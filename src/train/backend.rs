@@ -1,0 +1,493 @@
+use wgpu::util::DeviceExt;
+use std::sync::Arc;
+use bytemuck::{Pod, Zeroable};
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct MatrixDimensions {
+    a_rows: u32, a_cols: u32, b_cols: u32, _padding: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Default)]
+struct Dimensions {
+    rows: u32, cols: u32, padding1: u32, padding2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Default)]
+struct OpsDimensions {
+    len: u32, padding1: u32, padding2: u32, padding3: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Default)]
+struct UpdateParams {
+    len: u32, lr: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Default)]
+struct EmbeddingParams {
+    vocab_size: u32,
+    dimensions: u32,
+    seq_len: u32,
+    _padding: u32,
+}
+
+pub struct WgpuBackend {
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
+    pub matmul_pipeline: wgpu::ComputePipeline,
+    pub relu_pipeline: wgpu::ComputePipeline,
+    pub softmax_pipeline: wgpu::ComputePipeline,
+    pub add_pipeline: wgpu::ComputePipeline,
+    pub add_assign_pipeline: wgpu::ComputePipeline,
+    pub transpose_pipeline: wgpu::ComputePipeline,
+    pub update_pipeline: wgpu::ComputePipeline,
+    pub softmax_backward_pipeline: wgpu::ComputePipeline,
+    pub scale_mask_pipeline: wgpu::ComputePipeline,
+    pub relu_backward_pipeline: wgpu::ComputePipeline,
+    pub embedding_forward_pipeline: wgpu::ComputePipeline,
+    pub embedding_backward_pipeline: wgpu::ComputePipeline,
+}
+
+impl WgpuBackend {
+    pub async fn new() -> Option<Self> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None, force_fallback_adapter: false,
+        }).await?;
+
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("LLM GPU Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+        }, None).await.ok()?;
+
+        let matmul_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/matmul.wgsl"));
+        let activations_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/activations.wgsl"));
+        let ops_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/ops.wgsl"));
+        let transpose_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/transpose.wgsl"));
+        let update_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/update.wgsl"));
+        let backprop_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/backprop.wgsl"));
+        let embedding_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/embedding.wgsl"));
+
+        let matmul_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &matmul_shader, entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let relu_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &activations_shader, entry_point: Some("relu_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let softmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &activations_shader, entry_point: Some("softmax_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let add_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &ops_shader, entry_point: Some("add_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let add_assign_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &ops_shader, entry_point: Some("add_assign_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let transpose_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &transpose_shader, entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let update_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &update_shader, entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let softmax_backward_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &backprop_shader, entry_point: Some("softmax_backward_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let scale_mask_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &backprop_shader, entry_point: Some("scale_mask_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let relu_backward_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &backprop_shader, entry_point: Some("relu_backward_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let embedding_forward_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &embedding_shader, entry_point: Some("forward_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let embedding_backward_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &embedding_shader, entry_point: Some("backward_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        Some(Self {
+            device: Arc::new(device), queue: Arc::new(queue), matmul_pipeline, relu_pipeline,
+            softmax_pipeline, add_pipeline, add_assign_pipeline, transpose_pipeline, update_pipeline,
+            softmax_backward_pipeline, scale_mask_pipeline, relu_backward_pipeline,
+            embedding_forward_pipeline, embedding_backward_pipeline,
+        })
+    }
+
+    pub fn run_matmul(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
+        let out_shape = (a.shape.0, b.shape.1);
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: (out_shape.0 * out_shape.1 * 4) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false,
+        });
+        let dims = MatrixDimensions { a_rows: a.shape.0 as u32, a_cols: a.shape.1 as u32, b_cols: b.shape.1 as u32, _padding: 0 };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.matmul_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: a.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: b.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: output_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.matmul_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups((out_shape.0 as u32 + 15) / 16, (out_shape.1 as u32 + 15) / 16, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: output_buffer, shape: out_shape }
+    }
+
+    pub fn run_relu(&self, data: &mut GpuTensor) {
+        let dims = Dimensions { rows: data.shape.0 as u32, cols: data.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.relu_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: data.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.relu_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(((data.shape.0 * data.shape.1) as u32 + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_softmax(&self, data: &mut GpuTensor) {
+        let dims = Dimensions { rows: data.shape.0 as u32, cols: data.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.softmax_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: data.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.softmax_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(data.shape.0 as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_add(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
+        let total = (a.shape.0 * a.shape.1) as u32;
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: (total * 4) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false,
+        });
+        let dims = OpsDimensions { len: total, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.add_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: a.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: b.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.add_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups((total + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: out_buffer, shape: a.shape }
+    }
+
+    pub fn run_add_to_grad(&self, grad: &mut GpuTensor, d_w: &GpuTensor) {
+        let total = (grad.shape.0 * grad.shape.1) as u32;
+        let dims = OpsDimensions { len: total, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.add_assign_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: grad.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: d_w.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.add_assign_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups((total + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_transpose(&self, input: &GpuTensor) -> GpuTensor {
+        let out_shape = (input.shape.1, input.shape.0);
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: (input.shape.0 * input.shape.1 * 4) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false,
+        });
+        let dims = [input.shape.0 as u32, input.shape.1 as u32];
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&dims), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.transpose_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: input.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.transpose_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups((input.shape.0 as u32 + 15) / 16, (input.shape.1 as u32 + 15) / 16, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: output_buffer, shape: out_shape }
+    }
+
+    pub fn run_update(&self, weights: &mut GpuTensor, grads: &GpuTensor, lr: f32) {
+        let total = (weights.shape.0 * weights.shape.1) as u32;
+        let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[UpdateParams { len: total, lr }]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.update_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: param_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: weights.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: grads.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.update_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups((total + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_softmax_backward(&self, probs: &GpuTensor, d_probs: &GpuTensor) -> GpuTensor {
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: (probs.shape.0 * probs.shape.1 * 4) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false,
+        });
+        let dims = Dimensions { rows: probs.shape.0 as u32, cols: probs.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.softmax_backward_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: probs.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: d_probs.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.softmax_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(probs.shape.0 as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: out_buffer, shape: probs.shape }
+    }
+
+    pub fn run_scale_mask(&self, data: &mut GpuTensor) {
+        let dims = Dimensions { rows: data.shape.0 as u32, cols: data.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.scale_mask_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: data.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.scale_mask_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups((data.shape.0 as u32 + 15) / 16, (data.shape.1 as u32 + 15) / 16, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_relu_backward(&self, input: &GpuTensor, d_output: &mut GpuTensor) {
+        let dims = Dimensions { rows: input.shape.0 as u32, cols: input.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.relu_backward_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: input.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: d_output.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.relu_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            let total = (input.shape.0 * input.shape.1) as u32;
+            cp.dispatch_workgroups((total + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_embedding_forward(&self, tokens: &wgpu::Buffer, embedding: &GpuTensor, positional: &GpuTensor, seq_len: usize) -> GpuTensor {
+        let dims = embedding.shape.1;
+        let out_shape = (seq_len, dims);
+        let out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: (seq_len * dims * 4) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false,
+        });
+        let params = EmbeddingParams { vocab_size: embedding.shape.0 as u32, dimensions: dims as u32, seq_len: seq_len as u32, ..Default::default() };
+        let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[params]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.embedding_forward_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: param_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: tokens.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: embedding.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: positional.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: out_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.embedding_forward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(((seq_len * dims) as u32 + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: out_buffer, shape: out_shape }
+    }
+
+    pub fn run_embedding_backward(&self, tokens: &wgpu::Buffer, d_input: &GpuTensor, grad_emb: &mut GpuTensor, grad_pos: &mut GpuTensor) {
+        let params = EmbeddingParams { vocab_size: grad_emb.shape.0 as u32, dimensions: grad_emb.shape.1 as u32, seq_len: d_input.shape.0 as u32, ..Default::default() };
+        let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[params]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.embedding_backward_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: param_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: tokens.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: d_input.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: grad_emb.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: grad_pos.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.embedding_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(((d_input.shape.0 * d_input.shape.1) as u32 + 63) / 64, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+}
+
+pub struct GpuTensor {
+    pub buffer: wgpu::Buffer,
+    pub shape: (usize, usize),
+}
+
+impl GpuTensor {
+    pub fn from_cpu(backend: &WgpuBackend, data: &Vec<Vec<f32>>) -> Self {
+        let flat: Vec<f32> = data.iter().flatten().cloned().collect();
+        let buffer = backend.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&flat), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        });
+        Self { buffer, shape: (data.len(), data[0].len()) }
+    }
+
+    pub fn zero(&self, backend: &WgpuBackend) {
+        let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(&self.buffer, 0, None);
+        backend.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn clone_on_gpu(&self, backend: &WgpuBackend) -> Self {
+        let size = (self.shape.0 * self.shape.1 * 4) as u64;
+        let new_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&self.buffer, 0, &new_buffer, 0, size);
+        backend.queue.submit(Some(encoder.finish()));
+        Self { buffer: new_buffer, shape: self.shape }
+    }
+
+    pub async fn to_cpu(&self, backend: &WgpuBackend) -> Vec<Vec<f32>> {
+        let size = (self.shape.0 * self.shape.1 * 4) as u64;
+        let staging = backend.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&self.buffer, 0, &staging, 0, size);
+        backend.queue.submit(Some(encoder.finish()));
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |v| tx.send(v).unwrap());
+        backend.device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+        let data = slice.get_mapped_range();
+        let flat: &[f32] = bytemuck::cast_slice(&data);
+        let mut res = vec![vec![0.0f32; self.shape.1]; self.shape.0];
+        for i in 0..self.shape.0 { for j in 0..self.shape.1 { res[i][j] = flat[i * self.shape.1 + j]; } }
+        drop(data); staging.unmap();
+        res
+    }
+}
