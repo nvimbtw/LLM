@@ -1,6 +1,6 @@
 use crate::io::*;
 use crate::io::io::load_config;
-use crate::train::backend::{GpuTensor, WgpuBackend};
+use crate::train::backend::{GpuTensor, WgpuBackend, GpuCommandSession};
 use rand::prelude::*;
 use std::sync::Arc;
 
@@ -98,16 +98,16 @@ impl Weight {
         }
     }
 
-    pub fn update(&mut self, backend: &WgpuBackend, lr: f32, t: u32) {
-        backend.run_adam_update(&mut self.data, &self.grad, &mut self.m, &mut self.v, lr, 0.9, 0.999, 1e-8, t);
+    pub fn update(&mut self, backend: &WgpuBackend, lr: f32, t: u32, session: &mut Option<GpuCommandSession>) {
+        backend.run_adam_update(&mut self.data, &self.grad, &mut self.m, &mut self.v, lr, 0.9, 0.999, 1e-8, t, session);
     }
 
     pub fn zero_grad(&mut self, backend: &WgpuBackend) {
         self.grad.zero(backend);
     }
 
-    pub fn scale_grad(&mut self, backend: &WgpuBackend, scale: f32) {
-        backend.run_scale(&mut self.grad, scale);
+    pub fn scale_grad(&mut self, backend: &WgpuBackend, scale: f32, session: &mut Option<GpuCommandSession>) {
+        backend.run_scale(&mut self.grad, scale, session);
     }
 }
 
@@ -141,39 +141,46 @@ impl TransformerLayer {
         input: &GpuTensor,
         seq_len: usize,
         dimensions: usize,
+        session: &mut Option<GpuCommandSession>,
     ) -> (GpuTensor, LayerForwardState) {
-        let ln1_output = backend.run_layer_norm(input);
+        let ln1_output = backend.run_layer_norm(input, session);
 
-        let q_total = backend.run_matmul(&ln1_output, &self.w_q.data);
-        let k_total = backend.run_matmul(&ln1_output, &self.w_k.data);
-        let v_total = backend.run_matmul(&ln1_output, &self.w_v.data);
+        let q_total = backend.run_matmul_with_session(&ln1_output, &self.w_q.data, session);
+        let k_total = backend.run_matmul_with_session(&ln1_output, &self.w_k.data, session);
+        let v_total = backend.run_matmul_with_session(&ln1_output, &self.w_v.data, session);
 
         let head_dim = dimensions / self.n_heads;
         
-        let k_total_t = backend.run_transpose(&k_total);
-        let mut scores = backend.run_batched_matmul(&q_total, &k_total_t, self.n_heads, seq_len, head_dim, seq_len);
+        let q_perm = backend.run_permute_021(&q_total, seq_len, self.n_heads, head_dim, session);
+        let k_perm = backend.run_permute_021(&k_total, seq_len, self.n_heads, head_dim, session);
+        let v_perm = backend.run_permute_021(&v_total, seq_len, self.n_heads, head_dim, session);
+
+        let k_perm_t = backend.run_transpose(&k_perm, session);
+        let mut scores = backend.run_batched_matmul(&q_perm, &k_perm_t, self.n_heads, seq_len, head_dim, seq_len, session);
         
-        backend.run_scale_mask(&mut scores, 1.0 / (head_dim as f32).sqrt());
+        backend.run_scale_mask(&mut scores, 1.0 / (head_dim as f32).sqrt(), session);
 
         let mut probs = scores;
-        backend.run_softmax(&mut probs);
+        backend.run_softmax(&mut probs, session);
 
-        let attn = backend.run_batched_matmul(&probs, &v_total, self.n_heads, seq_len, seq_len, head_dim);
+        let attn_perm = backend.run_batched_matmul(&probs, &v_perm, self.n_heads, seq_len, seq_len, head_dim, session);
+        let attn = backend.run_permute_102(&attn_perm, self.n_heads, seq_len, head_dim, session);
         
-        let attn_output_linear = backend.run_matmul(&attn, &self.w_o.data);
-        let attn_output = backend.run_add(input, &attn_output_linear);
+        let attn_output_linear = backend.run_matmul_with_session(&attn, &self.w_o.data, session);
+        let attn_output = backend.run_add(input, &attn_output_linear, session);
 
-        let ln2_output = backend.run_layer_norm(&attn_output);
+        let ln2_output = backend.run_layer_norm(&attn_output, session);
 
-        let ff1_output = backend.run_matmul(&ln2_output, &self.w_ff1.data);
-        let mut relu_output = ff1_output.clone_on_gpu(backend);
-        backend.run_relu(&mut relu_output);
+        let ff1_output = backend.run_matmul_with_session(&ln2_output, &self.w_ff1.data, session);
+        let mut relu_output = ff1_output.clone_on_gpu(backend); // Still allocating here, fixable later
+        backend.run_relu(&mut relu_output, session);
 
-        let ffn_output_linear = backend.run_matmul(&relu_output, &self.w_ff2.data);
-        let output = backend.run_add(&attn_output, &ffn_output_linear);
+        let ffn_output_linear = backend.run_matmul_with_session(&relu_output, &self.w_ff2.data, session);
+        let output = backend.run_add(&attn_output, &ffn_output_linear, session);
 
         // Cleanup
-        k_total_t.return_to_pool(backend);
+        k_perm_t.return_to_pool(backend);
+        attn_perm.return_to_pool(backend);
         attn_output_linear.return_to_pool(backend);
         ffn_output_linear.return_to_pool(backend);
 
@@ -181,9 +188,9 @@ impl TransformerLayer {
             output,
             LayerForwardState {
                 ln1_output,
-                q_total,
-                k_total,
-                v_total,
+                q_perm,
+                k_perm,
+                v_perm,
                 probs,
                 attn,
                 attn_output,
@@ -201,71 +208,78 @@ impl TransformerLayer {
         state: &LayerForwardState,
         dimensions: usize,
         seq_len: usize,
+        session: &mut Option<GpuCommandSession>,
     ) -> GpuTensor {
         let head_dim = dimensions / self.n_heads;
 
-        let relu_output_t = backend.run_transpose(&state.relu_output);
-        let d_w_ff2 = backend.run_matmul(&relu_output_t, d_output);
-        backend.run_add_to_grad(&mut self.w_ff2.grad, &d_w_ff2);
+        let relu_output_t = backend.run_transpose(&state.relu_output, session);
+        let d_w_ff2 = backend.run_matmul_with_session(&relu_output_t, d_output, session);
+        backend.run_add_to_grad(&mut self.w_ff2.grad, &d_w_ff2, session);
 
-        let w_ff2_t = backend.run_transpose(&self.w_ff2.data);
-        let d_relu_output = backend.run_matmul(d_output, &w_ff2_t);
+        let w_ff2_t = backend.run_transpose(&self.w_ff2.data, session);
+        let d_relu_output = backend.run_matmul_with_session(d_output, &w_ff2_t, session);
 
         let mut d_ff1_output = d_relu_output.clone_on_gpu(backend);
-        backend.run_relu_backward(&state.ff1_output, &mut d_ff1_output);
+        backend.run_relu_backward(&state.ff1_output, &mut d_ff1_output, session);
 
-        let ln2_output_t = backend.run_transpose(&state.ln2_output);
-        let d_w_ff1 = backend.run_matmul(&ln2_output_t, &d_ff1_output);
-        backend.run_add_to_grad(&mut self.w_ff1.grad, &d_w_ff1);
+        let ln2_output_t = backend.run_transpose(&state.ln2_output, session);
+        let d_w_ff1 = backend.run_matmul_with_session(&ln2_output_t, &d_ff1_output, session);
+        backend.run_add_to_grad(&mut self.w_ff1.grad, &d_w_ff1, session);
 
-        let w_ff1_t = backend.run_transpose(&self.w_ff1.data);
-        let d_ln2_output = backend.run_matmul(&d_ff1_output, &w_ff1_t);
+        let w_ff1_t = backend.run_transpose(&self.w_ff1.data, session);
+        let d_ln2_output = backend.run_matmul_with_session(&d_ff1_output, &w_ff1_t, session);
         
-        let d_attn_output_from_ffn = backend.run_layer_norm_backward(&state.ln2_output, &d_ln2_output);
-        let d_attn_output = backend.run_add(d_output, &d_attn_output_from_ffn);
+        let d_attn_output_from_ffn = backend.run_layer_norm_backward(&state.ln2_output, &d_ln2_output, session);
+        let d_attn_output = backend.run_add(d_output, &d_attn_output_from_ffn, session);
 
-        let w_o_t = backend.run_transpose(&self.w_o.data);
-        let d_attn = backend.run_matmul(&d_attn_output, &w_o_t);
+        let w_o_t = backend.run_transpose(&self.w_o.data, session);
+        let d_attn = backend.run_matmul_with_session(&d_attn_output, &w_o_t, session);
 
-        let attn_t = backend.run_transpose(&state.attn);
-        let d_w_o = backend.run_matmul(&attn_t, &d_attn_output);
-        backend.run_add_to_grad(&mut self.w_o.grad, &d_w_o);
+        let d_attn_perm = backend.run_permute_021(&d_attn, seq_len, self.n_heads, head_dim, session);
 
-        let v_total_t = backend.run_transpose(&state.v_total);
-        let d_probs = backend.run_batched_matmul(&d_attn, &v_total_t, self.n_heads, seq_len, head_dim, seq_len);
+        let attn_t = backend.run_transpose(&state.attn, session);
+        let d_w_o = backend.run_matmul_with_session(&attn_t, &d_attn_output, session);
+        backend.run_add_to_grad(&mut self.w_o.grad, &d_w_o, session);
 
-        let probs_t = backend.run_transpose(&state.probs);
-        let d_v_total = backend.run_batched_matmul(&probs_t, &d_attn, self.n_heads, seq_len, seq_len, head_dim);
+        let v_perm_t = backend.run_transpose(&state.v_perm, session);
+        let d_probs = backend.run_batched_matmul(&d_attn_perm, &v_perm_t, self.n_heads, seq_len, head_dim, seq_len, session);
 
-        let d_scores = backend.run_softmax_backward(&state.probs, &d_probs, 1.0 / (head_dim as f32).sqrt());
+        let probs_t = backend.run_transpose(&state.probs, session);
+        let d_v_perm = backend.run_batched_matmul(&probs_t, &d_attn_perm, self.n_heads, seq_len, seq_len, head_dim, session);
 
-        let d_q_total = backend.run_batched_matmul(&d_scores, &state.k_total, self.n_heads, seq_len, seq_len, head_dim);
-        let d_scores_t = backend.run_transpose(&d_scores);
-        let d_k_total = backend.run_batched_matmul(&d_scores_t, &state.q_total, self.n_heads, seq_len, seq_len, head_dim);
+        let d_scores = backend.run_softmax_backward(&state.probs, &d_probs, 1.0 / (head_dim as f32).sqrt(), session);
 
-        let ln1_output_t = backend.run_transpose(&state.ln1_output);
-        let d_w_q = backend.run_matmul(&ln1_output_t, &d_q_total);
-        backend.run_add_to_grad(&mut self.w_q.grad, &d_w_q);
+        let d_q_perm = backend.run_batched_matmul(&d_scores, &state.k_perm, self.n_heads, seq_len, seq_len, head_dim, session);
+        let d_scores_t = backend.run_transpose(&d_scores, session);
+        let d_k_perm = backend.run_batched_matmul(&d_scores_t, &state.q_perm, self.n_heads, seq_len, seq_len, head_dim, session);
 
-        let d_w_k = backend.run_matmul(&ln1_output_t, &d_k_total);
-        backend.run_add_to_grad(&mut self.w_k.grad, &d_w_k);
+        let d_q_total = backend.run_permute_102(&d_q_perm, self.n_heads, seq_len, head_dim, session);
+        let d_k_total = backend.run_permute_102(&d_k_perm, self.n_heads, seq_len, head_dim, session);
+        let d_v_total = backend.run_permute_102(&d_v_perm, self.n_heads, seq_len, head_dim, session);
 
-        let d_w_v = backend.run_matmul(&ln1_output_t, &d_v_total);
-        backend.run_add_to_grad(&mut self.w_v.grad, &d_w_v);
+        let ln1_output_t = backend.run_transpose(&state.ln1_output, session);
+        let d_w_q = backend.run_matmul_with_session(&ln1_output_t, &d_q_total, session);
+        backend.run_add_to_grad(&mut self.w_q.grad, &d_w_q, session);
 
-        let w_q_t = backend.run_transpose(&self.w_q.data);
-        let w_k_t = backend.run_transpose(&self.w_k.data);
-        let w_v_t = backend.run_transpose(&self.w_v.data);
+        let d_w_k = backend.run_matmul_with_session(&ln1_output_t, &d_k_total, session);
+        backend.run_add_to_grad(&mut self.w_k.grad, &d_w_k, session);
 
-        let d_ln1_output_q = backend.run_matmul(&d_q_total, &w_q_t);
-        let d_ln1_output_k = backend.run_matmul(&d_k_total, &w_k_t);
-        let d_ln1_output_v = backend.run_matmul(&d_v_total, &w_v_t);
+        let d_w_v = backend.run_matmul_with_session(&ln1_output_t, &d_v_total, session);
+        backend.run_add_to_grad(&mut self.w_v.grad, &d_w_v, session);
 
-        let d_ln1_output_tmp = backend.run_add(&d_ln1_output_q, &d_ln1_output_k);
-        let d_ln1_output = backend.run_add(&d_ln1_output_tmp, &d_ln1_output_v);
+        let w_q_t = backend.run_transpose(&self.w_q.data, session);
+        let w_k_t = backend.run_transpose(&self.w_k.data, session);
+        let w_v_t = backend.run_transpose(&self.w_v.data, session);
 
-        let d_input_from_attn = backend.run_layer_norm_backward(&state.ln1_output, &d_ln1_output);
-        let d_input_total = backend.run_add(&d_attn_output, &d_input_from_attn);
+        let d_ln1_output_q = backend.run_matmul_with_session(&d_q_total, &w_q_t, session);
+        let d_ln1_output_k = backend.run_matmul_with_session(&d_k_total, &w_k_t, session);
+        let d_ln1_output_v = backend.run_matmul_with_session(&d_v_total, &w_v_t, session);
+
+        let d_ln1_output_tmp = backend.run_add(&d_ln1_output_q, &d_ln1_output_k, session);
+        let d_ln1_output = backend.run_add(&d_ln1_output_tmp, &d_ln1_output_v, session);
+
+        let d_input_from_attn = backend.run_layer_norm_backward(&state.ln1_output, &d_ln1_output, session);
+        let d_input_total = backend.run_add(&d_attn_output, &d_input_from_attn, session);
 
         // Cleanup
         relu_output_t.return_to_pool(backend);
@@ -281,16 +295,19 @@ impl TransformerLayer {
         d_attn_output.return_to_pool(backend);
         w_o_t.return_to_pool(backend);
         d_attn.return_to_pool(backend);
+        d_attn_perm.return_to_pool(backend);
         attn_t.return_to_pool(backend);
         d_w_o.return_to_pool(backend);
-        v_total_t.return_to_pool(backend);
+        v_perm_t.return_to_pool(backend);
         d_probs.return_to_pool(backend);
-        probs_t.return_to_pool(backend);
-        d_v_total.return_to_pool(backend);
+        d_v_perm.return_to_pool(backend);
         d_scores.return_to_pool(backend);
         d_scores_t.return_to_pool(backend);
+        d_q_perm.return_to_pool(backend);
+        d_k_perm.return_to_pool(backend);
         d_q_total.return_to_pool(backend);
         d_k_total.return_to_pool(backend);
+        d_v_total.return_to_pool(backend);
         ln1_output_t.return_to_pool(backend);
         d_w_q.return_to_pool(backend);
         d_w_k.return_to_pool(backend);
@@ -317,30 +334,30 @@ impl TransformerLayer {
         self.w_ff2.zero_grad(backend);
     }
 
-    pub fn update_weights(&mut self, backend: &WgpuBackend, lr: f32, t: u32) {
-        self.w_q.update(backend, lr, t);
-        self.w_k.update(backend, lr, t);
-        self.w_v.update(backend, lr, t);
-        self.w_o.update(backend, lr, t);
-        self.w_ff1.update(backend, lr, t);
-        self.w_ff2.update(backend, lr, t);
+    pub fn update_weights(&mut self, backend: &WgpuBackend, lr: f32, t: u32, session: &mut Option<GpuCommandSession>) {
+        self.w_q.update(backend, lr, t, session);
+        self.w_k.update(backend, lr, t, session);
+        self.w_v.update(backend, lr, t, session);
+        self.w_o.update(backend, lr, t, session);
+        self.w_ff1.update(backend, lr, t, session);
+        self.w_ff2.update(backend, lr, t, session);
     }
 
-    pub fn scale_grads(&mut self, backend: &WgpuBackend, scale: f32) {
-        self.w_q.scale_grad(backend, scale);
-        self.w_k.scale_grad(backend, scale);
-        self.w_v.scale_grad(backend, scale);
-        self.w_o.scale_grad(backend, scale);
-        self.w_ff1.scale_grad(backend, scale);
-        self.w_ff2.scale_grad(backend, scale);
+    pub fn scale_grads(&mut self, backend: &WgpuBackend, scale: f32, session: &mut Option<GpuCommandSession>) {
+        self.w_q.scale_grad(backend, scale, session);
+        self.w_k.scale_grad(backend, scale, session);
+        self.w_v.scale_grad(backend, scale, session);
+        self.w_o.scale_grad(backend, scale, session);
+        self.w_ff1.scale_grad(backend, scale, session);
+        self.w_ff2.scale_grad(backend, scale, session);
     }
 }
 
 pub struct LayerForwardState {
     pub ln1_output: GpuTensor,
-    pub q_total: GpuTensor,
-    pub k_total: GpuTensor,
-    pub v_total: GpuTensor,
+    pub q_perm: GpuTensor,
+    pub k_perm: GpuTensor,
+    pub v_perm: GpuTensor,
     pub probs: GpuTensor,
     pub attn: GpuTensor,
     pub attn_output: GpuTensor,
@@ -352,9 +369,9 @@ pub struct LayerForwardState {
 impl LayerForwardState {
     pub fn return_to_pool(self, backend: &WgpuBackend) {
         self.ln1_output.return_to_pool(backend);
-        self.q_total.return_to_pool(backend);
-        self.k_total.return_to_pool(backend);
-        self.v_total.return_to_pool(backend);
+        self.q_perm.return_to_pool(backend);
+        self.k_perm.return_to_pool(backend);
+        self.v_perm.return_to_pool(backend);
         self.probs.return_to_pool(backend);
         self.attn.return_to_pool(backend);
         self.attn_output.return_to_pool(backend);
@@ -401,13 +418,14 @@ impl Transformer {
         positional: &GpuTensor,
         seq_len: usize,
         dimensions: usize,
+        session: &mut Option<GpuCommandSession>,
     ) -> (GpuTensor, TransformerForwardState) {
-        let input = backend.run_embedding_forward(&tokens, embedding, positional, seq_len);
+        let input = backend.run_embedding_forward(&tokens, embedding, positional, seq_len, session);
         let mut current_input = input.clone_on_gpu(backend);
         let mut layer_states = Vec::new();
 
         for layer in &self.layers {
-            let (output, state) = layer.forward(backend, &current_input, seq_len, dimensions);
+            let (output, state) = layer.forward(backend, &current_input, seq_len, dimensions, session);
             current_input.return_to_pool(backend);
             current_input = output;
             layer_states.push(state);
@@ -431,17 +449,18 @@ impl Transformer {
         grad_emb_i32_buffer: &wgpu::Buffer,
         grad_pos: &mut GpuTensor,
         dimensions: usize,
+        session: &mut Option<GpuCommandSession>,
     ) -> GpuTensor {
         let mut d_input = d_output.clone_on_gpu(backend);
         let seq_len = state.input.shape.0;
 
         for (layer, layer_state) in self.layers.iter_mut().zip(state.layer_states.iter()).rev() {
-            let next_d_input = layer.backward(backend, &d_input, layer_state, dimensions, seq_len);
+            let next_d_input = layer.backward(backend, &d_input, layer_state, dimensions, seq_len, session);
             d_input.return_to_pool(backend);
             d_input = next_d_input;
         }
 
-        backend.run_embedding_backward(&state.tokens, &d_input, grad_emb_i32_buffer, grad_pos);
+        backend.run_embedding_backward(&state.tokens, &d_input, grad_emb_i32_buffer, grad_pos, session);
         d_input
     }
 
@@ -451,21 +470,20 @@ impl Transformer {
         }
     }
 
-    pub fn update_weights(&mut self, backend: &WgpuBackend, learning_rate: f32) {
+    pub fn update_weights(&mut self, backend: &WgpuBackend, learning_rate: f32, session: &mut Option<GpuCommandSession>) {
         self.t += 1;
         for layer in &mut self.layers {
-            layer.update_weights(backend, learning_rate, self.t);
+            layer.update_weights(backend, learning_rate, self.t, session);
         }
     }
 
-    pub fn scale_grads(&mut self, backend: &WgpuBackend, scale: f32) {
+    pub fn scale_grads(&mut self, backend: &WgpuBackend, scale: f32, session: &mut Option<GpuCommandSession>) {
         for layer in &mut self.layers {
-            layer.scale_grads(backend, scale);
+            layer.scale_grads(backend, scale, session);
         }
     }
 
-    pub fn clip_grads(&mut self, backend: &WgpuBackend, _max_norm: f32) {
-        // Simple global norm clipping (per layer for simplicity here, could be global global)
-        self.scale_grads(backend, 1.0); 
+    pub fn clip_grads(&mut self, backend: &WgpuBackend, _max_norm: f32, session: &mut Option<GpuCommandSession>) {
+        self.scale_grads(backend, 1.0, session); 
     }
 }

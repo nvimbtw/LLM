@@ -1,7 +1,7 @@
 use crate::io::*;
 use crate::tokenizer::decoder::decode;
 use crate::tokenizer::encoder::encode;
-use crate::train::backend::{GpuTensor, WgpuBackend};
+use crate::train::backend::{GpuTensor, WgpuBackend, GpuCommandSession};
 use crate::train::transformer::{new_table, Transformer};
 use pollster::block_on;
 use std::sync::Arc;
@@ -108,11 +108,12 @@ pub fn generate_text_with_model(
             &positional_table,
             current_input_tokens.len(),
             dimensions,
+            &mut None,
         );
 
         // Perform final matmul and softmax on GPU
         let mut logits_tensor = backend.run_matmul(&transformer_output, &w_lm);
-        backend.run_softmax(&mut logits_tensor);
+        backend.run_softmax(&mut logits_tensor, &mut None);
 
         // Download only the last row of logits for sampling
         let logits = block_on(logits_tensor.last_row_to_cpu(backend));

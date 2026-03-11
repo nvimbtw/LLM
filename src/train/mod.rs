@@ -3,7 +3,7 @@ pub mod output;
 pub mod transformer;
 
 use crate::io::*;
-use crate::train::backend::{GpuTensor, WgpuBackend};
+use crate::train::backend::{GpuTensor, WgpuBackend, GpuCommandSession};
 use crate::train::transformer::*;
 use pollster::block_on;
 use std::sync::Arc;
@@ -40,20 +40,15 @@ pub fn train() {
     let mut w_lm = GpuTensor::from_cpu(&backend, &w_lm_raw);
 
     println!("Creating gradient buffers...");
-    // grad_embedding now refers to the i32 buffer for fixed-point gradients
     let grad_embedding_i32_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("grad_embedding_i32_buffer"),
-        size: (vocab_size * actual_dimensions * 4) as u64, // 4 bytes per i32
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
+        size: (vocab_size * actual_dimensions * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let mut grad_positional =
-        GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; actual_dimensions]; context_window]);
+    let mut grad_positional = GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; actual_dimensions]; context_window]);
     let mut grad_w_lm = GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; vocab_size]; actual_dimensions]);
 
-    // Initialize i32 grad_embedding to zeros
     GpuTensor::zero_i32(&grad_embedding_i32_buffer, &backend);
 
     println!("Initialization complete. Starting training loop...");
@@ -63,12 +58,12 @@ pub fn train() {
     for epoch in 0..epochs {
         let mut total_loss = 0.0;
         let mut count = 0;
+        let mut last_step_loss = 0.0;
 
         for i in (0..(tokens.len() - context_window - 1)).step_by(stride) {
             let input_tokens = &tokens[i..i + context_window];
             let target_tokens = &tokens[i + 1..i + context_window + 1];
 
-            // 1. Send tokens to GPU
             let tokens_gpu = Arc::new(backend.device.create_buffer_init(
                 &wgpu::util::BufferInitDescriptor {
                     label: None,
@@ -77,7 +72,8 @@ pub fn train() {
                 },
             ));
 
-            // 2. Forward Pass (100% GPU)
+            // 2. Forward Pass (Consolidated)
+            let mut session = Some(GpuCommandSession::new(&backend.device));
             let (transformer_output, state) = transformer.forward(
                 &backend,
                 tokens_gpu,
@@ -85,37 +81,45 @@ pub fn train() {
                 &positional_table,
                 context_window,
                 actual_dimensions,
+                &mut session,
             );
 
-            let logits_batch_gpu = backend.run_matmul(&transformer_output, &w_lm);
+            let logits_batch_gpu = backend.run_matmul_with_session(&transformer_output, &w_lm, &mut session);
 
-            // 3. Compute Loss and Gradients (GPU)
             let target_tokens_u32: Vec<u32> = target_tokens.iter().map(|&x| x as u32).collect();
             let (loss_tensor, grad_logits_batch) =
-                backend.run_cross_entropy(&logits_batch_gpu, &target_tokens_u32);
-            let loss_cpu = block_on(loss_tensor.to_cpu(&backend));
-            let step_loss: f32 =
-                loss_cpu.iter().map(|row| row[0]).sum::<f32>() / context_window as f32;
+                backend.run_cross_entropy(&logits_batch_gpu, &target_tokens_u32, &mut session);
+            
+            session.take().unwrap().submit(&backend.queue);
 
-            total_loss += step_loss;
-            count += 1;
+            // 3. Optional Loss Download (Every 10 steps to maintain some throughput)
+            if count % 10 == 0 {
+                let loss_cpu = block_on(loss_tensor.to_cpu(&backend));
+                last_step_loss = loss_cpu.iter().map(|row| row[0]).sum::<f32>() / context_window as f32;
+                total_loss += last_step_loss;
+            }
 
-            // 4. Backward Pass (100% GPU)
-            let transformer_output_t = backend.run_transpose(&transformer_output);
-            let d_w_lm = backend.run_matmul(&transformer_output_t, &grad_logits_batch);
-            backend.run_add_to_grad(&mut grad_w_lm, &d_w_lm);
+            // 4. Backward Pass (Consolidated)
+            let mut session = Some(GpuCommandSession::new(&backend.device));
+            let transformer_output_t = backend.run_transpose(&transformer_output, &mut session);
+            let d_w_lm = backend.run_matmul_with_session(&transformer_output_t, &grad_logits_batch, &mut session);
+            backend.run_add_to_grad(&mut grad_w_lm, &d_w_lm, &mut session);
 
-            let w_lm_t = backend.run_transpose(&w_lm);
-            let d_transformer_output = backend.run_matmul(&grad_logits_batch, &w_lm_t);
+            let w_lm_t = backend.run_transpose(&w_lm, &mut session);
+            let d_transformer_output = backend.run_matmul_with_session(&grad_logits_batch, &w_lm_t, &mut session);
 
             let d_input = transformer.backward(
                 &backend,
                 &d_transformer_output,
                 &state,
-                &grad_embedding_i32_buffer, // Pass the i32 buffer
+                &grad_embedding_i32_buffer,
                 &mut grad_positional,
                 actual_dimensions,
+                &mut session,
             );
+            session.take().unwrap().submit(&backend.queue);
+
+            count += 1;
 
             // Return intermediate tensors to pool
             transformer_output.return_to_pool(&backend);
@@ -129,64 +133,52 @@ pub fn train() {
             d_input.return_to_pool(&backend);
             state.return_to_pool(&backend);
 
-            // 5. Update weights (Adam/SGD on GPU)
+            // 5. Update weights
             if count % batch_size == 0 {
+                let mut session = Some(GpuCommandSession::new(&backend.device));
                 let scale = 1.0 / (batch_size * context_window) as f32;
 
-                transformer.scale_grads(&backend, scale);
-                backend.run_scale(&mut grad_positional, scale);
-                backend.run_scale(&mut grad_w_lm, scale);
+                transformer.scale_grads(&backend, scale, &mut session);
+                backend.run_scale(&mut grad_positional, scale, &mut session);
+                backend.run_scale(&mut grad_w_lm, scale, &mut session);
 
-                // Adam update
-                transformer.update_weights(&backend, learning_rate);
+                transformer.update_weights(&backend, learning_rate, &mut session);
                 
-                // embedding, positional, w_lm still use SGD for simplicity or should be Adam too?
-                // The plan focused on Transformer layers for Adam.
-                
-                // grad_embedding uses fixed-point i32, so call run_update_i32
                 backend.run_update_i32(
                     &mut embedding_table,
                     &grad_embedding_i32_buffer,
                     learning_rate * scale,
+                    &mut session,
                 );
 
-                // positional_table and w_lm use f32
-                backend.run_update_f32(&mut positional_table, &grad_positional, learning_rate);
-                backend.run_update_f32(&mut w_lm, &grad_w_lm, learning_rate);
+                backend.run_update_f32(&mut positional_table, &grad_positional, learning_rate, &mut session);
+                backend.run_update_f32(&mut w_lm, &grad_w_lm, learning_rate, &mut session);
+
+                session.take().unwrap().submit(&backend.queue);
 
                 transformer.zero_grad(&backend);
-                GpuTensor::zero_i32(&grad_embedding_i32_buffer, &backend); // Zero i32 buffer
+                GpuTensor::zero_i32(&grad_embedding_i32_buffer, &backend);
                 grad_positional.zero(&backend);
                 grad_w_lm.zero(&backend);
             }
 
             if count % 100 == 0 {
-                println!("Epoch {} | Step {} | Loss: {:.4}", epoch, count, step_loss);
+                println!("Epoch {} | Step {} | Loss (sampled): {:.4}", epoch, count, last_step_loss);
             }
         }
 
         println!(
-            "Epoch {} completed. Average Loss: {:.4}",
+            "Epoch {} completed. Average Logged Loss: {:.4}",
             epoch,
-            total_loss / count as f32
+            total_loss / (count as f32 / 10.0)
         );
     }
 
-    // Save model (Download from GPU first)
     println!("Saving model...");
-    save_matrix(
-        &block_on(embedding_table.to_cpu(&backend)),
-        "data/embedding_table.bin",
-    )
-    .unwrap();
-    save_matrix(
-        &block_on(positional_table.to_cpu(&backend)),
-        "data/positional_table.bin",
-    )
-    .unwrap();
+    save_matrix(&block_on(embedding_table.to_cpu(&backend)), "data/embedding_table.bin").unwrap();
+    save_matrix(&block_on(positional_table.to_cpu(&backend)), "data/positional_table.bin").unwrap();
     save_matrix(&block_on(w_lm.to_cpu(&backend)), "data/w_lm.bin").unwrap();
     
-    // Save layers
     for (i, layer) in transformer.layers.iter().enumerate() {
         save_matrix(&block_on(layer.w_q.data.to_cpu(&backend)), &format!("data/layer_{}_w_q.bin", i)).unwrap();
         save_matrix(&block_on(layer.w_k.data.to_cpu(&backend)), &format!("data/layer_{}_w_k.bin", i)).unwrap();
