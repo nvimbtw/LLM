@@ -1,7 +1,7 @@
 use crate::io::*;
 use crate::tokenizer::decoder::decode;
 use crate::tokenizer::encoder::encode;
-use crate::train::backend::{GpuTensor, WgpuBackend, GpuCommandSession};
+use crate::train::backend::{GpuTensor, WgpuBackend};
 use crate::train::transformer::{new_table, Transformer};
 use pollster::block_on;
 use std::sync::Arc;

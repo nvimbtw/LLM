@@ -96,17 +96,27 @@ impl GpuBufferPool {
 
 pub struct GpuCommandSession {
     pub encoder: wgpu::CommandEncoder,
+    pub deferred_buffers: Vec<wgpu::Buffer>,
 }
 
 impl GpuCommandSession {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             encoder: device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuCommandSession") }),
+            deferred_buffers: Vec::new(),
         }
     }
 
-    pub fn submit(self, queue: &wgpu::Queue) {
-        queue.submit(Some(self.encoder.finish()));
+    pub fn defer_return(&mut self, buffer: wgpu::Buffer) {
+        self.deferred_buffers.push(buffer);
+    }
+
+    pub fn submit(self, backend: &WgpuBackend) {
+        backend.queue.submit(Some(self.encoder.finish()));
+        // After submission, it's safe to return buffers to the pool
+        for buf in self.deferred_buffers {
+            backend.pool.return_buffer(buf, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+        }
     }
 }
 
@@ -275,21 +285,6 @@ impl WgpuBackend {
         })
     }
 
-    fn ensure_encoder<'a>(&self, session: &'a mut Option<GpuCommandSession>) -> (wgpu::CommandEncoder, bool) {
-        match session {
-            Some(s) => (std::mem::replace(&mut s.encoder, self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })), true),
-            None => (self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }), false),
-        }
-    }
-
-    fn finish_encoder(&self, encoder: wgpu::CommandEncoder, session: &mut Option<GpuCommandSession>, submit: bool) {
-        if let Some(s) = session {
-            s.encoder = encoder;
-        } else if submit {
-            self.queue.submit(Some(encoder.finish()));
-        }
-    }
-
     pub fn run_matmul(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
         self.run_matmul_with_session(a, b, &mut None)
     }
@@ -317,26 +312,29 @@ impl WgpuBackend {
             ],
         });
         
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.matmul_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups((m as u32 + 15) / 16, (n as u32 + 15) / 16, batch_size as u32);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.matmul_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups((m as u32 + 15) / 16, (n as u32 + 15) / 16, batch_size as u32);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
-        
         GpuTensor { buffer: output_buffer, shape: out_shape }
     }
 
     pub fn run_permute_021(&self, data: &GpuTensor, s: usize, h: usize, d: usize, session: &mut Option<GpuCommandSession>) -> GpuTensor {
         let size = (s * h * d * 4) as u64;
         let out_buffer = self.pool.get(&self.device, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
-        
         let params = PermuteParams { s: s as u32, h: h as u32, d: d as u32, padding: 0 };
         let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&[params]), usage: wgpu::BufferUsages::UNIFORM,
         });
-        
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &self.permute_021_pipeline.get_bind_group_layout(0),
             entries: &[
@@ -346,25 +344,29 @@ impl WgpuBackend {
             ],
         });
 
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(sess) = session {
+            let mut cp = sess.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.permute_021_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, (s * h * d) as u32, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.permute_021_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, (s * h * d) as u32, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: (h * s, d) }
     }
 
     pub fn run_permute_102(&self, data: &GpuTensor, h: usize, s: usize, d: usize, session: &mut Option<GpuCommandSession>) -> GpuTensor {
         let size = (h * s * d * 4) as u64;
         let out_buffer = self.pool.get(&self.device, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
-        
         let params = PermuteParams { s: s as u32, h: h as u32, d: d as u32, padding: 0 };
         let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&[params]), usage: wgpu::BufferUsages::UNIFORM,
         });
-        
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None, layout: &self.permute_102_pipeline.get_bind_group_layout(0),
             entries: &[
@@ -374,13 +376,19 @@ impl WgpuBackend {
             ],
         });
 
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(sess) = session {
+            let mut cp = sess.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.permute_102_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, (h * s * d) as u32, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.permute_102_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, (h * s * d) as u32, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: (s * h, d) }
     }
 
@@ -396,13 +404,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 1, resource: data.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.relu_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, (data.shape.0 * data.shape.1) as u32, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.relu_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, (data.shape.0 * data.shape.1) as u32, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_softmax(&self, data: &mut GpuTensor, session: &mut Option<GpuCommandSession>) {
@@ -417,20 +431,25 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 1, resource: data.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.softmax_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups(data.shape.0 as u32, 1, 1);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.softmax_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups(data.shape.0 as u32, 1, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_add(&self, a: &GpuTensor, b: &GpuTensor, session: &mut Option<GpuCommandSession>) -> GpuTensor {
         let total = (a.shape.0 * a.shape.1) as u32;
         let size = (total * 4) as u64;
         let out_buffer = self.pool.get(&self.device, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
-
         let dims = OpsDimensions { len: total, ..Default::default() };
         let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
@@ -444,13 +463,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.add_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, total, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.add_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, total, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: a.shape }
     }
 
@@ -468,21 +493,30 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 2, resource: d_w.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.add_assign_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, total, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.add_assign_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, total, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_transpose(&self, input: &GpuTensor, session: &mut Option<GpuCommandSession>) -> GpuTensor {
-        let out_shape = (input.shape.1, input.shape.0);
+        self.run_batched_transpose(input, 1, input.shape.0, input.shape.1, session)
+    }
+
+    pub fn run_batched_transpose(&self, input: &GpuTensor, batch_size: usize, rows: usize, cols: usize, session: &mut Option<GpuCommandSession>) -> GpuTensor {
+        let out_shape = (batch_size * cols, rows);
         let size = (input.shape.0 * input.shape.1 * 4) as u64;
         let output_buffer = self.pool.get(&self.device, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
-
-        let dims = [input.shape.0 as u32, input.shape.1 as u32];
+        let dims = [rows as u32, cols as u32, batch_size as u32, 0];
         let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&dims), usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -494,14 +528,33 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 2, resource: output_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.transpose_pipeline); cp.set_bind_group(0, &bind_group, &[]);
-            cp.dispatch_workgroups((input.shape.0 as u32 + 15) / 16, (input.shape.1 as u32 + 15) / 16, 1);
+            cp.dispatch_workgroups((rows as u32 + 15) / 16, (cols as u32 + 15) / 16, batch_size as u32);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.transpose_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups((rows as u32 + 15) / 16, (cols as u32 + 15) / 16, batch_size as u32);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: output_buffer, shape: out_shape }
+    }
+
+    pub fn run_copy_with_session(&self, src: &GpuTensor, session: &mut Option<GpuCommandSession>) -> GpuTensor {
+        let size = (src.shape.0 * src.shape.1 * 4) as u64;
+        let dst_buffer = self.pool.get(&self.device, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+        if let Some(s) = session {
+            s.encoder.copy_buffer_to_buffer(&src.buffer, 0, &dst_buffer, 0, size);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_buffer_to_buffer(&src.buffer, 0, &dst_buffer, 0, size);
+            self.queue.submit(Some(encoder.finish()));
+        }
+        GpuTensor { buffer: dst_buffer, shape: src.shape }
     }
 
     pub fn run_update_f32(&self, weights: &mut GpuTensor, grads: &GpuTensor, lr: f32, session: &mut Option<GpuCommandSession>) {
@@ -517,13 +570,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 2, resource: grads.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.update_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, total, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.update_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, total, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_update_i32(&self, weights: &mut GpuTensor, grads_i32_buffer: &wgpu::Buffer, lr: f32, session: &mut Option<GpuCommandSession>) {
@@ -539,13 +598,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 3, resource: grads_i32_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.update_fixed_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, total, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.update_fixed_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, total, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_scale(&self, data: &mut GpuTensor, scale: f32, session: &mut Option<GpuCommandSession>) {
@@ -560,13 +625,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 1, resource: data.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.scale_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, total, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.scale_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, total, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_adam_update(&self, weights: &mut GpuTensor, grads: &GpuTensor, m: &mut GpuTensor, v: &mut GpuTensor, lr: f32, beta1: f32, beta2: f32, eps: f32, t: u32, session: &mut Option<GpuCommandSession>) {
@@ -587,13 +658,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 5, resource: v.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.adam_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, total, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.adam_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, total, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_softmax_backward(&self, probs: &GpuTensor, d_probs: &GpuTensor, scale: f32, session: &mut Option<GpuCommandSession>) -> GpuTensor {
@@ -612,13 +689,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.softmax_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups(probs.shape.0 as u32, 1, 1);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.softmax_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups(probs.shape.0 as u32, 1, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: probs.shape }
     }
 
@@ -634,13 +717,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 3, resource: data.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.scale_mask_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups((data.shape.0 as u32 + 15) / 16, (data.shape.1 as u32 + 15) / 16, 1);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.scale_mask_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups((data.shape.0 as u32 + 15) / 16, (data.shape.1 as u32 + 15) / 16, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_relu_backward(&self, input: &GpuTensor, d_output: &mut GpuTensor, session: &mut Option<GpuCommandSession>) {
@@ -656,20 +745,25 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 3, resource: d_output.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.relu_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, (input.shape.0 * input.shape.1) as u32, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.relu_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, (input.shape.0 * input.shape.1) as u32, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_layer_norm(&self, data: &GpuTensor, session: &mut Option<GpuCommandSession>) -> GpuTensor {
         let total_size = (data.shape.0 * data.shape.1 * 4) as u64;
         let out_buffer = self.pool.get(&self.device, total_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        encoder.copy_buffer_to_buffer(&data.buffer, 0, &out_buffer, 0, total_size);
+        
         let dims = Dimensions { rows: data.shape.0 as u32, cols: data.shape.1 as u32, ..Default::default() };
         let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
@@ -681,12 +775,22 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
             ],
         });
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+
+        if let Some(s) = session {
+            s.encoder.copy_buffer_to_buffer(&data.buffer, 0, &out_buffer, 0, total_size);
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.layer_norm_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups(data.shape.0 as u32, 1, 1);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_buffer_to_buffer(&data.buffer, 0, &out_buffer, 0, total_size);
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.layer_norm_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups(data.shape.0 as u32, 1, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: data.shape }
     }
 
@@ -706,13 +810,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.layer_norm_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups(d_output.shape.0 as u32, 1, 1);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.layer_norm_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups(d_output.shape.0 as u32, 1, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: d_output.shape }
     }
 
@@ -735,13 +845,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 4, resource: out_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.embedding_forward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, (seq_len * dims) as u32, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.embedding_forward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, (seq_len * dims) as u32, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         GpuTensor { buffer: out_buffer, shape: out_shape }
     }
 
@@ -760,13 +876,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 6, resource: grad_pos.buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.embedding_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             Self::dispatch_flat(&mut cp, (d_input.shape.0 * d_input.shape.1) as u32, 64);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.embedding_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                Self::dispatch_flat(&mut cp, (d_input.shape.0 * d_input.shape.1) as u32, 64);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
     }
 
     pub fn run_cross_entropy(&self, logits: &GpuTensor, target_token_ids: &[u32], session: &mut Option<GpuCommandSession>) -> (GpuTensor, GpuTensor) {
@@ -791,13 +913,19 @@ impl WgpuBackend {
                 wgpu::BindGroupEntry { binding: 4, resource: grad_logits_batch_buffer.as_entire_binding() },
             ],
         });
-        let (mut encoder, is_session) = self.ensure_encoder(session);
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        if let Some(s) = session {
+            let mut cp = s.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.cross_entropy_pipeline); cp.set_bind_group(0, &bind_group, &[]);
             cp.dispatch_workgroups(batch_size as u32, 1, 1);
+        } else {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                cp.set_pipeline(&self.cross_entropy_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+                cp.dispatch_workgroups(batch_size as u32, 1, 1);
+            }
+            self.queue.submit(Some(encoder.finish()));
         }
-        self.finish_encoder(encoder, session, !is_session);
         (GpuTensor { buffer: loss_output_buffer, shape: (batch_size, 1) }, GpuTensor { buffer: grad_logits_batch_buffer, shape: logits.shape })
     }
 
@@ -817,6 +945,12 @@ pub struct GpuTensor {
 impl GpuTensor {
     pub fn return_to_pool(self, backend: &WgpuBackend) {
         backend.pool.return_buffer(self.buffer, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+    }
+
+    pub fn return_to_session(self, session: &mut Option<GpuCommandSession>) {
+        if let Some(s) = session {
+            s.defer_return(self.buffer);
+        }
     }
 
     pub fn from_cpu(backend: &WgpuBackend, data: &Vec<Vec<f32>>) -> Self {
@@ -840,15 +974,31 @@ impl GpuTensor {
     }
 
     pub fn zero(&self, backend: &WgpuBackend) {
-        let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.clear_buffer(&self.buffer, 0, None);
-        backend.queue.submit(Some(encoder.finish()));
+        self.zero_with_session(backend, &mut None);
+    }
+
+    pub fn zero_with_session(&self, backend: &WgpuBackend, session: &mut Option<GpuCommandSession>) {
+        if let Some(s) = session {
+            s.encoder.clear_buffer(&self.buffer, 0, None);
+        } else {
+            let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.clear_buffer(&self.buffer, 0, None);
+            backend.queue.submit(Some(encoder.finish()));
+        }
     }
     
     pub fn zero_i32(buffer: &wgpu::Buffer, backend: &WgpuBackend) {
-        let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.clear_buffer(buffer, 0, None);
-        backend.queue.submit(Some(encoder.finish()));
+        Self::zero_i32_with_session(buffer, backend, &mut None);
+    }
+
+    pub fn zero_i32_with_session(buffer: &wgpu::Buffer, backend: &WgpuBackend, session: &mut Option<GpuCommandSession>) {
+        if let Some(s) = session {
+            s.encoder.clear_buffer(buffer, 0, None);
+        } else {
+            let mut encoder = backend.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.clear_buffer(buffer, 0, None);
+            backend.queue.submit(Some(encoder.finish()));
+        }
     }
 
     pub fn clone_on_gpu(&self, backend: &WgpuBackend) -> Self {
