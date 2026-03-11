@@ -105,7 +105,7 @@ impl WgpuBackend {
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("LLM GPU Device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::Performance,
         }, None).await.ok()?;
 
