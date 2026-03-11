@@ -17,7 +17,7 @@ pub fn train() {
 
     let dimensions = 1024;
     let context_window = 128;
-    let learning_rate = 0.001;
+    let learning_rate = 0.01;
     let epochs = 10;
     let batch_size = 512;
 
@@ -108,7 +108,7 @@ pub fn train() {
             let w_lm_t = backend.run_transpose(&w_lm);
             let d_transformer_output = backend.run_matmul(&grad_logits_batch, &w_lm_t);
 
-            transformer.backward(
+            let d_input = transformer.backward(
                 &backend,
                 &d_transformer_output,
                 &state,
@@ -118,14 +118,16 @@ pub fn train() {
             );
 
             // Return intermediate tensors to pool
-            backend.pool.return_buffer(transformer_output.buffer);
-            backend.pool.return_buffer(logits_batch_gpu.buffer);
-            backend.pool.return_buffer(loss_tensor.buffer);
-            backend.pool.return_buffer(grad_logits_batch.buffer);
-            backend.pool.return_buffer(transformer_output_t.buffer);
-            backend.pool.return_buffer(w_lm_t.buffer);
-            backend.pool.return_buffer(d_transformer_output.buffer);
-            backend.pool.return_buffer(d_w_lm.buffer);
+            transformer_output.return_to_pool(&backend);
+            logits_batch_gpu.return_to_pool(&backend);
+            loss_tensor.return_to_pool(&backend);
+            grad_logits_batch.return_to_pool(&backend);
+            transformer_output_t.return_to_pool(&backend);
+            w_lm_t.return_to_pool(&backend);
+            d_transformer_output.return_to_pool(&backend);
+            d_w_lm.return_to_pool(&backend);
+            d_input.return_to_pool(&backend);
+            state.return_to_pool(&backend);
 
             // 5. Update weights (SGD on GPU)
             if count % batch_size == 0 {

@@ -13,13 +13,19 @@ pub fn init_transformer(
 
     let embedding_table_raw = load_matrix("data/embedding_table.bin")
         .unwrap_or_else(|_| new_table(vocab_size, dimensions));
+    let actual_dimensions = if !embedding_table_raw.is_empty() {
+        embedding_table_raw[0].len()
+    } else {
+        dimensions
+    };
+
     let positional_table_raw = load_matrix("data/positional_table.bin")
-        .unwrap_or_else(|_| new_table(context_window, dimensions));
+        .unwrap_or_else(|_| new_table(context_window, actual_dimensions));
 
     let embedding_table = GpuTensor::from_cpu(backend, &embedding_table_raw);
     let positional_table = GpuTensor::from_cpu(backend, &positional_table_raw);
 
-    let mut transformer = Transformer::new(backend, dimensions);
+    let mut transformer = Transformer::new(backend, actual_dimensions);
 
     if let Ok(m) = load_matrix("data/w_q.bin") {
         transformer.w_q = GpuTensor::from_cpu(backend, &m);
@@ -40,7 +46,7 @@ pub fn init_transformer(
         transformer.w_ff2 = GpuTensor::from_cpu(backend, &m);
     }
 
-    (transformer, embedding_table, positional_table, dimensions)
+    (transformer, embedding_table, positional_table, actual_dimensions)
 }
 
 pub fn new_table(length: usize, dimensions: usize) -> Vec<Vec<f32>> {
@@ -73,13 +79,31 @@ pub struct Transformer {
 pub struct ForwardState {
     pub tokens: Arc<wgpu::Buffer>,
     pub input: GpuTensor,
+    pub ln1_output: GpuTensor,
     pub q: GpuTensor,
     pub k: GpuTensor,
     pub v: GpuTensor,
     pub probs: GpuTensor,
     pub attn_output: GpuTensor,
+    pub ln2_output: GpuTensor,
     pub ff1_output: GpuTensor,
     pub relu_output: GpuTensor,
+}
+
+impl ForwardState {
+    pub fn return_to_pool(self, backend: &WgpuBackend) {
+        // tokens is an Arc<wgpu::Buffer>, we don't return it to pool as it's small/transient
+        self.input.return_to_pool(backend);
+        self.ln1_output.return_to_pool(backend);
+        self.q.return_to_pool(backend);
+        self.k.return_to_pool(backend);
+        self.v.return_to_pool(backend);
+        self.probs.return_to_pool(backend);
+        self.attn_output.return_to_pool(backend);
+        self.ln2_output.return_to_pool(backend);
+        self.ff1_output.return_to_pool(backend);
+        self.relu_output.return_to_pool(backend);
+    }
 }
 
 impl Transformer {
@@ -123,14 +147,16 @@ impl Transformer {
     ) -> (GpuTensor, ForwardState) {
         let input = backend.run_embedding_forward(&tokens, embedding, positional, seq_len);
 
-        let q = backend.run_matmul(&input, &self.w_q);
-        let k = backend.run_matmul(&input, &self.w_k);
-        let v = backend.run_matmul(&input, &self.w_v);
+        // Pre-LN 1
+        let ln1_output = backend.run_layer_norm(&input);
+
+        let q = backend.run_matmul(&ln1_output, &self.w_q);
+        let k = backend.run_matmul(&ln1_output, &self.w_k);
+        let v = backend.run_matmul(&ln1_output, &self.w_v);
 
         let k_t = backend.run_transpose(&k);
         let mut scores = backend.run_matmul(&q, &k_t);
         
-        // Use updated run_scale_mask with dimensions-based scaling
         backend.run_scale_mask(&mut scores, 1.0 / (dimensions as f32).sqrt());
 
         let mut probs = scores;
@@ -140,31 +166,34 @@ impl Transformer {
         let attn_output_linear = backend.run_matmul(&attn, &self.w_o);
         let attn_output = backend.run_add(&input, &attn_output_linear);
 
-        let ff1_output = backend.run_matmul(&attn_output, &self.w_ff1);
+        // Pre-LN 2
+        let ln2_output = backend.run_layer_norm(&attn_output);
+
+        let ff1_output = backend.run_matmul(&ln2_output, &self.w_ff1);
         let mut relu_output = ff1_output.clone_on_gpu(backend);
         backend.run_relu(&mut relu_output);
 
         let ffn_output_linear = backend.run_matmul(&relu_output, &self.w_ff2);
         let output = backend.run_add(&attn_output, &ffn_output_linear);
 
-        // Cleanup intermediate tensors that are NOT needed in backward
-        // k, v, probs, q, input, etc. are needed for backward, so they go into ForwardState.
-        // But k_t, attn, attn_output_linear, ffn_output_linear are temporary.
-        backend.pool.return_buffer(k_t.buffer);
-        backend.pool.return_buffer(attn.buffer);
-        backend.pool.return_buffer(attn_output_linear.buffer);
-        backend.pool.return_buffer(ffn_output_linear.buffer);
+        // Cleanup
+        k_t.return_to_pool(backend);
+        attn.return_to_pool(backend);
+        attn_output_linear.return_to_pool(backend);
+        ffn_output_linear.return_to_pool(backend);
 
         (
             output,
             ForwardState {
                 tokens,
                 input,
+                ln1_output,
                 q,
                 k,
                 v,
                 probs,
                 attn_output,
+                ln2_output,
                 ff1_output,
                 relu_output,
             },
@@ -190,20 +219,23 @@ impl Transformer {
         let mut d_ff1_output = d_relu_output.clone_on_gpu(backend);
         backend.run_relu_backward(&state.ff1_output, &mut d_ff1_output);
 
-        let attn_output_t = backend.run_transpose(&state.attn_output);
-        let d_w_ff1 = backend.run_matmul(&attn_output_t, &d_ff1_output);
+        let ln2_output_t = backend.run_transpose(&state.ln2_output);
+        let d_w_ff1 = backend.run_matmul(&ln2_output_t, &d_ff1_output);
         backend.run_add_to_grad(&mut self.grad_w_ff1, &d_w_ff1);
 
         let w_ff1_t = backend.run_transpose(&self.w_ff1);
-        let d_attn_output_from_ffn = backend.run_matmul(&d_ff1_output, &w_ff1_t);
+        let d_ln2_output = backend.run_matmul(&d_ff1_output, &w_ff1_t);
+        
+        // Backward LN 2
+        let d_attn_output_from_ffn = backend.run_layer_norm_backward(&state.ln2_output, &d_ln2_output);
         let d_attn_output = backend.run_add(d_output, &d_attn_output_from_ffn);
 
         let w_o_t = backend.run_transpose(&self.w_o);
         let d_attn = backend.run_matmul(&d_attn_output, &w_o_t);
 
-        let attn = backend.run_matmul(&state.probs, &state.v);
-        let attn_t = backend.run_transpose(&attn);
-        let d_w_o = backend.run_matmul(&attn_t, &d_attn_output);
+        let d_w_o_attn = backend.run_matmul(&state.probs, &state.v);
+        let d_w_o_attn_t = backend.run_transpose(&d_w_o_attn);
+        let d_w_o = backend.run_matmul(&d_w_o_attn_t, &d_attn_output);
         backend.run_add_to_grad(&mut self.grad_w_o, &d_w_o);
 
         let v_t = backend.run_transpose(&state.v);
@@ -212,74 +244,80 @@ impl Transformer {
         let probs_t = backend.run_transpose(&state.probs);
         let d_v = backend.run_matmul(&probs_t, &d_attn);
 
-        // Updated run_softmax_backward with scaling
         let d_scores = backend.run_softmax_backward(&state.probs, &d_probs, 1.0 / (dimensions as f32).sqrt());
 
         let d_q = backend.run_matmul(&d_scores, &state.k);
         let d_scores_t = backend.run_transpose(&d_scores);
         let d_k = backend.run_matmul(&d_scores_t, &state.q);
 
-        let input_t = backend.run_transpose(&state.input);
-        let d_w_q = backend.run_matmul(&input_t, &d_q);
+        let ln1_output_t = backend.run_transpose(&state.ln1_output);
+        let d_w_q = backend.run_matmul(&ln1_output_t, &d_q);
         backend.run_add_to_grad(&mut self.grad_w_q, &d_w_q);
 
-        let d_w_k = backend.run_matmul(&input_t, &d_k);
+        let d_w_k = backend.run_matmul(&ln1_output_t, &d_k);
         backend.run_add_to_grad(&mut self.grad_w_k, &d_w_k);
 
-        let d_w_v = backend.run_matmul(&input_t, &d_v);
+        let d_w_v = backend.run_matmul(&ln1_output_t, &d_v);
         backend.run_add_to_grad(&mut self.grad_w_v, &d_w_v);
 
         let w_q_t = backend.run_transpose(&self.w_q);
         let w_k_t = backend.run_transpose(&self.w_k);
         let w_v_t = backend.run_transpose(&self.w_v);
 
-        let d_input_q = backend.run_matmul(&d_q, &w_q_t);
-        let d_input_k = backend.run_matmul(&d_k, &w_k_t);
-        let d_input_v = backend.run_matmul(&d_v, &w_v_t);
+        let d_ln1_output_q = backend.run_matmul(&d_q, &w_q_t);
+        let d_ln1_output_k = backend.run_matmul(&d_k, &w_k_t);
+        let d_ln1_output_v = backend.run_matmul(&d_v, &w_v_t);
 
-        let mut d_input = backend.run_add(&d_attn_output, &d_input_q);
-        d_input = backend.run_add(&d_input, &d_input_k);
-        d_input = backend.run_add(&d_input, &d_input_v);
+        let d_ln1_output_tmp = backend.run_add(&d_ln1_output_q, &d_ln1_output_k);
+        let d_ln1_output = backend.run_add(&d_ln1_output_tmp, &d_ln1_output_v);
+        d_ln1_output_tmp.return_to_pool(backend);
 
-        backend.run_embedding_backward(&state.tokens, &d_input, grad_emb_i32_buffer, grad_pos);
+        // Backward LN 1
+        let d_input_from_attn = backend.run_layer_norm_backward(&state.ln1_output, &d_ln1_output);
+        
+        let d_input_total = backend.run_add(&d_attn_output, &d_input_from_attn);
 
-        // Resource management: return intermediate tensors to pool
-        // This is simplified for now due to complex ownership.
-        backend.pool.return_buffer(relu_output_t.buffer);
-        backend.pool.return_buffer(d_w_ff2.buffer); 
-        backend.pool.return_buffer(w_ff2_t.buffer);
-        backend.pool.return_buffer(d_relu_output.buffer);
-        backend.pool.return_buffer(d_ff1_output.buffer);
-        backend.pool.return_buffer(attn_output_t.buffer);
-        backend.pool.return_buffer(d_w_ff1.buffer); 
-        backend.pool.return_buffer(w_ff1_t.buffer);
-        backend.pool.return_buffer(d_attn_output_from_ffn.buffer);
-        backend.pool.return_buffer(d_attn_output.buffer);
-        backend.pool.return_buffer(w_o_t.buffer);
-        backend.pool.return_buffer(d_attn.buffer);
-        backend.pool.return_buffer(attn.buffer);
-        backend.pool.return_buffer(attn_t.buffer);
-        backend.pool.return_buffer(d_w_o.buffer); 
-        backend.pool.return_buffer(v_t.buffer);
-        backend.pool.return_buffer(d_probs.buffer);
-        backend.pool.return_buffer(probs_t.buffer);
-        backend.pool.return_buffer(d_v.buffer);
-        backend.pool.return_buffer(d_scores.buffer);
-        backend.pool.return_buffer(d_scores_t.buffer);
-        backend.pool.return_buffer(d_q.buffer);
-        backend.pool.return_buffer(d_k.buffer);
-        backend.pool.return_buffer(input_t.buffer);
-        backend.pool.return_buffer(d_w_q.buffer); 
-        backend.pool.return_buffer(d_w_k.buffer); 
-        backend.pool.return_buffer(d_w_v.buffer); 
-        backend.pool.return_buffer(w_q_t.buffer);
-        backend.pool.return_buffer(w_k_t.buffer);
-        backend.pool.return_buffer(w_v_t.buffer);
-        backend.pool.return_buffer(d_input_q.buffer);
-        backend.pool.return_buffer(d_input_k.buffer);
-        backend.pool.return_buffer(d_input_v.buffer);
+        backend.run_embedding_backward(&state.tokens, &d_input_total, grad_emb_i32_buffer, grad_pos);
 
-        d_input
+        // Cleanup
+        relu_output_t.return_to_pool(backend);
+        d_w_ff2.return_to_pool(backend); 
+        w_ff2_t.return_to_pool(backend);
+        d_relu_output.return_to_pool(backend);
+        d_ff1_output.return_to_pool(backend);
+        ln2_output_t.return_to_pool(backend);
+        d_w_ff1.return_to_pool(backend); 
+        w_ff1_t.return_to_pool(backend);
+        d_ln2_output.return_to_pool(backend);
+        d_attn_output_from_ffn.return_to_pool(backend);
+        d_attn_output.return_to_pool(backend);
+        w_o_t.return_to_pool(backend);
+        d_attn.return_to_pool(backend);
+        d_w_o_attn.return_to_pool(backend);
+        d_w_o_attn_t.return_to_pool(backend);
+        d_w_o.return_to_pool(backend); 
+        v_t.return_to_pool(backend);
+        d_probs.return_to_pool(backend);
+        probs_t.return_to_pool(backend);
+        d_v.return_to_pool(backend);
+        d_scores.return_to_pool(backend);
+        d_scores_t.return_to_pool(backend);
+        d_q.return_to_pool(backend);
+        d_k.return_to_pool(backend);
+        ln1_output_t.return_to_pool(backend);
+        d_w_q.return_to_pool(backend); 
+        d_w_k.return_to_pool(backend); 
+        d_w_v.return_to_pool(backend); 
+        w_q_t.return_to_pool(backend);
+        w_k_t.return_to_pool(backend);
+        w_v_t.return_to_pool(backend);
+        d_ln1_output_q.return_to_pool(backend);
+        d_ln1_output_k.return_to_pool(backend);
+        d_ln1_output_v.return_to_pool(backend);
+        d_ln1_output.return_to_pool(backend);
+        d_input_from_attn.return_to_pool(backend);
+
+        d_input_total
     }
 
     pub fn zero_grad(&mut self, backend: &WgpuBackend) {

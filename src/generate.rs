@@ -37,12 +37,28 @@ pub fn sample_token(probs: &[f32], temperature: f32) -> u32 {
         for p in adjusted_probs.iter_mut() {
             *p = p.powf(1.0 / temperature);
         }
-        let sum: f32 = adjusted_probs.iter().sum();
+    }
+    
+    let sum: f32 = adjusted_probs.iter().sum();
+    if sum <= 0.0 || sum.is_nan() {
+        // Fallback to argmax if something went wrong with probabilities
+        return adjusted_probs
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0);
+    }
+
+    if temperature != 1.0 {
         for p in adjusted_probs.iter_mut() {
             *p /= sum;
         }
     }
-    let dist = WeightedIndex::new(&adjusted_probs).expect("Failed to create weighted index");
+    
+    let dist = WeightedIndex::new(&adjusted_probs).unwrap_or_else(|_| {
+        WeightedIndex::new(&vec![1.0; adjusted_probs.len()]).unwrap()
+    });
     dist.sample(&mut rng()) as u32
 }
 
@@ -57,8 +73,9 @@ pub fn generate_text_with_model(
     _context_window_request: usize,
 ) -> String {
     let vocab = read_vocab("data/pairs.bin").expect("Failed to read vocab");
+    let vocab_size = vocab.len() + 256;
     let w_lm_raw =
-        load_matrix("data/w_lm.bin").unwrap_or_else(|_| new_table(dimensions, vocab.len() + 256));
+        load_matrix("data/w_lm.bin").unwrap_or_else(|_| new_table(dimensions, vocab_size));
     let w_lm = GpuTensor::from_cpu(backend, &w_lm_raw);
 
     let mut generated_tokens: Vec<u32> = encode(prompt.to_string(), vocab.clone());
@@ -86,7 +103,7 @@ pub fn generate_text_with_model(
             },
         ));
 
-        let (transformer_output, _state) = transformer.forward(
+        let (transformer_output, state) = transformer.forward(
             backend,
             tokens_gpu,
             &embedding_table,
@@ -104,6 +121,11 @@ pub fn generate_text_with_model(
 
         let next_token_id = sample_token(&logits, temperature);
         generated_tokens.push(next_token_id);
+
+        // Cleanup: Return intermediate tensors to pool
+        transformer_output.return_to_pool(backend);
+        logits_tensor.return_to_pool(backend);
+        state.return_to_pool(backend);
     }
 
     decode(&generated_tokens, &vocab)

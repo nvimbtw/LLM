@@ -8,7 +8,6 @@ mod train;
 use crate::generate::*;
 use crate::tokenizer::*;
 use crate::train::backend::WgpuBackend;
-use crate::train::transformer;
 use pollster::block_on;
 
 fn main() {
@@ -19,6 +18,9 @@ fn main() {
         full_process();
     } else {
         match args[0].as_str() {
+            "prepare" => {
+                io::input::prepare_input_data().expect("Failed to prepare input data");
+            }
             "tokenise" => vocab::build_vocab(),
             "encode" => encoder::encoder(),
             "decode" => {
@@ -47,7 +49,7 @@ fn main() {
                 let prompt = args[1].clone();
                 let backend = block_on(WgpuBackend::new()).expect("Failed to init GPU");
 
-                let dimensions = 128;
+                let dimensions = 1024; // Default to 1024 to match typical training
                 let context_window = 1024;
                 let max_length = 256;
 
@@ -68,25 +70,19 @@ fn main() {
 }
 
 fn full_process() {
+    io::input::prepare_input_data().expect("Failed to prepare input data");
     vocab::build_vocab();
     encoder::encoder();
-    let backend = block_on(WgpuBackend::new()).expect("Failed to init GPU");
-    let dimensions = 256;
-    let context_window = 1024;
-    let (transformer_instance, embedding_table, positional_table, dimensions) =
-        transformer::init_transformer(&backend, dimensions, context_window);
+    train::train();
+
     let prompt = "The quick brown fox";
+    let backend = block_on(WgpuBackend::new()).expect("Failed to init GPU");
+
+    let dimensions = 1024; // Default to 1024 to match typical training
     let context_window = 1024;
     let max_length = 256;
-    let generated_text = generate_text_with_model(
-        &backend,
-        transformer_instance,
-        embedding_table,
-        positional_table,
-        dimensions,
-        prompt,
-        max_length,
-        context_window,
-    );
+
+    let generated_text =
+        generate_text_with_loaded_model(&backend, &prompt, max_length, context_window, dimensions);
     println!("Generated text (full_process):\n{}", generated_text);
 }

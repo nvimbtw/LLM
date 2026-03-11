@@ -19,7 +19,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 
 // Path 2: Fixed Point Gradients (for Embedding)
-@group(0) @binding(2) var<storage, read> grads_i32: array<i32>;
+@group(0) @binding(3) var<storage, read> grads_i32: array<i32>;
 
 @compute @workgroup_size(64)
 fn update_fixed_main(@builtin(global_invocation_id) global_id: vec3<u32>) {

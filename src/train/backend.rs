@@ -46,7 +46,7 @@ struct LossParams {
 }
 
 pub struct GpuBufferPool {
-    buffers: Mutex<HashMap<u64, Vec<wgpu::Buffer>>>,
+    buffers: Mutex<HashMap<(u64, u32), Vec<wgpu::Buffer>>>,
 }
 
 impl GpuBufferPool {
@@ -56,7 +56,8 @@ impl GpuBufferPool {
 
     pub fn get(&self, device: &wgpu::Device, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
         let mut buffers = self.buffers.lock().unwrap();
-        if let Some(list) = buffers.get_mut(&size) {
+        let key = (size, usage.bits());
+        if let Some(list) = buffers.get_mut(&key) {
             if let Some(buf) = list.pop() {
                 return buf;
             }
@@ -66,10 +67,11 @@ impl GpuBufferPool {
         })
     }
 
-    pub fn return_buffer(&self, buf: wgpu::Buffer) {
+    pub fn return_buffer(&self, buf: wgpu::Buffer, usage: wgpu::BufferUsages) {
         let size = buf.size();
         let mut buffers = self.buffers.lock().unwrap();
-        buffers.entry(size).or_insert_with(Vec::new).push(buf);
+        let key = (size, usage.bits());
+        buffers.entry(key).or_insert_with(Vec::new).push(buf);
     }
 }
 
@@ -89,6 +91,8 @@ pub struct WgpuBackend {
     pub softmax_backward_pipeline: wgpu::ComputePipeline,
     pub scale_mask_pipeline: wgpu::ComputePipeline,
     pub relu_backward_pipeline: wgpu::ComputePipeline,
+    pub layer_norm_pipeline: wgpu::ComputePipeline,
+    pub layer_norm_backward_pipeline: wgpu::ComputePipeline,
     pub embedding_forward_pipeline: wgpu::ComputePipeline,
     pub embedding_backward_pipeline: wgpu::ComputePipeline,
     pub cross_entropy_pipeline: wgpu::ComputePipeline,
@@ -178,6 +182,16 @@ impl WgpuBackend {
             compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
         });
 
+        let layer_norm_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &activations_shader, entry_point: Some("layer_norm_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
+        let layer_norm_backward_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &backprop_shader, entry_point: Some("layer_norm_backward_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
+
         let embedding_forward_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None, layout: None, module: &embedding_shader, entry_point: Some("forward_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
@@ -200,6 +214,7 @@ impl WgpuBackend {
             update_fixed_pipeline,
             scale_pipeline,
             softmax_backward_pipeline, scale_mask_pipeline, relu_backward_pipeline,
+            layer_norm_pipeline, layer_norm_backward_pipeline,
             embedding_forward_pipeline, embedding_backward_pipeline,
             cross_entropy_pipeline,
         })
@@ -385,7 +400,7 @@ impl WgpuBackend {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: param_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: weights.buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: grads_i32_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: grads_i32_buffer.as_entire_binding() },
             ],
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -486,6 +501,63 @@ impl WgpuBackend {
             Self::dispatch_flat(&mut cp, (input.shape.0 * input.shape.1) as u32, 64);
         }
         self.queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn run_layer_norm(&self, data: &GpuTensor) -> GpuTensor {
+        let total_size = (data.shape.0 * data.shape.1 * 4) as u64;
+        let out_buffer = self.pool.get(&self.device, total_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+        
+        // We reuse the input buffer's data in the out_buffer initially
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&data.buffer, 0, &out_buffer, 0, total_size);
+        self.queue.submit(Some(encoder.finish()));
+
+        let dims = Dimensions { rows: data.shape.0 as u32, cols: data.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.layer_norm_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.layer_norm_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(data.shape.0 as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: out_buffer, shape: data.shape }
+    }
+
+    pub fn run_layer_norm_backward(&self, normalized_input: &GpuTensor, d_output: &GpuTensor) -> GpuTensor {
+        let total_size = (d_output.shape.0 * d_output.shape.1 * 4) as u64;
+        let out_buffer = self.pool.get(&self.device, total_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+
+        let dims = Dimensions { rows: d_output.shape.0 as u32, cols: d_output.shape.1 as u32, ..Default::default() };
+        let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.layer_norm_backward_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dim_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: normalized_input.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: d_output.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: out_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.layer_norm_backward_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(d_output.shape.0 as u32, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        GpuTensor { buffer: out_buffer, shape: d_output.shape }
     }
 
     pub fn run_embedding_forward(&self, tokens: &wgpu::Buffer, embedding: &GpuTensor, positional: &GpuTensor, seq_len: usize) -> GpuTensor {
@@ -599,6 +671,10 @@ pub struct GpuTensor {
 }
 
 impl GpuTensor {
+    pub fn return_to_pool(self, backend: &WgpuBackend) {
+        backend.pool.return_buffer(self.buffer, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+    }
+
     pub fn from_cpu(backend: &WgpuBackend, data: &Vec<Vec<f32>>) -> Self {
         let rows = data.len();
         let cols = if rows > 0 { data[0].len() } else { 0 };
