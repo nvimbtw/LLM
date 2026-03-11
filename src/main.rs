@@ -7,14 +7,14 @@ mod train;
 
 use crate::generate::*;
 use crate::tokenizer::*;
-use crate::train::transformer;
 use crate::train::backend::WgpuBackend;
+use crate::train::transformer;
 use pollster::block_on;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     println!("Running with args: {:?}", args);
-    
+
     if args.is_empty() {
         full_process();
     } else {
@@ -26,7 +26,11 @@ fn main() {
                 let vocab = io::read_vocab("data/pairs.bin").expect("Failed to read vocab");
                 println!("Reading tokens...");
                 let tokens = io::read_tokens("data/tokens.bin").expect("Failed to read tokens");
-                println!("Loaded {} vocab pairs and {} tokens.", vocab.len(), tokens.len());
+                println!(
+                    "Loaded {} vocab pairs and {} tokens.",
+                    vocab.len(),
+                    tokens.len()
+                );
                 let limit = tokens.len().min(100);
                 let text = decoder::decode(&tokens[..limit], &vocab);
                 println!("Decoded text:\n{}", text);
@@ -67,8 +71,10 @@ fn full_process() {
     vocab::build_vocab();
     encoder::encoder();
     let backend = block_on(WgpuBackend::new()).expect("Failed to init GPU");
+    let dimensions = 256;
+    let context_window = 1024;
     let (transformer_instance, embedding_table, positional_table, dimensions) =
-        transformer::init_transformer(&backend);
+        transformer::init_transformer(&backend, dimensions, context_window);
     let prompt = "The quick brown fox";
     let context_window = 1024;
     let max_length = 256;

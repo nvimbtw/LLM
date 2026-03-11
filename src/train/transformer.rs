@@ -1,13 +1,15 @@
-use rand::prelude::*;
 use crate::io::*;
-use crate::train::backend::{WgpuBackend, GpuTensor};
+use crate::train::backend::{GpuTensor, WgpuBackend};
+use rand::prelude::*;
 use std::sync::Arc;
 
-pub fn init_transformer(backend: &WgpuBackend) -> (Transformer, GpuTensor, GpuTensor, usize) {
+pub fn init_transformer(
+    backend: &WgpuBackend,
+    dimensions: usize,
+    context_window: usize,
+) -> (Transformer, GpuTensor, GpuTensor, usize) {
     let vocab = read_vocab("data/pairs.bin").expect("Failed to read pairs");
     let vocab_size = vocab.len() + 256;
-    let dimensions = 128;
-    let context_window = 1024;
 
     let embedding_table_raw = load_matrix("data/embedding_table.bin")
         .unwrap_or_else(|_| new_table(vocab_size, dimensions));
@@ -18,13 +20,25 @@ pub fn init_transformer(backend: &WgpuBackend) -> (Transformer, GpuTensor, GpuTe
     let positional_table = GpuTensor::from_cpu(backend, &positional_table_raw);
 
     let mut transformer = Transformer::new(backend, dimensions);
-    
-    if let Ok(m) = load_matrix("data/w_q.bin") { transformer.w_q = GpuTensor::from_cpu(backend, &m); }
-    if let Ok(m) = load_matrix("data/w_k.bin") { transformer.w_k = GpuTensor::from_cpu(backend, &m); }
-    if let Ok(m) = load_matrix("data/w_v.bin") { transformer.w_v = GpuTensor::from_cpu(backend, &m); }
-    if let Ok(m) = load_matrix("data/w_o.bin") { transformer.w_o = GpuTensor::from_cpu(backend, &m); }
-    if let Ok(m) = load_matrix("data/w_ff1.bin") { transformer.w_ff1 = GpuTensor::from_cpu(backend, &m); }
-    if let Ok(m) = load_matrix("data/w_ff2.bin") { transformer.w_ff2 = GpuTensor::from_cpu(backend, &m); }
+
+    if let Ok(m) = load_matrix("data/w_q.bin") {
+        transformer.w_q = GpuTensor::from_cpu(backend, &m);
+    }
+    if let Ok(m) = load_matrix("data/w_k.bin") {
+        transformer.w_k = GpuTensor::from_cpu(backend, &m);
+    }
+    if let Ok(m) = load_matrix("data/w_v.bin") {
+        transformer.w_v = GpuTensor::from_cpu(backend, &m);
+    }
+    if let Ok(m) = load_matrix("data/w_o.bin") {
+        transformer.w_o = GpuTensor::from_cpu(backend, &m);
+    }
+    if let Ok(m) = load_matrix("data/w_ff1.bin") {
+        transformer.w_ff1 = GpuTensor::from_cpu(backend, &m);
+    }
+    if let Ok(m) = load_matrix("data/w_ff2.bin") {
+        transformer.w_ff2 = GpuTensor::from_cpu(backend, &m);
+    }
 
     (transformer, embedding_table, positional_table, dimensions)
 }
@@ -98,17 +112,27 @@ impl Transformer {
         }
     }
 
-    pub fn forward(&self, backend: &WgpuBackend, tokens: Arc<wgpu::Buffer>, embedding: &GpuTensor, positional: &GpuTensor, seq_len: usize, _dimensions: usize) -> (GpuTensor, ForwardState) {
+    pub fn forward(
+        &self,
+        backend: &WgpuBackend,
+        tokens: Arc<wgpu::Buffer>,
+        embedding: &GpuTensor,
+        positional: &GpuTensor,
+        seq_len: usize,
+        dimensions: usize,
+    ) -> (GpuTensor, ForwardState) {
         let input = backend.run_embedding_forward(&tokens, embedding, positional, seq_len);
-        
+
         let q = backend.run_matmul(&input, &self.w_q);
         let k = backend.run_matmul(&input, &self.w_k);
         let v = backend.run_matmul(&input, &self.w_v);
 
         let k_t = backend.run_transpose(&k);
         let mut scores = backend.run_matmul(&q, &k_t);
-        backend.run_scale_mask(&mut scores);
         
+        // Use updated run_scale_mask with dimensions-based scaling
+        backend.run_scale_mask(&mut scores, 1.0 / (dimensions as f32).sqrt());
+
         let mut probs = scores;
         backend.run_softmax(&mut probs);
 
@@ -119,14 +143,30 @@ impl Transformer {
         let ff1_output = backend.run_matmul(&attn_output, &self.w_ff1);
         let mut relu_output = ff1_output.clone_on_gpu(backend);
         backend.run_relu(&mut relu_output);
-        
+
         let ffn_output_linear = backend.run_matmul(&relu_output, &self.w_ff2);
         let output = backend.run_add(&attn_output, &ffn_output_linear);
+
+        // Cleanup intermediate tensors that are NOT needed in backward
+        // k, v, probs, q, input, etc. are needed for backward, so they go into ForwardState.
+        // But k_t, attn, attn_output_linear, ffn_output_linear are temporary.
+        backend.pool.return_buffer(k_t.buffer);
+        backend.pool.return_buffer(attn.buffer);
+        backend.pool.return_buffer(attn_output_linear.buffer);
+        backend.pool.return_buffer(ffn_output_linear.buffer);
 
         (
             output,
             ForwardState {
-                tokens, input, q, k, v, probs, attn_output, ff1_output, relu_output,
+                tokens,
+                input,
+                q,
+                k,
+                v,
+                probs,
+                attn_output,
+                ff1_output,
+                relu_output,
             },
         )
     }
@@ -136,9 +176,9 @@ impl Transformer {
         backend: &WgpuBackend,
         d_output: &GpuTensor,
         state: &ForwardState,
-        grad_emb: &mut GpuTensor,
+        grad_emb_i32_buffer: &wgpu::Buffer,
         grad_pos: &mut GpuTensor,
-        _dimensions: usize,
+        dimensions: usize,
     ) -> GpuTensor {
         let relu_output_t = backend.run_transpose(&state.relu_output);
         let d_w_ff2 = backend.run_matmul(&relu_output_t, d_output);
@@ -172,7 +212,8 @@ impl Transformer {
         let probs_t = backend.run_transpose(&state.probs);
         let d_v = backend.run_matmul(&probs_t, &d_attn);
 
-        let d_scores = backend.run_softmax_backward(&state.probs, &d_probs);
+        // Updated run_softmax_backward with scaling
+        let d_scores = backend.run_softmax_backward(&state.probs, &d_probs, 1.0 / (dimensions as f32).sqrt());
 
         let d_q = backend.run_matmul(&d_scores, &state.k);
         let d_scores_t = backend.run_transpose(&d_scores);
@@ -200,7 +241,43 @@ impl Transformer {
         d_input = backend.run_add(&d_input, &d_input_k);
         d_input = backend.run_add(&d_input, &d_input_v);
 
-        backend.run_embedding_backward(&state.tokens, &d_input, grad_emb, grad_pos);
+        backend.run_embedding_backward(&state.tokens, &d_input, grad_emb_i32_buffer, grad_pos);
+
+        // Resource management: return intermediate tensors to pool
+        // This is simplified for now due to complex ownership.
+        backend.pool.return_buffer(relu_output_t.buffer);
+        backend.pool.return_buffer(d_w_ff2.buffer); 
+        backend.pool.return_buffer(w_ff2_t.buffer);
+        backend.pool.return_buffer(d_relu_output.buffer);
+        backend.pool.return_buffer(d_ff1_output.buffer);
+        backend.pool.return_buffer(attn_output_t.buffer);
+        backend.pool.return_buffer(d_w_ff1.buffer); 
+        backend.pool.return_buffer(w_ff1_t.buffer);
+        backend.pool.return_buffer(d_attn_output_from_ffn.buffer);
+        backend.pool.return_buffer(d_attn_output.buffer);
+        backend.pool.return_buffer(w_o_t.buffer);
+        backend.pool.return_buffer(d_attn.buffer);
+        backend.pool.return_buffer(attn.buffer);
+        backend.pool.return_buffer(attn_t.buffer);
+        backend.pool.return_buffer(d_w_o.buffer); 
+        backend.pool.return_buffer(v_t.buffer);
+        backend.pool.return_buffer(d_probs.buffer);
+        backend.pool.return_buffer(probs_t.buffer);
+        backend.pool.return_buffer(d_v.buffer);
+        backend.pool.return_buffer(d_scores.buffer);
+        backend.pool.return_buffer(d_scores_t.buffer);
+        backend.pool.return_buffer(d_q.buffer);
+        backend.pool.return_buffer(d_k.buffer);
+        backend.pool.return_buffer(input_t.buffer);
+        backend.pool.return_buffer(d_w_q.buffer); 
+        backend.pool.return_buffer(d_w_k.buffer); 
+        backend.pool.return_buffer(d_w_v.buffer); 
+        backend.pool.return_buffer(w_q_t.buffer);
+        backend.pool.return_buffer(w_k_t.buffer);
+        backend.pool.return_buffer(w_v_t.buffer);
+        backend.pool.return_buffer(d_input_q.buffer);
+        backend.pool.return_buffer(d_input_k.buffer);
+        backend.pool.return_buffer(d_input_v.buffer);
 
         d_input
     }
@@ -215,11 +292,20 @@ impl Transformer {
     }
 
     pub fn update_weights(&mut self, backend: &WgpuBackend, learning_rate: f32) {
-        backend.run_update(&mut self.w_q, &self.grad_w_q, learning_rate);
-        backend.run_update(&mut self.w_k, &self.grad_w_k, learning_rate);
-        backend.run_update(&mut self.w_v, &self.grad_w_v, learning_rate);
-        backend.run_update(&mut self.w_o, &self.grad_w_o, learning_rate);
-        backend.run_update(&mut self.w_ff1, &self.grad_w_ff1, learning_rate);
-        backend.run_update(&mut self.w_ff2, &self.grad_w_ff2, learning_rate);
+        backend.run_update_f32(&mut self.w_q, &self.grad_w_q, learning_rate);
+        backend.run_update_f32(&mut self.w_k, &self.grad_w_k, learning_rate);
+        backend.run_update_f32(&mut self.w_v, &self.grad_w_v, learning_rate);
+        backend.run_update_f32(&mut self.w_o, &self.grad_w_o, learning_rate);
+        backend.run_update_f32(&mut self.w_ff1, &self.grad_w_ff1, learning_rate);
+        backend.run_update_f32(&mut self.w_ff2, &self.grad_w_ff2, learning_rate);
+    }
+
+    pub fn scale_grads(&mut self, backend: &WgpuBackend, scale: f32) {
+        backend.run_scale(&mut self.grad_w_q, scale);
+        backend.run_scale(&mut self.grad_w_k, scale);
+        backend.run_scale(&mut self.grad_w_v, scale);
+        backend.run_scale(&mut self.grad_w_o, scale);
+        backend.run_scale(&mut self.grad_w_ff1, scale);
+        backend.run_scale(&mut self.grad_w_ff2, scale);
     }
 }

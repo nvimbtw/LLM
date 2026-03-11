@@ -1,6 +1,8 @@
 struct Dimensions {
     rows: u32,
     cols: u32,
+    scale: f32, // Added scale
+    padding: u32,
 }
 
 @group(0) @binding(0) var<uniform> dims: Dimensions;
@@ -23,13 +25,13 @@ fn softmax_backward_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     for (var j: u32 = 0u; j < dims.cols; j = j + 1u) {
         let idx = row * dims.cols + j;
-        output[idx] = input1[idx] * (input2[idx] - dot_product);
+        output[idx] = input1[idx] * (input2[idx] - dot_product) * dims.scale;
     }
 }
 
 @compute @workgroup_size(64)
 fn relu_backward_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let idx = global_id.x;
+    let idx = global_id.y * 65536u + global_id.x;
     if (idx >= dims.rows * dims.cols) {
         return;
     }
@@ -48,9 +50,8 @@ fn scale_mask_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let idx = i * dims.cols + j;
-    // Scale (Hardcoded 128 dimensions sqrt = 11.31)
-    // We should ideally pass this in dims.
-    output[idx] = output[idx] / 11.3137; 
+    // Scale using dynamic factor
+    output[idx] = output[idx] * dims.scale; 
 
     // Causal Mask
     if (j > i) {
