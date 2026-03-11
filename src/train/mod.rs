@@ -23,13 +23,23 @@ pub fn train() {
 
     let vocab_size = vocab.len() + 256;
 
+    println!(
+        "Starting 100% GPU training initialization on {} tokens, vocab size {}, dimensions {}",
+        tokens.len(),
+        vocab_size,
+        dimensions
+    );
+
+    println!("Initializing transformer weights...");
     let (mut transformer, mut embedding_table, mut positional_table, _) =
         init_transformer(&backend, dimensions, context_window);
 
+    println!("Initializing language model head...");
     let w_lm_raw =
         load_matrix("data/w_lm.bin").unwrap_or_else(|_| new_table(dimensions, vocab_size));
     let mut w_lm = GpuTensor::from_cpu(&backend, &w_lm_raw);
 
+    println!("Creating gradient buffers...");
     // grad_embedding now refers to the i32 buffer for fixed-point gradients
     let grad_embedding_i32_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("grad_embedding_i32_buffer"),
@@ -46,11 +56,7 @@ pub fn train() {
     // Initialize i32 grad_embedding to zeros
     GpuTensor::zero_i32(&grad_embedding_i32_buffer, &backend);
 
-    println!(
-        "Starting 100% GPU training on {} tokens, vocab size {}",
-        tokens.len(),
-        vocab_size
-    );
+    println!("Initialization complete. Starting training loop...");
 
     let stride = 16;
 
