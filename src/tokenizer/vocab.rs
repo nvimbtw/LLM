@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::Write;
 
-use crate::io::io::{read_text_file, write_vocab};
+use crate::io::io::{read_text_file, write_vocab, save_config};
 
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
 struct PairCount {
@@ -33,6 +33,7 @@ pub fn build_vocab() {
 
     let vocab = bpe(input_bytes, 10000);
     write_vocab(&vocab, "data/pairs.bin").unwrap();
+    save_config("data/config.bin", (vocab.len() + 256) as u32, 1024, 1024).unwrap();
 }
 
 struct BpeState {
@@ -121,7 +122,6 @@ impl BpeState {
         }
         
         // Push to heap lazily
-        self.current_generation += 1;
         let new_count = *self.pair_counts.get(&pair).unwrap_or(&0);
         self.generation_map.insert(pair, self.current_generation);
         self.heap.push(PairCount {
@@ -132,6 +132,7 @@ impl BpeState {
     }
 
     fn merge_pair(&mut self, pair: (u32, u32), replacement: u32) {
+        self.current_generation += 1;
         let positions: Vec<usize> = self.pair_positions.get(&pair)
             .map(|s| s.iter().copied().collect())
             .unwrap_or_default();
@@ -213,3 +214,4 @@ fn bpe(input: Vec<u32>, max_size: usize) -> Vec<String> {
     println!("\nFinished BPE encoding.");
     vocab
 }
+

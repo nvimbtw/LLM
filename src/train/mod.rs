@@ -17,7 +17,7 @@ pub fn train() {
 
     let dimensions = 1024;
     let context_window = 128;
-    let learning_rate = 0.01;
+    let learning_rate = 0.0001; // Adam usually needs lower LR
     let epochs = 10;
     let batch_size = 512;
 
@@ -31,27 +31,27 @@ pub fn train() {
     );
 
     println!("Initializing transformer weights...");
-    let (mut transformer, mut embedding_table, mut positional_table, _) =
-        init_transformer(&backend, dimensions, context_window);
+    let (mut transformer, mut embedding_table, mut positional_table, actual_dimensions) =
+        init_transformer(&backend, context_window);
 
     println!("Initializing language model head...");
     let w_lm_raw =
-        load_matrix("data/w_lm.bin").unwrap_or_else(|_| new_table(dimensions, vocab_size));
+        load_matrix("data/w_lm.bin").unwrap_or_else(|_| new_table(actual_dimensions, vocab_size));
     let mut w_lm = GpuTensor::from_cpu(&backend, &w_lm_raw);
 
     println!("Creating gradient buffers...");
     // grad_embedding now refers to the i32 buffer for fixed-point gradients
     let grad_embedding_i32_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("grad_embedding_i32_buffer"),
-        size: (vocab_size * dimensions * 4) as u64, // 4 bytes per i32
+        size: (vocab_size * actual_dimensions * 4) as u64, // 4 bytes per i32
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_SRC
             | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let mut grad_positional =
-        GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; dimensions]; context_window]);
-    let mut grad_w_lm = GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; vocab_size]; dimensions]);
+        GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; actual_dimensions]; context_window]);
+    let mut grad_w_lm = GpuTensor::from_cpu(&backend, &vec![vec![0.0f32; vocab_size]; actual_dimensions]);
 
     // Initialize i32 grad_embedding to zeros
     GpuTensor::zero_i32(&grad_embedding_i32_buffer, &backend);
@@ -84,7 +84,7 @@ pub fn train() {
                 &embedding_table,
                 &positional_table,
                 context_window,
-                dimensions,
+                actual_dimensions,
             );
 
             let logits_batch_gpu = backend.run_matmul(&transformer_output, &w_lm);
@@ -114,7 +114,7 @@ pub fn train() {
                 &state,
                 &grad_embedding_i32_buffer, // Pass the i32 buffer
                 &mut grad_positional,
-                dimensions,
+                actual_dimensions,
             );
 
             // Return intermediate tensors to pool
@@ -129,7 +129,7 @@ pub fn train() {
             d_input.return_to_pool(&backend);
             state.return_to_pool(&backend);
 
-            // 5. Update weights (SGD on GPU)
+            // 5. Update weights (Adam/SGD on GPU)
             if count % batch_size == 0 {
                 let scale = 1.0 / (batch_size * context_window) as f32;
 
@@ -137,16 +137,20 @@ pub fn train() {
                 backend.run_scale(&mut grad_positional, scale);
                 backend.run_scale(&mut grad_w_lm, scale);
 
+                // Adam update
                 transformer.update_weights(&backend, learning_rate);
+                
+                // embedding, positional, w_lm still use SGD for simplicity or should be Adam too?
+                // The plan focused on Transformer layers for Adam.
+                
                 // grad_embedding uses fixed-point i32, so call run_update_i32
-                // We divide the LR by the same factor since we didn't scale the i32 gradients
                 backend.run_update_i32(
                     &mut embedding_table,
                     &grad_embedding_i32_buffer,
                     learning_rate * scale,
                 );
 
-                // positional_table and w_lm use f32, so call run_update_f32
+                // positional_table and w_lm use f32
                 backend.run_update_f32(&mut positional_table, &grad_positional, learning_rate);
                 backend.run_update_f32(&mut w_lm, &grad_w_lm, learning_rate);
 
@@ -181,20 +185,16 @@ pub fn train() {
     )
     .unwrap();
     save_matrix(&block_on(w_lm.to_cpu(&backend)), "data/w_lm.bin").unwrap();
-    save_matrix(&block_on(transformer.w_q.to_cpu(&backend)), "data/w_q.bin").unwrap();
-    save_matrix(&block_on(transformer.w_k.to_cpu(&backend)), "data/w_k.bin").unwrap();
-    save_matrix(&block_on(transformer.w_v.to_cpu(&backend)), "data/w_v.bin").unwrap();
-    save_matrix(&block_on(transformer.w_o.to_cpu(&backend)), "data/w_o.bin").unwrap();
-    save_matrix(
-        &block_on(transformer.w_ff1.to_cpu(&backend)),
-        "data/w_ff1.bin",
-    )
-    .unwrap();
-    save_matrix(
-        &block_on(transformer.w_ff2.to_cpu(&backend)),
-        "data/w_ff2.bin",
-    )
-    .unwrap();
+    
+    // Save layers
+    for (i, layer) in transformer.layers.iter().enumerate() {
+        save_matrix(&block_on(layer.w_q.data.to_cpu(&backend)), &format!("data/layer_{}_w_q.bin", i)).unwrap();
+        save_matrix(&block_on(layer.w_k.data.to_cpu(&backend)), &format!("data/layer_{}_w_k.bin", i)).unwrap();
+        save_matrix(&block_on(layer.w_v.data.to_cpu(&backend)), &format!("data/layer_{}_w_v.bin", i)).unwrap();
+        save_matrix(&block_on(layer.w_o.data.to_cpu(&backend)), &format!("data/layer_{}_w_o.bin", i)).unwrap();
+        save_matrix(&block_on(layer.w_ff1.data.to_cpu(&backend)), &format!("data/layer_{}_w_ff1.bin", i)).unwrap();
+        save_matrix(&block_on(layer.w_ff2.data.to_cpu(&backend)), &format!("data/layer_{}_w_ff2.bin", i)).unwrap();
+    }
 
     println!("Training finished.");
 }

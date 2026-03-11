@@ -6,7 +6,7 @@ use std::collections::HashMap;
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct MatrixDimensions {
-    a_rows: u32, a_cols: u32, b_cols: u32, _padding: u32,
+    a_rows: u32, a_cols: u32, b_cols: u32, batch_size: u32,
 }
 
 #[repr(C)]
@@ -25,6 +25,19 @@ struct OpsDimensions {
 #[derive(Copy, Clone, Pod, Zeroable, Default)]
 struct UpdateParams {
     len: u32, lr: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Default)]
+struct AdamParams {
+    len: u32,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    epsilon: f32,
+    correction1: f32,
+    correction2: f32,
+    padding: u32,
 }
 
 #[repr(C)]
@@ -87,6 +100,7 @@ pub struct WgpuBackend {
     pub transpose_pipeline: wgpu::ComputePipeline,
     pub update_pipeline: wgpu::ComputePipeline, // For f32 grads
     pub update_fixed_pipeline: wgpu::ComputePipeline, // For i32 fixed-point grads
+    pub adam_pipeline: wgpu::ComputePipeline, // For Adam optimizer
     pub scale_pipeline: wgpu::ComputePipeline, // Re-added scale_pipeline
     pub softmax_backward_pipeline: wgpu::ComputePipeline,
     pub scale_mask_pipeline: wgpu::ComputePipeline,
@@ -161,6 +175,11 @@ impl WgpuBackend {
             label: None, layout: None, module: &update_shader, entry_point: Some("update_fixed_main"), // i32 fixed-point grads
             compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
         });
+        
+        let adam_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: None, module: &update_shader, entry_point: Some("adam_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(), cache: None,
+        });
 
         let scale_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None, layout: None, module: &ops_shader, entry_point: Some("scale_main"),
@@ -211,7 +230,7 @@ impl WgpuBackend {
             device: Arc::new(device), queue: Arc::new(queue), pool: Arc::new(GpuBufferPool::new()),
             matmul_pipeline, relu_pipeline,
             softmax_pipeline, add_pipeline, add_assign_pipeline, transpose_pipeline, update_pipeline,
-            update_fixed_pipeline,
+            update_fixed_pipeline, adam_pipeline,
             scale_pipeline,
             softmax_backward_pipeline, scale_mask_pipeline, relu_backward_pipeline,
             layer_norm_pipeline, layer_norm_backward_pipeline,
@@ -221,11 +240,27 @@ impl WgpuBackend {
     }
 
     pub fn run_matmul(&self, a: &GpuTensor, b: &GpuTensor) -> GpuTensor {
-        let out_shape = (a.shape.0, b.shape.1);
-        let size = (out_shape.0 * out_shape.1 * 4) as u64;
+        self.run_batched_matmul(a, b, 1, a.shape.0, a.shape.1, b.shape.1)
+    }
+
+    pub fn run_batched_matmul(&self, a: &GpuTensor, b: &GpuTensor, batch_size: usize, m: usize, k: usize, n: usize) -> GpuTensor {
+        let out_shape = if batch_size > 1 {
+            // If batched, the output GpuTensor shape logic is tricky because GpuTensor is 2D.
+            // We'll return (batch * m, n) which flattens the batch dimension.
+            (batch_size * m, n)
+        } else {
+            (m, n)
+        };
+        
+        let size = (batch_size * m * n * 4) as u64;
         let output_buffer = self.pool.get(&self.device, size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
         
-        let dims = MatrixDimensions { a_rows: a.shape.0 as u32, a_cols: a.shape.1 as u32, b_cols: b.shape.1 as u32, _padding: 0 };
+        let dims = MatrixDimensions { 
+            a_rows: m as u32, 
+            a_cols: k as u32, 
+            b_cols: n as u32, 
+            batch_size: batch_size as u32 
+        };
         let dim_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&[dims]), usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -242,10 +277,48 @@ impl WgpuBackend {
         {
             let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             cp.set_pipeline(&self.matmul_pipeline); cp.set_bind_group(0, &bind_group, &[]);
-            cp.dispatch_workgroups((out_shape.0 as u32 + 15) / 16, (out_shape.1 as u32 + 15) / 16, 1);
+            cp.dispatch_workgroups((m as u32 + 15) / 16, (n as u32 + 15) / 16, batch_size as u32);
         }
         self.queue.submit(Some(encoder.finish()));
         GpuTensor { buffer: output_buffer, shape: out_shape }
+    }
+    
+    pub fn run_adam_update(&self, weights: &mut GpuTensor, grads: &GpuTensor, m: &mut GpuTensor, v: &mut GpuTensor, lr: f32, beta1: f32, beta2: f32, eps: f32, t: u32) {
+        let total = (weights.shape.0 * weights.shape.1) as u32;
+        let correction1 = 1.0 - beta1.powi(t as i32);
+        let correction2 = 1.0 - beta2.powi(t as i32);
+        
+        let params = AdamParams { 
+            len: total, 
+            lr, 
+            beta1, 
+            beta2, 
+            epsilon: eps, 
+            correction1,
+            correction2,
+            padding: 0 
+        };
+        let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None, contents: bytemuck::cast_slice(&[params]), usage: wgpu::BufferUsages::UNIFORM,
+        });
+        
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &self.adam_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: param_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: weights.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: grads.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: m.buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: v.buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            cp.set_pipeline(&self.adam_pipeline); cp.set_bind_group(0, &bind_group, &[]);
+            Self::dispatch_flat(&mut cp, total, 64);
+        }
+        self.queue.submit(Some(encoder.finish()));
     }
 
     pub fn run_relu(&self, data: &mut GpuTensor) {

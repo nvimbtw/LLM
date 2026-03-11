@@ -110,3 +110,25 @@ pub fn load_matrix(path: &str) -> std::io::Result<Vec<Vec<f32>>> {
     }
     Ok(matrix)
 }
+
+pub fn save_config(path: &str, vocab_size: u32, context_window: u32, dimensions: u32) -> std::io::Result<()> {
+    let mut file = BufWriter::new(File::create(path)?);
+    file.write_all(&vocab_size.to_le_bytes())?;
+    file.write_all(&context_window.to_le_bytes())?;
+    file.write_all(&dimensions.to_le_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
+pub fn load_config(path: &str) -> std::io::Result<(u32, u32, u32)> {
+    let mut file = BufReader::new(File::open(path)?);
+    let mut buffer = [0u8; 12];
+    file.read_exact(&mut buffer)?;
+    
+    let vocab_size = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+    let context_window = u32::from_le_bytes(buffer[4..8].try_into().unwrap());
+    let dimensions = u32::from_le_bytes(buffer[8..12].try_into().unwrap());
+    
+    Ok((vocab_size, context_window, dimensions))
+}
+

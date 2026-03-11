@@ -12,10 +12,9 @@ pub fn generate_text_with_loaded_model(
     prompt: &str,
     max_length: usize,
     context_window: usize,
-    _dimensions: usize,
 ) -> String {
     let (transformer_instance, embedding_table, positional_table, dim) =
-        crate::train::transformer::init_transformer(backend, _dimensions, context_window);
+        crate::train::transformer::init_transformer(backend, context_window);
     generate_text_with_model(
         backend,
         transformer_instance,
@@ -29,9 +28,9 @@ pub fn generate_text_with_loaded_model(
 }
 
 use rand::distr::{weighted::WeightedIndex, Distribution};
-use rand::rng;
+use rand::prelude::*;
 
-pub fn sample_token(probs: &[f32], temperature: f32) -> u32 {
+pub fn sample_token(probs: &[f32], temperature: f32, rng: &mut impl Rng) -> u32 {
     let mut adjusted_probs = probs.to_vec();
     if temperature != 1.0 {
         for p in adjusted_probs.iter_mut() {
@@ -50,16 +49,14 @@ pub fn sample_token(probs: &[f32], temperature: f32) -> u32 {
             .unwrap_or(0);
     }
 
-    if temperature != 1.0 {
-        for p in adjusted_probs.iter_mut() {
-            *p /= sum;
-        }
+    for p in adjusted_probs.iter_mut() {
+        *p /= sum;
     }
     
     let dist = WeightedIndex::new(&adjusted_probs).unwrap_or_else(|_| {
         WeightedIndex::new(&vec![1.0; adjusted_probs.len()]).unwrap()
     });
-    dist.sample(&mut rng()) as u32
+    dist.sample(rng) as u32
 }
 
 pub fn generate_text_with_model(
@@ -81,6 +78,7 @@ pub fn generate_text_with_model(
     let mut generated_tokens: Vec<u32> = encode(prompt.to_string(), vocab.clone());
     let context_window_limit = positional_table.shape.0;
     let temperature = 0.8;
+    let mut rng = rand::rng();
 
     println!("Starting generation with prompt: \"{}\"", prompt);
 
@@ -119,7 +117,7 @@ pub fn generate_text_with_model(
         // Download only the last row of logits for sampling
         let logits = block_on(logits_tensor.last_row_to_cpu(backend));
 
-        let next_token_id = sample_token(&logits, temperature);
+        let next_token_id = sample_token(&logits, temperature, &mut rng);
         generated_tokens.push(next_token_id);
 
         // Cleanup: Return intermediate tensors to pool

@@ -49,7 +49,6 @@ fn main() {
                 let prompt = args[1].clone();
                 let backend = block_on(WgpuBackend::new()).expect("Failed to init GPU");
 
-                let dimensions = 1024; // Default to 1024 to match typical training
                 let context_window = 1024;
                 let max_length = 256;
 
@@ -58,7 +57,6 @@ fn main() {
                     &prompt,
                     max_length,
                     context_window,
-                    dimensions,
                 );
                 println!("Generated text:\n{}", generated_text);
             }
@@ -78,11 +76,10 @@ fn full_process() {
     let prompt = "The quick brown fox";
     let backend = block_on(WgpuBackend::new()).expect("Failed to init GPU");
 
-    let dimensions = 1024; // Default to 1024 to match typical training
     let context_window = 1024;
     let max_length = 256;
 
     let generated_text =
-        generate_text_with_loaded_model(&backend, &prompt, max_length, context_window, dimensions);
+        generate_text_with_loaded_model(&backend, &prompt, max_length, context_window);
     println!("Generated text (full_process):\n{}", generated_text);
 }
