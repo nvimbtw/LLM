@@ -600,11 +600,23 @@ pub struct GpuTensor {
 
 impl GpuTensor {
     pub fn from_cpu(backend: &WgpuBackend, data: &Vec<Vec<f32>>) -> Self {
-        let flat: Vec<f32> = data.iter().flatten().cloned().collect();
-        let buffer = backend.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None, contents: bytemuck::cast_slice(&flat), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        let rows = data.len();
+        let cols = if rows > 0 { data[0].len() } else { 0 };
+        let size = (rows * cols * 4) as u64;
+
+        let buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        Self { buffer, shape: (data.len(), data[0].len()) }
+
+        for (i, row) in data.iter().enumerate() {
+            let offset = (i * cols * 4) as u64;
+            backend.queue.write_buffer(&buffer, offset, bytemuck::cast_slice(row));
+        }
+
+        Self { buffer, shape: (rows, cols) }
     }
 
     pub fn zero(&self, backend: &WgpuBackend) {

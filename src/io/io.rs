@@ -95,17 +95,18 @@ pub fn save_matrix(matrix: &Vec<Vec<f32>>, path: &str) -> std::io::Result<()> {
 
 #[allow(dead_code)]
 pub fn load_matrix(path: &str) -> std::io::Result<Vec<Vec<f32>>> {
-    let bytes = std::fs::read(path)?;
-    let rows = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
-    let cols = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    let mut matrix = vec![vec![0.0f32; cols]; rows];
-    let mut offset = 8;
-    for i in 0..rows {
-        for j in 0..cols {
-            let val = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            matrix[i][j] = val;
-            offset += 4;
-        }
+    let mut file = BufReader::new(std::fs::File::open(path)?);
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)?;
+    
+    let rows = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
+    let cols = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    
+    let mut matrix = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        let mut row = vec![0.0f32; cols];
+        file.read_exact(bytemuck::cast_slice_mut(&mut row))?;
+        matrix.push(row);
     }
     Ok(matrix)
 }
