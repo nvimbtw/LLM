@@ -1,10 +1,11 @@
-use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, put, web};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{db, extractors::AuthUser};
+use crate::{crypto, db, extractors::AuthUser};
 
 #[derive(Serialize)]
 struct ChatResponse {
@@ -84,67 +85,36 @@ fn derive_title(content: &str) -> String {
     }
 }
 
+// The very first frame a client sends over the socket: the encrypted token,
+// same value the HTTP routes pass as `Authorization: Bearer`. We auth here
+// because browsers can't set headers on a WebSocket handshake.
 #[derive(Deserialize)]
-struct SendMessagePayload {
+struct AuthFrame {
+    token: String,
+}
+
+// Every subsequent inbound frame is a chat turn.
+#[derive(Deserialize)]
+struct SendMessageFrame {
     // Absent => start a new chat; present => append to an existing one.
     chat_id: Option<Uuid>,
     content: String,
 }
 
-#[derive(Serialize)]
-struct SendMessageResponse {
-    // Always echoed back so the client learns the id of a freshly created chat.
-    chat_id: Uuid,
-    message: MessageResponse,
-}
-
-#[post("")]
-async fn send_message(
-    auth: AuthUser,
-    payload: web::Json<SendMessagePayload>,
-    pool: web::Data<PgPool>,
-) -> impl Responder {
-    let content = payload.content.trim();
-    if content.is_empty() {
-        return HttpResponse::BadRequest().body("message content is empty");
-    }
-
-    let user_id = auth.claims.sub;
-
-    // Resolve the target chat: an existing one the caller owns, or a brand-new
-    // chat seeded with a title derived from this first message.
-    let chat_id = match payload.chat_id {
-        Some(id) => match owned_chat(pool.get_ref(), id, user_id).await {
-            Ok(chat) => chat.id_chat,
-            Err(resp) => return resp,
-        },
-        None => match db::chat::create(pool.get_ref(), user_id, &derive_title(content)).await {
-            Ok(chat) => chat.id_chat,
-            Err(e) => {
-                eprintln!("create chat db error: {}", e);
-                return HttpResponse::InternalServerError().body("failed to create chat");
-            }
-        },
-    };
-
-    // Persist the user's message.
-    if let Err(e) =
-        db::message::create_user_message(pool.get_ref(), chat_id, user_id, content).await
-    {
-        eprintln!("create user message db error: {}", e);
-        return HttpResponse::InternalServerError().body("failed to save message");
-    }
-
-    // TODO: create model response — feed the chat history to the model and store
-    // its generated text (and the model's id) instead of this placeholder.
-    // The sleep fakes generation latency; it's an async (non-blocking) sleep so
-    // the worker thread stays free for other requests while we wait.
-    actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
-    // Placeholder that mimics a real model's structured-token output. The
-    // <|...|> markers are the generated control tokens the frontend parses into
-    // rich content — see the token reference accompanying this code. Real model
-    // text replaces this string once integration lands.
-    let reply = r#"<|heading 1|>Reading a File in Rust<|/heading 1|>
+// Placeholder that mimics a real model's structured-token output. The <|...|>
+// markers are the generated control tokens the frontend parses into rich
+// content. Real model text replaces this once inference integration lands.
+const PLACEHOLDER_REPLY: &str = r#"<|thinking | 'Thinking about the scope of the question'|>
+<|thinking | 'Recalling the relevant standard library file APIs'|>
+<|thinking | 'Weighing read_to_string against a buffered reader'|>
+<|thinking | 'Considering error handling with Result and the question mark operator'|>
+<|thinking | 'Deciding whether to also show the raw bytes variant fs::read'|>
+<|thinking | 'Sketching a minimal runnable example that compiles'|>
+<|thinking | 'Noting the memory cost of reading a whole file at once'|>
+<|thinking | 'Deciding which caveats are worth flagging to the user'|>
+<|thinking | 'Picking a documentation link to point at'|>
+<|thinking | 'Settling on the final structure of the answer'|>
+<|heading 1|>Reading a File in Rust<|/heading 1|>
 <|paragraph|>Here is a quick overview of how to read a file into a <|code inline | lang='rs'|>String<|/code inline|> using only the standard library. It is one of the most common <|bold|>I/O<|/bold|> tasks you will run into.<|/paragraph|>
 <|heading 2|>Steps<|/heading 2|>
 <|ordered list|>
@@ -169,19 +139,173 @@ fn main() -> std::io::Result<()> {
 <|paragraph|>For the full API, see the <|link | href='https://doc.rust-lang.org/std/fs/fn.read_to_string.html'|>official documentation<|/link|>.<|/paragraph|>
 <|quote|>Tip: handle errors explicitly rather than unwrapping in production code.<|/quote|>"#;
 
-    let assistant =
-        match db::message::create_assistant_message(pool.get_ref(), chat_id, reply).await {
-            Ok(message) => message,
-            Err(e) => {
-                eprintln!("create assistant message db error: {}", e);
-                return HttpResponse::InternalServerError().body("failed to save response");
-            }
-        };
+// Delay between streamed tokens, to fake generation latency.
+const TOKEN_DELAY_MS: u64 = 150;
 
-    HttpResponse::Ok().json(SendMessageResponse {
-        chat_id,
-        message: MessageResponse::from(assistant),
+fn error_frame(message: &str) -> String {
+    serde_json::json!({ "type": "error", "message": message }).to_string()
+}
+
+// WebSocket entrypoint. The handshake is a GET upgrade; we hand the socket off
+// to a spawned task and return the upgrade response immediately. Auth happens
+// inside the session (first frame), not here, since the browser can't send the
+// Authorization header on the handshake.
+#[get("/ws")]
+async fn chat_ws(
+    req: HttpRequest,
+    body: web::Payload,
+    pool: web::Data<PgPool>,
+    jwt_secret: web::Data<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let (response, session, msg_stream) = actix_ws::handle(&req, body)?;
+
+    // Owned clones for the 'static task: PgPool is an Arc internally (cheap to
+    // clone), and we copy the secret string.
+    let pool = pool.get_ref().clone();
+    let secret = jwt_secret.get_ref().clone();
+
+    actix_web::rt::spawn(chat_session(session, msg_stream, pool, secret));
+
+    Ok(response)
+}
+
+// Drives one socket for its lifetime: authenticate on the first text frame,
+// then treat every later text frame as a chat turn.
+async fn chat_session(
+    mut session: actix_ws::Session,
+    mut stream: actix_ws::MessageStream,
+    pool: PgPool,
+    secret: String,
+) {
+    let mut user_id: Option<Uuid> = None;
+
+    while let Some(Ok(msg)) = stream.next().await {
+        match msg {
+            actix_ws::Message::Text(text) => {
+                // Message::Text carries a ByteString; bind it as &str once so the
+                // helpers below get the type they expect.
+                let text: &str = &text;
+                match user_id {
+                    // Not yet authenticated: this frame must be the auth token.
+                    None => match authenticate(text, &secret) {
+                        Some(uid) => {
+                            user_id = Some(uid);
+                            let _ = session
+                                .text(serde_json::json!({ "type": "ready" }).to_string())
+                                .await;
+                        }
+                        None => {
+                            let _ = session.text(error_frame("authentication failed")).await;
+                            let _ = session.close(None).await;
+                            return;
+                        }
+                    },
+                    // Authenticated: handle a chat turn, streaming tokens back.
+                    Some(uid) => {
+                        if handle_message(&mut session, &pool, uid, text)
+                            .await
+                            .is_err()
+                        {
+                            // Client went away mid-stream; tear the session down.
+                            return;
+                        }
+                    }
+                }
+            }
+            actix_ws::Message::Ping(bytes) => {
+                let _ = session.pong(&bytes).await;
+            }
+            actix_ws::Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    let _ = session.close(None).await;
+}
+
+// Decrypts + verifies the token frame, yielding the caller's user id. None on
+// any failure (bad JSON, bad/expired token) — same all-or-nothing stance as
+// the AuthUser extractor.
+fn authenticate(text: &str, secret: &str) -> Option<Uuid> {
+    let frame: AuthFrame = serde_json::from_str(text).ok()?;
+    let jwt = crypto::token_cipher::decrypt(&frame.token, secret)?;
+    let claims = crypto::jwt::verify_token(&jwt, secret).ok()?;
+    Some(claims.sub)
+}
+
+// Processes one chat turn: resolve/create the chat, persist the user message,
+// stream the assistant reply word-by-word, then persist the full reply.
+// Returns Err only when sending to the socket fails (client disconnected), so
+// the caller can stop the session.
+async fn handle_message(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    user_id: Uuid,
+    text: &str,
+) -> Result<(), actix_ws::Closed> {
+    let frame: SendMessageFrame = match serde_json::from_str(text) {
+        Ok(frame) => frame,
+        Err(_) => return session.text(error_frame("invalid message frame")).await,
+    };
+
+    let content = frame.content.trim();
+    if content.is_empty() {
+        return session.text(error_frame("message content is empty")).await;
+    }
+
+    // Resolve the target chat: an existing one the caller owns, or a new chat
+    // seeded with a title derived from this first message.
+    let chat_id = match frame.chat_id {
+        Some(id) => match db::chat::find_by_id(pool, id).await {
+            Ok(Some(chat)) if chat.id_user == user_id => chat.id_chat,
+            Ok(Some(_)) => return session.text(error_frame("forbidden")).await,
+            Ok(None) => return session.text(error_frame("chat not found")).await,
+            Err(e) => {
+                eprintln!("chat lookup db error: {}", e);
+                return session.text(error_frame("failed to load chat")).await;
+            }
+        },
+        None => match db::chat::create(pool, user_id, &derive_title(content)).await {
+            Ok(chat) => chat.id_chat,
+            Err(e) => {
+                eprintln!("create chat db error: {}", e);
+                return session.text(error_frame("failed to create chat")).await;
+            }
+        },
+    };
+
+    // Persist the user's message.
+    if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content).await {
+        eprintln!("create user message db error: {}", e);
+        return session.text(error_frame("failed to save message")).await;
+    }
+
+    // TODO: create model response — stream real tokens from the model here
+    // instead of chopping a fixed placeholder on whitespace. "token = one word"
+    // is a stand-in; a real tokenizer won't split the <|...|> control tokens.
+    let reply = PLACEHOLDER_REPLY;
+    for word in reply.split_whitespace() {
+        actix_web::rt::time::sleep(std::time::Duration::from_millis(TOKEN_DELAY_MS)).await;
+        let token = serde_json::json!({ "type": "token", "value": word }).to_string();
+        session.text(token).await?;
+    }
+
+    // Persist the full assistant reply (not the chunked stream).
+    let assistant = match db::message::create_assistant_message(pool, chat_id, reply).await {
+        Ok(message) => message,
+        Err(e) => {
+            eprintln!("create assistant message db error: {}", e);
+            return session.text(error_frame("failed to save response")).await;
+        }
+    };
+
+    let done = serde_json::json!({
+        "type": "done",
+        "chat_id": chat_id,
+        "id_message": assistant.id_message,
     })
+    .to_string();
+    session.text(done).await
 }
 
 #[get("")]
@@ -279,7 +403,9 @@ async fn delete_chat(
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.service(send_message);
+    // chat_ws (GET /chat/ws) must be registered before get_messages (GET
+    // /chat/{id}), otherwise "ws" would be captured by the "{id}" pattern.
+    cfg.service(chat_ws);
     cfg.service(list_chats);
     cfg.service(get_messages);
     cfg.service(update_chat);

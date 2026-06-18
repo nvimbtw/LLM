@@ -2,6 +2,7 @@
 
 import * as React from "react"
 
+import { hasVisibleContent, latestThought } from "@/lib/message-parser"
 import { useChat } from "@/hooks/use-chat"
 import { ChatComposer } from "./chat-composer"
 import { ChatMessageBubble } from "./chat-message"
@@ -14,6 +15,13 @@ export function ChatThread({ chatId }: { chatId: string }) {
   const lastMessage = messages[messages.length - 1]
   const showIdle =
     !isLoading && !isSending && lastMessage?.role === "assistant"
+  // While streaming, show "Thinking…" until real answer text appears (the
+  // <|thinking|> block is hidden, so it counts as no visible content yet).
+  const streaming = isSending && lastMessage?.role === "assistant"
+  // Thinking phase: no visible answer yet. Generating phase: answer streaming in.
+  const showThinking = streaming && !hasVisibleContent(lastMessage.content)
+  const showGenerating = streaming && hasVisibleContent(lastMessage.content)
+  const thought = showThinking ? latestThought(lastMessage.content) : ""
 
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -29,13 +37,30 @@ export function ChatThread({ chatId }: { chatId: string }) {
             </div>
           ) : (
             messages.map((message, i) => (
-              <ChatMessageBubble key={i} message={message} />
+              <ChatMessageBubble
+                key={i}
+                message={message}
+                streaming={
+                  isSending &&
+                  i === messages.length - 1 &&
+                  message.role === "assistant"
+                }
+              />
             ))
           )}
 
-          {isSending && (
+          {showThinking && (
+            <div className="flex items-center gap-2.5 px-1 py-2 text-sm">
+              <FluxThrobber mode="thinking" className="h-8 w-14 shrink-0" />
+              <span className="text-shimmer min-w-0 truncate font-medium">
+                {thought || "Thinking about your request"}
+              </span>
+            </div>
+          )}
+
+          {showGenerating && (
             <div className="flex justify-start px-1 py-2">
-              <FluxThrobber mode="thinking" className="h-11 w-28" />
+              <FluxThrobber mode="thinking" className="h-8 w-14" />
             </div>
           )}
 

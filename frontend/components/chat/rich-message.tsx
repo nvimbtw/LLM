@@ -7,41 +7,70 @@ import { cn } from "@/lib/utils"
 import {
   isText,
   parseMessage,
+  stripThinking,
   textContent,
   type MElement,
   type MNode,
 } from "@/lib/message-parser"
 
-export function RichMessage({ content }: { content: string }) {
-  const tree = React.useMemo(() => parseMessage(content), [content])
-  return <RichContent root={tree} />
+export function RichMessage({
+  content,
+  streaming = false,
+}: {
+  content: string
+  streaming?: boolean
+}) {
+  const tree = React.useMemo(() => parseMessage(stripThinking(content)), [content])
+  return <RichContent root={tree} streaming={streaming} />
 }
 
 /** Renders an already-parsed node tree (model markup or user markdown). */
-export function RichContent({ root }: { root: MElement }) {
+export function RichContent({
+  root,
+  streaming = false,
+}: {
+  root: MElement
+  streaming?: boolean
+}) {
   return (
-    <div className="space-y-3 text-sm leading-relaxed">{renderChildren(root)}</div>
+    <div className="space-y-3 text-sm leading-relaxed">
+      {renderChildren(root, streaming)}
+    </div>
   )
 }
 
 // Block containers where whitespace between children is just formatting noise.
 const BLOCK_CONTAINERS = new Set(["root", "ordered list", "list"])
 
-function renderChildren(node: MElement): React.ReactNode {
+// While streaming, wrap each visible word in a one-shot fade so newly-arrived
+// words ease in. Already-rendered words stay mounted, so they don't re-animate.
+function fadeWords(value: string): React.ReactNode {
+  return value.split(/(\s+)/).map((part, i) =>
+    part.trim() === "" ? (
+      part
+    ) : (
+      <span key={i} className="word-fade">
+        {part}
+      </span>
+    )
+  )
+}
+
+function renderChildren(node: MElement, streaming: boolean): React.ReactNode {
   const children = BLOCK_CONTAINERS.has(node.type)
     ? node.children.filter((c) => !(isText(c) && c.value.trim() === ""))
     : node.children
 
   return children.map((child, i) => (
-    <React.Fragment key={i}>{renderNode(child)}</React.Fragment>
+    <React.Fragment key={i}>{renderNode(child, streaming)}</React.Fragment>
   ))
 }
 
-function renderNode(node: MNode): React.ReactNode {
-  if (isText(node)) return node.value
+function renderNode(node: MNode, streaming: boolean): React.ReactNode {
+  if (isText(node)) return streaming ? fadeWords(node.value) : node.value
 
   const el = node
-  const kids = renderChildren(el)
+  const kids = renderChildren(el, streaming)
 
   if (el.type.startsWith("heading ")) {
     const level = el.type.slice("heading ".length).trim()
@@ -61,6 +90,9 @@ function renderNode(node: MNode): React.ReactNode {
   }
 
   switch (el.type) {
+    case "thinking":
+      // The model's reasoning is surfaced as a "Thinking…" indicator, not text.
+      return null
     case "paragraph":
       return <p>{kids}</p>
     case "bold":
@@ -71,7 +103,7 @@ function renderNode(node: MNode): React.ReactNode {
       return <span className="font-medium text-foreground">{kids}</span>
     case "code inline":
       return (
-        <code className="rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.85em] text-foreground">
+        <code className="rounded bg-chart-4/10 px-1.5 py-0.5 font-mono text-[0.85em] text-chart-4">
           {textContent(el)}
         </code>
       )
@@ -108,7 +140,7 @@ function renderNode(node: MNode): React.ReactNode {
       )
     case "quote":
       return (
-        <blockquote className="border-l-2 border-border pl-3 text-muted-foreground italic">
+        <blockquote className="rounded-r-md border-l-2 border-chart-2 bg-chart-2/10 px-3 py-2 text-muted-foreground italic">
           {kids}
         </blockquote>
       )

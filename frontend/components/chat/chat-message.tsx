@@ -2,7 +2,13 @@ import type { ChatMessage } from "@/hooks/use-chat"
 import { parseUserMarkdown } from "@/lib/user-parser"
 import { RichContent, RichMessage } from "./rich-message"
 
-export function ChatMessageBubble({ message }: { message: ChatMessage }) {
+export function ChatMessageBubble({
+  message,
+  streaming = false,
+}: {
+  message: ChatMessage
+  streaming?: boolean
+}) {
   // User messages use a markdown subset; assistant messages use the model's markup.
   if (message.role === "user") {
     const tree = parseUserMarkdown(message.content)
@@ -17,7 +23,7 @@ export function ChatMessageBubble({ message }: { message: ChatMessage }) {
 
   return (
     <div className="w-full">
-      <RichMessage content={message.content} />
+      <RichMessage content={message.content} streaming={streaming} />
     </div>
   )
 }
