@@ -27,7 +27,30 @@ export function isText(node: MNode): node is MText {
   return node.type === "text"
 }
 
-const VOID_TAGS = new Set(["divider"])
+const VOID_TAGS = new Set(["divider", "thinking"])
+
+// Thinking tokens: `<|thinking | 'the current thought'|>` (self-contained).
+const THINKING_RE = /<\|thinking\b[^]*?\|>/g // a complete token
+const THINKING_TAIL_RE = /<\|thinking\b[^]*$/ // an unclosed, still-streaming one
+const THOUGHT_RE = /<\|thinking\s*\|\s*'([^']*)'\s*\|>/g
+
+/** Removes thinking tokens (complete and partially-streamed) from the text. */
+export function stripThinking(content: string): string {
+  return content.replace(THINKING_RE, "").replace(THINKING_TAIL_RE, "")
+}
+
+/**
+ * The most recent *complete* thought to surface in the indicator. Partial,
+ * still-streaming thinking tokens are ignored, so the displayed thought only
+ * changes once a full new thinking block arrives.
+ */
+export function latestThought(content: string): string {
+  let thought = ""
+  let m: RegExpExecArray | null
+  THOUGHT_RE.lastIndex = 0
+  while ((m = THOUGHT_RE.exec(content))) thought = m[1]
+  return thought.trim()
+}
 
 const TAG_RE = /<\|(.*?)\|>/g
 const ATTR_RE = /(\w+)\s*=\s*'([^']*)'/g
@@ -92,4 +115,18 @@ export function parseMessage(input: string): MElement {
 export function textContent(node: MNode): string {
   if (isText(node)) return node.value
   return node.children.map(textContent).join("")
+}
+
+/**
+ * True once the message has visible answer text — i.e. something beyond the
+ * (hidden) <|thinking|> block and control tokens. Used to switch from the
+ * "Thinking…" indicator to the streamed answer.
+ */
+export function hasVisibleContent(content: string): boolean {
+  return (
+    stripThinking(content)
+      .replace(/<\|.*?\|>/g, "") // complete control tokens
+      .replace(/<\|[^]*$/, "") // an unclosed trailing token
+      .trim().length > 0
+  )
 }

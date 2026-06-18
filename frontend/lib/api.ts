@@ -1,4 +1,5 @@
 export const API_URL = "http://localhost:8080"
+export const WS_URL = API_URL.replace(/^http/, "ws")
 
 const TOKEN_KEY = "auth_token"
 const ACCESS_LEVEL_KEY = "access_level"

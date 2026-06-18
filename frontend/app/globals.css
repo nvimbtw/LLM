@@ -132,6 +132,41 @@
     }
 }
 
+/* Streamed words ease in as they arrive. */
+@keyframes word-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.word-fade {
+  animation: word-fade-in 0.4s ease both;
+}
+
+/* "Thinking…" — a soft highlight sweeping across the text. Seamless because the
+   gradient tiles at 200% and travels exactly one tile per cycle. */
+@keyframes text-shimmer {
+  to {
+    background-position-x: -200%;
+  }
+}
+.text-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: text-shimmer 2.2s linear infinite;
+}
+
 /* Composer rich-text editor (TipTap) content styles. */
 .tiptap {
   outline: none;
@@ -164,7 +199,8 @@
 }
 .tiptap code {
   font-family: var(--font-mono);
-  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+  color: var(--chart-4);
+  background: color-mix(in oklab, var(--chart-4) 10%, transparent);
   padding: 0.1em 0.35em;
   border-radius: 0.25rem;
   font-size: 0.85em;

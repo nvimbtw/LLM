@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { API_URL, authHeaders } from "@/lib/api"
+import { streamChat } from "@/lib/chat-socket"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -15,58 +16,83 @@ export function useChat(chatId: string) {
   const [isSending, setIsSending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  const fetchMessages = React.useCallback(async () => {
+    const response = await fetch(`${API_URL}/chat/${chatId}`, {
+      headers: authHeaders(),
+    })
+    if (!response.ok) throw new Error("Unable to load this chat.")
+    return (await response.json()) as ChatMessage[]
+  }, [chatId])
+
   React.useEffect(() => {
     let active = true
     setIsLoading(true)
-
-    async function load() {
-      try {
-        const response = await fetch(`${API_URL}/chat/${chatId}`, {
-          headers: authHeaders(),
-        })
-        if (!response.ok) throw new Error("Unable to load this chat.")
-        const data: ChatMessage[] = await response.json()
+    fetchMessages()
+      .then((data) => {
         if (active) setMessages(data)
-      } catch (err) {
-        if (active) {
+      })
+      .catch((err) => {
+        if (active)
           setError(err instanceof Error ? err.message : "Unable to load this chat.")
-        }
-      } finally {
+      })
+      .finally(() => {
         if (active) setIsLoading(false)
-      }
-    }
-
-    load()
+      })
     return () => {
       active = false
     }
-  }, [chatId])
+  }, [fetchMessages])
 
   const sendMessage = React.useCallback(
-    async (content: string) => {
+    (content: string) => {
       setError(null)
       setIsSending(true)
-      setMessages((prev) => [...prev, { role: "user", content }])
+      // User message + an empty assistant message we fill as tokens arrive.
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content },
+        { role: "assistant", content: "" },
+      ])
 
-      try {
-        const response = await fetch(`${API_URL}/chat`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: JSON.stringify({ content, chat_id: chatId }),
+      const appendToAssistant = (value: string) =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === "assistant") {
+            // Tokens are whitespace-split words; rejoin with spaces to
+            // approximate the structured markup while it streams.
+            const sep = last.content ? " " : ""
+            next[next.length - 1] = {
+              ...last,
+              content: last.content + sep + value,
+            }
+          }
+          return next
         })
-        if (!response.ok) {
-          const text = await response.text()
-          throw new Error(text || "Unable to send your message.")
-        }
-        const data = await response.json()
-        setMessages((prev) => [...prev, data.message as ChatMessage])
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to send your message.")
-      } finally {
-        setIsSending(false)
-      }
+
+      return new Promise<void>((resolve) => {
+        streamChat(chatId, content, {
+          onToken: appendToAssistant,
+          onDone: async () => {
+            // Replace the streamed approximation with the authoritative,
+            // intact content saved on the server.
+            try {
+              setMessages(await fetchMessages())
+            } catch {
+              // Keep the approximation if the refetch fails.
+            }
+            setIsSending(false)
+            resolve()
+          },
+          onError: (message) => {
+            setError(message)
+            setIsSending(false)
+            resolve()
+          },
+        })
+      })
     },
-    [chatId]
+    [chatId, fetchMessages]
   )
 
   return { messages, isLoading, isSending, error, sendMessage }

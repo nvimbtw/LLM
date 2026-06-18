@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { API_URL, authHeaders } from "@/lib/api"
+import { streamChat } from "@/lib/chat-socket"
 
 export interface ChatSummary {
   id: string
@@ -56,20 +57,19 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   }, [refresh])
 
   const createChat = React.useCallback(
-    async (message: string) => {
-      const response = await fetch(`${API_URL}/chat`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ content: message }),
-      })
-      if (!response.ok) {
-        const text = await response.text()
-        throw new Error(text || "Unable to start a chat.")
-      }
-      const data = await response.json()
-      await refresh()
-      return String(data.chat_id)
-    },
+    (message: string) =>
+      new Promise<string>((resolve, reject) => {
+        // The first message is streamed too, but here we only need the new
+        // chat id; the chat page loads the saved messages after navigation.
+        streamChat(null, message, {
+          onToken: () => {},
+          onDone: async ({ chatId }) => {
+            await refresh()
+            resolve(chatId)
+          },
+          onError: (m) => reject(new Error(m)),
+        })
+      }),
     [refresh]
   )
 
