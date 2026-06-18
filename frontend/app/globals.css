@@ -1,0 +1,191 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: var(--font-sans);
+    --font-mono: var(--font-mono);
+    --font-display: var(--font-display);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    /* Kanagawa Lotus (light) */
+    --background: #e5ddb0;
+    --foreground: #545464;
+    --card: #dcd5ac;
+    --card-foreground: #545464;
+    --popover: #dcd5ac;
+    --popover-foreground: #545464;
+    --primary: #4d699b;
+    --primary-foreground: #f2ecbc;
+    --secondary: #8a8980;
+    --secondary-foreground: #545464;
+    --muted: #d5cea3;
+    --muted-foreground: #716e61;
+    --accent: #766b90;
+    --accent-foreground: #f2ecbc;
+    --destructive: #c84053;
+    --border: #716e61;
+    --input: #716e61;
+    --ring: #4d699b;
+    --chart-1: #de9800;
+    --chart-2: #6f894e;
+    --chart-3: #4d699b;
+    --chart-4: #b35b79;
+    --chart-5: #766b90;
+    --radius: 0.625rem;
+    --sidebar: #d5cea3;
+    --sidebar-foreground: #545464;
+    --sidebar-primary: #4d699b;
+    --sidebar-primary-foreground: #f2ecbc;
+    --sidebar-accent: #dcd5ac;
+    --sidebar-accent-foreground: #545464;
+    --sidebar-border: #716e61;
+    --sidebar-ring: #4d699b;
+}
+
+.dark {
+    /* Kanagawa Dragon (dark) */
+    --background: #181616;
+    --foreground: #c5c9c5;
+    --card: #282727;
+    --card-foreground: #c5c9c5;
+    --popover: #282727;
+    --popover-foreground: #c5c9c5;
+    --primary: #8ba4b0;
+    --primary-foreground: #181616;
+    --secondary: #393836;
+    --secondary-foreground: #c5c9c5;
+    --muted: #282727;
+    --muted-foreground: #a6a69c;
+    --accent: #8992a7;
+    --accent-foreground: #c5c9c5;
+    --destructive: #c4746e;
+    --border: #393836;
+    --input: #393836;
+    --ring: #8ba4b0;
+    --chart-1: #c4b28a;
+    --chart-2: #87a987;
+    --chart-3: #8ba4b0;
+    --chart-4: #a292a3;
+    --chart-5: #8992a7;
+    --sidebar: #12120f;
+    --sidebar-foreground: #c5c9c5;
+    --sidebar-primary: #8ba4b0;
+    --sidebar-primary-foreground: #181616;
+    --sidebar-accent: #282727;
+    --sidebar-accent-foreground: #c5c9c5;
+    --sidebar-border: #393836;
+    --sidebar-ring: #8ba4b0;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+
+/* Composer rich-text editor (TipTap) content styles. */
+.tiptap {
+  outline: none;
+}
+.tiptap p {
+  margin: 0;
+}
+.tiptap > * + * {
+  margin-top: 0.5rem;
+}
+.tiptap ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.tiptap ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.tiptap ul ul {
+  list-style: circle;
+}
+.tiptap :is(ul, ol) :is(ul, ol) {
+  margin-top: 0.25rem;
+}
+.tiptap li {
+  margin: 0.125rem 0;
+}
+.tiptap li > p {
+  margin: 0;
+}
+.tiptap code {
+  font-family: var(--font-mono);
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+.tiptap pre {
+  background: var(--muted);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.tiptap pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
