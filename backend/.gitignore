@@ -1,5 +1,6 @@
 /target
 
-# Uploaded ingestion inputs — throwaway files, deleted after processing.
-/src/data/input/*
-!/src/data/input/.gitkeep
+# Generated/ingested data — keep the directory skeleton, ignore the contents.
+/data/**/*
+!/data/**/
+!/data/**/.gitkeep

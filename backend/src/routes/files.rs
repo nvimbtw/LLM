@@ -7,10 +7,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::extractors::AdminUser;
-
-// Uploaded files land here for the ingestion pipeline to pick up later; they're
-// deleted once processed. Path is relative to the backend working directory.
-const INPUT_DIR: &str = "src/data/input";
+use crate::storage;
 
 // Formats the ingestion step can process. Mirrors the frontend's accept list;
 // validated again here since the extractor is the only real trust boundary.
@@ -23,9 +20,11 @@ const ALLOWED_EXTENSIONS: [&str; 3] = ["txt", "pdf", "docx"];
 // share a filename); only the extension is kept so the pipeline knows the type.
 #[post("")]
 async fn upload_files(_admin: AdminUser, mut payload: Multipart) -> impl Responder {
-    // Created lazily so a fresh checkout without the dir still works.
-    if let Err(e) = tokio::fs::create_dir_all(INPUT_DIR).await {
-        eprintln!("failed to create input dir: {}", e);
+    // Raw uploads land here for the ingestion pipeline to pick up later.
+    // Created lazily so a fresh checkout / custom DATA_DIR still works.
+    let uploads_dir = storage::uploads_dir();
+    if let Err(e) = tokio::fs::create_dir_all(&uploads_dir).await {
+        eprintln!("failed to create uploads dir: {}", e);
         return HttpResponse::InternalServerError().body("failed to store files");
     }
 
@@ -54,7 +53,7 @@ async fn upload_files(_admin: AdminUser, mut payload: Multipart) -> impl Respond
             _ => return HttpResponse::BadRequest().body("unsupported or missing file type"),
         };
 
-        let path = Path::new(INPUT_DIR).join(format!("{}.{}", Uuid::new_v4(), ext));
+        let path = uploads_dir.join(format!("{}.{}", Uuid::new_v4(), ext));
 
         let mut file = match tokio::fs::File::create(&path).await {
             Ok(file) => file,

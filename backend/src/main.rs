@@ -6,6 +6,7 @@ mod crypto;
 mod db;
 mod extractors;
 mod routes;
+mod storage;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
