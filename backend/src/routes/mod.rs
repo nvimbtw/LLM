@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod chat;
+pub mod files;
 pub mod health;
 pub mod user;
 
@@ -10,4 +11,5 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/user").configure(user::configure));
     cfg.service(web::scope("/auth").configure(auth::configure));
     cfg.service(web::scope("/chat").configure(chat::configure));
+    cfg.service(web::scope("/files").configure(files::configure));
 }

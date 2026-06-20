@@ -173,16 +173,16 @@ export function FluxThrobber({
   React.useEffect(() => {
     const preset = PRESETS[mode]
 
-    const reduce =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-
     const next = rollScene(preset, colors, forceDir, speed, sceneRef.current)
     setScene(next)
     setSceneId((id) => id + 1)
 
-    // Idle holds a single motif + scheme; reduced motion holds everything.
-    if (reduce || mode === "idle") return
+    // Idle intentionally holds a single motif + scheme (no scene switching).
+    // NOTE: we deliberately do NOT honor prefers-reduced-motion here. On some
+    // environments (notably WSLg, where GNOME's "enable animations" setting is
+    // unset) Chromium/Brave falsely report reduced-motion, which previously
+    // froze the entire throbber. The throbber is decorative, so we always run.
+    if (mode === "idle") return
 
     let timer: ReturnType<typeof setTimeout>
     const tick = () => {
@@ -258,8 +258,17 @@ function Sun({ scene }: { scene: Scene }) {
           cx="200"
           cy="140"
           r={6}
+          // Animate via transform: scale() rather than the `r` CSS property.
+          // Animating SVG geometry props (r/cx/cy) in CSS is Blink-only and
+          // unreliable across GPU/render paths (breaks on WSL/Brave, Safari,
+          // Firefox). scale() is universally supported and GPU-accelerated;
+          // fill-box origin keeps it centred on the circle and
+          // non-scaling-stroke keeps the stroke a constant 2px.
+          vectorEffect="non-scaling-stroke"
           style={{
             ...anim("flux-radiate", scene),
+            transformBox: "fill-box",
+            transformOrigin: "center",
             animationDelay: `${(i / rings) * scene.duration}s`,
           }}
         />
@@ -354,18 +363,16 @@ const KEYFRAMES = `
   100% { color: var(--flux-a); }
 }
 @keyframes flux-radiate {
-  0% { r: 6px; opacity: 0; }
+  /* base r=6 scaled to 28.667 == r 172, kept linear so ring spacing is uniform */
+  0% { transform: scale(1); opacity: 0; }
   18% { opacity: 0.5; }
   82% { opacity: 0.5; }
-  100% { r: 172px; opacity: 0; }
+  100% { transform: scale(28.667); opacity: 0; }
 }
 @keyframes flux-scroll-x {
   to { transform: translateX(-160px); }
 }
 @keyframes flux-march {
   to { transform: translateX(56px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-flux], [data-flux] * { animation: none !important; }
 }
 `

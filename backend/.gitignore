@@ -1,1 +1,5 @@
 /target
+
+# Uploaded ingestion inputs — throwaway files, deleted after processing.
+/src/data/input/*
+!/src/data/input/.gitkeep

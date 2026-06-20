@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LoaderCircle } from "lucide-react"
+import { LoaderCircle, FileUp } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -14,7 +14,10 @@ import {
 } from "@/components/ui/sidebar"
 import { useAuth } from "@/hooks/use-auth"
 
-const items = [{ title: "Throbber", href: "/throbber", icon: LoaderCircle }]
+const items = [
+  { title: "Files", href: "/files", icon: FileUp },
+  { title: "Throbber", href: "/throbber", icon: LoaderCircle },
+]
 
 export function NavAdmin() {
   const pathname = usePathname()
