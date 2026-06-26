@@ -20,4 +20,6 @@ base64 = "0.22"
 actix-ws = "0.3"
 actix-multipart = "0.7"
 futures-util = "0.3"
-tokio = { version = "1", features = ["fs", "io-util"] }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "macros"] }
+llm = { path = "src/llm" }
+tokenize = { path = "src/tokenize" }

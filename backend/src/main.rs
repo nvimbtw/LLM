@@ -5,8 +5,11 @@ use sqlx::PgPool;
 mod crypto;
 mod db;
 mod extractors;
+mod jobs;
 mod routes;
 mod storage;
+mod training;
+mod ws;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -20,6 +23,11 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to connect to database / run migrations");
 
     create_admin(&pool).await;
+
+    // Created once and shared across all workers (cloning web::Data clones the
+    // Arc, not the registry) so a job started on one worker is visible to a
+    // socket that lands on another.
+    let jobs = web::Data::new(jobs::JobRegistry::new());
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -35,6 +43,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
+            .app_data(jobs.clone())
             .configure(routes::configure)
     })
     .bind(("127.0.0.1", 8080))?

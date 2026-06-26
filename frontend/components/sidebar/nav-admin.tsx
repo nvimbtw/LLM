@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LoaderCircle, FileUp } from "lucide-react"
+import { LoaderCircle, FileUp, Dumbbell } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -16,6 +16,7 @@ import { useAuth } from "@/hooks/use-auth"
 
 const items = [
   { title: "Files", href: "/files", icon: FileUp },
+  { title: "Train", href: "/training", icon: Dumbbell },
   { title: "Throbber", href: "/throbber", icon: LoaderCircle },
 ]
 

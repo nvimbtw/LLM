@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{crypto, db, extractors::AuthUser};
+use crate::{db, extractors::AuthUser, ws};
 
 #[derive(Serialize)]
 struct ChatResponse {
@@ -85,14 +85,6 @@ fn derive_title(content: &str) -> String {
     }
 }
 
-// The very first frame a client sends over the socket: the encrypted token,
-// same value the HTTP routes pass as `Authorization: Bearer`. We auth here
-// because browsers can't set headers on a WebSocket handshake.
-#[derive(Deserialize)]
-struct AuthFrame {
-    token: String,
-}
-
 // Every subsequent inbound frame is a chat turn.
 #[derive(Deserialize)]
 struct SendMessageFrame {
@@ -142,10 +134,6 @@ fn main() -> std::io::Result<()> {
 // Delay between streamed tokens, to fake generation latency.
 const TOKEN_DELAY_MS: u64 = 150;
 
-fn error_frame(message: &str) -> String {
-    serde_json::json!({ "type": "error", "message": message }).to_string()
-}
-
 // WebSocket entrypoint. The handshake is a GET upgrade; we hand the socket off
 // to a spawned task and return the upgrade response immediately. Auth happens
 // inside the session (first frame), not here, since the browser can't send the
@@ -187,7 +175,7 @@ async fn chat_session(
                 let text: &str = &text;
                 match user_id {
                     // Not yet authenticated: this frame must be the auth token.
-                    None => match authenticate(text, &secret) {
+                    None => match ws::authenticate(text, &secret) {
                         Some(uid) => {
                             user_id = Some(uid);
                             let _ = session
@@ -195,7 +183,7 @@ async fn chat_session(
                                 .await;
                         }
                         None => {
-                            let _ = session.text(error_frame("authentication failed")).await;
+                            let _ = session.text(ws::error_frame("authentication failed")).await;
                             let _ = session.close(None).await;
                             return;
                         }
@@ -223,16 +211,6 @@ async fn chat_session(
     let _ = session.close(None).await;
 }
 
-// Decrypts + verifies the token frame, yielding the caller's user id. None on
-// any failure (bad JSON, bad/expired token) — same all-or-nothing stance as
-// the AuthUser extractor.
-fn authenticate(text: &str, secret: &str) -> Option<Uuid> {
-    let frame: AuthFrame = serde_json::from_str(text).ok()?;
-    let jwt = crypto::token_cipher::decrypt(&frame.token, secret)?;
-    let claims = crypto::jwt::verify_token(&jwt, secret).ok()?;
-    Some(claims.sub)
-}
-
 // Processes one chat turn: resolve/create the chat, persist the user message,
 // stream the assistant reply word-by-word, then persist the full reply.
 // Returns Err only when sending to the socket fails (client disconnected), so
@@ -245,12 +223,12 @@ async fn handle_message(
 ) -> Result<(), actix_ws::Closed> {
     let frame: SendMessageFrame = match serde_json::from_str(text) {
         Ok(frame) => frame,
-        Err(_) => return session.text(error_frame("invalid message frame")).await,
+        Err(_) => return session.text(ws::error_frame("invalid message frame")).await,
     };
 
     let content = frame.content.trim();
     if content.is_empty() {
-        return session.text(error_frame("message content is empty")).await;
+        return session.text(ws::error_frame("message content is empty")).await;
     }
 
     // Resolve the target chat: an existing one the caller owns, or a new chat
@@ -258,18 +236,18 @@ async fn handle_message(
     let chat_id = match frame.chat_id {
         Some(id) => match db::chat::find_by_id(pool, id).await {
             Ok(Some(chat)) if chat.id_user == user_id => chat.id_chat,
-            Ok(Some(_)) => return session.text(error_frame("forbidden")).await,
-            Ok(None) => return session.text(error_frame("chat not found")).await,
+            Ok(Some(_)) => return session.text(ws::error_frame("forbidden")).await,
+            Ok(None) => return session.text(ws::error_frame("chat not found")).await,
             Err(e) => {
                 eprintln!("chat lookup db error: {}", e);
-                return session.text(error_frame("failed to load chat")).await;
+                return session.text(ws::error_frame("failed to load chat")).await;
             }
         },
         None => match db::chat::create(pool, user_id, &derive_title(content)).await {
             Ok(chat) => chat.id_chat,
             Err(e) => {
                 eprintln!("create chat db error: {}", e);
-                return session.text(error_frame("failed to create chat")).await;
+                return session.text(ws::error_frame("failed to create chat")).await;
             }
         },
     };
@@ -277,7 +255,7 @@ async fn handle_message(
     // Persist the user's message.
     if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content).await {
         eprintln!("create user message db error: {}", e);
-        return session.text(error_frame("failed to save message")).await;
+        return session.text(ws::error_frame("failed to save message")).await;
     }
 
     // TODO: create model response — stream real tokens from the model here
@@ -295,7 +273,7 @@ async fn handle_message(
         Ok(message) => message,
         Err(e) => {
             eprintln!("create assistant message db error: {}", e);
-            return session.text(error_frame("failed to save response")).await;
+            return session.text(ws::error_frame("failed to save response")).await;
         }
     };
 
