@@ -1,9 +1,0 @@
-cargo:rustc-link-search=native=/home/x_x/Programming/LLM/backend/src/llm/src/training/shaders
-cargo:rustc-link-search=native=/opt/cuda/lib64
-cargo:rustc-link-lib=static=shaders
-cargo:rustc-link-lib=cudart
-cargo:rustc-link-lib=stdc++
-cargo:rustc-link-lib=cublas
-cargo:rustc-link-lib=cublasLt
-cargo:rerun-if-changed=src/training/shaders/shaders.cu
-cargo:rerun-if-changed=build.rs

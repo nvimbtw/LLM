@@ -1,6 +1,0 @@
-cargo:rustc-link-search=native=/home/x_x/Programming/gork/api/llm/src/training/shaders
-cargo:rustc-link-search=native=/opt/cuda/lib64
-cargo:rustc-link-lib=static=shaders
-cargo:rustc-link-lib=cudart
-cargo:rustc-link-lib=stdc++
-cargo:rerun-if-changed=src/training/shaders/shaders.cu
