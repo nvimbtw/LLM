@@ -84,18 +84,21 @@ pub async fn update(
     id: Uuid,
     name: Option<&str>,
     description: Option<&str>,
+    family: Option<&str>,
 ) -> Result<Option<Model>, sqlx::Error> {
     sqlx::query_as!(
         Model,
         r#"UPDATE models
            SET name = COALESCE($2, name),
-               description = COALESCE($3, description)
+               description = COALESCE($3, description),
+               family = COALESCE($4, family)
            WHERE id_model = $1
            RETURNING id_model, name, description,
                      parameters as "parameters: Value", context, family, created_at"#,
         id,
         name,
         description,
+        family,
     )
     .fetch_optional(pool)
     .await

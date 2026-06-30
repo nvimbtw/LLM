@@ -73,6 +73,9 @@ async fn get_model(
 struct UpdateModelPayload {
     name: Option<String>,
     description: Option<String>,
+    // Free-text family the model belongs to; assigning a previously-unused name
+    // is how a "new family" gets created (families aren't a separate table).
+    family: Option<String>,
 }
 
 #[put("/{id}")]
@@ -87,6 +90,7 @@ async fn update_model(
         path.into_inner(),
         payload.name.as_deref(),
         payload.description.as_deref(),
+        payload.family.as_deref(),
     )
     .await
     {

@@ -6,12 +6,14 @@ import { ChevronDown, Sparkles } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { InputGroupButton } from "@/components/ui/input-group"
-import { useModels } from "@/hooks/use-models"
+import { useModels, type Model } from "@/hooks/use-models"
 
 export function ModelSelector({
   value,
@@ -31,6 +33,18 @@ export function ModelSelector({
 
   const selected = models.find((m) => m.id === value)
 
+  // Group models under their family, families sorted alphabetically.
+  const groups = React.useMemo(() => {
+    const byFamily = new Map<string, Model[]>()
+    for (const m of models) {
+      const family = m.family || "Custom"
+      const list = byFamily.get(family)
+      if (list) list.push(m)
+      else byFamily.set(family, [m])
+    }
+    return Array.from(byFamily.entries()).sort(([a], [b]) => a.localeCompare(b))
+  }, [models])
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -47,10 +61,18 @@ export function ModelSelector({
       />
       <DropdownMenuContent side="top" align="start" className="w-auto min-w-44">
         <DropdownMenuRadioGroup value={value} onValueChange={onValueChange}>
-          {models.map((model) => (
-            <DropdownMenuRadioItem key={model.id} value={model.id}>
-              {model.name}
-            </DropdownMenuRadioItem>
+          {groups.map(([family, familyModels], i) => (
+            <React.Fragment key={family}>
+              {i > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                {family}
+              </DropdownMenuLabel>
+              {familyModels.map((model) => (
+                <DropdownMenuRadioItem key={model.id} value={model.id}>
+                  {model.name}
+                </DropdownMenuRadioItem>
+              ))}
+            </React.Fragment>
           ))}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>

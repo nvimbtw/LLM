@@ -19,19 +19,33 @@ export interface Model {
 }
 
 // Shape returned by GET /model (see backend routes/model.rs ModelResponse).
-interface RawModel {
+// `parameters` is the training run's stored config + dataset stats.
+export interface RawModelConfig {
+  dimensions?: number
+  ctx_window?: number
+  heads?: number
+  layers?: number
+  ff_multiplier?: number
+  max_vocab?: number
+  lr?: number
+  epochs?: number
+}
+
+export interface RawModelDataset {
+  files?: number
+  chars?: number
+  vocab_size?: number
+  merges?: number
+  corpus_len?: number
+}
+
+export interface RawModel {
   id_model: string
   name: string
   description: string | null
   parameters: {
-    config?: {
-      dimensions?: number
-      ctx_window?: number
-      layers?: number
-      ff_multiplier?: number
-      max_vocab?: number
-    }
-    dataset?: { vocab_size?: number }
+    config?: RawModelConfig
+    dataset?: RawModelDataset
   } | null
   context: number | null
   family: string | null
@@ -40,7 +54,7 @@ interface RawModel {
 
 // Rough transformer parameter count from the training config — enough for a
 // meaningful "size" stat on the card. Returns 0 when the config isn't available.
-function estimateParams(raw: RawModel): number {
+export function estimateParams(raw: RawModel): number {
   const c = raw.parameters?.config
   if (!c?.dimensions || !c.layers) return 0
   const d = c.dimensions
@@ -53,14 +67,14 @@ function estimateParams(raw: RawModel): number {
 }
 
 // Bucket by hidden size so the card glyph/badge varies with model scale.
-function tierFor(raw: RawModel): ModelTier {
+export function tierFor(raw: RawModel): ModelTier {
   const d = raw.parameters?.config?.dimensions ?? raw.context ?? 0
   if (d >= 256) return "flagship"
   if (d >= 96) return "balanced"
   return "fast"
 }
 
-function mapModel(raw: RawModel): Model {
+export function mapModel(raw: RawModel): Model {
   const c = raw.parameters?.config
   const description =
     raw.description ??
