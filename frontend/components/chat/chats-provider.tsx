@@ -16,7 +16,7 @@ interface ChatsContextValue {
   isLoading: boolean
   error: string | null
   refresh: () => Promise<void>
-  createChat: (message: string) => Promise<string>
+  createChat: (message: string, modelId: string) => Promise<string>
   renameChat: (id: string, title: string) => Promise<void>
   deleteChat: (id: string) => Promise<void>
 }
@@ -57,11 +57,11 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   }, [refresh])
 
   const createChat = React.useCallback(
-    (message: string) =>
+    (message: string, modelId: string) =>
       new Promise<string>((resolve, reject) => {
         // The first message is streamed too, but here we only need the new
         // chat id; the chat page loads the saved messages after navigation.
-        streamChat(null, message, {
+        streamChat(null, message, modelId, {
           onToken: () => {},
           onDone: async ({ chatId }) => {
             await refresh()

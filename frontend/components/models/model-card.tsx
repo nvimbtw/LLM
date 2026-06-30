@@ -9,13 +9,21 @@ import {
 import type { Model } from "@/hooks/use-models"
 import { ModelGlyph } from "./model-glyph"
 
-function formatParams(billions: number) {
-  if (!billions) return "Undisclosed"
-  if (billions >= 1000) {
-    const t = billions / 1000
-    return `${t % 1 ? t.toFixed(1) : t}T`
+function formatParams(count: number) {
+  if (!count) return "Undisclosed"
+  const units: [number, string][] = [
+    [1e12, "T"],
+    [1e9, "B"],
+    [1e6, "M"],
+    [1e3, "K"],
+  ]
+  for (const [size, suffix] of units) {
+    if (count >= size) {
+      const v = count / size
+      return `${v % 1 ? v.toFixed(1) : v}${suffix}`
+    }
   }
-  return `${billions}B`
+  return `${count}`
 }
 
 function formatContext(tokens: number) {

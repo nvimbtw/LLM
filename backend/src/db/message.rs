@@ -32,18 +32,21 @@ pub async fn create_user_message(
     .await
 }
 
-// An assistant reply. id_model is left NULL for now — once a real model exists,
-// its id should be passed here so replies are attributable to a specific model.
+// An assistant reply, attributed to the model that generated it. `id_model` is
+// Option so a reply can still be saved if the run wasn't tied to a registered
+// model, but in normal operation it carries the model's id.
 pub async fn create_assistant_message(
     pool: &PgPool,
     id_chat: Uuid,
+    id_model: Option<Uuid>,
     content: &str,
 ) -> Result<Message, sqlx::Error> {
     sqlx::query_as!(
         Message,
-        r#"INSERT INTO messages (id_chat, content) VALUES ($1, $2)
+        r#"INSERT INTO messages (id_chat, id_model, content) VALUES ($1, $2, $3)
            RETURNING id_message, id_chat, id_user, id_model, content, created_at"#,
         id_chat,
+        id_model,
         content,
     )
     .fetch_one(pool)

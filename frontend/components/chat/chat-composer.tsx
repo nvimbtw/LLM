@@ -33,7 +33,7 @@ export function ChatComposer({
   disabled = false,
   placeholder = "Talk to Gork...",
 }: {
-  onSend: (content: string) => Promise<void> | void
+  onSend: (content: string, modelId: string) => Promise<void> | void
   disabled?: boolean
   placeholder?: string
 }) {
@@ -97,8 +97,8 @@ export function ChatComposer({
     if (!markdown.trim()) return
     editor.commands.clearContent()
     setIsEmpty(true)
-    onSendRef.current(markdown)
-  }, [editor, disabled])
+    onSendRef.current(markdown, model)
+  }, [editor, disabled, model])
   submitRef.current = submit
 
   React.useEffect(() => {

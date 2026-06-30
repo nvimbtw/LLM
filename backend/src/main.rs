@@ -24,10 +24,24 @@ async fn main() -> std::io::Result<()> {
 
     create_admin(&pool).await;
 
+    // Training runs on blocking OS threads that can't touch the async pool. They
+    // hand a finished model to this channel; the consumer below owns a pool clone
+    // and performs the insert on the runtime that owns the pool. Unbounded so the
+    // worker never blocks, and so a finish can't be lost behind a full buffer.
+    let (model_tx, mut model_rx) = tokio::sync::mpsc::unbounded_channel();
+    let persist_pool = pool.clone();
+    actix_web::rt::spawn(async move {
+        while let Some(record) = model_rx.recv().await {
+            if let Err(e) = db::model::upsert(&persist_pool, &record).await {
+                eprintln!("failed to persist model {}: {}", record.name, e);
+            }
+        }
+    });
+
     // Created once and shared across all workers (cloning web::Data clones the
     // Arc, not the registry) so a job started on one worker is visible to a
     // socket that lands on another.
-    let jobs = web::Data::new(jobs::JobRegistry::new());
+    let jobs = web::Data::new(jobs::JobRegistry::new(model_tx));
 
     HttpServer::new(move || {
         let cors = Cors::default()

@@ -91,48 +91,18 @@ struct SendMessageFrame {
     // Absent => start a new chat; present => append to an existing one.
     chat_id: Option<Uuid>,
     content: String,
+    // Which trained model should generate the reply. Required for a real turn;
+    // resolves to the model's on-disk weights.
+    model_id: Option<Uuid>,
 }
 
-// Placeholder that mimics a real model's structured-token output. The <|...|>
-// markers are the generated control tokens the frontend parses into rich
-// content. Real model text replaces this once inference integration lands.
-const PLACEHOLDER_REPLY: &str = r#"<|thinking | 'Thinking about the scope of the question'|>
-<|thinking | 'Recalling the relevant standard library file APIs'|>
-<|thinking | 'Weighing read_to_string against a buffered reader'|>
-<|thinking | 'Considering error handling with Result and the question mark operator'|>
-<|thinking | 'Deciding whether to also show the raw bytes variant fs::read'|>
-<|thinking | 'Sketching a minimal runnable example that compiles'|>
-<|thinking | 'Noting the memory cost of reading a whole file at once'|>
-<|thinking | 'Deciding which caveats are worth flagging to the user'|>
-<|thinking | 'Picking a documentation link to point at'|>
-<|thinking | 'Settling on the final structure of the answer'|>
-<|heading 1|>Reading a File in Rust<|/heading 1|>
-<|paragraph|>Here is a quick overview of how to read a file into a <|code inline | lang='rs'|>String<|/code inline|> using only the standard library. It is one of the most common <|bold|>I/O<|/bold|> tasks you will run into.<|/paragraph|>
-<|heading 2|>Steps<|/heading 2|>
-<|ordered list|>
-<|item|>Bring <|code inline | lang='rs'|>std::fs<|/code inline|> into scope.<|/item|>
-<|item|>Call <|code inline | lang='rs'|>fs::read_to_string<|/code inline|> with your path.<|/item|>
-<|item|>Handle the <|code inline | lang='rs'|>Result<|/code inline|> it returns.<|/item|>
-<|/ordered list|>
-<|heading 2|>Example<|/heading 2|>
-<|code block | lang='rs'|>use std::fs;
-
-fn main() -> std::io::Result<()> {
-    let contents = fs::read_to_string("hello.txt")?;
-    println!("{contents}");
-    Ok(())
-}<|/code block|>
-<|divider|>
-<|paragraph|>A few things worth remembering: this reads the <|italic|>entire<|/italic|> file into memory, so for large inputs you should <|inline|>prefer a streaming approach<|/inline|> instead.<|/paragraph|>
-<|list|>
-<|item|>Use <|code inline | lang='rs'|>BufReader<|/code inline|> for line-by-line reading.<|/item|>
-<|item|>Use <|code inline | lang='rs'|>fs::read<|/code inline|> when you need the raw bytes.<|/item|>
-<|/list|>
-<|paragraph|>For the full API, see the <|link | href='https://doc.rust-lang.org/std/fs/fn.read_to_string.html'|>official documentation<|/link|>.<|/paragraph|>
-<|quote|>Tip: handle errors explicitly rather than unwrapping in production code.<|/quote|>"#;
-
-// Delay between streamed tokens, to fake generation latency.
-const TOKEN_DELAY_MS: u64 = 150;
+// Sampling knobs for a chat turn. A reply runs until the model emits
+// <|endoftext|>; MAX_TOKENS is only a safety ceiling so a model that never emits
+// it can't generate forever (the sliding context window means it otherwise
+// wouldn't stop on its own).
+const MAX_TOKENS: usize = 4096;
+const TEMPERATURE: f32 = 0.8;
+const TOP_K: u32 = 40;
 
 // WebSocket entrypoint. The handshake is a GET upgrade; we hand the socket off
 // to a spawned task and return the upgrade response immediately. Auth happens
@@ -258,24 +228,75 @@ async fn handle_message(
         return session.text(ws::error_frame("failed to save message")).await;
     }
 
-    // TODO: create model response — stream real tokens from the model here
-    // instead of chopping a fixed placeholder on whitespace. "token = one word"
-    // is a stand-in; a real tokenizer won't split the <|...|> control tokens.
-    let reply = PLACEHOLDER_REPLY;
-    for word in reply.split_whitespace() {
-        actix_web::rt::time::sleep(std::time::Duration::from_millis(TOKEN_DELAY_MS)).await;
-        let token = serde_json::json!({ "type": "token", "value": word }).to_string();
-        session.text(token).await?;
+    // Resolve the model to run. Its weights live on disk under its name; the
+    // inference engine loads (and caches) them on first use.
+    let model = match frame.model_id {
+        Some(id) => match db::model::find_by_id(pool, id).await {
+            Ok(Some(model)) => model,
+            Ok(None) => return session.text(ws::error_frame("model not found")).await,
+            Err(e) => {
+                eprintln!("model lookup db error: {}", e);
+                return session.text(ws::error_frame("failed to load model")).await;
+            }
+        },
+        None => return session.text(ws::error_frame("no model selected")).await,
+    };
+
+    // Inference is blocking GPU work (CUDA), so it must not run on the async
+    // executor — it runs on a dedicated thread. Decoded token text comes back
+    // over `tok_rx` and is forwarded to the socket as it arrives; `done_rx`
+    // carries the final outcome (full text, or an error) once generation ends.
+    let model_dir = crate::storage::models_dir().join(&model.name);
+    let prompt = content.to_string();
+    let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    std::thread::spawn(move || {
+        let result = llm::infer::generate_response_streaming(
+            &model_dir,
+            &prompt,
+            MAX_TOKENS,
+            TEMPERATURE,
+            TOP_K,
+            |token| {
+                let _ = tok_tx.send(token.to_string());
+            },
+        );
+        let _ = done_tx.send(result);
+    });
+
+    let mut reply = String::new();
+    while let Some(token) = tok_rx.recv().await {
+        reply.push_str(&token);
+        let out = serde_json::json!({ "type": "token", "value": token }).to_string();
+        session.text(out).await?;
     }
 
-    // Persist the full assistant reply (not the chunked stream).
-    let assistant = match db::message::create_assistant_message(pool, chat_id, reply).await {
-        Ok(message) => message,
-        Err(e) => {
-            eprintln!("create assistant message db error: {}", e);
-            return session.text(ws::error_frame("failed to save response")).await;
+    // Generation finished: prefer the authoritative full text, and surface a
+    // failure instead of persisting an empty reply. done_rx only errs if the
+    // worker thread panicked.
+    match done_rx.await {
+        Ok(Ok(full)) => reply = full,
+        Ok(Err(e)) => {
+            eprintln!("inference error: {}", e);
+            return session.text(ws::error_frame("inference failed")).await;
         }
-    };
+        Err(_) => {
+            eprintln!("inference thread panicked");
+            return session.text(ws::error_frame("inference failed")).await;
+        }
+    }
+
+    // Persist the full assistant reply, attributed to the model that produced it.
+    let assistant =
+        match db::message::create_assistant_message(pool, chat_id, Some(model.id_model), &reply)
+            .await
+        {
+            Ok(message) => message,
+            Err(e) => {
+                eprintln!("create assistant message db error: {}", e);
+                return session.text(ws::error_frame("failed to save response")).await;
+            }
+        };
 
     let done = serde_json::json!({
         "type": "done",

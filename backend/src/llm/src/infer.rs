@@ -107,11 +107,14 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
         }
     }
 
-    let ctx_window = 256;
-
     pollster::block_on(async {
         let cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
         let c = cache.as_ref().unwrap();
+
+        // The model's positional table defines its real context window; a fixed
+        // value larger than it overruns the table in forward_seq (the sliding
+        // window keeps more tokens than there are positions for).
+        let ctx_window = c.model.positional_table.len();
 
         let prompt_tokens = tokenize::bpe::encode(prompt, &c.merges);
         let mut seq = prompt_tokens;

@@ -3,12 +3,12 @@ import { WS_URL, getToken } from "./api"
 // Streams an assistant reply over the /chat WebSocket.
 //
 // Wire protocol:
-//   client → { token }                         (first frame, auth)
+//   client → { token }                            (first frame, auth)
 //   server → { type: "ready" }
-//   client → { chat_id, content }              (chat_id null = new chat)
-//   server → { type: "token", value }          (one per word, repeated)
+//   client → { chat_id, content, model_id }       (chat_id null = new chat)
+//   server → { type: "token", value }             (decoded token text, repeated)
 //   server → { type: "done", chat_id, id_message }
-//   server → { type: "error", message }        (at any point)
+//   server → { type: "error", message }           (at any point)
 
 export interface ChatStreamHandlers {
   onToken: (value: string) => void
@@ -20,6 +20,7 @@ export interface ChatStreamHandlers {
 export function streamChat(
   chatId: string | null,
   content: string,
+  modelId: string | null,
   handlers: ChatStreamHandlers
 ): () => void {
   const ws = new WebSocket(`${WS_URL}/chat/ws`)
@@ -50,7 +51,7 @@ export function streamChat(
 
     switch (msg.type) {
       case "ready":
-        ws.send(JSON.stringify({ chat_id: chatId, content }))
+        ws.send(JSON.stringify({ chat_id: chatId, content, model_id: modelId }))
         break
       case "token":
         handlers.onToken(msg.value ?? "")

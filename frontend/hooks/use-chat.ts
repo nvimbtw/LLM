@@ -44,7 +44,7 @@ export function useChat(chatId: string) {
   }, [fetchMessages])
 
   const sendMessage = React.useCallback(
-    (content: string) => {
+    (content: string, modelId: string) => {
       setError(null)
       setIsSending(true)
       // User message + an empty assistant message we fill as tokens arrive.
@@ -71,7 +71,7 @@ export function useChat(chatId: string) {
         })
 
       return new Promise<void>((resolve) => {
-        streamChat(chatId, content, {
+        streamChat(chatId, content, modelId, {
           onToken: appendToAssistant,
           onDone: async () => {
             // Replace the streamed approximation with the authoritative,

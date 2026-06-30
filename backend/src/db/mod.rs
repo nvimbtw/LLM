@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod message;
+pub mod model;
 pub mod user;
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

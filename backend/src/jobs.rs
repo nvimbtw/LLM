@@ -14,9 +14,10 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use serde::Serialize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+use crate::db::model::NewModel;
 use crate::training::{self, DatasetStats, TokenizeEvent, TrainConfig};
 
 const BROADCAST_CAPACITY: usize = 256;
@@ -58,16 +59,24 @@ pub struct Job {
     pub cancel: Arc<AtomicBool>,
     pub tx: broadcast::Sender<String>,
     pub state: Mutex<JobState>,
+    // Cloned into each job so the worker thread can hand a finished model off to
+    // the async db consumer (see `finish`).
+    pub model_tx: mpsc::UnboundedSender<NewModel>,
 }
 
 pub struct JobRegistry {
     jobs: Mutex<HashMap<Uuid, Arc<Job>>>,
+    // The producer end of the model-persistence channel. The consumer (which owns
+    // the db pool) is spawned in main; sending is synchronous, so it bridges the
+    // blocking worker thread to the async pool without a runtime handle here.
+    model_tx: mpsc::UnboundedSender<NewModel>,
 }
 
 impl JobRegistry {
-    pub fn new() -> Self {
+    pub fn new(model_tx: mpsc::UnboundedSender<NewModel>) -> Self {
         JobRegistry {
             jobs: Mutex::new(HashMap::new()),
+            model_tx,
         }
     }
 
@@ -96,6 +105,7 @@ impl JobRegistry {
         let job = Arc::new(Job {
             cancel: Arc::new(AtomicBool::new(false)),
             tx,
+            model_tx: self.model_tx.clone(),
             state: Mutex::new(JobState {
                 status: JobStatus::Tokenizing,
                 config: config.clone(),
@@ -316,6 +326,22 @@ fn finish(
 
     if let Err(e) = training::write_meta(config, dataset, status_str, created_at) {
         eprintln!("failed to write run meta for {}: {}", config.model_name, e);
+    }
+
+    // Register a successful run in the database so it appears in the model
+    // registry and can be selected in chat. Cancelled / failed runs may leave
+    // partial checkpoints on disk but are not registered. The consumer task
+    // (spawned in main) owns the pool and performs the async insert; sending is
+    // non-blocking and only fails at shutdown, so the error is ignored.
+    if status == JobStatus::Done {
+        let record = NewModel {
+            name: config.model_name.clone(),
+            description: None,
+            parameters: serde_json::json!({ "config": config, "dataset": dataset }),
+            context: config.ctx_window as i32,
+            family: Some("transformer".to_string()),
+        };
+        let _ = job.model_tx.send(record);
     }
 
     {
