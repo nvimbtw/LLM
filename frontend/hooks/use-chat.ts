@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { API_URL, authHeaders } from "@/lib/api"
 import { streamChat } from "@/lib/chat-socket"
+import { useChats } from "@/components/chat/chats-provider"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -11,6 +12,7 @@ export interface ChatMessage {
 }
 
 export function useChat(chatId: string) {
+  const { takePendingMessage } = useChats()
   const [messages, setMessages] = React.useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSending, setIsSending] = React.useState(false)
@@ -24,9 +26,14 @@ export function useChat(chatId: string) {
     return (await response.json()) as ChatMessage[]
   }, [chatId])
 
+  // Flips true once the initial DB load settles. The pending-first-message send
+  // waits for this so its optimistic messages aren't clobbered by the load.
+  const [loadedOnce, setLoadedOnce] = React.useState(false)
+
   React.useEffect(() => {
     let active = true
     setIsLoading(true)
+    setLoadedOnce(false)
     fetchMessages()
       .then((data) => {
         if (active) setMessages(data)
@@ -36,7 +43,10 @@ export function useChat(chatId: string) {
           setError(err instanceof Error ? err.message : "Unable to load this chat.")
       })
       .finally(() => {
-        if (active) setIsLoading(false)
+        if (active) {
+          setIsLoading(false)
+          setLoadedOnce(true)
+        }
       })
     return () => {
       active = false
@@ -94,6 +104,18 @@ export function useChat(chatId: string) {
     },
     [chatId, fetchMessages]
   )
+
+  // A chat just created from the home screen hands its first message off here;
+  // stream the reply once the (empty) initial load has settled. takePendingMessage
+  // is one-shot, so React's double-invoked effects / remounts won't re-send.
+  React.useEffect(() => {
+    if (!loadedOnce) return
+    const pending = takePendingMessage(chatId)
+    // Intentional: starting the first turn here is the whole point of the
+    // handoff, and takePendingMessage is one-shot so it can't loop.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (pending) sendMessage(pending.content, pending.modelId)
+  }, [loadedOnce, chatId, takePendingMessage, sendMessage])
 
   return { messages, isLoading, isSending, error, sendMessage }
 }

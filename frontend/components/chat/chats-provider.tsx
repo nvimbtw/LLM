@@ -3,12 +3,16 @@
 import * as React from "react"
 
 import { API_URL, authHeaders } from "@/lib/api"
-import { streamChat } from "@/lib/chat-socket"
 
 export interface ChatSummary {
   id: string
   title: string
   createdAt: string
+}
+
+export interface PendingMessage {
+  content: string
+  modelId: string
 }
 
 interface ChatsContextValue {
@@ -17,6 +21,9 @@ interface ChatsContextValue {
   error: string | null
   refresh: () => Promise<void>
   createChat: (message: string, modelId: string) => Promise<string>
+  // The first message of a freshly-created chat, handed off to the chat page so
+  // it can stream the reply there (one-shot: returns and clears it).
+  takePendingMessage: (chatId: string) => PendingMessage | null
   renameChat: (id: string, title: string) => Promise<void>
   deleteChat: (id: string) => Promise<void>
 }
@@ -56,20 +63,36 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     refresh()
   }, [refresh])
 
+  // Pending first messages, keyed by the new chat id. A ref (not state) so the
+  // value is written synchronously before navigation and read once on the chat
+  // page's mount, with no re-render churn.
+  const pendingRef = React.useRef<Map<string, PendingMessage>>(new Map())
+
+  const takePendingMessage = React.useCallback((chatId: string) => {
+    const msg = pendingRef.current.get(chatId)
+    if (msg) pendingRef.current.delete(chatId)
+    return msg ?? null
+  }, [])
+
+  // Create the chat row only (no generation) so we can navigate immediately;
+  // the chat page streams the reply for the stashed first message on mount.
   const createChat = React.useCallback(
-    (message: string, modelId: string) =>
-      new Promise<string>((resolve, reject) => {
-        // The first message is streamed too, but here we only need the new
-        // chat id; the chat page loads the saved messages after navigation.
-        streamChat(null, message, modelId, {
-          onToken: () => {},
-          onDone: async ({ chatId }) => {
-            await refresh()
-            resolve(chatId)
-          },
-          onError: (m) => reject(new Error(m)),
-        })
-      }),
+    async (message: string, modelId: string): Promise<string> => {
+      const response = await fetch(`${API_URL}/chat`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ content: message }),
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || "Unable to start a chat.")
+      }
+      const id = String((await response.json()).id_chat)
+      pendingRef.current.set(id, { content: message, modelId })
+      // Surface the new chat in the sidebar; no need to block navigation on it.
+      refresh()
+      return id
+    },
     [refresh]
   )
 
@@ -110,6 +133,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     error,
     refresh,
     createChat,
+    takePendingMessage,
     renameChat,
     deleteChat,
   }

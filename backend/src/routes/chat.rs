@@ -1,4 +1,4 @@
-use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, put, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, post, put, web};
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -307,6 +307,36 @@ async fn handle_message(
     session.text(done).await
 }
 
+#[derive(Deserialize)]
+struct CreateChatPayload {
+    // The first message — used only to derive a provisional title here. The
+    // message itself is NOT persisted by this endpoint; it's saved by the WS
+    // turn that follows. Splitting chat creation from generation lets the client
+    // navigate to the new chat (and start streaming the reply there) immediately
+    // instead of waiting for the whole reply to finish.
+    content: String,
+}
+
+#[post("")]
+async fn create_chat(
+    auth: AuthUser,
+    payload: web::Json<CreateChatPayload>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    let content = payload.content.trim();
+    if content.is_empty() {
+        return HttpResponse::BadRequest().body("message content is empty");
+    }
+
+    match db::chat::create(pool.get_ref(), auth.claims.sub, &derive_title(content)).await {
+        Ok(chat) => HttpResponse::Created().json(ChatResponse::from(chat)),
+        Err(e) => {
+            eprintln!("create chat db error: {}", e);
+            HttpResponse::InternalServerError().body("failed to create chat")
+        }
+    }
+}
+
 #[get("")]
 async fn list_chats(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
     match db::chat::list_for_user(pool.get_ref(), auth.claims.sub).await {
@@ -405,6 +435,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // chat_ws (GET /chat/ws) must be registered before get_messages (GET
     // /chat/{id}), otherwise "ws" would be captured by the "{id}" pattern.
     cfg.service(chat_ws);
+    cfg.service(create_chat);
     cfg.service(list_chats);
     cfg.service(get_messages);
     cfg.service(update_chat);
