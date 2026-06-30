@@ -118,21 +118,26 @@ def inline_format(text: str) -> str:
     return ITALIC_RE.sub(r"<|italic|>\1<|/italic|>", text)
 
 
+# Markup uses the backend tokenizer's protected vocabulary (SPECIAL_TOKENS in
+# backend/src/tokenize/src/pretokenize.rs): the book title is <|title|>, chapter
+# headings are <|heading|>, paragraphs are the paired <|par|>…<|/par|>, and
+# <|divider|>/<|italic|> are emitted verbatim. Anything not in that list would be
+# shredded by pre-tokenization, so these names must stay in sync with the crate.
 def render_book(text: str, title: str) -> str:
     text = strip_boilerplate(text)
     out = []
     if title:
-        out.append(f"<|heading 1|>{title}<|/heading 1|>")
+        out.append(f"<|title|>{title}<|/title|>")
 
     for block in split_blocks(text):
         if DIVIDER_RE.match(block.strip()):
             out.append("<|divider|>")
         elif is_heading(block):
-            out.append(f"<|heading 2|>{unwrap(block)}<|/heading 2|>")
+            out.append(f"<|heading|>{unwrap(block)}<|/heading|>")
         elif is_blockquote(block):
             out.append(f"<|quote|>{inline_format(unwrap(block))}<|/quote|>")
         else:
-            out.append(f"<|paragraph|>{inline_format(unwrap(block))}<|/paragraph|>")
+            out.append(f"<|par|>{inline_format(unwrap(block))}<|/par|>")
 
     out.append("<|endoftext|>")
     return "\n\n".join(out) + "\n"

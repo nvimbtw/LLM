@@ -36,6 +36,12 @@ pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     ("<|/math|>", '\u{E022}'),
     ("<|lang|>", '\u{E023}'),
     ("<|/lang|>", '\u{E024}'),
+    ("<|/par|>", '\u{E025}'),
+    ("<|divider|>", '\u{E026}'),
+    ("<|italic|>", '\u{E027}'),
+    ("<|/italic|>", '\u{E028}'),
+    ("<|bold|>", '\u{E029}'),
+    ("<|/bold|>", '\u{E02A}'),
 ];
 
 pub fn lookup_special(ch: char) -> Option<&'static str> {
