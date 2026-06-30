@@ -249,7 +249,8 @@ async fn handle_message(
     let model_dir = crate::storage::models_dir().join(&model.name);
     let prompt = content.to_string();
     let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let (done_tx, done_rx) =
+        tokio::sync::oneshot::channel::<Result<llm::infer::GenerationOutput, String>>();
     std::thread::spawn(move || {
         let result = llm::infer::generate_response_streaming(
             &model_dir,
@@ -274,8 +275,11 @@ async fn handle_message(
     // Generation finished: prefer the authoritative full text, and surface a
     // failure instead of persisting an empty reply. done_rx only errs if the
     // worker thread panicked.
-    match done_rx.await {
-        Ok(Ok(full)) => reply = full,
+    let (input_tokens, output_tokens) = match done_rx.await {
+        Ok(Ok(out)) => {
+            reply = out.text;
+            (out.input_tokens, out.output_tokens)
+        }
         Ok(Err(e)) => {
             eprintln!("inference error: {}", e);
             return session.text(ws::error_frame("inference failed")).await;
@@ -284,7 +288,7 @@ async fn handle_message(
             eprintln!("inference thread panicked");
             return session.text(ws::error_frame("inference failed")).await;
         }
-    }
+    };
 
     // Persist the full assistant reply, attributed to the model that produced it.
     let assistant =
@@ -297,6 +301,20 @@ async fn handle_message(
                 return session.text(ws::error_frame("failed to save response")).await;
             }
         };
+
+    // Record usage for this turn. Non-fatal: a tracking failure shouldn't sink a
+    // reply the user already received and we already persisted.
+    if let Err(e) = db::usage::record(
+        pool,
+        user_id,
+        Some(model.id_model),
+        input_tokens as i32,
+        output_tokens as i32,
+    )
+    .await
+    {
+        eprintln!("record usage db error: {}", e);
+    }
 
     let done = serde_json::json!({
         "type": "done",

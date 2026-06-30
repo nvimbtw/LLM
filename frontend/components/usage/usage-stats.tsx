@@ -30,7 +30,9 @@ function StatCard({
 }
 
 export function UsageStats({ usage }: { usage: Usage }) {
-  const avgPerRequest = Math.round(usage.totalTokens / usage.totalRequests)
+  const avgPerRequest = usage.totalRequests
+    ? Math.round(usage.totalTokens / usage.totalRequests)
+    : 0
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

@@ -66,6 +66,15 @@ fn marker_from_str(s: &str) -> Marker {
     }
 }
 
+// The result of one generation: the decoded reply plus token counts, used for
+// usage tracking. input_tokens is the prompt length after BPE encoding;
+// output_tokens is how many tokens the model actually generated.
+pub struct GenerationOutput {
+    pub text: String,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+}
+
 pub fn generate_response(
     model_dir: &Path,
     prompt: &str,
@@ -73,11 +82,8 @@ pub fn generate_response(
     temperature: f32,
     top_k: u32,
 ) -> Result<String, String> {
-    let mut response = String::new();
-    generate_response_streaming(model_dir, prompt, max_tokens, temperature, top_k, |token| {
-        response.push_str(token);
-    })?;
-    Ok(response)
+    let out = generate_response_streaming(model_dir, prompt, max_tokens, temperature, top_k, |_| {})?;
+    Ok(out.text)
 }
 
 pub fn generate_response_streaming<F: FnMut(&str)>(
@@ -87,7 +93,7 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
     temperature: f32,
     top_k: u32,
     mut on_token: F,
-) -> Result<String, String> {
+) -> Result<GenerationOutput, String> {
     // The caller (backend) builds model_dir via its storage module; the
     // tokenizer merges live alongside the weights, written there at train time.
     let model_dir_str = model_dir.to_string_lossy().to_string();
@@ -117,6 +123,7 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
         let ctx_window = c.model.positional_table.len();
 
         let prompt_tokens = tokenize::bpe::encode(prompt, &c.merges);
+        let input_tokens = prompt_tokens.len();
         let mut seq = prompt_tokens;
         let mut output_ids: Vec<u32> = Vec::new();
         let mut response = String::new();
@@ -152,7 +159,11 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
             response
         };
 
-        Ok(result)
+        Ok(GenerationOutput {
+            text: result,
+            input_tokens,
+            output_tokens: output_ids.len(),
+        })
     })
 }
 

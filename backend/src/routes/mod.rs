@@ -4,6 +4,7 @@ pub mod files;
 pub mod health;
 pub mod model;
 pub mod training;
+pub mod usage;
 pub mod user;
 
 use actix_web::web;
@@ -16,4 +17,5 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/files").configure(files::configure));
     cfg.service(web::scope("/model").configure(model::configure));
     cfg.service(web::scope("/training").configure(training::configure));
+    cfg.service(web::scope("/usage").configure(usage::configure));
 }
