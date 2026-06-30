@@ -6,7 +6,8 @@ use uuid::Uuid;
 // A trained model as stored in the registry. `parameters` holds the full
 // training config + dataset stats as JSON (inspectable, not queried column-wise);
 // `context` mirrors the config's ctx_window for quick display. Weights themselves
-// live on disk under storage::models_dir()/<name>, not here.
+// live on disk under storage::models_dir()/<id_model>, keyed by the immutable
+// UUID so the display `name` can be renamed freely without moving files.
 pub struct Model {
     pub id_model: Uuid,
     pub name: String,
@@ -14,12 +15,17 @@ pub struct Model {
     pub parameters: Option<Value>,
     pub context: Option<i32>,
     pub family: Option<String>,
+    // Models start private (false) and an admin publishes them. Only published
+    // models are visible to non-admins.
+    pub published: bool,
     pub created_at: DateTime<Utc>,
 }
 
 // Input for persisting a freshly trained model. Built by the training worker on
-// a successful run and inserted via `upsert`.
+// a successful run and inserted via `upsert`. `id_model` is chosen up front (it
+// also names the on-disk weights directory), not defaulted by the DB.
 pub struct NewModel {
+    pub id_model: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub parameters: Value,
@@ -35,14 +41,16 @@ pub struct NewModel {
 pub async fn upsert(pool: &PgPool, model: &NewModel) -> Result<Model, sqlx::Error> {
     sqlx::query_as!(
         Model,
-        r#"INSERT INTO models (name, description, parameters, context, family)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO models (id_model, name, description, parameters, context, family)
+           VALUES ($1, $2, $3, $4, $5, $6)
            ON CONFLICT (name) DO UPDATE
            SET parameters = EXCLUDED.parameters,
                context = EXCLUDED.context,
                family = EXCLUDED.family
            RETURNING id_model, name, description,
-                     parameters as "parameters: Value", context, family, created_at"#,
+                     parameters as "parameters: Value", context, family,
+                     published, created_at"#,
+        model.id_model,
         model.name,
         model.description,
         model.parameters,
@@ -53,13 +61,27 @@ pub async fn upsert(pool: &PgPool, model: &NewModel) -> Result<Model, sqlx::Erro
     .await
 }
 
-pub async fn list(pool: &PgPool) -> Result<Vec<Model>, sqlx::Error> {
-    // Newest first, for the registry/sidebar recency ordering.
+// Resolves an existing model's id by name, so a retrain reuses its on-disk
+// directory (and registry row) rather than creating a new one.
+pub async fn find_id_by_name(pool: &PgPool, name: &str) -> Result<Option<Uuid>, sqlx::Error> {
+    let row = sqlx::query!("SELECT id_model FROM models WHERE name = $1", name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.id_model))
+}
+
+// Newest first, for the registry/sidebar recency ordering. When `only_published`
+// is true (non-admin callers) private models are hidden.
+pub async fn list(pool: &PgPool, only_published: bool) -> Result<Vec<Model>, sqlx::Error> {
     sqlx::query_as!(
         Model,
         r#"SELECT id_model, name, description,
-                  parameters as "parameters: Value", context, family, created_at
-           FROM models ORDER BY created_at DESC"#,
+                  parameters as "parameters: Value", context, family,
+                  published, created_at
+           FROM models
+           WHERE NOT $1 OR published
+           ORDER BY created_at DESC"#,
+        only_published,
     )
     .fetch_all(pool)
     .await
@@ -69,7 +91,8 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Model>, sqlx::
     sqlx::query_as!(
         Model,
         r#"SELECT id_model, name, description,
-                  parameters as "parameters: Value", context, family, created_at
+                  parameters as "parameters: Value", context, family,
+                  published, created_at
            FROM models WHERE id_model = $1"#,
         id,
     )
@@ -85,20 +108,24 @@ pub async fn update(
     name: Option<&str>,
     description: Option<&str>,
     family: Option<&str>,
+    published: Option<bool>,
 ) -> Result<Option<Model>, sqlx::Error> {
     sqlx::query_as!(
         Model,
         r#"UPDATE models
            SET name = COALESCE($2, name),
                description = COALESCE($3, description),
-               family = COALESCE($4, family)
+               family = COALESCE($4, family),
+               published = COALESCE($5, published)
            WHERE id_model = $1
            RETURNING id_model, name, description,
-                     parameters as "parameters: Value", context, family, created_at"#,
+                     parameters as "parameters: Value", context, family,
+                     published, created_at"#,
         id,
         name,
         description,
         family,
+        published,
     )
     .fetch_optional(pool)
     .await

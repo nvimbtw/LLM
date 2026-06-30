@@ -3,7 +3,9 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, Pencil, Trash2 } from "lucide-react"
+import { ArrowLeft, Eye, EyeOff, Pencil, Trash2 } from "lucide-react"
+
+import { cn } from "@/lib/utils"
 
 import {
   AlertDialog,
@@ -88,7 +90,8 @@ function formatDate(iso: string): string {
 export function ModelDetail({ modelId }: { modelId: string }) {
   const router = useRouter()
   const { isAdmin } = useAuth()
-  const { model, isLoading, notFound, error, update, remove } = useModel(modelId)
+  const { model, isLoading, notFound, error, update, setPublished, remove } =
+    useModel(modelId)
   // Existing families across all models, offered as suggestions in the editor.
   const { models } = useModels()
   const families = React.useMemo(
@@ -99,6 +102,20 @@ export function ModelDetail({ modelId }: { modelId: string }) {
   const [editing, setEditing] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
+  const [isPublishing, setIsPublishing] = React.useState(false)
+  const [actionError, setActionError] = React.useState<string | null>(null)
+
+  async function handleTogglePublished(next: boolean) {
+    setIsPublishing(true)
+    setActionError(null)
+    try {
+      await setPublished(next)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to update visibility.")
+    } finally {
+      setIsPublishing(false)
+    }
+  }
 
   async function handleDelete() {
     setIsDeleting(true)
@@ -171,8 +188,8 @@ export function ModelDetail({ modelId }: { modelId: string }) {
     <>
       <BackLink />
 
-      {deleteError && (
-        <p className="mb-4 text-sm text-destructive">{deleteError}</p>
+      {(deleteError || actionError) && (
+        <p className="mb-4 text-sm text-destructive">{deleteError ?? actionError}</p>
       )}
 
       <div className="flex flex-col gap-4">
@@ -188,6 +205,16 @@ export function ModelDetail({ modelId }: { modelId: string }) {
                   <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground capitalize">
                     {model.tier}
                   </span>
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-0.5 text-xs font-medium",
+                      model.published
+                        ? "bg-chart-2/15 text-chart-2"
+                        : "bg-muted text-muted-foreground"
+                    )}
+                  >
+                    {model.published ? "Published" : "Private"}
+                  </span>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {model.description}
@@ -196,6 +223,19 @@ export function ModelDetail({ modelId }: { modelId: string }) {
 
               {isAdmin && (
                 <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    variant={model.published ? "outline" : "default"}
+                    size="sm"
+                    disabled={isPublishing}
+                    onClick={() => handleTogglePublished(!model.published)}
+                  >
+                    {model.published ? (
+                      <EyeOff className="size-3.5" />
+                    ) : (
+                      <Eye className="size-3.5" />
+                    )}
+                    {model.published ? "Unpublish" : "Publish"}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
                     <Pencil className="size-3.5" />
                     Edit

@@ -7,6 +7,7 @@ use std::fs;
 use uuid::Uuid;
 
 use crate::db;
+use crate::db::user::AccessLevel;
 use crate::extractors::{AdminUser, AuthUser};
 use crate::storage;
 
@@ -20,6 +21,7 @@ struct ModelResponse {
     parameters: Option<Value>,
     context: Option<i32>,
     family: Option<String>,
+    published: bool,
     created_at: DateTime<Utc>,
 }
 
@@ -32,16 +34,19 @@ impl From<db::model::Model> for ModelResponse {
             parameters: m.parameters,
             context: m.context,
             family: m.family,
+            published: m.published,
             created_at: m.created_at,
         }
     }
 }
 
 // Any authenticated user may browse the registry — they need it to pick a model
-// in chat. Mutating routes below require admin.
+// in chat. Non-admins only see published models; admins see all. Mutating routes
+// below require admin.
 #[get("")]
-async fn list_models(_auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
-    match db::model::list(pool.get_ref()).await {
+async fn list_models(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
+    let only_published = !matches!(auth.claims.access_level, AccessLevel::Admin);
+    match db::model::list(pool.get_ref(), only_published).await {
         Ok(models) => {
             let body: Vec<ModelResponse> = models.into_iter().map(ModelResponse::from).collect();
             HttpResponse::Ok().json(body)
@@ -54,13 +59,15 @@ async fn list_models(_auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder
 }
 
 #[get("/{id}")]
-async fn get_model(
-    _auth: AuthUser,
-    path: web::Path<Uuid>,
-    pool: web::Data<PgPool>,
-) -> impl Responder {
+async fn get_model(auth: AuthUser, path: web::Path<Uuid>, pool: web::Data<PgPool>) -> impl Responder {
+    let is_admin = matches!(auth.claims.access_level, AccessLevel::Admin);
     match db::model::find_by_id(pool.get_ref(), path.into_inner()).await {
-        Ok(Some(model)) => HttpResponse::Ok().json(ModelResponse::from(model)),
+        // A private model is invisible to non-admins — report it as not found
+        // rather than forbidden so its existence isn't leaked.
+        Ok(Some(model)) if model.published || is_admin => {
+            HttpResponse::Ok().json(ModelResponse::from(model))
+        }
+        Ok(Some(_)) => HttpResponse::NotFound().body("model not found"),
         Ok(None) => HttpResponse::NotFound().body("model not found"),
         Err(e) => {
             eprintln!("get model db error: {}", e);
@@ -76,6 +83,8 @@ struct UpdateModelPayload {
     // Free-text family the model belongs to; assigning a previously-unused name
     // is how a "new family" gets created (families aren't a separate table).
     family: Option<String>,
+    // Publish (true) / unpublish (false) the model.
+    published: Option<bool>,
 }
 
 #[put("/{id}")]
@@ -91,6 +100,7 @@ async fn update_model(
         payload.name.as_deref(),
         payload.description.as_deref(),
         payload.family.as_deref(),
+        payload.published,
     )
     .await
     {
@@ -114,11 +124,12 @@ async fn delete_model(
     pool: web::Data<PgPool>,
 ) -> impl Responder {
     // The db delete detaches referencing messages and removes the row in one
-    // transaction, returning the model's name so we can clean up its weights on
-    // disk too.
-    match db::model::delete(pool.get_ref(), path.into_inner()).await {
-        Ok(Some(name)) => {
-            let dir = storage::models_dir().join(&name);
+    // transaction, returning the model's name to confirm it existed. Weights are
+    // stored under the model's id, so we clean up that directory.
+    let id = path.into_inner();
+    match db::model::delete(pool.get_ref(), id).await {
+        Ok(Some(_name)) => {
+            let dir = storage::models_dir().join(id.to_string());
             if let Err(e) = fs::remove_dir_all(&dir) {
                 // The row is already gone; a missing/half-removed directory isn't
                 // worth failing the request over — log and report success.

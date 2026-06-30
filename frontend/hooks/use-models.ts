@@ -16,6 +16,8 @@ export interface Model {
   /** Context window in tokens. */
   contextWindow: number
   description: string
+  /** Whether the model is published (visible to non-admins). */
+  published: boolean
 }
 
 // Shape returned by GET /model (see backend routes/model.rs ModelResponse).
@@ -49,6 +51,7 @@ export interface RawModel {
   } | null
   context: number | null
   family: string | null
+  published: boolean
   created_at: string
 }
 
@@ -89,6 +92,7 @@ export function mapModel(raw: RawModel): Model {
     params: estimateParams(raw),
     contextWindow: raw.context ?? 0,
     description,
+    published: raw.published,
   }
 }
 

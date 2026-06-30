@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::storage;
 
@@ -26,6 +27,11 @@ pub struct TrainConfig {
     pub lr: f32,
     pub ff_multiplier: i64,
     pub max_vocab: u32,
+    // The model's id, which names its on-disk directory. Set server-side by the
+    // start route (reused on retrain, freshly generated for a new model), never
+    // by the client — hence skipped on deserialize.
+    #[serde(skip_deserializing)]
+    pub storage_id: Uuid,
 }
 
 // Summary of what tokenization produced, for the dashboard + meta.json.
@@ -131,7 +137,7 @@ pub fn run_training(
     on_progress: llm::train::ProgressCallback,
     cancel: Arc<AtomicBool>,
 ) -> io::Result<bool> {
-    let model_dir = storage::models_dir().join(&cfg.model_name);
+    let model_dir = storage::models_dir().join(cfg.storage_id.to_string());
     let corpus_path = storage::datasets_dir().join("corpus.bin");
     let merges_path = storage::tokenizer_dir().join("merges.bin");
     let checkpoints_dir = model_dir.join("checkpoints");
@@ -170,7 +176,7 @@ pub fn write_meta(
     status: &str,
     created_at: &str,
 ) -> io::Result<()> {
-    let model_dir = storage::models_dir().join(&cfg.model_name);
+    let model_dir = storage::models_dir().join(cfg.storage_id.to_string());
     fs::create_dir_all(&model_dir)?;
     let meta = RunMeta {
         config: cfg,

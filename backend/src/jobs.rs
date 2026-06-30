@@ -335,6 +335,7 @@ fn finish(
     // non-blocking and only fails at shutdown, so the error is ignored.
     if status == JobStatus::Done {
         let record = NewModel {
+            id_model: config.storage_id,
             name: config.model_name.clone(),
             description: None,
             parameters: serde_json::json!({ "config": config, "dataset": dataset }),
@@ -353,7 +354,7 @@ fn finish(
     let payload = match error {
         Some(msg) => frame("error", serde_json::json!({ "message": msg })),
         None => {
-            let model_dir = crate::storage::models_dir().join(&config.model_name);
+            let model_dir = crate::storage::models_dir().join(config.storage_id.to_string());
             frame(
                 "done",
                 serde_json::json!({

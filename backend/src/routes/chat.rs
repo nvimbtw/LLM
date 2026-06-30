@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{db, extractors::AuthUser, ws};
+use crate::{db, db::user::AccessLevel, extractors::AuthUser, ws};
 
 #[derive(Serialize)]
 struct ChatResponse {
@@ -135,7 +135,8 @@ async fn chat_session(
     pool: PgPool,
     secret: String,
 ) {
-    let mut user_id: Option<Uuid> = None;
+    // (user id, is_admin) once authenticated. is_admin gates use of private models.
+    let mut auth: Option<(Uuid, bool)> = None;
 
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
@@ -143,11 +144,12 @@ async fn chat_session(
                 // Message::Text carries a ByteString; bind it as &str once so the
                 // helpers below get the type they expect.
                 let text: &str = &text;
-                match user_id {
+                match auth {
                     // Not yet authenticated: this frame must be the auth token.
                     None => match ws::authenticate(text, &secret) {
-                        Some(uid) => {
-                            user_id = Some(uid);
+                        Some(claims) => {
+                            let is_admin = matches!(claims.access_level, AccessLevel::Admin);
+                            auth = Some((claims.sub, is_admin));
                             let _ = session
                                 .text(serde_json::json!({ "type": "ready" }).to_string())
                                 .await;
@@ -159,8 +161,8 @@ async fn chat_session(
                         }
                     },
                     // Authenticated: handle a chat turn, streaming tokens back.
-                    Some(uid) => {
-                        if handle_message(&mut session, &pool, uid, text)
+                    Some((uid, is_admin)) => {
+                        if handle_message(&mut session, &pool, uid, is_admin, text)
                             .await
                             .is_err()
                         {
@@ -189,6 +191,7 @@ async fn handle_message(
     session: &mut actix_ws::Session,
     pool: &PgPool,
     user_id: Uuid,
+    is_admin: bool,
     text: &str,
 ) -> Result<(), actix_ws::Closed> {
     let frame: SendMessageFrame = match serde_json::from_str(text) {
@@ -242,11 +245,17 @@ async fn handle_message(
         None => return session.text(ws::error_frame("no model selected")).await,
     };
 
+    // A private model can only be used by an admin. Report it as not found to a
+    // non-admin rather than revealing it exists.
+    if !model.published && !is_admin {
+        return session.text(ws::error_frame("model not found")).await;
+    }
+
     // Inference is blocking GPU work (CUDA), so it must not run on the async
     // executor — it runs on a dedicated thread. Decoded token text comes back
     // over `tok_rx` and is forwarded to the socket as it arrives; `done_rx`
     // carries the final outcome (full text, or an error) once generation ends.
-    let model_dir = crate::storage::models_dir().join(&model.name);
+    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
     let prompt = content.to_string();
     let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (done_tx, done_rx) =

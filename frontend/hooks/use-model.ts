@@ -83,6 +83,23 @@ export function useModel(id: string) {
     [id]
   )
 
+  // Admin only. Publish/unpublish toggle.
+  const setPublished = React.useCallback(
+    async (published: boolean) => {
+      const res = await fetch(`${API_URL}/model/${id}`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ published }),
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || "Unable to update visibility.")
+      }
+      setModel(mapDetail((await res.json()) as RawModel))
+    },
+    [id]
+  )
+
   // Admin only. Removes the registry row and the on-disk weights.
   const remove = React.useCallback(async () => {
     const res = await fetch(`${API_URL}/model/${id}`, {
@@ -95,5 +112,5 @@ export function useModel(id: string) {
     }
   }, [id])
 
-  return { model, isLoading, notFound, error, update, remove }
+  return { model, isLoading, notFound, error, update, setPublished, remove }
 }

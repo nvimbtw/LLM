@@ -16,12 +16,27 @@ use crate::ws;
 async fn start_training(
     _admin: AdminUser,
     registry: web::Data<JobRegistry>,
+    pool: web::Data<sqlx::PgPool>,
     body: web::Json<TrainConfig>,
 ) -> impl Responder {
-    let config = body.into_inner();
+    let mut config = body.into_inner();
     if let Err(msg) = validate_config(&config) {
         return HttpResponse::BadRequest().body(msg);
     }
+
+    // Resolve the storage id (which names the on-disk weights dir): reuse the
+    // existing model's id on a retrain of the same name, else mint a new one.
+    config.storage_id = match crate::db::model::find_id_by_name(pool.get_ref(), &config.model_name)
+        .await
+    {
+        Ok(Some(id)) => id,
+        Ok(None) => uuid::Uuid::new_v4(),
+        Err(e) => {
+            eprintln!("resolve model id db error: {}", e);
+            return HttpResponse::InternalServerError().body("failed to start training");
+        }
+    };
+
     let job_id = registry.start(config);
     HttpResponse::Created().json(serde_json::json!({ "job_id": job_id }))
 }

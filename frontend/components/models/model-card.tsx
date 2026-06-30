@@ -31,7 +31,12 @@ export function ModelCard({ model }: { model: Model }) {
         <ModelGlyph tier={model.tier} />
         <CardHeader className="pt-4">
           <CardTitle>{model.name}</CardTitle>
-          <CardAction>
+          <CardAction className="flex items-center gap-1.5">
+            {!model.published && (
+              <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                Private
+              </span>
+            )}
             <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground capitalize">
               {model.tier}
             </span>
