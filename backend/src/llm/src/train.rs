@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::training::gpu_workspace::GpuWorkspace;
-use crate::training::transformer::{gpu_sgd_update, sync_weights_from_gpu, Transformer};
+use crate::training::transformer::{gpu_adam_update, sync_weights_from_gpu, Transformer};
 
 pub struct TrainingProgress {
     pub epoch: u64,
@@ -149,6 +149,9 @@ fn run_training_loop(
     let mut epochs_since_best = 0;
     let training_start = Instant::now();
     let accum_steps = 4usize;
+    // Global optimizer-step counter for Adam bias correction (persists across
+    // epochs, incremented once per weight update).
+    let mut adam_step: i32 = 0;
 
     for epoch in 0..epochs {
         let mut total_loss = 0.0f32;
@@ -177,7 +180,10 @@ fn run_training_loop(
             max_loss = max_loss.max(loss);
 
             if n_chunks % (accum_steps as u64) == 0 || n_chunks == total_chunks as u64 {
-                gpu_sgd_update(&ws, lr / accum_steps as f32, layers as usize);
+                adam_step += 1;
+                // Adam averages the gradient internally (grad_scale), so pass the
+                // full lr rather than dividing it by accum_steps.
+                gpu_adam_update(&ws, lr, adam_step, accum_steps, layers as usize);
                 ws.zero_accumulators();
             }
 

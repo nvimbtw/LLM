@@ -37,7 +37,7 @@ pub struct GpuWorkspace {
     pub g_dln_gamma: Vec<DeviceBuffer>,
     pub g_dln_beta: Vec<DeviceBuffer>,
 
-    // Momentum velocity buffers (f32) — one per gradient buffer
+    // Adam first-moment buffers (f32) — one per gradient buffer.
     pub v_wq_all: Vec<DeviceBuffer>,
     pub v_wk_all: Vec<DeviceBuffer>,
     pub v_wv_all: Vec<DeviceBuffer>,
@@ -50,6 +50,20 @@ pub struct GpuWorkspace {
     pub v_db2: Vec<DeviceBuffer>,
     pub v_dln_gamma: Vec<DeviceBuffer>,
     pub v_dln_beta: Vec<DeviceBuffer>,
+
+    // Adam second-moment buffers (f32) — EMA of gradient², one per gradient.
+    pub s_wq_all: Vec<DeviceBuffer>,
+    pub s_wk_all: Vec<DeviceBuffer>,
+    pub s_wv_all: Vec<DeviceBuffer>,
+    pub s_dw_output: DeviceBuffer,
+    pub s_d_embedding: DeviceBuffer,
+    pub s_dwo: Vec<DeviceBuffer>,
+    pub s_dw1: Vec<DeviceBuffer>,
+    pub s_dw2: Vec<DeviceBuffer>,
+    pub s_db1: Vec<DeviceBuffer>,
+    pub s_db2: Vec<DeviceBuffer>,
+    pub s_dln_gamma: Vec<DeviceBuffer>,
+    pub s_dln_beta: Vec<DeviceBuffer>,
 
     // Logits + loss
     pub d_logits: DeviceBufferF16,
@@ -142,6 +156,20 @@ impl GpuWorkspace {
         let v_dln_gamma = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
         let v_dln_beta = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
 
+        // Adam second-moment buffers (same shapes, zero-initialized).
+        let s_wq_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
+        let s_wk_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
+        let s_wv_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
+        let s_dw_output = DeviceBuffer::alloc_zeroed(d * vocab);
+        let s_d_embedding = DeviceBuffer::alloc_zeroed(vocab * d);
+        let s_dwo = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * d)).collect();
+        let s_dw1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * ff)).collect();
+        let s_dw2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff * d)).collect();
+        let s_db1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff)).collect();
+        let s_db2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let s_dln_gamma = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let s_dln_beta = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+
         let d_logits = DeviceBufferF16::alloc(max_s * vocab);
         let d_dlogits = DeviceBufferF16::alloc(max_s * vocab);
         let d_targets = DeviceBuffer::alloc(max_s);
@@ -164,6 +192,8 @@ impl GpuWorkspace {
             g_dw_output, g_d_embedding, d_token_ids, g_dwo, g_dw1, g_dw2, g_db1, g_db2, g_dln_gamma, g_dln_beta,
             v_wq_all, v_wk_all, v_wv_all, v_dw_output, v_d_embedding,
             v_dwo, v_dw1, v_dw2, v_db1, v_db2, v_dln_gamma, v_dln_beta,
+            s_wq_all, s_wk_all, s_wv_all, s_dw_output, s_d_embedding,
+            s_dwo, s_dw1, s_dw2, s_db1, s_db2, s_dln_gamma, s_dln_beta,
             d_logits, d_dlogits, d_targets, d_dw_output, d_dhidden,
             layer_inputs: Vec::new(),
             post_attn_residuals: Vec::new(),

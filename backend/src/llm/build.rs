@@ -5,7 +5,15 @@ fn main() {
     let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
     let shader_dir = format!("{}/src/training/shaders", manifest);
 
-    Command::new("nvcc")
+    // Resolve the CUDA toolkit root: honor CUDA_HOME/CUDA_PATH if set, else fall
+    // back to /opt/cuda (where it lives on this box). nvcc is often not on PATH,
+    // so we invoke it by absolute path instead of relying on `nvcc` alone.
+    let cuda_home = env::var("CUDA_HOME")
+        .or_else(|_| env::var("CUDA_PATH"))
+        .unwrap_or_else(|_| "/opt/cuda".to_string());
+    let nvcc = format!("{}/bin/nvcc", cuda_home);
+
+    Command::new(&nvcc)
         .args([
             "-c",
             &format!("{}/shaders.cu", shader_dir),
@@ -18,7 +26,7 @@ fn main() {
             "-fPIC",
         ])
         .status()
-        .expect("nvcc failed");
+        .unwrap_or_else(|e| panic!("failed to run nvcc at {}: {}", nvcc, e));
 
     Command::new("ar")
         .args([
@@ -30,7 +38,7 @@ fn main() {
         .expect("ar failed");
 
     println!("cargo:rustc-link-search=native={}", shader_dir);
-    println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
+    println!("cargo:rustc-link-search=native={}/lib64", cuda_home);
     println!("cargo:rustc-link-lib=static=shaders");
     println!("cargo:rustc-link-lib=cudart");
     println!("cargo:rustc-link-lib=stdc++");

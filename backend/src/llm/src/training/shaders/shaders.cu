@@ -147,6 +147,24 @@ __global__ void sgd_momentum_kernel(const float *__restrict__ g, __half *w,
   w[i] = __float2half(__half2float(w[i]) - lr * new_v);
 }
 
+// Adam update. Weights are f16; the two moment estimates (m = 1st, v = 2nd) are
+// f32. `grad_scale` averages the accumulated gradient (1/accum_steps); `bc1`,
+// `bc2` are the bias-correction denominators (1 - beta^t) computed host-side.
+__global__ void adam_kernel(const float *__restrict__ g, __half *w, float *m,
+                            float *v, float grad_scale, float lr, float beta1,
+                            float beta2, float eps, float bc1, float bc2, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  float grad = g[i] * grad_scale;
+  float new_m = beta1 * m[i] + (1.0f - beta1) * grad;
+  float new_v = beta2 * v[i] + (1.0f - beta2) * grad * grad;
+  m[i] = new_m;
+  v[i] = new_v;
+  float m_hat = new_m / bc1;
+  float v_hat = new_v / bc2;
+  w[i] = __float2half(__half2float(w[i]) - lr * m_hat / (sqrtf(v_hat) + eps));
+}
+
 // ─── Copy strided columns into contiguous batch layout ─────────────────────
 // src: [rows × src_cols] row-major, copies 'num' strided column slices
 // each of width 'dst_cols' starting at stride offset 'src_stride'
@@ -1363,6 +1381,13 @@ extern "C" int cuda_check_nan_f32(const float *buf, int n, int *out_pos) {
 extern "C" void cuda_sgd_momentum(const float *g, __half *w, float *v,
                                    float lr, float mu, int n) {
   sgd_momentum_kernel<<<(n + 255) / 256, 256>>>(g, w, v, lr, mu, n);
+}
+
+extern "C" void cuda_adam(const float *g, __half *w, float *m, float *v,
+                          float grad_scale, float lr, float beta1, float beta2,
+                          float eps, float bc1, float bc2, int n) {
+  adam_kernel<<<(n + 255) / 256, 256>>>(g, w, m, v, grad_scale, lr, beta1,
+                                        beta2, eps, bc1, bc2, n);
 }
 
 // ─── Embedding forward: lookup + positional add ─────────────────────

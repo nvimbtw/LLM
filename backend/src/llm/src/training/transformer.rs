@@ -1245,29 +1245,60 @@ unsafe extern "C" {
         mu: f32,
         n: i32,
     );
+
+    fn cuda_adam(
+        g: *const f32,
+        w: *mut c_void,
+        m: *mut f32,
+        v: *mut f32,
+        grad_scale: f32,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        bc1: f32,
+        bc2: f32,
+        n: i32,
+    );
 }
 
-pub fn gpu_sgd_update(ws: &GpuWorkspace, lr: f32, layers: usize) {
-    let mu = 0.9f32;
+// Adam optimizer step. `step` is the 1-based global update count (for bias
+// correction); `accum_steps` is the gradient-accumulation factor so the summed
+// gradient is averaged. `v_*` hold the first moment (m), `s_*` the second (v).
+pub fn gpu_adam_update(ws: &GpuWorkspace, lr: f32, step: i32, accum_steps: usize, layers: usize) {
+    let beta1 = 0.9f32;
+    let beta2 = 0.999f32;
+    let eps = 1e-8f32;
+    let bc1 = 1.0 - beta1.powi(step);
+    let bc2 = 1.0 - beta2.powi(step);
+    let gs = 1.0 / accum_steps as f32;
     let d = ws.d;
     let h = ws.h;
     let hd = ws.hd;
     let ff = ws.ff;
     let vocab = ws.vocab;
+
+    // Cuts the repeated argument list down to (grad, weight, m, v, n).
+    macro_rules! adam {
+        ($g:expr, $w:expr, $m:expr, $v:expr, $n:expr) => {
+            cuda_adam($g, $w as *mut c_void, $m, $v, gs, lr, beta1, beta2, eps, bc1, bc2, $n as i32)
+        };
+    }
+
     unsafe {
-        cuda_sgd_momentum(ws.g_dw_output.ptr, ws.d_w_output.ptr as *mut c_void, ws.v_dw_output.ptr, lr, mu, (d * vocab) as i32);
-        cuda_sgd_momentum(ws.g_d_embedding.ptr, ws.d_embedding.ptr as *mut c_void, ws.v_d_embedding.ptr, lr, mu, (vocab * d) as i32);
-        for layer in 0..layers {
-            cuda_sgd_momentum(ws.g_wq_all[layer].ptr, ws.d_wq_all[layer].ptr as *mut c_void, ws.v_wq_all[layer].ptr, lr, mu, (h * d * hd) as i32);
-            cuda_sgd_momentum(ws.g_wk_all[layer].ptr, ws.d_wk_all[layer].ptr as *mut c_void, ws.v_wk_all[layer].ptr, lr, mu, (h * d * hd) as i32);
-            cuda_sgd_momentum(ws.g_wv_all[layer].ptr, ws.d_wv_all[layer].ptr as *mut c_void, ws.v_wv_all[layer].ptr, lr, mu, (h * d * hd) as i32);
-            cuda_sgd_momentum(ws.g_dwo[layer].ptr, ws.d_wo[layer].ptr as *mut c_void, ws.v_dwo[layer].ptr, lr, mu, (d * d) as i32);
-            cuda_sgd_momentum(ws.g_dw1[layer].ptr, ws.d_w1[layer].ptr as *mut c_void, ws.v_dw1[layer].ptr, lr, mu, (d * ff) as i32);
-            cuda_sgd_momentum(ws.g_dw2[layer].ptr, ws.d_w2[layer].ptr as *mut c_void, ws.v_dw2[layer].ptr, lr, mu, (ff * d) as i32);
-            cuda_sgd_momentum(ws.g_db1[layer].ptr, ws.d_b1[layer].ptr as *mut c_void, ws.v_db1[layer].ptr, lr, mu, ff as i32);
-            cuda_sgd_momentum(ws.g_db2[layer].ptr, ws.d_b2[layer].ptr as *mut c_void, ws.v_db2[layer].ptr, lr, mu, d as i32);
-            cuda_sgd_momentum(ws.g_dln_gamma[layer].ptr, ws.d_ln_gamma[layer].ptr as *mut c_void, ws.v_dln_gamma[layer].ptr, lr, mu, d as i32);
-            cuda_sgd_momentum(ws.g_dln_beta[layer].ptr, ws.d_ln_beta[layer].ptr as *mut c_void, ws.v_dln_beta[layer].ptr, lr, mu, d as i32);
+        adam!(ws.g_dw_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, d * vocab);
+        adam!(ws.g_d_embedding.ptr, ws.d_embedding.ptr, ws.v_d_embedding.ptr, ws.s_d_embedding.ptr, vocab * d);
+        for l in 0..layers {
+            adam!(ws.g_wq_all[l].ptr, ws.d_wq_all[l].ptr, ws.v_wq_all[l].ptr, ws.s_wq_all[l].ptr, h * d * hd);
+            adam!(ws.g_wk_all[l].ptr, ws.d_wk_all[l].ptr, ws.v_wk_all[l].ptr, ws.s_wk_all[l].ptr, h * d * hd);
+            adam!(ws.g_wv_all[l].ptr, ws.d_wv_all[l].ptr, ws.v_wv_all[l].ptr, ws.s_wv_all[l].ptr, h * d * hd);
+            adam!(ws.g_dwo[l].ptr, ws.d_wo[l].ptr, ws.v_dwo[l].ptr, ws.s_dwo[l].ptr, d * d);
+            adam!(ws.g_dw1[l].ptr, ws.d_w1[l].ptr, ws.v_dw1[l].ptr, ws.s_dw1[l].ptr, d * ff);
+            adam!(ws.g_dw2[l].ptr, ws.d_w2[l].ptr, ws.v_dw2[l].ptr, ws.s_dw2[l].ptr, ff * d);
+            adam!(ws.g_db1[l].ptr, ws.d_b1[l].ptr, ws.v_db1[l].ptr, ws.s_db1[l].ptr, ff);
+            adam!(ws.g_db2[l].ptr, ws.d_b2[l].ptr, ws.v_db2[l].ptr, ws.s_db2[l].ptr, d);
+            adam!(ws.g_dln_gamma[l].ptr, ws.d_ln_gamma[l].ptr, ws.v_dln_gamma[l].ptr, ws.s_dln_gamma[l].ptr, d);
+            adam!(ws.g_dln_beta[l].ptr, ws.d_ln_beta[l].ptr, ws.v_dln_beta[l].ptr, ws.s_dln_beta[l].ptr, d);
         }
     }
 }
@@ -1989,7 +2020,7 @@ mod tests {
         let _loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
 
         let _loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
-        gpu_sgd_update(&ws, 0.001, layers as usize);
+        gpu_adam_update(&ws, 0.001, 1, 1, layers as usize);
         ws.zero_accumulators();
 
         let mut t_synced = Transformer {
