@@ -31,7 +31,7 @@ const ComposerKeys = Extension.create({
 export function ChatComposer({
   onSend,
   disabled = false,
-  placeholder = "Talk to Gork...",
+  placeholder = "Investigate the Lattice...",
 }: {
   onSend: (content: string, modelId: string) => Promise<void> | void
   disabled?: boolean

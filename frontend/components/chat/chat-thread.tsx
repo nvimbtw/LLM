@@ -2,11 +2,12 @@
 
 import * as React from "react"
 
-import { hasVisibleContent, latestThought } from "@/lib/message-parser"
+import { hasVisibleContent } from "@/lib/message-parser"
 import { useChat } from "@/hooks/use-chat"
 import { ChatComposer } from "./chat-composer"
 import { ChatMessageBubble } from "./chat-message"
 import { FluxThrobber } from "./flux-throbber"
+import { ThinkingLabel } from "./thinking-label"
 
 export function ChatThread({ chatId }: { chatId: string }) {
   const { messages, isLoading, isSending, error, sendMessage } = useChat(chatId)
@@ -21,7 +22,6 @@ export function ChatThread({ chatId }: { chatId: string }) {
   // Thinking phase: no visible answer yet. Generating phase: answer streaming in.
   const showThinking = streaming && !hasVisibleContent(lastMessage.content)
   const showGenerating = streaming && hasVisibleContent(lastMessage.content)
-  const thought = showThinking ? latestThought(lastMessage.content) : ""
 
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -52,9 +52,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
           {showThinking && (
             <div className="flex items-center gap-2.5 px-1 py-2 text-sm">
               <FluxThrobber mode="thinking" className="h-8 w-14 shrink-0" />
-              <span className="text-shimmer min-w-0 truncate font-medium">
-                {thought || "Thinking about your request"}
-              </span>
+              <ThinkingLabel />
             </div>
           )}
 

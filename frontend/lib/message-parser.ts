@@ -48,29 +48,17 @@ export function isText(node: MNode): node is MText {
   return node.type === "text"
 }
 
-const VOID_TAGS = new Set(["divider", "thinking"])
+const VOID_TAGS = new Set(["divider"])
 
-// Thinking tokens: `<|thinking | 'the current thought'|>` (self-contained).
-const THINKING_RE = /<\|thinking\b[^]*?\|>/g // a complete token
-const THINKING_TAIL_RE = /<\|thinking\b[^]*$/ // an unclosed, still-streaming one
-const THOUGHT_RE = /<\|thinking\s*\|\s*'([^']*)'\s*\|>/g
+// Thinking blocks: `<|thinking|>...reasoning...<|/thinking|>`. The content is
+// never shown — the UI displays a themed status label while the model is in a
+// thinking block — so we only need to strip these out of the rendered message.
+const THINKING_RE = /<\|thinking\|>[^]*?<\|\/thinking\|>/g // a complete block
+const THINKING_TAIL_RE = /<\|thinking\|>[^]*$/ // an unclosed, still-streaming one
 
-/** Removes thinking tokens (complete and partially-streamed) from the text. */
+/** Removes thinking blocks (complete and partially-streamed) from the text. */
 export function stripThinking(content: string): string {
   return content.replace(THINKING_RE, "").replace(THINKING_TAIL_RE, "")
-}
-
-/**
- * The most recent *complete* thought to surface in the indicator. Partial,
- * still-streaming thinking tokens are ignored, so the displayed thought only
- * changes once a full new thinking block arrives.
- */
-export function latestThought(content: string): string {
-  let thought = ""
-  let m: RegExpExecArray | null
-  THOUGHT_RE.lastIndex = 0
-  while ((m = THOUGHT_RE.exec(content))) thought = m[1]
-  return thought.trim()
 }
 
 const TAG_RE = /<\|(.*?)\|>/g

@@ -16,8 +16,8 @@ import { NavProfile } from "./sidebar/nav-profile";
 
 // Brand shown in the sidebar header. Change these to rename the app:
 // APP_NAME is shown when expanded, APP_NAME_SHORT when collapsed to icons.
-const APP_NAME = "Gork"
-const APP_NAME_SHORT = "G"
+const APP_NAME = "Lattice"
+const APP_NAME_SHORT = "L"
 
 export function AppSidebar() {
   return (

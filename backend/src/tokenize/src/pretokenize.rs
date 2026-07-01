@@ -42,6 +42,12 @@ pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     ("<|/italic|>", '\u{E028}'),
     ("<|bold|>", '\u{E029}'),
     ("<|/bold|>", '\u{E02A}'),
+    // Paired thinking block: `<|thinking|>...reasoning...<|/thinking|>`. Both
+    // delimiters are protected; the reasoning between them is ordinary generated
+    // text. The frontend hides the content and shows a themed status label
+    // instead, so the model only has to learn the two clean markers.
+    ("<|thinking|>", '\u{E02B}'),
+    ("<|/thinking|>", '\u{E02C}'),
 ];
 
 pub fn lookup_special(ch: char) -> Option<&'static str> {
@@ -503,5 +509,22 @@ mod tests {
         for &(_, pua) in SPECIAL_TOKENS {
             assert!(!combined.contains(pua), "unexpected PUA char in plain text");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Paired thinking block: both delimiters protected, reasoning is text
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_paired_thinking_tokens() {
+        let words = pre_tokenize_str("<|thinking|>weighing the options<|/thinking|>");
+        let combined: String = words.join("");
+        // Both delimiters map to their atomic PUA markers.
+        assert!(combined.contains('\u{E02B}'), "missing <|thinking|>");
+        assert!(combined.contains('\u{E02C}'), "missing <|/thinking|>");
+        // The reasoning survives as ordinary text between them.
+        assert!(combined.contains("weighing"), "reasoning text lost");
+        assert!(combined.contains("options"), "reasoning text lost");
+        // The bracket structure must not leak through as literal characters.
+        assert!(!combined.contains("<|thinking"), "wrapper leaked as text");
     }
 }
