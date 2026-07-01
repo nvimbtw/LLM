@@ -20,6 +20,7 @@ const NUM_FIELDS: { key: keyof TrainConfig; label: string; step?: number }[] = [
   { key: "max_vocab", label: "Max vocab" },
   { key: "lr", label: "Learning rate", step: 0.001 },
   { key: "num_books", label: "Books (0 = all)" },
+  { key: "num_synthetic", label: "Synthetic files (0 = none)" },
 ]
 
 function isPowerOfTwo(n: number) {
@@ -71,6 +72,8 @@ function validate(cfg: TrainConfig): string[] {
     errs.push("Max vocab must be at least 256.")
   if (!Number.isInteger(cfg.num_books) || cfg.num_books < 0)
     errs.push("Books must be 0 (all) or a positive whole number.")
+  if (!Number.isInteger(cfg.num_synthetic) || cfg.num_synthetic < 0)
+    errs.push("Synthetic files must be 0 (none) or a positive whole number.")
   return errs
 }
 

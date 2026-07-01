@@ -24,6 +24,7 @@ export const DEFAULT_CONFIG: TrainConfig = {
   ff_multiplier: 4,
   max_vocab: 1024,
   num_books: 0,
+  num_synthetic: 0,
 }
 
 // Cap the number of loss points kept for the chart. Long runs emit thousands of

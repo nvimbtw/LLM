@@ -28,6 +28,8 @@ export interface TrainConfig {
   max_vocab: number
   // How many uploaded books to train on, picked at random. 0 = use all.
   num_books: number
+  // How many synthetic documents to mix in, picked at random. 0 = none.
+  num_synthetic: number
 }
 
 export type JobStatus =

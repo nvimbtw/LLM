@@ -28,6 +28,12 @@ pub fn uploads_dir() -> PathBuf {
     root().join("raw").join("uploads")
 }
 
+// Synthetic training documents, kept separate from user uploads so a run can mix
+// in a chosen number of them independently.
+pub fn synthetic_dir() -> PathBuf {
+    root().join("raw").join("synthetic")
+}
+
 pub fn crawled_dir() -> PathBuf {
     root().join("raw").join("crawled")
 }

@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +34,10 @@ pub struct TrainConfig {
     // in uploads and dial the training set size per run.
     #[serde(default)]
     pub num_books: usize,
+    // How many synthetic documents (from the synthetic dir) to mix in, chosen at
+    // random. 0 means none — synthetic data is opt-in per run.
+    #[serde(default)]
+    pub num_synthetic: usize,
     // The model's id, which names its on-disk directory. Set server-side by the
     // start route (reused on retrain, freshly generated for a new model), never
     // by the client — hence skipped on deserialize.
@@ -79,17 +84,12 @@ fn shuffle<T>(items: &mut [T]) {
     }
 }
 
-// writes the two files `llm::train` consumes: a flat token-id `corpus.bin` in
-// `datasets/` and `merges.bin` in `artifacts/tokenizer/`. Progress is pushed
-// through `on_event` (synchronous; runs on the caller's thread).
-pub fn build_dataset(
-    max_vocab: u32,
-    num_books: usize,
-    on_event: impl Fn(TokenizeEvent),
-) -> io::Result<DatasetStats> {
-    let uploads = storage::uploads_dir();
-    let mut paths: Vec<_> = if uploads.is_dir() {
-        fs::read_dir(&uploads)?
+// Collects the `.txt` files in `dir`, optionally sampling `num` of them at
+// random. `zero_means_all` distinguishes "0 = use everything" (books) from
+// "0 = none" (synthetic data, which is opt-in). A missing dir yields no files.
+fn select_txt(dir: &Path, num: usize, zero_means_all: bool) -> io::Result<Vec<PathBuf>> {
+    let mut paths: Vec<PathBuf> = if dir.is_dir() {
+        fs::read_dir(dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("txt"))
@@ -99,18 +99,37 @@ pub fn build_dataset(
     };
     paths.sort(); // deterministic base order before any sampling
 
+    let take = if zero_means_all && num == 0 {
+        paths.len()
+    } else {
+        num.min(paths.len())
+    };
+    if take < paths.len() {
+        shuffle(&mut paths);
+        paths.truncate(take);
+        paths.sort(); // stable concatenation order for the chosen subset
+    }
+    Ok(paths)
+}
+
+// writes the two files `llm::train` consumes: a flat token-id `corpus.bin` in
+// `datasets/` and `merges.bin` in `artifacts/tokenizer/`. Progress is pushed
+// through `on_event` (synchronous; runs on the caller's thread).
+pub fn build_dataset(
+    max_vocab: u32,
+    num_books: usize,
+    num_synthetic: usize,
+    on_event: impl Fn(TokenizeEvent),
+) -> io::Result<DatasetStats> {
+    // Books from uploads (0 => all) plus a chosen number of synthetic docs.
+    let mut paths = select_txt(&storage::uploads_dir(), num_books, true)?;
+    paths.extend(select_txt(&storage::synthetic_dir(), num_synthetic, false)?);
+
     if paths.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "no .txt files found in uploads",
+            "no .txt files found in uploads or synthetic",
         ));
-    }
-
-    // Randomly pick `num_books` of the uploaded files (0 or >= available => all).
-    if num_books > 0 && num_books < paths.len() {
-        shuffle(&mut paths);
-        paths.truncate(num_books);
-        paths.sort(); // stable concatenation order for the chosen subset
     }
 
     let mut combined = String::new();
