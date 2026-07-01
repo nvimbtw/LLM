@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,11 @@ pub struct TrainConfig {
     pub lr: f32,
     pub ff_multiplier: i64,
     pub max_vocab: u32,
+    // How many uploaded books to train on, chosen at random. 0 (or >= the number
+    // available) means "use all of them". Lets the user keep a big pile of data
+    // in uploads and dial the training set size per run.
+    #[serde(default)]
+    pub num_books: usize,
     // The model's id, which names its on-disk directory. Set server-side by the
     // start route (reused on retrain, freshly generated for a new model), never
     // by the client — hence skipped on deserialize.
@@ -52,11 +58,33 @@ pub enum TokenizeEvent<'a> {
 }
 
 // Reads every `.txt` in the uploads dir, trains a fresh BPE tokenizer, and
+// Fisher–Yates shuffle with a time-seeded xorshift PRNG. Avoids pulling in the
+// `rand` crate for the one spot we need randomness (picking a book subset) — the
+// bar here is "different each run", not cryptographic quality.
+fn shuffle<T>(items: &mut [T]) {
+    let mut state = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
+        | 1; // xorshift must never start at zero
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for i in (1..items.len()).rev() {
+        let j = (next() % (i as u64 + 1)) as usize;
+        items.swap(i, j);
+    }
+}
+
 // writes the two files `llm::train` consumes: a flat token-id `corpus.bin` in
 // `datasets/` and `merges.bin` in `artifacts/tokenizer/`. Progress is pushed
 // through `on_event` (synchronous; runs on the caller's thread).
 pub fn build_dataset(
     max_vocab: u32,
+    num_books: usize,
     on_event: impl Fn(TokenizeEvent),
 ) -> io::Result<DatasetStats> {
     let uploads = storage::uploads_dir();
@@ -69,13 +97,20 @@ pub fn build_dataset(
     } else {
         Vec::new()
     };
-    paths.sort(); // deterministic concatenation order
+    paths.sort(); // deterministic base order before any sampling
 
     if paths.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "no .txt files found in uploads",
         ));
+    }
+
+    // Randomly pick `num_books` of the uploaded files (0 or >= available => all).
+    if num_books > 0 && num_books < paths.len() {
+        shuffle(&mut paths);
+        paths.truncate(num_books);
+        paths.sort(); // stable concatenation order for the chosen subset
     }
 
     let mut combined = String::new();

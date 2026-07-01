@@ -205,9 +205,11 @@ fn run_training_loop(
                     loss: loss as f64,
                     eta_secs,
                     epoch_done: false,
-                    avg_loss: 0.0,
-                    min_loss: 0.0,
-                    max_loss: 0.0,
+                    // Running stats so far this epoch (n_chunks >= 1 here), so the
+                    // UI shows a live average instead of a frozen 0.
+                    avg_loss: total_loss / n_chunks as f32,
+                    min_loss,
+                    max_loss,
                     epoch_duration_secs: 0.0,
                     checkpoint_path: None,
                 });

@@ -23,6 +23,18 @@ export const DEFAULT_CONFIG: TrainConfig = {
   lr: 0.01,
   ff_multiplier: 4,
   max_vocab: 1024,
+  num_books: 0,
+}
+
+// Cap the number of loss points kept for the chart. Long runs emit thousands of
+// frames; recharts chokes rendering them all, so we halve the resolution
+// whenever we hit the cap — the curve's shape is preserved, the DOM stays light.
+const MAX_LOSS_POINTS = 500
+
+function downsample<T>(arr: T[], max: number): T[] {
+  let out = arr
+  while (out.length > max) out = out.filter((_, i) => i % 2 === 0)
+  return out
 }
 
 export interface LossPoint {
@@ -60,7 +72,12 @@ export function useTraining() {
         setStatus(snap.status)
         setTokenize(snap.tokenize ?? {})
         setTrain(snap.train ?? {})
-        setLoss((snap.loss_series ?? []).map(([step, l]) => ({ step, loss: l })))
+        setLoss(
+          downsample(
+            (snap.loss_series ?? []).map(([step, l]) => ({ step, loss: l })),
+            MAX_LOSS_POINTS
+          )
+        )
         setVocabSeries(
           snap.tokenize?.vocab != null
             ? [{ merges: snap.tokenize.merges ?? 0, vocab: snap.tokenize.vocab }]
@@ -85,7 +102,15 @@ export function useTraining() {
         setStatus("training")
         setTrain(s)
         if (Number.isFinite(s.loss)) {
-          setLoss((prev) => [...prev, { step: s.step, loss: s.loss }])
+          setLoss((prev) => {
+            // Halve resolution when full so the array stays bounded instead of
+            // growing without limit over a long run.
+            const base =
+              prev.length >= MAX_LOSS_POINTS
+                ? prev.filter((_, i) => i % 2 === 0)
+                : prev
+            return [...base, { step: s.step, loss: s.loss }]
+          })
         }
         if (s.epoch_done && s.checkpoint_path) {
           const path = s.checkpoint_path

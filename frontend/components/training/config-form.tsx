@@ -19,6 +19,7 @@ const NUM_FIELDS: { key: keyof TrainConfig; label: string; step?: number }[] = [
   { key: "ff_multiplier", label: "FF multiplier" },
   { key: "max_vocab", label: "Max vocab" },
   { key: "lr", label: "Learning rate", step: 0.001 },
+  { key: "num_books", label: "Books (0 = all)" },
 ]
 
 function isPowerOfTwo(n: number) {
@@ -29,10 +30,15 @@ function isPowerOfTwo(n: number) {
 // submitting. Returns a list of human-readable problems (empty = valid).
 function validate(cfg: TrainConfig): string[] {
   const errs: string[] = []
-  const name = cfg.model_name.trim()
-  if (!name) errs.push("Model name is required.")
-  else if (!/^[A-Za-z0-9_-]+$/.test(name))
-    errs.push("Model name may only contain letters, digits, '_' or '-'.")
+  // Name is a display label only (weights live under the model's UUID), so
+  // spaces and dots like "Opal 1.1" are allowed — just no surrounding whitespace
+  // or control characters.
+  const name = cfg.model_name
+  if (!name.trim()) errs.push("Model name is required.")
+  else if (name !== name.trim())
+    errs.push("Model name may not have leading or trailing whitespace.")
+  else if (/[\x00-\x1f\x7f]/.test(name))
+    errs.push("Model name may not contain control characters.")
 
   const positives: [keyof TrainConfig, string][] = [
     ["dimensions", "Dimensions"],
@@ -63,6 +69,8 @@ function validate(cfg: TrainConfig): string[] {
     errs.push("Learning rate must be positive.")
   if (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
     errs.push("Max vocab must be at least 256.")
+  if (!Number.isInteger(cfg.num_books) || cfg.num_books < 0)
+    errs.push("Books must be 0 (all) or a positive whole number.")
   return errs
 }
 

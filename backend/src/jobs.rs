@@ -183,7 +183,7 @@ fn run_job(job: Arc<Job>, config: TrainConfig) {
 
     // ---- Phase 1: tokenize / build the dataset ----
     eprintln!("[training] {}: tokenizing uploads…", config.model_name);
-    let dataset = training::build_dataset(config.max_vocab, |event| {
+    let dataset = training::build_dataset(config.max_vocab, config.num_books, |event| {
         handle_tokenize_event(&job, event);
     });
 

@@ -26,6 +26,8 @@ export interface TrainConfig {
   lr: number
   ff_multiplier: number
   max_vocab: number
+  // How many uploaded books to train on, picked at random. 0 = use all.
+  num_books: number
 }
 
 export type JobStatus =

@@ -220,11 +220,11 @@ fn validate_config(cfg: &TrainConfig) -> Result<(), &'static str> {
     if name.len() != cfg.model_name.len() {
         return Err("model_name may not have leading or trailing whitespace");
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err("model_name may only contain letters, digits, '_' or '-'");
+    // The name is a display label + unique key only — weights live under the
+    // model's UUID, not its name — so spaces and dots (e.g. "Opal 1.1") are fine.
+    // Just reject control characters.
+    if name.chars().any(|c| c.is_control()) {
+        return Err("model_name may not contain control characters");
     }
     if cfg.dimensions <= 0
         || cfg.ctx_window <= 0
