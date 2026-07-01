@@ -4,9 +4,22 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-export type ThrobberMode = "thinking" | "loading" | "idle" | "training"
+export type ThrobberMode =
+  | "thinking"
+  | "generating"
+  | "tool"
+  | "loading"
+  | "idle"
+  | "training"
 
-type Motif = "sun" | "wave" | "streak"
+type Motif =
+  | "sun"
+  | "wave"
+  | "streak"
+  | "facet"
+  | "lattice"
+  | "pour"
+  | "spark"
 type Dir = "normal" | "reverse"
 
 interface Scene {
@@ -30,12 +43,25 @@ interface Preset {
 
 const PRESETS: Record<ThrobberMode, Preset> = {
   thinking: { duration: [0.6, 1.2], interval: [1400, 3200], color: [1, 1.8] },
+  generating: { duration: [0.7, 1.3], interval: [1500, 3300], color: [1, 1.8] },
+  tool: { duration: [0.5, 1.0], interval: [1200, 2600], color: [0.9, 1.6] },
   loading: { duration: [1.6, 2.8], interval: [2800, 5200], color: [1.6, 2.8] },
   idle: { duration: [6, 10], interval: [5500, 10000], color: [3, 5] },
   training: { duration: [3.5, 6], interval: [9000, 16000], color: [4, 7] },
 }
 
-const MOTIFS: Motif[] = ["sun", "wave", "streak"]
+// Each activity draws from its own set of motifs. `thinking` and `generating`
+// are kept DISJOINT so the two phases read clearly differently; `tool` is a
+// distinct set reserved for future tool calls. The rest reuse fitting motifs.
+const MODE_MOTIFS: Record<ThrobberMode, Motif[]> = {
+  thinking: ["sun", "facet", "lattice"], // radiate · turn the stone · crystallize
+  generating: ["wave", "streak", "pour"], // flow · march · pour
+  tool: ["spark", "facet"], // strike sparks · cut
+  loading: ["wave", "streak", "pour"],
+  idle: ["sun"],
+  training: ["lattice", "facet", "sun"],
+}
+
 const VARIANTS = 3
 
 // Theme color tokens (raw CSS vars so we can animate `color` between them).
@@ -63,6 +89,22 @@ const MOTIF_SCHEMES: Record<Motif, [string, string][]> = {
     [C.yellow, C.red],
     [C.yellow, C.rose],
     [C.rose, C.red],
+  ],
+  facet: [
+    [C.blue, C.purple],
+    [C.purple, C.rose],
+  ],
+  lattice: [
+    [C.green, C.blue],
+    [C.blue, C.purple],
+  ],
+  pour: [
+    [C.yellow, C.rose],
+    [C.rose, C.red],
+  ],
+  spark: [
+    [C.yellow, C.red],
+    [C.red, C.rose],
   ],
 }
 
@@ -98,9 +140,10 @@ function rollScene(
   colorsOverride: string[] | undefined,
   forceDirection: Dir | "alternate" | "random" | undefined,
   speed: number,
-  prev: Scene
+  prev: Scene,
+  motifs: Motif[]
 ): Scene {
-  const motif = pickDifferent(MOTIFS, prev.motif)
+  const motif = pickDifferent(motifs, prev.motif)
 
   // Pick a 2-color scheme, avoiding an exact repeat of the previous pair.
   const schemes = MOTIF_SCHEMES[motif]
@@ -160,9 +203,6 @@ export function FluxThrobber({
   const [scene, setScene] = React.useState<Scene>(INITIAL_SCENE)
   const [sceneId, setSceneId] = React.useState(0)
 
-  const sceneRef = React.useRef(scene)
-  sceneRef.current = scene
-
   const forceDir =
     direction === "forward"
       ? "normal"
@@ -172,9 +212,11 @@ export function FluxThrobber({
 
   React.useEffect(() => {
     const preset = PRESETS[mode]
+    const motifs = MODE_MOTIFS[mode]
 
-    const next = rollScene(preset, colors, forceDir, speed, sceneRef.current)
-    setScene(next)
+    // Roll a fresh scene for the new mode, using the current scene as the "prev"
+    // (via the functional updater) so motif/colour choices stay varied.
+    setScene((prev) => rollScene(preset, colors, forceDir, speed, prev, motifs))
     setSceneId((id) => id + 1)
 
     // Idle intentionally holds a single motif + scheme (no scene switching).
@@ -188,7 +230,7 @@ export function FluxThrobber({
     const tick = () => {
       const delay = rand(preset.interval[0], preset.interval[1])
       timer = setTimeout(() => {
-        setScene((prev) => rollScene(preset, colors, forceDir, speed, prev))
+        setScene((prev) => rollScene(preset, colors, forceDir, speed, prev, motifs))
         setSceneId((id) => id + 1)
         tick()
       }, delay)
@@ -230,6 +272,10 @@ export function FluxThrobber({
           {scene.motif === "sun" && <Sun scene={scene} />}
           {scene.motif === "wave" && <Wave scene={scene} />}
           {scene.motif === "streak" && <Streak scene={scene} />}
+          {scene.motif === "facet" && <Facet scene={scene} />}
+          {scene.motif === "lattice" && <Lattice scene={scene} />}
+          {scene.motif === "pour" && <Pour scene={scene} />}
+          {scene.motif === "spark" && <Spark scene={scene} />}
         </g>
       </svg>
     </span>
@@ -242,6 +288,8 @@ function anim(name: string, scene: Scene): React.CSSProperties {
     animationDirection: scene.direction,
   }
 }
+
+const flip = (d: Dir): Dir => (d === "normal" ? "reverse" : "normal")
 
 // Rising sun: a fixed dot at the bottom centre; concentric rings radiate
 // outward (or inward, when reversed) at constant speed — evenly spaced, fading
@@ -352,6 +400,135 @@ function Streak({ scene }: { scene: Scene }) {
   )
 }
 
+// Regular polygon points centred at (cx, cy), first vertex pointing up.
+function polygonPoints(cx: number, cy: number, r: number, sides: number) {
+  const pts: string[] = []
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2 - Math.PI / 2
+    pts.push(`${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`)
+  }
+  return pts.join(" ")
+}
+
+// Faceted stone: nested regular polygons spinning against each other, like a
+// gem turned under the light. Neighbouring rings counter-rotate.
+function Facet({ scene }: { scene: Scene }) {
+  const sides = [6, 4, 3][scene.variant % 3] // hexagon · diamond · triangle
+  const rings = 3
+
+  return (
+    <g stroke="currentColor" strokeWidth="2" fill="none">
+      {Array.from({ length: rings }).map((_, i) => (
+        <polygon
+          key={i}
+          points={polygonPoints(200, 70, 20 + i * 20, sides)}
+          strokeOpacity={0.7 - i * 0.17}
+          vectorEffect="non-scaling-stroke"
+          style={{
+            animation: `flux-spin ${scene.duration * (1.4 + i * 0.5)}s linear infinite`,
+            animationDirection: i % 2 === 0 ? scene.direction : flip(scene.direction),
+            transformBox: "fill-box",
+            transformOrigin: "center",
+          }}
+        />
+      ))}
+    </g>
+  )
+}
+
+// Crystallising lattice: a grid of dots pulsing in a diagonal wave, as if the
+// structure were nucleating across the field.
+function Lattice({ scene }: { scene: Scene }) {
+  const cols = 7
+  const rows = 3
+  const dots: React.ReactNode[] = []
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = 110 + (c / (cols - 1)) * 180 // 110..290 (inside the visible band)
+      const y = 35 + (r / (rows - 1)) * 70 // 35..105
+      const phase = (c + r) / (cols + rows)
+      const delay = (scene.direction === "reverse" ? 1 - phase : phase) * scene.duration
+      dots.push(
+        <circle
+          key={`${r}-${c}`}
+          cx={x}
+          cy={y}
+          r={4}
+          fill="currentColor"
+          style={{
+            animation: `flux-pulse ${scene.duration}s ease-in-out infinite`,
+            animationDelay: `${-delay}s`,
+            transformBox: "fill-box",
+            transformOrigin: "center",
+          }}
+        />
+      )
+    }
+  }
+  return <g>{dots}</g>
+}
+
+// Molten pour: dashed vertical streams running downward (or up, reversed). Each
+// column runs at its own speed for a trickling look.
+function Pour({ scene }: { scene: Scene }) {
+  const cols = 6 + (scene.variant % 2) // 6 or 7
+  const speeds = [1, 0.7, 1.35, 0.85, 1.15, 0.6, 1.25]
+
+  return (
+    <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none">
+      {Array.from({ length: cols }).map((_, i) => {
+        const x = 100 + (i / (cols - 1)) * 200 // 100..300
+        return (
+          <line
+            key={i}
+            x1={x}
+            y1={-40}
+            x2={x}
+            y2={180}
+            strokeDasharray="16 24"
+            strokeOpacity={0.3 + (i % 2) * 0.22}
+            style={{
+              animation: `flux-scroll-y ${scene.duration * speeds[i % speeds.length]}s linear infinite`,
+              animationDirection: scene.direction,
+              animationDelay: `${-i * 0.45}s`,
+            }}
+          />
+        )
+      })}
+    </g>
+  )
+}
+
+// Struck sparks: embers rising and fading from the base, like metal on a wheel.
+function Spark({ scene }: { scene: Scene }) {
+  const count = 16
+
+  return (
+    <g fill="currentColor" stroke="none">
+      {Array.from({ length: count }).map((_, i) => {
+        // Deterministic pseudo-random scatter (LCG), so it's stable per render.
+        const seed = (i * 1103515245 + 12345) >>> 0
+        const x = 100 + (seed % 200)
+        const rad = 2 + ((seed >> 8) % 3)
+        const dur = scene.duration * (0.7 + ((seed >> 12) % 60) / 100)
+        const delay = -(((seed >> 20) % 100) / 100) * dur
+        return (
+          <circle
+            key={i}
+            cx={x}
+            cy={150}
+            r={rad}
+            style={{
+              animation: `flux-rise ${dur}s ease-out infinite`,
+              animationDelay: `${delay}s`,
+            }}
+          />
+        )
+      })}
+    </g>
+  )
+}
+
 const KEYFRAMES = `
 @keyframes flux-enter {
   from { opacity: 0; }
@@ -374,5 +551,20 @@ const KEYFRAMES = `
 }
 @keyframes flux-march {
   to { transform: translateX(56px); }
+}
+@keyframes flux-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes flux-pulse {
+  0%, 100% { transform: scale(0.2); opacity: 0.12; }
+  50% { transform: scale(1); opacity: 0.9; }
+}
+@keyframes flux-scroll-y {
+  to { transform: translateY(40px); }
+}
+@keyframes flux-rise {
+  0% { transform: translateY(0); opacity: 0; }
+  15% { opacity: 0.9; }
+  100% { transform: translateY(-180px); opacity: 0; }
 }
 `

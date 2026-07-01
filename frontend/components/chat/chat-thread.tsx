@@ -58,7 +58,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
 
           {showGenerating && (
             <div className="flex justify-start px-1 py-2">
-              <FluxThrobber mode="thinking" className="h-8 w-14" />
+              <FluxThrobber mode="generating" className="h-8 w-14" />
             </div>
           )}
 

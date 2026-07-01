@@ -10,7 +10,15 @@ import { FluxThrobber, type ThrobberMode } from "@/components/chat/flux-throbber
 const MODES: { mode: ThrobberMode; description: string }[] = [
   {
     mode: "thinking",
-    description: "Generating a response — fast motion, frequent scene switches.",
+    description: "Model reasoning — sun, facet, lattice. Fast, frequent switches.",
+  },
+  {
+    mode: "generating",
+    description: "Streaming the answer — wave, streak, pour. Distinct from thinking.",
+  },
+  {
+    mode: "tool",
+    description: "Reserved for tool calls — spark, facet. Snappy and mechanical.",
   },
   {
     mode: "loading",
