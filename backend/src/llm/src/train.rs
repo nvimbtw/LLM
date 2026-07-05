@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::training::gpu_workspace::GpuWorkspace;
-use crate::training::transformer::{gpu_adam_update, sync_weights_from_gpu, Transformer};
+use crate::training::transformer::{
+    gpu_adam_update, gpu_clip_gradients, sync_weights_from_gpu, Transformer,
+};
 
 pub struct TrainingProgress {
     pub epoch: u64,
@@ -149,6 +151,14 @@ fn run_training_loop(
     let mut epochs_since_best = 0;
     let training_start = Instant::now();
     let accum_steps = 4usize;
+    // Loss-spike guard: clip the per-step gradient to this L2 norm. The gradient
+    // buffers hold the SUM over accum_steps, so the clip threshold is scaled by
+    // accum_steps below to correspond to a ~1.0 per-step clip.
+    let max_grad_norm = 1.0f32;
+    // Linear LR warmup over the first N optimizer steps. The opening steps on a
+    // fresh (especially deep) model are the most unstable, so ramping lr up from
+    // ~0 avoids the early divergence that clipping alone only slows down.
+    let warmup_steps = 100i32;
     // Global optimizer-step counter for Adam bias correction (persists across
     // epochs, incremented once per weight update).
     let mut adam_step: i32 = 0;
@@ -181,10 +191,20 @@ fn run_training_loop(
 
             if n_chunks % (accum_steps as u64) == 0 || n_chunks == total_chunks as u64 {
                 adam_step += 1;
-                // Adam averages the gradient internally (grad_scale), so pass the
-                // full lr rather than dividing it by accum_steps.
-                gpu_adam_update(&ws, lr, adam_step, accum_steps, layers as usize);
+                // Clip the accumulated gradient BEFORE the step so a rare huge
+                // gradient can't blow the model up (the loss-spike-to-50 case).
+                let clip = max_grad_norm * accum_steps as f32;
+                let gnorm = gpu_clip_gradients(&ws, layers as usize, clip);
+                // Warmup-scaled lr. Adam averages the gradient internally
+                // (grad_scale), so pass the full (warmed) lr, not lr/accum_steps.
+                let warm = (adam_step as f32 / warmup_steps as f32).min(1.0);
+                gpu_adam_update(&ws, lr * warm, adam_step, accum_steps, layers as usize);
                 ws.zero_accumulators();
+                // Periodic gradient-norm readout (and always on a spike) so a
+                // divergent run is visible: a norm that keeps growing = trouble.
+                if adam_step % 50 == 0 || gnorm > clip * 20.0 || !gnorm.is_finite() {
+                    eprintln!("  step {} grad_norm {:.2}", adam_step, gnorm);
+                }
             }
 
             if n_chunks % 10 == 0 || n_chunks == total_chunks as u64 {

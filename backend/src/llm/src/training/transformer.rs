@@ -1260,6 +1260,64 @@ unsafe extern "C" {
         bc2: f32,
         n: i32,
     );
+
+    fn cuda_l2norm(v: *const f32, n: i32) -> f32;
+    fn cuda_scale(v: *mut f32, s: f32, n: i32);
+}
+
+// Every trainable gradient buffer as (ptr, element count). Shared by the
+// clipping pass and (implicitly) mirrors what the Adam step touches.
+fn grad_buffers(ws: &GpuWorkspace, layers: usize) -> Vec<(*mut f32, usize)> {
+    let d = ws.d;
+    let h = ws.h;
+    let hd = ws.hd;
+    let ff = ws.ff;
+    let vocab = ws.vocab;
+    let mut bufs = vec![
+        (ws.g_dw_output.ptr, d * vocab),
+        (ws.g_d_embedding.ptr, vocab * d),
+    ];
+    for l in 0..layers {
+        bufs.push((ws.g_wq_all[l].ptr, h * d * hd));
+        bufs.push((ws.g_wk_all[l].ptr, h * d * hd));
+        bufs.push((ws.g_wv_all[l].ptr, h * d * hd));
+        bufs.push((ws.g_dwo[l].ptr, d * d));
+        bufs.push((ws.g_dw1[l].ptr, d * ff));
+        bufs.push((ws.g_dw2[l].ptr, ff * d));
+        bufs.push((ws.g_db1[l].ptr, ff));
+        bufs.push((ws.g_db2[l].ptr, d));
+        bufs.push((ws.g_dln_gamma[l].ptr, d));
+        bufs.push((ws.g_dln_beta[l].ptr, d));
+    }
+    bufs
+}
+
+// Clips the global gradient norm to `max_norm` (over all trainable buffers),
+// scaling every gradient down by the same factor when it's exceeded. This is the
+// standard guard against loss spikes: no single step can be large enough to blow
+// the weights up. A non-finite norm (already-overflowed gradient) is zeroed so
+// the step is effectively skipped. Returns the pre-clip norm for logging.
+pub fn gpu_clip_gradients(ws: &GpuWorkspace, layers: usize, max_norm: f32) -> f32 {
+    let bufs = grad_buffers(ws, layers);
+
+    let mut sumsq = 0.0f64;
+    for &(ptr, n) in &bufs {
+        let norm = unsafe { cuda_l2norm(ptr, n as i32) } as f64;
+        sumsq += norm * norm;
+    }
+    let total = sumsq.sqrt() as f32;
+
+    if !total.is_finite() {
+        for &(ptr, n) in &bufs {
+            unsafe { cuda_scale(ptr, 0.0, n as i32) };
+        }
+    } else if total > max_norm {
+        let scale = max_norm / total;
+        for &(ptr, n) in &bufs {
+            unsafe { cuda_scale(ptr, scale, n as i32) };
+        }
+    }
+    total
 }
 
 // Adam optimizer step. `step` is the 1-based global update count (for bias

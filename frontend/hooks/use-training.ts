@@ -38,9 +38,31 @@ function downsample<T>(arr: T[], max: number): T[] {
   return out
 }
 
+// One recorded loss value, tagged with the epoch it belongs to and its position
+// (chunk) within that epoch. The chart overlays each epoch as its own line using
+// `chunk` as the shared x-axis, so the plot width stays bounded to a single
+// epoch instead of growing with the whole run.
 export interface LossPoint {
-  step: number
+  epoch: number
+  chunk: number
   loss: number
+}
+
+// Reconstruct (epoch, chunk) from a global step for the reattach snapshot, which
+// only carries [step, loss]. The backend numbers steps 1-indexed globally as
+// step = (epoch - 1) * total_chunks + chunk, so we invert that here.
+function stepToPoint(
+  step: number,
+  loss: number,
+  totalChunks: number | undefined
+): LossPoint {
+  if (!totalChunks || totalChunks <= 0) return { epoch: 1, chunk: step, loss }
+  const idx = step - 1
+  return {
+    epoch: Math.floor(idx / totalChunks) + 1,
+    chunk: (idx % totalChunks) + 1,
+    loss,
+  }
 }
 
 export interface VocabPoint {
@@ -75,13 +97,20 @@ export function useTraining() {
         setTrain(snap.train ?? {})
         setLoss(
           downsample(
-            (snap.loss_series ?? []).map(([step, l]) => ({ step, loss: l })),
+            (snap.loss_series ?? []).map(([step, l]) =>
+              stepToPoint(step, l, snap.train?.total_chunks)
+            ),
             MAX_LOSS_POINTS
           )
         )
         setVocabSeries(
           snap.tokenize?.vocab != null
-            ? [{ merges: snap.tokenize.merges ?? 0, vocab: snap.tokenize.vocab }]
+            ? [
+                {
+                  merges: snap.tokenize.merges ?? 0,
+                  vocab: snap.tokenize.vocab,
+                },
+              ]
             : []
         )
         setLog(snap.log ?? [])
@@ -110,7 +139,7 @@ export function useTraining() {
               prev.length >= MAX_LOSS_POINTS
                 ? prev.filter((_, i) => i % 2 === 0)
                 : prev
-            return [...base, { step: s.step, loss: s.loss }]
+            return [...base, { epoch: s.epoch, chunk: s.chunk, loss: s.loss }]
           })
         }
         if (s.epoch_done && s.checkpoint_path) {

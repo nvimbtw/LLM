@@ -30,7 +30,7 @@ const MODES: { mode: ThrobberMode; description: string }[] = [
   },
   {
     mode: "training",
-    description: "Reserved for a future training state — very slow.",
+    description: "Shown while a model trains — very slow and calm.",
   },
 ];
 

@@ -59,6 +59,19 @@ static cublasHandle_t get_cublas() {
     return g_cublas;
 }
 
+// ─── Gradient-clipping helpers (f32 vectors) ────────────────────────────────
+// L2 norm of a gradient buffer (host-mode result, so this is synchronous).
+extern "C" float cuda_l2norm(const float *v, int n) {
+    float result = 0.0f;
+    cublasSnrm2(get_cublas(), n, v, 1, &result);
+    return result;
+}
+
+// Scale a gradient buffer in place by `s`.
+extern "C" void cuda_scale(float *v, float s, int n) {
+    cublasSscal(get_cublas(), n, &s, v, 1);
+}
+
 #define TENSOR_OP CUBLAS_GEMM_DEFAULT_TENSOR_OP
 #define COMPUTE_F32 CUBLAS_COMPUTE_32F
 

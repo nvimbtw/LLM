@@ -3,7 +3,6 @@
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
 import type { TrainConfig } from "@/lib/training-socket"
@@ -107,57 +106,48 @@ export function ConfigForm({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Model configuration</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={submit} className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-          <label className="col-span-2 flex flex-col gap-1.5 sm:col-span-3">
-            <span className="text-sm font-medium">Model name</span>
-            <Input
-              value={cfg.model_name}
-              onChange={(e) => setField("model_name", e.target.value)}
-              placeholder="my-model"
-            />
-          </label>
-          {NUM_FIELDS.map((f) => (
-            <label key={f.key} className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">{f.label}</span>
-              <Input
-                type="number"
-                step={f.step ?? 1}
-                value={String(cfg[f.key])}
-                onChange={(e) => setField(f.key, e.target.value)}
-              />
-            </label>
+    <form onSubmit={submit} className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      <label className="col-span-2 flex flex-col gap-1.5 sm:col-span-3">
+        <span className="text-sm font-medium">Model name</span>
+        <Input
+          value={cfg.model_name}
+          onChange={(e) => setField("model_name", e.target.value)}
+          placeholder="my-model"
+        />
+      </label>
+      {NUM_FIELDS.map((f) => (
+        <label key={f.key} className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">{f.label}</span>
+          <Input
+            type="number"
+            step={f.step ?? 1}
+            value={String(cfg[f.key])}
+            onChange={(e) => setField(f.key, e.target.value)}
+          />
+        </label>
+      ))}
+
+      <div className="col-span-2 text-xs text-muted-foreground tabular-nums sm:col-span-3">
+        Head size:{" "}
+        <span className="font-medium text-foreground">{headDim ?? "—"}</span>{" "}
+        (dimensions ÷ heads) · FF hidden:{" "}
+        <span className="font-medium text-foreground">{dFf || "—"}</span>{" "}
+        (dimensions × FF multiplier)
+      </div>
+
+      {errors.length > 0 && (
+        <ul className="col-span-2 space-y-0.5 text-sm text-destructive sm:col-span-3">
+          {errors.map((err) => (
+            <li key={err}>{err}</li>
           ))}
+        </ul>
+      )}
 
-          <div className="col-span-2 text-xs text-muted-foreground tabular-nums sm:col-span-3">
-            Head size:{" "}
-            <span className="font-medium text-foreground">
-              {headDim ?? "—"}
-            </span>{" "}
-            (dimensions ÷ heads) · FF hidden:{" "}
-            <span className="font-medium text-foreground">{dFf || "—"}</span>{" "}
-            (dimensions × FF multiplier)
-          </div>
-
-          {errors.length > 0 && (
-            <ul className="col-span-2 space-y-0.5 text-sm text-destructive sm:col-span-3">
-              {errors.map((err) => (
-                <li key={err}>{err}</li>
-              ))}
-            </ul>
-          )}
-
-          <div className="col-span-2 sm:col-span-3">
-            <Button type="submit" disabled={disabled || errors.length > 0}>
-              {disabled ? "Training…" : "Start training"}
-            </Button>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
+      <div className="col-span-2 sm:col-span-3">
+        <Button type="submit" disabled={disabled || errors.length > 0}>
+          {disabled ? "Training…" : "Start training"}
+        </Button>
+      </div>
+    </form>
   )
 }
