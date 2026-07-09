@@ -47,8 +47,9 @@ async fn insert_user(
     let pwd_hash = match crypto::password::hash_password(password) {
         Ok(hash) => hash,
         Err(e) => {
-            return HttpResponse::InternalServerError()
-                .body(format!("failed to hash password: {}", e));
+            // Log the real cause server-side; never leak internals to the client.
+            eprintln!("password hashing failed: {}", e);
+            return HttpResponse::InternalServerError().body("failed to create user");
         }
     };
 
