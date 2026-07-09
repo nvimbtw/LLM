@@ -184,9 +184,10 @@ async fn chat_session(
 }
 
 // Processes one chat turn: resolve/create the chat, persist the user message,
-// stream the assistant reply word-by-word, then persist the full reply.
-// Returns Err only when sending to the socket fails (client disconnected), so
-// the caller can stop the session.
+// stream the assistant reply word-by-word, then persist the full reply. Each
+// stage below sends its own error frame and signals "stop this turn" when it
+// fails, so this stays a readable sequence. Returns Err only when sending to the
+// socket fails (client disconnected), so the caller can stop the session.
 async fn handle_message(
     session: &mut actix_ws::Session,
     pool: &PgPool,
@@ -194,76 +195,193 @@ async fn handle_message(
     is_admin: bool,
     text: &str,
 ) -> Result<(), actix_ws::Closed> {
-    let frame: SendMessageFrame = match serde_json::from_str(text) {
-        Ok(frame) => frame,
-        Err(_) => return session.text(ws::error_frame("invalid message frame")).await,
+    let Some(frame) = parse_frame(session, text).await? else {
+        return Ok(());
     };
-
     let content = frame.content.trim();
     if content.is_empty() {
         return session.text(ws::error_frame("message content is empty")).await;
     }
 
-    // Resolve the target chat: an existing one the caller owns, or a new chat
-    // seeded with a title derived from this first message.
-    let chat_id = match frame.chat_id {
+    let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
+        return Ok(());
+    };
+    if !persist_user_message(session, pool, chat_id, user_id, content).await? {
+        return Ok(());
+    }
+    let Some(model) = resolve_model(session, pool, frame.model_id, is_admin).await? else {
+        return Ok(());
+    };
+    let Some(history) = load_history(session, pool, chat_id).await? else {
+        return Ok(());
+    };
+
+    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
+    let Some(reply) = stream_reply(session, &model_dir, history).await? else {
+        return Ok(());
+    };
+
+    finalize_turn(session, pool, user_id, chat_id, model.id_model, reply).await
+}
+
+// Parse the incoming frame; sends an error and returns None if it's malformed.
+async fn parse_frame(
+    session: &mut actix_ws::Session,
+    text: &str,
+) -> Result<Option<SendMessageFrame>, actix_ws::Closed> {
+    match serde_json::from_str(text) {
+        Ok(frame) => Ok(Some(frame)),
+        Err(_) => {
+            session.text(ws::error_frame("invalid message frame")).await?;
+            Ok(None)
+        }
+    }
+}
+
+// Resolve the target chat: an existing one the caller owns, or a new chat seeded
+// with a title derived from this first message. None => an error was sent.
+async fn resolve_chat(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    user_id: Uuid,
+    chat_id: Option<Uuid>,
+    content: &str,
+) -> Result<Option<Uuid>, actix_ws::Closed> {
+    match chat_id {
         Some(id) => match db::chat::find_by_id(pool, id).await {
-            Ok(Some(chat)) if chat.id_user == user_id => chat.id_chat,
-            Ok(Some(_)) => return session.text(ws::error_frame("forbidden")).await,
-            Ok(None) => return session.text(ws::error_frame("chat not found")).await,
+            Ok(Some(chat)) if chat.id_user == user_id => Ok(Some(chat.id_chat)),
+            Ok(Some(_)) => {
+                session.text(ws::error_frame("forbidden")).await?;
+                Ok(None)
+            }
+            Ok(None) => {
+                session.text(ws::error_frame("chat not found")).await?;
+                Ok(None)
+            }
             Err(e) => {
                 eprintln!("chat lookup db error: {}", e);
-                return session.text(ws::error_frame("failed to load chat")).await;
+                session.text(ws::error_frame("failed to load chat")).await?;
+                Ok(None)
             }
         },
         None => match db::chat::create(pool, user_id, &derive_title(content)).await {
-            Ok(chat) => chat.id_chat,
+            Ok(chat) => Ok(Some(chat.id_chat)),
             Err(e) => {
                 eprintln!("create chat db error: {}", e);
-                return session.text(ws::error_frame("failed to create chat")).await;
+                session.text(ws::error_frame("failed to create chat")).await?;
+                Ok(None)
             }
         },
-    };
+    }
+}
 
-    // Persist the user's message.
+// Persist the user's message. Returns false (after sending an error) on failure.
+async fn persist_user_message(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    chat_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+) -> Result<bool, actix_ws::Closed> {
     if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content).await {
         eprintln!("create user message db error: {}", e);
-        return session.text(ws::error_frame("failed to save message")).await;
+        session.text(ws::error_frame("failed to save message")).await?;
+        return Ok(false);
     }
+    Ok(true)
+}
 
-    // Resolve the model to run. Its weights live on disk under its name; the
-    // inference engine loads (and caches) them on first use.
-    let model = match frame.model_id {
+// Resolve the model to run, enforcing that a private model is only visible to an
+// admin (reported as "not found" to others). None => an error was sent.
+async fn resolve_model(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    model_id: Option<Uuid>,
+    is_admin: bool,
+) -> Result<Option<db::model::Model>, actix_ws::Closed> {
+    let model = match model_id {
         Some(id) => match db::model::find_by_id(pool, id).await {
             Ok(Some(model)) => model,
-            Ok(None) => return session.text(ws::error_frame("model not found")).await,
+            Ok(None) => {
+                session.text(ws::error_frame("model not found")).await?;
+                return Ok(None);
+            }
             Err(e) => {
                 eprintln!("model lookup db error: {}", e);
-                return session.text(ws::error_frame("failed to load model")).await;
+                session.text(ws::error_frame("failed to load model")).await?;
+                return Ok(None);
             }
         },
-        None => return session.text(ws::error_frame("no model selected")).await,
+        None => {
+            session.text(ws::error_frame("no model selected")).await?;
+            return Ok(None);
+        }
     };
-
-    // A private model can only be used by an admin. Report it as not found to a
-    // non-admin rather than revealing it exists.
     if !model.published && !is_admin {
-        return session.text(ws::error_frame("model not found")).await;
+        session.text(ws::error_frame("model not found")).await?;
+        return Ok(None);
     }
+    Ok(Some(model))
+}
 
-    // Inference is blocking GPU work (CUDA), so it must not run on the async
-    // executor — it runs on a dedicated thread. Decoded token text comes back
-    // over `tok_rx` and is forwarded to the socket as it arrives; `done_rx`
-    // carries the final outcome (full text, or an error) once generation ends.
-    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
-    let prompt = content.to_string();
+// Load the whole conversation (oldest-first, including the user message just
+// persisted) as template turns. The inference layer renders and truncates them
+// to the model's context window. None => an error was sent.
+async fn load_history(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    chat_id: Uuid,
+) -> Result<Option<Vec<llm::chat_template::Turn>>, actix_ws::Closed> {
+    let messages = match db::message::list_for_chat(pool, chat_id).await {
+        Ok(messages) => messages,
+        Err(e) => {
+            eprintln!("list messages db error: {}", e);
+            session.text(ws::error_frame("failed to load history")).await?;
+            return Ok(None);
+        }
+    };
+    let history = messages
+        .into_iter()
+        .map(|m| llm::chat_template::Turn {
+            // id_user set => a person sent it; otherwise it's an assistant reply.
+            role: if m.id_user.is_some() {
+                llm::chat_template::Role::User
+            } else {
+                llm::chat_template::Role::Assistant
+            },
+            text: m.content,
+        })
+        .collect();
+    Ok(Some(history))
+}
+
+// The streamed reply plus its token counts, produced by one generation.
+struct StreamedReply {
+    text: String,
+    input_tokens: usize,
+    output_tokens: usize,
+}
+
+// Run inference on a dedicated thread (CUDA is blocking and must not run on the
+// async executor), forwarding decoded tokens to the socket as they arrive. None
+// => generation failed and an error was sent.
+async fn stream_reply(
+    session: &mut actix_ws::Session,
+    model_dir: &std::path::Path,
+    history: Vec<llm::chat_template::Turn>,
+) -> Result<Option<StreamedReply>, actix_ws::Closed> {
+    let model_dir = model_dir.to_path_buf();
     let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (done_tx, done_rx) =
         tokio::sync::oneshot::channel::<Result<llm::infer::GenerationOutput, String>>();
     std::thread::spawn(move || {
-        let result = llm::infer::generate_response_streaming(
+        // System prompt slot is supported by the template; passing None until the
+        // SFT data includes system turns, so we don't spend the tiny context
+        // window on text the model was never trained to act on.
+        let result = llm::infer::generate_chat_response_streaming(
             &model_dir,
-            &prompt,
+            None,
+            &history,
             MAX_TOKENS,
             TEMPERATURE,
             TOP_K,
@@ -274,34 +392,44 @@ async fn handle_message(
         let _ = done_tx.send(result);
     });
 
-    let mut reply = String::new();
     while let Some(token) = tok_rx.recv().await {
-        reply.push_str(&token);
         let out = serde_json::json!({ "type": "token", "value": token }).to_string();
         session.text(out).await?;
     }
 
-    // Generation finished: prefer the authoritative full text, and surface a
-    // failure instead of persisting an empty reply. done_rx only errs if the
-    // worker thread panicked.
-    let (input_tokens, output_tokens) = match done_rx.await {
-        Ok(Ok(out)) => {
-            reply = out.text;
-            (out.input_tokens, out.output_tokens)
-        }
+    // Prefer the authoritative full text over the streamed concatenation, and
+    // surface a failure instead of persisting an empty reply. done_rx only errs
+    // if the worker thread panicked.
+    match done_rx.await {
+        Ok(Ok(out)) => Ok(Some(StreamedReply {
+            text: out.text,
+            input_tokens: out.input_tokens,
+            output_tokens: out.output_tokens,
+        })),
         Ok(Err(e)) => {
             eprintln!("inference error: {}", e);
-            return session.text(ws::error_frame("inference failed")).await;
+            session.text(ws::error_frame("inference failed")).await?;
+            Ok(None)
         }
         Err(_) => {
             eprintln!("inference thread panicked");
-            return session.text(ws::error_frame("inference failed")).await;
+            session.text(ws::error_frame("inference failed")).await?;
+            Ok(None)
         }
-    };
+    }
+}
 
-    // Persist the full assistant reply, attributed to the model that produced it.
+// Persist the assistant reply, record usage (non-fatal), and send the done frame.
+async fn finalize_turn(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    user_id: Uuid,
+    chat_id: Uuid,
+    model_id: Uuid,
+    reply: StreamedReply,
+) -> Result<(), actix_ws::Closed> {
     let assistant =
-        match db::message::create_assistant_message(pool, chat_id, Some(model.id_model), &reply)
+        match db::message::create_assistant_message(pool, chat_id, Some(model_id), &reply.text)
             .await
         {
             Ok(message) => message,
@@ -311,14 +439,14 @@ async fn handle_message(
             }
         };
 
-    // Record usage for this turn. Non-fatal: a tracking failure shouldn't sink a
-    // reply the user already received and we already persisted.
+    // Non-fatal: a tracking failure shouldn't sink a reply the user already
+    // received and we already persisted.
     if let Err(e) = db::usage::record(
         pool,
         user_id,
-        Some(model.id_model),
-        input_tokens as i32,
-        output_tokens as i32,
+        Some(model_id),
+        reply.input_tokens as i32,
+        reply.output_tokens as i32,
     )
     .await
     {

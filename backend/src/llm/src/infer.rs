@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::chat_template::{build_prompt, Turn};
 use crate::training::transformer::Transformer;
 use tokenize::pretokenize::lookup_special;
 
@@ -92,79 +93,141 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
     max_tokens: usize,
     temperature: f32,
     top_k: u32,
-    mut on_token: F,
+    on_token: F,
 ) -> Result<GenerationOutput, String> {
-    // The caller (backend) builds model_dir via its storage module; the
-    // tokenizer merges live alongside the weights, written there at train time.
+    ensure_loaded(model_dir)?;
+    let cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
+    let c = cache.as_ref().unwrap();
+
+    let seq = tokenize::bpe::encode(prompt, &c.merges);
+    let input_tokens = seq.len();
+    Ok(stream_generation(
+        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, on_token,
+    ))
+}
+
+// Multi-turn chat generation: renders the whole conversation (system + history)
+// through the canonical template, truncating oldest-first to the loaded model's
+// context window, then generates the next assistant turn. This is what the chat
+// route uses so the model actually sees the conversation, not just the last line.
+pub fn generate_chat_response_streaming<F: FnMut(&str)>(
+    model_dir: &Path,
+    system: Option<&str>,
+    history: &[Turn],
+    max_tokens: usize,
+    temperature: f32,
+    top_k: u32,
+    on_token: F,
+) -> Result<GenerationOutput, String> {
+    ensure_loaded(model_dir)?;
+    let cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
+    let c = cache.as_ref().unwrap();
+
+    // The model's positional table defines its real context window.
+    let ctx_window = c.model.positional_table.len();
+    // Leave headroom so the model can generate a reply before the sliding window
+    // starts evicting the freshest prompt tokens.
+    let reserve = (ctx_window / 4).max(8);
+    let seq = build_prompt(system, history, &c.merges, ctx_window, reserve);
+    let input_tokens = seq.len();
+    Ok(stream_generation(
+        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, on_token,
+    ))
+}
+
+// Load the model + merges into the cache if a different model is requested. The
+// caller (backend) builds model_dir via its storage module; the tokenizer merges
+// live alongside the weights, written there at train time.
+fn ensure_loaded(model_dir: &Path) -> Result<(), String> {
     let model_dir_str = model_dir.to_string_lossy().to_string();
     let merges_path = model_dir.join("merges.bin");
-
-    {
-        let mut cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
-        if cache.as_ref().map(|c| c.name.as_str()) != Some(model_dir_str.as_str()) {
-            let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())
-                .map_err(|e| e.to_string())?;
-            let model = Transformer::load(&model_dir_str).map_err(|e| e.to_string())?;
-            *cache = Some(CachedModel {
-                name: model_dir_str.clone(),
-                model,
-                merges,
-            });
-        }
+    let mut cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
+    if cache.as_ref().map(|c| c.name.as_str()) != Some(model_dir_str.as_str()) {
+        let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())
+            .map_err(|e| e.to_string())?;
+        let model = Transformer::load(&model_dir_str).map_err(|e| e.to_string())?;
+        *cache = Some(CachedModel {
+            name: model_dir_str.clone(),
+            model,
+            merges,
+        });
     }
+    Ok(())
+}
 
+// The core autoregressive loop, shared by the single-prompt and chat entry
+// points. Takes the already-tokenized prompt `seq` and streams decoded token
+// text through `on_token`, stopping at the first end-of-turn marker.
+#[allow(clippy::too_many_arguments)]
+fn stream_generation<F: FnMut(&str)>(
+    model: &Transformer,
+    merges: &[((u32, u32), u32)],
+    mut seq: Vec<u32>,
+    input_tokens: usize,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: u32,
+    mut on_token: F,
+) -> GenerationOutput {
     pollster::block_on(async {
-        let cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
-        let c = cache.as_ref().unwrap();
-
-        // The model's positional table defines its real context window; a fixed
-        // value larger than it overruns the table in forward_seq (the sliding
-        // window keeps more tokens than there are positions for).
-        let ctx_window = c.model.positional_table.len();
-
-        let prompt_tokens = tokenize::bpe::encode(prompt, &c.merges);
-        let input_tokens = prompt_tokens.len();
-        let mut seq = prompt_tokens;
+        // A fixed value larger than the positional table would overrun it in
+        // forward_seq (the sliding window keeps more tokens than there are
+        // positions for), so the model's own table length is the ceiling.
+        let ctx_window = model.positional_table.len();
         let mut output_ids: Vec<u32> = Vec::new();
         let mut response = String::new();
 
         for _ in 0..max_tokens {
-            let hidden = c.model.forward_seq(&seq, c.model.layers as usize, ctx_window).await;
+            let hidden = model.forward_seq(&seq, model.layers as usize, ctx_window).await;
             if hidden.is_empty() {
                 break;
             }
             let last_hidden = vec![hidden.last().unwrap().clone()];
-            let logits = c.model.unembed(&last_hidden).await;
-            let logits_row = &logits[0];
+            let logits = model.unembed(&last_hidden).await;
 
-            let next_token = sample_token(logits_row, temperature, top_k);
+            let next_token = sample_token(&logits[0], temperature, top_k);
             output_ids.push(next_token);
             seq.push(next_token);
 
-            let new_response = tokenize::bpe::decode(&output_ids, &c.merges);
+            let new_response = tokenize::bpe::decode(&output_ids, merges);
             if new_response.len() > response.len() {
                 let token_text = &new_response[response.len()..];
                 on_token(token_text);
                 response = new_response;
             }
 
-            if response.contains("<|endoftext|>") {
+            if find_stop(&response).is_some() {
                 break;
             }
         }
 
-        let result = if let Some(pos) = response.find("<|endoftext|>") {
-            response[..pos + "<|endoftext|>".len()].to_string()
-        } else {
-            response
+        // The reply is everything up to the first end-of-turn marker; the marker
+        // itself is dropped from the returned/persisted text.
+        let text = match find_stop(&response) {
+            Some(pos) => response[..pos].to_string(),
+            None => response,
         };
 
-        Ok(GenerationOutput {
-            text: result,
+        GenerationOutput {
+            text,
             input_tokens,
             output_tokens: output_ids.len(),
-        })
+        }
     })
+}
+
+// Generation halts at the first end-of-turn marker: `<|/assistant|>` (the model
+// finished its turn) or `<|endoftext|>`. Returns the byte offset of the earliest
+// one, or None if neither has appeared yet.
+fn find_stop(text: &str) -> Option<usize> {
+    let eot = text.find("<|endoftext|>");
+    let eoa = text.find("<|/assistant|>");
+    match (eot, eoa) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
 }
 
 fn sample_token(logits: &[f32], temperature: f32, top_k: u32) -> u32 {
