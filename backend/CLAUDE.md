@@ -1,5 +1,10 @@
 # CLAUDE.md
 
+> **Role:** See [`AGENTS.md`](../AGENTS.md) at the project root for the agent
+> role system. Unless told otherwise, you are the **Fixer** — the only role
+> that edits application code. Adhere to the coding rules in
+> [`skills/RULES.md`](../skills/RULES.md).
+
 Guidance for Claude Code when working in this repository.
 
 ## Project overview
