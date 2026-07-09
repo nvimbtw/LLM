@@ -10,6 +10,21 @@ use crate::training::transformer::{
     gpu_adam_update, gpu_clip_gradients, sync_weights_from_gpu, Transformer,
 };
 
+// Early-stopping patience: stop after this many consecutive epochs without an
+// average-loss improvement.
+const EARLY_STOP_PATIENCE: i32 = 3;
+// Gradient-accumulation factor: the optimizer steps once per this many chunks,
+// and the summed gradients are averaged by it.
+const ACCUM_STEPS: usize = 4;
+// Loss-spike guard: per-step gradient L2 norm to clip to. The gradient buffers
+// hold the SUM over ACCUM_STEPS, so this is scaled by ACCUM_STEPS at the step to
+// correspond to a ~1.0 per-step clip.
+const MAX_GRAD_NORM: f32 = 1.0;
+// Linear LR warmup length, in optimizer steps. The opening steps on a fresh
+// (especially deep) model are the most unstable, so ramping lr up from ~0 avoids
+// the early divergence that clipping alone only slows down.
+const WARMUP_STEPS: i32 = 100;
+
 pub struct TrainingProgress {
     pub epoch: u64,
     pub total_epochs: u64,
@@ -131,6 +146,159 @@ pub fn continue_train(
     )
 }
 
+struct EpochStats {
+    avg_loss: f32,
+    min_loss: f32,
+    max_loss: f32,
+    duration_secs: f64,
+}
+
+// Estimated seconds remaining, from the average time per chunk so far. NaN
+// before any chunk has completed.
+fn compute_eta(training_start: Instant, chunks_done_global: u64, total_chunks_all: u64) -> f64 {
+    if chunks_done_global == 0 {
+        return f64::NAN;
+    }
+    let secs_per = training_start.elapsed().as_secs_f64() / chunks_done_global as f64;
+    secs_per * (total_chunks_all - chunks_done_global) as f64
+}
+
+// Sync GPU weights back to the host and persist them: a per-epoch checkpoint (if
+// a checkpoints dir is configured) plus the model dir for final-model access.
+// Returns the checkpoint path, if one was written.
+fn save_checkpoint(
+    transformer: &mut Transformer,
+    ws: &GpuWorkspace,
+    model_dir: &Path,
+    checkpoints_dir: Option<&Path>,
+    epoch: i64,
+) -> Option<String> {
+    sync_weights_from_gpu(ws, transformer);
+    let checkpoint_path = checkpoints_dir.map(|cp_dir| {
+        let cp_str = cp_dir
+            .join(format!("epoch_{:04}.bin", epoch + 1))
+            .to_string_lossy()
+            .to_string();
+        transformer.save_to_path(&cp_str).ok();
+        cp_str
+    });
+    let _ = transformer.save(&model_dir.to_string_lossy().to_string());
+    println!("Checkpoint saved");
+    checkpoint_path
+}
+
+// Train one full pass over the corpus: forward/backward each chunk, step the
+// optimizer every ACCUM_STEPS chunks, and emit a mid-epoch progress report every
+// 10 chunks. Advances `adam_step` and returns the epoch's loss summary.
+#[allow(clippy::too_many_arguments)]
+fn train_epoch(
+    transformer: &mut Transformer,
+    ws: &mut GpuWorkspace,
+    corpus: &[u32],
+    ctx_window: i64,
+    layers: i64,
+    lr: f32,
+    epoch: i64,
+    epochs: i64,
+    total_chunks: usize,
+    total_chunks_all: u64,
+    training_start: Instant,
+    adam_step: &mut i32,
+    on_progress: &ProgressCallback,
+) -> EpochStats {
+    let mut total_loss = 0.0f32;
+    let mut n_chunks = 0u64;
+    let mut min_loss = f32::INFINITY;
+    let mut max_loss = f32::NEG_INFINITY;
+    // Per-report-window accumulators, reset after each report emitted below.
+    let mut win_total = 0.0f32;
+    let mut win_n = 0u64;
+    let mut win_min = f32::INFINITY;
+    let mut win_max = f32::NEG_INFINITY;
+    let epoch_start = Instant::now();
+
+    ws.zero_accumulators();
+
+    for chunk in corpus.chunks(ctx_window as usize) {
+        if chunk.len() < 2 {
+            continue;
+        }
+        let loss = pollster::block_on(transformer.train_step(ws, chunk, layers as usize));
+
+        if !loss.is_finite() {
+            eprint!("  ⚠ NaN loss — zeroing accumulators and skipping chunk");
+            ws.zero_accumulators();
+            continue;
+        }
+
+        total_loss += loss;
+        n_chunks += 1;
+        min_loss = min_loss.min(loss);
+        max_loss = max_loss.max(loss);
+
+        win_total += loss;
+        win_n += 1;
+        win_min = win_min.min(loss);
+        win_max = win_max.max(loss);
+
+        if n_chunks % (ACCUM_STEPS as u64) == 0 || n_chunks == total_chunks as u64 {
+            *adam_step += 1;
+            // Clip the accumulated gradient BEFORE the step so a rare huge
+            // gradient can't blow the model up (the loss-spike-to-50 case).
+            let clip = MAX_GRAD_NORM * ACCUM_STEPS as f32;
+            let gnorm = gpu_clip_gradients(ws, layers as usize, clip);
+            // Warmup-scaled lr. Adam averages the gradient internally
+            // (grad_scale), so pass the full (warmed) lr, not lr/ACCUM_STEPS.
+            let warm = (*adam_step as f32 / WARMUP_STEPS as f32).min(1.0);
+            gpu_adam_update(ws, lr * warm, *adam_step, ACCUM_STEPS, layers as usize);
+            ws.zero_accumulators();
+            // Periodic gradient-norm readout (and always on a spike) so a
+            // divergent run is visible: a norm that keeps growing = trouble.
+            if *adam_step % 50 == 0 || gnorm > clip * 20.0 || !gnorm.is_finite() {
+                eprintln!("  step {} grad_norm {:.2}", *adam_step, gnorm);
+            }
+        }
+
+        if n_chunks % 10 == 0 || n_chunks == total_chunks as u64 {
+            let chunks_done_global = (epoch as u64) * (total_chunks as u64) + n_chunks;
+            let batch_avg = if win_n > 0 { win_total / win_n as f32 } else { f32::NAN };
+            on_progress(TrainingProgress {
+                epoch: (epoch + 1) as u64,
+                total_epochs: epochs as u64,
+                chunk: n_chunks,
+                total_chunks: total_chunks as u64,
+                loss: loss as f64,
+                eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
+                epoch_done: false,
+                // Running stats so far this epoch (n_chunks >= 1 here), so the
+                // UI shows a live average instead of a frozen 0.
+                avg_loss: total_loss / n_chunks as f32,
+                min_loss,
+                max_loss,
+                // Spread over just the chunks in this window.
+                batch_min: win_min,
+                batch_avg,
+                batch_max: win_max,
+                epoch_duration_secs: 0.0,
+                checkpoint_path: None,
+            });
+
+            // Start a fresh window for the next report.
+            win_total = 0.0;
+            win_n = 0;
+            win_min = f32::INFINITY;
+            win_max = f32::NEG_INFINITY;
+        }
+    }
+
+    EpochStats {
+        avg_loss: total_loss / n_chunks as f32,
+        min_loss,
+        max_loss,
+        duration_secs: epoch_start.elapsed().as_secs_f64(),
+    }
+}
+
 fn run_training_loop(
     transformer: &mut Transformer,
     ws: &mut GpuWorkspace,
@@ -150,174 +318,46 @@ fn run_training_loop(
         .filter(|c| c.len() >= 2)
         .count();
     let total_chunks_all: u64 = (epochs as u64) * (total_chunks as u64);
-
-    let patience = 3;
+    let training_start = Instant::now();
     let mut best_loss = f32::INFINITY;
     let mut epochs_since_best = 0;
-    let training_start = Instant::now();
-    let accum_steps = 4usize;
-    // Loss-spike guard: clip the per-step gradient to this L2 norm. The gradient
-    // buffers hold the SUM over accum_steps, so the clip threshold is scaled by
-    // accum_steps below to correspond to a ~1.0 per-step clip.
-    let max_grad_norm = 1.0f32;
-    // Linear LR warmup over the first N optimizer steps. The opening steps on a
-    // fresh (especially deep) model are the most unstable, so ramping lr up from
-    // ~0 avoids the early divergence that clipping alone only slows down.
-    let warmup_steps = 100i32;
     // Global optimizer-step counter for Adam bias correction (persists across
-    // epochs, incremented once per weight update).
+    // epochs, advanced inside train_epoch).
     let mut adam_step: i32 = 0;
 
     for epoch in 0..epochs {
-        let mut total_loss = 0.0f32;
-        let mut n_chunks = 0;
-        let mut min_loss = f32::INFINITY;
-        let mut max_loss = f32::NEG_INFINITY;
-        // Per-report-window accumulators, reset after each report emitted below.
-        let mut win_total = 0.0f32;
-        let mut win_n = 0u64;
-        let mut win_min = f32::INFINITY;
-        let mut win_max = f32::NEG_INFINITY;
-        let epoch_start = Instant::now();
-
-        ws.zero_accumulators();
-
-        for chunk in corpus.chunks(ctx_window as usize) {
-            if chunk.len() < 2 {
-                continue;
-            }
-            let loss = pollster::block_on(transformer.train_step(ws, chunk, layers as usize));
-
-            if !loss.is_finite() {
-                eprint!("  ⚠ NaN loss — zeroing accumulators and skipping chunk");
-                ws.zero_accumulators();
-                continue;
-            }
-
-            total_loss += loss;
-            n_chunks += 1;
-            min_loss = min_loss.min(loss);
-            max_loss = max_loss.max(loss);
-
-            win_total += loss;
-            win_n += 1;
-            win_min = win_min.min(loss);
-            win_max = win_max.max(loss);
-
-            if n_chunks % (accum_steps as u64) == 0 || n_chunks == total_chunks as u64 {
-                adam_step += 1;
-                // Clip the accumulated gradient BEFORE the step so a rare huge
-                // gradient can't blow the model up (the loss-spike-to-50 case).
-                let clip = max_grad_norm * accum_steps as f32;
-                let gnorm = gpu_clip_gradients(&ws, layers as usize, clip);
-                // Warmup-scaled lr. Adam averages the gradient internally
-                // (grad_scale), so pass the full (warmed) lr, not lr/accum_steps.
-                let warm = (adam_step as f32 / warmup_steps as f32).min(1.0);
-                gpu_adam_update(&ws, lr * warm, adam_step, accum_steps, layers as usize);
-                ws.zero_accumulators();
-                // Periodic gradient-norm readout (and always on a spike) so a
-                // divergent run is visible: a norm that keeps growing = trouble.
-                if adam_step % 50 == 0 || gnorm > clip * 20.0 || !gnorm.is_finite() {
-                    eprintln!("  step {} grad_norm {:.2}", adam_step, gnorm);
-                }
-            }
-
-            if n_chunks % 10 == 0 || n_chunks == total_chunks as u64 {
-                let global_elapsed = training_start.elapsed().as_secs_f64();
-                let chunks_done_global = (epoch as u64) * (total_chunks as u64) + n_chunks as u64;
-                let eta_secs = if chunks_done_global > 0 {
-                    let secs_per = global_elapsed / chunks_done_global as f64;
-                    secs_per * (total_chunks_all - chunks_done_global) as f64
-                } else {
-                    f64::NAN
-                };
-
-                let batch_avg = if win_n > 0 {
-                    win_total / win_n as f32
-                } else {
-                    f32::NAN
-                };
-
-                on_progress(TrainingProgress {
-                    epoch: (epoch + 1) as u64,
-                    total_epochs: epochs as u64,
-                    chunk: n_chunks,
-                    total_chunks: total_chunks as u64,
-                    loss: loss as f64,
-                    eta_secs,
-                    epoch_done: false,
-                    // Running stats so far this epoch (n_chunks >= 1 here), so the
-                    // UI shows a live average instead of a frozen 0.
-                    avg_loss: total_loss / n_chunks as f32,
-                    min_loss,
-                    max_loss,
-                    // Spread over just the chunks in this window.
-                    batch_min: win_min,
-                    batch_avg,
-                    batch_max: win_max,
-                    epoch_duration_secs: 0.0,
-                    checkpoint_path: None,
-                });
-
-                // Start a fresh window for the next report.
-                win_total = 0.0;
-                win_n = 0;
-                win_min = f32::INFINITY;
-                win_max = f32::NEG_INFINITY;
-            }
-        }
-
-        let epoch_duration = epoch_start.elapsed().as_secs_f64();
-        let avg_loss = total_loss / n_chunks as f32;
+        let stats = train_epoch(
+            transformer, ws, corpus, ctx_window, layers, lr, epoch, epochs,
+            total_chunks, total_chunks_all, training_start, &mut adam_step, &on_progress,
+        );
         println!(
             "Epoch {}: avg loss = {:.6} (min={:.4} max={:.4})",
             epoch + 1,
-            avg_loss,
-            min_loss,
-            max_loss
+            stats.avg_loss,
+            stats.min_loss,
+            stats.max_loss
         );
 
-        let global_elapsed = training_start.elapsed().as_secs_f64();
+        let checkpoint_path = save_checkpoint(transformer, ws, model_dir, checkpoints_dir, epoch);
+
         let chunks_done_global = ((epoch + 1) as u64) * (total_chunks as u64);
-        let eta_secs = if chunks_done_global > 0 {
-            let secs_per = global_elapsed / chunks_done_global as f64;
-            secs_per * (total_chunks_all - chunks_done_global) as f64
-        } else {
-            f64::NAN
-        };
-
-        sync_weights_from_gpu(ws, transformer);
-
-        // Save checkpoint if a directory is configured
-        let checkpoint_path = checkpoints_dir.map(|cp_dir| {
-            let cp_path = cp_dir.join(format!("epoch_{:04}.bin", epoch + 1));
-            let cp_str = cp_path.to_string_lossy().to_string();
-            transformer.save_to_path(&cp_str).ok();
-            cp_str
-        });
-
-        // Save to model dir for backward compat / final model access
-        let _ = transformer.save(&model_dir.to_string_lossy().to_string());
-
-        println!("Checkpoint saved");
-
         on_progress(TrainingProgress {
             epoch: (epoch + 1) as u64,
             total_epochs: epochs as u64,
             chunk: total_chunks as u64,
             total_chunks: total_chunks as u64,
-            loss: avg_loss as f64,
-            eta_secs,
+            loss: stats.avg_loss as f64,
+            eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
             epoch_done: true,
-            avg_loss,
-            min_loss,
-            max_loss,
+            avg_loss: stats.avg_loss,
+            min_loss: stats.min_loss,
+            max_loss: stats.max_loss,
             // No window at an epoch boundary; NaN serializes to null and the
             // frontend skips it for the batch chart.
             batch_min: f32::NAN,
             batch_avg: f32::NAN,
             batch_max: f32::NAN,
-            epoch_duration_secs: epoch_duration,
+            epoch_duration_secs: stats.duration_secs,
             checkpoint_path,
         });
 
@@ -328,17 +368,17 @@ fn run_training_loop(
             }
         }
 
-        if avg_loss < best_loss {
-            best_loss = avg_loss;
+        if stats.avg_loss < best_loss {
+            best_loss = stats.avg_loss;
             epochs_since_best = 0;
         } else {
             epochs_since_best += 1;
         }
-        if epochs_since_best >= patience {
+        if epochs_since_best >= EARLY_STOP_PATIENCE {
             println!(
                 "Epoch {}: early stopping (no improvement for {} epochs)",
                 epoch + 1,
-                patience
+                EARLY_STOP_PATIENCE
             );
             break;
         }
