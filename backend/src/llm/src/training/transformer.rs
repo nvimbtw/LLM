@@ -4,6 +4,28 @@ use crate::training::device_buffer::DeviceBufferF16;
 use crate::training::embed::embed;
 use crate::training::gpu_workspace::GpuWorkspace;
 
+// Layer-norm numerical-stability epsilon, shared by every layer-norm forward and
+// backward call.
+const LAYER_NORM_EPS: f32 = 1e-5;
+// Per-step gradient L2-norm clip applied inside train_step before accumulation.
+const TRAIN_STEP_CLIP_NORM: f32 = 1.0;
+// Adam optimizer hyperparameters (standard defaults).
+const ADAM_BETA1: f32 = 0.9;
+const ADAM_BETA2: f32 = 0.999;
+const ADAM_EPS: f32 = 1e-8;
+
+// The per-step tensor dimensions, derived once from the model + chunk length and
+// threaded through the train_step stage helpers.
+#[derive(Clone, Copy)]
+struct StepDims {
+    s: usize,     // sequence length (this chunk)
+    d: usize,     // model dimension
+    h: usize,     // number of heads
+    hd: usize,    // per-head dimension
+    ff: usize,    // feed-forward width
+    vocab: usize, // vocabulary size
+}
+
 #[derive(Clone)]
 pub struct LayerRow {
     pub name: String,
@@ -21,6 +43,8 @@ pub struct ModelHeader {
     pub layers: i64,
 }
 
+/// Read just the fixed-size header of a saved model (`model.bin` in `dir`)
+/// without loading any weights — used to report a model's architecture.
 pub fn read_model_header(dir: &str) -> Result<ModelHeader, std::io::Error> {
     let path = format!("{}/model.bin", dir);
     let mut f = std::fs::File::open(&path)?;
@@ -43,9 +67,50 @@ pub fn read_model_header(dir: &str) -> Result<ModelHeader, std::io::Error> {
     let heads = read_i64(&mut f)?;
     let ff_multiplier = read_i64(&mut f)?;
     let layers = read_i64(&mut f)?;
+    validate_header_fields(dimensions, vocab_size, max_seq_len, heads, ff_multiplier, layers)?;
     Ok(ModelHeader { dimensions, vocab_size, max_seq_len, heads, ff_multiplier, layers })
 }
 
+// A model header comes from a file (external input), so its fields are validated
+// at the boundary rather than trusted. A non-positive field would produce a
+// negative-sized allocation, and heads not dividing dimensions (or being zero)
+// would make `dimensions / heads` panic or compute a wrong head_dim.
+fn validate_header_fields(
+    dimensions: i64,
+    vocab: i64,
+    ctx: i64,
+    heads: i64,
+    ff_multiplier: i64,
+    layers: i64,
+) -> Result<(), std::io::Error> {
+    let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+    for (name, value) in [
+        ("dimensions", dimensions),
+        ("vocab_size", vocab),
+        ("max_seq_len", ctx),
+        ("heads", heads),
+        ("ff_multiplier", ff_multiplier),
+        ("layers", layers),
+    ] {
+        if value <= 0 {
+            return Err(invalid(format!(
+                "model header field `{}` must be positive, got {}",
+                name, value
+            )));
+        }
+    }
+    if dimensions % heads != 0 {
+        return Err(invalid(format!(
+            "model header: dimensions ({}) must be divisible by heads ({})",
+            dimensions, heads
+        )));
+    }
+    Ok(())
+}
+
+/// A decoder-only transformer held as plain nested `Vec`s on the host. This is
+/// the canonical CPU-side copy that gets (de)serialized and used for inference;
+/// during training the weights are mirrored to GPU buffers in `GpuWorkspace`.
 pub struct Transformer {
     pub embedding_table: Vec<Vec<f32>>,
     pub positional_table: Vec<Vec<f32>>,
@@ -66,6 +131,8 @@ pub struct Transformer {
 }
 
 impl Transformer {
+    /// Build a fresh model with randomly-initialized weights. `dimensions` must
+    /// be divisible by `heads`; the feed-forward width is `dimensions * ff_multiplier`.
     pub fn init(dimensions: i64, vocab: i64, ctx_window: i64, heads: i64, ff_multiplier: i64, layers: i64) -> Transformer {
         let head_dim: i64 = dimensions / heads;
         let d_ff = dimensions * ff_multiplier;
@@ -115,67 +182,9 @@ impl Transformer {
         }
     }
 
-    pub async fn forward(
-        &self,
-        per_word: &[Vec<u32>],
-        layers: usize,
-        ctx_window: usize,
-    ) -> (Vec<Vec<f32>>, Vec<u32>) {
-        // Flatten per-word tokens into a single sequence
-        let corpus: Vec<u32> = per_word.iter().flatten().copied().collect();
-        let mut all_hidden = Vec::new();
-        let mut all_targets = Vec::new();
-
-        for chunk in corpus.chunks(ctx_window) {
-            if chunk.len() < 2 {
-                continue;
-            }
-
-            let input: Vec<Vec<f32>> = chunk
-                .iter()
-                .map(|&token_id| self.embedding_table[token_id as usize].clone())
-                .collect();
-
-            let positioned: Vec<Vec<f32>> = input
-                .iter()
-                .enumerate()
-                .map(|(pos, token_embed)| {
-                    token_embed
-                        .iter()
-                        .zip(self.positional_table[pos].iter())
-                        .map(|(t, p)| t + p)
-                        .collect()
-                })
-                .collect();
-
-        let mut x = positioned;
-
-        for layer_idx in 0..layers {
-            let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
-            let attn = self.self_attention(&x_norm, &self.wq[layer_idx], &self.wk[layer_idx], &self.wv[layer_idx], &self.wo[layer_idx]).await;
-            for i in 0..x.len() {
-                for j in 0..x[i].len() {
-                    x[i][j] += attn[i][j];
-                }
-            }
-
-            let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
-            let ff = self.feed_forward(&x_norm, &self.w1[layer_idx], &self.w2[layer_idx], &self.b1[layer_idx], &self.b2[layer_idx]).await;
-            for i in 0..x.len() {
-                for j in 0..x[i].len() {
-                    x[i][j] += ff[i][j];
-                }
-            }
-        }
-
-        // position i predicts chunk[i+1]; drop the last (no target)
-        all_hidden.extend(x[..x.len() - 1].iter().cloned());
-        all_targets.extend(chunk[1..].iter().copied());
-        }
-
-        (all_hidden, all_targets)
-    }
-
+    /// Run the forward pass over a token sequence and return the final hidden
+    /// state for every position. Only the last `ctx_window` tokens are used (the
+    /// model has no positions beyond its table), so a growing prompt is fine.
     pub async fn forward_seq(
         &self,
         tokens: &[u32],
@@ -245,7 +254,7 @@ impl Transformer {
                 d_beta.ptr as *const c_void,
                 rows as i32,
                 cols as i32,
-                1e-5f32,
+                LAYER_NORM_EPS,
             );
         }
 
@@ -342,7 +351,10 @@ impl Transformer {
     ) -> Vec<Vec<f32>> {
         let seq_len = input.len();
         let d_model = input[0].len();
-        let d_ff = d_model * 4;
+        // FF width comes from the weight shape (w1 is [d_model][d_ff]), not a
+        // fixed multiple: ff_multiplier is configurable, so assuming ×4 would
+        // read w1 with the wrong stride for any other setting.
+        let d_ff = w1[0].len();
 
         let flat_input: Vec<f32> = input.iter().flatten().cloned().collect();
         let flat_w1: Vec<f32> = w1.iter().flatten().cloned().collect();
@@ -376,6 +388,7 @@ impl Transformer {
             .collect()
     }
 
+    /// Project hidden states to vocab-sized logits via the output embedding.
     pub async fn unembed(&self, hidden: &[Vec<f32>]) -> Vec<Vec<f32>> {
         let seq_len = hidden.len();
         let d_model = hidden[0].len();
@@ -406,18 +419,56 @@ impl Transformer {
             .collect()
     }
 
+    /// Run one forward+backward pass over a single `chunk`, accumulating gradients
+    /// into `ws` (which it mutates) and returning the scalar cross-entropy loss.
+    /// `chunk` must hold at least 2 tokens (position i is trained to predict token
+    /// i+1). Weights are not updated here — the caller drives the optimizer step.
     pub async fn train_step(&self, ws: &mut GpuWorkspace, chunk: &[u32], layers: usize) -> f32 {
-        let s = chunk.len();
-        let d = self.wo[0].len();
-        let h = self.heads as usize;
-        let hd = self.head_dim as usize;
-        let ff = self.w1[0][0].len();
-        let vocab = self.w_output[0].len();
-
+        let dims = StepDims {
+            s: chunk.len(),
+            d: self.wo[0].len(),
+            h: self.heads as usize,
+            hd: self.head_dim as usize,
+            ff: self.w1[0][0].len(),
+            vocab: self.w_output[0].len(),
+        };
         ws.ensure_layer_caches(layers);
 
-        // ── 1. Embedding forward on GPU: lookup + positional ──
+        let mut d_x = self.embed_forward(ws, dims, chunk);
+        for layer_idx in 0..layers {
+            let x = self.attn_sublayer_forward(ws, dims, layer_idx, d_x);
+            d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
+        }
+        self.project_logits(ws, dims, d_x);
+        let loss = self.compute_loss(ws, dims, chunk);
+
+        let mut d_dx = self.backward_unembed(ws, dims, d_x);
+        for layer_idx in (0..layers).rev() {
+            let g = self.ffn_sublayer_backward(ws, dims, layer_idx, d_dx);
+            d_dx = self.attn_sublayer_backward(ws, dims, layer_idx, g);
+        }
+        self.clip_gradients(ws, dims, layers);
+        self.accumulate_embedding_grad(ws, dims, d_dx);
+
+        loss
+    }
+
+    // ── train_step stage helpers ─────────────────────────────────────────────
+    //
+    // SAFETY CONTRACT (shared by every `unsafe` block in the helpers below):
+    // all `d_*`, `b_*`, `g_*`, `head_*` pointers are GpuWorkspace device
+    // allocations sized for the configured maximum dims, and `s <= ctx_window`,
+    // so every kernel stays within its buffers. Each CUDA kernel is bounded by
+    // the size arguments (`s`, `d`, `vocab`, …) passed alongside the pointers.
+    // Individual blocks add a note only where they do something beyond "call a
+    // kernel over ws buffers with valid dims" (raw pointer arithmetic).
+
+    // Embedding lookup + positional add for the input tokens, producing the
+    // initial hidden state in b_sd[0]; returns the pointer to it.
+    fn embed_forward(&self, ws: &mut GpuWorkspace, dims: StepDims, chunk: &[u32]) -> *mut c_void {
+        let StepDims { s, d, vocab, .. } = dims;
         let token_ids: Vec<i32> = chunk.iter().map(|&id| id as i32).collect();
+        // SAFETY: see contract; token_ids holds exactly s i32s.
         unsafe {
             cuda_memcpy_h2d(
                 ws.d_token_ids.ptr as *mut c_void,
@@ -435,175 +486,196 @@ impl Transformer {
             );
             cuda_clamp_f16(ws.b_sd[0].ptr as *mut c_void, (s * d) as i32);
         }
-        let mut d_x: *mut c_void = ws.b_sd[0].ptr as *mut c_void;
+        ws.b_sd[0].ptr as *mut c_void
+    }
 
-        for layer_idx in 0..layers {
-            // ── Save layer input (for LN1 backward + residual) ──
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.layer_inputs[layer_idx].ptr as *mut c_void,
-                    d_x as *const c_void,
-                    (s * d * 2) as usize,
-                );
-            }
+    // Attention sublayer forward: LN1 → multi-head attention → residual, caching
+    // the activations the backward pass needs. Takes the block input and returns
+    // the post-attention residual.
+    fn attn_sublayer_forward(
+        &self,
+        ws: &mut GpuWorkspace,
+        dims: StepDims,
+        layer_idx: usize,
+        d_x: *mut c_void,
+    ) -> *mut c_void {
+        let StepDims { s, d, h, hd, .. } = dims;
 
-            // ── Layer norm 1 (pre-attention) ──
-            unsafe {
-                cuda_layer_norm(
-                    d_x,
-                    ws.b_sd[0].ptr as *mut c_void,
-                    ws.d_ln_gamma[layer_idx].ptr as *const c_void,
-                    ws.d_ln_beta[layer_idx].ptr as *const c_void,
-                    s as i32,
-                    d as i32,
-                    1e-5f32,
-                );
-            }
-            // Cache LN1 output (= attention input) for backward
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.post_ff_residuals[layer_idx].ptr as *mut c_void,
-                    ws.b_sd[0].ptr as *const c_void,
-                    (s * d * 2) as usize,
-                );
-            }
-
-            // ── Batched multi-head self-attention forward ──
-            unsafe {
-                cuda_attention_forward_batched(
-                    ws.b_sd[0].ptr as *const c_void,
-                    ws.d_wq_all[layer_idx].ptr as *const c_void,
-                    ws.d_wk_all[layer_idx].ptr as *const c_void,
-                    ws.d_wv_all[layer_idx].ptr as *const c_void,
-                    ws.head_out_all[layer_idx].ptr as *mut c_void,
-                    ws.head_p_all[layer_idx].ptr as *mut c_void,
-                    s as i32, d as i32, hd as i32, h as i32,
-                );
-            }
-
-            // Concat heads: interleave by token on GPU
-            let head_out_base = ws.head_out_all[layer_idx].ptr as *mut u8;
-            let head_ptrs: Vec<*mut c_void> = (0..h)
-                .map(|hi| unsafe {
-                    head_out_base.add(hi * s * hd * 2) as *mut c_void
-                })
-                .collect();
-            unsafe {
-                cuda_memcpy_h2d(
-                    ws.d_head_ptrs.ptr as *mut c_void,
-                    head_ptrs.as_ptr() as *const c_void,
-                    head_ptrs.len() * std::mem::size_of::<*mut c_void>(),
-                );
-                cuda_concat_heads(
-                    ws.d_head_ptrs.ptr as *mut *mut c_void,
-                    ws.b_sd[1].ptr as *mut c_void,
-                    s as i32,
-                    h as i32,
-                    hd as i32,
-                );
-            }
-
-            // Save concat output for wo backward
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.concat_outputs[layer_idx].ptr as *mut c_void,
-                    ws.b_sd[1].ptr as *const c_void,
-                    (s * h * hd * 2) as usize,
-                );
-            }
-
-            // wo projection
-            unsafe {
-                cuda_matmul(
-                    ws.b_sd[1].ptr as *const c_void,
-                    ws.d_wo[layer_idx].ptr as *const c_void,
-                    ws.b_sd[2].ptr as *mut c_void,
-                    s as i32,
-                    (h * hd) as i32,
-                    d as i32,
-                );
-            }
-
-            // ── Residual add: x + attn_out (restore x from cache) ──
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.b_sd[3].ptr as *mut c_void,
-                    ws.layer_inputs[layer_idx].ptr as *const c_void,
-                    (s * d * 2) as usize,
-                );
-                cuda_add_inplace_f16(
-                    ws.b_sd[3].ptr as *mut c_void,
-                    ws.b_sd[2].ptr as *const c_void,
-                    (s * d) as i32,
-                );
-                cuda_clamp_f16(ws.b_sd[3].ptr as *mut c_void, (s * d) as i32);
-            }
-            d_x = ws.b_sd[3].ptr as *mut c_void;
-
-            // ── Save post-attn residual (for LN2 backward + FF residual) ──
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.post_attn_residuals[layer_idx].ptr as *mut c_void,
-                    d_x as *const c_void,
-                    (s * d * 2) as usize,
-                );
-            }
-
-            // ── Layer norm 2 (pre-FF) ──
-            unsafe {
-                cuda_layer_norm(
-                    d_x,
-                    ws.b_sd[0].ptr as *mut c_void,
-                    ws.d_ln_gamma[layer_idx].ptr as *const c_void,
-                    ws.d_ln_beta[layer_idx].ptr as *const c_void,
-                    s as i32,
-                    d as i32,
-                    1e-5f32,
-                );
-            }
-            // Save FF input (= LN2 output)
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.ff_inputs[layer_idx].ptr as *mut c_void,
-                    ws.b_sd[0].ptr as *const c_void,
-                    (s * d * 2) as usize,
-                );
-            }
-
-            // ── Feed-forward with pre-gelu save ──
-            unsafe {
-                cuda_feed_forward_forward(
-                    ws.b_sd[0].ptr as *const c_void,
-                    ws.d_w1[layer_idx].ptr as *const c_void,
-                    ws.d_w2[layer_idx].ptr as *const c_void,
-                    ws.d_b1[layer_idx].ptr as *const c_void,
-                    ws.d_b2[layer_idx].ptr as *const c_void,
-                    ws.b_sd[1].ptr as *mut c_void,
-                    ws.pre_gelus[layer_idx].ptr as *mut c_void,
-                    s as i32,
-                    d as i32,
-                    ff as i32,
-                );
-            }
-
-            // ── Residual add: post_attn + ff_out ──
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.b_sd[2].ptr as *mut c_void,
-                    d_x as *const c_void,
-                    (s * d * 2) as usize,
-                );
-                cuda_add_inplace_f16(
-                    ws.b_sd[2].ptr as *mut c_void,
-                    ws.b_sd[1].ptr as *const c_void,
-                    (s * d) as i32,
-                );
-                cuda_clamp_f16(ws.b_sd[2].ptr as *mut c_void, (s * d) as i32);
-            }
-            d_x = ws.b_sd[2].ptr as *mut c_void;
+        // Save layer input (for LN1 backward + residual).
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(
+                ws.layer_inputs[layer_idx].ptr as *mut c_void,
+                d_x as *const c_void,
+                (s * d * 2) as usize,
+            );
         }
 
-        // ── 2. Compute logits and loss ──
+        // Layer norm 1 (pre-attention), then cache its output (= attention input).
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm(
+                d_x,
+                ws.b_sd[0].ptr as *mut c_void,
+                ws.d_ln_gamma[layer_idx].ptr as *const c_void,
+                ws.d_ln_beta[layer_idx].ptr as *const c_void,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_memcpy_d2d(
+                ws.post_ff_residuals[layer_idx].ptr as *mut c_void,
+                ws.b_sd[0].ptr as *const c_void,
+                (s * d * 2) as usize,
+            );
+        }
+
+        // Batched multi-head self-attention forward.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_attention_forward_batched(
+                ws.b_sd[0].ptr as *const c_void,
+                ws.d_wq_all[layer_idx].ptr as *const c_void,
+                ws.d_wk_all[layer_idx].ptr as *const c_void,
+                ws.d_wv_all[layer_idx].ptr as *const c_void,
+                ws.head_out_all[layer_idx].ptr as *mut c_void,
+                ws.head_p_all[layer_idx].ptr as *mut c_void,
+                s as i32, d as i32, hd as i32, h as i32,
+            );
+        }
+
+        // Concat heads: interleave by token on GPU.
+        let head_out_base = ws.head_out_all[layer_idx].ptr as *mut u8;
+        let head_ptrs: Vec<*mut c_void> = (0..h)
+            .map(|hi| {
+                // SAFETY: head hi's slice starts at byte offset hi*s*hd*2 within
+                // head_out_all[layer_idx], which holds h*s*hd f16 values.
+                unsafe { head_out_base.add(hi * s * hd * 2) as *mut c_void }
+            })
+            .collect();
+        // SAFETY: see contract; head_ptrs holds exactly h device pointers.
+        unsafe {
+            cuda_memcpy_h2d(
+                ws.d_head_ptrs.ptr as *mut c_void,
+                head_ptrs.as_ptr() as *const c_void,
+                head_ptrs.len() * std::mem::size_of::<*mut c_void>(),
+            );
+            cuda_concat_heads(
+                ws.d_head_ptrs.ptr as *mut *mut c_void,
+                ws.b_sd[1].ptr as *mut c_void,
+                s as i32,
+                h as i32,
+                hd as i32,
+            );
+        }
+
+        // Save concat output (for wo backward), then project through wo.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(
+                ws.concat_outputs[layer_idx].ptr as *mut c_void,
+                ws.b_sd[1].ptr as *const c_void,
+                (s * h * hd * 2) as usize,
+            );
+            cuda_matmul(
+                ws.b_sd[1].ptr as *const c_void,
+                ws.d_wo[layer_idx].ptr as *const c_void,
+                ws.b_sd[2].ptr as *mut c_void,
+                s as i32,
+                (h * hd) as i32,
+                d as i32,
+            );
+        }
+
+        // Residual add: x + attn_out (restore x from cache), then save the
+        // post-attention residual (for LN2 backward + FF residual).
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(
+                ws.b_sd[3].ptr as *mut c_void,
+                ws.layer_inputs[layer_idx].ptr as *const c_void,
+                (s * d * 2) as usize,
+            );
+            cuda_add_inplace_f16(
+                ws.b_sd[3].ptr as *mut c_void,
+                ws.b_sd[2].ptr as *const c_void,
+                (s * d) as i32,
+            );
+            cuda_clamp_f16(ws.b_sd[3].ptr as *mut c_void, (s * d) as i32);
+            cuda_memcpy_d2d(
+                ws.post_attn_residuals[layer_idx].ptr as *mut c_void,
+                ws.b_sd[3].ptr as *const c_void,
+                (s * d * 2) as usize,
+            );
+        }
+        ws.b_sd[3].ptr as *mut c_void
+    }
+
+    // Feed-forward sublayer forward: LN2 → feed-forward (saving pre-gelu) →
+    // residual. Takes the post-attention residual and returns the block output.
+    fn ffn_sublayer_forward(
+        &self,
+        ws: &mut GpuWorkspace,
+        dims: StepDims,
+        layer_idx: usize,
+        d_x: *mut c_void,
+    ) -> *mut c_void {
+        let StepDims { s, d, ff, .. } = dims;
+
+        // Layer norm 2 (pre-FF), save its output (= FF input), then FF (with the
+        // pre-gelu activation saved for backward).
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm(
+                d_x,
+                ws.b_sd[0].ptr as *mut c_void,
+                ws.d_ln_gamma[layer_idx].ptr as *const c_void,
+                ws.d_ln_beta[layer_idx].ptr as *const c_void,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_memcpy_d2d(
+                ws.ff_inputs[layer_idx].ptr as *mut c_void,
+                ws.b_sd[0].ptr as *const c_void,
+                (s * d * 2) as usize,
+            );
+            cuda_feed_forward_forward(
+                ws.b_sd[0].ptr as *const c_void,
+                ws.d_w1[layer_idx].ptr as *const c_void,
+                ws.d_w2[layer_idx].ptr as *const c_void,
+                ws.d_b1[layer_idx].ptr as *const c_void,
+                ws.d_b2[layer_idx].ptr as *const c_void,
+                ws.b_sd[1].ptr as *mut c_void,
+                ws.pre_gelus[layer_idx].ptr as *mut c_void,
+                s as i32,
+                d as i32,
+                ff as i32,
+            );
+        }
+
+        // Residual add: post_attn + ff_out.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(
+                ws.b_sd[2].ptr as *mut c_void,
+                d_x as *const c_void,
+                (s * d * 2) as usize,
+            );
+            cuda_add_inplace_f16(
+                ws.b_sd[2].ptr as *mut c_void,
+                ws.b_sd[1].ptr as *const c_void,
+                (s * d) as i32,
+            );
+            cuda_clamp_f16(ws.b_sd[2].ptr as *mut c_void, (s * d) as i32);
+        }
+        ws.b_sd[2].ptr as *mut c_void
+    }
+
+    // Project the final hidden state to logits in d_logits.
+    fn project_logits(&self, ws: &mut GpuWorkspace, dims: StepDims, d_x: *mut c_void) {
+        let StepDims { s, d, vocab, .. } = dims;
+        // SAFETY: see contract.
         unsafe {
             cuda_matmul(
                 d_x,
@@ -615,9 +687,15 @@ impl Transformer {
             );
             cuda_clamp_f16(ws.d_logits.ptr as *mut c_void, (s * vocab) as i32);
         }
+    }
 
-        // ── 3. Compute loss and dlogits on GPU ──
+    // Cross-entropy loss over positions 0..s-1 (position i predicts token i+1),
+    // plus its gradient into d_dlogits (final row zeroed — no target). Returns
+    // the scalar loss.
+    fn compute_loss(&self, ws: &mut GpuWorkspace, dims: StepDims, chunk: &[u32]) -> f32 {
+        let StepDims { s, vocab, .. } = dims;
         let flat_targets_f32: Vec<f32> = chunk[1..].iter().map(|&t| t as f32).collect();
+        // SAFETY: see contract; flat_targets_f32 holds s-1 f32 targets.
         unsafe {
             cuda_memcpy_h2d(
                 ws.d_targets.ptr as *mut c_void,
@@ -625,6 +703,7 @@ impl Transformer {
                 (flat_targets_f32.len() * 4) as usize,
             );
         }
+        // SAFETY: see contract.
         let loss = unsafe {
             cuda_cross_entropy_loss(
                 ws.d_logits.ptr as *const c_void,
@@ -641,14 +720,22 @@ impl Transformer {
                 (s - 1) as i32,
                 vocab as i32,
             );
+            // SAFETY: offset (s-1)*vocab*2 bytes lands on the final (no-target)
+            // logit row inside d_dlogits (s*vocab f16 = s*vocab*2 bytes); zero it.
             cudaMemset(
-                (ws.d_dlogits.ptr as *mut c_void).add((s - 1) * vocab as usize * 2),
+                (ws.d_dlogits.ptr as *mut c_void).add((s - 1) * vocab * 2),
                 0,
-                (vocab as usize * 2) as usize,
+                vocab * 2,
             );
         }
+        loss
+    }
 
-        // ── 4. Backward through unembed ──
+    // Backprop through the output projection: accumulate the d_w_output gradient
+    // and produce the hidden-state gradient d_dhidden; returns its pointer.
+    fn backward_unembed(&self, ws: &mut GpuWorkspace, dims: StepDims, d_x: *mut c_void) -> *mut c_void {
+        let StepDims { s, d, vocab, .. } = dims;
+        // SAFETY: see contract.
         unsafe {
             cuda_d_weight(
                 d_x,
@@ -666,156 +753,173 @@ impl Transformer {
                 vocab as i32,
                 d as i32,
             );
-        }
-        unsafe {
             cuda_add_inplace_f32(ws.g_dw_output.ptr, ws.d_dw_output.ptr, (d * vocab) as i32);
         }
+        ws.d_dhidden.ptr as *mut c_void
+    }
 
-        let mut d_dx: *mut c_void = ws.d_dhidden.ptr as *mut c_void;
+    // Feed-forward sublayer backward: FF backward → LN2 backward → residual.
+    // Takes the incoming gradient and returns the gradient out of the FF sublayer
+    // (which the attention sublayer backward then consumes).
+    fn ffn_sublayer_backward(
+        &self,
+        ws: &mut GpuWorkspace,
+        dims: StepDims,
+        layer_idx: usize,
+        d_dx: *mut c_void,
+    ) -> *mut c_void {
+        let StepDims { s, d, ff, .. } = dims;
 
-        // ── 5. Backward through layers (in reverse) ──
-        for layer_idx in (0..layers).rev() {
-            // 5a. Feed-forward backward
-            unsafe {
-                cuda_feed_forward_backward(
-                    ws.ff_inputs[layer_idx].ptr as *const c_void,
-                    ws.pre_gelus[layer_idx].ptr as *const c_void,
-                    d_dx,
-                    ws.d_w1[layer_idx].ptr as *const c_void,
-                    ws.d_w2[layer_idx].ptr as *const c_void,
-                    ws.b_sd[0].ptr as *mut c_void,
-                    ws.b_dff[0].ptr,
-                    ws.b_dff[1].ptr,
-                    ws.b_ff.ptr,
-                    ws.b_d[0].ptr,
-                    s as i32,
-                    d as i32,
-                    ff as i32,
-                );
-            }
-            unsafe {
-                cuda_add_inplace_f32(ws.g_dw1[layer_idx].ptr, ws.b_dff[0].ptr, (d * ff) as i32);
-                cuda_add_inplace_f32(ws.g_dw2[layer_idx].ptr, ws.b_dff[1].ptr, (ff * d) as i32);
-                cuda_add_inplace_f32(ws.g_db1[layer_idx].ptr, ws.b_ff.ptr, ff as i32);
-                cuda_add_inplace_f32(ws.g_db2[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
-            }
-            unsafe { cuda_clamp_f16(ws.b_sd[0].ptr as *mut c_void, (s * d) as i32); }
-
-            // 5b. Layer norm 2 backward
-            unsafe {
-                cuda_layer_norm_backward(
-                    ws.post_attn_residuals[layer_idx].ptr as *const c_void,
-                    ws.b_sd[0].ptr as *const c_void,
-                    ws.d_ln_gamma[layer_idx].ptr as *const c_void,
-                    ws.b_dd.ptr as *mut c_void,
-                    ws.b_d[0].ptr,
-                    ws.b_d[1].ptr,
-                    s as i32,
-                    d as i32,
-                    1e-5f32,
-                );
-            }
-            unsafe {
-                cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
-                cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
-            }
-            unsafe { cuda_clamp_f16(ws.b_dd.ptr as *mut c_void, (s * d) as i32); }
-
-            // Residual: d_dx + LN2 backprop
-            unsafe {
-                cuda_memcpy_d2d(
-                    ws.b_sd[2].ptr as *mut c_void,
-                    d_dx,
-                    (s * d * 2) as usize,
-                );
-                cuda_add_inplace_f16(
-                    ws.b_sd[2].ptr as *mut c_void,
-                    ws.b_dd.ptr as *const c_void,
-                    (s * d) as i32,
-                );
-            }
-            unsafe { cuda_clamp_f16(ws.b_sd[2].ptr as *mut c_void, (s * d) as i32); }
-
-            // 5c. Wo backward
-            unsafe {
-                cuda_d_weight(
-                    ws.concat_outputs[layer_idx].ptr as *const c_void,
-                    ws.b_sd[2].ptr as *const c_void,
-                    ws.b_dd.ptr,
-                    s as i32,
-                    d as i32,
-                    d as i32,
-                );
-            }
-            unsafe {
-                cuda_add_inplace_f32(ws.g_dwo[layer_idx].ptr, ws.b_dd.ptr, (d * d) as i32);
-            }
-
-            // d_wo_x = d_post_attn @ wo^T
-            unsafe {
-                cuda_matmul(
-                    ws.b_sd[2].ptr as *const c_void,
-                    ws.d_wo[layer_idx].ptr as *const c_void,
-                    ws.d_wo_x.ptr as *mut c_void,
-                    s as i32,
-                    d as i32,
-                    d as i32,
-                );
-            }
-
-            // ── Batched multi-head attention backward ──
-            // Weight gradients are accumulated into g_wq_all/g_wk_all/g_wv_all
-            // (β=1 inside the kernel). The dX gradient goes to b_sd_head.
-            unsafe {
-                cuda_attention_backward_batched(
-                    ws.post_ff_residuals[layer_idx].ptr as *const c_void,
-                    ws.d_wq_all[layer_idx].ptr as *const c_void,
-                    ws.d_wk_all[layer_idx].ptr as *const c_void,
-                    ws.d_wv_all[layer_idx].ptr as *const c_void,
-                    ws.head_p_all[layer_idx].ptr as *const c_void,
-                    ws.d_wo_x.ptr as *const c_void,
-                    ws.b_sd_head.ptr as *mut c_void,
-                    ws.g_wq_all[layer_idx].ptr,
-                    ws.g_wk_all[layer_idx].ptr,
-                    ws.g_wv_all[layer_idx].ptr,
-                    s as i32, d as i32, hd as i32, h as i32,
-                );
-            }
-            unsafe { cuda_clamp_f16(ws.b_sd_head.ptr as *mut c_void, (s * d) as i32); }
-
-            // 5d. Layer norm 1 backward
-            unsafe {
-                cuda_layer_norm_backward(
-                    ws.layer_inputs[layer_idx].ptr as *const c_void,
-                    ws.b_sd_head.ptr as *const c_void,
-                    ws.d_ln_gamma[layer_idx].ptr as *const c_void,
-                    ws.b_sd[1].ptr as *mut c_void,
-                    ws.b_d[0].ptr,
-                    ws.b_d[1].ptr,
-                    s as i32,
-                    d as i32,
-                    1e-5f32,
-                );
-            }
-            unsafe {
-                cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
-                cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
-            }
-
-            // Residual: layer_input gradient = residual (b_sd[2]) + LN1 backprop (b_sd[1])
-            unsafe {
-                cuda_add_inplace_f16(
-                    ws.b_sd[1].ptr as *mut c_void,
-                    ws.b_sd[2].ptr as *const c_void,
-                    (s * d) as i32,
-                );
-                cuda_clamp_f16(ws.b_sd[1].ptr as *mut c_void, (s * d) as i32);
-            }
-            d_dx = ws.b_sd[1].ptr as *mut c_void;
+        // Feed-forward backward, accumulate its weight/bias gradients.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_feed_forward_backward(
+                ws.ff_inputs[layer_idx].ptr as *const c_void,
+                ws.pre_gelus[layer_idx].ptr as *const c_void,
+                d_dx,
+                ws.d_w1[layer_idx].ptr as *const c_void,
+                ws.d_w2[layer_idx].ptr as *const c_void,
+                ws.b_sd[0].ptr as *mut c_void,
+                ws.b_dff[0].ptr,
+                ws.b_dff[1].ptr,
+                ws.b_ff.ptr,
+                ws.b_d[0].ptr,
+                s as i32,
+                d as i32,
+                ff as i32,
+            );
+            cuda_add_inplace_f32(ws.g_dw1[layer_idx].ptr, ws.b_dff[0].ptr, (d * ff) as i32);
+            cuda_add_inplace_f32(ws.g_dw2[layer_idx].ptr, ws.b_dff[1].ptr, (ff * d) as i32);
+            cuda_add_inplace_f32(ws.g_db1[layer_idx].ptr, ws.b_ff.ptr, ff as i32);
+            cuda_add_inplace_f32(ws.g_db2[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
+            cuda_clamp_f16(ws.b_sd[0].ptr as *mut c_void, (s * d) as i32);
         }
 
-        // ── 6. Clip gradient norms on GPU ──
-        let max_norm = 1.0f32;
+        // Layer norm 2 backward, accumulate its gamma/beta gradients.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm_backward(
+                ws.post_attn_residuals[layer_idx].ptr as *const c_void,
+                ws.b_sd[0].ptr as *const c_void,
+                ws.d_ln_gamma[layer_idx].ptr as *const c_void,
+                ws.b_dd.ptr as *mut c_void,
+                ws.b_d[0].ptr,
+                ws.b_d[1].ptr,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
+            cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
+            cuda_clamp_f16(ws.b_dd.ptr as *mut c_void, (s * d) as i32);
+        }
+
+        // Residual: d_dx + LN2 backprop → b_sd[2].
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(ws.b_sd[2].ptr as *mut c_void, d_dx, (s * d * 2) as usize);
+            cuda_add_inplace_f16(
+                ws.b_sd[2].ptr as *mut c_void,
+                ws.b_dd.ptr as *const c_void,
+                (s * d) as i32,
+            );
+            cuda_clamp_f16(ws.b_sd[2].ptr as *mut c_void, (s * d) as i32);
+        }
+        ws.b_sd[2].ptr as *mut c_void
+    }
+
+    // Attention sublayer backward: wo → multi-head attention → LN1, accumulating
+    // weight gradients and returning the block's input gradient (for the next,
+    // earlier block). Takes the gradient out of the FF sublayer.
+    fn attn_sublayer_backward(
+        &self,
+        ws: &mut GpuWorkspace,
+        dims: StepDims,
+        layer_idx: usize,
+        d_dx: *mut c_void,
+    ) -> *mut c_void {
+        let StepDims { s, d, h, hd, .. } = dims;
+
+        // Wo backward (accumulate its gradient), then d_wo_x = d_post_attn @ wo^T.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_d_weight(
+                ws.concat_outputs[layer_idx].ptr as *const c_void,
+                d_dx as *const c_void,
+                ws.b_dd.ptr,
+                s as i32,
+                d as i32,
+                d as i32,
+            );
+            cuda_add_inplace_f32(ws.g_dwo[layer_idx].ptr, ws.b_dd.ptr, (d * d) as i32);
+            cuda_matmul(
+                d_dx as *const c_void,
+                ws.d_wo[layer_idx].ptr as *const c_void,
+                ws.d_wo_x.ptr as *mut c_void,
+                s as i32,
+                d as i32,
+                d as i32,
+            );
+        }
+
+        // Batched multi-head attention backward. Weight gradients accumulate into
+        // g_wq_all/g_wk_all/g_wv_all (β=1 inside the kernel); dX goes to b_sd_head.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_attention_backward_batched(
+                ws.post_ff_residuals[layer_idx].ptr as *const c_void,
+                ws.d_wq_all[layer_idx].ptr as *const c_void,
+                ws.d_wk_all[layer_idx].ptr as *const c_void,
+                ws.d_wv_all[layer_idx].ptr as *const c_void,
+                ws.head_p_all[layer_idx].ptr as *const c_void,
+                ws.d_wo_x.ptr as *const c_void,
+                ws.b_sd_head.ptr as *mut c_void,
+                ws.g_wq_all[layer_idx].ptr,
+                ws.g_wk_all[layer_idx].ptr,
+                ws.g_wv_all[layer_idx].ptr,
+                s as i32, d as i32, hd as i32, h as i32,
+            );
+            cuda_clamp_f16(ws.b_sd_head.ptr as *mut c_void, (s * d) as i32);
+        }
+
+        // Layer norm 1 backward, accumulate its gamma/beta gradients.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm_backward(
+                ws.layer_inputs[layer_idx].ptr as *const c_void,
+                ws.b_sd_head.ptr as *const c_void,
+                ws.d_ln_gamma[layer_idx].ptr as *const c_void,
+                ws.b_sd[1].ptr as *mut c_void,
+                ws.b_d[0].ptr,
+                ws.b_d[1].ptr,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
+            cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
+        }
+
+        // Residual: layer_input gradient = incoming FF-sublayer gradient (d_dx)
+        // + LN1 backprop (b_sd[1]).
+        // SAFETY: see contract.
+        unsafe {
+            cuda_add_inplace_f16(
+                ws.b_sd[1].ptr as *mut c_void,
+                d_dx as *const c_void,
+                (s * d) as i32,
+            );
+            cuda_clamp_f16(ws.b_sd[1].ptr as *mut c_void, (s * d) as i32);
+        }
+        ws.b_sd[1].ptr as *mut c_void
+    }
+
+    // Clip every accumulated gradient buffer to unit norm before the optimizer
+    // step (the per-step loss-spike guard).
+    fn clip_gradients(&self, ws: &mut GpuWorkspace, dims: StepDims, layers: usize) {
+        let StepDims { d, h, hd, ff, vocab, .. } = dims;
+        let max_norm = TRAIN_STEP_CLIP_NORM;
+        // SAFETY: see contract; each buffer's element count is passed alongside.
         unsafe {
             cuda_clip_norm(ws.g_dw_output.ptr, (d * vocab) as i32, max_norm);
             for layer_idx in 0..layers {
@@ -831,8 +935,13 @@ impl Transformer {
                 cuda_clip_norm(ws.g_dln_beta[layer_idx].ptr, d as i32, max_norm);
             }
         }
+    }
 
-        // ── 7. Accumulate embedding gradients on GPU, then clip ──
+    // Scatter-add the input gradient into the embedding gradient (by token id)
+    // and clip it, closing out the backward pass.
+    fn accumulate_embedding_grad(&self, ws: &mut GpuWorkspace, dims: StepDims, d_dx: *mut c_void) {
+        let StepDims { s, d, vocab, .. } = dims;
+        // SAFETY: see contract; d_token_ids holds the s token ids scattered into.
         unsafe {
             cuda_scatter_add_embedding_grad(
                 d_dx as *const c_void,
@@ -842,218 +951,270 @@ impl Transformer {
                 d as i32,
                 vocab as i32,
             );
-            cuda_clip_norm(ws.g_d_embedding.ptr, (vocab * d) as i32, max_norm);
+            cuda_clip_norm(ws.g_d_embedding.ptr, (vocab * d) as i32, TRAIN_STEP_CLIP_NORM);
         }
-
-        loss
     }
+    /// Serialize the model to `path` in the versioned `GORK` binary format.
     pub fn save_to_path(&self, path: &str) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let mut f = std::fs::File::create(path)?;
-        f.write_all(b"GORK")?;
-        f.write_all(&3u32.to_le_bytes())?;
-        let d = self.wo[0].len() as i64;
-        let vocab = self.w_output[0].len() as i64;
-        let ctx = self.positional_table.len() as i64;
-        let ff = self.w1[0][0].len() as i64;
-        f.write_all(&d.to_le_bytes())?;
-        f.write_all(&vocab.to_le_bytes())?;
-        f.write_all(&ctx.to_le_bytes())?;
-        f.write_all(&self.heads.to_le_bytes())?;
-        f.write_all(&ff.to_le_bytes())?;
-        f.write_all(&self.layers.to_le_bytes())?;
-        let write_2d = |f: &mut std::fs::File, m: &[Vec<f32>]| -> Result<(), std::io::Error> {
-            let rows = m.len() as u64;
-            let cols = m[0].len() as u64;
-            f.write_all(&rows.to_le_bytes())?;
-            f.write_all(&cols.to_le_bytes())?;
-            for row in m {
-                for &v in row {
-                    f.write_all(&v.to_le_bytes())?;
-                }
-            }
-            Ok(())
-        };
-        let write_1d = |f: &mut std::fs::File, v: &[f32]| -> Result<(), std::io::Error> {
-            let len = v.len() as u64;
-            f.write_all(&len.to_le_bytes())?;
-            for &x in v {
-                f.write_all(&x.to_le_bytes())?;
-            }
-            Ok(())
-        };
-        write_2d(&mut f, &self.embedding_table)?;
-        write_2d(&mut f, &self.positional_table)?;
-        for layer_idx in 0..self.layers as usize {
-            for head_idx in 0..self.heads as usize {
-                write_2d(&mut f, &self.wq[layer_idx][head_idx])?;
-                write_2d(&mut f, &self.wk[layer_idx][head_idx])?;
-                write_2d(&mut f, &self.wv[layer_idx][head_idx])?;
-            }
-        }
-        for mat in &self.wo { write_2d(&mut f, mat)?; }
-        for mat in &self.w1 { write_2d(&mut f, mat)?; }
-        for mat in &self.w2 { write_2d(&mut f, mat)?; }
-        for v in &self.b1 { write_1d(&mut f, v)?; }
-        for v in &self.b2 { write_1d(&mut f, v)?; }
-        for v in &self.ln_gamma { write_1d(&mut f, v)?; }
-        for v in &self.ln_beta { write_1d(&mut f, v)?; }
-        write_2d(&mut f, &self.w_output)?;
-        Ok(())
+        write_model(self, &mut f)
     }
 
+    /// Serialize the model to `model.bin` inside `dir`.
     pub fn save(&self, dir: &str) -> Result<(), std::io::Error> {
         self.save_to_path(&format!("{}/model.bin", dir))
     }
 
+    /// Load a model from `model.bin` inside `dir`, accepting any supported format
+    /// version. Errors on bad magic, truncation, or an invalid header.
     pub fn load(dir: &str) -> Result<Self, std::io::Error> {
-        use std::io::Read;
-        let path = format!("{}/model.bin", dir);
-        let mut f = std::fs::File::open(&path)?;
-        let read_u32 = |f: &mut std::fs::File| -> Result<u32, std::io::Error> {
-            let mut buf = [0u8; 4];
-            f.read_exact(&mut buf)?;
-            Ok(u32::from_le_bytes(buf))
-        };
-        let read_i64 = |f: &mut std::fs::File| -> Result<i64, std::io::Error> {
-            let mut buf = [0u8; 8];
-            f.read_exact(&mut buf)?;
-            Ok(i64::from_le_bytes(buf))
-        };
-        let read_u64 = |f: &mut std::fs::File| -> Result<u64, std::io::Error> {
-            let mut buf = [0u8; 8];
-            f.read_exact(&mut buf)?;
-            Ok(u64::from_le_bytes(buf))
-        };
-        let read_2d = |f: &mut std::fs::File| -> Result<Vec<Vec<f32>>, std::io::Error> {
-            let rows = read_u64(f)? as usize;
-            let cols = read_u64(f)? as usize;
-            let mut buf = vec![0u8; rows * cols * 4];
-            f.read_exact(&mut buf)?;
-            let data: Vec<f32> = buf
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect();
-            Ok(data.chunks(cols).map(|c| c.to_vec()).collect())
-        };
-        let read_1d = |f: &mut std::fs::File| -> Result<Vec<f32>, std::io::Error> {
-            let len = read_u64(f)? as usize;
-            let mut buf = vec![0u8; len * 4];
-            f.read_exact(&mut buf)?;
-            Ok(buf
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect())
-        };
-        // verify magic
-        let mut magic = [0u8; 4];
-        f.read_exact(&mut magic)?;
-        if &magic != b"GORK" {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bad magic"));
+        let mut f = std::fs::File::open(format!("{}/model.bin", dir))?;
+        read_model(&mut f)
+    }
+}
+
+// ── Model (de)serialization ─────────────────────────────────────────────────
+// One definition of the on-disk format, shared by the file-backed (`save`/
+// `load`) and in-memory (`to_bytes`/`from_bytes`) paths by being generic over
+// the writer/reader — so the byte layout is described exactly once.
+
+const MODEL_MAGIC: &[u8; 4] = b"GORK";
+const MODEL_VERSION: u32 = 3;
+
+fn write_2d<W: std::io::Write>(w: &mut W, m: &[Vec<f32>]) -> Result<(), std::io::Error> {
+    w.write_all(&(m.len() as u64).to_le_bytes())?;
+    w.write_all(&(m[0].len() as u64).to_le_bytes())?;
+    for row in m {
+        for &v in row {
+            w.write_all(&v.to_le_bytes())?;
         }
-        let version = read_u32(&mut f)?;
-        let dimensions = read_i64(&mut f)?;
-        let _vocab = read_i64(&mut f)?;
-        let _ctx_window = read_i64(&mut f)?;
-        let heads = read_i64(&mut f)?;
-        let _ff_multiplier = read_i64(&mut f)?;
-        let layers = if version >= 2 { read_i64(&mut f)? } else { 6 };
-        let head_dim = dimensions / heads;
-        let embedding_table = read_2d(&mut f)?;
-        let positional_table = read_2d(&mut f)?;
+    }
+    Ok(())
+}
+
+fn write_1d<W: std::io::Write>(w: &mut W, v: &[f32]) -> Result<(), std::io::Error> {
+    w.write_all(&(v.len() as u64).to_le_bytes())?;
+    for &x in v {
+        w.write_all(&x.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+fn write_model<W: std::io::Write>(t: &Transformer, w: &mut W) -> Result<(), std::io::Error> {
+    w.write_all(MODEL_MAGIC)?;
+    w.write_all(&MODEL_VERSION.to_le_bytes())?;
+    let d = t.wo[0].len() as i64;
+    let vocab = t.w_output[0].len() as i64;
+    let ctx = t.positional_table.len() as i64;
+    let ff = t.w1[0][0].len() as i64;
+    for field in [d, vocab, ctx, t.heads, ff, t.layers] {
+        w.write_all(&field.to_le_bytes())?;
+    }
+    write_2d(w, &t.embedding_table)?;
+    write_2d(w, &t.positional_table)?;
+    for layer in 0..t.layers as usize {
+        for head in 0..t.heads as usize {
+            write_2d(w, &t.wq[layer][head])?;
+            write_2d(w, &t.wk[layer][head])?;
+            write_2d(w, &t.wv[layer][head])?;
+        }
+    }
+    for mat in &t.wo { write_2d(w, mat)?; }
+    for mat in &t.w1 { write_2d(w, mat)?; }
+    for mat in &t.w2 { write_2d(w, mat)?; }
+    for v in &t.b1 { write_1d(w, v)?; }
+    for v in &t.b2 { write_1d(w, v)?; }
+    for v in &t.ln_gamma { write_1d(w, v)?; }
+    for v in &t.ln_beta { write_1d(w, v)?; }
+    write_2d(w, &t.w_output)?;
+    Ok(())
+}
+
+fn read_u32<R: std::io::Read>(r: &mut R) -> Result<u32, std::io::Error> {
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    Ok(u32::from_le_bytes(b))
+}
+
+fn read_i64<R: std::io::Read>(r: &mut R) -> Result<i64, std::io::Error> {
+    let mut b = [0u8; 8];
+    r.read_exact(&mut b)?;
+    Ok(i64::from_le_bytes(b))
+}
+
+fn read_u64<R: std::io::Read>(r: &mut R) -> Result<u64, std::io::Error> {
+    let mut b = [0u8; 8];
+    r.read_exact(&mut b)?;
+    Ok(u64::from_le_bytes(b))
+}
+
+fn read_2d<R: std::io::Read>(r: &mut R) -> Result<Vec<Vec<f32>>, std::io::Error> {
+    let rows = read_u64(r)? as usize;
+    let cols = read_u64(r)? as usize;
+    let mut buf = vec![0u8; rows * cols * 4];
+    r.read_exact(&mut buf)?;
+    // chunks_exact(4) yields exactly-4-byte slices, so try_into can't fail here.
+    let data: Vec<f32> = buf
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    Ok(data.chunks(cols).map(|c| c.to_vec()).collect())
+}
+
+fn read_1d<R: std::io::Read>(r: &mut R) -> Result<Vec<f32>, std::io::Error> {
+    let len = read_u64(r)? as usize;
+    let mut buf = vec![0u8; len * 4];
+    r.read_exact(&mut buf)?;
+    // chunks_exact(4) yields exactly-4-byte slices, so try_into can't fail here.
+    Ok(buf
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect())
+}
+
+struct ModelFileHeader {
+    version: u32,
+    heads: i64,
+    head_dim: i64,
+    layers: i64,
+}
+
+// Parse and validate the fixed-size header: magic, version, and the six i64
+// dimension fields. `layers` was added in v2; v1 files are assumed to be 6-layer.
+fn read_header<R: std::io::Read>(r: &mut R) -> Result<ModelFileHeader, std::io::Error> {
+    let mut magic = [0u8; 4];
+    r.read_exact(&mut magic)?;
+    if &magic != MODEL_MAGIC {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bad magic"));
+    }
+    let version = read_u32(r)?;
+    let dimensions = read_i64(r)?;
+    let vocab = read_i64(r)?;
+    let ctx = read_i64(r)?;
+    let heads = read_i64(r)?;
+    let ff_multiplier = read_i64(r)?;
+    let layers = if version >= 2 { read_i64(r)? } else { 6 };
+    validate_header_fields(dimensions, vocab, ctx, heads, ff_multiplier, layers)?;
+    Ok(ModelFileHeader {
+        version,
+        heads,
+        head_dim: dimensions / heads,
+        layers,
+    })
+}
+
+// Per-head Q/K/V weights. v3 stores them per layer ([layers][heads][d][hd]);
+// legacy v1/v2 stored a single layer's weights, broadcast to every layer.
+#[allow(clippy::type_complexity)]
+fn read_qkv_weights<R: std::io::Read>(
+    r: &mut R,
+    version: u32,
+    layers: usize,
+    heads: usize,
+) -> Result<(Vec<Vec<Vec<Vec<f32>>>>, Vec<Vec<Vec<Vec<f32>>>>, Vec<Vec<Vec<Vec<f32>>>>), std::io::Error>
+{
+    let read_layer = |r: &mut R| -> Result<(Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>), std::io::Error> {
         let mut wq = Vec::new();
         let mut wk = Vec::new();
         let mut wv = Vec::new();
-        let h = heads as usize;
-        let l = layers as usize;
-        if version >= 3 {
-            // Per-layer format: [layers][heads][d][hd]
-            for _ in 0..l {
-                let mut layer_wq = Vec::new();
-                let mut layer_wk = Vec::new();
-                let mut layer_wv = Vec::new();
-                for _ in 0..h {
-                    layer_wq.push(read_2d(&mut f)?);
-                    layer_wk.push(read_2d(&mut f)?);
-                    layer_wv.push(read_2d(&mut f)?);
-                }
-                wq.push(layer_wq);
-                wk.push(layer_wk);
-                wv.push(layer_wv);
-            }
-        } else {
-            // Legacy v1/v2: single-layer shared weights → broadcast to all layers
-            let mut single_wq = Vec::new();
-            let mut single_wk = Vec::new();
-            let mut single_wv = Vec::new();
-            for _ in 0..h {
-                single_wq.push(read_2d(&mut f)?);
-                single_wk.push(read_2d(&mut f)?);
-                single_wv.push(read_2d(&mut f)?);
-            }
-            for _ in 0..l {
-                wq.push(single_wq.clone());
-                wk.push(single_wk.clone());
-                wv.push(single_wv.clone());
-            }
+        for _ in 0..heads {
+            wq.push(read_2d(r)?);
+            wk.push(read_2d(r)?);
+            wv.push(read_2d(r)?);
         }
-        let mut wo = Vec::new();
-        let mut w1 = Vec::new();
-        let mut w2 = Vec::new();
-        let mut b1 = Vec::new();
-        let mut b2 = Vec::new();
-        let mut ln_gamma = Vec::new();
-        let mut ln_beta = Vec::new();
-        if version >= 3 {
-            for _ in 0..l {
-                wo.push(read_2d(&mut f)?);
-            }
-            for _ in 0..l {
-                w1.push(read_2d(&mut f)?);
-            }
-            for _ in 0..l {
-                w2.push(read_2d(&mut f)?);
-            }
-            for _ in 0..l {
-                b1.push(read_1d(&mut f)?);
-            }
-            for _ in 0..l {
-                b2.push(read_1d(&mut f)?);
-            }
-            for _ in 0..l {
-                ln_gamma.push(read_1d(&mut f)?);
-            }
-            for _ in 0..l {
-                ln_beta.push(read_1d(&mut f)?);
-            }
-        } else {
-            let single_wo = read_2d(&mut f)?;
-            let single_w1 = read_2d(&mut f)?;
-            let single_w2 = read_2d(&mut f)?;
-            let single_b1 = read_1d(&mut f)?;
-            let single_b2 = read_1d(&mut f)?;
-            let single_ln_gamma = read_1d(&mut f)?;
-            let single_ln_beta = read_1d(&mut f)?;
-            for _ in 0..l {
-                wo.push(single_wo.clone());
-                w1.push(single_w1.clone());
-                w2.push(single_w2.clone());
-                b1.push(single_b1.clone());
-                b2.push(single_b2.clone());
-                ln_gamma.push(single_ln_gamma.clone());
-                ln_beta.push(single_ln_beta.clone());
-            }
+        Ok((wq, wk, wv))
+    };
+
+    let mut wq = Vec::new();
+    let mut wk = Vec::new();
+    let mut wv = Vec::new();
+    if version >= 3 {
+        for _ in 0..layers {
+            let (lq, lk, lv) = read_layer(r)?;
+            wq.push(lq);
+            wk.push(lk);
+            wv.push(lv);
         }
-        let w_output = read_2d(&mut f)?;
-        Ok(Transformer {
-            embedding_table,
-            positional_table,
-            wq, wk, wv, wo,
-            heads, head_dim, layers,
-            w1, w2, b1, b2, ln_gamma, ln_beta,
-            w_output,
-        })
+    } else {
+        let (sq, sk, sv) = read_layer(r)?;
+        for _ in 0..layers {
+            wq.push(sq.clone());
+            wk.push(sk.clone());
+            wv.push(sv.clone());
+        }
     }
+    Ok((wq, wk, wv))
+}
+
+struct LayerBlockWeights {
+    wo: Vec<Vec<Vec<f32>>>,
+    w1: Vec<Vec<Vec<f32>>>,
+    w2: Vec<Vec<Vec<f32>>>,
+    b1: Vec<Vec<f32>>,
+    b2: Vec<Vec<f32>>,
+    ln_gamma: Vec<Vec<f32>>,
+    ln_beta: Vec<Vec<f32>>,
+}
+
+// The per-layer block tensors (wo, w1, w2, biases, layer-norm scale/shift). Same
+// v3-per-layer vs legacy-broadcast rule as the QKV weights.
+fn read_block_weights<R: std::io::Read>(
+    r: &mut R,
+    version: u32,
+    layers: usize,
+) -> Result<LayerBlockWeights, std::io::Error> {
+    let mut b = LayerBlockWeights {
+        wo: Vec::new(), w1: Vec::new(), w2: Vec::new(),
+        b1: Vec::new(), b2: Vec::new(), ln_gamma: Vec::new(), ln_beta: Vec::new(),
+    };
+    if version >= 3 {
+        for _ in 0..layers { b.wo.push(read_2d(r)?); }
+        for _ in 0..layers { b.w1.push(read_2d(r)?); }
+        for _ in 0..layers { b.w2.push(read_2d(r)?); }
+        for _ in 0..layers { b.b1.push(read_1d(r)?); }
+        for _ in 0..layers { b.b2.push(read_1d(r)?); }
+        for _ in 0..layers { b.ln_gamma.push(read_1d(r)?); }
+        for _ in 0..layers { b.ln_beta.push(read_1d(r)?); }
+    } else {
+        let (wo, w1, w2) = (read_2d(r)?, read_2d(r)?, read_2d(r)?);
+        let (b1, b2) = (read_1d(r)?, read_1d(r)?);
+        let (ln_gamma, ln_beta) = (read_1d(r)?, read_1d(r)?);
+        for _ in 0..layers {
+            b.wo.push(wo.clone());
+            b.w1.push(w1.clone());
+            b.w2.push(w2.clone());
+            b.b1.push(b1.clone());
+            b.b2.push(b2.clone());
+            b.ln_gamma.push(ln_gamma.clone());
+            b.ln_beta.push(ln_beta.clone());
+        }
+    }
+    Ok(b)
+}
+
+fn read_model<R: std::io::Read>(r: &mut R) -> Result<Transformer, std::io::Error> {
+    let header = read_header(r)?;
+    let embedding_table = read_2d(r)?;
+    let positional_table = read_2d(r)?;
+    let (wq, wk, wv) = read_qkv_weights(r, header.version, header.layers as usize, header.heads as usize)?;
+    let blocks = read_block_weights(r, header.version, header.layers as usize)?;
+    let w_output = read_2d(r)?;
+    Ok(Transformer {
+        embedding_table,
+        positional_table,
+        wq, wk, wv,
+        wo: blocks.wo,
+        heads: header.heads,
+        head_dim: header.head_dim,
+        layers: header.layers,
+        w1: blocks.w1,
+        w2: blocks.w2,
+        b1: blocks.b1,
+        b2: blocks.b2,
+        ln_gamma: blocks.ln_gamma,
+        ln_beta: blocks.ln_beta,
+        w_output,
+    })
 }
 
 unsafe extern "C" {
@@ -1237,15 +1398,6 @@ unsafe extern "C" {
         seq: i32, d: i32, hd: i32, h: i32,
     );
 
-    fn cuda_sgd_momentum(
-        g: *const f32,
-        w: *mut c_void,
-        v: *mut f32,
-        lr: f32,
-        mu: f32,
-        n: i32,
-    );
-
     fn cuda_adam(
         g: *const f32,
         w: *mut c_void,
@@ -1324,9 +1476,9 @@ pub fn gpu_clip_gradients(ws: &GpuWorkspace, layers: usize, max_norm: f32) -> f3
 // correction); `accum_steps` is the gradient-accumulation factor so the summed
 // gradient is averaged. `v_*` hold the first moment (m), `s_*` the second (v).
 pub fn gpu_adam_update(ws: &GpuWorkspace, lr: f32, step: i32, accum_steps: usize, layers: usize) {
-    let beta1 = 0.9f32;
-    let beta2 = 0.999f32;
-    let eps = 1e-8f32;
+    let beta1 = ADAM_BETA1;
+    let beta2 = ADAM_BETA2;
+    let eps = ADAM_EPS;
     let bc1 = 1.0 - beta1.powi(step);
     let bc2 = 1.0 - beta2.powi(step);
     let gs = 1.0 / accum_steps as f32;
@@ -1436,217 +1588,16 @@ pub fn sync_weights_from_gpu(ws: &GpuWorkspace, t: &mut Transformer) {
 }
 
 impl Transformer {
+    /// Serialize the model to an in-memory buffer (same format as `save`).
     pub fn to_bytes(&self) -> Result<Vec<u8>, std::io::Error> {
-        use std::io::Write;
         let mut buf = Vec::new();
-        buf.write_all(b"GORK")?;
-        buf.write_all(&3u32.to_le_bytes())?;
-        let d = self.wo[0].len() as i64;
-        let vocab = self.w_output[0].len() as i64;
-        let ctx = self.positional_table.len() as i64;
-        let ff = self.w1[0][0].len() as i64;
-        buf.write_all(&d.to_le_bytes())?;
-        buf.write_all(&vocab.to_le_bytes())?;
-        buf.write_all(&ctx.to_le_bytes())?;
-        buf.write_all(&self.heads.to_le_bytes())?;
-        buf.write_all(&ff.to_le_bytes())?;
-        buf.write_all(&self.layers.to_le_bytes())?;
-        let write_2d = |buf: &mut Vec<u8>, m: &[Vec<f32>]| {
-            let rows = m.len() as u64;
-            let cols = m[0].len() as u64;
-            buf.write_all(&rows.to_le_bytes())?;
-            buf.write_all(&cols.to_le_bytes())?;
-            for row in m {
-                for &v in row {
-                    buf.write_all(&v.to_le_bytes())?;
-                }
-            }
-            Ok::<_, std::io::Error>(())
-        };
-        let write_1d = |buf: &mut Vec<u8>, v: &[f32]| {
-            let len = v.len() as u64;
-            buf.write_all(&len.to_le_bytes())?;
-            for &x in v {
-                buf.write_all(&x.to_le_bytes())?;
-            }
-            Ok::<_, std::io::Error>(())
-        };
-        write_2d(&mut buf, &self.embedding_table)?;
-        write_2d(&mut buf, &self.positional_table)?;
-        for layer_idx in 0..self.layers as usize {
-            for head_idx in 0..self.heads as usize {
-                write_2d(&mut buf, &self.wq[layer_idx][head_idx])?;
-                write_2d(&mut buf, &self.wk[layer_idx][head_idx])?;
-                write_2d(&mut buf, &self.wv[layer_idx][head_idx])?;
-            }
-        }
-        for mat in &self.wo {
-            write_2d(&mut buf, mat)?;
-        }
-        for mat in &self.w1 {
-            write_2d(&mut buf, mat)?;
-        }
-        for mat in &self.w2 {
-            write_2d(&mut buf, mat)?;
-        }
-        for v in &self.b1 {
-            write_1d(&mut buf, v)?;
-        }
-        for v in &self.b2 {
-            write_1d(&mut buf, v)?;
-        }
-        for v in &self.ln_gamma {
-            write_1d(&mut buf, v)?;
-        }
-        for v in &self.ln_beta {
-            write_1d(&mut buf, v)?;
-        }
-        write_2d(&mut buf, &self.w_output)?;
+        write_model(self, &mut buf)?;
         Ok(buf)
     }
 
+    /// Deserialize a model from a byte buffer produced by `to_bytes`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        use std::io::Read;
-        let mut cursor = std::io::Cursor::new(bytes);
-        let read_u32 = |c: &mut std::io::Cursor<&[u8]>| -> Result<u32, std::io::Error> {
-            let mut buf = [0u8; 4];
-            c.read_exact(&mut buf)?;
-            Ok(u32::from_le_bytes(buf))
-        };
-        let read_i64 = |c: &mut std::io::Cursor<&[u8]>| -> Result<i64, std::io::Error> {
-            let mut buf = [0u8; 8];
-            c.read_exact(&mut buf)?;
-            Ok(i64::from_le_bytes(buf))
-        };
-        let read_u64 = |c: &mut std::io::Cursor<&[u8]>| -> Result<u64, std::io::Error> {
-            let mut buf = [0u8; 8];
-            c.read_exact(&mut buf)?;
-            Ok(u64::from_le_bytes(buf))
-        };
-        let read_2d = |c: &mut std::io::Cursor<&[u8]>| -> Result<Vec<Vec<f32>>, std::io::Error> {
-            let rows = read_u64(c)? as usize;
-            let cols = read_u64(c)? as usize;
-            let mut buf = vec![0u8; rows * cols * 4];
-            c.read_exact(&mut buf)?;
-            let data: Vec<f32> = buf
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect();
-            Ok(data.chunks(cols).map(|c| c.to_vec()).collect())
-        };
-        let read_1d = |c: &mut std::io::Cursor<&[u8]>| -> Result<Vec<f32>, std::io::Error> {
-            let len = read_u64(c)? as usize;
-            let mut buf = vec![0u8; len * 4];
-            c.read_exact(&mut buf)?;
-            Ok(buf
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect())
-        };
-        let mut magic = [0u8; 4];
-        cursor.read_exact(&mut magic)?;
-        if &magic != b"GORK" {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bad magic"));
-        }
-        let version = read_u32(&mut cursor)?;
-        let dimensions = read_i64(&mut cursor)?;
-        let _vocab = read_i64(&mut cursor)?;
-        let _ctx_window = read_i64(&mut cursor)?;
-        let heads = read_i64(&mut cursor)?;
-        let _ff_multiplier = read_i64(&mut cursor)?;
-        let layers = if version >= 2 { read_i64(&mut cursor)? } else { 6 };
-        let head_dim = dimensions / heads;
-        let embedding_table = read_2d(&mut cursor)?;
-        let positional_table = read_2d(&mut cursor)?;
-        let mut wq = Vec::new();
-        let mut wk = Vec::new();
-        let mut wv = Vec::new();
-        let h = heads as usize;
-        let l = layers as usize;
-        if version >= 3 {
-            for _ in 0..l {
-                let mut layer_wq = Vec::new();
-                let mut layer_wk = Vec::new();
-                let mut layer_wv = Vec::new();
-                for _ in 0..h {
-                    layer_wq.push(read_2d(&mut cursor)?);
-                    layer_wk.push(read_2d(&mut cursor)?);
-                    layer_wv.push(read_2d(&mut cursor)?);
-                }
-                wq.push(layer_wq);
-                wk.push(layer_wk);
-                wv.push(layer_wv);
-            }
-        } else {
-            let mut single_wq = Vec::new();
-            let mut single_wk = Vec::new();
-            let mut single_wv = Vec::new();
-            for _ in 0..h {
-                single_wq.push(read_2d(&mut cursor)?);
-                single_wk.push(read_2d(&mut cursor)?);
-                single_wv.push(read_2d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                wq.push(single_wq.clone());
-                wk.push(single_wk.clone());
-                wv.push(single_wv.clone());
-            }
-        }
-        let mut wo = Vec::new();
-        let mut w1 = Vec::new();
-        let mut w2 = Vec::new();
-        let mut b1 = Vec::new();
-        let mut b2 = Vec::new();
-        let mut ln_gamma = Vec::new();
-        let mut ln_beta = Vec::new();
-        if version >= 3 {
-            for _ in 0..l {
-                wo.push(read_2d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                w1.push(read_2d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                w2.push(read_2d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                b1.push(read_1d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                b2.push(read_1d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                ln_gamma.push(read_1d(&mut cursor)?);
-            }
-            for _ in 0..l {
-                ln_beta.push(read_1d(&mut cursor)?);
-            }
-        } else {
-            let single_wo = read_2d(&mut cursor)?;
-            let single_w1 = read_2d(&mut cursor)?;
-            let single_w2 = read_2d(&mut cursor)?;
-            let single_b1 = read_1d(&mut cursor)?;
-            let single_b2 = read_1d(&mut cursor)?;
-            let single_ln_gamma = read_1d(&mut cursor)?;
-            let single_ln_beta = read_1d(&mut cursor)?;
-            for _ in 0..l {
-                wo.push(single_wo.clone());
-                w1.push(single_w1.clone());
-                w2.push(single_w2.clone());
-                b1.push(single_b1.clone());
-                b2.push(single_b2.clone());
-                ln_gamma.push(single_ln_gamma.clone());
-                ln_beta.push(single_ln_beta.clone());
-            }
-        }
-        let w_output = read_2d(&mut cursor)?;
-        Ok(Transformer {
-            embedding_table, positional_table,
-            wq, wk, wv, wo,
-            heads, head_dim, layers,
-            w1, w2, b1, b2, ln_gamma, ln_beta,
-            w_output,
-        })
+        read_model(&mut std::io::Cursor::new(bytes))
     }
 
     pub fn to_layer_rows(&self) -> Vec<LayerRow> {
