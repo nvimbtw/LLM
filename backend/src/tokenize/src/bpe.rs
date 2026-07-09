@@ -202,6 +202,9 @@ pub fn save_corpus(corpus: &[u32], path: &str) -> Result<(), io::Error> {
 pub fn load_merges(path: &str) -> Result<Vec<((u32, u32), u32)>, io::Error> {
     let data = std::fs::read(path)?;
     let mut merges = Vec::new();
+    // chunks_exact(12) yields exactly-12-byte chunks, so each fixed 4-byte
+    // sub-slice below is guaranteed to be 4 bytes and try_into can't fail. A
+    // trailing partial chunk (corrupt file) is dropped by chunks_exact.
     for chunk in data.chunks_exact(12) {
         let a = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
         let b = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
