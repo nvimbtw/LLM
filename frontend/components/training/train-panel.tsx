@@ -10,8 +10,15 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { Progress } from "@/components/ui/progress"
-import type { LossPoint } from "@/hooks/use-training"
+import type { BatchPoint, LossPoint } from "@/hooks/use-training"
 import type { TrainStats } from "@/lib/training-socket"
+
+// Fixed colours for the intra-batch spread chart's three lines.
+const batchChartConfig = {
+  max: { label: "Max", color: "hsl(0 72% 51%)" },
+  avg: { label: "Avg", color: "hsl(217 91% 60%)" },
+  min: { label: "Min", color: "hsl(142 71% 45%)" },
+} satisfies ChartConfig
 
 // Per-epoch line colour: a warm→cool gradient across the run so early epochs
 // read warm (red/orange) and later ones cool (green), making the downward drift
@@ -47,10 +54,12 @@ function Stat({ label, value }: { label: string; value: string }) {
 export function TrainPanel({
   train,
   loss,
+  batchSeries,
   checkpoints,
 }: {
   train: Partial<TrainStats>
   loss: LossPoint[]
+  batchSeries: BatchPoint[]
   checkpoints: string[]
 }) {
   const totalSteps =
@@ -198,6 +207,60 @@ export function TrainPanel({
       ) : (
         <div className="flex h-64 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
           Waiting for the first loss values…
+        </div>
+      )}
+
+      {batchSeries.length > 1 && (
+        <div className="space-y-2">
+          <div className="text-xs text-muted-foreground">
+            Intra-batch spread (last {batchSeries.length} reports) — highest,
+            average and lowest chunk loss within each window
+          </div>
+          <ChartContainer
+            config={batchChartConfig}
+            className="aspect-auto h-48 w-full"
+          >
+            <LineChart
+              data={batchSeries}
+              margin={{ left: 4, right: 4, top: 4 }}
+            >
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="step"
+                type="number"
+                domain={["dataMin", "dataMax"]}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                minTickGap={32}
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={44}
+                tickMargin={4}
+                domain={["auto", "auto"]}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <ChartTooltipContent labelFormatter={(v) => `Step ${v}`} />
+                }
+              />
+              {(["max", "avg", "min"] as const).map((key) => (
+                <Line
+                  key={key}
+                  dataKey={key}
+                  name={batchChartConfig[key].label}
+                  type="monotone"
+                  stroke={batchChartConfig[key].color}
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              ))}
+            </LineChart>
+          </ChartContainer>
         </div>
       )}
 

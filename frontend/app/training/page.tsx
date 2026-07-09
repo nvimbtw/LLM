@@ -110,6 +110,7 @@ export default function TrainingPage() {
           <TrainPanel
             train={t.train}
             loss={t.loss}
+            batchSeries={t.batchSeries}
             checkpoints={t.checkpoints}
           />
         </Section>

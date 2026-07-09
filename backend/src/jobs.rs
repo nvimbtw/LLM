@@ -23,6 +23,8 @@ use crate::training::{self, DatasetStats, TokenizeEvent, TrainConfig};
 const BROADCAST_CAPACITY: usize = 256;
 const MAX_LOG_LINES: usize = 500;
 const MAX_LOSS_POINTS: usize = 4000;
+// The batch-spread chart is a short rolling window of the most recent reports.
+const MAX_BATCH_POINTS: usize = 60;
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +53,8 @@ pub struct JobState {
     pub tokenize: serde_json::Value,
     pub train: serde_json::Value,
     pub loss_series: Vec<[f64; 2]>,
+    // Rolling window of recent per-report spread: [step, min, avg, max].
+    pub batch_series: Vec<[f64; 4]>,
     pub log: Vec<String>,
     pub error: Option<String>,
 }
@@ -112,6 +116,7 @@ impl JobRegistry {
                 tokenize: serde_json::json!({}),
                 train: serde_json::json!({}),
                 loss_series: Vec::new(),
+                batch_series: Vec::new(),
                 log: Vec::new(),
                 error: None,
             }),
@@ -167,6 +172,7 @@ pub fn snapshot_frame(state: &JobState) -> String {
         "tokenize": state.tokenize,
         "train": state.train,
         "loss_series": state.loss_series,
+        "batch_series": state.batch_series,
         "log": state.log,
         "error": state.error,
     })
@@ -293,6 +299,9 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
         "avg_loss": p.avg_loss,
         "min_loss": p.min_loss,
         "max_loss": p.max_loss,
+        "batch_min": p.batch_min,
+        "batch_avg": p.batch_avg,
+        "batch_max": p.batch_max,
         "eta_secs": p.eta_secs,
         "epoch_done": p.epoch_done,
         "epoch_duration_secs": p.epoch_duration_secs,
@@ -304,6 +313,17 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
         st.train = obj.clone();
         if p.loss.is_finite() {
             push_loss(&mut st.loss_series, [step as f64, p.loss]);
+        }
+        if !p.epoch_done && p.batch_avg.is_finite() {
+            push_batch(
+                &mut st.batch_series,
+                [
+                    step as f64,
+                    p.batch_min as f64,
+                    p.batch_avg as f64,
+                    p.batch_max as f64,
+                ],
+            );
         }
     }
     let _ = job.tx.send(frame("train", obj));
@@ -406,5 +426,15 @@ fn push_loss(series: &mut Vec<[f64; 2]>, point: [f64; 2]) {
             keep = !keep;
             keep
         });
+    }
+}
+
+// Appends a batch-spread point, keeping only the most recent MAX_BATCH_POINTS.
+// Unlike push_loss we drop from the front rather than halving — this is a small
+// rolling window where every-other-point thinning would distort it.
+fn push_batch(series: &mut Vec<[f64; 4]>, point: [f64; 4]) {
+    series.push(point);
+    if series.len() > MAX_BATCH_POINTS {
+        series.drain(0..series.len() - MAX_BATCH_POINTS);
     }
 }

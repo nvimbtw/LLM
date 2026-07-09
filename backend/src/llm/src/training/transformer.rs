@@ -2103,6 +2103,61 @@ mod tests {
         eprintln!("✓ GPU SGD changes weights (total_change={:.6})", total_change);
     }
 
+    // The single most important training test: prove the model can actually
+    // LEARN, not just that a step runs and mutates weights. We repeatedly train
+    // one fixed tiny sequence (a batch of size 1) and assert the loss collapses
+    // far below its random starting point ln(vocab). If the backward pass has a
+    // wrong sign, a disconnected gradient, a bad optimizer step, or a
+    // clip/scale that throttles learning to zero, every other test here still
+    // passes but this one fails — the loss just sits near ln(vocab) forever.
+    // This is the guardrail against the "loss plateaus and won't drop" class of
+    // regression, distinguished from a genuine data/capacity plateau because on
+    // a single memorizable sequence a correct trainer must reach ~0.
+    #[test]
+    fn test_overfits_single_sequence() {
+        let vocab = 20;
+        let d = 16;
+        let ctx = 8;
+        let heads = 2;
+        let ff_mult = 2;
+        let layers = 2;
+
+        let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = GpuWorkspace::new(&t, ctx as usize);
+
+        // A fixed, arbitrary sequence the model must memorize.
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+        let first_loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+        ws.zero_accumulators();
+
+        // Plain per-step Adam (accum_steps = 1), no warmup/clip games — we want
+        // to test the core learning mechanism in isolation.
+        let mut last_loss = first_loss;
+        for step in 1..=200 {
+            last_loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+            gpu_adam_update(&ws, 0.01, step, 1, layers as usize);
+            ws.zero_accumulators();
+        }
+
+        let random_loss = (vocab as f32).ln();
+        eprintln!(
+            "  first_loss={:.4}  last_loss={:.4}  ln(vocab)={:.4}",
+            first_loss, last_loss, random_loss
+        );
+        assert!(last_loss.is_finite(), "loss went non-finite while overfitting");
+        // A correct trainer memorizes 8 tokens easily; anything above a small
+        // fraction of ln(vocab) means the gradient/optimizer path is broken.
+        assert!(
+            last_loss < 0.25 * random_loss,
+            "model failed to overfit a single sequence: loss {:.4} did not drop \
+             well below ln(vocab)={:.4} after 200 steps (started at {:.4}). \
+             The backward pass or optimizer step is not actually learning.",
+            last_loss, random_loss, first_loss
+        );
+        eprintln!("✓ model overfits a single sequence (loss {:.4} -> {:.4})", first_loss, last_loss);
+    }
+
     // ── Non-GPU tests: Transformer::init ──
 
     #[test]

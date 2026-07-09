@@ -21,6 +21,11 @@ pub struct TrainingProgress {
     pub avg_loss: f32,
     pub min_loss: f32,
     pub max_loss: f32,
+    // Spread of per-chunk loss over just this report window (the ~10 chunks since
+    // the last report), as opposed to the epoch-cumulative avg/min/max above.
+    pub batch_min: f32,
+    pub batch_avg: f32,
+    pub batch_max: f32,
     pub epoch_duration_secs: f64,
     pub checkpoint_path: Option<String>,
 }
@@ -168,6 +173,11 @@ fn run_training_loop(
         let mut n_chunks = 0;
         let mut min_loss = f32::INFINITY;
         let mut max_loss = f32::NEG_INFINITY;
+        // Per-report-window accumulators, reset after each report emitted below.
+        let mut win_total = 0.0f32;
+        let mut win_n = 0u64;
+        let mut win_min = f32::INFINITY;
+        let mut win_max = f32::NEG_INFINITY;
         let epoch_start = Instant::now();
 
         ws.zero_accumulators();
@@ -188,6 +198,11 @@ fn run_training_loop(
             n_chunks += 1;
             min_loss = min_loss.min(loss);
             max_loss = max_loss.max(loss);
+
+            win_total += loss;
+            win_n += 1;
+            win_min = win_min.min(loss);
+            win_max = win_max.max(loss);
 
             if n_chunks % (accum_steps as u64) == 0 || n_chunks == total_chunks as u64 {
                 adam_step += 1;
@@ -217,6 +232,12 @@ fn run_training_loop(
                     f64::NAN
                 };
 
+                let batch_avg = if win_n > 0 {
+                    win_total / win_n as f32
+                } else {
+                    f32::NAN
+                };
+
                 on_progress(TrainingProgress {
                     epoch: (epoch + 1) as u64,
                     total_epochs: epochs as u64,
@@ -230,9 +251,19 @@ fn run_training_loop(
                     avg_loss: total_loss / n_chunks as f32,
                     min_loss,
                     max_loss,
+                    // Spread over just the chunks in this window.
+                    batch_min: win_min,
+                    batch_avg,
+                    batch_max: win_max,
                     epoch_duration_secs: 0.0,
                     checkpoint_path: None,
                 });
+
+                // Start a fresh window for the next report.
+                win_total = 0.0;
+                win_n = 0;
+                win_min = f32::INFINITY;
+                win_max = f32::NEG_INFINITY;
             }
         }
 
@@ -281,6 +312,11 @@ fn run_training_loop(
             avg_loss,
             min_loss,
             max_loss,
+            // No window at an epoch boundary; NaN serializes to null and the
+            // frontend skips it for the batch chart.
+            batch_min: f32::NAN,
+            batch_avg: f32::NAN,
+            batch_max: f32::NAN,
             epoch_duration_secs: epoch_duration,
             checkpoint_path,
         });

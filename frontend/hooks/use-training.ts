@@ -32,6 +32,9 @@ export const DEFAULT_CONFIG: TrainConfig = {
 // whenever we hit the cap — the curve's shape is preserved, the DOM stays light.
 const MAX_LOSS_POINTS = 500
 
+// The batch-spread chart is a short rolling window of the most recent reports.
+const MAX_BATCH_POINTS = 60
+
 function downsample<T>(arr: T[], max: number): T[] {
   let out = arr
   while (out.length > max) out = out.filter((_, i) => i % 2 === 0)
@@ -70,6 +73,15 @@ export interface VocabPoint {
   vocab: number
 }
 
+// One report's intra-batch loss spread, plotted over the global step on the
+// rolling batch-spread chart.
+export interface BatchPoint {
+  step: number
+  min: number
+  avg: number
+  max: number
+}
+
 // Owns all live state for the training page and keeps a single socket attached
 // to the current job. Re-attaches to an in-flight run on mount so a reload (or a
 // new tab) resumes watching instead of starting over.
@@ -80,6 +92,7 @@ export function useTraining() {
   const [train, setTrain] = React.useState<Partial<TrainStats>>({})
   const [loss, setLoss] = React.useState<LossPoint[]>([])
   const [vocabSeries, setVocabSeries] = React.useState<VocabPoint[]>([])
+  const [batchSeries, setBatchSeries] = React.useState<BatchPoint[]>([])
   const [checkpoints, setCheckpoints] = React.useState<string[]>([])
   const [log, setLog] = React.useState<string[]>([])
   const [error, setError] = React.useState<string | null>(null)
@@ -113,6 +126,11 @@ export function useTraining() {
               ]
             : []
         )
+        setBatchSeries(
+          (snap.batch_series ?? [])
+            .map(([step, min, avg, max]) => ({ step, min, avg, max }))
+            .slice(-MAX_BATCH_POINTS)
+        )
         setLog(snap.log ?? [])
         setError(snap.error ?? null)
       },
@@ -142,6 +160,21 @@ export function useTraining() {
             return [...base, { epoch: s.epoch, chunk: s.chunk, loss: s.loss }]
           })
         }
+        // Epoch-boundary reports carry null batch stats (an epoch average, not a
+        // window) — skip them so the spread chart stays purely per-window.
+        if (!s.epoch_done && Number.isFinite(s.batch_avg)) {
+          setBatchSeries((prev) =>
+            [
+              ...prev,
+              {
+                step: s.step,
+                min: s.batch_min,
+                avg: s.batch_avg,
+                max: s.batch_max,
+              },
+            ].slice(-MAX_BATCH_POINTS)
+          )
+        }
         if (s.epoch_done && s.checkpoint_path) {
           const path = s.checkpoint_path
           setCheckpoints((prev) =>
@@ -160,6 +193,7 @@ export function useTraining() {
       setTrain({})
       setLoss([])
       setVocabSeries([])
+      setBatchSeries([])
       setCheckpoints([])
       setLog([])
       setError(null)
@@ -210,6 +244,7 @@ export function useTraining() {
     train,
     loss,
     vocabSeries,
+    batchSeries,
     checkpoints,
     log,
     error,

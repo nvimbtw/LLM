@@ -57,6 +57,10 @@ export interface TrainStats {
   avg_loss: number
   min_loss: number
   max_loss: number
+  // Spread of per-chunk loss within just this report window.
+  batch_min: number
+  batch_avg: number
+  batch_max: number
   eta_secs: number
   epoch_done: boolean
   epoch_duration_secs: number
@@ -70,6 +74,7 @@ export interface TrainingSnapshot {
   tokenize: Partial<TokenizeStats>
   train: Partial<TrainStats>
   loss_series: [number, number][]
+  batch_series: [number, number, number, number][]
   log: string[]
   error: string | null
 }
@@ -158,7 +163,9 @@ export function attachTraining(
         break
       case "error":
         handlers.onError(
-          typeof msg.message === "string" ? msg.message : "Something went wrong."
+          typeof msg.message === "string"
+            ? msg.message
+            : "Something went wrong."
         )
         break
     }
