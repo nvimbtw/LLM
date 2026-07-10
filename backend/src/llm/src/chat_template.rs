@@ -116,6 +116,85 @@ pub fn build_prompt(
     encode(&s, merges)
 }
 
+/// Render a full training example — the whole conversation *including* the
+/// assistant replies — into token ids plus a parallel loss mask.
+///
+/// `mask[i] == 1` iff the token predicted from position `i` (i.e. token `i+1`)
+/// is part of an assistant reply: its content through the closing
+/// `<|/assistant|>` marker, inclusive. Everything else — the system block, the
+/// user turns, the opening `<|assistant|>` cue, and the final position (which has
+/// no next token) — is `0`. `ids` and `mask` are the same length.
+///
+/// Unlike `build_prompt` (which renders for *inference*: it ends on an open
+/// `<|assistant|>` and strips historical reasoning), this keeps the assistant
+/// turns verbatim — including any `<|thinking|>` block — because during SFT the
+/// assistant text is the training target and we *want* the model to learn to
+/// produce reasoning.
+///
+/// The conversation is encoded segment-by-segment rather than in a single pass.
+/// This is deliberate: the pre-tokenizer only splits words on spaces, so a
+/// special marker glues to the text next to it inside one "word" (e.g.
+/// `<|assistant|>Hello` is a single word) — there is no clean token boundary at a
+/// marker in a whole-string encoding. Splitting at the marker boundaries here
+/// makes the reply tokens stand alone, which is exactly how the model sees them
+/// at generation time (it emits standalone tokens after the prompt's open
+/// `<|assistant|>`) and makes the mask exact. The cost is that the concatenated
+/// tokenization can differ by ~1 token at each seam versus one whole-string
+/// `encode()`; that is the right trade for a precise mask and a closer match to
+/// the autoregressive path.
+pub fn build_training_example(
+    system: Option<&str>,
+    turns: &[Turn],
+    merges: &[((u32, u32), u32)],
+) -> (Vec<u32>, Vec<u8>) {
+    // Each entry is one rendered piece plus whether its tokens are a training
+    // target. Order matters — pieces are concatenated in the order pushed.
+    let mut segments: Vec<(String, bool)> = Vec::new();
+
+    if let Some(s) = system.map(str::trim).filter(|s| !s.is_empty()) {
+        segments.push((format!("<|system|>{}<|/system|>", s), false));
+    }
+
+    for t in turns {
+        match t.role {
+            Role::User => {
+                segments.push((format!("<|user|>{}<|/user|>", t.text.trim()), false));
+            }
+            Role::Assistant => {
+                // The opening marker is the cue the model conditions on (not a
+                // target); the reply body and the closing marker are the target —
+                // the model must learn both to answer and to stop.
+                segments.push((ASSISTANT_OPEN.to_string(), false));
+                segments.push((t.text.trim().to_string(), true));
+                segments.push(("<|/assistant|>".to_string(), true));
+            }
+        }
+    }
+
+    // Encode each segment on its own and record, per resulting token, whether it
+    // belongs to a target segment.
+    let mut ids: Vec<u32> = Vec::new();
+    let mut target: Vec<bool> = Vec::new();
+    for (text, is_target) in &segments {
+        let toks = encode(text, merges);
+        target.extend(std::iter::repeat(*is_target).take(toks.len()));
+        ids.extend(toks);
+    }
+
+    // Shift the per-token target flag onto prediction positions: position i is
+    // trained iff the token it predicts (i+1) is a target. The last position has
+    // no successor, so it is never trained.
+    let n = ids.len();
+    let mut mask: Vec<u8> = vec![0u8; n];
+    for i in 0..n.saturating_sub(1) {
+        if target[i + 1] {
+            mask[i] = 1;
+        }
+    }
+
+    (ids, mask)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +219,86 @@ mod tests {
             text: "<|thinking|>hmm<|/thinking|>hello".into(),
         });
         assert_eq!(a, "<|assistant|>hello<|/assistant|>");
+    }
+
+    // ── build_training_example ──
+
+    // With no trained merges, `encode` falls back to byte-level tokens, which is
+    // deterministic and enough to check the mask's shape.
+    fn no_merges() -> Vec<((u32, u32), u32)> {
+        Vec::new()
+    }
+
+    #[test]
+    fn test_training_example_masks_only_assistant_reply() {
+        let merges = no_merges();
+        let turns = vec![
+            Turn { role: Role::User, text: "hi".into() },
+            Turn { role: Role::Assistant, text: "yo".into() },
+        ];
+        let (ids, mask) = build_training_example(None, &turns, &merges);
+
+        assert_eq!(ids.len(), mask.len(), "ids and mask must be parallel");
+        assert!(!ids.is_empty());
+
+        // The trained positions predict exactly the reply body + closing marker.
+        // count(mask==1) == number of target tokens (the first target token still
+        // has a predecessor to be predicted from; only the very last position,
+        // which has no successor, is dropped — and that isn't a target's
+        // predecessor).
+        let trained = mask.iter().filter(|&&m| m == 1).count();
+        let expected = encode("yo", &merges).len() + encode("<|/assistant|>", &merges).len();
+        assert_eq!(trained, expected);
+
+        // The final position has no next token, so it is never trained.
+        assert_eq!(*mask.last().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_training_example_two_turns_two_masked_spans() {
+        let merges = no_merges();
+        let turns = vec![
+            Turn { role: Role::User, text: "q1".into() },
+            Turn { role: Role::Assistant, text: "a1".into() },
+            Turn { role: Role::User, text: "q2".into() },
+            Turn { role: Role::Assistant, text: "a2".into() },
+        ];
+        let (ids, mask) = build_training_example(Some("be nice"), &turns, &merges);
+
+        assert_eq!(ids.len(), mask.len());
+
+        let close = encode("<|/assistant|>", &merges).len();
+        let expected = encode("a1", &merges).len()
+            + close
+            + encode("a2", &merges).len()
+            + close;
+        let trained = mask.iter().filter(|&&m| m == 1).count();
+        assert_eq!(trained, expected, "both assistant replies should be trained");
+
+        // The system block + user turns are present but untrained, so the total
+        // stream is strictly longer than the trained span.
+        assert!(ids.len() > trained);
+
+        // There must be two separate masked spans (a 1→0→1 transition), proving
+        // the intervening second user turn is masked off.
+        let transitions = mask.windows(2).filter(|w| w[0] == 1 && w[1] == 0).count();
+        assert_eq!(transitions, 2, "expected two distinct trained spans");
+    }
+
+    #[test]
+    fn test_training_example_system_and_user_untrained() {
+        let merges = no_merges();
+        let turns = vec![
+            Turn { role: Role::User, text: "question".into() },
+            Turn { role: Role::Assistant, text: "answer".into() },
+        ];
+        let (ids, mask) = build_training_example(Some("system prompt"), &turns, &merges);
+
+        // The prefix up to the first trained position (everything predicting the
+        // system/user/scaffold tokens) must be entirely masked off.
+        let first_trained = mask.iter().position(|&m| m == 1).unwrap();
+        assert!(mask[..first_trained].iter().all(|&m| m == 0));
+        assert!(first_trained > 0);
+        assert_eq!(ids.len(), mask.len());
     }
 }
