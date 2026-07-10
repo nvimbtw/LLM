@@ -67,3 +67,6 @@ No logic changed — comments only. `cargo build -p llm` clean, zero warnings. N
 new `.unwrap()`/`.expect()` introduced. One minor observation: `cudaMemset`
 returns an `i32` status code that is silently ignored in both files (pre-existing,
 not part of this issue). The fix resolves the described problem cleanly.
+
+### VCS · 2026-07-10
+Committed at `b809b62` on branch `dev`

@@ -65,3 +65,6 @@ no new unwraps/expects in the split code (R3); constants named (`LAYER_NORM_EPS`
 `test_overfits_single_sequence` (learning works end-to-end); `cargo build -p llm`
 and `cargo clippy -p llm` clean (pre-existing `cuda_sgd_momentum` warning is a known
 separate issue, ISSUE-0002).  No regression introduced by the refactor.
+
+### VCS · 2026-07-10
+Committed as `c45107e` on branch `dev`.

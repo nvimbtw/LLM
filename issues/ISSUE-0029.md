@@ -82,3 +82,6 @@ it to reference `PROGRESS_REPORT_INTERVAL` instead of the old hard-coded number,
 so the comment can't drift out of sync with the constant again. Ran `cargo build`
 (full workspace) — clean, zero warnings.
 
+### VCS · 2026-07-10
+Committed as `2dead59` on branch `dev`.
+

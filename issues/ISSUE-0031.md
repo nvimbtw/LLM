@@ -150,3 +150,6 @@ storage/IO plumbing in the `backend` crate.
 **Rules check (skills/RULES.md):** No violations found. Function body ~51 lines (R1 ✓), all loops bounded (R2 ✓), no dropped `Result`/`unsafe`/magic numbers (R3/R4/R8 ✓), public fn has doc comment (R9 ✓), zero clippy warnings (R7 ✓).
 
 **GPU test note:** The GPU-backed tests (SIGSEGV/SIGABRT) fail identically with the change stashed — pre-existing CUDA-less environment issue, not a regression from this change.
+
+### VCS · 2026-07-10
+Committed as `2630edf` on branch `dev`.
