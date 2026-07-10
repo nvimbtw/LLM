@@ -153,6 +153,38 @@ struct EpochStats {
     duration_secs: f64,
 }
 
+// Running min / mean / max over a set of per-chunk losses. Used both for the
+// whole-epoch summary and for each progress-report window (reset between
+// reports). `min`/`max` stay at ±INFINITY and `avg` is NaN until the first
+// `record`, matching the sentinel behaviour of the pre-refactor accumulators.
+struct LossStats {
+    total: f32,
+    n: u64,
+    min: f32,
+    max: f32,
+}
+
+impl LossStats {
+    fn new() -> Self {
+        LossStats { total: 0.0, n: 0, min: f32::INFINITY, max: f32::NEG_INFINITY }
+    }
+
+    fn record(&mut self, loss: f32) {
+        self.total += loss;
+        self.n += 1;
+        self.min = self.min.min(loss);
+        self.max = self.max.max(loss);
+    }
+
+    fn avg(&self) -> f32 {
+        if self.n > 0 {
+            self.total / self.n as f32
+        } else {
+            f32::NAN
+        }
+    }
+}
+
 // Estimated seconds remaining, from the average time per chunk so far. NaN
 // before any chunk has completed.
 fn compute_eta(training_start: Instant, chunks_done_global: u64, total_chunks_all: u64) -> f64 {
@@ -206,15 +238,8 @@ fn train_epoch(
     adam_step: &mut i32,
     on_progress: &ProgressCallback,
 ) -> EpochStats {
-    let mut total_loss = 0.0f32;
-    let mut n_chunks = 0u64;
-    let mut min_loss = f32::INFINITY;
-    let mut max_loss = f32::NEG_INFINITY;
-    // Per-report-window accumulators, reset after each report emitted below.
-    let mut win_total = 0.0f32;
-    let mut win_n = 0u64;
-    let mut win_min = f32::INFINITY;
-    let mut win_max = f32::NEG_INFINITY;
+    let mut epoch_stats = LossStats::new();
+    let mut window = LossStats::new();
     let epoch_start = Instant::now();
 
     ws.zero_accumulators();
@@ -231,72 +256,86 @@ fn train_epoch(
             continue;
         }
 
-        total_loss += loss;
-        n_chunks += 1;
-        min_loss = min_loss.min(loss);
-        max_loss = max_loss.max(loss);
+        epoch_stats.record(loss);
+        window.record(loss);
 
-        win_total += loss;
-        win_n += 1;
-        win_min = win_min.min(loss);
-        win_max = win_max.max(loss);
-
-        if n_chunks % (ACCUM_STEPS as u64) == 0 || n_chunks == total_chunks as u64 {
-            *adam_step += 1;
-            // Clip the accumulated gradient BEFORE the step so a rare huge
-            // gradient can't blow the model up (the loss-spike-to-50 case).
-            let clip = MAX_GRAD_NORM * ACCUM_STEPS as f32;
-            let gnorm = gpu_clip_gradients(ws, layers as usize, clip);
-            // Warmup-scaled lr. Adam averages the gradient internally
-            // (grad_scale), so pass the full (warmed) lr, not lr/ACCUM_STEPS.
-            let warm = (*adam_step as f32 / WARMUP_STEPS as f32).min(1.0);
-            gpu_adam_update(ws, lr * warm, *adam_step, ACCUM_STEPS, layers as usize);
-            ws.zero_accumulators();
-            // Periodic gradient-norm readout (and always on a spike) so a
-            // divergent run is visible: a norm that keeps growing = trouble.
-            if *adam_step % 50 == 0 || gnorm > clip * 20.0 || !gnorm.is_finite() {
-                eprintln!("  step {} grad_norm {:.2}", *adam_step, gnorm);
-            }
+        if epoch_stats.n % (ACCUM_STEPS as u64) == 0 || epoch_stats.n == total_chunks as u64 {
+            step_optimizer(ws, layers, lr, adam_step);
         }
 
-        if n_chunks % 10 == 0 || n_chunks == total_chunks as u64 {
-            let chunks_done_global = (epoch as u64) * (total_chunks as u64) + n_chunks;
-            let batch_avg = if win_n > 0 { win_total / win_n as f32 } else { f32::NAN };
-            on_progress(TrainingProgress {
-                epoch: (epoch + 1) as u64,
-                total_epochs: epochs as u64,
-                chunk: n_chunks,
-                total_chunks: total_chunks as u64,
-                loss: loss as f64,
-                eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
-                epoch_done: false,
-                // Running stats so far this epoch (n_chunks >= 1 here), so the
-                // UI shows a live average instead of a frozen 0.
-                avg_loss: total_loss / n_chunks as f32,
-                min_loss,
-                max_loss,
-                // Spread over just the chunks in this window.
-                batch_min: win_min,
-                batch_avg,
-                batch_max: win_max,
-                epoch_duration_secs: 0.0,
-                checkpoint_path: None,
-            });
-
+        if epoch_stats.n % 10 == 0 || epoch_stats.n == total_chunks as u64 {
+            report_chunk_progress(
+                epoch, epochs, total_chunks, total_chunks_all, training_start, loss,
+                &epoch_stats, &window, on_progress,
+            );
             // Start a fresh window for the next report.
-            win_total = 0.0;
-            win_n = 0;
-            win_min = f32::INFINITY;
-            win_max = f32::NEG_INFINITY;
+            window = LossStats::new();
         }
     }
 
     EpochStats {
-        avg_loss: total_loss / n_chunks as f32,
-        min_loss,
-        max_loss,
+        avg_loss: epoch_stats.avg(),
+        min_loss: epoch_stats.min,
+        max_loss: epoch_stats.max,
         duration_secs: epoch_start.elapsed().as_secs_f64(),
     }
+}
+
+// Apply one accumulated optimizer step: clip the summed gradient, take a
+// warmup-scaled Adam step, then zero the accumulators for the next window.
+fn step_optimizer(ws: &mut GpuWorkspace, layers: i64, lr: f32, adam_step: &mut i32) {
+    *adam_step += 1;
+    // Clip the accumulated gradient BEFORE the step so a rare huge gradient
+    // can't blow the model up (the loss-spike-to-50 case).
+    let clip = MAX_GRAD_NORM * ACCUM_STEPS as f32;
+    let gnorm = gpu_clip_gradients(ws, layers as usize, clip);
+    // Warmup-scaled lr. Adam averages the gradient internally (grad_scale), so
+    // pass the full (warmed) lr, not lr/ACCUM_STEPS.
+    let warm = (*adam_step as f32 / WARMUP_STEPS as f32).min(1.0);
+    gpu_adam_update(ws, lr * warm, *adam_step, ACCUM_STEPS, layers as usize);
+    ws.zero_accumulators();
+    // Periodic gradient-norm readout (and always on a spike) so a divergent run
+    // is visible: a norm that keeps growing = trouble.
+    if *adam_step % 50 == 0 || gnorm > clip * 20.0 || !gnorm.is_finite() {
+        eprintln!("  step {} grad_norm {:.2}", *adam_step, gnorm);
+    }
+}
+
+// Emit a mid-epoch progress frame: epoch-cumulative avg/min/max plus the batch
+// spread over just this report window. The caller resets `window` afterward.
+#[allow(clippy::too_many_arguments)] // cohesive progress-frame builder; the fields belong together
+fn report_chunk_progress(
+    epoch: i64,
+    epochs: i64,
+    total_chunks: usize,
+    total_chunks_all: u64,
+    training_start: Instant,
+    loss: f32,
+    epoch_stats: &LossStats,
+    window: &LossStats,
+    on_progress: &ProgressCallback,
+) {
+    let chunks_done_global = (epoch as u64) * (total_chunks as u64) + epoch_stats.n;
+    on_progress(TrainingProgress {
+        epoch: (epoch + 1) as u64,
+        total_epochs: epochs as u64,
+        chunk: epoch_stats.n,
+        total_chunks: total_chunks as u64,
+        loss: loss as f64,
+        eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
+        epoch_done: false,
+        // Running stats so far this epoch (n >= 1 here), so the UI shows a live
+        // average instead of a frozen 0.
+        avg_loss: epoch_stats.avg(),
+        min_loss: epoch_stats.min,
+        max_loss: epoch_stats.max,
+        // Spread over just the chunks in this window.
+        batch_min: window.min,
+        batch_avg: window.avg(),
+        batch_max: window.max,
+        epoch_duration_secs: 0.0,
+        checkpoint_path: None,
+    });
 }
 
 fn run_training_loop(
@@ -339,27 +378,10 @@ fn run_training_loop(
         );
 
         let checkpoint_path = save_checkpoint(transformer, ws, model_dir, checkpoints_dir, epoch);
-
-        let chunks_done_global = ((epoch + 1) as u64) * (total_chunks as u64);
-        on_progress(TrainingProgress {
-            epoch: (epoch + 1) as u64,
-            total_epochs: epochs as u64,
-            chunk: total_chunks as u64,
-            total_chunks: total_chunks as u64,
-            loss: stats.avg_loss as f64,
-            eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
-            epoch_done: true,
-            avg_loss: stats.avg_loss,
-            min_loss: stats.min_loss,
-            max_loss: stats.max_loss,
-            // No window at an epoch boundary; NaN serializes to null and the
-            // frontend skips it for the batch chart.
-            batch_min: f32::NAN,
-            batch_avg: f32::NAN,
-            batch_max: f32::NAN,
-            epoch_duration_secs: stats.duration_secs,
-            checkpoint_path,
-        });
+        report_epoch_progress(
+            epoch, epochs, total_chunks, total_chunks_all, training_start, &stats,
+            checkpoint_path, &on_progress,
+        );
 
         if let Some(ref cancel) = cancel {
             if cancel.load(Ordering::SeqCst) {
@@ -368,21 +390,70 @@ fn run_training_loop(
             }
         }
 
-        if stats.avg_loss < best_loss {
-            best_loss = stats.avg_loss;
-            epochs_since_best = 0;
-        } else {
-            epochs_since_best += 1;
-        }
-        if epochs_since_best >= EARLY_STOP_PATIENCE {
-            println!(
-                "Epoch {}: early stopping (no improvement for {} epochs)",
-                epoch + 1,
-                EARLY_STOP_PATIENCE
-            );
+        if should_stop_early(stats.avg_loss, epoch, &mut best_loss, &mut epochs_since_best) {
             break;
         }
     }
 
     Ok(false)
+}
+
+// Emit the end-of-epoch progress frame: the epoch summary, with no batch window
+// (batch fields are NaN so the frontend skips them for the batch chart).
+#[allow(clippy::too_many_arguments)] // cohesive progress-frame builder; the fields belong together
+fn report_epoch_progress(
+    epoch: i64,
+    epochs: i64,
+    total_chunks: usize,
+    total_chunks_all: u64,
+    training_start: Instant,
+    stats: &EpochStats,
+    checkpoint_path: Option<String>,
+    on_progress: &ProgressCallback,
+) {
+    let chunks_done_global = ((epoch + 1) as u64) * (total_chunks as u64);
+    on_progress(TrainingProgress {
+        epoch: (epoch + 1) as u64,
+        total_epochs: epochs as u64,
+        chunk: total_chunks as u64,
+        total_chunks: total_chunks as u64,
+        loss: stats.avg_loss as f64,
+        eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
+        epoch_done: true,
+        avg_loss: stats.avg_loss,
+        min_loss: stats.min_loss,
+        max_loss: stats.max_loss,
+        // No window at an epoch boundary; NaN serializes to null and the
+        // frontend skips it for the batch chart.
+        batch_min: f32::NAN,
+        batch_avg: f32::NAN,
+        batch_max: f32::NAN,
+        epoch_duration_secs: stats.duration_secs,
+        checkpoint_path,
+    });
+}
+
+// Advance early-stopping state and report whether training should halt: true
+// after EARLY_STOP_PATIENCE consecutive epochs with no average-loss improvement.
+fn should_stop_early(
+    avg_loss: f32,
+    epoch: i64,
+    best_loss: &mut f32,
+    epochs_since_best: &mut i32,
+) -> bool {
+    if avg_loss < *best_loss {
+        *best_loss = avg_loss;
+        *epochs_since_best = 0;
+    } else {
+        *epochs_since_best += 1;
+    }
+    if *epochs_since_best >= EARLY_STOP_PATIENCE {
+        println!(
+            "Epoch {}: early stopping (no improvement for {} epochs)",
+            epoch + 1,
+            EARLY_STOP_PATIENCE
+        );
+        return true;
+    }
+    false
 }
