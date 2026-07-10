@@ -3,7 +3,7 @@ id: ISSUE-0008
 title: Unwraps on file-parsed model data (R3, R11)
 scope: backend/llm
 priority: P1
-status: verification
+status: done
 rule: R3, R11
 location: backend/src/llm/src/training/transformer.rs:935,944,1533,1543 backend/src/tokenize/src/bpe.rs:206-208
 blocked-by: []
@@ -32,3 +32,11 @@ so `try_into` can't fail, and a corrupt trailing chunk is dropped rather than
 panicking. This matches the accepted pattern in transformer.rs `read_2d`/`read_1d`
 (lines 1056/1068). `cargo build -p tokenize` clean. Both named locations now
 covered — advancing to verification.
+
+### Verifier · 2026-07-10 · pass
+Checked: (1) bpe.rs `load_merges` (lines 205–211) has a justification comment
+above the loop citing `chunks_exact(12)` guaranteeing 4-byte sub-slices — pass.
+(2) transformer.rs `read_2d`/`read_1d` unwraps (lines 1056, 1068) still carry
+their `// chunks_exact(4) yields exactly-4-byte slices, so try_into can't fail here.`
+comments — pass. (3) `cargo build -p tokenize` from `backend/` is clean (no
+warnings, no errors) — pass. All three conditions hold; advancing to done.
