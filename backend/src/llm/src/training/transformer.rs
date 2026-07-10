@@ -703,22 +703,29 @@ impl Transformer {
                 (flat_targets_f32.len() * 4) as usize,
             );
         }
+        // Pretraining trains on every position: null mask, and active == seq_len
+        // (s-1) so the normalizer is identical to the pre-mask behaviour. The SFT
+        // path (ISSUE-0033) passes a real mask + trained-row count instead.
         // SAFETY: see contract.
         let loss = unsafe {
             cuda_cross_entropy_loss(
                 ws.d_logits.ptr as *const c_void,
                 ws.d_targets.ptr as *const f32,
+                std::ptr::null(),
                 (s - 1) as i32,
                 vocab as i32,
+                (s - 1) as i32,
             )
         };
         unsafe {
             cuda_cross_entropy_backward(
                 ws.d_logits.ptr as *const c_void,
                 ws.d_targets.ptr as *const f32,
+                std::ptr::null(),
                 ws.d_dlogits.ptr as *mut c_void,
                 (s - 1) as i32,
                 vocab as i32,
+                (s - 1) as i32,
             );
             // SAFETY: offset (s-1)*vocab*2 bytes lands on the final (no-target)
             // logit row inside d_dlogits (s*vocab f16 = s*vocab*2 bytes); zero it.
@@ -1229,16 +1236,20 @@ unsafe extern "C" {
     fn cuda_cross_entropy_backward(
         logits: *const c_void,
         targets: *const f32,
+        mask: *const f32,
         dlogits: *mut c_void,
         seq_len: i32,
         vocab: i32,
+        active: i32,
     );
 
     fn cuda_cross_entropy_loss(
         logits: *const c_void,
         targets: *const f32,
+        mask: *const f32,
         seq_len: i32,
         vocab: i32,
+        active: i32,
     ) -> f32;
 
     fn cuda_attention_head(

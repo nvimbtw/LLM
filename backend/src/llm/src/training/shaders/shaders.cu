@@ -210,13 +210,25 @@ __global__ void f32_to_f16_kernel(const float *src, __half *dst, int n) {
 
 // ─── cross-entropy backward ────────────────────────────────────────────────
 
+// `mask` (length seq_len, 1=train / 0=ignore) may be null, meaning "every row is
+// active". Masked rows contribute a zero gradient. The gradient is normalized by
+// `active` — the number of trained rows — so it matches the loss normalizer
+// (SFT trains on a subset of positions; pretraining passes mask=null, active=seq_len).
 __global__ void cross_entropy_bw_kernel(const __half *logits,
                                          const float *targets,
+                                         const float *mask,
                                          __half *dlogits, int seq_len,
-                                         int vocab) {
+                                         int vocab, int active) {
   int row = blockIdx.x * blockDim.x + threadIdx.x;
   if (row >= seq_len)
     return;
+
+  // Ignored position: no learning signal — zero its whole gradient row.
+  if (mask != nullptr && mask[row] == 0.0f) {
+    for (int j = 0; j < vocab; j++)
+      dlogits[row * vocab + j] = __float2half(0.0f);
+    return;
+  }
 
   int target = (int)(targets[row]);
 
@@ -231,29 +243,35 @@ __global__ void cross_entropy_bw_kernel(const __half *logits,
   float inv_sum = 1.0f / sum;
   for (int j = 0; j < vocab; j++) {
     float softmax_j = expf(__half2float(logits[row * vocab + j]) - max_val) * inv_sum;
-    dlogits[row * vocab + j] = __float2half((softmax_j - (j == target ? 1.0f : 0.0f)) / seq_len);
+    dlogits[row * vocab + j] = __float2half((softmax_j - (j == target ? 1.0f : 0.0f)) / active);
   }
 }
 
 extern "C" void cuda_cross_entropy_backward(const __half *logits,
                                              const float *targets,
+                                             const float *mask,
                                              __half *dlogits, int seq_len,
-                                             int vocab) {
+                                             int vocab, int active) {
   cross_entropy_bw_kernel<<<(seq_len + 255) / 256, 256>>>(
-      logits, targets, dlogits, seq_len, vocab);
+      logits, targets, mask, dlogits, seq_len, vocab, active);
 }
 
 // ─── cross-entropy loss (GPU, async-friendly via event) ─────────────────
 
+// `mask` (length seq_len, 1=train / 0=ignore) may be null, meaning "every row is
+// active". Masked rows contribute 0 to the loss, which is normalized by `active`
+// (the trained-row count) rather than seq_len so the reported loss is the mean
+// over trained positions only.
 __global__ void cross_entropy_loss_kernel(const __half *logits,
                                            const float *targets,
+                                           const float *mask,
                                            float *loss_out, int seq_len,
-                                           int vocab) {
+                                           int vocab, int active) {
   extern __shared__ float shared[];
   int row = blockIdx.x * blockDim.x + threadIdx.x;
 
   float contrib = 0.0f;
-  if (row < seq_len) {
+  if (row < seq_len && (mask == nullptr || mask[row] != 0.0f)) {
     int target = (int)targets[row];
 
     float max_val = __half2float(logits[row * vocab]);
@@ -278,19 +296,20 @@ __global__ void cross_entropy_loss_kernel(const __half *logits,
   }
 
   if (threadIdx.x == 0)
-    atomicAdd(loss_out, shared[0] / seq_len);
+    atomicAdd(loss_out, shared[0] / active);
 }
 
 extern "C" float cuda_cross_entropy_loss(const __half *logits,
-                                          const float *targets, int seq_len,
-                                          int vocab) {
+                                          const float *targets,
+                                          const float *mask, int seq_len,
+                                          int vocab, int active) {
   float *d_loss;
   cudaMalloc(&d_loss, sizeof(float));
   cudaMemset(d_loss, 0, sizeof(float));
   int threads = 256;
   int blocks = (seq_len + threads - 1) / threads;
   cross_entropy_loss_kernel<<<blocks, threads, threads * sizeof(float)>>>(
-      logits, targets, d_loss, seq_len, vocab);
+      logits, targets, mask, d_loss, seq_len, vocab, active);
   float loss;
   cudaMemcpy(&loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
   cudaFree(d_loss);
