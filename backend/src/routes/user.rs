@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::routes::validate;
 use crate::{crypto, db, extractors::AuthUser};
 
 // Response shape sent to clients. The db `User` struct carries the password
@@ -43,6 +44,23 @@ async fn insert_user(
 ) -> impl Responder {
     let username = &payload.username;
     let password = &payload.password;
+
+    if let Err(msg) = validate::field_len(
+        "username",
+        username,
+        validate::MIN_USERNAME_LEN,
+        validate::MAX_USERNAME_LEN,
+    ) {
+        return HttpResponse::BadRequest().body(msg);
+    }
+    if let Err(msg) = validate::field_len(
+        "password",
+        password,
+        validate::MIN_PASSWORD_LEN,
+        validate::MAX_PASSWORD_LEN,
+    ) {
+        return HttpResponse::BadRequest().body(msg);
+    }
 
     let pwd_hash = match crypto::password::hash_password(password) {
         Ok(hash) => hash,
@@ -125,6 +143,29 @@ async fn update_user(
 
     if !authorized(&auth.claims, id) {
         return HttpResponse::Forbidden().body("forbidden");
+    }
+
+    if let Some(msg) = payload.username.as_deref().and_then(|u| {
+        validate::field_len(
+            "username",
+            u,
+            validate::MIN_USERNAME_LEN,
+            validate::MAX_USERNAME_LEN,
+        )
+        .err()
+    }) {
+        return HttpResponse::BadRequest().body(msg);
+    }
+    if let Some(msg) = payload.password.as_deref().and_then(|p| {
+        validate::field_len(
+            "password",
+            p,
+            validate::MIN_PASSWORD_LEN,
+            validate::MAX_PASSWORD_LEN,
+        )
+        .err()
+    }) {
+        return HttpResponse::BadRequest().body(msg);
     }
 
     // Hash the new password (if one was supplied) before it touches the db.

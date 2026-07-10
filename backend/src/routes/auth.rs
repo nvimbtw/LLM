@@ -2,6 +2,7 @@ use actix_web::{HttpResponse, Responder, post, web};
 use serde::Deserialize;
 use sqlx::PgPool;
 
+use crate::routes::validate;
 use crate::{crypto, db};
 
 #[derive(Deserialize)]
@@ -16,6 +17,15 @@ async fn login(
     pool: web::Data<PgPool>,
     jwt_secret: web::Data<String>,
 ) -> impl Responder {
+    // Bound the inputs before hashing/verifying so an oversized password can't
+    // force expensive argon2 work. Only the upper bound is checked and the reason
+    // is generic — the auth failure below must not reveal which field was wrong.
+    if validate::max_len("username", &payload.username, validate::MAX_USERNAME_LEN).is_err()
+        || validate::max_len("password", &payload.password, validate::MAX_PASSWORD_LEN).is_err()
+    {
+        return HttpResponse::BadRequest().body("invalid request");
+    }
+
     let user = match db::user::find_by_username(pool.get_ref(), &payload.username).await {
         Ok(Some(user)) => user,
         Ok(_) => return HttpResponse::Unauthorized().body("invalid username or password"),

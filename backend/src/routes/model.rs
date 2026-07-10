@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::db::user::AccessLevel;
+use crate::routes::validate;
 use crate::extractors::{AdminUser, AuthUser};
 use crate::storage;
 
@@ -94,6 +95,21 @@ async fn update_model(
     payload: web::Json<UpdateModelPayload>,
     pool: web::Data<PgPool>,
 ) -> impl Responder {
+    if let Some(msg) = payload
+        .name
+        .as_deref()
+        .and_then(|n| validate::field_len("name", n, 1, validate::MAX_MODEL_NAME_LEN).err())
+    {
+        return HttpResponse::BadRequest().body(msg);
+    }
+    if let Some(msg) = payload
+        .description
+        .as_deref()
+        .and_then(|d| validate::max_len("description", d, validate::MAX_MODEL_DESC_LEN).err())
+    {
+        return HttpResponse::BadRequest().body(msg);
+    }
+
     match db::model::update(
         pool.get_ref(),
         path.into_inner(),

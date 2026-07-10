@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::routes::validate;
 use crate::{db, db::user::AccessLevel, extractors::AuthUser, ws};
 
 #[derive(Serialize)]
@@ -207,6 +208,9 @@ async fn handle_message(
     let content = frame.content.trim();
     if content.is_empty() {
         return session.text(ws::error_frame("message content is empty")).await;
+    }
+    if validate::max_len("message", content, validate::MAX_MESSAGE_LEN).is_err() {
+        return session.text(ws::error_frame("message content too long")).await;
     }
 
     let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
@@ -491,6 +495,9 @@ async fn create_chat(
     let content = payload.content.trim();
     if content.is_empty() {
         return HttpResponse::BadRequest().body("message content is empty");
+    }
+    if let Err(msg) = validate::max_len("message", content, validate::MAX_MESSAGE_LEN) {
+        return HttpResponse::BadRequest().body(msg);
     }
 
     match db::chat::create(pool.get_ref(), auth.claims.sub, &derive_title(content)).await {

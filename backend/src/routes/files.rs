@@ -7,6 +7,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::extractors::AdminUser;
+use crate::routes::validate;
 use crate::storage;
 
 // Formats the ingestion step can process. Mirrors the frontend's accept list;
@@ -66,6 +67,7 @@ async fn upload_files(_admin: AdminUser, mut payload: Multipart) -> impl Respond
         // Stream chunks straight to disk instead of buffering the whole file.
         // On any failure mid-write, drop the partial file so the pipeline never
         // ingests a truncated input.
+        let mut written: u64 = 0;
         while let Some(chunk) = field.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
@@ -75,6 +77,13 @@ async fn upload_files(_admin: AdminUser, mut payload: Multipart) -> impl Respond
                     return HttpResponse::BadRequest().body("malformed upload");
                 }
             };
+            // Cap per-file size so a client can't fill the disk; drop the partial
+            // file and reject with 413 the moment the limit is crossed.
+            written += chunk.len() as u64;
+            if written > validate::MAX_UPLOAD_BYTES {
+                let _ = tokio::fs::remove_file(&path).await;
+                return HttpResponse::PayloadTooLarge().body("file exceeds maximum size");
+            }
             if let Err(e) = file.write_all(&chunk).await {
                 eprintln!("failed to write {}: {}", path.display(), e);
                 let _ = tokio::fs::remove_file(&path).await;

@@ -6,6 +6,7 @@ pub mod model;
 pub mod training;
 pub mod usage;
 pub mod user;
+pub mod validate;
 
 use actix_web::web;
 
