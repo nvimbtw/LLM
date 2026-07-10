@@ -4,11 +4,16 @@ use uuid::Uuid;
 
 pub struct Message {
     pub id_message: Uuid,
+    // id_chat and id_model are part of the messages-table row that `query_as!`
+    // maps (both appear in every RETURNING), but nothing reads them in Rust yet.
+    // Kept so the struct mirrors the table rather than trimming the queries.
+    #[allow(dead_code)]
     pub id_chat: Uuid,
     // Exactly one of these identifies the author: id_user for a person's
     // message, id_model for a model-generated reply. Both are nullable in the
     // schema, so both are Option here.
     pub id_user: Option<Uuid>,
+    #[allow(dead_code)]
     pub id_model: Option<Uuid>,
     pub content: String,
     pub created_at: DateTime<Utc>,

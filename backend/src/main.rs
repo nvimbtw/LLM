@@ -72,7 +72,7 @@ async fn create_admin(pool: &PgPool) {
     };
 
     match db::user::create(
-        &pool,
+        pool,
         "admin",
         pwd_hash.as_str(),
         Some(db::user::AccessLevel::Admin),

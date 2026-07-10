@@ -54,7 +54,7 @@ async fn insert_user(
     };
 
     match db::user::create(
-        &pool.get_ref(),
+        pool.get_ref(),
         username.as_str(),
         pwd_hash.as_str(),
         Some(db::user::AccessLevel::User),

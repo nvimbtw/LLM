@@ -82,6 +82,10 @@ impl FromRequest for AuthUser {
 // token is rejected with 403 (authenticated, but not permitted). Use this in
 // place of `AuthUser` and the handler is guaranteed to run only for admins.
 pub struct AdminUser {
+    // Carried for handlers that need the authenticated admin's claims, mirroring
+    // `AuthUser`; the guard's main job is proving admin access, so some admin
+    // handlers never read this.
+    #[allow(dead_code)]
     pub claims: Claims,
 }
 
