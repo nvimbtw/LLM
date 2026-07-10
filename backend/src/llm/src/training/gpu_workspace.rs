@@ -69,6 +69,9 @@ pub struct GpuWorkspace {
     pub d_logits: DeviceBufferF16,
     pub d_dlogits: DeviceBufferF16,
     pub d_targets: DeviceBuffer,
+    // Per-position loss mask (f32, 1=train / 0=ignore) for SFT. Unused by the
+    // pretraining path, which passes a null mask to the cross-entropy kernels.
+    pub d_mask: DeviceBuffer,
     pub d_dw_output: DeviceBuffer,
     pub d_dhidden: DeviceBufferF16,
 
@@ -173,6 +176,7 @@ impl GpuWorkspace {
         let d_logits = DeviceBufferF16::alloc(max_s * vocab);
         let d_dlogits = DeviceBufferF16::alloc(max_s * vocab);
         let d_targets = DeviceBuffer::alloc(max_s);
+        let d_mask = DeviceBuffer::alloc(max_s);
         let d_dw_output = DeviceBuffer::alloc(d * vocab);
         let d_dhidden = DeviceBufferF16::alloc(max_s * d);
 
@@ -194,7 +198,7 @@ impl GpuWorkspace {
             v_dwo, v_dw1, v_dw2, v_db1, v_db2, v_dln_gamma, v_dln_beta,
             s_wq_all, s_wk_all, s_wv_all, s_dw_output, s_d_embedding,
             s_dwo, s_dw1, s_dw2, s_db1, s_db2, s_dln_gamma, s_dln_beta,
-            d_logits, d_dlogits, d_targets, d_dw_output, d_dhidden,
+            d_logits, d_dlogits, d_targets, d_mask, d_dw_output, d_dhidden,
             layer_inputs: Vec::new(),
             post_attn_residuals: Vec::new(),
             ff_inputs: Vec::new(),

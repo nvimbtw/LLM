@@ -424,6 +424,32 @@ impl Transformer {
     /// `chunk` must hold at least 2 tokens (position i is trained to predict token
     /// i+1). Weights are not updated here — the caller drives the optimizer step.
     pub async fn train_step(&self, ws: &mut GpuWorkspace, chunk: &[u32], layers: usize) -> f32 {
+        self.run_step(ws, chunk, None, layers).await
+    }
+
+    /// One SFT training step over `chunk` with a per-position loss `mask` (aligned
+    /// to `chunk`, `1`=train / `0`=ignore per the ISSUE-0031 convention). Only the
+    /// masked-in positions (the assistant reply) contribute loss and gradient;
+    /// everything else is forward-passed but produces no learning signal.
+    pub async fn train_step_masked(
+        &self,
+        ws: &mut GpuWorkspace,
+        chunk: &[u32],
+        mask: &[u8],
+        layers: usize,
+    ) -> f32 {
+        self.run_step(ws, chunk, Some(mask), layers).await
+    }
+
+    // Shared forward+backward body for both the pretraining (`mask == None`) and
+    // SFT (`mask == Some`) steps. Only the loss stage differs between them.
+    async fn run_step(
+        &self,
+        ws: &mut GpuWorkspace,
+        chunk: &[u32],
+        mask: Option<&[u8]>,
+        layers: usize,
+    ) -> f32 {
         let dims = StepDims {
             s: chunk.len(),
             d: self.wo[0].len(),
@@ -440,7 +466,7 @@ impl Transformer {
             d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
         }
         self.project_logits(ws, dims, d_x);
-        let loss = self.compute_loss(ws, dims, chunk);
+        let loss = self.compute_loss(ws, dims, chunk, mask);
 
         let mut d_dx = self.backward_unembed(ws, dims, d_x);
         for layer_idx in (0..layers).rev() {
@@ -692,7 +718,13 @@ impl Transformer {
     // Cross-entropy loss over positions 0..s-1 (position i predicts token i+1),
     // plus its gradient into d_dlogits (final row zeroed — no target). Returns
     // the scalar loss.
-    fn compute_loss(&self, ws: &mut GpuWorkspace, dims: StepDims, chunk: &[u32]) -> f32 {
+    fn compute_loss(
+        &self,
+        ws: &mut GpuWorkspace,
+        dims: StepDims,
+        chunk: &[u32],
+        mask: Option<&[u8]>,
+    ) -> f32 {
         let StepDims { s, vocab, .. } = dims;
         let flat_targets_f32: Vec<f32> = chunk[1..].iter().map(|&t| t as f32).collect();
         // SAFETY: see contract; flat_targets_f32 holds s-1 f32 targets.
@@ -703,29 +735,61 @@ impl Transformer {
                 (flat_targets_f32.len() * 4) as usize,
             );
         }
-        // Pretraining trains on every position: null mask, and active == seq_len
-        // (s-1) so the normalizer is identical to the pre-mask behaviour. The SFT
-        // path (ISSUE-0033) passes a real mask + trained-row count instead.
+
+        // Resolve the mask + active-row count for the loss over positions 0..s-1.
+        // - Pretraining (mask None): null mask, active == seq_len (s-1) — the
+        //   normalizer is identical to the pre-mask behaviour.
+        // - SFT (mask Some): the per-token mask's first s-1 entries are the
+        //   prediction mask for these positions (entry i governs position i, which
+        //   predicts chunk[i+1]); the final token has no successor and is unused
+        //   here. Upload it to ws.d_mask and count the trained rows.
+        let (mask_ptr, active): (*const f32, i32) = match mask {
+            None => (std::ptr::null(), (s - 1) as i32),
+            Some(m) => {
+                let mask_f32: Vec<f32> = m[..s - 1].iter().map(|&b| b as f32).collect();
+                let active = mask_f32.iter().filter(|&&x| x != 0.0).count() as i32;
+                // SAFETY: see contract; mask_f32 holds s-1 f32s, ws.d_mask is sized max_s.
+                unsafe {
+                    cuda_memcpy_h2d(
+                        ws.d_mask.ptr as *mut c_void,
+                        mask_f32.as_ptr() as *const c_void,
+                        (mask_f32.len() * 4) as usize,
+                    );
+                }
+                (ws.d_mask.ptr as *const f32, active)
+            }
+        };
+
+        // No trained positions in this chunk: produce no loss and a zero gradient
+        // (guards the kernels' divide-by-`active`).
+        if active == 0 {
+            // SAFETY: see contract; zeroing the whole s*vocab f16 dlogits buffer.
+            unsafe {
+                cudaMemset(ws.d_dlogits.ptr as *mut c_void, 0, s * vocab * 2);
+            }
+            return 0.0;
+        }
+
         // SAFETY: see contract.
         let loss = unsafe {
             cuda_cross_entropy_loss(
                 ws.d_logits.ptr as *const c_void,
                 ws.d_targets.ptr as *const f32,
-                std::ptr::null(),
+                mask_ptr,
                 (s - 1) as i32,
                 vocab as i32,
-                (s - 1) as i32,
+                active,
             )
         };
         unsafe {
             cuda_cross_entropy_backward(
                 ws.d_logits.ptr as *const c_void,
                 ws.d_targets.ptr as *const f32,
-                std::ptr::null(),
+                mask_ptr,
                 ws.d_dlogits.ptr as *mut c_void,
                 (s - 1) as i32,
                 vocab as i32,
-                (s - 1) as i32,
+                active,
             );
             // SAFETY: offset (s-1)*vocab*2 bytes lands on the final (no-target)
             // logit row inside d_dlogits (s*vocab f16 = s*vocab*2 bytes); zero it.
@@ -2118,6 +2182,71 @@ mod tests {
             last_loss, random_loss, first_loss
         );
         eprintln!("✓ model overfits a single sequence (loss {:.4} -> {:.4})", first_loss, last_loss);
+    }
+
+    // An all-ones mask must reproduce the unmasked loss exactly: same forward,
+    // and active == s-1 makes the normalizer identical. This is the regression
+    // guard that the masked path doesn't perturb pretraining numerics.
+    #[test]
+    fn test_train_step_masked_all_ones_matches_unmasked() {
+        let (vocab, d, ctx, heads, ff_mult, layers) = (20, 8, 8, 2, 2, 2);
+        let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
+        let chunk: Vec<u32> = (0..8).map(|i| i as u32 % (vocab as u32)).collect();
+
+        let mut ws_a = GpuWorkspace::new(&t, ctx as usize);
+        let unmasked = pollster::block_on(t.train_step(&mut ws_a, &chunk, layers as usize));
+
+        let mut ws_b = GpuWorkspace::new(&t, ctx as usize);
+        let mask = vec![1u8; chunk.len()];
+        let masked = pollster::block_on(t.train_step_masked(&mut ws_b, &chunk, &mask, layers as usize));
+
+        eprintln!("  unmasked={:.6}  all-ones-masked={:.6}", unmasked, masked);
+        assert!(
+            (unmasked - masked).abs() < 1e-4,
+            "all-ones mask changed the loss: {:.6} vs {:.6}",
+            unmasked, masked
+        );
+    }
+
+    // An all-zero mask trains on nothing: zero loss and — after an optimizer step
+    // — zero weight change, proving masked-out positions produce no gradient.
+    #[test]
+    fn test_train_step_masked_all_zero_trains_nothing() {
+        let (vocab, d, ctx, heads, ff_mult, layers) = (20, 8, 8, 2, 2, 2);
+        let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = GpuWorkspace::new(&t, ctx as usize);
+
+        let clone_of = |m: &Transformer| Transformer {
+            embedding_table: m.embedding_table.clone(),
+            positional_table: m.positional_table.clone(),
+            wq: m.wq.clone(), wk: m.wk.clone(), wv: m.wv.clone(),
+            wo: m.wo.clone(), w1: m.w1.clone(), w2: m.w2.clone(),
+            b1: m.b1.clone(), b2: m.b2.clone(),
+            ln_gamma: m.ln_gamma.clone(), ln_beta: m.ln_beta.clone(),
+            w_output: m.w_output.clone(),
+            heads: m.heads, head_dim: m.head_dim, layers: m.layers,
+        };
+
+        // Baseline: the GPU weights as uploaded (already f16-quantized). Comparing
+        // against these — not the original f32 weights — isolates *training* change
+        // from the harmless upload/sync quantization.
+        let mut t_base = clone_of(&t);
+        sync_weights_from_gpu(&ws, &mut t_base);
+        let base_emb: Vec<f32> = t_base.embedding_table.iter().flatten().copied().collect();
+
+        let chunk: Vec<u32> = (0..8).map(|i| i as u32 % (vocab as u32)).collect();
+        let mask = vec![0u8; chunk.len()];
+        let loss = pollster::block_on(t.train_step_masked(&mut ws, &chunk, &mask, layers as usize));
+        assert_eq!(loss, 0.0, "an all-zero mask should yield zero loss");
+
+        gpu_adam_update(&ws, 0.01, 1, 1, layers as usize);
+        let mut t_synced = clone_of(&t);
+        sync_weights_from_gpu(&ws, &mut t_synced);
+        let post_emb: Vec<f32> = t_synced.embedding_table.iter().flatten().copied().collect();
+
+        let total_change: f32 = base_emb.iter().zip(&post_emb).map(|(a, b)| (a - b).abs()).sum();
+        assert_eq!(total_change, 0.0, "masked-out training changed weights by {}", total_change);
+        eprintln!("✓ all-zero mask trains nothing (loss=0, weight change=0)");
     }
 
     // ── Non-GPU tests: Transformer::init ──
