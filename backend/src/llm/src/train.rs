@@ -24,6 +24,12 @@ const MAX_GRAD_NORM: f32 = 1.0;
 // (especially deep) model are the most unstable, so ramping lr up from ~0 avoids
 // the early divergence that clipping alone only slows down.
 const WARMUP_STEPS: i32 = 100;
+// How often (in trained chunks) to emit a `train` progress frame over the
+// WebSocket. At the old hard-coded interval of 10, a large corpus fired dozens
+// of frames per second; Recharts re-renders synchronously on every point, so
+// the chart visibly jittered. 100 keeps the graphs responsive while cutting
+// the update rate 10x.
+const PROGRESS_REPORT_INTERVAL: u64 = 100;
 
 pub struct TrainingProgress {
     pub epoch: u64,
@@ -221,7 +227,8 @@ fn save_checkpoint(
 
 // Train one full pass over the corpus: forward/backward each chunk, step the
 // optimizer every ACCUM_STEPS chunks, and emit a mid-epoch progress report every
-// 10 chunks. Advances `adam_step` and returns the epoch's loss summary.
+// PROGRESS_REPORT_INTERVAL chunks. Advances `adam_step` and returns the epoch's
+// loss summary.
 #[allow(clippy::too_many_arguments)]
 fn train_epoch(
     transformer: &mut Transformer,
@@ -263,7 +270,7 @@ fn train_epoch(
             step_optimizer(ws, layers, lr, adam_step);
         }
 
-        if epoch_stats.n % 10 == 0 || epoch_stats.n == total_chunks as u64 {
+        if epoch_stats.n % PROGRESS_REPORT_INTERVAL == 0 || epoch_stats.n == total_chunks as u64 {
             report_chunk_progress(
                 epoch, epochs, total_chunks, total_chunks_all, training_start, loss,
                 &epoch_stats, &window, on_progress,
