@@ -139,3 +139,6 @@ Committed as `d5b9a57` on branch `dev`.
 Addressed the Verifier's clippy note: switched the boundary-mask fill to
 `std::iter::repeat_n(0u8, eot.len())`. `cargo clippy -p backend` now clean; sft
 tests still pass.
+
+### VCS · 2026-07-10
+Committed as `715883c` on branch `dev`.
