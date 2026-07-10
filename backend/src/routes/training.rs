@@ -102,18 +102,22 @@ async fn training_session(
             Some(Ok(Message::Text(text))) => match ws::authenticate(&text, &secret) {
                 Some(_uid) => break,
                 None => {
+                    // Best-effort notify + close; we return regardless of whether
+                    // the peer is still there to receive them.
                     let _ = session.text(ws::error_frame("authentication failed")).await;
                     let _ = session.close(None).await;
                     return;
                 }
             },
             Some(Ok(Message::Ping(bytes))) => {
+                // Best-effort pong; a dead peer ends the loop on the next read.
                 let _ = session.pong(&bytes).await;
             }
             Some(Ok(Message::Close(_))) | None => return,
             _ => {}
         }
     }
+    // Best-effort ready signal; if the peer is gone the next read ends the loop.
     let _ = session
         .text(serde_json::json!({ "type": "ready" }).to_string())
         .await;
@@ -122,12 +126,15 @@ async fn training_session(
     let job = loop {
         match stream.next().await {
             Some(Ok(Message::Text(text))) => {
+                // A malformed attach frame (bad JSON) is treated as "unknown
+                // job": `.ok()` drops the parse error and the None flows below.
                 let attached = serde_json::from_str::<AttachFrame>(&text)
                     .ok()
                     .and_then(|f| registry.get(f.job_id));
                 match attached {
                     Some(job) => break job,
                     None => {
+                        // Best-effort notify + close; we return either way.
                         let _ = session.text(ws::error_frame("unknown job")).await;
                         let _ = session.close(None).await;
                         return;
@@ -135,6 +142,7 @@ async fn training_session(
                 }
             }
             Some(Ok(Message::Ping(bytes))) => {
+                // Best-effort pong; a dead peer ends the loop on the next read.
                 let _ = session.pong(&bytes).await;
             }
             Some(Ok(Message::Close(_))) | None => return,
@@ -147,7 +155,7 @@ async fn training_session(
     // snapshot read and the subscription (we'd rather risk a duplicate frame,
     // which the client renders idempotently, than miss one).
     let (snapshot, terminal, mut rx) = {
-        let st = job.state.lock().unwrap();
+        let st = jobs::lock(&job.state);
         (
             jobs::snapshot_frame(&st),
             st.status.is_terminal(),
@@ -160,6 +168,7 @@ async fn training_session(
     // Nothing more will be broadcast for a finished run; don't leave the socket
     // blocked on a channel that will never produce again.
     if terminal {
+        // Best-effort close; nothing more will be broadcast for a finished run.
         let _ = session.close(None).await;
         return;
     }
@@ -177,6 +186,7 @@ async fn training_session(
                     }
                 }
                 Some(Ok(Message::Ping(bytes))) => {
+                    // Best-effort pong; a dead peer ends the loop on the next read.
                     let _ = session.pong(&bytes).await;
                 }
                 Some(Ok(Message::Close(_))) | None => break,
@@ -197,7 +207,7 @@ async fn training_session(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     // A slow socket fell behind; re-sync from the snapshot.
-                    let snapshot = jobs::snapshot_frame(&job.state.lock().unwrap());
+                    let snapshot = jobs::snapshot_frame(&jobs::lock(&job.state));
                     if session.text(snapshot).await.is_err() {
                         break;
                     }
@@ -207,6 +217,7 @@ async fn training_session(
         }
     }
 
+    // Best-effort close on the way out; the socket may already be gone.
     let _ = session.close(None).await;
 }
 

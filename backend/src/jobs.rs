@@ -85,17 +85,15 @@ impl JobRegistry {
     }
 
     pub fn get(&self, id: Uuid) -> Option<Arc<Job>> {
-        self.jobs.lock().unwrap().get(&id).cloned()
+        lock(&self.jobs).get(&id).cloned()
     }
 
     // (id, status, model_name) for each known run, for the resume listing.
     pub fn list(&self) -> Vec<(Uuid, JobStatus, String)> {
-        self.jobs
-            .lock()
-            .unwrap()
+        lock(&self.jobs)
             .iter()
             .map(|(id, job)| {
-                let st = job.state.lock().unwrap();
+                let st = lock(&job.state);
                 (*id, st.status, st.config.model_name.clone())
             })
             .collect()
@@ -121,7 +119,7 @@ impl JobRegistry {
                 error: None,
             }),
         });
-        self.jobs.lock().unwrap().insert(id, job.clone());
+        lock(&self.jobs).insert(id, job.clone());
 
         // The crate's GPU training is FFI into CUDA; a CUDA fault or a failed
         // invariant surfaces as a panic. On a bare thread that would die
@@ -135,12 +133,12 @@ impl JobRegistry {
             if let Err(payload) = outcome {
                 let msg = panic_message(&*payload);
                 eprintln!("[training] job crashed: {}", msg);
-                let mut st = watched.state.lock().unwrap();
+                let mut st = lock(&watched.state);
                 if !st.status.is_terminal() {
                     st.status = JobStatus::Failed;
                     st.error = Some(format!("training crashed: {}", msg));
                     drop(st);
-                    let _ = watched.tx.send(frame(
+                    emit(&watched.tx, frame(
                         "error",
                         serde_json::json!({ "message": format!("training crashed: {}", msg) }),
                     ));
@@ -205,11 +203,11 @@ fn run_job(job: Arc<Job>, config: TrainConfig) {
                 "done": true,
             });
             {
-                let mut st = job.state.lock().unwrap();
+                let mut st = lock(&job.state);
                 st.tokenize = obj.clone();
                 st.status = JobStatus::Training;
             }
-            let _ = job.tx.send(frame("tokenize", obj));
+            emit(&job.tx, frame("tokenize", obj));
             stats
         }
         Err(e) => {
@@ -260,8 +258,8 @@ fn handle_tokenize_event(job: &Job, event: TokenizeEvent) {
                 "progress": 0.0,
                 "done": false,
             });
-            job.state.lock().unwrap().tokenize = obj.clone();
-            let _ = job.tx.send(frame("tokenize", obj));
+            lock(&job.state).tokenize = obj.clone();
+            emit(&job.tx, frame("tokenize", obj));
         }
         TokenizeEvent::Merge { done, total } => {
             let progress = if total > 0 {
@@ -271,7 +269,7 @@ fn handle_tokenize_event(job: &Job, event: TokenizeEvent) {
             };
             // Keep files/chars already recorded by the Start event.
             let obj = {
-                let mut st = job.state.lock().unwrap();
+                let mut st = lock(&job.state);
                 if let Some(map) = st.tokenize.as_object_mut() {
                     map.insert("vocab".into(), serde_json::json!(256 + done as i64));
                     map.insert("merges".into(), serde_json::json!(done));
@@ -279,11 +277,11 @@ fn handle_tokenize_event(job: &Job, event: TokenizeEvent) {
                 }
                 st.tokenize.clone()
             };
-            let _ = job.tx.send(frame("tokenize", obj));
+            emit(&job.tx, frame("tokenize", obj));
         }
         TokenizeEvent::Log(line) => {
-            push_capped(&mut job.state.lock().unwrap().log, line.to_string());
-            let _ = job.tx.send(frame("log", serde_json::json!({ "line": line })));
+            push_capped(&mut lock(&job.state).log, line.to_string());
+            emit(&job.tx, frame("log", serde_json::json!({ "line": line })));
         }
     }
 }
@@ -309,7 +307,7 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
         "step": step,
     });
     {
-        let mut st = job.state.lock().unwrap();
+        let mut st = lock(&job.state);
         st.train = obj.clone();
         if p.loss.is_finite() {
             push_loss(&mut st.loss_series, [step as f64, p.loss]);
@@ -326,7 +324,7 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
             );
         }
     }
-    let _ = job.tx.send(frame("train", obj));
+    emit(&job.tx, frame("train", obj));
 }
 
 // Terminal completion (done / cancelled / failed) once the dataset is known.
@@ -367,7 +365,7 @@ fn finish(
     }
 
     {
-        let mut st = job.state.lock().unwrap();
+        let mut st = lock(&job.state);
         st.status = status;
         st.error = error.clone();
     }
@@ -385,20 +383,38 @@ fn finish(
             )
         }
     };
-    let _ = job.tx.send(payload);
+    emit(&job.tx, payload);
 }
 
 // Terminal failure before a dataset exists (i.e. tokenization failed).
 fn finish_error(job: &Job, msg: &str) {
     {
-        let mut st = job.state.lock().unwrap();
+        let mut st = lock(&job.state);
         st.status = JobStatus::Failed;
         st.error = Some(msg.to_string());
     }
-    let _ = job.tx.send(frame("error", serde_json::json!({ "message": msg })));
+    emit(&job.tx, frame("error", serde_json::json!({ "message": msg })));
 }
 
 // ── small helpers ───────────────────────────────────────────────────────────
+
+// Locks a job mutex, recovering the guard if a previous holder panicked while
+// holding it. The guarded sections here are single field reads/writes that don't
+// themselves panic, so poisoning isn't expected — but a long-running server
+// shouldn't turn one unlucky panic into a cascade of `.unwrap()` panics across
+// every socket handler, so we take the last state and carry on. Centralizes the
+// justification that would otherwise repeat at each `.lock()` (R3).
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// Best-effort broadcast of a live frame. `send` errors only when no socket is
+// currently attached (no receivers); that's normal — the job runs regardless of
+// who is listening, and a re-attaching socket catches up from the JobState
+// snapshot. Dropping the result is intentional (R3).
+fn emit(tx: &broadcast::Sender<String>, msg: String) {
+    let _ = tx.send(msg);
+}
 
 // Tags a JSON object with its frame `type` and serializes it.
 fn frame(kind: &str, mut obj: serde_json::Value) -> String {

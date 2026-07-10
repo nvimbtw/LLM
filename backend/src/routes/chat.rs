@@ -150,11 +150,15 @@ async fn chat_session(
                         Some(claims) => {
                             let is_admin = matches!(claims.access_level, AccessLevel::Admin);
                             auth = Some((claims.sub, is_admin));
+                            // Best-effort: if the client vanished between frames,
+                            // the next stream read ends the loop anyway.
                             let _ = session
                                 .text(serde_json::json!({ "type": "ready" }).to_string())
                                 .await;
                         }
                         None => {
+                            // Best-effort notify + close; we return regardless of
+                            // whether the peer is still there to receive them.
                             let _ = session.text(ws::error_frame("authentication failed")).await;
                             let _ = session.close(None).await;
                             return;
@@ -173,6 +177,7 @@ async fn chat_session(
                 }
             }
             actix_ws::Message::Ping(bytes) => {
+                // Best-effort pong; a dead peer just ends the loop on next read.
                 let _ = session.pong(&bytes).await;
             }
             actix_ws::Message::Close(_) => break,
@@ -180,6 +185,7 @@ async fn chat_session(
         }
     }
 
+    // Best-effort close on the way out; the socket may already be gone.
     let _ = session.close(None).await;
 }
 
@@ -386,9 +392,13 @@ async fn stream_reply(
             TEMPERATURE,
             TOP_K,
             |token| {
+                // Best-effort: if the receiver was dropped (client disconnected
+                // or the turn aborted) the token is discarded and generation
+                // winds down on its own — nothing here can act on the failure.
                 let _ = tok_tx.send(token.to_string());
             },
         );
+        // Same: the oneshot receiver may be gone if the turn was abandoned.
         let _ = done_tx.send(result);
     });
 
