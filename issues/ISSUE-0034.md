@@ -3,7 +3,7 @@ id: ISSUE-0034
 title: SFT dataset builder — conversations to sft_corpus.bin + sft_mask.bin
 scope: backend
 priority: P2
-status: todo
+status: done
 rule: none
 location: backend/src/training.rs:65-177 backend/src/storage.rs:27-62
 blocked-by: [ISSUE-0031]
@@ -58,6 +58,51 @@ vocab and the special-marker ids, and the fine-tune would be gibberish. So
   and a trainable-token count matching the assistant spans.
 
 ## Comments
+### Builder · 2026-07-10
+Added `build_sft_dataset(base_model_dir)` + supporting types to
+`backend/src/training.rs`, and `storage::sft_dir()` (`raw/sft`).
+
+**The critical constraint is honoured: the base tokenizer is loaded, never
+retrained.** `build_sft_dataset` reads `base_model_dir/merges.bin` via
+`tokenize::bpe::load_merges` and passes those merges to
+`llm::chat_template::build_training_example`. It never calls `tokenize::bpe::train`,
+so the token ids (and the special-marker ids) stay exactly what the base model
+learned.
+
+**What it does:** reads every `*.jsonl` in `sft_dir()` (sorted for determinism),
+parses one `SftConversation` per line (`{system?, turns:[{role,text}...]}` via
+serde), renders each with `build_training_example`, and concatenates into a flat
+`corpus: Vec<u32>` + `mask: Vec<u8>`. Between conversations it inserts one
+`<|endoftext|>` token (encoded via the base merges) with mask `0`, so the model
+sees a boundary but is never trained across two unrelated conversations. Writes
+`datasets/sft_corpus.bin` (via `save_corpus`, the same u32-LE format
+`llm::sft_train` will read with `chunks_exact(4)`) and `datasets/sft_mask.bin`
+(raw bytes, 1:1 with the corpus). Returns `SftDatasetStats { conversations,
+total_tokens, trainable_tokens }` for the dashboard/meta.
+
+**Decisions worth noting:**
+- Unknown role strings are a **hard error** (`parse_role`), not silently skipped —
+  bad data should fail loudly rather than train on a wrong mask.
+- Empty SFT dir / empty output are errors (`NotFound` / `InvalidData`), matching
+  `build_dataset`'s "no files" behaviour.
+- The new items carry `#[allow(dead_code)]` with a comment: they're exercised by
+  tests now and wired into the run/route by ISSUE-0037; this mirrors the
+  "defined ahead of its caller" convention already used with `#![allow(dead_code)]`
+  in `storage.rs`. Keeps R7 (clean build) satisfied without leaving them unused-and-
+  warning.
+
+**Verification.**
+- `cargo test -p backend sft_tests -- --test-threads=1` → **2 passed**:
+  - `test_build_sft_dataset_aligns_and_counts`: two conversations (incl. one with
+    a system prompt) → `sft_corpus.bin` length is exactly `4 × sft_mask.bin`
+    length (u32 vs u8 per token), `total_tokens` matches the mask length, and
+    `trainable_tokens` equals the sum of the two examples' assistant-span mask
+    counts (computed independently via `build_training_example`).
+  - `test_build_sft_dataset_rejects_unknown_role`: `parse_role` rejects `system`,
+    accepts `user`/`assistant`.
+- `cargo build -p backend` → clean, **0 warnings**.
+- No GPU involved (pure IO + the CPU `build_training_example`).
+
 ### Auditor · 2026-07-10
 The storage/IO half of the SFT data path — deliberately in the `backend` crate
 (where `storage.rs` owns the layout), distinct from the pure format logic in
@@ -69,3 +114,28 @@ loop (0035) and the orchestration (0037).
 
 ### VCS · 2026-07-10
 Committed as `d5b9a57` on branch `dev`.
+
+### Verifier · 2026-07-10 · pass
+
+**What was checked:**
+- Read `backend/src/training.rs` (lines 246–468) and `backend/src/storage.rs` (lines 39–41).
+- `build_sft_dataset` loads the base model's tokenizer via `tokenize::bpe::load_merges(base_model_dir/merges.bin)` — never calls `tokenize::bpe::train`. The critical constraint is honoured.
+- Between conversations, inserts `<|endoftext|>` with mask `0` (line 374–377).
+- Writes `sft_corpus.bin` (u32-LE via `tokenize::bpe::save_corpus`) and `sft_mask.bin` (raw bytes, 1:1 alignment) to `datasets/`.
+- Returns `SftDatasetStats { conversations, total_tokens, trainable_tokens }`.
+- Unknown roles are a hard error (`parse_role`, line 291–300).
+- Empty SFT dir / empty output are properly rejected with `io::Error`.
+- `#[allow(dead_code)]` with justified comments on SFT items (same pattern as `storage.rs`).
+
+**Build & tests:**
+- `cargo build -p backend` → clean, **0 warnings**.
+- `cargo test -p backend sft_tests -- --test-threads=1` → **2 passed**:
+  - `test_build_sft_dataset_aligns_and_counts`
+  - `test_build_sft_dataset_rejects_unknown_role`
+
+**Minor note (not blocking):** `cargo clippy -p backend` flags line 376 with `clippy::manual_repeat_n` — `std::iter::repeat_n(0u8, eot.len())` is preferred over `std::iter::repeat(0u8).take(eot.len())`. Not a correctness issue; can be addressed in a follow-up if desired.
+
+### Builder · 2026-07-10
+Addressed the Verifier's clippy note: switched the boundary-mask fill to
+`std::iter::repeat_n(0u8, eot.len())`. `cargo clippy -p backend` now clean; sft
+tests still pass.

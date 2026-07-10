@@ -242,3 +242,227 @@ pub fn write_meta(
     let json = serde_json::to_string_pretty(&meta)?;
     fs::write(model_dir.join("meta.json"), json)
 }
+
+// ── Supervised fine-tuning (SFT) dataset ────────────────────────────────────
+//
+// SFT trains a *pretrained* model on chat conversations, computing loss only on
+// the assistant's replies. Its dataset is two aligned files in `datasets/`:
+//   sft_corpus.bin  flat little-endian u32 token ids (same format as corpus.bin)
+//   sft_mask.bin    one byte per token, 1=train / 0=ignore, aligned 1:1
+// The mask comes straight from `llm::chat_template::build_training_example`, the
+// single source of the format the model is prompted with (see ISSUE-0031/0030).
+//
+// These items are exercised by tests now and wired into the run orchestration +
+// route by ISSUE-0037; allow them to be otherwise-unused until then (same
+// "defined ahead of its caller" pattern as the path helpers in storage.rs).
+
+// One turn of a conversation, as it appears in the input JSONL.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct SftTurn {
+    role: String,
+    text: String,
+}
+
+// One conversation: an optional system prompt plus alternating turns, ending on
+// an assistant reply. One JSON object per line in the input `.jsonl` files.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct SftConversation {
+    #[serde(default)]
+    system: Option<String>,
+    turns: Vec<SftTurn>,
+}
+
+// Summary of what the SFT build produced, for the dashboard + meta.json. The
+// trainable fraction is a useful sanity check — it should sit well under 50%
+// (most tokens are system/user context the model only conditions on).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct SftDatasetStats {
+    pub conversations: usize,
+    pub total_tokens: usize,
+    pub trainable_tokens: usize,
+}
+
+// Map the JSONL role string onto the chat-template Role. Unknown roles are a
+// hard error — bad training data should fail loudly, not train on the wrong mask.
+#[allow(dead_code)]
+fn parse_role(role: &str) -> io::Result<llm::chat_template::Role> {
+    match role {
+        "user" => Ok(llm::chat_template::Role::User),
+        "assistant" => Ok(llm::chat_template::Role::Assistant),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown conversation role {:?} (expected user|assistant)", other),
+        )),
+    }
+}
+
+// Reads every `.jsonl` conversation file in the SFT dir, renders each conversation
+// through the canonical chat template using the **base model's** tokenizer, and
+// writes the aligned `sft_corpus.bin` + `sft_mask.bin` to `datasets/`.
+//
+// The tokenizer is loaded from `base_model_dir/merges.bin` and is NOT retrained:
+// SFT is a fine-tune, so the token ids must match exactly what the base model
+// already learned. Training a fresh BPE here would renumber the vocab (and the
+// special-marker ids) and the fine-tune would be gibberish.
+#[allow(dead_code)]
+pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
+    let merges_path = base_model_dir.join("merges.bin");
+    let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
+
+    // Between conversations, a single <|endoftext|> with mask 0 marks the boundary
+    // so the model sees a separator but is never trained to predict across two
+    // unrelated conversations.
+    let eot = tokenize::bpe::encode("<|endoftext|>", &merges);
+
+    let sft = storage::sft_dir();
+    let mut files: Vec<PathBuf> = if sft.is_dir() {
+        fs::read_dir(&sft)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    files.sort();
+    if files.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no .jsonl conversation files found in the SFT dir",
+        ));
+    }
+
+    let mut corpus: Vec<u32> = Vec::new();
+    let mut mask: Vec<u8> = Vec::new();
+    let mut conversations = 0usize;
+
+    for path in &files {
+        let content = fs::read_to_string(path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let conv: SftConversation = serde_json::from_str(line).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("bad conversation JSON in {}: {}", path.display(), e),
+                )
+            })?;
+
+            let mut turns = Vec::with_capacity(conv.turns.len());
+            for t in &conv.turns {
+                turns.push(llm::chat_template::Turn {
+                    role: parse_role(&t.role)?,
+                    text: t.text.clone(),
+                });
+            }
+
+            let (ids, m) = llm::chat_template::build_training_example(
+                conv.system.as_deref(),
+                &turns,
+                &merges,
+            );
+            if ids.is_empty() {
+                continue;
+            }
+
+            // Boundary before every conversation after the first.
+            if !corpus.is_empty() {
+                corpus.extend(&eot);
+                mask.extend(std::iter::repeat_n(0u8, eot.len()));
+            }
+            corpus.extend(&ids);
+            mask.extend(&m);
+            conversations += 1;
+        }
+    }
+
+    if corpus.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SFT input produced no tokens (empty conversations?)",
+        ));
+    }
+
+    let datasets = storage::datasets_dir();
+    fs::create_dir_all(&datasets)?;
+    tokenize::bpe::save_corpus(&corpus, &datasets.join("sft_corpus.bin").to_string_lossy())?;
+    fs::write(datasets.join("sft_mask.bin"), &mask)?;
+
+    let trainable_tokens = mask.iter().filter(|&&b| b != 0).count();
+    Ok(SftDatasetStats {
+        conversations,
+        total_tokens: corpus.len(),
+        trainable_tokens,
+    })
+}
+
+#[cfg(test)]
+mod sft_tests {
+    use super::*;
+
+    // Build a dataset from a fixture SFT dir + a fixture merges.bin (empty merges
+    // → byte-level tokenization, deterministic), and check the corpus/mask are
+    // aligned and the trained-token count matches the assistant spans.
+    #[test]
+    fn test_build_sft_dataset_aligns_and_counts() {
+        // Isolate storage + a base-model dir under a unique temp root.
+        let tmp = std::env::temp_dir().join(format!("sft_test_{}", std::process::id()));
+        let sft = tmp.join("raw").join("sft");
+        let base = tmp.join("base");
+        fs::create_dir_all(&sft).unwrap();
+        fs::create_dir_all(&base).unwrap();
+        // SAFETY: single-threaded test; DATA_DIR drives storage::root().
+        unsafe { std::env::set_var("DATA_DIR", &tmp); }
+
+        let merges: Vec<((u32, u32), u32)> = Vec::new();
+        tokenize::bpe::save_merges(&merges, &base.join("merges.bin").to_string_lossy()).unwrap();
+
+        // Two conversations, one per line.
+        let jsonl = "{\"turns\":[{\"role\":\"user\",\"text\":\"q1\"},{\"role\":\"assistant\",\"text\":\"a1\"}]}\n\
+                     {\"system\":\"be nice\",\"turns\":[{\"role\":\"user\",\"text\":\"q2\"},{\"role\":\"assistant\",\"text\":\"a2\"}]}\n";
+        fs::write(sft.join("data.jsonl"), jsonl).unwrap();
+
+        let stats = build_sft_dataset(&base).unwrap();
+        assert_eq!(stats.conversations, 2);
+
+        let corpus_bytes = fs::read(storage::datasets_dir().join("sft_corpus.bin")).unwrap();
+        let mask_bytes = fs::read(storage::datasets_dir().join("sft_mask.bin")).unwrap();
+        // corpus is u32 (4 bytes) per token; mask is 1 byte per token — same count.
+        assert_eq!(corpus_bytes.len(), mask_bytes.len() * 4, "corpus/mask must align");
+        assert_eq!(stats.total_tokens, mask_bytes.len());
+
+        // Trainable tokens = the two assistant replies + their closing markers.
+        let expected = llm::chat_template::build_training_example(
+            None,
+            &[
+                llm::chat_template::Turn { role: llm::chat_template::Role::User, text: "q1".into() },
+                llm::chat_template::Turn { role: llm::chat_template::Role::Assistant, text: "a1".into() },
+            ],
+            &merges,
+        ).1.iter().filter(|&&b| b != 0).count()
+        + llm::chat_template::build_training_example(
+            Some("be nice"),
+            &[
+                llm::chat_template::Turn { role: llm::chat_template::Role::User, text: "q2".into() },
+                llm::chat_template::Turn { role: llm::chat_template::Role::Assistant, text: "a2".into() },
+            ],
+            &merges,
+        ).1.iter().filter(|&&b| b != 0).count();
+        assert_eq!(stats.trainable_tokens, expected);
+        assert!(stats.trainable_tokens < stats.total_tokens);
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_build_sft_dataset_rejects_unknown_role() {
+        assert!(parse_role("system").is_err());
+        assert!(parse_role("user").is_ok());
+        assert!(parse_role("assistant").is_ok());
+    }
+}

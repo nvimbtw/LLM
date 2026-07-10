@@ -34,6 +34,12 @@ pub fn synthetic_dir() -> PathBuf {
     root().join("raw").join("synthetic")
 }
 
+// Chat-conversation datasets (JSONL) for supervised fine-tuning, kept separate
+// from the raw prose corpora since SFT consumes a different format.
+pub fn sft_dir() -> PathBuf {
+    root().join("raw").join("sft")
+}
+
 pub fn crawled_dir() -> PathBuf {
     root().join("raw").join("crawled")
 }
