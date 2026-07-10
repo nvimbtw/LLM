@@ -57,3 +57,6 @@ Blocked-by 0037 (needs the `mode`/`base_model_id` contract and the branching
 route). Main care point: keep pretrain mode's request shape identical so existing
 behaviour doesn't regress, and reuse the existing models-list fetch rather than
 inventing a new data path (frontend conventions in the epic / existing hooks).
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

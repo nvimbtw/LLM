@@ -90,3 +90,6 @@ independently-verifiable units (cf. the R1 function-splitting issues). Children
 carry all the code; this issue carries the plan and the final integration check.
 Priority P2: it's net-new feature work, not a latent bug, and each child is
 sized to pass a single Builder→Verifier round.
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

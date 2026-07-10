@@ -76,3 +76,6 @@ dataset). The main design risk is loop duplication: `train_epoch` should be
 *parameterized* over the step function, not copy-pasted, to respect R6. Also flag
 the pretrain-tuned constants (`WARMUP_STEPS`) as possibly-wrong for short SFT runs
 so the Builder makes a conscious choice rather than inheriting them silently.
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

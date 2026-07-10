@@ -67,3 +67,6 @@ because the "all-ones mask == current behaviour" regression guard is worth
 verifying on its own before the buffer plumbing lands. The `active`-count
 normalizer is the subtle part — flag it clearly so the Verifier checks loss and
 gradient use the *same* divisor.
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

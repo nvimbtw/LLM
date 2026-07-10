@@ -69,3 +69,6 @@ the "pretraining path is byte-identical" guarantee deserves its own verification
 round. Blocked-by 0032 since the masked variant has nothing to call until the
 kernels accept a mask. Flag the token-mask → prediction-mask index shift for the
 Verifier; it's the most likely bug.
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

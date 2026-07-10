@@ -61,3 +61,6 @@ pretrain — is the thing most likely to regress, so it's called out for the
 Verifier. Kept in the `backend` crate per the layering rules in
 `backend/CLAUDE.md` (composite operations that span dataset + model live in the
 orchestration/route layer, not in the pure `llm`/`tokenize` crates).
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

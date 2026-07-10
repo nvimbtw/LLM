@@ -66,3 +66,6 @@ retrain BPE" constraint is the single most important correctness note in the who
 epic; a Builder who misses it will produce a dataset that silently trains on the
 wrong vocab. Blocked-by 0031 (it calls `build_training_example`); feeds both the
 loop (0035) and the orchestration (0037).
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.

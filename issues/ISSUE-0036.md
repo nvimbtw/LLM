@@ -57,3 +57,6 @@ convenience, not a blocker — hence it `blocks` nothing. Kept blocked-by 0031 o
 so its round-trip test can assert the generated examples render to a valid mask.
 Deliberately templated/verifiable-by-construction so the SFT smoke test has clean
 signal rather than noisy synthetic text.
+
+### VCS · 2026-07-10
+Committed as `d5b9a57` on branch `dev`.
