@@ -208,6 +208,11 @@ impl GpuWorkspace {
             max_s, d, h, hd, ff, vocab,
         };
         ws.upload_weights(t);
+        // SAFETY: cublas_init() takes no arguments and initializes the process-wide
+        // cuBLAS handle used by the CUDA kernels; calling it once per `GpuWorkspace`
+        // construction (paired with `cublas_shutdown` in `Drop`) is sound as long as
+        // workspaces aren't constructed concurrently on multiple threads, which this
+        // single-threaded training loop guarantees.
         unsafe { cublas_init(); }
         ws.zero_accumulators();
         ws
@@ -254,6 +259,12 @@ impl GpuWorkspace {
     }
 
     pub fn zero_accumulators(&self) {
+        // SAFETY: every pointer below is a `DeviceBuffer`/`DeviceBufferF32`
+        // device allocation owned by `self` (or `self.d_token_ids`), and each
+        // `cudaMemset` count matches the element count that pointer was
+        // allocated with in `GpuWorkspace::new` (`self.d`, `self.vocab`,
+        // `self.h`, `self.hd`, `self.ff`, `self.max_s` — the same dims used at
+        // allocation time), scaled by 4 bytes per f32 element.
         unsafe {
             extern "C" { fn cudaMemset(ptr: *mut std::ffi::c_void, value: i32, count: usize) -> i32; }
 
@@ -292,6 +303,9 @@ impl GpuWorkspace {
 
 impl Drop for GpuWorkspace {
     fn drop(&mut self) {
+        // SAFETY: cublas_shutdown() tears down the process-wide cuBLAS handle
+        // that `cublas_init()` set up in `GpuWorkspace::new`; `Drop::drop` runs
+        // at most once per value, so the init/shutdown pair stays balanced.
         unsafe { cublas_shutdown(); }
     }
 }
