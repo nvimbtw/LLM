@@ -1,8 +1,10 @@
 # Coding Rules
 
-Rules the Auditor enforces against the codebase. These layer on top of the
-project-specific conventions in `backend/CLAUDE.md` (Rust) and the frontend
-conventions established in existing code.
+The shared standard for every role: the **Auditor** files issues against these,
+the **Builder** must satisfy them, and the **Verifier** bounces anything that
+violates them. These layer on top of the project-specific conventions in
+`backend/CLAUDE.md` (Rust) and the frontend conventions established in existing
+code.
 
 Each rule has an id, the standard, and what a violation looks like. File issues
 against the id (e.g. `rule: R1`).

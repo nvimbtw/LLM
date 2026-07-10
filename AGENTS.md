@@ -3,47 +3,87 @@
 Router for agents working on this repository. Read this first, then load the
 skill file for your assigned role.
 
-## Roles
+## Roles and engines
 
-This project uses a three-role workflow. **You are told which role you are** at
-the start of your session (e.g. "you are the auditor"). Find your role below and
-read the linked skill file before doing anything else.
+This project uses a multi-role workflow split across two engines to control cost.
+The expensive engine (Claude Code) does only the work that edits code and drives
+the loop; the cheap engine (opencode, cheap/free models) does the read-only
+review and git roles.
 
-| If you are told you are the… | Read | You do |
-| --- | --- | --- |
-| **Auditor** | [`skills/AUDITOR.md`](skills/AUDITOR.md) | Scan the codebase against the coding rules and **file issues** into `todo.md`. Read-only on source. |
-| **Verifier** | [`skills/VERIFIER.md`](skills/VERIFIER.md) | Check whether issues marked `verification` are actually resolved, then pass or bounce them. Read-only on source. |
-| **Fixer** | [`skills/RULES.md`](skills/RULES.md) | The only role that edits application code. Picks up `todo` issues, implements the fix, moves them to `verification`. |
-| **VCS** | [`skills/VCS.md`](skills/VCS.md) | Manages git — stage, commit, push. Read-only on source. Runs pre-commit checks. |
+| Role | Engine | Read | Does |
+| --- | --- | --- | --- |
+| **Orchestrator** | Claude Code | [`skills/ORCHESTRATOR.md`](skills/ORCHESTRATOR.md) | Drives the chain: picks the next issue, hands it to the Builder, then shells out to opencode for the Verifier and VCS, loops on bounces. |
+| **Builder/Fixer** | Claude Code | [`skills/BUILDER.md`](skills/BUILDER.md) + [`skills/RULES.md`](skills/RULES.md) | The **only** role that edits application code. Picks up a `todo` issue, implements the fix, appends a comment, moves it to `verification`. |
+| **Auditor** | opencode | [`skills/AUDITOR.md`](skills/AUDITOR.md) | Scans the codebase against the coding rules and **files issues** into `issues/`. Read-only on source. |
+| **Verifier** | opencode | [`skills/VERIFIER.md`](skills/VERIFIER.md) | Checks whether `verification` issues are actually resolved, then passes (`done`) or bounces (`todo`) with a comment. Read-only on source. |
+| **VCS** | opencode | [`skills/VCS.md`](skills/VCS.md) | Manages git — stage, commit, push. Read-only on source. Runs pre-commit checks. |
 
-If you have **not** been told your role, you are the **Fixer** by default. Read
-`skills/RULES.md` and `backend/CLAUDE.md` and start working.
+You are told which role you are at the start of your session. If you have **not**
+been told, you are the **Orchestrator + Builder/Fixer** (the Claude Code default):
+read `skills/ORCHESTRATOR.md`, `skills/BUILDER.md`, `skills/RULES.md`, and
+`backend/CLAUDE.md`, and start working.
 
 ## The one hard rule
 
-**Only the Fixer edits application code.** The Auditor and Verifier are
-**read-only on all source** — their sole writable file is `todo.md` (issues and
-issue status). If you are the Auditor or Verifier and you feel the urge to fix
-something, file it or note it instead. This separation is what keeps the cheap
-audit pass safe to run broadly.
+**Only the Builder/Fixer edits application code.** The Orchestrator, Auditor,
+Verifier, and VCS are **read-only on all source** — their only writable surface is
+the issue files under `issues/` (frontmatter `status` and appended comments). If a
+non-Builder role feels the urge to fix something, it files or comments instead.
+This separation is what keeps the cheap review passes safe to run broadly.
 
-## The shared artifact: `todo.md`
+## The shared artifact: `issues/`
 
-`todo.md` is the single source of truth for outstanding work. Its header defines
-the exact issue format, the status lifecycle, and the legends for priority and
-scope. Every role reads and respects that format:
+`issues/` is the single source of truth for outstanding work — **one Markdown file
+per issue**, named `ISSUE-XXXX.md`. Its spec lives in
+[`issues/README.md`](issues/README.md): the exact frontmatter, the status
+lifecycle, the priority/scope legends, and — new — the **append-only comment
+thread** that lets roles hold a real back-and-forth across rounds.
 
-- **Auditor** appends new issues (status `todo`).
-- **Fixer** moves an issue `todo → in-progress → verification` as it works.
-- **Verifier** moves an issue `verification → done` (passed) or back to `todo`
-  (bounced, with a reason in `verification-notes`).
+Field/comment ownership:
 
-Never rewrite or delete another role's issues. Only change the fields your role
-owns (see each skill file).
+- **Auditor** creates a new `ISSUE-XXXX.md` with `status: todo` and owns every
+  frontmatter field.
+- **Builder** moves an issue `todo → in-progress → verification` and appends a
+  `### Builder` comment describing the fix. It never edits other frontmatter.
+- **Verifier** moves an issue `verification → done` (pass) or `verification → todo`
+  (bounce) and appends a `### Verifier` comment with the verdict/reason.
+- **VCS** appends a `### VCS` comment recording the commit; edits no frontmatter.
+
+Never edit or delete another role's comment — always append your own.
+
+## The chain
+
+The Orchestrator (Claude Code) runs this loop, one issue at a time:
+
+```
+  pick next todo issue (P0→P3, bounced first, respect blocked-by)
+        │
+        ▼
+  Builder (Claude Code) edits code, appends ### Builder comment, status → verification
+        │
+        ▼
+  Verifier (opencode)   opencode run --agent verifier "ISSUE-XXXX"
+        │                 ├─ pass   → status done, ### Verifier comment
+        │                 └─ bounce → status todo,  ### Verifier comment  ─┐
+        ▼                                                                  │
+  VCS (opencode)        opencode run --agent vcs "ISSUE-XXXX"             │
+        │                 └─ commit, ### VCS comment                       │
+        ▼                                                                  │
+  next issue ◄──────────────────── loop back on bounce ────────────────────┘
+```
+
+The Orchestrator reads each opencode step's appended comment + resulting `status`
+to decide the next move. Concrete invocation shapes and model selection live in
+[`skills/ORCHESTRATOR.md`](skills/ORCHESTRATOR.md). The opencode roles are wired up
+as thin agent shims in `.opencode/agent/{auditor,verifier,vcs}.md` — each pins a
+cheap model and is **harness-locked to read-only on source** (`permission.edit`
+allows only `issues/**`), deferring its actual instructions to the matching
+`skills/*.md`.
 
 ## Project context
 
 For how the code itself is organized and its conventions, see `backend/CLAUDE.md`
-(backend, Rust) and `frontend/CLAUDE.md` (frontend, TypeScript/React). The
-coding rules the Auditor enforces live in `skills/RULES.md` and are intended to
-layer *on top of* those existing conventions, not replace them.
+(backend, Rust) and `frontend/CLAUDE.md` (frontend, TypeScript/React). The coding
+rules the Auditor enforces and the Builder must satisfy live in
+[`skills/RULES.md`](skills/RULES.md) and layer *on top of* those existing
+conventions, not replace them.
