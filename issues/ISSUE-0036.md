@@ -130,3 +130,6 @@ Added the templated synthetic-data generator in `training.rs`.
 5. **No regressions:** the `shuffle` refactor preserves Fisher-Yates with the same xorshift64 algorithm. The existing `build_dataset` / `build_sft_dataset` / `run_sft_training` functions are unchanged.
 
 **Verdict:** Pass — all criteria from the issue description and all applicable coding rules are satisfied.
+
+### VCS · 2026-07-11
+Committed as `a74eda7` on branch `dev`.
