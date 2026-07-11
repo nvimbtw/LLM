@@ -16,6 +16,11 @@ import { API_URL, WS_URL, authHeaders, getToken } from "./api"
 //   server → { type: "error", message }
 //   client → { action: "cancel" }               (stop the run)
 
+// Which kind of run: pretrain a fresh model, or supervised-fine-tune (SFT) an
+// existing one on chat data. Matches the backend `TrainMode` (serialized
+// lowercase). Absent on older clients → the backend defaults to "pretrain".
+export type TrainMode = "pretrain" | "sft"
+
 export interface TrainConfig {
   model_name: string
   dimensions: number
@@ -30,6 +35,11 @@ export interface TrainConfig {
   num_books: number
   // How many synthetic documents to mix in, picked at random. 0 = none.
   num_synthetic: number
+  // Pretrain (default) vs SFT fine-tune.
+  mode: TrainMode
+  // For SFT only: the id of the base model to fine-tune from. Omitted for
+  // pretrain; the backend rejects an SFT request without a resolvable one.
+  base_model_id?: string
 }
 
 export type JobStatus =

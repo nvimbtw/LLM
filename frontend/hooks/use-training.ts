@@ -25,6 +25,7 @@ export const DEFAULT_CONFIG: TrainConfig = {
   max_vocab: 1024,
   num_books: 0,
   num_synthetic: 0,
+  mode: "pretrain",
 }
 
 // Cap the number of loss points kept for the chart. Long runs emit thousands of
