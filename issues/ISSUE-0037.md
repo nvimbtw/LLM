@@ -155,3 +155,6 @@ The GPU end-to-end SFT run itself is exercised by ISSUE-0035's
 **Rule check:** All new/changed code respects R1–R13. `#[allow(dead_code)]` correctly removed from the five ISSUE-0034 items now that they are reachable; the removed allows would themselves violate R7 if left.
 
 **Observation (no bounce needed):** `build_sft_dataset` (~90 lines body) exceeds R1's 60-line guideline. This is pre-existing from ISSUE-0034 — this issue only removed its `#[allow(dead_code)]` and did not modify its structure. A separate Auditor finding may be warranted if the length is deemed actionable.
+
+### VCS · 2026-07-11
+Committed as `6ad0872` on branch `dev`.
