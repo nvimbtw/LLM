@@ -202,3 +202,6 @@ convention, and the SFT dataset layout with input/output schemas. ✅
 or errors. ✅
 
 All three DoD criteria satisfied. Passing.
+
+### VCS · 2026-07-11
+Committed as `890ba6b` on branch `dev`.
