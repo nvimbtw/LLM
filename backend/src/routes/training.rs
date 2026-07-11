@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::extractors::AdminUser;
 use crate::jobs::{self, JobRegistry};
-use crate::training::TrainConfig;
+use crate::storage;
+use crate::training::{TrainConfig, TrainMode};
 use crate::ws;
 
 // Kicks off a run in the background and returns its id. The actual progress is
@@ -21,6 +22,9 @@ async fn start_training(
 ) -> impl Responder {
     let mut config = body.into_inner();
     if let Err(msg) = validate_config(&config) {
+        return HttpResponse::BadRequest().body(msg);
+    }
+    if let Err(msg) = validate_sft(&config) {
         return HttpResponse::BadRequest().body(msg);
     }
 
@@ -271,6 +275,26 @@ fn validate_config(cfg: &TrainConfig) -> Result<(), &'static str> {
 
 fn is_power_of_two(n: i64) -> bool {
     n > 0 && (n & (n - 1)) == 0
+}
+
+// Extra validation for an SFT run (a no-op for pretrain): the base model to
+// fine-tune from must be named and must resolve to an on-disk model (a
+// `model.bin` under its UUID dir). A bad or missing base is a client error (400),
+// not a server fault — catch it here so the worker never spawns against a
+// nonexistent base. Note: the model hyperparameters (dimensions/ctx_window/…) are
+// ignored for SFT — they are loaded from the base — but must still pass
+// `validate_config`; the frontend mirrors the base's values into the request
+// (ISSUE-0038).
+fn validate_sft(cfg: &TrainConfig) -> Result<(), &'static str> {
+    if cfg.mode != TrainMode::Sft {
+        return Ok(());
+    }
+    let base_id = cfg.base_model_id.ok_or("base_model_id is required for an SFT run")?;
+    let base_dir = storage::models_dir().join(base_id.to_string());
+    if !base_dir.join("model.bin").is_file() {
+        return Err("base_model_id does not resolve to an existing model");
+    }
+    Ok(())
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

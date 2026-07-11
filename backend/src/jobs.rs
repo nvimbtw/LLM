@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::db::model::NewModel;
-use crate::training::{self, DatasetStats, TokenizeEvent, TrainConfig};
+use crate::training::{self, TokenizeEvent, TrainConfig, TrainMode};
 
 const BROADCAST_CAPACITY: usize = 256;
 const MAX_LOG_LINES: usize = 500;
@@ -179,10 +179,20 @@ pub fn snapshot_frame(state: &JobState) -> String {
 
 // ── worker ──────────────────────────────────────────────────────────────────
 
-// Runs both phases for one job on a dedicated thread. Both crate calls are
+// Dispatches a job to its mode's worker. Both are two-phase (build dataset, then
+// train) and share the progress/finish plumbing; they differ only in phase 1
+// (BPE tokenize vs. SFT render) and which train entry point phase 2 drives.
+fn run_job(job: Arc<Job>, config: TrainConfig) {
+    match config.mode {
+        TrainMode::Pretrain => run_pretrain_job(job, config),
+        TrainMode::Sft => run_sft_job(job, config),
+    }
+}
+
+// Runs both phases for a pretrain job on a dedicated thread. Both crate calls are
 // synchronous and blocking, which is exactly why this is a plain OS thread and
 // not a task on the actix runtime.
-fn run_job(job: Arc<Job>, config: TrainConfig) {
+fn run_pretrain_job(job: Arc<Job>, config: TrainConfig) {
     let created_at = Utc::now().to_rfc3339();
 
     // ---- Phase 1: tokenize / build the dataset ----
@@ -233,15 +243,84 @@ fn run_job(job: Arc<Job>, config: TrainConfig) {
 
     let outcome = training::run_training(&config, on_progress, job.cancel.clone());
     eprintln!("[training] {}: training returned {:?}", config.model_name, outcome);
+    let dataset = serde_json::json!(dataset);
+    finish_outcome(&job, &config, &dataset, &created_at, outcome);
+}
+
+// Runs both phases for an SFT job: render the chat conversations into the masked
+// dataset using the base model's tokenizer, then fine-tune the base via
+// `run_sft_training`. Shares the progress/finish plumbing with the pretrain path.
+fn run_sft_job(job: Arc<Job>, config: TrainConfig) {
+    let created_at = Utc::now().to_rfc3339();
+
+    // The base model to fine-tune from; its tokenizer renders the dataset and its
+    // weights are the starting point. The route guarantees this is present and
+    // resolves, but we resolve defensively (the id is untrusted here).
+    let base_model_dir = match config.base_model_id {
+        Some(id) => crate::storage::models_dir().join(id.to_string()),
+        None => {
+            finish_error(&job, "SFT run is missing a base_model_id");
+            return;
+        }
+    };
+
+    // ---- Phase 1: render conversations → sft_corpus.bin + sft_mask.bin ----
+    eprintln!("[training] {}: building SFT dataset…", config.model_name);
+    let dataset = match training::build_sft_dataset(&base_model_dir) {
+        Ok(stats) => {
+            let obj = serde_json::json!({
+                "conversations": stats.conversations,
+                "total_tokens": stats.total_tokens,
+                "trainable_tokens": stats.trainable_tokens,
+                "progress": 1.0,
+                "done": true,
+            });
+            {
+                let mut st = lock(&job.state);
+                st.tokenize = obj.clone();
+                st.status = JobStatus::Training;
+            }
+            emit(&job.tx, frame("tokenize", obj));
+            serde_json::json!(stats)
+        }
+        Err(e) => {
+            finish_error(&job, &format!("SFT dataset build failed: {}", e));
+            return;
+        }
+    };
+
+    // ---- Phase 2: fine-tune from the base ----
+    eprintln!(
+        "[training] {}: starting SFT fine-tune ({} epochs, base {})",
+        config.model_name, config.epochs, base_model_dir.display(),
+    );
+    let job_for_cb = job.clone();
+    let on_progress: llm::train::ProgressCallback =
+        Box::new(move |p| handle_train_progress(&job_for_cb, p));
+
+    let outcome = training::run_sft_training(&config, on_progress, job.cancel.clone());
+    eprintln!("[training] {}: SFT returned {:?}", config.model_name, outcome);
+    finish_outcome(&job, &config, &dataset, &created_at, outcome);
+}
+
+// Maps a training outcome (cancelled / completed / errored) onto the terminal
+// `finish`. Shared by both modes so the status mapping lives in one place.
+fn finish_outcome(
+    job: &Job,
+    config: &TrainConfig,
+    dataset: &serde_json::Value,
+    created_at: &str,
+    outcome: std::io::Result<bool>,
+) {
     match outcome {
-        Ok(true) => finish(&job, JobStatus::Cancelled, &config, dataset, &created_at, None),
-        Ok(false) => finish(&job, JobStatus::Done, &config, dataset, &created_at, None),
+        Ok(true) => finish(job, JobStatus::Cancelled, config, dataset, created_at, None),
+        Ok(false) => finish(job, JobStatus::Done, config, dataset, created_at, None),
         Err(e) => finish(
-            &job,
+            job,
             JobStatus::Failed,
-            &config,
+            config,
             dataset,
-            &created_at,
+            created_at,
             Some(format!("training failed: {}", e)),
         ),
     }
@@ -332,7 +411,8 @@ fn finish(
     job: &Job,
     status: JobStatus,
     config: &TrainConfig,
-    dataset: DatasetStats,
+    // Already-serialized per-mode dataset stats (DatasetStats or SftDatasetStats).
+    dataset: &serde_json::Value,
     created_at: &str,
     error: Option<String>,
 ) {

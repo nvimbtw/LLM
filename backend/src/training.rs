@@ -16,6 +16,17 @@ use uuid::Uuid;
 
 use crate::storage;
 
+// Which kind of run this is: pretrain a fresh model, or supervised-fine-tune
+// (SFT) an existing one on chat data. Serialized lowercase (`"pretrain"` /
+// `"sft"`) in the POST body and meta.json.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TrainMode {
+    #[default]
+    Pretrain,
+    Sft,
+}
+
 // Hyperparameters + dataset knobs for one run. Deserialized from the POST body,
 // echoed back in progress snapshots, and persisted to the run's meta.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +40,15 @@ pub struct TrainConfig {
     pub lr: f32,
     pub ff_multiplier: i64,
     pub max_vocab: u32,
+    // Pretrain (default) vs SFT. `#[serde(default)]` so a body/meta.json written
+    // before this field existed still deserializes as a pretrain run (back-compat).
+    #[serde(default)]
+    pub mode: TrainMode,
+    // For SFT only: the id of the already-trained model to fine-tune from (names
+    // its on-disk dir under models/). Ignored for pretrain; validated present at
+    // the route boundary for SFT.
+    #[serde(default)]
+    pub base_model_id: Option<Uuid>,
     // How many uploaded books to train on, chosen at random. 0 (or >= the number
     // available) means "use all of them". Lets the user keep a big pile of data
     // in uploads and dial the training set size per run.
@@ -213,20 +233,57 @@ pub fn run_training(
     )
 }
 
+// Maps an SFT run onto the on-disk layout and invokes `llm::sft_train`. Mirrors
+// `run_training` but loads a pretrained base (resolved from `cfg.base_model_id`)
+// and drives the masked SFT path. Returns Ok(true) if cancelled, Ok(false) if it
+// completed. The dataset (`sft_corpus.bin` + `sft_mask.bin`) must already have
+// been built by `build_sft_dataset` — the caller runs that as phase 1.
+pub fn run_sft_training(
+    cfg: &TrainConfig,
+    on_progress: llm::train::ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<bool> {
+    // The route validates presence, but this crate is also called directly (tests,
+    // future callers), so guard here rather than trust the invariant.
+    let base_id = cfg.base_model_id.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "SFT run requires a base_model_id")
+    })?;
+    let base_model_dir = storage::models_dir().join(base_id.to_string());
+    let sft_corpus_path = storage::datasets_dir().join("sft_corpus.bin");
+    let sft_mask_path = storage::datasets_dir().join("sft_mask.bin");
+    let out_model_dir = storage::models_dir().join(cfg.storage_id.to_string());
+    let checkpoints_dir = out_model_dir.join("checkpoints");
+
+    llm::train::sft_train(
+        &base_model_dir,
+        &sft_corpus_path,
+        &sft_mask_path,
+        &out_model_dir,
+        cfg.epochs,
+        cfg.lr,
+        Some(&checkpoints_dir),
+        on_progress,
+        Some(cancel),
+    )
+}
+
 #[derive(Serialize)]
 struct RunMeta<'a> {
     config: &'a TrainConfig,
-    dataset: DatasetStats,
+    // Serialized dataset summary — `DatasetStats` for pretrain, `SftDatasetStats`
+    // for SFT — so one meta.json shape covers both modes.
+    dataset: &'a serde_json::Value,
     status: &'a str,
     created_at: &'a str,
     finished_at: String,
 }
 
 // Writes a durable record of the run next to its weights, so a run is
-// inspectable on disk without a database.
+// inspectable on disk without a database. `dataset` is the already-serialized
+// per-mode stats (see `RunMeta::dataset`).
 pub fn write_meta(
     cfg: &TrainConfig,
-    dataset: DatasetStats,
+    dataset: &serde_json::Value,
     status: &str,
     created_at: &str,
 ) -> io::Result<()> {
@@ -251,13 +308,10 @@ pub fn write_meta(
 //   sft_mask.bin    one byte per token, 1=train / 0=ignore, aligned 1:1
 // The mask comes straight from `llm::chat_template::build_training_example`, the
 // single source of the format the model is prompted with (see ISSUE-0031/0030).
-//
-// These items are exercised by tests now and wired into the run orchestration +
-// route by ISSUE-0037; allow them to be otherwise-unused until then (same
-// "defined ahead of its caller" pattern as the path helpers in storage.rs).
+// Wired into the run orchestration (`run_sft_training` + `jobs::run_sft_job`) and
+// the route by ISSUE-0037.
 
 // One turn of a conversation, as it appears in the input JSONL.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SftTurn {
     role: String,
@@ -266,7 +320,6 @@ struct SftTurn {
 
 // One conversation: an optional system prompt plus alternating turns, ending on
 // an assistant reply. One JSON object per line in the input `.jsonl` files.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct SftConversation {
     #[serde(default)]
@@ -277,7 +330,6 @@ struct SftConversation {
 // Summary of what the SFT build produced, for the dashboard + meta.json. The
 // trainable fraction is a useful sanity check — it should sit well under 50%
 // (most tokens are system/user context the model only conditions on).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct SftDatasetStats {
     pub conversations: usize,
@@ -287,7 +339,6 @@ pub struct SftDatasetStats {
 
 // Map the JSONL role string onto the chat-template Role. Unknown roles are a
 // hard error — bad training data should fail loudly, not train on the wrong mask.
-#[allow(dead_code)]
 fn parse_role(role: &str) -> io::Result<llm::chat_template::Role> {
     match role {
         "user" => Ok(llm::chat_template::Role::User),
@@ -307,7 +358,6 @@ fn parse_role(role: &str) -> io::Result<llm::chat_template::Role> {
 // SFT is a fine-tune, so the token ids must match exactly what the base model
 // already learned. Training a fresh BPE here would renumber the vocab (and the
 // special-marker ids) and the fine-tune would be gibberish.
-#[allow(dead_code)]
 pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
     let merges_path = base_model_dir.join("merges.bin");
     let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
@@ -457,6 +507,34 @@ mod sft_tests {
         assert!(stats.trainable_tokens < stats.total_tokens);
 
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    // Back-compat: a request body written before `mode`/`base_model_id` existed
+    // (no such keys) must still deserialize, defaulting to a pretrain run. This is
+    // the regression ISSUE-0037 most needs to guard.
+    #[test]
+    fn test_trainconfig_defaults_to_pretrain_without_mode() {
+        let body = r#"{
+            "model_name": "legacy", "dimensions": 64, "ctx_window": 16, "heads": 4,
+            "layers": 2, "epochs": 1, "lr": 0.01, "ff_multiplier": 2, "max_vocab": 512
+        }"#;
+        let cfg: TrainConfig = serde_json::from_str(body).unwrap();
+        assert_eq!(cfg.mode, TrainMode::Pretrain);
+        assert!(cfg.base_model_id.is_none());
+    }
+
+    // An explicit SFT body parses the lowercase tag and carries the base id.
+    #[test]
+    fn test_trainconfig_parses_sft_mode() {
+        let id = Uuid::new_v4();
+        let body = format!(
+            r#"{{"model_name":"ft","dimensions":64,"ctx_window":16,"heads":4,"layers":2,
+                "epochs":1,"lr":0.0001,"ff_multiplier":2,"max_vocab":512,
+                "mode":"sft","base_model_id":"{id}"}}"#
+        );
+        let cfg: TrainConfig = serde_json::from_str(&body).unwrap();
+        assert_eq!(cfg.mode, TrainMode::Sft);
+        assert_eq!(cfg.base_model_id, Some(id));
     }
 
     #[test]
