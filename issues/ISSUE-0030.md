@@ -3,7 +3,7 @@ id: ISSUE-0030
 title: "Epic: Post-training (SFT) — fine-tune a pretrained base model on chat data with loss masking"
 scope: cross
 priority: P2
-status: todo
+status: done
 rule: none
 location: backend/src/llm/src/chat_template.rs backend/src/llm/src/train.rs backend/src/llm/src/training/transformer.rs backend/src/training.rs frontend/components/training/config-form.tsx
 blocked-by: [ISSUE-0031, ISSUE-0032, ISSUE-0033, ISSUE-0034, ISSUE-0035, ISSUE-0036, ISSUE-0037, ISSUE-0038]
@@ -82,6 +82,34 @@ so the mask built at data-prep time lines up with the loss computed on GPU.
    and the SFT dataset layout.
 
 ## Comments
+### Builder · 2026-07-10 · progress log
+Snapshot of the SFT epic build-out (4 of 8 children landed on `dev`):
+
+| # | Issue | Status | Commit | Notes |
+| --- | --- | --- | --- | --- |
+| 0031 | chat_template `build_training_example` → (ids, mask) | ✅ done | `2630edf` | Compositional per-segment encoding (markers glue to text in the pre-tokenizer, so single-pass marker-hunting is unreliable); matches the autoregressive gen path. 3 CPU tests. |
+| 0032 | Masked cross-entropy loss/backward CUDA kernels | ✅ done | `b69af20` | Nullable `mask` + `active` divisor; null mask ⇒ byte-identical pretraining. Verified on GPU (15 transformer tests). |
+| 0033 | `train_step_masked` + `GpuWorkspace.d_mask` | ✅ done | (in `d5b9a57` thread / own commit) | Shared `run_step(mask: Option)` — no pipeline dup. `active==0` divide-by-zero guard. 2 new GPU tests (all-ones==unmasked; all-zero trains nothing). 45/45 llm tests. |
+| 0034 | `build_sft_dataset` → sft_corpus.bin + sft_mask.bin | ✅ done | (committing) | Loads base `merges.bin`, **never retrains BPE**; `<|endoftext|>` mask-0 boundaries between conversations. 2 backend tests. |
+| 0035 | `sft_train` loop (fine-tune from base) | ⬜ todo | — | **Next up.** Unblocked (0031/0033/0034 done). The heart of the epic. |
+| 0036 | Synthetic chat-data generator | ⬜ todo | — | P3, unblocked (needs 0031). |
+| 0037 | `TrainMode` + SFT route/job wiring | ⬜ todo | — | Blocked on 0035. Will remove the `#[allow(dead_code)]` on the 0034 SFT items by wiring them up. |
+| 0038 | Frontend fine-tune toggle + base-model picker | ⬜ todo | — | P3, blocked on 0037. |
+
+**Environment notes carried forward for the remaining children:**
+- This box **has** a CUDA GPU (RTX 3060). Run GPU tests with the Bash sandbox
+  disabled **and** `--test-threads=1` — the parallel harness SIGSEGVs because
+  `GpuWorkspace` uses the process-wide, non-thread-safe cuBLAS init/shutdown
+  (documented in ISSUE-0016). The opencode Verifier is on the same machine.
+- The mask convention (`mask[i]=1` iff token `i+1` is an assistant-reply token) is
+  now realized end-to-end from `build_training_example` → `sft_mask.bin` →
+  `train_step_masked` → the masked kernels. 0035 just has to keep the corpus/mask
+  chunk slices index-aligned.
+
+Remaining for the epic's own "definition of done": children 0035–0038, then the
+end-to-end smoke test (pretrain → sft_train → assert masked-region loss drops
+while a user/system token's gradient stays zero) and the docs note.
+
 ### Auditor · 2026-07-10
 Filed as the design/tracking parent for the post-training feature the user asked
 to scope out. Deliberately structured as an epic with a `blocked-by` chain rather
@@ -93,3 +121,84 @@ sized to pass a single Builder→Verifier round.
 
 ### VCS · 2026-07-10
 Committed as `d5b9a57` on branch `dev`.
+
+### Builder · 2026-07-11 · epic closure
+All eight children are `done` and committed on `dev`; closing the epic against its
+definition of done.
+
+**Children (final):**
+
+| # | Issue | Commit |
+| --- | --- | --- |
+| 0031 | chat_template `build_training_example` → (ids, mask) | `2630edf` |
+| 0032 | Masked cross-entropy loss/backward CUDA kernels | `b69af20` |
+| 0033 | `train_step_masked` + `GpuWorkspace.d_mask` | `e79c614` |
+| 0034 | `build_sft_dataset` → sft_corpus.bin + sft_mask.bin | `715883c` |
+| 0035 | `sft_train` loop (fine-tune from base) | `133dd22` |
+| 0036 | Synthetic chat-data generator | `a74eda7` |
+| 0037 | `TrainMode` + SFT route/job wiring | `6ad0872` |
+| 0038 | Frontend fine-tune toggle + base-model picker | `4dff321` |
+
+**DoD item 1 — all children done:** ✅ (table above).
+
+**DoD item 2 — end-to-end smoke test:** added
+`test_sft_epic_masking_isolates_gradient` in `src/llm/tests/train_test.rs`. It
+builds a tiny base via `Transformer::init` + `save` (fast — no full-corpus
+pretrain), then runs `sft_train` twice over a 16-token fixture:
+- **all-zero mask** → every reported epoch loss is exactly `0.0`: masked-out
+  (system/user/scaffold) positions contribute nothing to the SFT objective, so
+  there is no learning signal outside the assistant span.
+- **real mask** (first 4 positions 0, rest 1) → the loss is positive and *drops*,
+  and the resulting model differs from the all-zero-mask model.
+
+Note on the assertion I did **not** make: I first tried byte-equality of the
+all-zero-mask output against the on-disk base ("weights provably untouched") and it
+failed — correctly. GPU weights are `__half` (f16), so `sft_train` round-trips the
+f32 base through f16 and re-quantizes it even when the gradient is exactly zero;
+that's a precision round-trip, not a masking leak. The rigorous "zero gradient ⇒
+GPU weights unchanged" property is already proven at the step level, without any
+f16 round-trip, by `transformer::tests::test_train_step_masked_all_zero_trains_nothing`
+(ISSUE-0033). The epic test asserts the observable end-to-end behaviour instead.
+Passes in 0.69s (GPU, `--test-threads=1`).
+
+**DoD item 3 — docs:** added a "Training modes (pretrain vs SFT)" section to
+`backend/CLAUDE.md` covering the two modes, the masking convention, and the SFT
+dataset layout (`raw/sft/*.jsonl` input schema → `datasets/sft_corpus.bin` +
+`sft_mask.bin`).
+
+**Checks:** `cargo build` + `cargo clippy` clean (zero warnings); backend
+`training::sft_tests` 5/5; the new epic GPU test passes. The full masked path is
+realized end-to-end: `build_training_example` → `sft_mask.bin` →
+`train_step_masked` → masked kernels, launchable via the SFT route/job and the
+frontend fine-tune toggle.
+
+### Verifier · 2026-07-11 · pass
+
+**DoD item 1 — children all done:** Confirmed via `grep`: ISSUE-0031 through
+ISSUE-0038 each have `status: done`. ✅
+
+**DoD item 2 — epic smoke test:** Reviewed
+`test_sft_epic_masking_isolates_gradient` (lines 142–199 of
+`backend/src/llm/tests/train_test.rs`). Design is sound:
+- Creates a tiny random `Transformer::init(32,300,16,4,2,1)` base model,
+  avoiding a full pretrain.
+- **All-zero mask** (case a): runs `sft_train` with all `mask=0`, asserts
+  every reported epoch loss is exactly `0.0` — proving masked-out positions
+  contribute no learning signal to the SFT objective.
+- **Real mask** (case b): runs with first-4-zero/rest-one mask, asserts
+  initial loss is positive and decreases over epochs, and the saved model
+  differs from the all-zero run — proving the assistant region actually learns.
+- Correctly avoids byte-equality assertion against on-disk base (Builder's
+  comment explains the f16 round-trip limitation and correctly defers the
+  rigorous zero-gradient proof to the step-level GPU test from ISSUE-0033).
+- Cleans up temp directory. No obvious bugs. ✅
+
+**DoD item 3 — docs:** `backend/CLAUDE.md` contains a "Training modes
+(pretrain vs SFT)" section (line 69) covering both modes, the masking
+convention, and the SFT dataset layout with input/output schemas. ✅
+
+**Build/static checks:** `cargo build` (from `backend/`) passed clean in
+0.70s. `cargo clippy` (from `backend/`) passed clean in 0.51s. No warnings
+or errors. ✅
+
+All three DoD criteria satisfied. Passing.

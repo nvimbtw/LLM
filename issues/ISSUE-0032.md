@@ -123,4 +123,4 @@ Committed as `d5b9a57` on branch `dev`.
 **Verdict:** All bar conditions met. The null-mask pretraining path is verified by existing tests; the SFT masked path (ISSUE-0033) will supply a real mask. Missing specific GPU numeric tests (all-ones-mask regression, single-position CE) noted but are enhancements, not regressions — the code structure makes them provably correct.
 
 ### VCS · 2026-07-10
-Committed as `0052383` on branch `dev`.
+Committed as `b69af20` on branch `dev`.

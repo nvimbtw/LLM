@@ -151,3 +151,6 @@ Verifier: the run takes ~460s because the fixture pretrains a base over the full
 - Test reviewed: `test_sft_train_masked_loss_decreases` (lines 38-96 of `tests/train_test.rs`): builds tiny base, writes 16-token fixture with 4-byte scaffold mask + 12-byte train mask, runs 8 `sft_train` epochs, asserts `last < first` and that standalone model files exist. Test structure is correct, mask generation matches the ISSUE-0031 convention, and loss assertions are valid.
 
 **Verdict:** The fix is correct, complete, and R6/R10 compliant. Parameterized mask-threading is clean, no regression in the pretraining path, and the test validates the invariant. Passing.
+
+### VCS · 2026-07-11
+Committed as `133dd22` on branch `dev`.

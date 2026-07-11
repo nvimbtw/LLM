@@ -143,3 +143,6 @@ default) — so existing behaviour is unchanged.
 - R18: No `any` — all types explicit (uses `Record<string, unknown>`, proper `interface`/`type`).
 
 No rule violations. The fix is complete, back-compatible, and adds zero new lint issues.
+
+### VCS · 2026-07-11
+Committed as `4dff321` on branch `dev`.
