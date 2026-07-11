@@ -3,7 +3,7 @@ id: ISSUE-0035
 title: SFT training loop and sft_train entry point (fine-tune from a base model)
 scope: backend/llm
 priority: P2
-status: todo
+status: done
 rule: none
 location: backend/src/llm/src/train.rs:56-153 backend/src/llm/src/train.rs:228-280
 blocked-by: [ISSUE-0031, ISSUE-0033, ISSUE-0034]
@@ -79,3 +79,75 @@ so the Builder makes a conscious choice rather than inheriting them silently.
 
 ### VCS · 2026-07-10
 Committed as `d5b9a57` on branch `dev`.
+
+### Builder · 2026-07-11
+Implemented `sft_train` in `train.rs` and threaded a loss mask through the
+existing loop rather than forking it.
+
+**What changed:**
+- **New `pub fn sft_train(base_model_dir, sft_corpus_path, sft_mask_path,
+  out_model_dir, epochs, lr, checkpoints_dir, on_progress, cancel)`** — mirrors
+  `continue_train`'s load-then-loop shape: `Transformer::load(base_model_dir)`
+  recovers the base weights (and implies `ctx_window` via `positional_table.len()`
+  and `layers`), reads `sft_corpus.bin` as `chunks_exact(4)` → `Vec<u32>` and
+  `sft_mask.bin` as raw `Vec<u8>`, then copies the base `merges.bin` into
+  `out_model_dir` so the fine-tuned model loads standalone at inference.
+- **Length guard (R10):** returns `io::ErrorKind::InvalidData` if
+  `corpus.len() != mask.len()` — a drift there would misalign every chunk's mask
+  slice, so we fail cleanly instead of training on garbage.
+- **No loop duplication (R6):** rather than copy `train_epoch`, I added a single
+  `mask: Option<&[u8]>` parameter to both `run_training_loop` and `train_epoch`.
+  Pretraining (`train`/`continue_train`) passes `None` → the existing
+  `train_step` path, byte-for-byte unchanged; SFT passes `Some(&mask)` → the new
+  `train_step_masked`. Inside `train_epoch` I switched the chunk loop to
+  `.enumerate()` and slice the mask at `chunk_idx * ctx_window .. + chunk.len()`,
+  i.e. the *same* `chunks(ctx_window)` boundaries as the corpus, so the two stay
+  index-aligned (the epic's one hard invariant). The masked kernel itself only
+  consumes `m[..s-1]` per chunk, so a full-length (per-token) mask slice is
+  exactly what it wants.
+- **`WARMUP_STEPS`:** left at 100 but documented at the const that on short SFT
+  runs a fixed 100-step warmup can be a large fraction of the run (so the
+  effective lr may never reach the requested `lr`). Left deliberately — a base
+  model is already near a good minimum, so a conservative warming lr is a safe
+  default, and changing it would perturb the well-tuned pretraining path. `lr`
+  and `epochs` are caller params (doc'd starting points ~1e-4–5e-5, few epochs),
+  not hardcoded.
+
+**Why parameterize over the step fn instead of a masked sibling loop:** the whole
+of `train_epoch`/`run_training_loop` (accumulation, clipping, warmup, progress
+reporting, ETA, checkpointing, early-stop) is identical between the two modes —
+only the per-chunk step differs. A sibling would duplicate ~120 lines that must
+change together. Reported loss now naturally reflects only the masked (assistant)
+positions, which is exactly what the training chart should show.
+
+**Verified:**
+- `cargo build -p llm` — clean, zero warnings.
+- New GPU test `test_sft_train_masked_loss_decreases` (in `tests/train_test.rs`,
+  the epic smoke-test seed): pretrains a tiny ctx-16 base, writes a 16-token
+  masked fixture (first 4 positions mask 0 = scaffold, rest mask 1 = "assistant
+  reply"), runs 8 `sft_train` epochs and asserts the masked-region avg loss
+  decreases and that `out_dir/{model.bin,merges.bin}` both exist. Passed:
+  loss fell monotonically 34.47 → 21.91 over the 8 epochs (`--test-threads=1`,
+  sandbox disabled per the ISSUE-0016 cuBLAS note).
+
+Existing pretraining tests untouched (the `None` path is unchanged). Note for the
+Verifier: the run takes ~460s because the fixture pretrains a base over the full
+`corpus.bin` first (same cost as `test_training_runs`), not because of SFT.
+
+### Verifier · 2026-07-11 · pass
+
+**What was checked:**
+- Code review of `backend/src/llm/src/train.rs` (full file, 582 lines).
+- Mask-threading trace: `sft_train` → `run_training_loop` → `train_epoch` → `train_step_masked`, all carrying `mask: Option<&[u8]>`.
+- Flat-offset arithmetic in `train_epoch`: `chunk_idx * ctx_window` start, `chunk.len()` end — correct for all chunks including the trailing shorter one. Index-aligned with the same `chunks(ctx_window)` boundaries as the corpus. Validated that the length guard at the public boundary (`corpus.len() != mask.len()` → `InvalidData`) ensures the mask indexing can never OOB.
+- R6: no loop duplication. `train`/`continue_train` pass `None` → `train_step` (unchanged). Only `sft_train` passes `Some(&mask)` → `train_step_masked`.
+- R10: length guard at `sft_train` (line 210-219) validates corpus/mask alignment before any training.
+- R9: `pub fn sft_train` has a full doc comment (parameters, return semantics, suggested LR/epoch starting points).
+- R8: no new magic numbers; all constants are named consts with doc lines. `WARMUP_STEPS` left at 100 with SFT-specific rationale documented (line 27-32).
+- R3: all fallible results use `?` in `train.rs`; test `.unwrap()` calls are in test code (acceptable).
+- R1: `sft_train` body ~25 lines of logic, well under 60.
+- Build: `cargo build -p llm` — clean, zero warnings.
+- Clippy: `cargo clippy -p llm` — clean, zero warnings.
+- Test reviewed: `test_sft_train_masked_loss_decreases` (lines 38-96 of `tests/train_test.rs`): builds tiny base, writes 16-token fixture with 4-byte scaffold mask + 12-byte train mask, runs 8 `sft_train` epochs, asserts `last < first` and that standalone model files exist. Test structure is correct, mask generation matches the ISSUE-0031 convention, and loss assertions are valid.
+
+**Verdict:** The fix is correct, complete, and R6/R10 compliant. Parameterized mask-threading is clean, no regression in the pretraining path, and the test validates the invariant. Passing.

@@ -23,6 +23,13 @@ const MAX_GRAD_NORM: f32 = 1.0;
 // Linear LR warmup length, in optimizer steps. The opening steps on a fresh
 // (especially deep) model are the most unstable, so ramping lr up from ~0 avoids
 // the early divergence that clipping alone only slows down.
+//
+// Note for SFT (`sft_train`): fine-tuning runs are short, so a fixed 100-step
+// warmup can be a large fraction of (or exceed) the whole run, meaning the
+// effective lr never reaches the requested `lr`. This is left as-is on purpose —
+// a base model is already near a good minimum, so a conservative, mostly-warming
+// lr is a safe default and avoids changing the well-tuned pretraining behaviour.
+// Revisit (e.g. warmup as a fraction of total steps) only if SFT underfits.
 const WARMUP_STEPS: i32 = 100;
 // How often (in trained chunks) to emit a `train` progress frame over the
 // WebSocket. At the old hard-coded interval of 10, a large corpus fired dozens
@@ -96,6 +103,7 @@ pub fn train(
         &mut transformer,
         &mut ws,
         &corpus,
+        None,
         ctx_window,
         layers,
         epochs,
@@ -141,11 +149,97 @@ pub fn continue_train(
         &mut transformer,
         &mut ws,
         &corpus,
+        None,
         ctx_window,
         layers,
         additional_epochs,
         lr,
         model_dir,
+        checkpoints_dir,
+        on_progress,
+        cancel,
+    )
+}
+
+/// Fine-tune (supervised fine-tuning) a **pretrained base model** on a masked
+/// chat dataset. Loads the base weights from `base_model_dir`, then runs the
+/// training loop over `sft_corpus_path` (flat little-endian `u32` ids, exactly
+/// like `corpus.bin`) driven by the per-position loss mask in `sft_mask_path`
+/// (one byte per token, `1`=train / `0`=ignore per the ISSUE-0031 convention).
+/// Only the masked-in positions — the assistant reply tokens — contribute loss
+/// and gradient; system/user/scaffold tokens are forward-passed but produce no
+/// learning signal, so the base model is nudged toward answering in the chat
+/// shape without being retrained on the prompt text.
+///
+/// The corpus and mask must be the same length (asserted; SFT is meaningless if
+/// they drift). The base `merges.bin` is copied into `out_model_dir` so the
+/// fine-tuned model loads standalone at inference time.
+///
+/// `lr` and `epochs` are caller-supplied on purpose: SFT typically wants a
+/// *lower* LR and *fewer* epochs than pretraining (a base model is already near
+/// a good minimum). Good starting points are ~1e-4 to 5e-5 for a handful of
+/// epochs — an order of magnitude below a from-scratch run. Returns `Ok(true)`
+/// if training was cancelled, `Ok(false)` if it ran to completion.
+#[allow(clippy::too_many_arguments)]
+pub fn sft_train(
+    base_model_dir: &Path,
+    sft_corpus_path: &Path,
+    sft_mask_path: &Path,
+    out_model_dir: &Path,
+    epochs: i64,
+    lr: f32,
+    checkpoints_dir: Option<&Path>,
+    on_progress: ProgressCallback,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<bool, io::Error> {
+    let mut transformer = Transformer::load(&base_model_dir.to_string_lossy())?;
+    let ctx_window = transformer.positional_table.len() as i64;
+    let layers = transformer.layers;
+    let mut ws = GpuWorkspace::new(&transformer, ctx_window as usize);
+
+    let corpus_bytes = fs::read(sft_corpus_path)?;
+    let corpus: Vec<u32> = corpus_bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let mask: Vec<u8> = fs::read(sft_mask_path)?;
+
+    // The mask is aligned 1:1 with the corpus tokens; a mismatch means the
+    // dataset was built inconsistently and every chunk's mask slice would be
+    // misaligned. Fail cleanly rather than train on garbage.
+    if corpus.len() != mask.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "SFT corpus/mask length mismatch: {} tokens vs {} mask bytes",
+                corpus.len(),
+                mask.len()
+            ),
+        ));
+    }
+
+    // Copy the base tokenizer next to the fine-tuned weights so inference can
+    // load both from `out_model_dir` alone (mirrors what `train` does).
+    fs::create_dir_all(out_model_dir)?;
+    let base_merges = base_model_dir.join("merges.bin");
+    if base_merges.is_file() {
+        fs::copy(&base_merges, out_model_dir.join("merges.bin"))?;
+    }
+
+    if let Some(cp_dir) = checkpoints_dir {
+        fs::create_dir_all(cp_dir)?;
+    }
+
+    run_training_loop(
+        &mut transformer,
+        &mut ws,
+        &corpus,
+        Some(&mask),
+        ctx_window,
+        layers,
+        epochs,
+        lr,
+        out_model_dir,
         checkpoints_dir,
         on_progress,
         cancel,
@@ -234,6 +328,9 @@ fn train_epoch(
     transformer: &mut Transformer,
     ws: &mut GpuWorkspace,
     corpus: &[u32],
+    // SFT loss mask aligned 1:1 with `corpus`, or `None` for plain pretraining.
+    // When present, each chunk trains only on its masked-in (assistant) tokens.
+    mask: Option<&[u8]>,
     ctx_window: i64,
     layers: i64,
     lr: f32,
@@ -251,11 +348,26 @@ fn train_epoch(
 
     ws.zero_accumulators();
 
-    for chunk in corpus.chunks(ctx_window as usize) {
+    for (chunk_idx, chunk) in corpus.chunks(ctx_window as usize).enumerate() {
         if chunk.len() < 2 {
             continue;
         }
-        let loss = pollster::block_on(transformer.train_step(ws, chunk, layers as usize));
+        // Slice the mask with the SAME boundaries as the corpus chunks. Chunks
+        // are contiguous and fixed-size (only the last may be shorter), so the
+        // chunk's flat offset is `chunk_idx * ctx_window`.
+        let loss = match mask {
+            Some(m) => {
+                let start = chunk_idx * ctx_window as usize;
+                let mask_slice = &m[start..start + chunk.len()];
+                pollster::block_on(transformer.train_step_masked(
+                    ws,
+                    chunk,
+                    mask_slice,
+                    layers as usize,
+                ))
+            }
+            None => pollster::block_on(transformer.train_step(ws, chunk, layers as usize)),
+        };
 
         if !loss.is_finite() {
             eprint!("  ⚠ NaN loss — zeroing accumulators and skipping chunk");
@@ -345,10 +457,14 @@ fn report_chunk_progress(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_training_loop(
     transformer: &mut Transformer,
     ws: &mut GpuWorkspace,
     corpus: &[u32],
+    // SFT loss mask aligned 1:1 with `corpus`, threaded to `train_epoch`; `None`
+    // for pretraining (`train`/`continue_train`).
+    mask: Option<&[u8]>,
     ctx_window: i64,
     layers: i64,
     epochs: i64,
@@ -373,7 +489,7 @@ fn run_training_loop(
 
     for epoch in 0..epochs {
         let stats = train_epoch(
-            transformer, ws, corpus, ctx_window, layers, lr, epoch, epochs,
+            transformer, ws, corpus, mask, ctx_window, layers, lr, epoch, epochs,
             total_chunks, total_chunks_all, training_start, &mut adam_step, &on_progress,
         );
         println!(
