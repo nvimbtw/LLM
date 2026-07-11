@@ -83,23 +83,31 @@ pub enum TokenizeEvent<'a> {
 }
 
 // Reads every `.txt` in the uploads dir, trains a fresh BPE tokenizer, and
-// Fisher–Yates shuffle with a time-seeded xorshift PRNG. Avoids pulling in the
-// `rand` crate for the one spot we need randomness (picking a book subset) — the
-// bar here is "different each run", not cryptographic quality.
-fn shuffle<T>(items: &mut [T]) {
-    let mut state = SystemTime::now()
+// A time-seeded xorshift64 state. Avoids pulling in the `rand` crate for the few
+// spots we need randomness (picking a book subset, sampling synthetic templates)
+// — the bar here is "different each run", not cryptographic quality. The `| 1`
+// guarantees the seed is never zero, which xorshift can never leave.
+fn rng_seed() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x9E37_79B9_7F4A_7C15)
-        | 1; // xorshift must never start at zero
-    let mut next = || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
+        | 1
+}
+
+// Advances an xorshift64 state in place and returns the new value.
+fn xorshift_next(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+// Fisher–Yates shuffle using the shared xorshift PRNG.
+fn shuffle<T>(items: &mut [T]) {
+    let mut state = rng_seed();
     for i in (1..items.len()).rev() {
-        let j = (next() % (i as u64 + 1)) as usize;
+        let j = (xorshift_next(&mut state) % (i as u64 + 1)) as usize;
         items.swap(i, j);
     }
 }
@@ -451,17 +459,160 @@ pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
     })
 }
 
+// ── Synthetic SFT data generator (ISSUE-0036) ───────────────────────────────
+//
+// Produces templated instruction/response conversations whose correct assistant
+// reply is known *by construction* (arithmetic, sorting, factual lookup, echo),
+// so the SFT smoke path has clean signal without a data-collection project. Opt-in
+// and independent of the training loop — it just writes JSONL that
+// `build_sft_dataset` later consumes. No LLM-in-the-loop, no external corpora, no
+// template-engine dependency (`format!` is enough at this scale).
+//
+// Not yet wired to a runtime trigger (a dev/admin route or CLI is a future
+// issue), so in this binary crate its items read as dead code until then — the
+// same "defined ahead of its caller" state `build_sft_dataset` sat in before
+// ISSUE-0037. One justified module-level allow rather than scattering it (R7).
+#[allow(dead_code)]
+mod synthetic {
+    use super::{rng_seed, storage, xorshift_next};
+    use serde::Serialize;
+    use std::fs;
+    use std::io;
+
+// A conversation in the on-disk JSONL shape (`SftConversation`'s serialize twin;
+// that one is deserialize-only). `system` is omitted from the line when absent.
+#[derive(Debug, Serialize)]
+struct GenConversation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    turns: Vec<GenTurn>,
+}
+
+#[derive(Debug, Serialize)]
+struct GenTurn {
+    role: &'static str,
+    text: String,
+}
+
+// Small factual table — capital cities. Verifiable lookups with short answers
+// that fit the tiny models' context.
+const CAPITALS: &[(&str, &str)] = &[
+    ("France", "Paris"),
+    ("Japan", "Tokyo"),
+    ("Egypt", "Cairo"),
+    ("Peru", "Lima"),
+    ("Norway", "Oslo"),
+    ("Kenya", "Nairobi"),
+];
+
+// Roughly one in `SYSTEM_PROMPT_ODDS` examples gets a system prompt, so the model
+// sees (and learns to ignore for loss) the system scaffold on some fraction.
+const SYSTEM_PROMPT_ODDS: u64 = 3;
+
+/// Generates `count` templated chat conversations and writes them as one JSONL
+/// file (`synthetic.jsonl`) into `storage::sft_dir()`, the input dir that
+/// `build_sft_dataset` reads. Each line is a `{system?, turns:[…]}` object ending
+/// on an assistant turn, matching the SFT dataset schema. Returns `count`.
+pub fn generate_sft_examples(count: usize) -> io::Result<usize> {
+    let sft = storage::sft_dir();
+    fs::create_dir_all(&sft)?;
+
+    let mut state = rng_seed();
+    let mut out = String::new();
+    for _ in 0..count {
+        let conv = make_example(&mut state);
+        // Serializing a struct we built ourselves can only fail on an allocator
+        // fault; propagate anyway rather than unwrap (R3).
+        out.push_str(&serde_json::to_string(&conv)?);
+        out.push('\n');
+    }
+    fs::write(sft.join("synthetic.jsonl"), out)?;
+    Ok(count)
+}
+
+// Builds one conversation: pick a category, optionally prepend a system prompt.
+fn make_example(state: &mut u64) -> GenConversation {
+    let (question, answer) = match xorshift_next(state) % 4 {
+        0 => arithmetic_example(state),
+        1 => sort_example(state),
+        2 => capital_example(state),
+        _ => echo_example(state),
+    };
+    let system = if xorshift_next(state).is_multiple_of(SYSTEM_PROMPT_ODDS) {
+        Some("You are a helpful assistant. Answer concisely.".to_string())
+    } else {
+        None
+    };
+    GenConversation {
+        system,
+        turns: vec![
+            GenTurn { role: "user", text: question },
+            GenTurn { role: "assistant", text: answer },
+        ],
+    }
+}
+
+// `a op b` for +/-/* with small operands; subtraction is ordered so the answer is
+// never negative (keeps replies to a single short token run).
+fn arithmetic_example(state: &mut u64) -> (String, String) {
+    let a = (xorshift_next(state) % 20) as i64;
+    let b = (xorshift_next(state) % 20) as i64;
+    match xorshift_next(state) % 3 {
+        0 => (format!("What is {} + {}?", a, b), format!("{}", a + b)),
+        1 => {
+            let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+            (format!("What is {} - {}?", hi, lo), format!("{}", hi - lo))
+        }
+        _ => (format!("What is {} * {}?", a, b), format!("{}", a * b)),
+    }
+}
+
+// Sort 3–5 small numbers ascending. Both prompt and answer are comma-separated.
+fn sort_example(state: &mut u64) -> (String, String) {
+    let n = 3 + (xorshift_next(state) % 3) as usize; // 3..=5
+    let nums: Vec<i64> = (0..n).map(|_| (xorshift_next(state) % 100) as i64).collect();
+    let prompt = nums.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+    let mut sorted = nums;
+    sorted.sort();
+    let answer = sorted.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+    (format!("Sort these numbers in ascending order: {}", prompt), answer)
+}
+
+// "What is the capital of X?" from the CAPITALS table.
+fn capital_example(state: &mut u64) -> (String, String) {
+    let (country, capital) = CAPITALS[(xorshift_next(state) as usize) % CAPITALS.len()];
+    (format!("What is the capital of {}?", country), capital.to_string())
+}
+
+// Echo a short word N times — a format-following task with a known answer.
+fn echo_example(state: &mut u64) -> (String, String) {
+    const WORDS: &[&str] = &["cat", "sun", "book", "tree", "star"];
+    let word = WORDS[(xorshift_next(state) as usize) % WORDS.len()];
+    let times = 2 + (xorshift_next(state) % 3) as usize; // 2..=4
+    let answer = std::iter::repeat_n(word, times).collect::<Vec<_>>().join(" ");
+    (format!("Repeat the word \"{}\" {} times.", word, times), answer)
+}
+} // mod synthetic
+
 #[cfg(test)]
 mod sft_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // `DATA_DIR` is a process-global that `storage::root()` reads, so tests that
+    // set it must not run concurrently. cargo runs tests multi-threaded by
+    // default; serialize the env-touching ones through this lock. (`.lock()`
+    // recovers from a poisoned guard so one failing test doesn't cascade.)
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     // Build a dataset from a fixture SFT dir + a fixture merges.bin (empty merges
     // → byte-level tokenization, deterministic), and check the corpus/mask are
     // aligned and the trained-token count matches the assistant spans.
     #[test]
     fn test_build_sft_dataset_aligns_and_counts() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Isolate storage + a base-model dir under a unique temp root.
-        let tmp = std::env::temp_dir().join(format!("sft_test_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("sft_build_{}", std::process::id()));
         let sft = tmp.join("raw").join("sft");
         let base = tmp.join("base");
         fs::create_dir_all(&sft).unwrap();
@@ -542,5 +693,54 @@ mod sft_tests {
         assert!(parse_role("system").is_err());
         assert!(parse_role("user").is_ok());
         assert!(parse_role("assistant").is_ok());
+    }
+
+    // Every generated example is a well-formed JSONL line that round-trips through
+    // `SftConversation` and renders (via ISSUE-0031's `build_training_example`) to
+    // a non-empty masked span — i.e. it carries a trainable assistant reply.
+    #[test]
+    fn test_generate_sft_examples_are_well_formed() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!("sft_gen_{}", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: env access serialized by ENV_LOCK; DATA_DIR drives storage::root().
+        unsafe { std::env::set_var("DATA_DIR", &tmp); }
+
+        let n = 50;
+        assert_eq!(synthetic::generate_sft_examples(n).unwrap(), n);
+
+        // Empty merges → deterministic byte-level tokenization, enough to assert the
+        // mask is non-empty per example.
+        let merges: Vec<((u32, u32), u32)> = Vec::new();
+
+        let content = fs::read_to_string(storage::sft_dir().join("synthetic.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), n, "one JSONL line per example");
+
+        for line in lines {
+            let conv: SftConversation = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line not valid SftConversation: {} ({})", line, e));
+            // Must end on an assistant turn.
+            assert_eq!(conv.turns.last().unwrap().role, "assistant");
+
+            let turns: Vec<llm::chat_template::Turn> = conv
+                .turns
+                .iter()
+                .map(|t| llm::chat_template::Turn {
+                    role: parse_role(&t.role).unwrap(),
+                    text: t.text.clone(),
+                })
+                .collect();
+            let (ids, mask) =
+                llm::chat_template::build_training_example(conv.system.as_deref(), &turns, &merges);
+            assert!(!ids.is_empty(), "example rendered to no tokens: {}", line);
+            assert!(
+                mask.iter().any(|&b| b != 0),
+                "example has no trainable (assistant) span: {}",
+                line
+            );
+        }
+
+        fs::remove_dir_all(&tmp).ok();
     }
 }
