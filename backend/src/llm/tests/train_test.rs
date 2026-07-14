@@ -1,4 +1,4 @@
-use llm::training::transformer::Transformer;
+use llm::training::transformer::Model;
 use llm::{infer::generate_response, train::train};
 use llm::train::sft_train;
 use std::sync::{Arc, Mutex};
@@ -136,7 +136,7 @@ fn run_sft_fixture(
 // here we assert the observable end-to-end behaviour. Byte-equality against the
 // on-disk base is deliberately NOT asserted — training round-trips weights through
 // f16 on the GPU, so even a zero-gradient run re-quantizes the f32 base.)
-// Uses `Transformer::init` for the base (a random model is enough to exercise the
+// Uses `Model::init` for the base (a random model is enough to exercise the
 // load→masked-loop→save path) so the test is fast — no full-corpus pretrain.
 #[test]
 fn test_sft_epic_masking_isolates_gradient() {
@@ -146,7 +146,7 @@ fn test_sft_epic_masking_isolates_gradient() {
     std::fs::create_dir_all(&base_dir).unwrap();
 
     // Tiny random base model, saved to disk.
-    let base = Transformer::init(32, 300, 16, 4, 2, 1);
+    let base = Model::init(32, 300, 16, 4, 2, 1);
     base.save(&base_dir.to_string_lossy()).unwrap();
 
     // A 16-token single-chunk fixture the tiny model can memorize.
@@ -207,8 +207,9 @@ fn test_sft_epic_masking_isolates_gradient() {
 // small LR and lurched in coarse quanta (diverging) at large LR. These two tests
 // prove the fix end-to-end.
 
-use llm::training::gpu_workspace::GpuWorkspace;
-use llm::training::transformer::{gpu_adam_update, sync_weights_from_gpu};
+use llm::training::gpu_workspace::Workspace;
+use llm::training::optimizer::gpu_adam_update;
+use llm::training::sync::sync_weights_from_gpu;
 
 // Deterministic, unit-level proof that a sub-f16-ULP update now ACCUMULATES in
 // the f32 master instead of rounding away. `ln_gamma` initializes to exactly 1.0,
@@ -220,10 +221,10 @@ use llm::training::transformer::{gpu_adam_update, sync_weights_from_gpu};
 #[test]
 fn test_master_accumulates_sub_ulp_updates() {
     let (vocab, d, ctx, heads, ff_mult, layers) = (20, 16, 8, 2, 2, 2);
-    let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
-    let ws = GpuWorkspace::new(&t, ctx as usize);
+    let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+    let ws = Workspace::new(&t, ctx as usize);
 
-    // All grad buffers are zeroed by GpuWorkspace::new. Set a constant, positive
+    // All grad buffers are zeroed by Workspace::new. Set a constant, positive
     // gradient on layer-0 ln_gamma only, and never zero it, so every Adam step
     // sees the same gradient.
     let grad = vec![1.0f32; d as usize];
@@ -236,7 +237,7 @@ fn test_master_accumulates_sub_ulp_updates() {
         // deliberately NOT zeroing accumulators — keep the gradient constant
     }
 
-    let mut t_synced = Transformer {
+    let mut t_synced = Model {
         embedding_table: t.embedding_table.clone(),
         positional_table: t.positional_table.clone(),
         wq: t.wq.clone(), wk: t.wk.clone(), wv: t.wv.clone(),
@@ -288,8 +289,8 @@ fn test_master_accumulates_sub_ulp_updates() {
 #[test]
 fn test_raised_lr_trains_stably() {
     let (vocab, d, ctx, heads, ff_mult, layers) = (20, 16, 8, 2, 2, 2);
-    let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
-    let mut ws = GpuWorkspace::new(&t, ctx as usize);
+    let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+    let mut ws = Workspace::new(&t, ctx as usize);
     let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
 
     let lr = 1e-4f32;

@@ -1,0 +1,1142 @@
+use std::ffi::c_void;
+use crate::training::device_buffer::DeviceBufferF16;
+use crate::training::embed::embed;
+mod serialization;
+mod forward;
+mod backward;
+pub use serialization::{LayerRow, ModelHeader, read_model_header};
+use crate::training::gpu_workspace::Workspace;
+
+// Layer-norm numerical-stability epsilon, shared by every layer-norm forward and
+// backward call.
+const LAYER_NORM_EPS: f32 = 1e-5;
+// Per-step gradient L2-norm clip applied inside train_step before accumulation.
+const TRAIN_STEP_CLIP_NORM: f32 = 1.0;
+
+// The per-step tensor dimensions, derived once from the model + chunk length and
+// threaded through the train_step stage helpers.
+#[derive(Clone, Copy)]
+struct StepDims {
+    s: usize,     // sequence length (this chunk)
+    d: usize,     // model dimension
+    h: usize,     // number of heads
+    hd: usize,    // per-head dimension
+    ff: usize,    // feed-forward width
+    vocab: usize, // vocabulary size
+}
+
+#[derive(Clone)]
+/// without loading any weights — used to report a model's architecture.
+pub struct Model {
+    pub embedding_table: Vec<Vec<f32>>,
+    pub positional_table: Vec<Vec<f32>>,
+    pub wq: Vec<Vec<Vec<Vec<f32>>>>,  // [layers][heads][d][hd]
+    pub wk: Vec<Vec<Vec<Vec<f32>>>>,
+    pub wv: Vec<Vec<Vec<Vec<f32>>>>,
+    pub wo: Vec<Vec<Vec<f32>>>,       // [layers][d][d]
+    pub heads: i64,
+    pub head_dim: i64,
+    pub layers: i64,
+    pub w1: Vec<Vec<Vec<f32>>>,       // [layers][d][ff]
+    pub w2: Vec<Vec<Vec<f32>>>,       // [layers][ff][d]
+    pub b1: Vec<Vec<f32>>,            // [layers][ff]
+    pub b2: Vec<Vec<f32>>,            // [layers][d]
+    pub ln_gamma: Vec<Vec<f32>>,      // [layers][d]
+    pub ln_beta: Vec<Vec<f32>>,       // [layers][d]
+    pub w_output: Vec<Vec<f32>>,
+}
+
+impl Model {
+    /// Build a fresh model with randomly-initialized weights. `dimensions` must
+    /// be divisible by `heads`; the feed-forward width is `dimensions * ff_multiplier`.
+    pub fn init(dimensions: i64, vocab: i64, ctx_window: i64, heads: i64, ff_multiplier: i64, layers: i64) -> Model {
+        let head_dim: i64 = dimensions / heads;
+        let d_ff = dimensions * ff_multiplier;
+        let h = heads as usize;
+        let d = dimensions as usize;
+        let ff = d_ff as usize;
+        let l = layers as usize;
+
+        let mut wq: Vec<Vec<Vec<Vec<f32>>>> = Vec::new();
+        let mut wk: Vec<Vec<Vec<Vec<f32>>>> = Vec::new();
+        let mut wv: Vec<Vec<Vec<Vec<f32>>>> = Vec::new();
+        let mut wo: Vec<Vec<Vec<f32>>> = Vec::new();
+        let mut w1: Vec<Vec<Vec<f32>>> = Vec::new();
+        let mut w2: Vec<Vec<Vec<f32>>> = Vec::new();
+        let mut b1: Vec<Vec<f32>> = Vec::new();
+        let mut b2: Vec<Vec<f32>> = Vec::new();
+        let mut ln_gamma: Vec<Vec<f32>> = Vec::new();
+        let mut ln_beta: Vec<Vec<f32>> = Vec::new();
+
+        for _ in 0..l {
+            let mut layer_wq = Vec::new();
+            let mut layer_wk = Vec::new();
+            let mut layer_wv = Vec::new();
+            for _ in 0..h {
+                layer_wq.push(embed(head_dim, dimensions));
+                layer_wk.push(embed(head_dim, dimensions));
+                layer_wv.push(embed(head_dim, dimensions));
+            }
+            wq.push(layer_wq);
+            wk.push(layer_wk);
+            wv.push(layer_wv);
+            wo.push(embed(dimensions, dimensions));
+            w1.push(embed(d_ff, dimensions));
+            w2.push(embed(dimensions, d_ff));
+            b1.push(vec![0.0f32; ff]);
+            b2.push(vec![0.0f32; d]);
+            ln_gamma.push(vec![1.0f32; d]);
+            ln_beta.push(vec![0.0f32; d]);
+        }
+
+        Model {
+            embedding_table: embed(dimensions, vocab),
+            positional_table: embed(dimensions, ctx_window),
+            wq, wk, wv, wo, w1, w2, b1, b2, ln_gamma, ln_beta,
+            heads, head_dim, layers,
+            w_output: embed(vocab, dimensions),
+        }
+    }
+
+    /// Run the forward pass over a token sequence and return the final hidden
+    /// state for every position. Only the last `ctx_window` tokens are used (the
+    /// model has no positions beyond its table), so a growing prompt is fine.
+    pub async fn forward_seq(
+        &self,
+        tokens: &[u32],
+        layers: usize,
+        ctx_window: usize,
+    ) -> Vec<Vec<f32>> {
+        let seq = if tokens.len() > ctx_window {
+            &tokens[tokens.len() - ctx_window..]
+        } else {
+            tokens
+        };
+
+        let input: Vec<Vec<f32>> = seq
+            .iter()
+            .map(|&token_id| self.embedding_table[token_id as usize].clone())
+            .collect();
+
+        let positioned: Vec<Vec<f32>> = input
+            .iter()
+            .enumerate()
+            .map(|(pos, token_embed)| {
+                token_embed
+                    .iter()
+                    .zip(self.positional_table[pos].iter())
+                    .map(|(t, p)| t + p)
+                    .collect()
+            })
+            .collect();
+
+        let mut x = positioned;
+
+        for layer_idx in 0..layers {
+            let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
+            let attn = self.self_attention(&x_norm, &self.wq[layer_idx], &self.wk[layer_idx], &self.wv[layer_idx], &self.wo[layer_idx]).await;
+            for i in 0..x.len() {
+                for j in 0..x[i].len() {
+                    x[i][j] += attn[i][j];
+                }
+            }
+
+            let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
+            let ff = self.feed_forward(&x_norm, &self.w1[layer_idx], &self.w2[layer_idx], &self.b1[layer_idx], &self.b2[layer_idx]).await;
+            for i in 0..x.len() {
+                for j in 0..x[i].len() {
+                    x[i][j] += ff[i][j];
+                }
+            }
+        }
+
+        x
+    }
+
+    async fn layer_norm(&self, input: &[Vec<f32>], gamma: &[f32], beta: &[f32]) -> Vec<Vec<f32>> {
+        let rows = input.len();
+        let cols = input[0].len();
+        let flat: Vec<f32> = input.iter().flatten().cloned().collect();
+        let d_in = DeviceBufferF16::from_f32_slice(&flat);
+        let d_gamma = DeviceBufferF16::from_f32_slice(gamma);
+        let d_beta = DeviceBufferF16::from_f32_slice(beta);
+        let d_out = DeviceBufferF16::alloc(rows * cols);
+
+        unsafe {
+            cuda_layer_norm(
+                d_in.ptr as *const c_void,
+                d_out.ptr as *mut c_void,
+                d_gamma.ptr as *const c_void,
+                d_beta.ptr as *const c_void,
+                rows as i32,
+                cols as i32,
+                LAYER_NORM_EPS,
+            );
+        }
+
+        d_out
+            .to_f32_vec()
+            .chunks(cols)
+            .map(|row: &[f32]| row.to_vec())
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn self_attention(
+        &self, input: &[Vec<f32>],
+        wq: &[Vec<Vec<f32>>], wk: &[Vec<Vec<f32>>], wv: &[Vec<Vec<f32>>],
+        wo: &[Vec<f32>],
+    ) -> Vec<Vec<f32>> {
+        let seq_len = input.len();
+        let d_model = input[0].len();
+        let flat_embeddings: Vec<f32> = input.iter().flatten().cloned().collect();
+        let d_embeddings = DeviceBufferF16::from_f32_slice(&flat_embeddings);
+
+        let mut head_outputs: Vec<Vec<f32>> = Vec::new();
+
+        for i in 0..self.heads {
+            let h = i as usize;
+
+            let d_wq = DeviceBufferF16::from_f32_slice(
+                &wq[h].iter().flatten().cloned().collect::<Vec<f32>>(),
+            );
+            let d_wk = DeviceBufferF16::from_f32_slice(
+                &wk[h].iter().flatten().cloned().collect::<Vec<f32>>(),
+            );
+            let d_wv = DeviceBufferF16::from_f32_slice(
+                &wv[h].iter().flatten().cloned().collect::<Vec<f32>>(),
+            );
+            let d_out = DeviceBufferF16::alloc(seq_len * self.head_dim as usize);
+
+            unsafe {
+                cuda_attention_head(
+                    d_embeddings.ptr as *const c_void,
+                    d_wq.ptr as *const c_void,
+                    d_wk.ptr as *const c_void,
+                    d_wv.ptr as *const c_void,
+                    d_out.ptr as *mut c_void,
+                    seq_len as i32,
+                    d_model as i32,
+                    self.head_dim as i32,
+                );
+            }
+
+            head_outputs.push(d_out.to_f32_vec());
+        }
+
+        let head_dim = self.head_dim as usize;
+        let heads = self.heads as usize;
+
+        let mut concatenated: Vec<f32> = vec![0.0f32; seq_len * heads * head_dim];
+        for token in 0..seq_len {
+            for h in 0..heads {
+                let src_start = token * head_dim;
+                let dst_start = token * (heads * head_dim) + h * head_dim;
+                concatenated[dst_start..dst_start + head_dim]
+                    .copy_from_slice(&head_outputs[h][src_start..src_start + head_dim]);
+            }
+        }
+
+        let flat_wo: Vec<f32> = wo.iter().flatten().cloned().collect();
+        let d_concat = DeviceBufferF16::from_f32_slice(&concatenated);
+        let d_wo = DeviceBufferF16::from_f32_slice(&flat_wo);
+        let d_result = DeviceBufferF16::alloc(seq_len * d_model);
+
+        unsafe {
+            cuda_matmul(
+                d_concat.ptr as *const c_void,
+                d_wo.ptr as *const c_void,
+                d_result.ptr as *mut c_void,
+                seq_len as i32,
+                (heads * head_dim) as i32,
+                d_model as i32,
+            );
+        }
+
+        d_result
+            .to_f32_vec()
+            .chunks(d_model)
+            .map(|row: &[f32]| row.to_vec())
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn feed_forward(
+        &self, input: &[Vec<f32>],
+        w1: &[Vec<f32>], w2: &[Vec<f32>], b1: &[f32], b2: &[f32],
+    ) -> Vec<Vec<f32>> {
+        let seq_len = input.len();
+        let d_model = input[0].len();
+        // FF width comes from the weight shape (w1 is [d_model][d_ff]), not a
+        // fixed multiple: ff_multiplier is configurable, so assuming ×4 would
+        // read w1 with the wrong stride for any other setting.
+        let d_ff = w1[0].len();
+
+        let flat_input: Vec<f32> = input.iter().flatten().cloned().collect();
+        let flat_w1: Vec<f32> = w1.iter().flatten().cloned().collect();
+        let flat_w2: Vec<f32> = w2.iter().flatten().cloned().collect();
+
+        let d_input = DeviceBufferF16::from_f32_slice(&flat_input);
+        let d_w1 = DeviceBufferF16::from_f32_slice(&flat_w1);
+        let d_w2 = DeviceBufferF16::from_f32_slice(&flat_w2);
+        let d_b1 = DeviceBufferF16::from_f32_slice(b1);
+        let d_b2 = DeviceBufferF16::from_f32_slice(b2);
+        let d_out = DeviceBufferF16::alloc(seq_len * d_model);
+
+        unsafe {
+            cuda_feed_forward(
+                d_input.ptr as *const c_void,
+                d_w1.ptr as *const c_void,
+                d_w2.ptr as *const c_void,
+                d_b1.ptr as *const c_void,
+                d_b2.ptr as *const c_void,
+                d_out.ptr as *mut c_void,
+                seq_len as i32,
+                d_model as i32,
+                d_ff as i32,
+            );
+        }
+
+        d_out
+            .to_f32_vec()
+            .chunks(d_model)
+            .map(|row: &[f32]| row.to_vec())
+            .collect()
+    }
+
+    /// Project hidden states to vocab-sized logits via the output embedding.
+    pub async fn unembed(&self, hidden: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        let seq_len = hidden.len();
+        let d_model = hidden[0].len();
+        let vocab = self.w_output[0].len();
+
+        let flat_hidden: Vec<f32> = hidden.iter().flatten().cloned().collect();
+        let flat_w_output: Vec<f32> = self.w_output.iter().flatten().cloned().collect();
+
+        let d_hidden = DeviceBufferF16::from_f32_slice(&flat_hidden);
+        let d_w_output = DeviceBufferF16::from_f32_slice(&flat_w_output);
+        let d_logits = DeviceBufferF16::alloc(seq_len * vocab);
+
+        unsafe {
+            cuda_matmul(
+                d_hidden.ptr as *const c_void,
+                d_w_output.ptr as *const c_void,
+                d_logits.ptr as *mut c_void,
+                seq_len as i32,
+                d_model as i32,
+                vocab as i32,
+            );
+        }
+
+        d_logits
+            .to_f32_vec()
+            .chunks(vocab)
+            .map(|row: &[f32]| row.to_vec())
+            .collect()
+    }
+
+    /// Run one forward+backward pass over a single `chunk`, accumulating gradients
+    /// into `ws` (which it mutates) and returning the scalar cross-entropy loss.
+    /// `chunk` must hold at least 2 tokens (position i is trained to predict token
+    /// i+1). Weights are not updated here — the caller drives the optimizer step.
+    pub async fn train_step(&self, ws: &mut Workspace, chunk: &[u32], layers: usize) -> f32 {
+        self.run_step(ws, chunk, None, layers).await
+    }
+
+    /// One SFT training step over `chunk` with a per-position loss `mask` (aligned
+    /// to `chunk`, `1`=train / `0`=ignore per the ISSUE-0031 convention). Only the
+    /// masked-in positions (the assistant reply) contribute loss and gradient;
+    /// everything else is forward-passed but produces no learning signal.
+    pub async fn train_step_masked(
+        &self,
+        ws: &mut Workspace,
+        chunk: &[u32],
+        mask: &[u8],
+        layers: usize,
+    ) -> f32 {
+        self.run_step(ws, chunk, Some(mask), layers).await
+    }
+
+    // Shared forward+backward body for both the pretraining (`mask == None`) and
+    // SFT (`mask == Some`) steps. Only the loss stage differs between them.
+    async fn run_step(
+        &self,
+        ws: &mut Workspace,
+        chunk: &[u32],
+        mask: Option<&[u8]>,
+        layers: usize,
+    ) -> f32 {
+        let dims = StepDims {
+            s: chunk.len(),
+            d: self.wo[0].len(),
+            h: self.heads as usize,
+            hd: self.head_dim as usize,
+            ff: self.w1[0][0].len(),
+            vocab: self.w_output[0].len(),
+        };
+        ws.ensure_layer_caches(layers);
+
+        let mut d_x = self.embed_forward(ws, dims, chunk);
+        for layer_idx in 0..layers {
+            let x = self.attn_sublayer_forward(ws, dims, layer_idx, d_x);
+            d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
+        }
+        self.project_logits(ws, dims, d_x);
+        let loss = self.compute_loss(ws, dims, chunk, mask);
+
+        let mut d_dx = self.backward_unembed(ws, dims, d_x);
+        for layer_idx in (0..layers).rev() {
+            let g = self.ffn_sublayer_backward(ws, dims, layer_idx, d_dx);
+            d_dx = self.attn_sublayer_backward(ws, dims, layer_idx, g);
+        }
+        self.clip_gradients(ws, dims, layers);
+        self.accumulate_embedding_grad(ws, dims, d_dx);
+
+        loss
+    }
+
+}
+
+// ── Model (de)serialization ─────────────────────────────────────────────────
+// One definition of the on-disk format, shared by the file-backed (`save`/
+// `load`) and in-memory (`to_bytes`/`from_bytes`) paths by being generic over
+// the writer/reader — so the byte layout is described exactly once.
+
+unsafe extern "C" {
+    fn cuda_memcpy_d2d(dst: *mut c_void, src: *const c_void, size: usize);
+    fn cuda_memcpy_h2d(dst: *mut c_void, src: *const c_void, size: usize);
+
+    fn cudaMemset(ptr: *mut c_void, value: i32, count: usize) -> i32;
+
+    fn cuda_add_inplace_f32(dst: *mut f32, src: *const f32, n: i32);
+    fn cuda_add_inplace_f16(dst: *mut c_void, src: *const c_void, n: i32);
+
+    fn cuda_cross_entropy_backward(
+        logits: *const c_void,
+        targets: *const f32,
+        mask: *const f32,
+        dlogits: *mut c_void,
+        seq_len: i32,
+        vocab: i32,
+        active: i32,
+    );
+
+    fn cuda_cross_entropy_loss(
+        logits: *const c_void,
+        targets: *const f32,
+        mask: *const f32,
+        seq_len: i32,
+        vocab: i32,
+        active: i32,
+    ) -> f32;
+
+    fn cuda_attention_head(
+        embeddings: *const c_void,
+        wq: *const c_void,
+        wk: *const c_void,
+        wv: *const c_void,
+        out: *mut c_void,
+        seq_len: i32,
+        d_model: i32,
+        head_dim: i32,
+    );
+
+    fn cuda_matmul(
+        a: *const c_void,
+        b: *const c_void,
+        result: *mut c_void,
+        rows_a: i32,
+        cols_a: i32,
+        cols_b: i32,
+    );
+
+    fn cuda_matmul_bt(
+        a: *const c_void,
+        b: *const c_void,
+        result: *mut c_void,
+        rows_a: i32,
+        cols_a: i32,
+        rows_b: i32,
+    );
+
+    fn cuda_layer_norm(
+        in_: *const c_void,
+        out: *mut c_void,
+        gamma: *const c_void,
+        beta: *const c_void,
+        rows: i32,
+        cols: i32,
+        eps: f32,
+    );
+
+    fn cuda_layer_norm_backward(
+        x: *const c_void,
+        dy: *const c_void,
+        gamma: *const c_void,
+        dx: *mut c_void,
+        dgamma: *mut f32,
+        dbeta: *mut f32,
+        rows: i32,
+        cols: i32,
+        eps: f32,
+    );
+
+    fn cuda_d_weight(
+        A: *const c_void,
+        dB: *const c_void,
+        dW: *mut f32,
+        rows: i32,
+        cols_a: i32,
+        cols_b: i32,
+    );
+
+    fn cuda_concat_heads(
+        head_ptrs: *mut *mut c_void,
+        out: *mut c_void,
+        seq_len: i32,
+        heads: i32,
+        head_dim: i32,
+    );
+
+    fn cuda_clip_norm(g: *mut f32, n: i32, max_norm: f32);
+
+    fn cuda_clamp_f16(buf: *mut c_void, n: i32);
+
+    fn cuda_feed_forward(
+        input: *const c_void,
+        w1: *const c_void,
+        w2: *const c_void,
+        b1: *const c_void,
+        b2: *const c_void,
+        out: *mut c_void,
+        seq_len: i32,
+        d_model: i32,
+        d_ff: i32,
+    );
+
+    fn cuda_feed_forward_forward(
+        input: *const c_void,
+        w1: *const c_void,
+        w2: *const c_void,
+        b1: *const c_void,
+        b2: *const c_void,
+        out: *mut c_void,
+        pre_gelu: *mut c_void,
+        seq_len: i32,
+        d_model: i32,
+        d_ff: i32,
+    );
+
+    fn cuda_feed_forward_backward(
+        input: *const c_void,
+        pre_gelu: *const c_void,
+        dout: *const c_void,
+        w1: *const c_void,
+        w2: *const c_void,
+        dinput: *mut c_void,
+        dw1: *mut f32,
+        dw2: *mut f32,
+        db1: *mut f32,
+        db2: *mut f32,
+        seq_len: i32,
+        d_model: i32,
+        d_ff: i32,
+    );
+
+
+    fn cuda_embedding_forward(
+        token_ids: *const i32,
+        embedding_table: *const c_void,
+        positional_table: *const c_void,
+        output: *mut c_void,
+        s: i32,
+        d: i32,
+        vocab: i32,
+    );
+
+    fn cuda_scatter_add_embedding_grad(
+        d_dx: *const c_void,
+        token_ids: *const i32,
+        g_emb: *mut f32,
+        s: i32,
+        d: i32,
+        vocab: i32,
+    );
+
+    fn cuda_attention_forward_batched(
+        X: *const c_void,
+        wq_all: *const c_void,
+        wk_all: *const c_void,
+        wv_all: *const c_void,
+        out_all: *mut c_void,
+        P_all: *mut c_void,
+        seq: i32, d: i32, hd: i32, h: i32,
+    );
+
+    fn cuda_attention_backward_batched(
+        X: *const c_void,
+        wq_all: *const c_void,
+        wk_all: *const c_void,
+        wv_all: *const c_void,
+        P_all: *const c_void,
+        dout_full: *const c_void,
+        dX: *mut c_void,
+        dwq_all: *mut f32,
+        dwk_all: *mut f32,
+        dwv_all: *mut f32,
+        seq: i32, d: i32, hd: i32, h: i32,
+    );
+
+
+}
+
+// Every trainable gradient buffer as (ptr, element count). Shared by the
+// clipping pass and (implicitly) mirrors what the Adam step touches.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::training::gpu_workspace::Workspace;
+    use crate::training::optimizer::gpu_adam_update;
+    use crate::training::sync::sync_weights_from_gpu;
+
+    #[test]
+    fn test_embedding_forward_cpu_vs_gpu() {
+        let vocab = 10;
+        let d = 4;
+        let ctx = 8;
+        let heads = 2;
+        let ff_mult = 2;
+        let layers = 1;
+
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let ws = Workspace::new(&t, ctx as usize);
+
+        let chunk: Vec<u32> = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        let s = chunk.len();
+        let du = d as usize;
+
+        // CPU embedding forward
+        let flat_emb: Vec<f32> = chunk
+            .iter()
+            .flat_map(|&id| t.embedding_table[id as usize].clone())
+            .collect();
+        let mut expected = vec![0.0f32; s * du];
+        for pos in 0..s {
+            for j in 0..du {
+                expected[pos * du + j] = flat_emb[pos * du + j] + t.positional_table[pos][j];
+            }
+        }
+
+        // GPU embedding forward via extern "C" kernel
+        let token_ids: Vec<i32> = chunk.iter().map(|&id| id as i32).collect();
+        unsafe {
+            super::cuda_memcpy_h2d(
+                ws.d_token_ids.ptr as *mut std::ffi::c_void,
+                token_ids.as_ptr() as *const std::ffi::c_void,
+                (s * 4) as usize,
+            );
+            super::cuda_embedding_forward(
+                ws.d_token_ids.ptr as *const i32,
+                ws.d_embedding.ptr as *const std::ffi::c_void,
+                ws.d_positional.ptr as *const std::ffi::c_void,
+                ws.b_sd[0].ptr as *mut std::ffi::c_void,
+                s as i32,
+                d as i32,
+                vocab as i32,
+            );
+        }
+        let gpu_out = ws.b_sd[0].to_f32_vec();
+
+        let mut max_diff = 0.0f32;
+        let mut any_mismatch = false;
+        for i in 0..s * du {
+            let diff = (gpu_out[i] - expected[i]).abs();
+            if diff > 1e-3 {
+                any_mismatch = true;
+                if diff > max_diff {
+                    max_diff = diff;
+                }
+                eprintln!("  MISMATCH [{}] pos={} j={}  gpu={:.6}  cpu={:.6}  diff={:.6}",
+                    i, i / du, i % du, gpu_out[i], expected[i], diff);
+            }
+        }
+        if any_mismatch {
+            panic!("GPU vs CPU embedding forward mismatch! max_diff={:.6}", max_diff);
+        }
+        eprintln!("✓ GPU and CPU embedding forward match (max_diff={:.6})", max_diff);
+    }
+
+    #[test]
+    fn test_embedding_backward_gpu() {
+        let vocab = 5;
+        let d = 3;
+        let ctx = 8;
+        let heads = 2;
+        let ff_mult = 2;
+        let layers = 1;
+
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let ws = Workspace::new(&t, ctx as usize);
+
+        let chunk: Vec<u32> = vec![0, 1, 2, 0, 1];
+        let s = chunk.len();
+        let du = d as usize;
+
+        // Create a synthetic gradient d_dx on CPU [s x d]
+        let mut cpu_dx: Vec<f32> = vec![0.0; s * du];
+        for i in 0..s * du {
+            cpu_dx[i] = (i as f32) * 0.1 + 1.0;
+        }
+
+        // CPU reference: scatter-add into g_emb
+        let mut cpu_grad = vec![0.0f32; vocab as usize * du];
+        for pos in 0..s {
+            let token = chunk[pos] as usize;
+            for j in 0..du {
+                cpu_grad[token * du + j] += cpu_dx[pos * du + j];
+            }
+        }
+
+        // Upload d_dx to GPU (b_sd[0]), zero g_d_embedding, run scatter_add kernel
+        ws.b_sd[0].upload_f32_slice(&cpu_dx);
+        unsafe {
+            super::cudaMemset(
+                ws.g_d_embedding.ptr as *mut std::ffi::c_void,
+                0,
+                (vocab as usize * du * 4) as usize,
+            );
+            let token_ids: Vec<i32> = chunk.iter().map(|&id| id as i32).collect();
+            super::cuda_memcpy_h2d(
+                ws.d_token_ids.ptr as *mut std::ffi::c_void,
+                token_ids.as_ptr() as *const std::ffi::c_void,
+                (s * 4) as usize,
+            );
+            super::cuda_scatter_add_embedding_grad(
+                ws.b_sd[0].ptr as *const std::ffi::c_void,
+                ws.d_token_ids.ptr as *const i32,
+                ws.g_d_embedding.ptr,
+                s as i32,
+                d as i32,
+                vocab as i32,
+            );
+        }
+        let gpu_grad = ws.g_d_embedding.to_vec();
+
+        // Compare
+        let mut max_diff = 0.0f32;
+        let mut any_mismatch = false;
+        for i in 0..(vocab as usize * du) {
+            let diff = (gpu_grad[i] - cpu_grad[i]).abs();
+            if diff > 1e-2 {
+                any_mismatch = true;
+                if diff > max_diff {
+                    max_diff = diff;
+                }
+                eprintln!("  MISMATCH [{}]  gpu={:.6}  cpu={:.6}  diff={:.6}",
+                    i, gpu_grad[i], cpu_grad[i], diff);
+            }
+        }
+        if any_mismatch {
+            panic!("GPU vs CPU embedding backward mismatch! max_diff={:.6}", max_diff);
+        }
+        eprintln!("✓ GPU and CPU embedding backward match (max_diff={:.6})", max_diff);
+    }
+
+    #[test]
+    fn test_train_step_loss_reasonable() {
+        let vocab = 20;
+        let d = 8;
+        let ctx = 8;
+        let heads = 2;
+        let ff_mult = 2;
+        let layers = 2;
+
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&t, ctx as usize);
+
+        let chunk: Vec<u32> = (0..8).map(|i| i as u32 % (vocab as u32)).collect();
+        let loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+
+        let expected_random_loss = (vocab as f32).ln();
+        eprintln!("  loss={:.4}  expected≈ln(vocab={})={:.4}",
+            loss, vocab, expected_random_loss);
+        let ratio = loss / expected_random_loss;
+        assert!(ratio > 0.5 && ratio < 2.0,
+            "loss {:.4} too far from ln(vocab)={:.4} (ratio={:.2})",
+            loss, expected_random_loss, ratio);
+        eprintln!("✓ train_step produces reasonable loss (ratio={:.2})", ratio);
+    }
+
+    #[test]
+    fn test_gpu_sgd_does_not_corrupt_weights() {
+        let vocab = 20;
+        let d = 8;
+        let ctx = 8;
+        let heads = 2;
+        let ff_mult = 2;
+        let layers = 2;
+
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&t, ctx as usize);
+
+        // Record pre-SGD embedding weights
+        let pre_emb: Vec<f32> = t.embedding_table.iter().flatten().copied().collect();
+
+        let chunk: Vec<u32> = (0..8).map(|i| i as u32 % (vocab as u32)).collect();
+        let _loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+
+        let _loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+        gpu_adam_update(&ws, 0.001, 1, 1, layers as usize);
+        ws.zero_accumulators();
+
+        let mut t_synced = Model {
+            embedding_table: t.embedding_table.clone(),
+            positional_table: t.positional_table.clone(),
+            wq: t.wq.clone(), wk: t.wk.clone(), wv: t.wv.clone(),
+            wo: t.wo.clone(), w1: t.w1.clone(), w2: t.w2.clone(),
+            b1: t.b1.clone(), b2: t.b2.clone(),
+            ln_gamma: t.ln_gamma.clone(), ln_beta: t.ln_beta.clone(),
+            w_output: t.w_output.clone(),
+            heads: t.heads, head_dim: t.head_dim, layers: t.layers,
+        };
+        sync_weights_from_gpu(&ws, &mut t_synced);
+        let post_emb: Vec<f32> = t_synced.embedding_table.iter().flatten().copied().collect();
+
+        let mut total_change = 0.0f32;
+        for i in 0..pre_emb.len() {
+            total_change += (post_emb[i] - pre_emb[i]).abs();
+            assert!(post_emb[i].is_finite(), "post-SGD weight not finite at {}", i);
+        }
+        assert!(total_change > 0.0, "SGD should change at least some weights");
+        eprintln!("✓ GPU SGD changes weights (total_change={:.6})", total_change);
+    }
+
+    // The single most important training test: prove the model can actually
+    // LEARN, not just that a step runs and mutates weights. We repeatedly train
+    // one fixed tiny sequence (a batch of size 1) and assert the loss collapses
+    // far below its random starting point ln(vocab). If the backward pass has a
+    // wrong sign, a disconnected gradient, a bad optimizer step, or a
+    // clip/scale that throttles learning to zero, every other test here still
+    // passes but this one fails — the loss just sits near ln(vocab) forever.
+    // This is the guardrail against the "loss plateaus and won't drop" class of
+    // regression, distinguished from a genuine data/capacity plateau because on
+    // a single memorizable sequence a correct trainer must reach ~0.
+    #[test]
+    fn test_overfits_single_sequence() {
+        let vocab = 20;
+        let d = 16;
+        let ctx = 8;
+        let heads = 2;
+        let ff_mult = 2;
+        let layers = 2;
+
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&t, ctx as usize);
+
+        // A fixed, arbitrary sequence the model must memorize.
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+        let first_loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+        ws.zero_accumulators();
+
+        // Plain per-step Adam (accum_steps = 1), no warmup/clip games — we want
+        // to test the core learning mechanism in isolation.
+        let mut last_loss = first_loss;
+        for step in 1..=200 {
+            last_loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+            gpu_adam_update(&ws, 0.01, step, 1, layers as usize);
+            ws.zero_accumulators();
+        }
+
+        let random_loss = (vocab as f32).ln();
+        eprintln!(
+            "  first_loss={:.4}  last_loss={:.4}  ln(vocab)={:.4}",
+            first_loss, last_loss, random_loss
+        );
+        assert!(last_loss.is_finite(), "loss went non-finite while overfitting");
+        // A correct trainer memorizes 8 tokens easily; anything above a small
+        // fraction of ln(vocab) means the gradient/optimizer path is broken.
+        assert!(
+            last_loss < 0.25 * random_loss,
+            "model failed to overfit a single sequence: loss {:.4} did not drop \
+             well below ln(vocab)={:.4} after 200 steps (started at {:.4}). \
+             The backward pass or optimizer step is not actually learning.",
+            last_loss, random_loss, first_loss
+        );
+        eprintln!("✓ model overfits a single sequence (loss {:.4} -> {:.4})", first_loss, last_loss);
+    }
+
+    // An all-ones mask must reproduce the unmasked loss exactly: same forward,
+    // and active == s-1 makes the normalizer identical. This is the regression
+    // guard that the masked path doesn't perturb pretraining numerics.
+    #[test]
+    fn test_train_step_masked_all_ones_matches_unmasked() {
+        let (vocab, d, ctx, heads, ff_mult, layers) = (20, 8, 8, 2, 2, 2);
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let chunk: Vec<u32> = (0..8).map(|i| i as u32 % (vocab as u32)).collect();
+
+        let mut ws_a = Workspace::new(&t, ctx as usize);
+        let unmasked = pollster::block_on(t.train_step(&mut ws_a, &chunk, layers as usize));
+
+        let mut ws_b = Workspace::new(&t, ctx as usize);
+        let mask = vec![1u8; chunk.len()];
+        let masked = pollster::block_on(t.train_step_masked(&mut ws_b, &chunk, &mask, layers as usize));
+
+        eprintln!("  unmasked={:.6}  all-ones-masked={:.6}", unmasked, masked);
+        assert!(
+            (unmasked - masked).abs() < 1e-4,
+            "all-ones mask changed the loss: {:.6} vs {:.6}",
+            unmasked, masked
+        );
+    }
+
+    // An all-zero mask trains on nothing: zero loss and — after an optimizer step
+    // — zero weight change, proving masked-out positions produce no gradient.
+    #[test]
+    fn test_train_step_masked_all_zero_trains_nothing() {
+        let (vocab, d, ctx, heads, ff_mult, layers) = (20, 8, 8, 2, 2, 2);
+        let t = Model::init(d, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&t, ctx as usize);
+
+        let clone_of = |m: &Model| Model {
+            embedding_table: m.embedding_table.clone(),
+            positional_table: m.positional_table.clone(),
+            wq: m.wq.clone(), wk: m.wk.clone(), wv: m.wv.clone(),
+            wo: m.wo.clone(), w1: m.w1.clone(), w2: m.w2.clone(),
+            b1: m.b1.clone(), b2: m.b2.clone(),
+            ln_gamma: m.ln_gamma.clone(), ln_beta: m.ln_beta.clone(),
+            w_output: m.w_output.clone(),
+            heads: m.heads, head_dim: m.head_dim, layers: m.layers,
+        };
+
+        // Baseline: the GPU weights as uploaded (already f16-quantized). Comparing
+        // against these — not the original f32 weights — isolates *training* change
+        // from the harmless upload/sync quantization.
+        let mut t_base = clone_of(&t);
+        sync_weights_from_gpu(&ws, &mut t_base);
+        let base_emb: Vec<f32> = t_base.embedding_table.iter().flatten().copied().collect();
+
+        let chunk: Vec<u32> = (0..8).map(|i| i as u32 % (vocab as u32)).collect();
+        let mask = vec![0u8; chunk.len()];
+        let loss = pollster::block_on(t.train_step_masked(&mut ws, &chunk, &mask, layers as usize));
+        assert_eq!(loss, 0.0, "an all-zero mask should yield zero loss");
+
+        gpu_adam_update(&ws, 0.01, 1, 1, layers as usize);
+        let mut t_synced = clone_of(&t);
+        sync_weights_from_gpu(&ws, &mut t_synced);
+        let post_emb: Vec<f32> = t_synced.embedding_table.iter().flatten().copied().collect();
+
+        let total_change: f32 = base_emb.iter().zip(&post_emb).map(|(a, b)| (a - b).abs()).sum();
+        assert_eq!(total_change, 0.0, "masked-out training changed weights by {}", total_change);
+        eprintln!("✓ all-zero mask trains nothing (loss=0, weight change=0)");
+    }
+
+    // ── Non-GPU tests: Model::init ──
+
+    #[test]
+    fn test_init_dimensions() {
+        let t = Model::init(32, 100, 64, 4, 2, 2);
+        assert_eq!(t.embedding_table.len(), 100);
+        assert_eq!(t.embedding_table[0].len(), 32);
+        assert_eq!(t.positional_table.len(), 64);
+        assert_eq!(t.positional_table[0].len(), 32);
+        assert_eq!(t.layers, 2);
+        assert_eq!(t.heads, 4);
+        assert_eq!(t.head_dim, 8);
+        assert_eq!(t.wq.len(), 2);
+        assert_eq!(t.wq[0].len(), 4);
+        assert_eq!(t.wq[0][0].len(), 32);
+        assert_eq!(t.wq[0][0][0].len(), 8);
+        assert_eq!(t.wo.len(), 2);
+        assert_eq!(t.wo[0].len(), 32);
+        assert_eq!(t.wo[0][0].len(), 32);
+        let ff = 32 * 2;
+        assert_eq!(t.w1[0].len(), 32);
+        assert_eq!(t.w1[0][0].len(), ff);
+        assert_eq!(t.w2[0].len(), ff);
+        assert_eq!(t.w2[0][0].len(), 32);
+        assert_eq!(t.b1[0].len(), ff);
+        assert!(t.b1[0].iter().all(|&v| v == 0.0), "b1 should be zero-initialized");
+        assert!(t.b2[0].iter().all(|&v| v == 0.0), "b2 should be zero-initialized");
+        assert!(t.ln_gamma[0].iter().all(|&v| v == 1.0), "ln_gamma should be one-initialized");
+        assert!(t.ln_beta[0].iter().all(|&v| v == 0.0), "ln_beta should be zero-initialized");
+        assert_eq!(t.w_output.len(), 32);
+        assert_eq!(t.w_output[0].len(), 100);
+    }
+
+    #[test]
+    fn test_init_single_layer() {
+        let t = Model::init(16, 50, 32, 2, 4, 1);
+        assert_eq!(t.layers, 1);
+        assert_eq!(t.wq.len(), 1);
+        assert_eq!(t.wq[0].len(), 2);
+        let ff = 16 * 4;
+        assert_eq!(t.w1[0][0].len(), ff);
+        assert_eq!(t.b1[0].len(), ff);
+    }
+
+    // ── Non-GPU tests: serialization round-trips ──
+
+    #[test]
+    fn test_to_bytes_from_bytes_roundtrip() {
+        let t1 = Model::init(16, 50, 32, 2, 2, 1);
+        let bytes = t1.to_bytes().unwrap();
+        let t2 = Model::from_bytes(&bytes).unwrap();
+
+        assert_eq!(t1.embedding_table, t2.embedding_table);
+        assert_eq!(t1.positional_table, t2.positional_table);
+        assert_eq!(t1.wq, t2.wq);
+        assert_eq!(t1.wk, t2.wk);
+        assert_eq!(t1.wv, t2.wv);
+        assert_eq!(t1.wo, t2.wo);
+        assert_eq!(t1.w1, t2.w1);
+        assert_eq!(t1.w2, t2.w2);
+        assert_eq!(t1.b1, t2.b1);
+        assert_eq!(t1.b2, t2.b2);
+        assert_eq!(t1.ln_gamma, t2.ln_gamma);
+        assert_eq!(t1.ln_beta, t2.ln_beta);
+        assert_eq!(t1.w_output, t2.w_output);
+        assert_eq!(t1.heads, t2.heads);
+        assert_eq!(t1.layers, t2.layers);
+        assert_eq!(t1.head_dim, t2.head_dim);
+    }
+
+    #[test]
+    fn test_to_bytes_from_bytes_multi_layer_roundtrip() {
+        let t1 = Model::init(32, 100, 64, 4, 2, 3);
+        let bytes = t1.to_bytes().unwrap();
+        let t2 = Model::from_bytes(&bytes).unwrap();
+
+        for l in 0..3 {
+            assert_eq!(t1.wq[l], t2.wq[l], "wq layer {} mismatch", l);
+            assert_eq!(t1.wk[l], t2.wk[l], "wk layer {} mismatch", l);
+            assert_eq!(t1.wv[l], t2.wv[l], "wv layer {} mismatch", l);
+            assert_eq!(t1.wo[l], t2.wo[l], "wo layer {} mismatch", l);
+            assert_eq!(t1.w1[l], t2.w1[l], "w1 layer {} mismatch", l);
+            assert_eq!(t1.w2[l], t2.w2[l], "w2 layer {} mismatch", l);
+            assert_eq!(t1.b1[l], t2.b1[l], "b1 layer {} mismatch", l);
+            assert_eq!(t1.b2[l], t2.b2[l], "b2 layer {} mismatch", l);
+            assert_eq!(t1.ln_gamma[l], t2.ln_gamma[l], "ln_gamma layer {} mismatch", l);
+            assert_eq!(t1.ln_beta[l], t2.ln_beta[l], "ln_beta layer {} mismatch", l);
+        }
+        assert_eq!(t1.embedding_table, t2.embedding_table);
+        assert_eq!(t1.positional_table, t2.positional_table);
+        assert_eq!(t1.w_output, t2.w_output);
+    }
+
+    #[test]
+    fn test_from_bytes_rejects_bad_magic() {
+        let bad = b"\xFF\xFF\xFF\xFF\x03\x00\x00\x00";
+        assert!(Model::from_bytes(bad).is_err());
+    }
+
+    #[test]
+    fn test_from_bytes_rejects_truncated() {
+        let bad = b"GORK\x03\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00";
+        assert!(Model::from_bytes(bad).is_err());
+    }
+
+    #[test]
+    fn test_to_layer_rows_from_layer_rows_roundtrip() {
+        let t1 = Model::init(16, 50, 32, 2, 2, 1);
+        let header = ModelHeader {
+            dimensions: 16,
+            vocab_size: 50,
+            max_seq_len: 32,
+            heads: 2,
+            ff_multiplier: 2,
+            layers: 1,
+        };
+        let rows = t1.to_layer_rows();
+        let t2 = Model::from_layer_rows(&header, &rows).unwrap();
+
+        assert_eq!(t1.embedding_table, t2.embedding_table);
+        assert_eq!(t1.positional_table, t2.positional_table);
+        assert_eq!(t1.wq, t2.wq);
+        assert_eq!(t1.wk, t2.wk);
+        assert_eq!(t1.wv, t2.wv);
+        assert_eq!(t1.wo, t2.wo);
+        assert_eq!(t1.w1, t2.w1);
+        assert_eq!(t1.w2, t2.w2);
+        assert_eq!(t1.b1, t2.b1);
+        assert_eq!(t1.b2, t2.b2);
+        assert_eq!(t1.ln_gamma, t2.ln_gamma);
+        assert_eq!(t1.ln_beta, t2.ln_beta);
+        assert_eq!(t1.w_output, t2.w_output);
+    }
+
+    #[test]
+    fn test_to_layer_rows_from_layer_rows_multi_layer() {
+        let t1 = Model::init(32, 100, 64, 4, 2, 3);
+        let header = ModelHeader {
+            dimensions: 32,
+            vocab_size: 100,
+            max_seq_len: 64,
+            heads: 4,
+            ff_multiplier: 2,
+            layers: 3,
+        };
+        let rows = t1.to_layer_rows();
+        let t2 = Model::from_layer_rows(&header, &rows).unwrap();
+
+        for l in 0..3 {
+            assert_eq!(t1.wq[l], t2.wq[l], "wq layer {} mismatch", l);
+            assert_eq!(t1.wk[l], t2.wk[l], "wk layer {} mismatch", l);
+            assert_eq!(t1.wv[l], t2.wv[l], "wv layer {} mismatch", l);
+            assert_eq!(t1.wo[l], t2.wo[l], "wo layer {} mismatch", l);
+            assert_eq!(t1.w1[l], t2.w1[l], "w1 layer {} mismatch", l);
+            assert_eq!(t1.w2[l], t2.w2[l], "w2 layer {} mismatch", l);
+        }
+        assert_eq!(t1.embedding_table, t2.embedding_table);
+        assert_eq!(t1.positional_table, t2.positional_table);
+        assert_eq!(t1.w_output, t2.w_output);
+    }
+
+    #[test]
+    fn test_to_layer_rows_correct_names() {
+        let t = Model::init(8, 20, 16, 2, 2, 2);
+        let rows = t.to_layer_rows();
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"embedding"));
+        assert!(names.contains(&"positional"));
+        assert!(names.contains(&"unembed"));
+        assert!(names.contains(&"h.0.attn.wq"));
+        assert!(names.contains(&"h.0.attn.wk"));
+        assert!(names.contains(&"h.0.attn.wv"));
+        assert!(names.contains(&"h.0.attn.wo"));
+        assert!(names.contains(&"h.0.ffn.w1"));
+        assert!(names.contains(&"h.0.ffn.w2"));
+        assert!(names.contains(&"h.0.ffn.b1"));
+        assert!(names.contains(&"h.0.ffn.b2"));
+        assert!(names.contains(&"h.0.ln.gamma"));
+        assert!(names.contains(&"h.0.ln.beta"));
+        assert!(names.contains(&"h.1.attn.wq"));
+        assert!(names.contains(&"h.1.attn.wk"));
+        assert!(names.contains(&"h.1.attn.wv"));
+        assert!(names.contains(&"h.1.attn.wo"));
+        assert!(names.contains(&"h.1.ffn.w1"));
+        assert!(names.contains(&"h.1.ffn.w2"));
+        assert!(names.contains(&"h.1.ffn.b1"));
+        assert!(names.contains(&"h.1.ffn.b2"));
+        assert!(names.contains(&"h.1.ln.gamma"));
+        assert!(names.contains(&"h.1.ln.beta"));
+        assert_eq!(names.len(), 23);
+    }
+
+    #[test]
+    fn test_from_layer_rows_rejects_missing_layer() {
+        let header = ModelHeader {
+            dimensions: 8,
+            vocab_size: 20,
+            max_seq_len: 16,
+            heads: 2,
+            ff_multiplier: 2,
+            layers: 1,
+        };
+        let rows = vec![
+            LayerRow { name: "embedding".into(), shape: vec![20, 8], data: vec![0u8; 20 * 8 * 4] },
+        ];
+        assert!(Model::from_layer_rows(&header, &rows).is_err());
+    }
+}

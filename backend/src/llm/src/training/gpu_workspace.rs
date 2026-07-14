@@ -1,12 +1,12 @@
-use crate::training::device_buffer::{DeviceBuffer, DeviceBufferF16};
-use crate::training::transformer::Transformer;
+use crate::training::device_buffer::{Buffer, DeviceBufferF16};
+use crate::training::transformer::Model;
 
 unsafe extern "C" {
     fn cublas_init();
     fn cublas_shutdown();
 }
 
-pub struct GpuWorkspace {
+pub struct Workspace {
     // Per-layer weight mirrors (f16) — per-head QKV are now contiguous
     pub d_wq_all: Vec<DeviceBufferF16>,   // [layers][h * d * hd]
     pub d_wk_all: Vec<DeviceBufferF16>,
@@ -26,70 +26,70 @@ pub struct GpuWorkspace {
     // matching `d_*` f16 buffer above is a derived view refreshed from the master
     // every optimizer step; the master is what Adam accumulates into (0052 epic).
     // `d_positional` is never stepped, so it has no master.
-    pub m_wq_all: Vec<DeviceBuffer>,      // [layers][h * d * hd]
-    pub m_wk_all: Vec<DeviceBuffer>,
-    pub m_wv_all: Vec<DeviceBuffer>,
-    pub m_wo: Vec<DeviceBuffer>,          // [layers][d * d]
-    pub m_w1: Vec<DeviceBuffer>,
-    pub m_w2: Vec<DeviceBuffer>,
-    pub m_b1: Vec<DeviceBuffer>,
-    pub m_b2: Vec<DeviceBuffer>,
-    pub m_ln_gamma: Vec<DeviceBuffer>,
-    pub m_ln_beta: Vec<DeviceBuffer>,
-    pub m_w_output: DeviceBuffer,         // shared
-    pub m_embedding: DeviceBuffer,         // [vocab, d]
+    pub m_wq_all: Vec<Buffer>,      // [layers][h * d * hd]
+    pub m_wk_all: Vec<Buffer>,
+    pub m_wv_all: Vec<Buffer>,
+    pub m_wo: Vec<Buffer>,          // [layers][d * d]
+    pub m_w1: Vec<Buffer>,
+    pub m_w2: Vec<Buffer>,
+    pub m_b1: Vec<Buffer>,
+    pub m_b2: Vec<Buffer>,
+    pub m_ln_gamma: Vec<Buffer>,
+    pub m_ln_beta: Vec<Buffer>,
+    pub m_w_output: Buffer,         // shared
+    pub m_embedding: Buffer,         // [vocab, d]
 
     // Per-layer gradient accumulators (f32) — contiguous for QKV
-    pub g_wq_all: Vec<DeviceBuffer>,      // [layers][h * d * hd]
-    pub g_wk_all: Vec<DeviceBuffer>,
-    pub g_wv_all: Vec<DeviceBuffer>,
-    pub g_dw_output: DeviceBuffer,        // shared
-    pub g_d_embedding: DeviceBuffer,       // [vocab, d]
-    pub d_token_ids: DeviceBuffer,         // [max_s] (i32, stored as f32-sized slots)
-    pub g_dwo: Vec<DeviceBuffer>,         // [layers]
-    pub g_dw1: Vec<DeviceBuffer>,
-    pub g_dw2: Vec<DeviceBuffer>,
-    pub g_db1: Vec<DeviceBuffer>,
-    pub g_db2: Vec<DeviceBuffer>,
-    pub g_dln_gamma: Vec<DeviceBuffer>,
-    pub g_dln_beta: Vec<DeviceBuffer>,
+    pub g_wq_all: Vec<Buffer>,      // [layers][h * d * hd]
+    pub g_wk_all: Vec<Buffer>,
+    pub g_wv_all: Vec<Buffer>,
+    pub g_dw_output: Buffer,        // shared
+    pub g_d_embedding: Buffer,       // [vocab, d]
+    pub d_token_ids: Buffer,         // [max_s] (i32, stored as f32-sized slots)
+    pub g_dwo: Vec<Buffer>,         // [layers]
+    pub g_dw1: Vec<Buffer>,
+    pub g_dw2: Vec<Buffer>,
+    pub g_db1: Vec<Buffer>,
+    pub g_db2: Vec<Buffer>,
+    pub g_dln_gamma: Vec<Buffer>,
+    pub g_dln_beta: Vec<Buffer>,
 
     // Adam first-moment buffers (f32) — one per gradient buffer.
-    pub v_wq_all: Vec<DeviceBuffer>,
-    pub v_wk_all: Vec<DeviceBuffer>,
-    pub v_wv_all: Vec<DeviceBuffer>,
-    pub v_dw_output: DeviceBuffer,
-    pub v_d_embedding: DeviceBuffer,
-    pub v_dwo: Vec<DeviceBuffer>,
-    pub v_dw1: Vec<DeviceBuffer>,
-    pub v_dw2: Vec<DeviceBuffer>,
-    pub v_db1: Vec<DeviceBuffer>,
-    pub v_db2: Vec<DeviceBuffer>,
-    pub v_dln_gamma: Vec<DeviceBuffer>,
-    pub v_dln_beta: Vec<DeviceBuffer>,
+    pub v_wq_all: Vec<Buffer>,
+    pub v_wk_all: Vec<Buffer>,
+    pub v_wv_all: Vec<Buffer>,
+    pub v_dw_output: Buffer,
+    pub v_d_embedding: Buffer,
+    pub v_dwo: Vec<Buffer>,
+    pub v_dw1: Vec<Buffer>,
+    pub v_dw2: Vec<Buffer>,
+    pub v_db1: Vec<Buffer>,
+    pub v_db2: Vec<Buffer>,
+    pub v_dln_gamma: Vec<Buffer>,
+    pub v_dln_beta: Vec<Buffer>,
 
     // Adam second-moment buffers (f32) — EMA of gradient², one per gradient.
-    pub s_wq_all: Vec<DeviceBuffer>,
-    pub s_wk_all: Vec<DeviceBuffer>,
-    pub s_wv_all: Vec<DeviceBuffer>,
-    pub s_dw_output: DeviceBuffer,
-    pub s_d_embedding: DeviceBuffer,
-    pub s_dwo: Vec<DeviceBuffer>,
-    pub s_dw1: Vec<DeviceBuffer>,
-    pub s_dw2: Vec<DeviceBuffer>,
-    pub s_db1: Vec<DeviceBuffer>,
-    pub s_db2: Vec<DeviceBuffer>,
-    pub s_dln_gamma: Vec<DeviceBuffer>,
-    pub s_dln_beta: Vec<DeviceBuffer>,
+    pub s_wq_all: Vec<Buffer>,
+    pub s_wk_all: Vec<Buffer>,
+    pub s_wv_all: Vec<Buffer>,
+    pub s_dw_output: Buffer,
+    pub s_d_embedding: Buffer,
+    pub s_dwo: Vec<Buffer>,
+    pub s_dw1: Vec<Buffer>,
+    pub s_dw2: Vec<Buffer>,
+    pub s_db1: Vec<Buffer>,
+    pub s_db2: Vec<Buffer>,
+    pub s_dln_gamma: Vec<Buffer>,
+    pub s_dln_beta: Vec<Buffer>,
 
     // Logits + loss
     pub d_logits: DeviceBufferF16,
     pub d_dlogits: DeviceBufferF16,
-    pub d_targets: DeviceBuffer,
+    pub d_targets: Buffer,
     // Per-position loss mask (f32, 1=train / 0=ignore) for SFT. Unused by the
     // pretraining path, which passes a null mask to the cross-entropy kernels.
-    pub d_mask: DeviceBuffer,
-    pub d_dw_output: DeviceBuffer,
+    pub d_mask: Buffer,
+    pub d_dw_output: Buffer,
     pub d_dhidden: DeviceBufferF16,
 
     // Per-layer forward caches (f16)
@@ -104,16 +104,16 @@ pub struct GpuWorkspace {
     pub head_out_all: Vec<DeviceBufferF16>,   // [layers][h * max_s * hd]
     pub head_p_all: Vec<DeviceBufferF16>,     // [layers][h * max_s * max_s]
 
-    pub d_head_ptrs: DeviceBuffer,
+    pub d_head_ptrs: Buffer,
 
     // Backward scratch
     pub b_sd: Vec<DeviceBufferF16>,
     pub b_sd_head: DeviceBufferF16,
     pub d_wo_x: DeviceBufferF16,
-    pub b_d: Vec<DeviceBuffer>,
-    pub b_dd: DeviceBuffer,
-    pub b_dff: Vec<DeviceBuffer>,
-    pub b_ff: DeviceBuffer,
+    pub b_d: Vec<Buffer>,
+    pub b_dd: Buffer,
+    pub b_dff: Vec<Buffer>,
+    pub b_ff: Buffer,
     pub max_s: usize,
     pub d: usize,
     pub h: usize,
@@ -122,8 +122,8 @@ pub struct GpuWorkspace {
     pub vocab: usize,
 }
 
-impl GpuWorkspace {
-    pub fn new(t: &Transformer, ctx_window: usize) -> Self {
+impl Workspace {
+    pub fn new(t: &Model, ctx_window: usize) -> Self {
         let max_s = ctx_window;
         let d = t.wo[0].len();
         let h = t.heads as usize;
@@ -149,79 +149,79 @@ impl GpuWorkspace {
 
         // f32 master weights (same element counts as the f16 views above). Start
         // zeroed; 0056 seeds them from the f32 CPU weights on `upload_weights`.
-        let m_wq_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let m_wk_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let m_wv_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let m_wo = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * d)).collect();
-        let m_w1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * ff)).collect();
-        let m_w2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff * d)).collect();
-        let m_b1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff)).collect();
-        let m_b2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let m_ln_gamma = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let m_ln_beta = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let m_w_output = DeviceBuffer::alloc_zeroed(d * vocab);
-        let m_embedding = DeviceBuffer::alloc_zeroed(vocab * d);
+        let m_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let m_wk_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let m_wv_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let m_wo = (0..layers).map(|_| Buffer::alloc_zeroed(d * d)).collect();
+        let m_w1 = (0..layers).map(|_| Buffer::alloc_zeroed(d * ff)).collect();
+        let m_w2 = (0..layers).map(|_| Buffer::alloc_zeroed(ff * d)).collect();
+        let m_b1 = (0..layers).map(|_| Buffer::alloc_zeroed(ff)).collect();
+        let m_b2 = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let m_ln_gamma = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let m_ln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let m_w_output = Buffer::alloc_zeroed(d * vocab);
+        let m_embedding = Buffer::alloc_zeroed(vocab * d);
 
         // Gradient accumulators
-        let g_wq_all = (0..layers).map(|_| DeviceBuffer::alloc(h * d * hd)).collect();
-        let g_wk_all = (0..layers).map(|_| DeviceBuffer::alloc(h * d * hd)).collect();
-        let g_wv_all = (0..layers).map(|_| DeviceBuffer::alloc(h * d * hd)).collect();
-        let g_dw_output = DeviceBuffer::alloc(d * vocab);
-        let g_d_embedding = DeviceBuffer::alloc(vocab * d);
-        let d_token_ids = DeviceBuffer::alloc(max_s);
-        let g_dwo = (0..layers).map(|_| DeviceBuffer::alloc(d * d)).collect();
-        let g_dw1 = (0..layers).map(|_| DeviceBuffer::alloc(d * ff)).collect();
-        let g_dw2 = (0..layers).map(|_| DeviceBuffer::alloc(ff * d)).collect();
-        let g_db1 = (0..layers).map(|_| DeviceBuffer::alloc(ff)).collect();
-        let g_db2 = (0..layers).map(|_| DeviceBuffer::alloc(d)).collect();
-        let g_dln_gamma = (0..layers).map(|_| DeviceBuffer::alloc(d)).collect();
-        let g_dln_beta = (0..layers).map(|_| DeviceBuffer::alloc(d)).collect();
+        let g_wq_all = (0..layers).map(|_| Buffer::alloc(h * d * hd)).collect();
+        let g_wk_all = (0..layers).map(|_| Buffer::alloc(h * d * hd)).collect();
+        let g_wv_all = (0..layers).map(|_| Buffer::alloc(h * d * hd)).collect();
+        let g_dw_output = Buffer::alloc(d * vocab);
+        let g_d_embedding = Buffer::alloc(vocab * d);
+        let d_token_ids = Buffer::alloc(max_s);
+        let g_dwo = (0..layers).map(|_| Buffer::alloc(d * d)).collect();
+        let g_dw1 = (0..layers).map(|_| Buffer::alloc(d * ff)).collect();
+        let g_dw2 = (0..layers).map(|_| Buffer::alloc(ff * d)).collect();
+        let g_db1 = (0..layers).map(|_| Buffer::alloc(ff)).collect();
+        let g_db2 = (0..layers).map(|_| Buffer::alloc(d)).collect();
+        let g_dln_gamma = (0..layers).map(|_| Buffer::alloc(d)).collect();
+        let g_dln_beta = (0..layers).map(|_| Buffer::alloc(d)).collect();
 
         // Momentum velocity buffers (same size as gradient buffers, zero-initialized)
-        let v_wq_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let v_wk_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let v_wv_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let v_dw_output = DeviceBuffer::alloc_zeroed(d * vocab);
-        let v_d_embedding = DeviceBuffer::alloc_zeroed(vocab * d);
-        let v_dwo = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * d)).collect();
-        let v_dw1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * ff)).collect();
-        let v_dw2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff * d)).collect();
-        let v_db1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff)).collect();
-        let v_db2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let v_dln_gamma = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let v_dln_beta = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let v_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let v_wk_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let v_wv_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let v_dw_output = Buffer::alloc_zeroed(d * vocab);
+        let v_d_embedding = Buffer::alloc_zeroed(vocab * d);
+        let v_dwo = (0..layers).map(|_| Buffer::alloc_zeroed(d * d)).collect();
+        let v_dw1 = (0..layers).map(|_| Buffer::alloc_zeroed(d * ff)).collect();
+        let v_dw2 = (0..layers).map(|_| Buffer::alloc_zeroed(ff * d)).collect();
+        let v_db1 = (0..layers).map(|_| Buffer::alloc_zeroed(ff)).collect();
+        let v_db2 = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let v_dln_gamma = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let v_dln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
 
         // Adam second-moment buffers (same shapes, zero-initialized).
-        let s_wq_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let s_wk_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let s_wv_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
-        let s_dw_output = DeviceBuffer::alloc_zeroed(d * vocab);
-        let s_d_embedding = DeviceBuffer::alloc_zeroed(vocab * d);
-        let s_dwo = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * d)).collect();
-        let s_dw1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * ff)).collect();
-        let s_dw2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff * d)).collect();
-        let s_db1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff)).collect();
-        let s_db2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let s_dln_gamma = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
-        let s_dln_beta = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let s_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let s_wk_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let s_wv_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
+        let s_dw_output = Buffer::alloc_zeroed(d * vocab);
+        let s_d_embedding = Buffer::alloc_zeroed(vocab * d);
+        let s_dwo = (0..layers).map(|_| Buffer::alloc_zeroed(d * d)).collect();
+        let s_dw1 = (0..layers).map(|_| Buffer::alloc_zeroed(d * ff)).collect();
+        let s_dw2 = (0..layers).map(|_| Buffer::alloc_zeroed(ff * d)).collect();
+        let s_db1 = (0..layers).map(|_| Buffer::alloc_zeroed(ff)).collect();
+        let s_db2 = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let s_dln_gamma = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let s_dln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
 
         let d_logits = DeviceBufferF16::alloc(max_s * vocab);
         let d_dlogits = DeviceBufferF16::alloc(max_s * vocab);
-        let d_targets = DeviceBuffer::alloc(max_s);
-        let d_mask = DeviceBuffer::alloc(max_s);
-        let d_dw_output = DeviceBuffer::alloc(d * vocab);
+        let d_targets = Buffer::alloc(max_s);
+        let d_mask = Buffer::alloc(max_s);
+        let d_dw_output = Buffer::alloc(d * vocab);
         let d_dhidden = DeviceBufferF16::alloc(max_s * d);
 
-        let d_head_ptrs = DeviceBuffer::alloc(h * 2);
+        let d_head_ptrs = Buffer::alloc(h * 2);
 
         let b_sd = (0..4).map(|_| DeviceBufferF16::alloc(max_s * d)).collect();
         let b_sd_head = DeviceBufferF16::alloc(max_s * d);
         let d_wo_x = DeviceBufferF16::alloc(max_s * d);
-        let b_d = (0..2).map(|_| DeviceBuffer::alloc(d)).collect();
-        let b_dd = DeviceBuffer::alloc(d * d);
-        let b_dff = vec![DeviceBuffer::alloc(d * ff), DeviceBuffer::alloc(ff * d)];
-        let b_ff = DeviceBuffer::alloc(ff);
-        let ws = GpuWorkspace {
+        let b_d = (0..2).map(|_| Buffer::alloc(d)).collect();
+        let b_dd = Buffer::alloc(d * d);
+        let b_dff = vec![Buffer::alloc(d * ff), Buffer::alloc(ff * d)];
+        let b_ff = Buffer::alloc(ff);
+        let ws = Workspace {
             d_wq_all, d_wk_all, d_wv_all, d_wo, d_w1, d_w2, d_b1, d_b2, d_ln_gamma, d_ln_beta, d_w_output,
             d_embedding, d_positional,
             m_wq_all, m_wk_all, m_wv_all, m_wo, m_w1, m_w2, m_b1, m_b2, m_ln_gamma, m_ln_beta,
@@ -247,7 +247,7 @@ impl GpuWorkspace {
         };
         ws.upload_weights(t);
         // SAFETY: cublas_init() takes no arguments and initializes the process-wide
-        // cuBLAS handle used by the CUDA kernels; calling it once per `GpuWorkspace`
+        // cuBLAS handle used by the CUDA kernels; calling it once per `Workspace`
         // construction (paired with `cublas_shutdown` in `Drop`) is sound as long as
         // workspaces aren't constructed concurrently on multiple threads, which this
         // single-threaded training loop guarantees.
@@ -256,7 +256,7 @@ impl GpuWorkspace {
         ws
     }
 
-    pub fn upload_weights(&self, t: &Transformer) {
+    pub fn upload_weights(&self, t: &Model) {
         let d = self.d;
         let h = self.h;
         let hd = self.hd;
@@ -313,10 +313,10 @@ impl GpuWorkspace {
     }
 
     pub fn zero_accumulators(&self) {
-        // SAFETY: every pointer below is a `DeviceBuffer`/`DeviceBufferF32`
+        // SAFETY: every pointer below is a `Buffer`/`DeviceBufferF32`
         // device allocation owned by `self` (or `self.d_token_ids`), and each
         // `cudaMemset` count matches the element count that pointer was
-        // allocated with in `GpuWorkspace::new` (`self.d`, `self.vocab`,
+        // allocated with in `Workspace::new` (`self.d`, `self.vocab`,
         // `self.h`, `self.hd`, `self.ff`, `self.max_s` — the same dims used at
         // allocation time), scaled by 4 bytes per f32 element.
         unsafe {
@@ -355,10 +355,10 @@ impl GpuWorkspace {
     }
 }
 
-impl Drop for GpuWorkspace {
+impl Drop for Workspace {
     fn drop(&mut self) {
         // SAFETY: cublas_shutdown() tears down the process-wide cuBLAS handle
-        // that `cublas_init()` set up in `GpuWorkspace::new`; `Drop::drop` runs
+        // that `cublas_init()` set up in `Workspace::new`; `Drop::drop` runs
         // at most once per value, so the init/shutdown pair stays balanced.
         unsafe { cublas_shutdown(); }
     }

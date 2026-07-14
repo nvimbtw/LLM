@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use crate::chat_template::{build_prompt, Turn};
-use crate::training::transformer::Transformer;
+use crate::training::transformer::Model;
 use tokenize::pretokenize::lookup_special;
 
 struct CachedModel {
     name: String,
-    model: Transformer,
+    model: Model,
     merges: Vec<((u32, u32), u32)>,
 }
 
@@ -145,7 +145,7 @@ fn ensure_loaded(model_dir: &Path) -> Result<(), String> {
     if cache.as_ref().map(|c| c.name.as_str()) != Some(model_dir_str.as_str()) {
         let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())
             .map_err(|e| e.to_string())?;
-        let model = Transformer::load(&model_dir_str).map_err(|e| e.to_string())?;
+        let model = Model::load(&model_dir_str).map_err(|e| e.to_string())?;
         *cache = Some(CachedModel {
             name: model_dir_str.clone(),
             model,
@@ -160,7 +160,7 @@ fn ensure_loaded(model_dir: &Path) -> Result<(), String> {
 // text through `on_token`, stopping at the first end-of-turn marker.
 #[allow(clippy::too_many_arguments)]
 fn stream_generation<F: FnMut(&str)>(
-    model: &Transformer,
+    model: &Model,
     merges: &[((u32, u32), u32)],
     mut seq: Vec<u32>,
     input_tokens: usize,

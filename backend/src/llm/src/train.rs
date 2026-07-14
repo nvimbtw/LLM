@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::training::gpu_workspace::GpuWorkspace;
-use crate::training::transformer::{
-    gpu_adam_update, gpu_clip_gradients, sync_weights_from_gpu, Transformer,
-};
+use crate::training::gpu_workspace::Workspace;
+use crate::training::transformer::Model;
+use crate::training::optimizer::{gpu_adam_update, gpu_clip_gradients};
+use crate::training::sync::sync_weights_from_gpu;
 
 // Early-stopping patience: stop after this many consecutive epochs without an
 // average-loss improvement.
@@ -96,8 +96,8 @@ pub fn train(
     }
 
     let mut transformer =
-        Transformer::init(dimensions, vocab, ctx_window, heads, ff_multiplier, layers);
-    let mut ws = GpuWorkspace::new(&transformer, ctx_window as usize);
+        Model::init(dimensions, vocab, ctx_window, heads, ff_multiplier, layers);
+    let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
     run_training_loop(
         &mut transformer,
@@ -127,13 +127,13 @@ pub fn continue_train(
 ) -> Result<bool, io::Error> {
     let mut transformer = if let Some(cp) = checkpoint_path {
         let bytes = fs::read(cp)?;
-        Transformer::from_bytes(&bytes)?
+        Model::from_bytes(&bytes)?
     } else {
-        Transformer::load(&model_dir.to_string_lossy())?
+        Model::load(&model_dir.to_string_lossy())?
     };
     let ctx_window = transformer.positional_table.len() as i64;
     let layers = transformer.layers;
-    let mut ws = GpuWorkspace::new(&transformer, ctx_window as usize);
+    let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
     let corpus_bytes = fs::read(corpus_path)?;
     let corpus: Vec<u32> = corpus_bytes
@@ -192,10 +192,10 @@ pub fn sft_train(
     on_progress: ProgressCallback,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<bool, io::Error> {
-    let mut transformer = Transformer::load(&base_model_dir.to_string_lossy())?;
+    let mut transformer = Model::load(&base_model_dir.to_string_lossy())?;
     let ctx_window = transformer.positional_table.len() as i64;
     let layers = transformer.layers;
-    let mut ws = GpuWorkspace::new(&transformer, ctx_window as usize);
+    let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
     let corpus_bytes = fs::read(sft_corpus_path)?;
     let corpus: Vec<u32> = corpus_bytes
@@ -299,8 +299,8 @@ fn compute_eta(training_start: Instant, chunks_done_global: u64, total_chunks_al
 // a checkpoints dir is configured) plus the model dir for final-model access.
 // Returns the checkpoint path, if one was written.
 fn save_checkpoint(
-    transformer: &mut Transformer,
-    ws: &GpuWorkspace,
+    transformer: &mut Model,
+    ws: &Workspace,
     model_dir: &Path,
     checkpoints_dir: Option<&Path>,
     epoch: i64,
@@ -325,8 +325,8 @@ fn save_checkpoint(
 // loss summary.
 #[allow(clippy::too_many_arguments)]
 fn train_epoch(
-    transformer: &mut Transformer,
-    ws: &mut GpuWorkspace,
+    transformer: &mut Model,
+    ws: &mut Workspace,
     corpus: &[u32],
     // SFT loss mask aligned 1:1 with `corpus`, or `None` for plain pretraining.
     // When present, each chunk trains only on its masked-in (assistant) tokens.
@@ -402,7 +402,7 @@ fn train_epoch(
 
 // Apply one accumulated optimizer step: clip the summed gradient, take a
 // warmup-scaled Adam step, then zero the accumulators for the next window.
-fn step_optimizer(ws: &mut GpuWorkspace, layers: i64, lr: f32, adam_step: &mut i32) {
+fn step_optimizer(ws: &mut Workspace, layers: i64, lr: f32, adam_step: &mut i32) {
     *adam_step += 1;
     // Clip the accumulated gradient BEFORE the step so a rare huge gradient
     // can't blow the model up (the loss-spike-to-50 case).
@@ -459,8 +459,8 @@ fn report_chunk_progress(
 
 #[allow(clippy::too_many_arguments)]
 fn run_training_loop(
-    transformer: &mut Transformer,
-    ws: &mut GpuWorkspace,
+    transformer: &mut Model,
+    ws: &mut Workspace,
     corpus: &[u32],
     // SFT loss mask aligned 1:1 with `corpus`, threaded to `train_epoch`; `None`
     // for pretraining (`train`/`continue_train`).

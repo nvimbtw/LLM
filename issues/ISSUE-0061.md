@@ -3,7 +3,7 @@ id: ISSUE-0061
 title: "Rename training::transformer::Transformer to training::transformer::Model"
 scope: backend/llm
 priority: P2
-status: todo
+status: verification
 rule: R21
 location: backend/src/llm/src/training/transformer.rs:114
 blocked-by: []
@@ -37,4 +37,5 @@ A mechanical rename across these files that reference `Transformer`:
 - No references to `transformer::Transformer` remain in any source file
 
 ## Comments
-_No comments yet._
+### Builder · 2026-07-14
+Renamed `Transformer` -> `Model` (word-boundary, whole crate incl. tests/train_test.rs). No residual `transformer::Transformer` refs; `ModelHeader`/`ModelFileHeader`/`CachedModel` untouched (distinct symbols). `cargo build`+`clippy` clean, 45/45 lib GPU tests pass (`--test-threads=1`).

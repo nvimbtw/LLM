@@ -8,12 +8,12 @@ unsafe extern "C" {
     fn cudaMemset(ptr: *mut c_void, value: i32, count: usize) -> i32;
 }
 
-pub struct DeviceBuffer {
+pub struct Buffer {
     pub ptr: *mut f32,
     pub len: usize,
 }
 
-impl DeviceBuffer {
+impl Buffer {
     pub fn alloc(len: usize) -> Self {
         let mut ptr: *mut c_void = std::ptr::null_mut();
         // SAFETY: `ptr` is a valid, aligned out-pointer to a local `*mut c_void`;
@@ -75,7 +75,7 @@ impl DeviceBuffer {
         // so its pointer is valid for writes of `self.len * size_of::<f32>()`
         // bytes; `self.ptr` is a device allocation of the same size (invariant
         // maintained by `alloc`/`alloc_zeroed`/`from_slice`, the only ways to
-        // construct a `DeviceBuffer`).
+        // construct a `Buffer`).
         unsafe {
             cuda_memcpy_d2h(
                 out.as_mut_ptr() as *mut c_void,
@@ -88,7 +88,7 @@ impl DeviceBuffer {
 
 }
 
-impl Drop for DeviceBuffer {
+impl Drop for Buffer {
     fn drop(&mut self) {
         // SAFETY: `self.ptr` was allocated by `cuda_malloc` in one of the
         // constructors and is freed exactly once here, since `Drop::drop` runs

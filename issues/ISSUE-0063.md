@@ -3,7 +3,7 @@ id: ISSUE-0063
 title: "Rename training::gpu_workspace::GpuWorkspace to training::gpu_workspace::Workspace"
 scope: backend/llm
 priority: P2
-status: todo
+status: verification
 rule: R21
 location: backend/src/llm/src/training/gpu_workspace.rs:9
 blocked-by: []
@@ -32,4 +32,5 @@ blocks: [ISSUE-0060]
 - No references to `gpu_workspace::GpuWorkspace` remain
 
 ## Comments
-_No comments yet._
+### Builder · 2026-07-14
+Renamed `GpuWorkspace` -> `Workspace` across `gpu_workspace.rs`, `transformer.rs`, `train.rs`, tests. Build/clippy clean, 45/45 lib tests pass. Path now `training::gpu_workspace::Workspace`.

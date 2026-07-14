@@ -3,7 +3,7 @@ id: ISSUE-0062
 title: "Rename training::device_buffer::DeviceBuffer to training::device_buffer::Buffer"
 scope: backend/llm
 priority: P2
-status: todo
+status: verification
 rule: R21
 location: backend/src/llm/src/training/device_buffer.rs:11
 blocked-by: []
@@ -33,4 +33,5 @@ Since `device_buffer.rs` also defines `DeviceBufferF16` (which does NOT stutter 
 - No references to `device_buffer::DeviceBuffer` remain
 
 ## Comments
-_No comments yet._
+### Builder · 2026-07-14
+Renamed the f32 `DeviceBuffer` -> `Buffer`; `DeviceBufferF16` left as-is per the issue (the F16 suffix carries meaning). Updated `device_buffer.rs` + all field/param types in `gpu_workspace.rs`. Build/clippy clean, 45/45 lib tests pass.
