@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod message;
 pub mod model;
+pub mod preset;
 pub mod usage;
 pub mod user;
 

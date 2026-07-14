@@ -6,7 +6,7 @@ satisfies the coding rules, and hand it to the Verifier by moving it to
 `verification`.
 
 The rules you must satisfy are the full catalog in
-[`RULES.md`](RULES.md) (R1–R18) — read it. This file is your *process*; RULES.md
+[`RULES.md`](RULES.md) (R1–R21) — read it. This file is your *process*; RULES.md
 is the *standard*.
 
 ## Absolute constraints

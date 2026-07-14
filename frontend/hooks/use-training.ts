@@ -7,6 +7,7 @@ import {
   listJobs,
   startTraining,
   type Attachment,
+  type FinishedModel,
   type JobStatus,
   type TokenizeStats,
   type TrainConfig,
@@ -20,7 +21,10 @@ export const DEFAULT_CONFIG: TrainConfig = {
   heads: 4,
   layers: 2,
   epochs: 5,
-  lr: 0.01,
+  // Pretrain default. Raised from 1e-5 → 1e-4 now that the f32 master-weight fix
+  // (ISSUE-0052) lifted the old f16-quantization LR cap: at 1e-5 from-scratch
+  // pretrains were badly undertrained. 1e-4 trains stably post-fix (ISSUE-0057).
+  lr: 0.0001,
   ff_multiplier: 4,
   max_vocab: 1024,
   num_books: 0,
@@ -97,6 +101,16 @@ export function useTraining() {
   const [checkpoints, setCheckpoints] = React.useState<string[]>([])
   const [log, setLog] = React.useState<string[]>([])
   const [error, setError] = React.useState<string | null>(null)
+  // The config the current/last run was started with (or reattached from the
+  // snapshot), so the shell can label the phase stepper by mode and recap the run.
+  const [runConfig, setRunConfig] = React.useState<TrainConfig | null>(null)
+  // The model a completed run produced, for the "Continue to SFT" flow. Null
+  // until a run finishes successfully; cleared when a new run starts.
+  const [finishedModel, setFinishedModel] =
+    React.useState<FinishedModel | null>(null)
+  // Sticky across a subsequent SFT start so the stepper keeps reading "Pretrain ✓"
+  // through the continuation. Only a *fresh* pretrain resets it.
+  const [pretrainDone, setPretrainDone] = React.useState(false)
 
   const attachment = React.useRef<Attachment | null>(null)
 
@@ -107,6 +121,14 @@ export function useTraining() {
     attachment.current = attachTraining(id, {
       onSnapshot: (snap) => {
         setStatus(snap.status)
+        if (snap.config) setRunConfig(snap.config)
+        // A run that finished while we were away carries the trained model's
+        // identifiers on its snapshot — populate the same state onDone would, so a
+        // reattached, just-finished pretrain still offers "Continue to SFT".
+        if (snap.status === "done" && snap.id_model && snap.model_name) {
+          setFinishedModel({ id: snap.id_model, name: snap.model_name })
+          if (snap.config?.mode === "pretrain") setPretrainDone(true)
+        }
         setTokenize(snap.tokenize ?? {})
         setTrain(snap.train ?? {})
         setLoss(
@@ -183,7 +205,19 @@ export function useTraining() {
           )
         }
       },
-      onDone: (info) => setStatus(info.status as JobStatus),
+      onDone: (info) => {
+        setStatus(info.status as JobStatus)
+        // Only a successful run carries a registered model. Capture it for the
+        // continuation flow, and remember that a pretrain succeeded so the stepper
+        // stays "Pretrain ✓" even after an SFT run starts and resets live state.
+        if (info.status === "done" && info.id_model && info.model_name) {
+          setFinishedModel({ id: info.id_model, name: info.model_name })
+          setRunConfig((cfg) => {
+            if (cfg?.mode === "pretrain") setPretrainDone(true)
+            return cfg
+          })
+        }
+      },
       onError: (msg) => setError(msg),
     })
   }, [])
@@ -199,6 +233,11 @@ export function useTraining() {
       setLog([])
       setError(null)
       setStatus("tokenizing")
+      setRunConfig(config)
+      setFinishedModel(null)
+      // A fresh pretrain clears the "Pretrain ✓" marker; starting an SFT run
+      // (the continuation) keeps it so the stepper reads Pretrain ✓ → SFT active.
+      if (config.mode === "pretrain") setPretrainDone(false)
       try {
         const id = await startTraining(config)
         setJobId(id)
@@ -241,6 +280,9 @@ export function useTraining() {
     jobId,
     status,
     isActive,
+    runConfig,
+    finishedModel,
+    pretrainDone,
     tokenize,
     train,
     loss,

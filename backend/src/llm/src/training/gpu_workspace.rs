@@ -22,6 +22,23 @@ pub struct GpuWorkspace {
     pub d_embedding: DeviceBufferF16,      // [vocab, d]
     pub d_positional: DeviceBufferF16,     // [max_s, d]
 
+    // f32 master weights (source of truth) — one per *trained* weight. The
+    // matching `d_*` f16 buffer above is a derived view refreshed from the master
+    // every optimizer step; the master is what Adam accumulates into (0052 epic).
+    // `d_positional` is never stepped, so it has no master.
+    pub m_wq_all: Vec<DeviceBuffer>,      // [layers][h * d * hd]
+    pub m_wk_all: Vec<DeviceBuffer>,
+    pub m_wv_all: Vec<DeviceBuffer>,
+    pub m_wo: Vec<DeviceBuffer>,          // [layers][d * d]
+    pub m_w1: Vec<DeviceBuffer>,
+    pub m_w2: Vec<DeviceBuffer>,
+    pub m_b1: Vec<DeviceBuffer>,
+    pub m_b2: Vec<DeviceBuffer>,
+    pub m_ln_gamma: Vec<DeviceBuffer>,
+    pub m_ln_beta: Vec<DeviceBuffer>,
+    pub m_w_output: DeviceBuffer,         // shared
+    pub m_embedding: DeviceBuffer,         // [vocab, d]
+
     // Per-layer gradient accumulators (f32) — contiguous for QKV
     pub g_wq_all: Vec<DeviceBuffer>,      // [layers][h * d * hd]
     pub g_wk_all: Vec<DeviceBuffer>,
@@ -130,6 +147,21 @@ impl GpuWorkspace {
         let d_embedding = DeviceBufferF16::alloc(vocab * d);
         let d_positional = DeviceBufferF16::alloc(max_s * d);
 
+        // f32 master weights (same element counts as the f16 views above). Start
+        // zeroed; 0056 seeds them from the f32 CPU weights on `upload_weights`.
+        let m_wq_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
+        let m_wk_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
+        let m_wv_all = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(h * d * hd)).collect();
+        let m_wo = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * d)).collect();
+        let m_w1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d * ff)).collect();
+        let m_w2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff * d)).collect();
+        let m_b1 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(ff)).collect();
+        let m_b2 = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let m_ln_gamma = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let m_ln_beta = (0..layers).map(|_| DeviceBuffer::alloc_zeroed(d)).collect();
+        let m_w_output = DeviceBuffer::alloc_zeroed(d * vocab);
+        let m_embedding = DeviceBuffer::alloc_zeroed(vocab * d);
+
         // Gradient accumulators
         let g_wq_all = (0..layers).map(|_| DeviceBuffer::alloc(h * d * hd)).collect();
         let g_wk_all = (0..layers).map(|_| DeviceBuffer::alloc(h * d * hd)).collect();
@@ -192,6 +224,8 @@ impl GpuWorkspace {
         let ws = GpuWorkspace {
             d_wq_all, d_wk_all, d_wv_all, d_wo, d_w1, d_w2, d_b1, d_b2, d_ln_gamma, d_ln_beta, d_w_output,
             d_embedding, d_positional,
+            m_wq_all, m_wk_all, m_wv_all, m_wo, m_w1, m_w2, m_b1, m_b2, m_ln_gamma, m_ln_beta,
+            m_w_output, m_embedding,
             g_wq_all, g_wk_all, g_wv_all,
             g_dw_output, g_d_embedding, d_token_ids, g_dwo, g_dw1, g_dw2, g_db1, g_db2, g_dln_gamma, g_dln_beta,
             v_wq_all, v_wk_all, v_wv_all, v_dw_output, v_d_embedding,
@@ -239,25 +273,41 @@ impl GpuWorkspace {
                 wk_flat.extend(t.wk[layer_idx][hi].iter().flatten());
                 wv_flat.extend(t.wv[layer_idx][hi].iter().flatten());
             }
+            // Seed both the f16 view (first forward pass reads it before any Adam
+            // step) and the f32 master (source of truth) from the full-precision
+            // CPU weights — the master gets the exact f32, not the f16 round-trip.
             self.d_wq_all[layer_idx].upload_f32_slice(&wq_flat);
             self.d_wk_all[layer_idx].upload_f32_slice(&wk_flat);
             self.d_wv_all[layer_idx].upload_f32_slice(&wv_flat);
+            self.m_wq_all[layer_idx].upload(&wq_flat);
+            self.m_wk_all[layer_idx].upload(&wk_flat);
+            self.m_wv_all[layer_idx].upload(&wv_flat);
 
             let flat_wo: Vec<f32> = t.wo[layer_idx].iter().flatten().copied().collect();
             self.d_wo[layer_idx].upload_f32_slice(&flat_wo);
+            self.m_wo[layer_idx].upload(&flat_wo);
             let flat_w1: Vec<f32> = t.w1[layer_idx].iter().flatten().copied().collect();
             self.d_w1[layer_idx].upload_f32_slice(&flat_w1);
+            self.m_w1[layer_idx].upload(&flat_w1);
             let flat_w2: Vec<f32> = t.w2[layer_idx].iter().flatten().copied().collect();
             self.d_w2[layer_idx].upload_f32_slice(&flat_w2);
+            self.m_w2[layer_idx].upload(&flat_w2);
             self.d_b1[layer_idx].upload_f32_slice(&t.b1[layer_idx]);
+            self.m_b1[layer_idx].upload(&t.b1[layer_idx]);
             self.d_b2[layer_idx].upload_f32_slice(&t.b2[layer_idx]);
+            self.m_b2[layer_idx].upload(&t.b2[layer_idx]);
             self.d_ln_gamma[layer_idx].upload_f32_slice(&t.ln_gamma[layer_idx]);
+            self.m_ln_gamma[layer_idx].upload(&t.ln_gamma[layer_idx]);
             self.d_ln_beta[layer_idx].upload_f32_slice(&t.ln_beta[layer_idx]);
+            self.m_ln_beta[layer_idx].upload(&t.ln_beta[layer_idx]);
         }
         let flat_w_output: Vec<f32> = t.w_output.iter().flatten().copied().collect();
         self.d_w_output.upload_f32_slice(&flat_w_output);
+        self.m_w_output.upload(&flat_w_output);
         let flat_embedding: Vec<f32> = t.embedding_table.iter().flatten().copied().collect();
         self.d_embedding.upload_f32_slice(&flat_embedding);
+        self.m_embedding.upload(&flat_embedding);
+        // `d_positional` is never stepped by Adam, so it has no master.
         let flat_positional: Vec<f32> = t.positional_table.iter().flatten().copied().collect();
         self.d_positional.upload_f32_slice(&flat_positional);
     }

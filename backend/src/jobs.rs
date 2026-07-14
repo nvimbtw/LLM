@@ -163,6 +163,17 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 // Renders the accumulated state for a socket that just attached.
 pub fn snapshot_frame(state: &JobState) -> String {
+    // Only a successful run registered a model, so a reattached, already-`done`
+    // run can still offer "Continue to SFT". Absent (null) for in-flight,
+    // cancelled, or failed runs. Mirrors the live `done` frame's identifiers.
+    let (id_model, model_name) = if state.status == JobStatus::Done {
+        (
+            serde_json::json!(state.config.storage_id),
+            serde_json::json!(state.config.model_name),
+        )
+    } else {
+        (serde_json::Value::Null, serde_json::Value::Null)
+    };
     serde_json::json!({
         "type": "snapshot",
         "status": state.status,
@@ -173,6 +184,8 @@ pub fn snapshot_frame(state: &JobState) -> String {
         "batch_series": state.batch_series,
         "log": state.log,
         "error": state.error,
+        "id_model": id_model,
+        "model_name": model_name,
     })
     .to_string()
 }
@@ -250,7 +263,7 @@ fn run_pretrain_job(job: Arc<Job>, config: TrainConfig) {
 // Runs both phases for an SFT job: render the chat conversations into the masked
 // dataset using the base model's tokenizer, then fine-tune the base via
 // `run_sft_training`. Shares the progress/finish plumbing with the pretrain path.
-fn run_sft_job(job: Arc<Job>, config: TrainConfig) {
+fn run_sft_job(job: Arc<Job>, mut config: TrainConfig) {
     let created_at = Utc::now().to_rfc3339();
 
     // The base model to fine-tune from; its tokenizer renders the dataset and its
@@ -263,6 +276,17 @@ fn run_sft_job(job: Arc<Job>, config: TrainConfig) {
             return;
         }
     };
+
+    // The SFT fine-tune inherits the base's architecture (it loads the base
+    // weights), so overwrite the request's placeholder arch fields with the base's
+    // real ones — otherwise the registered model records the wrong dimensions/
+    // context/param-count. Best-effort: a failure here only affects metadata.
+    if let Err(e) = training::apply_base_architecture(&mut config, &base_model_dir) {
+        eprintln!(
+            "[training] {}: could not inherit base architecture ({}); registry metadata may be off",
+            config.model_name, e
+        );
+    }
 
     // ---- Phase 1: render conversations → sft_corpus.bin + sft_mask.bin ----
     eprintln!("[training] {}: building SFT dataset…", config.model_name);
@@ -459,6 +483,11 @@ fn finish(
                 serde_json::json!({
                     "status": status_str,
                     "model_dir": model_dir.to_string_lossy(),
+                    // The just-registered model's identifiers, so the client can
+                    // seed a follow-up SFT run with this model as its base without
+                    // hunting for it in the model list (the "Continue to SFT" flow).
+                    "id_model": config.storage_id,
+                    "model_name": config.model_name,
                 }),
             )
         }

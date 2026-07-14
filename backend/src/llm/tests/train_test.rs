@@ -198,3 +198,120 @@ fn test_sft_epic_masking_isolates_gradient() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+// ─── ISSUE-0057: mixed-precision (f32 master weights) lifts the LR cap ────────
+// The epic (ISSUE-0052) added an f32 master copy of every trained weight so Adam
+// accumulates the step in full precision and only casts a disposable f16 *view*
+// for the matmuls. Before the fix the master lived in f16, so an update smaller
+// than the f16 ULP near the weight rounded away entirely — updates vanished at
+// small LR and lurched in coarse quanta (diverging) at large LR. These two tests
+// prove the fix end-to-end.
+
+use llm::training::gpu_workspace::GpuWorkspace;
+use llm::training::transformer::{gpu_adam_update, sync_weights_from_gpu};
+
+// Deterministic, unit-level proof that a sub-f16-ULP update now ACCUMULATES in
+// the f32 master instead of rounding away. `ln_gamma` initializes to exactly 1.0,
+// where the f16 gap (ULP) is 2^-10 ≈ 9.77e-4. We drive a constant gradient into
+// that weight's grad buffer at an LR whose per-step Adam move (≈ lr, because Adam
+// normalizes a constant gradient to ~sign(g)) is 1e-4 — below one f16 ULP. Over
+// N steps the master must move by ≈ N·lr; a pre-fix f16 master would not budge,
+// since each 1e-4 step rounds back to 1.0.
+#[test]
+fn test_master_accumulates_sub_ulp_updates() {
+    let (vocab, d, ctx, heads, ff_mult, layers) = (20, 16, 8, 2, 2, 2);
+    let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
+    let ws = GpuWorkspace::new(&t, ctx as usize);
+
+    // All grad buffers are zeroed by GpuWorkspace::new. Set a constant, positive
+    // gradient on layer-0 ln_gamma only, and never zero it, so every Adam step
+    // sees the same gradient.
+    let grad = vec![1.0f32; d as usize];
+    ws.g_dln_gamma[0].upload(&grad);
+
+    let lr = 1e-4f32; // per-step move ≈ 1e-4, below the f16 ULP (~9.77e-4) at w=1.0
+    let n_steps = 50i32;
+    for step in 1..=n_steps {
+        gpu_adam_update(&ws, lr, step, 1, layers as usize);
+        // deliberately NOT zeroing accumulators — keep the gradient constant
+    }
+
+    let mut t_synced = Transformer {
+        embedding_table: t.embedding_table.clone(),
+        positional_table: t.positional_table.clone(),
+        wq: t.wq.clone(), wk: t.wk.clone(), wv: t.wv.clone(),
+        wo: t.wo.clone(), w1: t.w1.clone(), w2: t.w2.clone(),
+        b1: t.b1.clone(), b2: t.b2.clone(),
+        ln_gamma: t.ln_gamma.clone(), ln_beta: t.ln_beta.clone(),
+        w_output: t.w_output.clone(),
+        heads: t.heads, head_dim: t.head_dim, layers: t.layers,
+    };
+    sync_weights_from_gpu(&ws, &mut t_synced);
+
+    // ln_gamma started at 1.0; with a positive gradient Adam drives it DOWN by
+    // ≈ n_steps·lr = 5e-3 — several f16 ULPs, impossible if the master were f16.
+    let moved = 1.0f32 - t_synced.ln_gamma[0][0];
+    let ulp = 2f32.powi(-10); // f16 ULP near 1.0
+    eprintln!(
+        "  ln_gamma[0][0]: 1.0 -> {:.6}  (moved {:.6}, {:.1} ULPs, expected ≈ {:.6})",
+        t_synced.ln_gamma[0][0], moved, moved / ulp, n_steps as f32 * lr
+    );
+    assert!(t_synced.ln_gamma[0][0].is_finite(), "weight went non-finite");
+    assert!(
+        moved > 2.0 * ulp,
+        "sub-ULP updates did not accumulate: weight moved only {:.6} (<2 f16 ULPs) \
+         — the f32 master is not the source of truth",
+        moved
+    );
+    // The Adam-normalized move is ≈ lr/step, so total ≈ n_steps·lr. Allow a wide
+    // band (bias-correction ramp + eps make early steps slightly smaller).
+    let expected = n_steps as f32 * lr;
+    assert!(
+        moved > 0.5 * expected && moved < 1.5 * expected,
+        "accumulated move {:.6} not within 2x of expected {:.6}",
+        moved, expected
+    );
+}
+
+// A previously-cap-bound LR now trains stably: overfit a single fixed sequence at
+// the epic's target pretrain LR (1e-4) and assert the loss stays finite and
+// trends down rather than blowing up. Mirrors `transformer::tests::
+// test_overfits_single_sequence` but at the raised LR the epic exists to unlock.
+//
+// Observed ceiling (this toy: vocab 20, d 16, 2 layers, single fixed sequence,
+// post-fix): 1e-4 trains cleanly (loss 3.22 -> 1.10, max never above first);
+// 3e-4 is also stable and stronger (loss 3.04 -> 0.09). The loss never exceeds
+// its starting value at either LR — no divergence. We assert on 1e-4 (the
+// conservative pretrain default ISSUE-0058 bakes in); 3e-4 is comfortably in
+// range on this toy. The old f16-master path could not sustain these because the
+// per-step update rounded away / lurched in f16 quanta.
+#[test]
+fn test_raised_lr_trains_stably() {
+    let (vocab, d, ctx, heads, ff_mult, layers) = (20, 16, 8, 2, 2, 2);
+    let t = Transformer::init(d, vocab, ctx, heads, ff_mult, layers);
+    let mut ws = GpuWorkspace::new(&t, ctx as usize);
+    let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+    let lr = 1e-4f32;
+    let first = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+    ws.zero_accumulators();
+    let mut last = first;
+    let mut max_seen = first;
+    for step in 1..=300 {
+        last = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+        gpu_adam_update(&ws, lr, step, 1, layers as usize);
+        ws.zero_accumulators();
+        assert!(last.is_finite(), "loss went non-finite at step {} (lr={})", step, lr);
+        if last > max_seen { max_seen = last; }
+    }
+    eprintln!(
+        "  lr={:.0e}: first_loss={:.4} last_loss={:.4} max_loss={:.4}",
+        lr, first, last, max_seen
+    );
+    assert!(last.is_finite(), "final loss non-finite at lr={}", lr);
+    assert!(
+        last < first,
+        "loss did not decrease at lr={}: {:.4} -> {:.4} (max {:.4})",
+        lr, first, last, max_seen
+    );
+}

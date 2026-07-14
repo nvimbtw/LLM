@@ -39,6 +39,11 @@ per issue**, named `ISSUE-XXXX.md`. Its spec lives in
 lifecycle, the priority/scope legends, and — new — the **append-only comment
 thread** that lets roles hold a real back-and-forth across rounds.
 
+Related findings that share a theme or a dependency order are grouped into an
+**epic** — a tracking issue `blocked-by` a strictly-ordered child chain — so the
+Builder can later run the whole chain end-to-end. The Auditor files these; the
+convention lives in [`issues/README.md`](issues/README.md).
+
 Field/comment ownership:
 
 - **Auditor** creates a new `ISSUE-XXXX.md` with `status: todo` and owns every

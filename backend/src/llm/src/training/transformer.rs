@@ -1475,7 +1475,8 @@ unsafe extern "C" {
 
     fn cuda_adam(
         g: *const f32,
-        w: *mut c_void,
+        w_master: *mut f32,
+        w_view: *mut c_void,
         m: *mut f32,
         v: *mut f32,
         grad_scale: f32,
@@ -1563,27 +1564,28 @@ pub fn gpu_adam_update(ws: &GpuWorkspace, lr: f32, step: i32, accum_steps: usize
     let ff = ws.ff;
     let vocab = ws.vocab;
 
-    // Cuts the repeated argument list down to (grad, weight, m, v, n).
+    // Cuts the repeated argument list down to (grad, master, view, m, v, n).
+    // `$wm` is the f32 master (canonical); `$wv` the f16 view refreshed from it.
     macro_rules! adam {
-        ($g:expr, $w:expr, $m:expr, $v:expr, $n:expr) => {
-            cuda_adam($g, $w as *mut c_void, $m, $v, gs, lr, beta1, beta2, eps, bc1, bc2, $n as i32)
+        ($g:expr, $wm:expr, $wv:expr, $m:expr, $v:expr, $n:expr) => {
+            cuda_adam($g, $wm, $wv as *mut c_void, $m, $v, gs, lr, beta1, beta2, eps, bc1, bc2, $n as i32)
         };
     }
 
     unsafe {
-        adam!(ws.g_dw_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, d * vocab);
-        adam!(ws.g_d_embedding.ptr, ws.d_embedding.ptr, ws.v_d_embedding.ptr, ws.s_d_embedding.ptr, vocab * d);
+        adam!(ws.g_dw_output.ptr, ws.m_w_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, d * vocab);
+        adam!(ws.g_d_embedding.ptr, ws.m_embedding.ptr, ws.d_embedding.ptr, ws.v_d_embedding.ptr, ws.s_d_embedding.ptr, vocab * d);
         for l in 0..layers {
-            adam!(ws.g_wq_all[l].ptr, ws.d_wq_all[l].ptr, ws.v_wq_all[l].ptr, ws.s_wq_all[l].ptr, h * d * hd);
-            adam!(ws.g_wk_all[l].ptr, ws.d_wk_all[l].ptr, ws.v_wk_all[l].ptr, ws.s_wk_all[l].ptr, h * d * hd);
-            adam!(ws.g_wv_all[l].ptr, ws.d_wv_all[l].ptr, ws.v_wv_all[l].ptr, ws.s_wv_all[l].ptr, h * d * hd);
-            adam!(ws.g_dwo[l].ptr, ws.d_wo[l].ptr, ws.v_dwo[l].ptr, ws.s_dwo[l].ptr, d * d);
-            adam!(ws.g_dw1[l].ptr, ws.d_w1[l].ptr, ws.v_dw1[l].ptr, ws.s_dw1[l].ptr, d * ff);
-            adam!(ws.g_dw2[l].ptr, ws.d_w2[l].ptr, ws.v_dw2[l].ptr, ws.s_dw2[l].ptr, ff * d);
-            adam!(ws.g_db1[l].ptr, ws.d_b1[l].ptr, ws.v_db1[l].ptr, ws.s_db1[l].ptr, ff);
-            adam!(ws.g_db2[l].ptr, ws.d_b2[l].ptr, ws.v_db2[l].ptr, ws.s_db2[l].ptr, d);
-            adam!(ws.g_dln_gamma[l].ptr, ws.d_ln_gamma[l].ptr, ws.v_dln_gamma[l].ptr, ws.s_dln_gamma[l].ptr, d);
-            adam!(ws.g_dln_beta[l].ptr, ws.d_ln_beta[l].ptr, ws.v_dln_beta[l].ptr, ws.s_dln_beta[l].ptr, d);
+            adam!(ws.g_wq_all[l].ptr, ws.m_wq_all[l].ptr, ws.d_wq_all[l].ptr, ws.v_wq_all[l].ptr, ws.s_wq_all[l].ptr, h * d * hd);
+            adam!(ws.g_wk_all[l].ptr, ws.m_wk_all[l].ptr, ws.d_wk_all[l].ptr, ws.v_wk_all[l].ptr, ws.s_wk_all[l].ptr, h * d * hd);
+            adam!(ws.g_wv_all[l].ptr, ws.m_wv_all[l].ptr, ws.d_wv_all[l].ptr, ws.v_wv_all[l].ptr, ws.s_wv_all[l].ptr, h * d * hd);
+            adam!(ws.g_dwo[l].ptr, ws.m_wo[l].ptr, ws.d_wo[l].ptr, ws.v_dwo[l].ptr, ws.s_dwo[l].ptr, d * d);
+            adam!(ws.g_dw1[l].ptr, ws.m_w1[l].ptr, ws.d_w1[l].ptr, ws.v_dw1[l].ptr, ws.s_dw1[l].ptr, d * ff);
+            adam!(ws.g_dw2[l].ptr, ws.m_w2[l].ptr, ws.d_w2[l].ptr, ws.v_dw2[l].ptr, ws.s_dw2[l].ptr, ff * d);
+            adam!(ws.g_db1[l].ptr, ws.m_b1[l].ptr, ws.d_b1[l].ptr, ws.v_db1[l].ptr, ws.s_db1[l].ptr, ff);
+            adam!(ws.g_db2[l].ptr, ws.m_b2[l].ptr, ws.d_b2[l].ptr, ws.v_db2[l].ptr, ws.s_db2[l].ptr, d);
+            adam!(ws.g_dln_gamma[l].ptr, ws.m_ln_gamma[l].ptr, ws.d_ln_gamma[l].ptr, ws.v_dln_gamma[l].ptr, ws.s_dln_gamma[l].ptr, d);
+            adam!(ws.g_dln_beta[l].ptr, ws.m_ln_beta[l].ptr, ws.d_ln_beta[l].ptr, ws.v_dln_beta[l].ptr, ws.s_dln_beta[l].ptr, d);
         }
     }
 }
@@ -1596,15 +1598,17 @@ pub fn sync_weights_from_gpu(ws: &GpuWorkspace, t: &mut Transformer) {
     let vocab = ws.vocab;
     let layers = t.layers as usize;
 
+    // Read back the f32 masters (the source of truth), not the f16 views — this
+    // makes save lossless and drops the f16 re-quantize round-trip (ISSUE-0052).
     let w = &mut t.w_output;
-    let flat = ws.d_w_output.to_f32_vec();
+    let flat = ws.m_w_output.to_vec();
     for i in 0..d {
         for j in 0..vocab {
             w[i][j] = flat[i * vocab + j];
         }
     }
     let emb = &mut t.embedding_table;
-    let flat_emb = ws.d_embedding.to_f32_vec();
+    let flat_emb = ws.m_embedding.to_vec();
     for i in 0..vocab {
         for j in 0..d {
             emb[i][j] = flat_emb[i * d + j];
@@ -1612,9 +1616,9 @@ pub fn sync_weights_from_gpu(ws: &GpuWorkspace, t: &mut Transformer) {
     }
     for layer in 0..layers {
         // Contiguous per-head QKV weights: [h * d * hd]
-        let flat_q = ws.d_wq_all[layer].to_f32_vec();
-        let flat_k = ws.d_wk_all[layer].to_f32_vec();
-        let flat_v = ws.d_wv_all[layer].to_f32_vec();
+        let flat_q = ws.m_wq_all[layer].to_vec();
+        let flat_k = ws.m_wk_all[layer].to_vec();
+        let flat_v = ws.m_wv_all[layer].to_vec();
         for hi in 0..h {
             let off = hi * d * hd;
             for i in 0..d {
@@ -1625,37 +1629,37 @@ pub fn sync_weights_from_gpu(ws: &GpuWorkspace, t: &mut Transformer) {
                 }
             }
         }
-        let flat = ws.d_wo[layer].to_f32_vec();
+        let flat = ws.m_wo[layer].to_vec();
         for i in 0..d {
             for j in 0..d {
                 t.wo[layer][i][j] = flat[i * d + j];
             }
         }
-        let flat = ws.d_w1[layer].to_f32_vec();
+        let flat = ws.m_w1[layer].to_vec();
         for i in 0..d {
             for j in 0..ff {
                 t.w1[layer][i][j] = flat[i * ff + j];
             }
         }
-        let flat = ws.d_w2[layer].to_f32_vec();
+        let flat = ws.m_w2[layer].to_vec();
         for i in 0..ff {
             for j in 0..d {
                 t.w2[layer][i][j] = flat[i * d + j];
             }
         }
-        let flat = ws.d_b1[layer].to_f32_vec();
+        let flat = ws.m_b1[layer].to_vec();
         for j in 0..ff {
             t.b1[layer][j] = flat[j];
         }
-        let flat = ws.d_b2[layer].to_f32_vec();
+        let flat = ws.m_b2[layer].to_vec();
         for j in 0..d {
             t.b2[layer][j] = flat[j];
         }
-        let flat = ws.d_ln_gamma[layer].to_f32_vec();
+        let flat = ws.m_ln_gamma[layer].to_vec();
         for j in 0..d {
             t.ln_gamma[layer][j] = flat[j];
         }
-        let flat = ws.d_ln_beta[layer].to_f32_vec();
+        let flat = ws.m_ln_beta[layer].to_vec();
         for j in 0..d {
             t.ln_beta[layer][j] = flat[j];
         }

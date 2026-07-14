@@ -7,7 +7,10 @@ violates them. These layer on top of the project-specific conventions in
 code.
 
 Each rule has an id, the standard, and what a violation looks like. File issues
-against the id (e.g. `rule: R1`).
+against the id (e.g. `rule: R1`). Ids are stable and permanent — new rules append
+new numbers rather than renumbering, so the backend set is **R1–R13 and R19–R21**
+and the frontend set is **R14–R18** (the numbering is not sectionally contiguous;
+don't infer a rule's area from its number).
 
 ---
 
@@ -70,10 +73,18 @@ thresholds, epsilons, buffer sizes get a `const` with a doc line.
 *Violation:* `0.9`, `0.999`, `1e-8`, `1.0` clip norms scattered inline in the
 optimizer/training loop.
 
-### R9 — Documented public surface
-Every `pub fn`, `pub struct`, and `pub` module has a doc comment saying what it
-does and any non-obvious contract (units, invariants, panics).
-*Violation:* a `pub fn` in the inference or training API with no `///`.
+### R9 — Document contracts, not names
+A `pub fn`, `pub struct`, or `pub` module carries a doc comment **only where the
+name cannot carry the meaning by itself** — a non-obvious contract (units,
+invariants, panics, ownership, ordering, side effects) or the *why* behind it. A
+well-named public symbol whose behavior is obvious from its signature needs no
+doc comment, and a doc comment that merely restates the name is itself a
+violation (see R19). The bar is "what would surprise a caller," not "every symbol
+gets a `///`."
+*Violation:* `/// Widens the f16 view to f32.` on `pub fn to_f32_vec(&self) ->
+Vec<f32>` (restates the name — delete it); **or**, conversely, a `pub fn
+upload(&self, data: &[f32])` that panics on a length mismatch with no note that
+it does. The first has a comment it shouldn't; the second lacks one it should.
 
 ### R10 — Validate at boundaries
 Functions that take external or cross-module input validate their assumptions
@@ -109,6 +120,47 @@ what the function actually does.
 *Note:* this does not conflict with R9 — R9 wants a doc comment stating a public
 function's *contract* (units, invariants, panics, the *why*), not a restatement
 of its name.
+
+### R19 — Comments earn their place: why, never what
+A comment exists to say something the code **cannot**: the *why* (rationale for a
+non-obvious choice), an invariant the types don't encode, a gotcha, a link to a
+spec/issue. A comment that restates *what* the next line(s) do is noise — delete
+it and let the naming (R13) carry the *what*, or, if the block is too dense to
+read, extract a named function instead of captioning it. The code should be
+legible because of how it's named and structured, not because prose narrates it.
+Prefer zero comments in a well-named body over a comment per step.
+*Violation:* `// loop over layers` above `for layer in 0..layers`; `// increment
+the counter`; a `// --- attention ---` banner splitting a function into sections
+that should be separate functions; any comment that could be deleted without a
+reader losing information the code doesn't already give them.
+*Not a violation:* `// bias correction is nonzero on step 1 even for a zero
+gradient` (a *why* the code can't state); a `SAFETY:` note on `unsafe` (R4); a
+contract doc on a public symbol (R9).
+
+### R20 — Cohesive modules and honest crate boundaries
+A module or crate holds **one coherent concern**, named for that concern, and code
+lives in the crate its dependencies imply — not wherever it was first typed. No
+grab-bag `utils`/`misc`/`helpers` module accreting unrelated functions; no single
+file mixing several concerns that each deserve their own module; no logic sitting
+in a crate that has no business owning it (e.g. tokenizer logic inside `llm`,
+HTTP concerns inside a compute crate). When a file grows to cover multiple
+concerns, split it along those concerns. Crate dependencies stay one-directional
+(this extends R12 from layering to crate placement).
+*Violation:* a 300-line module spanning allocation, upload, save, and optimizer
+plumbing that should be several modules; a `helpers.rs` holding three unrelated
+functions; a type defined in a crate that only exists to be used by another crate
+it could live in.
+
+### R21 — Names don't stutter and the path adds meaning
+A symbol's fully-qualified path should read without repetition. A type named the
+same as its module (`transformer::Transformer`, `config::Config`) stutters — the
+module segment adds nothing. Either give the type a name that says what it *is*
+within its module (`transformer::Model`), or, if the module holds exactly one
+public type, collapse the module. Every path segment must add information the next
+one doesn't already carry. This applies to new and changed code, and existing
+stutters are fair game to file.
+*Violation:* `transformer::Transformer`; `workspace::Workspace`; a `mod tokenizer`
+whose only export is `struct Tokenizer`; a field named `config.config`.
 
 ---
 

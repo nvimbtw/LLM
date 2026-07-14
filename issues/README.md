@@ -72,6 +72,29 @@ a real back-and-forth across rounds instead of overwriting a single notes line.
 Everything else in the frontmatter (id, scope, priority, rule, location,
 blocked-by, blocks) belongs to the Auditor.
 
+## Epics (tracking issue + child chain)
+
+When a body of work is several dependent steps or a single theme resolved by many
+issues, the Auditor files it as an **epic** rather than a flat pile. An epic is an
+ordinary set of issue files wired together by `blocked-by`/`blocks` — no new
+frontmatter fields, so the Orchestrator parses it with the same machinery.
+
+- **Tracking issue** — one `ISSUE-XXXX.md` that holds *no code*. Its body opens
+  with "epic — no code lives here directly," lists the children in a table, states
+  the shared goal/invariant, and gives a **Definition of done** (what the Builder
+  verifies to close it — usually "all children done" plus an end-to-end check). It
+  sets `blocked-by: [<every child>]` and `blocks: []`, with `rule: none`.
+- **Child issues** — one per discrete, independently-verifiable step, each with a
+  single `location`, its own `rule`, and its own DoD. They carry real
+  `blocked-by`/`blocks` edges among themselves so the chain is strictly ordered;
+  each child is one Builder→Verifier round.
+- The Orchestrator picks children in dependency order (respecting `blocked-by`) and
+  closes the tracker last. Examples in this repo: ISSUE-0052, ISSUE-0030,
+  ISSUE-0040.
+
+Keep independent one-off findings flat — an epic is for a **dependency order** or a
+**shared theme**, not for grouping unrelated nits.
+
 ## Priority legend
 
 - **P0** — critical: broken build, data loss, or a correctness bug that produces

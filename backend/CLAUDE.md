@@ -106,6 +106,28 @@ gradient.
   `corpus.bin`) and `datasets/sft_mask.bin` (one `u8` per token, `1`=train /
   `0`=ignore) — the two are aligned 1:1 and length-checked before training.
 
+## Mixed-precision (f32 master weights)
+
+GPU training keeps **all compute in f16** but holds an **f32 master copy of every
+*trained* weight** as the source of truth (ISSUE-0052). Each trained parameter has
+three parts in `GpuWorkspace`: the f32 master (`m_*`), the f16 view the matmuls
+read (`d_*`), and the f32 Adam moments (`v_*` = 1st, `s_*` = 2nd). The invariant:
+
+- **The master is canonical; the f16 `d_*` weight is a derived, disposable view.**
+  `adam_kernel` accumulates the step into the f32 master and refreshes the f16 view
+  from it in the same pass (fused — no extra kernel launch). `upload_weights` seeds
+  the master from the full-precision f32 CPU weights (not the f16 round-trip), and
+  `sync_weights_from_gpu` reads the master back on save (so save is lossless).
+- Only the 12 weights `gpu_adam_update` steps get a master (2 shared + 10×layers).
+  `d_positional` is never updated, so it has **no** master and stays f16-only.
+
+Why: before this, the master lived in f16, so an Adam step below the f16 ULP near
+the weight (~1e-3 at w≈1.0) rounded away entirely — updates vanished at small LR
+and diverged in coarse quanta at large LR, capping the usable LR at ~1e-5. The f32
+master lets a sub-ULP `Δw` accumulate, lifting the cap (pretrain default is now
+1e-4; see `use-training.ts`). Cost: **14 B/param** (f16 `w` 2 B + f32 `m`/`v` 8 B +
+f32 master 4 B), ~+40 MB on a 10M-param model; compute throughput is unchanged.
+
 ## Error handling
 
 Distinguish failure types and map to correct HTTP status codes — don't collapse everything into 500:

@@ -160,12 +160,17 @@ __global__ void sgd_momentum_kernel(const float *__restrict__ g, __half *w,
   w[i] = __float2half(__half2float(w[i]) - lr * new_v);
 }
 
-// Adam update. Weights are f16; the two moment estimates (m = 1st, v = 2nd) are
-// f32. `grad_scale` averages the accumulated gradient (1/accum_steps); `bc1`,
-// `bc2` are the bias-correction denominators (1 - beta^t) computed host-side.
-__global__ void adam_kernel(const float *__restrict__ g, __half *w, float *m,
-                            float *v, float grad_scale, float lr, float beta1,
-                            float beta2, float eps, float bc1, float bc2, int n) {
+// Adam update. `w_master` (f32) is the canonical weight; `w_view` (f16) is a
+// derived copy the matmuls consume, refreshed from the master in the same pass.
+// The two moment estimates (m = 1st, v = 2nd) are f32. `grad_scale` averages the
+// accumulated gradient (1/accum_steps); `bc1`, `bc2` are the bias-correction
+// denominators (1 - beta^t) computed host-side. Accumulating the step in f32
+// (not the old f16 read-back) is the mixed-precision fix that lifts the LR cap
+// (ISSUE-0052): a sub-f16-ULP `Δw` now survives instead of rounding away.
+__global__ void adam_kernel(const float *__restrict__ g, float *w_master,
+                            __half *w_view, float *m, float *v, float grad_scale,
+                            float lr, float beta1, float beta2, float eps,
+                            float bc1, float bc2, int n) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n) return;
   float grad = g[i] * grad_scale;
@@ -175,7 +180,9 @@ __global__ void adam_kernel(const float *__restrict__ g, __half *w, float *m,
   v[i] = new_v;
   float m_hat = new_m / bc1;
   float v_hat = new_v / bc2;
-  w[i] = __float2half(__half2float(w[i]) - lr * m_hat / (sqrtf(v_hat) + eps));
+  float updated = w_master[i] - lr * m_hat / (sqrtf(v_hat) + eps);
+  w_master[i] = updated;                 // accumulate in f32 (the master)
+  w_view[i] = __float2half(updated);     // refresh the f16 view, fused
 }
 
 // ─── Copy strided columns into contiguous batch layout ─────────────────────
@@ -1415,11 +1422,12 @@ extern "C" void cuda_sgd_momentum(const float *g, __half *w, float *v,
   sgd_momentum_kernel<<<(n + 255) / 256, 256>>>(g, w, v, lr, mu, n);
 }
 
-extern "C" void cuda_adam(const float *g, __half *w, float *m, float *v,
-                          float grad_scale, float lr, float beta1, float beta2,
-                          float eps, float bc1, float bc2, int n) {
-  adam_kernel<<<(n + 255) / 256, 256>>>(g, w, m, v, grad_scale, lr, beta1,
-                                        beta2, eps, bc1, bc2, n);
+extern "C" void cuda_adam(const float *g, float *w_master, __half *w_view,
+                          float *m, float *v, float grad_scale, float lr,
+                          float beta1, float beta2, float eps, float bc1,
+                          float bc2, int n) {
+  adam_kernel<<<(n + 255) / 256, 256>>>(g, w_master, w_view, m, v, grad_scale,
+                                        lr, beta1, beta2, eps, bc1, bc2, n);
 }
 
 // ─── Embedding forward: lookup + positional add ─────────────────────

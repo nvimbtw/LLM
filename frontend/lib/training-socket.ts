@@ -50,10 +50,17 @@ export type JobStatus =
   | "failed"
 
 export interface TokenizeStats {
+  // Pretrain phase-1 stats (BPE tokenizer + corpus build).
   files: number
   chars: number
   vocab: number
   merges: number
+  // SFT phase-1 stats (chat dataset build). The backend reuses the `tokenize`
+  // frame for SFT's "build dataset" phase but emits these fields instead of the
+  // pretrain ones; their presence is how the panel tells the two modes apart.
+  conversations: number
+  total_tokens: number
+  trainable_tokens: number
   progress: number
   done: boolean
 }
@@ -87,6 +94,20 @@ export interface TrainingSnapshot {
   batch_series: [number, number, number, number][]
   log: string[]
   error: string | null
+  // Present (non-null) only when a *successful* run registered a model — the
+  // backend fills these on the `done` and terminal `snapshot` frames so the
+  // client can seed a follow-up SFT run with this model as its base without
+  // hunting for it in the model list ("Continue to SFT"). Null for in-flight,
+  // cancelled, or failed runs.
+  id_model?: string | null
+  model_name?: string | null
+}
+
+// The identifiers of a model a completed run produced. Absent when a run
+// cancelled/failed or hasn't finished.
+export interface FinishedModel {
+  id: string
+  name: string
 }
 
 export interface JobSummary {
@@ -100,7 +121,12 @@ export interface TrainingHandlers {
   onTokenize: (stats: TokenizeStats) => void
   onLog: (line: string) => void
   onTrain: (stats: TrainStats) => void
-  onDone: (info: { status: string; model_dir: string }) => void
+  onDone: (info: {
+    status: string
+    model_dir: string
+    id_model?: string | null
+    model_name?: string | null
+  }) => void
   onError: (message: string) => void
 }
 
@@ -169,6 +195,10 @@ export function attachTraining(
         handlers.onDone({
           status: String(msg.status ?? ""),
           model_dir: String(msg.model_dir ?? ""),
+          id_model:
+            typeof msg.id_model === "string" ? msg.id_model : null,
+          model_name:
+            typeof msg.model_name === "string" ? msg.model_name : null,
         })
         break
       case "error":

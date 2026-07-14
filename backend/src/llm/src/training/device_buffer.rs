@@ -54,6 +54,21 @@ impl DeviceBuffer {
         buf
     }
 
+    /// Copy `data` into this already-allocated buffer (host→device). `data.len()`
+    /// must equal `self.len` — used to seed the f32 master weights in place.
+    pub fn upload(&self, data: &[f32]) {
+        assert_eq!(data.len(), self.len, "upload length mismatch");
+        // SAFETY: `self.ptr` is a device allocation of `self.len` f32s; `data` is a
+        // live slice of the same length, so both spans are valid for the copy.
+        unsafe {
+            cuda_memcpy_h2d(
+                self.ptr as *mut c_void,
+                data.as_ptr() as *const c_void,
+                data.len() * size_of::<f32>(),
+            );
+        }
+    }
+
     pub fn to_vec(&self) -> Vec<f32> {
         let mut out = vec![0.0f32; self.len];
         // SAFETY: `out` is a freshly allocated `Vec<f32>` of `self.len` elements,

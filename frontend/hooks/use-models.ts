@@ -96,7 +96,10 @@ export function mapModel(raw: RawModel): Model {
   }
 }
 
-export function useModels() {
+// `refreshKey` re-fetches the model list whenever it changes — pass a value that
+// advances when a new model is registered (e.g. after a training run finishes) so
+// the just-trained model appears without a page reload.
+export function useModels(refreshKey?: unknown) {
   const [models, setModels] = React.useState<Model[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<Error | null>(null)
@@ -121,7 +124,7 @@ export function useModels() {
     return () => {
       active = false
     }
-  }, [])
+  }, [refreshKey])
 
   return { models, isLoading, error }
 }

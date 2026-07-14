@@ -286,6 +286,53 @@ struct RunMeta<'a> {
     finished_at: String,
 }
 
+// Overwrite an SFT run's architecture fields with the base model's *actual*
+// architecture, read from the base's `meta.json`. An SFT fine-tune loads the base
+// weights wholesale, so it inherits the base's dimensions/context/heads/layers —
+// the run's own arch fields are just placeholders from the request form (the SFT
+// UI doesn't collect them). Without this, the fine-tuned model is *registered*
+// with those placeholders (e.g. 64ctx, ~200k params) instead of the real inherited
+// architecture, so the registry/param-count display is wrong even though the
+// weights are correct. `max_vocab` is set from the base's actual vocab so the
+// derived parameter count matches the base exactly. Best-effort: on any read/parse
+// failure the caller logs and proceeds (metadata stays as-is; training is
+// unaffected).
+pub fn apply_base_architecture(cfg: &mut TrainConfig, base_model_dir: &Path) -> io::Result<()> {
+    let raw = fs::read_to_string(base_model_dir.join("meta.json"))?;
+    let meta: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let config = meta
+        .get("config")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "base meta.json has no config"))?;
+
+    if let Some(v) = config.get("dimensions").and_then(|v| v.as_i64()) {
+        cfg.dimensions = v;
+    }
+    if let Some(v) = config.get("ctx_window").and_then(|v| v.as_i64()) {
+        cfg.ctx_window = v;
+    }
+    if let Some(v) = config.get("heads").and_then(|v| v.as_i64()) {
+        cfg.heads = v;
+    }
+    if let Some(v) = config.get("layers").and_then(|v| v.as_i64()) {
+        cfg.layers = v;
+    }
+    if let Some(v) = config.get("ff_multiplier").and_then(|v| v.as_i64()) {
+        cfg.ff_multiplier = v;
+    }
+    // Prefer the base's *actual* trained vocab (dataset.vocab_size) over its
+    // configured cap, so the SFT model's derived param count matches the base's.
+    let vocab = meta
+        .get("dataset")
+        .and_then(|d| d.get("vocab_size"))
+        .and_then(|v| v.as_i64())
+        .or_else(|| config.get("max_vocab").and_then(|v| v.as_i64()));
+    if let Some(v) = vocab.filter(|v| *v > 0) {
+        cfg.max_vocab = v as u32;
+    }
+    Ok(())
+}
+
 // Writes a durable record of the run next to its weights, so a run is
 // inspectable on disk without a database. `dataset` is the already-serialized
 // per-mode stats (see `RunMeta::dataset`).
