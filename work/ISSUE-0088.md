@@ -61,3 +61,7 @@ All other pages (conversations, training, files, usage, profile, models) use
 simple `flex-1` divs with no custom overflow — they scroll inside `<main>`
 instead of the body, visually identical. `bun run build` succeeds with zero
 warnings.
+
+### VCS · 2026-07-17
+Committed at `e769d50` on branch `dev`. Staged only `frontend/app/layout.tsx`
+and `work/ISSUE-0088.md`.

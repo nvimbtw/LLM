@@ -67,4 +67,4 @@ Checked: `tsc --noEmit` clean; lint only pre-existing ISSUE-0026 errors (none
 in touched files). No new rule violations. The code block's existing
 `overflow-x-auto` is now contained by the `min-w-0` ancestors as described.
 
-### VCS · 2026-07-17 · `84669ec` on `dev`
+### VCS · 2026-07-17 · `dc3a89a` on `dev`

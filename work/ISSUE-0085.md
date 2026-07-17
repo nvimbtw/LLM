@@ -48,3 +48,6 @@ token cleared → drop the list (also fixes conversations lingering after
 logout). Ran `bun run typecheck` (clean) and `bun run lint` — the 13 errors it
 reports are all pre-existing react-hooks violations tracked by ISSUE-0026,
 none in the changed lines.
+
+### VCS · 2026-07-17 · `f69ca48` on `dev`
+Committed ISSUE-0085. Staged: `frontend/lib/api.ts`, `frontend/components/chat/chats-provider.tsx`, `work/ISSUE-0085.md`. Left out other in-flight changes. Did not push.
