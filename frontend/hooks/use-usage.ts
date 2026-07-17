@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, authHeaders } from "@/lib/api"
+import { apiFetch } from "@/lib/api"
 
 export interface UsageDay {
   date: string // ISO date (YYYY-MM-DD)
@@ -42,7 +42,7 @@ export function useUsage() {
   React.useEffect(() => {
     let active = true
     setIsLoading(true)
-    fetch(`${API_URL}/usage`, { headers: authHeaders() })
+    apiFetch(`/usage`)
       .then(async (res) => {
         if (!res.ok) throw new Error("Failed to load usage.")
         return (await res.json()) as Usage

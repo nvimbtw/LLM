@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, authHeaders } from "@/lib/api"
+import { apiFetch } from "@/lib/api"
 
 export type ModelTier = "flagship" | "balanced" | "fast"
 
@@ -107,7 +107,7 @@ export function useModels(refreshKey?: unknown) {
   React.useEffect(() => {
     let active = true
     setIsLoading(true)
-    fetch(`${API_URL}/model`, { headers: authHeaders() })
+    apiFetch(`/model`)
       .then((res) => {
         if (!res.ok) throw new Error("Unable to load models.")
         return res.json() as Promise<RawModel[]>

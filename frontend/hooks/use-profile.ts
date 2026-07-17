@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 
-import { API_URL, authHeaders, clearSession } from "@/lib/api"
+import { apiFetch, clearSession } from "@/lib/api"
 
 export interface Profile {
   id: string
@@ -22,9 +22,7 @@ export function useProfile() {
 
     async function load() {
       try {
-        const response = await fetch(`${API_URL}/user/me`, {
-          headers: authHeaders(),
-        })
+        const response = await apiFetch(`/user/me`)
         if (!response.ok) {
           throw new Error("Unable to load your profile.")
         }
@@ -47,9 +45,8 @@ export function useProfile() {
 
   async function changePassword(password: string) {
     if (!user) throw new Error("Profile not loaded yet.")
-    const response = await fetch(`${API_URL}/user/${user.id}`, {
+    const response = await apiFetch(`/user/${user.id}`, {
       method: "PUT",
-      headers: authHeaders(),
       body: JSON.stringify({ username: user.username, password }),
     })
     if (!response.ok) {
@@ -60,10 +57,7 @@ export function useProfile() {
 
   async function deleteAccount() {
     if (!user) throw new Error("Profile not loaded yet.")
-    const response = await fetch(`${API_URL}/user/${user.id}`, {
-      method: "DELETE",
-      headers: authHeaders(),
-    })
+    const response = await apiFetch(`/user/${user.id}`, { method: "DELETE" })
     if (!response.ok) {
       const message = await response.text()
       throw new Error(message || "Unable to delete your account.")

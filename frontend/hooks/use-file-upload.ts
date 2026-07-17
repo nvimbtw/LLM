@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, getToken } from "@/lib/api"
+import { API_URL, getToken, handleSessionExpired } from "@/lib/api"
 import { hasAcceptedExtension } from "@/components/files/constants"
 
 export type UploadStatus = "idle" | "uploading" | "success" | "error"
@@ -102,6 +102,9 @@ export function useFileUpload() {
           setProgress(100)
           setFiles([])
           resolve()
+        } else if (xhr.status === 401) {
+          handleSessionExpired()
+          reject(new Error("Your session has expired. Please log in again."))
         } else {
           const message = xhr.responseText || "Upload failed."
           setStatus("error")

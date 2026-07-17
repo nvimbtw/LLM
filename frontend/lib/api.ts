@@ -49,3 +49,28 @@ export function authHeaders(): HeadersInit {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
 }
+
+/** Clears the session and lands the user on /login (token expired/invalid). */
+export function handleSessionExpired() {
+  clearSession()
+  window.location.assign("/login")
+}
+
+/**
+ * Authenticated fetch for API routes: attaches auth headers and, on a 401,
+ * logs the user out and redirects to /login instead of surfacing a generic
+ * error on a broken page. Use this instead of raw fetch for every
+ * authenticated call; the thrown error still rejects the caller's promise so
+ * in-flight UI settles.
+ */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { ...authHeaders(), ...(init.headers ?? {}) },
+  })
+  if (response.status === 401) {
+    handleSessionExpired()
+    throw new Error("Your session has expired. Please log in again.")
+  }
+  return response
+}

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, authHeaders } from "@/lib/api"
+import { apiFetch } from "@/lib/api"
 import {
   estimateParams,
   mapModel,
@@ -42,7 +42,7 @@ export function useModel(id: string) {
     setIsLoading(true)
     setNotFound(false)
     setError(null)
-    fetch(`${API_URL}/model/${id}`, { headers: authHeaders() })
+    apiFetch(`/model/${id}`)
       .then(async (res) => {
         if (res.status === 404) {
           if (active) setNotFound(true)
@@ -69,9 +69,8 @@ export function useModel(id: string) {
   // Admin only. Sends the fields; the backend COALESCEs unchanged ones.
   const update = React.useCallback(
     async (name: string, description: string, family: string) => {
-      const res = await fetch(`${API_URL}/model/${id}`, {
+      const res = await apiFetch(`/model/${id}`, {
         method: "PUT",
-        headers: authHeaders(),
         body: JSON.stringify({ name, description, family }),
       })
       if (!res.ok) {
@@ -86,9 +85,8 @@ export function useModel(id: string) {
   // Admin only. Publish/unpublish toggle.
   const setPublished = React.useCallback(
     async (published: boolean) => {
-      const res = await fetch(`${API_URL}/model/${id}`, {
+      const res = await apiFetch(`/model/${id}`, {
         method: "PUT",
-        headers: authHeaders(),
         body: JSON.stringify({ published }),
       })
       if (!res.ok) {
@@ -102,10 +100,7 @@ export function useModel(id: string) {
 
   // Admin only. Removes the registry row and the on-disk weights.
   const remove = React.useCallback(async () => {
-    const res = await fetch(`${API_URL}/model/${id}`, {
-      method: "DELETE",
-      headers: authHeaders(),
-    })
+    const res = await apiFetch(`/model/${id}`, { method: "DELETE" })
     if (!res.ok) {
       const text = await res.text()
       throw new Error(text || "Unable to delete the model.")

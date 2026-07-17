@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, authHeaders } from "@/lib/api"
+import { apiFetch } from "@/lib/api"
 import { streamChat } from "@/lib/chat-socket"
 import { useChats } from "@/components/chat/chats-provider"
 
@@ -19,9 +19,7 @@ export function useChat(chatId: string) {
   const [error, setError] = React.useState<string | null>(null)
 
   const fetchMessages = React.useCallback(async () => {
-    const response = await fetch(`${API_URL}/chat/${chatId}`, {
-      headers: authHeaders(),
-    })
+    const response = await apiFetch(`/chat/${chatId}`)
     if (!response.ok) throw new Error("Unable to load this chat.")
     return (await response.json()) as ChatMessage[]
   }, [chatId])

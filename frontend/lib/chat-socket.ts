@@ -1,4 +1,7 @@
-import { WS_URL, getToken } from "./api"
+import { WS_URL, getToken, handleSessionExpired } from "./api"
+
+// The backend's exact error frame for a bad/expired token (routes/chat.rs).
+const AUTH_FAILED_MESSAGE = "authentication failed"
 
 // Streams an assistant reply over the /chat WebSocket.
 //
@@ -65,6 +68,10 @@ export function streamChat(
         )
         break
       case "error":
+        if (msg.message === AUTH_FAILED_MESSAGE) {
+          settle(() => handleSessionExpired())
+          break
+        }
         settle(() => handlers.onError(msg.message || "Something went wrong."))
         break
     }

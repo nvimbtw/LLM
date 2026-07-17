@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, SESSION_CHANGED_EVENT, authHeaders, getToken } from "@/lib/api"
+import { SESSION_CHANGED_EVENT, apiFetch, getToken } from "@/lib/api"
 
 export interface ChatSummary {
   id: string
@@ -47,7 +47,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = React.useCallback(async () => {
     try {
-      const response = await fetch(`${API_URL}/chat`, { headers: authHeaders() })
+      const response = await apiFetch(`/chat`)
       if (!response.ok) throw new Error("Unable to load your chats.")
       const data: RawChat[] = await response.json()
       setConversations(data.map(mapChat))
@@ -90,9 +90,8 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   // the chat page streams the reply for the stashed first message on mount.
   const createChat = React.useCallback(
     async (message: string, modelId: string): Promise<string> => {
-      const response = await fetch(`${API_URL}/chat`, {
+      const response = await apiFetch(`/chat`, {
         method: "POST",
-        headers: authHeaders(),
         body: JSON.stringify({ content: message }),
       })
       if (!response.ok) {
@@ -110,9 +109,8 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
 
   const renameChat = React.useCallback(
     async (id: string, title: string) => {
-      const response = await fetch(`${API_URL}/chat/${id}`, {
+      const response = await apiFetch(`/chat/${id}`, {
         method: "PUT",
-        headers: authHeaders(),
         body: JSON.stringify({ title }),
       })
       if (!response.ok) {
@@ -126,10 +124,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
 
   const deleteChat = React.useCallback(
     async (id: string) => {
-      const response = await fetch(`${API_URL}/chat/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      })
+      const response = await apiFetch(`/chat/${id}`, { method: "DELETE" })
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || "Unable to delete the chat.")
