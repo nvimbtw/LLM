@@ -12,6 +12,7 @@ Cost split: Claude Code (expensive) edits code and drives the loop; opencode
 | --- | --- | --- | --- |
 | **Orchestrator** | Claude Code | `.claude/skills/orchestrator/` | Drives the chain: pick → build → shell out to opencode for verify/commit, loop on bounces. |
 | **Builder** | Claude Code | `.claude/skills/builder/` | The **only** role that edits application code. |
+| **Planner** | Claude Code | `.claude/skills/planner/` | Turns requests/findings into filed `work/` artifacts: single ISSUE/TODO, or an EPIC decomposed into an ordered child chain. |
 | **Auditor** | opencode | `.opencode/skill/auditor/` | Scans code against the rules, files ISSUEs/EPICs into `work/`. |
 | **Verifier** | opencode | `.opencode/skill/verifier/` | Passes (`done`) or bounces (`todo`) a `verification` artifact. |
 | **VCS** | opencode | `.opencode/skill/vcs/` | Stages/commits one `done` artifact per commit; never pushes unasked. |

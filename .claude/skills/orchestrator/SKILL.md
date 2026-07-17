@@ -48,10 +48,9 @@ Artifact format/lifecycle:
 
 ## Decomposing feature work
 
-When the user hands you feature work: small → file one `TODO-NNNN.md`
-(next sequential id across all prefixes). Big / multi-step → file an
-`EPIC-NNNN.md` tracker + ordered child TODOs per the epic section of
-`artifact-spec.md`, then run the loop over the children.
+When the user hands you unfiled work, switch to the `planner` skill to file it
+(one TODO/ISSUE, or an EPIC + ordered children), then run the loop over what
+it filed.
 
 ## opencode notes
 

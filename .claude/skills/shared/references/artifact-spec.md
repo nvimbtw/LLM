@@ -86,6 +86,6 @@ ceremony for nothing.
 ## Who files what
 
 - **Auditor** files ISSUEs (and an EPIC + child ISSUEs for ordered sweeps).
-- **User / Orchestrator** file TODOs for feature work; the Orchestrator
-  decomposes a big TODO into an EPIC + child TODOs.
+- **Planner** (Claude skill) turns user requests and findings into filed
+  artifacts: a single ISSUE/TODO, or an EPIC decomposed into ordered children.
 - **Builder** consumes ISSUE and TODO identically; never works an EPIC directly.
