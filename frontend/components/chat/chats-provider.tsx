@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { API_URL, authHeaders } from "@/lib/api"
+import { API_URL, SESSION_CHANGED_EVENT, authHeaders, getToken } from "@/lib/api"
 
 export interface ChatSummary {
   id: string
@@ -59,8 +59,20 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // This provider mounts in the root layout — before login — so the mount-time
+  // fetch can run unauthenticated and go stale. Refetch when the session
+  // changes (login), and drop the list when it's cleared (logout).
   React.useEffect(() => {
     refresh()
+    const onSessionChanged = () => {
+      if (getToken()) {
+        refresh()
+      } else {
+        setConversations([])
+      }
+    }
+    window.addEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
+    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
   }, [refresh])
 
   // Pending first messages, keyed by the new chat id. A ref (not state) so the

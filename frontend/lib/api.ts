@@ -11,8 +11,18 @@ export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
 
+// Fired on the window whenever the session is set or cleared, so providers
+// mounted above the auth flow (e.g. ChatsProvider in the root layout) can
+// refetch — the "storage" event only fires in *other* tabs.
+export const SESSION_CHANGED_EVENT = "session-changed"
+
+function emitSessionChanged() {
+  window.dispatchEvent(new Event(SESSION_CHANGED_EVENT))
+}
+
 export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token)
+  emitSessionChanged()
 }
 
 export function getAccessLevel(): AccessLevel | null {
@@ -29,6 +39,7 @@ export function setAccessLevel(level: AccessLevel) {
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(ACCESS_LEVEL_KEY)
+  emitSessionChanged()
 }
 
 export function authHeaders(): HeadersInit {
