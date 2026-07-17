@@ -44,7 +44,11 @@ export default function RootLayout({
               {/* h-svh + overflow-hidden bound the column so page content
                   scrolls inside <main>, keeping the header (and the chat
                   composer) pinned instead of scrolling the document body. */}
-              <SidebarInset className="flex h-svh flex-col overflow-hidden">
+              {/* min-w-0: SidebarInset is a flex-row item (SidebarProvider),
+                  so without it wide message content (long unbroken strings,
+                  code blocks) propagates its min-content width and pushes the
+                  page past the viewport instead of wrapping/scrolling. */}
+              <SidebarInset className="flex h-svh min-w-0 flex-col overflow-hidden">
                 <header className="flex h-12 shrink-0 items-center px-2">
                   <SidebarTrigger />
                 </header>

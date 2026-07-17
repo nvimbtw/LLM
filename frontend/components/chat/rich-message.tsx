@@ -33,7 +33,7 @@ export function RichContent({
   streaming?: boolean
 }) {
   return (
-    <div className="space-y-3 text-sm leading-relaxed">
+    <div className="space-y-3 text-sm leading-relaxed break-words">
       {renderChildren(root, streaming)}
     </div>
   )
@@ -103,7 +103,7 @@ function renderNode(node: MNode, streaming: boolean): React.ReactNode {
       return <span className="font-medium text-foreground">{kids}</span>
     case "code inline":
       return (
-        <code className="rounded bg-chart-4/10 px-1.5 py-0.5 font-mono text-[0.85em] text-chart-4">
+        <code className="rounded bg-chart-4/10 px-1.5 py-0.5 font-mono text-[0.85em] break-all text-chart-4">
           {textContent(el)}
         </code>
       )
@@ -133,7 +133,7 @@ function renderNode(node: MNode, streaming: boolean): React.ReactNode {
           href={el.attrs?.href}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+          className="font-medium break-all text-primary underline underline-offset-2 hover:text-primary/80"
         >
           {kids}
         </a>
