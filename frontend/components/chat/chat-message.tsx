@@ -24,6 +24,13 @@ export function ChatMessageBubble({
   return (
     <div className="w-full min-w-0">
       <RichMessage content={message.content} streaming={streaming} />
+      {!streaming && message.tokenCount !== undefined && (
+        <p className="mt-1.5 px-1 text-xs text-muted-foreground tabular-nums">
+          tokens: {message.tokenCount.toLocaleString("en-US")}
+          {!!message.thinkingTokenCount &&
+            `, thinking: ${message.thinkingTokenCount.toLocaleString("en-US")}`}
+        </p>
+      )}
     </div>
   )
 }

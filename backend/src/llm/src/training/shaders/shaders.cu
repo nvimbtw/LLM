@@ -160,17 +160,22 @@ __global__ void sgd_momentum_kernel(const float *__restrict__ g, __half *w,
   w[i] = __float2half(__half2float(w[i]) - lr * new_v);
 }
 
-// Adam update. `w_master` (f32) is the canonical weight; `w_view` (f16) is a
+// AdamW update. `w_master` (f32) is the canonical weight; `w_view` (f16) is a
 // derived copy the matmuls consume, refreshed from the master in the same pass.
 // The two moment estimates (m = 1st, v = 2nd) are f32. `grad_scale` averages the
 // accumulated gradient (1/accum_steps); `bc1`, `bc2` are the bias-correction
 // denominators (1 - beta^t) computed host-side. Accumulating the step in f32
 // (not the old f16 read-back) is the mixed-precision fix that lifts the LR cap
 // (ISSUE-0052): a sub-f16-ULP `Δw` now survives instead of rounding away.
+//
+// `weight_decay` is DECOUPLED (AdamW, not L2-in-gradient): it shrinks the master
+// weight toward zero directly, outside the moment estimates, so it doesn't feed
+// m/v or interact with the per-parameter adaptive scaling. Pass 0.0 to recover
+// plain Adam (the caller does exactly that for biases and LayerNorm params).
 __global__ void adam_kernel(const float *__restrict__ g, float *w_master,
                             __half *w_view, float *m, float *v, float grad_scale,
                             float lr, float beta1, float beta2, float eps,
-                            float bc1, float bc2, int n) {
+                            float weight_decay, float bc1, float bc2, int n) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n) return;
   float grad = g[i] * grad_scale;
@@ -180,7 +185,10 @@ __global__ void adam_kernel(const float *__restrict__ g, float *w_master,
   v[i] = new_v;
   float m_hat = new_m / bc1;
   float v_hat = new_v / bc2;
-  float updated = w_master[i] - lr * m_hat / (sqrtf(v_hat) + eps);
+  // Decoupled decay: the `weight_decay * w_master[i]` term is added to the Adam
+  // step, not to the gradient — reduces to plain Adam when weight_decay == 0.
+  float updated =
+      w_master[i] - lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * w_master[i]);
   w_master[i] = updated;                 // accumulate in f32 (the master)
   w_view[i] = __float2half(updated);     // refresh the f16 view, fused
 }
@@ -1424,10 +1432,11 @@ extern "C" void cuda_sgd_momentum(const float *g, __half *w, float *v,
 
 extern "C" void cuda_adam(const float *g, float *w_master, __half *w_view,
                           float *m, float *v, float grad_scale, float lr,
-                          float beta1, float beta2, float eps, float bc1,
-                          float bc2, int n) {
+                          float beta1, float beta2, float eps,
+                          float weight_decay, float bc1, float bc2, int n) {
   adam_kernel<<<(n + 255) / 256, 256>>>(g, w_master, w_view, m, v, grad_scale,
-                                        lr, beta1, beta2, eps, bc1, bc2, n);
+                                        lr, beta1, beta2, eps, weight_decay,
+                                        bc1, bc2, n);
 }
 
 // ─── Embedding forward: lookup + positional add ─────────────────────

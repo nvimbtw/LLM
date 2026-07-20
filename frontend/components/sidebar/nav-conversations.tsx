@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MoreHorizontal, Pencil, Trash2 } from "lucide-react"
+import { ChevronRight, MoreHorizontal, Pencil, Trash2 } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -34,29 +34,46 @@ import {
 import { Input } from "@/components/ui/input"
 import { useChats, type ChatSummary } from "@/components/chat/chats-provider"
 
+// Keep the sidebar list short — only the most recent chats. The rest live on the
+// full /conversations page (reachable from NavMain when collapsed).
+const RECENT_LIMIT = 5
+
 export function NavConversations() {
   const { conversations, isLoading } = useChats()
+  const [expanded, setExpanded] = React.useState(true)
+
+  const recent = conversations.slice(0, RECENT_LIMIT)
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-      <SidebarGroupLabel>Conversations</SidebarGroupLabel>
-      <SidebarGroupContent>
-        <SidebarMenu>
-          {isLoading ? (
-            ["72%", "58%", "84%", "65%"].map((width, i) => (
-              <SidebarMenuItem key={i}>
-                <div className="flex h-8 items-center px-2">
-                  <Skeleton className="h-4" style={{ width }} />
-                </div>
-              </SidebarMenuItem>
-            ))
-          ) : (
-            conversations.map((chat) => (
-              <ConversationItem key={chat.id} chat={chat} />
-            ))
-          )}
-        </SidebarMenu>
-      </SidebarGroupContent>
+      <SidebarGroupLabel
+        render={
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} />
+        }
+        className="w-full justify-between hover:text-sidebar-foreground"
+      >
+        Conversations
+        <ChevronRight
+          className={`transition-transform duration-200 ${expanded ? "rotate-90" : ""}`}
+        />
+      </SidebarGroupLabel>
+      {expanded && (
+        <SidebarGroupContent>
+          <SidebarMenu>
+            {isLoading ? (
+              ["72%", "58%", "84%", "65%"].map((width, i) => (
+                <SidebarMenuItem key={i}>
+                  <div className="flex h-8 items-center px-2">
+                    <Skeleton className="h-4" style={{ width }} />
+                  </div>
+                </SidebarMenuItem>
+              ))
+            ) : (
+              recent.map((chat) => <ConversationItem key={chat.id} chat={chat} />)
+            )}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      )}
     </SidebarGroup>
   )
 }

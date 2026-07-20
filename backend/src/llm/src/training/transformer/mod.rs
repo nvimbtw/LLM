@@ -891,8 +891,12 @@ mod tests {
         );
     }
 
-    // An all-zero mask trains on nothing: zero loss and — after an optimizer step
-    // — zero weight change, proving masked-out positions produce no gradient.
+    // An all-zero mask trains on nothing: zero loss and zero gradient. Under
+    // AdamW the optimizer step still applies DECOUPLED weight decay (a gradient-
+    // independent shrink toward zero), so weights don't stay frozen — instead
+    // every 2-D weight is scaled by exactly the same (1 - lr*wd) factor. That
+    // uniform, gradient-free shrink is precisely what proves the mask zeroed the
+    // gradient: any leaked gradient would perturb some weights off that ratio.
     #[test]
     fn test_train_step_masked_all_zero_trains_nothing() {
         let (vocab, d, ctx, heads, ff_mult, layers) = (20, 8, 8, 2, 2, 2);
@@ -922,14 +926,25 @@ mod tests {
         let loss = pollster::block_on(t.train_step_masked(&mut ws, &chunk, &mask, layers as usize));
         assert_eq!(loss, 0.0, "an all-zero mask should yield zero loss");
 
-        gpu_adam_update(&ws, 0.01, 1, 1, layers as usize);
+        // lr and wd here mirror the call below and ADAM_WEIGHT_DECAY in
+        // optimizer.rs (0.1). The embedding is a 2-D weight, so it decays.
+        let (lr, wd) = (0.01_f32, 0.1_f32);
+        gpu_adam_update(&ws, lr, 1, 1, layers as usize);
         let mut t_synced = clone_of(&t);
         sync_weights_from_gpu(&ws, &mut t_synced);
         let post_emb: Vec<f32> = t_synced.embedding_table.iter().flatten().copied().collect();
 
-        let total_change: f32 = base_emb.iter().zip(&post_emb).map(|(a, b)| (a - b).abs()).sum();
-        assert_eq!(total_change, 0.0, "masked-out training changed weights by {}", total_change);
-        eprintln!("✓ all-zero mask trains nothing (loss=0, weight change=0)");
+        // The ONLY movement must be the decoupled decay: post == base - lr*wd*base
+        // (the kernel's exact arithmetic, since the Adam term is 0 with no
+        // gradient). A tight per-weight tolerance catches any leaked gradient.
+        for (b, p) in base_emb.iter().zip(&post_emb) {
+            let expected = b - lr * (wd * b);
+            assert!(
+                (p - expected).abs() <= 1e-5 + 1e-4 * b.abs(),
+                "masked step should apply weight decay only: got {p}, expected {expected} (base {b})"
+            );
+        }
+        eprintln!("✓ all-zero mask trains nothing (loss=0, only decoupled weight decay applied)");
     }
 
     // ── Non-GPU tests: Model::init ──

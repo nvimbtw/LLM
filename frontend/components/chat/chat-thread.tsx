@@ -69,10 +69,22 @@ export function ChatThread({ chatId }: { chatId: string }) {
                 <>
                   <FluxThrobber mode="thinking" className="h-8 w-14 shrink-0" />
                   <ThinkingLabel />
+                  {!!lastMessage.thinkingTokenCount && (
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {lastMessage.thinkingTokenCount.toLocaleString("en-US")} tokens
+                    </span>
+                  )}
                 </>
               )}
               {showGenerating && (
-                <FluxThrobber mode="generating" className="h-8 w-14" />
+                <>
+                  <FluxThrobber mode="generating" className="h-8 w-14" />
+                  {!!lastMessage.tokenCount && (
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {lastMessage.tokenCount.toLocaleString("en-US")} tokens
+                    </span>
+                  )}
+                </>
               )}
               {showIdle && <FluxThrobber mode="idle" className="h-11 w-28" />}
             </div>

@@ -7,10 +7,15 @@ use std::ffi::c_void;
 
 use crate::training::gpu_workspace::Workspace;
 
-// Adam optimizer hyperparameters (standard defaults).
+// AdamW optimizer hyperparameters (standard defaults).
 const ADAM_BETA1: f32 = 0.9;
 const ADAM_BETA2: f32 = 0.999;
 const ADAM_EPS: f32 = 1e-8;
+// Decoupled weight decay. Applied to the 2-D weight matrices only; 1-D params
+// (biases, LayerNorm scale/shift) pass 0.0 — decaying those is the standard
+// AdamW carve-out (it hurts more than it helps). 0.1 is the common GPT default;
+// tune here if a run over- or under-regularizes.
+const ADAM_WEIGHT_DECAY: f32 = 0.1;
 
 unsafe extern "C" {
     fn cuda_adam(
@@ -24,6 +29,7 @@ unsafe extern "C" {
         beta1: f32,
         beta2: f32,
         eps: f32,
+        weight_decay: f32,
         bc1: f32,
         bc2: f32,
         n: i32,
@@ -85,13 +91,16 @@ pub fn gpu_clip_gradients(ws: &Workspace, layers: usize, max_norm: f32) -> f32 {
     total
 }
 
-// Adam optimizer step. `step` is the 1-based global update count (for bias
+// AdamW optimizer step. `step` is the 1-based global update count (for bias
 // correction); `accum_steps` is the gradient-accumulation factor so the summed
 // gradient is averaged. `v_*` hold the first moment (m), `s_*` the second (v).
+// Decoupled weight decay (`ADAM_WEIGHT_DECAY`) is applied to the 2-D weight
+// matrices; 1-D params (biases `b1`/`b2`, LayerNorm `gamma`/`beta`) pass 0.0.
 pub fn gpu_adam_update(ws: &Workspace, lr: f32, step: i32, accum_steps: usize, layers: usize) {
     let beta1 = ADAM_BETA1;
     let beta2 = ADAM_BETA2;
     let eps = ADAM_EPS;
+    let wd = ADAM_WEIGHT_DECAY;
     let bc1 = 1.0 - beta1.powi(step);
     let bc2 = 1.0 - beta2.powi(step);
     let gs = 1.0 / accum_steps as f32;
@@ -101,28 +110,31 @@ pub fn gpu_adam_update(ws: &Workspace, lr: f32, step: i32, accum_steps: usize, l
     let ff = ws.ff;
     let vocab = ws.vocab;
 
-    // Cuts the repeated argument list down to (grad, master, view, m, v, n).
-    // `$wm` is the f32 master (canonical); `$wv` the f16 view refreshed from it.
+    // Cuts the repeated argument list down to (grad, master, view, m, v, wd, n).
+    // `$wm` is the f32 master (canonical); `$wv` the f16 view refreshed from it;
+    // `$wd` is this tensor's decoupled weight decay (0.0 disables it).
     macro_rules! adam {
-        ($g:expr, $wm:expr, $wv:expr, $m:expr, $v:expr, $n:expr) => {
-            cuda_adam($g, $wm, $wv as *mut c_void, $m, $v, gs, lr, beta1, beta2, eps, bc1, bc2, $n as i32)
+        ($g:expr, $wm:expr, $wv:expr, $m:expr, $v:expr, $wd:expr, $n:expr) => {
+            cuda_adam($g, $wm, $wv as *mut c_void, $m, $v, gs, lr, beta1, beta2, eps, $wd, bc1, bc2, $n as i32)
         };
     }
 
     unsafe {
-        adam!(ws.g_dw_output.ptr, ws.m_w_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, d * vocab);
-        adam!(ws.g_d_embedding.ptr, ws.m_embedding.ptr, ws.d_embedding.ptr, ws.v_d_embedding.ptr, ws.s_d_embedding.ptr, vocab * d);
+        // 2-D weight matrices — decayed.
+        adam!(ws.g_dw_output.ptr, ws.m_w_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, wd, d * vocab);
+        adam!(ws.g_d_embedding.ptr, ws.m_embedding.ptr, ws.d_embedding.ptr, ws.v_d_embedding.ptr, ws.s_d_embedding.ptr, wd, vocab * d);
         for l in 0..layers {
-            adam!(ws.g_wq_all[l].ptr, ws.m_wq_all[l].ptr, ws.d_wq_all[l].ptr, ws.v_wq_all[l].ptr, ws.s_wq_all[l].ptr, h * d * hd);
-            adam!(ws.g_wk_all[l].ptr, ws.m_wk_all[l].ptr, ws.d_wk_all[l].ptr, ws.v_wk_all[l].ptr, ws.s_wk_all[l].ptr, h * d * hd);
-            adam!(ws.g_wv_all[l].ptr, ws.m_wv_all[l].ptr, ws.d_wv_all[l].ptr, ws.v_wv_all[l].ptr, ws.s_wv_all[l].ptr, h * d * hd);
-            adam!(ws.g_dwo[l].ptr, ws.m_wo[l].ptr, ws.d_wo[l].ptr, ws.v_dwo[l].ptr, ws.s_dwo[l].ptr, d * d);
-            adam!(ws.g_dw1[l].ptr, ws.m_w1[l].ptr, ws.d_w1[l].ptr, ws.v_dw1[l].ptr, ws.s_dw1[l].ptr, d * ff);
-            adam!(ws.g_dw2[l].ptr, ws.m_w2[l].ptr, ws.d_w2[l].ptr, ws.v_dw2[l].ptr, ws.s_dw2[l].ptr, ff * d);
-            adam!(ws.g_db1[l].ptr, ws.m_b1[l].ptr, ws.d_b1[l].ptr, ws.v_db1[l].ptr, ws.s_db1[l].ptr, ff);
-            adam!(ws.g_db2[l].ptr, ws.m_b2[l].ptr, ws.d_b2[l].ptr, ws.v_db2[l].ptr, ws.s_db2[l].ptr, d);
-            adam!(ws.g_dln_gamma[l].ptr, ws.m_ln_gamma[l].ptr, ws.d_ln_gamma[l].ptr, ws.v_dln_gamma[l].ptr, ws.s_dln_gamma[l].ptr, d);
-            adam!(ws.g_dln_beta[l].ptr, ws.m_ln_beta[l].ptr, ws.d_ln_beta[l].ptr, ws.v_dln_beta[l].ptr, ws.s_dln_beta[l].ptr, d);
+            adam!(ws.g_wq_all[l].ptr, ws.m_wq_all[l].ptr, ws.d_wq_all[l].ptr, ws.v_wq_all[l].ptr, ws.s_wq_all[l].ptr, wd, h * d * hd);
+            adam!(ws.g_wk_all[l].ptr, ws.m_wk_all[l].ptr, ws.d_wk_all[l].ptr, ws.v_wk_all[l].ptr, ws.s_wk_all[l].ptr, wd, h * d * hd);
+            adam!(ws.g_wv_all[l].ptr, ws.m_wv_all[l].ptr, ws.d_wv_all[l].ptr, ws.v_wv_all[l].ptr, ws.s_wv_all[l].ptr, wd, h * d * hd);
+            adam!(ws.g_dwo[l].ptr, ws.m_wo[l].ptr, ws.d_wo[l].ptr, ws.v_dwo[l].ptr, ws.s_dwo[l].ptr, wd, d * d);
+            adam!(ws.g_dw1[l].ptr, ws.m_w1[l].ptr, ws.d_w1[l].ptr, ws.v_dw1[l].ptr, ws.s_dw1[l].ptr, wd, d * ff);
+            adam!(ws.g_dw2[l].ptr, ws.m_w2[l].ptr, ws.d_w2[l].ptr, ws.v_dw2[l].ptr, ws.s_dw2[l].ptr, wd, ff * d);
+            // 1-D params (biases, LayerNorm scale/shift) — NOT decayed (pass 0.0).
+            adam!(ws.g_db1[l].ptr, ws.m_b1[l].ptr, ws.d_b1[l].ptr, ws.v_db1[l].ptr, ws.s_db1[l].ptr, 0.0, ff);
+            adam!(ws.g_db2[l].ptr, ws.m_b2[l].ptr, ws.d_b2[l].ptr, ws.v_db2[l].ptr, ws.s_db2[l].ptr, 0.0, d);
+            adam!(ws.g_dln_gamma[l].ptr, ws.m_ln_gamma[l].ptr, ws.d_ln_gamma[l].ptr, ws.v_dln_gamma[l].ptr, ws.s_dln_gamma[l].ptr, 0.0, d);
+            adam!(ws.g_dln_beta[l].ptr, ws.m_ln_beta[l].ptr, ws.d_ln_beta[l].ptr, ws.v_dln_beta[l].ptr, ws.s_dln_beta[l].ptr, 0.0, d);
         }
     }
 }

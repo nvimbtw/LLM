@@ -22,15 +22,24 @@ const ACCUM_STEPS: usize = 4;
 const MAX_GRAD_NORM: f32 = 1.0;
 // Linear LR warmup length, in optimizer steps. The opening steps on a fresh
 // (especially deep) model are the most unstable, so ramping lr up from ~0 avoids
-// the early divergence that clipping alone only slows down.
+// the early divergence that clipping alone only slows down. After warmup the lr
+// cosine-decays toward MIN_LR_RATIO * lr over the rest of the run (see
+// `lr_at_step`) — the classic GPT schedule: warmup steadies the opening, decay
+// lets the loss settle late instead of skating on a flat lr.
 //
 // Note for SFT (`sft_train`): fine-tuning runs are short, so a fixed 100-step
 // warmup can be a large fraction of (or exceed) the whole run, meaning the
-// effective lr never reaches the requested `lr`. This is left as-is on purpose —
-// a base model is already near a good minimum, so a conservative, mostly-warming
-// lr is a safe default and avoids changing the well-tuned pretraining behaviour.
-// Revisit (e.g. warmup as a fraction of total steps) only if SFT underfits.
+// effective lr never reaches the requested `lr` (and a short run stays in/near
+// warmup rather than decaying). This is left as-is on purpose — a base model is
+// already near a good minimum, so a conservative, mostly-warming lr is a safe
+// default and avoids changing the well-tuned pretraining behaviour. Revisit
+// (e.g. warmup as a fraction of total steps) only if SFT underfits.
 const WARMUP_STEPS: i32 = 100;
+// Cosine-decay floor as a fraction of the configured lr: after warmup the lr
+// decays from `lr` down to `MIN_LR_RATIO * lr` by the final optimizer step. 0.1
+// is the common GPT default — decaying all the way to 0 tends to waste the last
+// stretch of training.
+const MIN_LR_RATIO: f32 = 0.1;
 // How often (in trained chunks) to emit a `train` progress frame over the
 // WebSocket. At the old hard-coded interval of 10, a large corpus fired dozens
 // of frames per second; Recharts re-renders synchronously on every point, so
@@ -334,6 +343,8 @@ fn train_epoch(
     ctx_window: i64,
     layers: i64,
     lr: f32,
+    // The run's whole planned optimizer-step budget, for the cosine-decay curve.
+    total_opt_steps: i32,
     epoch: i64,
     epochs: i64,
     total_chunks: usize,
@@ -379,7 +390,7 @@ fn train_epoch(
         window.record(loss);
 
         if epoch_stats.n % (ACCUM_STEPS as u64) == 0 || epoch_stats.n == total_chunks as u64 {
-            step_optimizer(ws, layers, lr, adam_step);
+            step_optimizer(ws, layers, lr, total_opt_steps, adam_step);
         }
 
         if epoch_stats.n % PROGRESS_REPORT_INTERVAL == 0 || epoch_stats.n == total_chunks as u64 {
@@ -400,18 +411,39 @@ fn train_epoch(
     }
 }
 
+// Learning-rate schedule: linear warmup over the first WARMUP_STEPS optimizer
+// steps, then cosine decay from `base_lr` down to `MIN_LR_RATIO * base_lr` across
+// the remaining steps. `step` is the 1-based optimizer-step count; `total_steps`
+// is the run's whole planned optimizer-step budget.
+fn lr_at_step(base_lr: f32, step: i32, total_steps: i32) -> f32 {
+    if step <= WARMUP_STEPS {
+        // Linear ramp from ~0 up to base_lr (base_lr itself at step == WARMUP_STEPS).
+        return base_lr * (step as f32 / WARMUP_STEPS as f32).min(1.0);
+    }
+    let min_lr = base_lr * MIN_LR_RATIO;
+    // Fraction of the post-warmup span already travelled. Clamp to [0, 1] and
+    // floor the denominator at 1 so a run with total_steps <= WARMUP_STEPS (very
+    // short SFT) can't divide by zero or produce a negative/out-of-range lr — it
+    // just pins to min_lr past warmup instead of going haywire.
+    let denom = (total_steps - WARMUP_STEPS).max(1) as f32;
+    let progress = ((step - WARMUP_STEPS) as f32 / denom).clamp(0.0, 1.0);
+    min_lr + 0.5 * (base_lr - min_lr) * (1.0 + (std::f32::consts::PI * progress).cos())
+}
+
 // Apply one accumulated optimizer step: clip the summed gradient, take a
-// warmup-scaled Adam step, then zero the accumulators for the next window.
-fn step_optimizer(ws: &mut Workspace, layers: i64, lr: f32, adam_step: &mut i32) {
+// scheduled (warmup + cosine-decay) Adam step, then zero the accumulators for
+// the next window. `total_opt_steps` is the run's whole planned step budget,
+// used only to place `adam_step` on the decay curve.
+fn step_optimizer(ws: &mut Workspace, layers: i64, lr: f32, total_opt_steps: i32, adam_step: &mut i32) {
     *adam_step += 1;
     // Clip the accumulated gradient BEFORE the step so a rare huge gradient
     // can't blow the model up (the loss-spike-to-50 case).
     let clip = MAX_GRAD_NORM * ACCUM_STEPS as f32;
     let gnorm = gpu_clip_gradients(ws, layers as usize, clip);
-    // Warmup-scaled lr. Adam averages the gradient internally (grad_scale), so
-    // pass the full (warmed) lr, not lr/ACCUM_STEPS.
-    let warm = (*adam_step as f32 / WARMUP_STEPS as f32).min(1.0);
-    gpu_adam_update(ws, lr * warm, *adam_step, ACCUM_STEPS, layers as usize);
+    // Scheduled lr. Adam averages the gradient internally (grad_scale), so pass
+    // the full scheduled lr, not lr/ACCUM_STEPS.
+    let step_lr = lr_at_step(lr, *adam_step, total_opt_steps);
+    gpu_adam_update(ws, step_lr, *adam_step, ACCUM_STEPS, layers as usize);
     ws.zero_accumulators();
     // Periodic gradient-norm readout (and always on a spike) so a divergent run
     // is visible: a norm that keeps growing = trouble.
@@ -480,6 +512,10 @@ fn run_training_loop(
         .filter(|c| c.len() >= 2)
         .count();
     let total_chunks_all: u64 = (epochs as u64) * (total_chunks as u64);
+    // Whole-run optimizer-step budget for the LR cosine-decay curve. The step
+    // fires once per ACCUM_STEPS chunks plus once at each epoch's tail, i.e.
+    // ceil(total_chunks / ACCUM_STEPS) steps per epoch.
+    let total_opt_steps: i32 = (total_chunks.div_ceil(ACCUM_STEPS) as i32) * epochs as i32;
     let training_start = Instant::now();
     let mut best_loss = f32::INFINITY;
     let mut epochs_since_best = 0;
@@ -489,7 +525,7 @@ fn run_training_loop(
 
     for epoch in 0..epochs {
         let stats = train_epoch(
-            transformer, ws, corpus, mask, ctx_window, layers, lr, epoch, epochs,
+            transformer, ws, corpus, mask, ctx_window, layers, lr, total_opt_steps, epoch, epochs,
             total_chunks, total_chunks_all, training_start, &mut adam_step, &on_progress,
         );
         println!(
@@ -579,4 +615,50 @@ fn should_stop_early(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The LR schedule is pure arithmetic (no GPU), so it's unit-testable directly
+    // and pins the three anchor points of warmup + cosine decay.
+    #[test]
+    fn lr_schedule_warmup_then_cosine_decay() {
+        let base = 1e-3_f32;
+        let total = 1000;
+
+        // Warmup ramps linearly from ~0 to base_lr at WARMUP_STEPS.
+        assert!(lr_at_step(base, 1, total) < base * 0.05);
+        assert!((lr_at_step(base, WARMUP_STEPS / 2, total) - base * 0.5).abs() < 1e-9);
+        assert!((lr_at_step(base, WARMUP_STEPS, total) - base).abs() < 1e-9);
+
+        // Just past warmup the lr is still ~base_lr; by the final step it has
+        // decayed to the MIN_LR_RATIO floor; the midpoint sits between the two.
+        assert!((lr_at_step(base, WARMUP_STEPS + 1, total) - base).abs() < base * 0.01);
+        assert!((lr_at_step(base, total, total) - base * MIN_LR_RATIO).abs() < 1e-9);
+        let mid = lr_at_step(base, (WARMUP_STEPS + total) / 2, total);
+        assert!(mid < base && mid > base * MIN_LR_RATIO);
+
+        // The curve is monotonically non-increasing across the decay span.
+        let mut prev = lr_at_step(base, WARMUP_STEPS, total);
+        for step in (WARMUP_STEPS + 1)..=total {
+            let cur = lr_at_step(base, step, total);
+            assert!(cur <= prev + 1e-9, "lr rose at step {step}: {cur} > {prev}");
+            prev = cur;
+        }
+    }
+
+    // A run shorter than warmup must not divide by zero or emit a negative/NaN lr.
+    #[test]
+    fn lr_schedule_handles_run_shorter_than_warmup() {
+        let base = 1e-3_f32;
+        let total = WARMUP_STEPS / 2; // total_steps <= WARMUP_STEPS
+        for step in 1..=(WARMUP_STEPS + 5) {
+            let lr = lr_at_step(base, step, total);
+            assert!(lr.is_finite() && lr >= 0.0, "bad lr {lr} at step {step}");
+        }
+        // Past warmup it pins to the floor rather than going out of range.
+        assert!((lr_at_step(base, WARMUP_STEPS + 1, total) - base * MIN_LR_RATIO).abs() < 1e-9);
+    }
 }

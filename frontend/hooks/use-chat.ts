@@ -4,11 +4,16 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import { streamChat } from "@/lib/chat-socket"
+import { hasVisibleContent } from "@/lib/message-parser"
 import { useChats } from "@/components/chat/chats-provider"
 
 export interface ChatMessage {
   role: "user" | "assistant"
   content: string
+  // Counted client-side as tokens stream in (see sendMessage below); absent
+  // on messages loaded from history, since the backend doesn't persist counts.
+  tokenCount?: number
+  thinkingTokenCount?: number
 }
 
 export function useChat(chatId: string) {
@@ -62,17 +67,28 @@ export function useChat(chatId: string) {
         { role: "assistant", content: "" },
       ])
 
+      // Counts every token frame the socket delivers for this turn.
+      // thinkingTokens freezes once real answer text appears (hasVisibleContent
+      // flips true), so it ends up as "tokens spent before the visible reply
+      // started" and totalTokens as "thinking + generating" throughout.
+      let totalTokens = 0
+      let thinkingTokens = 0
+
       const appendToAssistant = (value: string) =>
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === "assistant") {
+            totalTokens += 1
+            if (!hasVisibleContent(last.content)) thinkingTokens += 1
             // Tokens are whitespace-split words; rejoin with spaces to
             // approximate the structured markup while it streams.
             const sep = last.content ? " " : ""
             next[next.length - 1] = {
               ...last,
               content: last.content + sep + value,
+              tokenCount: totalTokens,
+              thinkingTokenCount: thinkingTokens,
             }
           }
           return next
@@ -83,9 +99,19 @@ export function useChat(chatId: string) {
           onToken: appendToAssistant,
           onDone: async () => {
             // Replace the streamed approximation with the authoritative,
-            // intact content saved on the server.
+            // intact content saved on the server, but keep the token counts
+            // we tallied — the server doesn't send them back.
             try {
-              setMessages(await fetchMessages())
+              const fresh = await fetchMessages()
+              const lastIdx = fresh.length - 1
+              if (fresh[lastIdx]?.role === "assistant") {
+                fresh[lastIdx] = {
+                  ...fresh[lastIdx],
+                  tokenCount: totalTokens,
+                  thinkingTokenCount: thinkingTokens,
+                }
+              }
+              setMessages(fresh)
             } catch {
               // Keep the approximation if the refetch fails.
             }
