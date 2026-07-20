@@ -1488,3 +1488,120 @@ extern "C" void cuda_scatter_add_embedding_grad(
 ) {
   scatter_add_embedding_grad_kernel<<<(s * d + 255) / 256, 256>>>(d_dx, token_ids, g_emb, s, d, vocab);
 }
+
+// ─── Training-telemetry reductions (read-only diagnostics) ──────────────────
+// These are sampled off the hot path (once per progress report, ~1% of steps)
+// to feed the training dashboard: activation RMS, update:weight ratios, and
+// attention entropy. They only READ workspace buffers — never mutate training
+// state — so they can never perturb the numerics of the run they observe.
+
+// Block-reduced sum of squares of an f16 buffer, returned host-side (synchronous
+// via the final cudaMemcpy). The caller turns this into an L2 norm (sqrt) or an
+// RMS (sqrt(sumsq / n)); doing the reduction on-device keeps a large activation
+// tensor off the host. `out` is a single f32 accumulator, zeroed before launch.
+__global__ void sumsq_f16_kernel(const __half *__restrict__ v, int n, float *out) {
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  float val = 0.0f;
+  if (i < n) {
+    float x = __half2float(v[i]);
+    val = x * x;
+  }
+  sdata[tid] = val;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  if (tid == 0) atomicAdd(out, sdata[0]);
+}
+
+extern "C" float cuda_sumsq_f16(const __half *v, int n) {
+  float *d_out;
+  cudaMalloc(&d_out, sizeof(float));
+  cudaMemset(d_out, 0, sizeof(float));
+  int threads = 256;
+  int blocks = (n + threads - 1) / threads;
+  sumsq_f16_kernel<<<blocks, threads, threads * sizeof(float)>>>(v, n, d_out);
+  float out = 0.0f;
+  cudaMemcpy(&out, d_out, sizeof(float), cudaMemcpyDeviceToHost);
+  cudaFree(d_out);
+  return out;
+}
+
+// Sum of squares of the AdamW *step* vector  step_i = lr * (m_hat/(sqrt(v_hat)+eps)),
+// using the CURRENT moment buffers (m = 1st moment, v = 2nd moment). This mirrors
+// `adam_kernel`'s adaptive term but EXCLUDES the decoupled weight-decay shrink and
+// writes nothing — it is the applied-update magnitude the update:weight telemetry
+// tracks. `bc1`/`bc2` are the bias-correction denominators (1 - beta^t) the caller
+// computes host-side, exactly as the real Adam step does.
+__global__ void adam_step_sumsq_kernel(const float *__restrict__ m,
+                                       const float *__restrict__ v, float lr,
+                                       float eps, float bc1, float bc2, int n,
+                                       float *out) {
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  float val = 0.0f;
+  if (i < n) {
+    float m_hat = m[i] / bc1;
+    float v_hat = v[i] / bc2;
+    float step = lr * (m_hat / (sqrtf(v_hat) + eps));
+    val = step * step;
+  }
+  sdata[tid] = val;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  if (tid == 0) atomicAdd(out, sdata[0]);
+}
+
+extern "C" float cuda_adam_step_sumsq(const float *m, const float *v, float lr,
+                                      float eps, float bc1, float bc2, int n) {
+  float *d_out;
+  cudaMalloc(&d_out, sizeof(float));
+  cudaMemset(d_out, 0, sizeof(float));
+  int threads = 256;
+  int blocks = (n + threads - 1) / threads;
+  adam_step_sumsq_kernel<<<blocks, threads, threads * sizeof(float)>>>(
+      m, v, lr, eps, bc1, bc2, n, d_out);
+  float out = 0.0f;
+  cudaMemcpy(&out, d_out, sizeof(float), cudaMemcpyDeviceToHost);
+  cudaFree(d_out);
+  return out;
+}
+
+// Per-head mean attention entropy, normalized to [0,1]. `P` is the saved causal
+// softmax [h, seq, seq]: query row r sums over key cols 0..=r. For each row r>=1
+// the Shannon entropy -Σ p·ln p is divided by ln(r+1) — the entropy of a uniform
+// distribution over its r+1 valid keys — so the value is scale-free across query
+// positions (1 = perfectly diffuse attention, →0 = a sharp single-key spike). Row
+// 0 has a single key (entropy 0, undefined normalizer) and is skipped. The kernel
+// accumulates the normalized per-row entropies into out[head]; the caller divides
+// by the row count (seq-1) to get the head's mean. `out` holds h floats, zeroed
+// here. One block per head, one thread per query row — seq <= ctx_window, well
+// within a block's thread limit for the small contexts this trainer uses.
+__global__ void attention_entropy_kernel(const __half *__restrict__ P, int seq,
+                                         int h, float *out) {
+  int head = blockIdx.x;
+  int row = threadIdx.x + 1;  // rows 1..seq-1 (row 0 has a single key)
+  if (head >= h || row >= seq) return;
+  const __half *prow = P + (size_t)head * seq * seq + (size_t)row * seq;
+  float ent = 0.0f;
+  for (int c = 0; c <= row; c++) {
+    float p = __half2float(prow[c]);
+    if (p > 1e-9f) ent -= p * logf(p);
+  }
+  float norm = logf((float)(row + 1));
+  if (norm > 0.0f) atomicAdd(&out[head], ent / norm);
+}
+
+extern "C" void cuda_attention_entropy(const __half *P, int seq, int h,
+                                       float *out_dev) {
+  cudaMemset(out_dev, 0, h * sizeof(float));
+  int threads = seq > 1 ? seq - 1 : 1;
+  attention_entropy_kernel<<<h, threads>>>(P, seq, h, out_dev);
+}

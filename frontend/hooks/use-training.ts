@@ -7,6 +7,7 @@ import {
   listJobs,
   startTraining,
   type Attachment,
+  type DiagPoint,
   type FinishedModel,
   type JobStatus,
   type TokenizeStats,
@@ -39,6 +40,10 @@ const MAX_LOSS_POINTS = 500
 
 // The batch-spread chart is a short rolling window of the most recent reports.
 const MAX_BATCH_POINTS = 60
+
+// Diagnostics points mirror the loss cap: halve resolution when full so the
+// whole-run trajectory is preserved without unbounded growth.
+const MAX_DIAG_POINTS = 500
 
 function downsample<T>(arr: T[], max: number): T[] {
   let out = arr
@@ -98,6 +103,7 @@ export function useTraining() {
   const [loss, setLoss] = React.useState<LossPoint[]>([])
   const [vocabSeries, setVocabSeries] = React.useState<VocabPoint[]>([])
   const [batchSeries, setBatchSeries] = React.useState<BatchPoint[]>([])
+  const [diag, setDiag] = React.useState<DiagPoint[]>([])
   const [checkpoints, setCheckpoints] = React.useState<string[]>([])
   const [log, setLog] = React.useState<string[]>([])
   const [error, setError] = React.useState<string | null>(null)
@@ -154,6 +160,7 @@ export function useTraining() {
             .map(([step, min, avg, max]) => ({ step, min, avg, max }))
             .slice(-MAX_BATCH_POINTS)
         )
+        setDiag(downsample(snap.diag_series ?? [], MAX_DIAG_POINTS))
         setLog(snap.log ?? [])
         setError(snap.error ?? null)
       },
@@ -198,6 +205,17 @@ export function useTraining() {
             ].slice(-MAX_BATCH_POINTS)
           )
         }
+        // Diagnostics ride mid-epoch report frames (null at epoch boundaries).
+        if (s.diag) {
+          const point = s.diag
+          setDiag((prev) => {
+            const base =
+              prev.length >= MAX_DIAG_POINTS
+                ? prev.filter((_, i) => i % 2 === 0)
+                : prev
+            return [...base, point]
+          })
+        }
         if (s.epoch_done && s.checkpoint_path) {
           const path = s.checkpoint_path
           setCheckpoints((prev) =>
@@ -229,6 +247,7 @@ export function useTraining() {
       setLoss([])
       setVocabSeries([])
       setBatchSeries([])
+      setDiag([])
       setCheckpoints([])
       setLog([])
       setError(null)
@@ -288,6 +307,7 @@ export function useTraining() {
     loss,
     vocabSeries,
     batchSeries,
+    diag,
     checkpoints,
     log,
     error,

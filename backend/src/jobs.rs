@@ -25,6 +25,10 @@ const MAX_LOG_LINES: usize = 500;
 const MAX_LOSS_POINTS: usize = 4000;
 // The batch-spread chart is a short rolling window of the most recent reports.
 const MAX_BATCH_POINTS: usize = 60;
+// The diagnostics charts (grad norms, update ratios, activations, attention,
+// embeddings) show the whole run trajectory, so — like the loss series — this is
+// halved when it fills rather than windowed, preserving the curve shape.
+const MAX_DIAG_POINTS: usize = 1000;
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +59,10 @@ pub struct JobState {
     pub loss_series: Vec<[f64; 2]>,
     // Rolling window of recent per-report spread: [step, min, avg, max].
     pub batch_series: Vec<[f64; 4]>,
+    // Per-report training diagnostics, each a `{ step, grad_*, update_ratio_layers,
+    // act_rms_layers, attn_entropy, emb_cos_* }` object (see `diag_frame`). Kept as
+    // pre-rendered JSON so the snapshot replays it verbatim.
+    pub diag_series: Vec<serde_json::Value>,
     pub log: Vec<String>,
     pub error: Option<String>,
 }
@@ -115,6 +123,7 @@ impl JobRegistry {
                 train: serde_json::json!({}),
                 loss_series: Vec::new(),
                 batch_series: Vec::new(),
+                diag_series: Vec::new(),
                 log: Vec::new(),
                 error: None,
             }),
@@ -182,6 +191,7 @@ pub fn snapshot_frame(state: &JobState) -> String {
         "train": state.train,
         "loss_series": state.loss_series,
         "batch_series": state.batch_series,
+        "diag_series": state.diag_series,
         "log": state.log,
         "error": state.error,
         "id_model": id_model,
@@ -389,8 +399,32 @@ fn handle_tokenize_event(job: &Job, event: TokenizeEvent) {
     }
 }
 
+// Renders a diagnostics snapshot into the `{ step, … }` JSON the frontend charts
+// consume. Non-finite metrics (e.g. an empty embedding metric on a tiny vocab)
+// serialize to null via `json!`, matching the batch-spread convention, so the
+// client simply skips those points. Kept separate from the `train` frame builder
+// so the (larger, per-report-only) diagnostics payload lives in one place.
+fn diag_frame(step: u64, d: &llm::training::diagnostics::Diagnostics) -> serde_json::Value {
+    serde_json::json!({
+        "step": step,
+        "grad_global": d.grad_global,
+        "grad_layers": d.grad_layers,
+        "grad_embedding": d.grad_embedding,
+        "grad_unembed": d.grad_unembed,
+        "update_ratio_layers": d.update_ratio_layers,
+        "act_rms_layers": d.act_rms_layers,
+        "attn_entropy": d.attn_entropy,
+        "emb_cos_mean": d.emb_cos_mean,
+        "emb_cos_p5": d.emb_cos_p5,
+        "emb_cos_p95": d.emb_cos_p95,
+    })
+}
+
 fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
     let step = p.epoch.saturating_sub(1) * p.total_chunks + p.chunk;
+    // Render the diagnostics (present only on mid-epoch report frames) before the
+    // main object so it can be embedded in the live frame and stored for reattach.
+    let diag = p.diagnostics.as_ref().map(|d| diag_frame(step, d));
     let obj = serde_json::json!({
         "epoch": p.epoch,
         "total_epochs": p.total_epochs,
@@ -408,6 +442,9 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
         "epoch_duration_secs": p.epoch_duration_secs,
         "checkpoint_path": p.checkpoint_path,
         "step": step,
+        // Present only on mid-epoch report frames; null otherwise so the client
+        // knows there's no fresh diagnostics sample on this frame.
+        "diag": diag,
     });
     {
         let mut st = lock(&job.state);
@@ -425,6 +462,9 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
                     p.batch_max as f64,
                 ],
             );
+        }
+        if let Some(d) = diag {
+            push_diag(&mut st.diag_series, d);
         }
     }
     emit(&job.tx, frame("train", obj));
@@ -561,5 +601,19 @@ fn push_batch(series: &mut Vec<[f64; 4]>, point: [f64; 4]) {
     series.push(point);
     if series.len() > MAX_BATCH_POINTS {
         series.drain(0..series.len() - MAX_BATCH_POINTS);
+    }
+}
+
+// Appends a diagnostics point, halving the series (like the loss series) once it
+// grows past the cap so the whole-run trajectory is preserved while the reattach
+// snapshot stays bounded.
+fn push_diag(series: &mut Vec<serde_json::Value>, point: serde_json::Value) {
+    series.push(point);
+    if series.len() > MAX_DIAG_POINTS {
+        let mut keep = false;
+        series.retain(|_| {
+            keep = !keep;
+            keep
+        });
     }
 }

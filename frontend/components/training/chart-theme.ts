@@ -60,3 +60,33 @@ export const batchRamp = {
 // The vocab-growth line is a lone series — the site's curated `--chart-2` token
 // (referenced as a CSS var so it tracks the theme in light/dark).
 export const VOCAB_COLOR = "var(--chart-2)"
+
+// ── Diagnostics figures ─────────────────────────────────────────────────────
+// The per-layer diagnostics (grad norms, update:weight ratios, activation RMS)
+// are the same *magnitude-by-depth* idea as the loss overlay, so they reuse the
+// single-hue sequential ramp — but in a teal family, distinct from the loss
+// overlay's blue, so a per-layer diagnostic never reads as "loss". A given layer
+// keeps one colour across all three figures.
+export function layerColor(layer: number, totalLayers: number): string {
+  const t = totalLayers > 1 ? layer / (totalLayers - 1) : 0
+  return sequential(168, 44, t)
+}
+
+// Attention entropy is per *head*; one hue (violet) swept light→dark by head
+// index, again a sequential ramp rather than a categorical cycle.
+export function headColor(head: number, totalHeads: number): string {
+  const t = totalHeads > 1 ? head / (totalHeads - 1) : 0
+  return sequential(280, 40, t)
+}
+
+// Accent for an aggregate line drawn over a per-layer ramp (the global grad norm)
+// or a reference marker — the site's curated amber `--chart-1`.
+export const ACCENT_COLOR = "var(--chart-1)"
+
+// A recessive hue for the two shared tables (token-embedding / output-projection
+// grad) plotted alongside the per-layer ramp, kept muted so the layers lead.
+export const MUTED_SERIES = "var(--muted-foreground)"
+
+// Embedding-anisotropy figure: one blue hue (`--chart-3`) for the mean line and
+// its p5–p95 band fill.
+export const EMB_COLOR = "var(--chart-3)"

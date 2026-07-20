@@ -65,6 +65,25 @@ export interface TokenizeStats {
   done: boolean
 }
 
+// One report's worth of training diagnostics (grad norms, update:weight ratios,
+// activation RMS, attention entropy, embedding anisotropy). Emitted on mid-epoch
+// report frames only, tagged with the same global `step` as the loss point.
+// `*_layers` arrays are indexed by transformer layer (0 = first block);
+// `attn_entropy[layer]` holds one normalized entropy per attention head.
+export interface DiagPoint {
+  step: number
+  grad_global: number
+  grad_layers: number[]
+  grad_embedding: number
+  grad_unembed: number
+  update_ratio_layers: number[]
+  act_rms_layers: number[]
+  attn_entropy: number[][]
+  emb_cos_mean: number
+  emb_cos_p5: number
+  emb_cos_p95: number
+}
+
 export interface TrainStats {
   epoch: number
   total_epochs: number
@@ -83,6 +102,8 @@ export interface TrainStats {
   epoch_duration_secs: number
   checkpoint_path: string | null
   step: number
+  // Diagnostics sampled on this report frame, or null on epoch-boundary frames.
+  diag: DiagPoint | null
 }
 
 export interface TrainingSnapshot {
@@ -92,6 +113,7 @@ export interface TrainingSnapshot {
   train: Partial<TrainStats>
   loss_series: [number, number][]
   batch_series: [number, number, number, number][]
+  diag_series: DiagPoint[]
   log: string[]
   error: string | null
   // Present (non-null) only when a *successful* run registered a model — the

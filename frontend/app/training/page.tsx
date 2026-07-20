@@ -91,6 +91,7 @@ export default function TrainingPage() {
               loss={t.loss}
               vocabSeries={t.vocabSeries}
               batchSeries={t.batchSeries}
+              diag={t.diag}
             />
           </>
         )

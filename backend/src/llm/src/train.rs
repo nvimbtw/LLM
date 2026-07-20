@@ -7,8 +7,9 @@ use std::time::Instant;
 
 use crate::training::gpu_workspace::Workspace;
 use crate::training::transformer::Model;
-use crate::training::optimizer::{gpu_adam_update, gpu_clip_gradients};
+use crate::training::optimizer::{gpu_adam_update, gpu_clip_gradients, gpu_grad_norms};
 use crate::training::sync::sync_weights_from_gpu;
+use crate::training::diagnostics::{self, Diagnostics};
 
 // Early-stopping patience: stop after this many consecutive epochs without an
 // average-loss improvement.
@@ -65,6 +66,10 @@ pub struct TrainingProgress {
     pub batch_max: f32,
     pub epoch_duration_secs: f64,
     pub checkpoint_path: Option<String>,
+    // Per-report training telemetry (grad norms, update:weight ratios, activation
+    // RMS, attention entropy, embedding anisotropy). Present only on mid-epoch
+    // report frames — `None` on epoch-boundary frames, which carry no fresh caches.
+    pub diagnostics: Option<Diagnostics>,
 }
 
 pub type ProgressCallback = Box<dyn Fn(TrainingProgress) + Send>;
@@ -351,6 +356,10 @@ fn train_epoch(
     total_chunks_all: u64,
     training_start: Instant,
     adam_step: &mut i32,
+    // The corpus's most-frequent token ids, for the embedding-anisotropy metric.
+    // Computed once per run and reused across epochs so the metric tracks a fixed
+    // token set.
+    freq_tokens: &[u32],
     on_progress: &ProgressCallback,
 ) -> EpochStats {
     let mut epoch_stats = LossStats::new();
@@ -389,14 +398,39 @@ fn train_epoch(
         epoch_stats.record(loss);
         window.record(loss);
 
-        if epoch_stats.n % (ACCUM_STEPS as u64) == 0 || epoch_stats.n == total_chunks as u64 {
+        let step_due =
+            epoch_stats.n % (ACCUM_STEPS as u64) == 0 || epoch_stats.n == total_chunks as u64;
+        let report_due =
+            epoch_stats.n % PROGRESS_REPORT_INTERVAL == 0 || epoch_stats.n == total_chunks as u64;
+
+        // Sample diagnostics coherently with the optimizer step. The gradient
+        // norms must be read from the accumulated buffers BEFORE the step zeroes
+        // them; the update:weight ratio and the activation/attention/embedding
+        // metrics are read AFTER, from the post-step moments and the still-valid
+        // forward caches. `report_due` implies `step_due` (the report interval is
+        // a multiple of the accumulation window, and the epoch tail triggers
+        // both), so a report always straddles a real step and the grad norms are
+        // never a just-zeroed reading.
+        let grad_norms = if report_due {
+            Some(gpu_grad_norms(ws, layers as usize))
+        } else {
+            None
+        };
+
+        if step_due {
             step_optimizer(ws, layers, lr, total_opt_steps, adam_step);
         }
 
-        if epoch_stats.n % PROGRESS_REPORT_INTERVAL == 0 || epoch_stats.n == total_chunks as u64 {
+        if report_due {
+            let step_lr = lr_at_step(lr, *adam_step, total_opt_steps);
+            let diag = grad_norms.map(|g| {
+                diagnostics::compute(
+                    ws, g, layers as usize, chunk.len(), step_lr, *adam_step, freq_tokens,
+                )
+            });
             report_chunk_progress(
                 epoch, epochs, total_chunks, total_chunks_all, training_start, loss,
-                &epoch_stats, &window, on_progress,
+                &epoch_stats, &window, diag, on_progress,
             );
             // Start a fresh window for the next report.
             window = LossStats::new();
@@ -464,6 +498,7 @@ fn report_chunk_progress(
     loss: f32,
     epoch_stats: &LossStats,
     window: &LossStats,
+    diagnostics: Option<Diagnostics>,
     on_progress: &ProgressCallback,
 ) {
     let chunks_done_global = (epoch as u64) * (total_chunks as u64) + epoch_stats.n;
@@ -486,6 +521,7 @@ fn report_chunk_progress(
         batch_max: window.max,
         epoch_duration_secs: 0.0,
         checkpoint_path: None,
+        diagnostics,
     });
 }
 
@@ -507,6 +543,10 @@ fn run_training_loop(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<bool, io::Error> {
     ws.ensure_layer_caches(layers as usize);
+    // The most-frequent tokens for the embedding-anisotropy metric — computed once
+    // over the fixed corpus and reused every report so the metric tracks the same
+    // token set across the whole run.
+    let freq_tokens = diagnostics::frequent_tokens(corpus);
     let total_chunks: usize = corpus
         .chunks(ctx_window as usize)
         .filter(|c| c.len() >= 2)
@@ -526,7 +566,8 @@ fn run_training_loop(
     for epoch in 0..epochs {
         let stats = train_epoch(
             transformer, ws, corpus, mask, ctx_window, layers, lr, total_opt_steps, epoch, epochs,
-            total_chunks, total_chunks_all, training_start, &mut adam_step, &on_progress,
+            total_chunks, total_chunks_all, training_start, &mut adam_step, &freq_tokens,
+            &on_progress,
         );
         println!(
             "Epoch {}: avg loss = {:.6} (min={:.4} max={:.4})",
@@ -589,6 +630,8 @@ fn report_epoch_progress(
         batch_max: f32::NAN,
         epoch_duration_secs: stats.duration_secs,
         checkpoint_path,
+        // Epoch-boundary frames carry no fresh forward caches to sample.
+        diagnostics: None,
     });
 }
 
