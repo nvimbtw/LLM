@@ -24,10 +24,19 @@ unsafe extern "C" {
     fn cuda_attention_entropy(p: *const c_void, seq: i32, h: i32, out_dev: *mut f32);
 }
 
-// How many of the most-frequent tokens to include in the embedding-anisotropy
-// metric. All C(N,2) pairwise cosines are averaged, so this stays small: 32
-// tokens = 496 pairs, cheap to sync and reduce on the host once per report.
+// How many of the most-frequent tokens to include in the embedding metrics. All
+// C(N,2) pairwise cosines are averaged for anisotropy and the same N are projected
+// for the PCA scatter, so this stays small: 32 tokens = 496 pairs, cheap to sync
+// and reduce on the host once per report.
 const ANISOTROPY_TOKENS: usize = 32;
+
+// Activation-distribution histogram: number of bins and the half-range in standard
+// deviations. The residual stream is z-scored (its scale is already the activation
+// RMS chart's job), so the fixed ±4σ window over these bins gives a scale-free view
+// of the distribution *shape* — is it Gaussian, heavy-tailed, saturating — as it
+// evolves. Kept in sync with the frontend heatmap's axis labels.
+const ACT_HIST_BINS: usize = 24;
+const ACT_HIST_RANGE: f32 = 4.0;
 
 // One progress report's worth of training diagnostics. Every vector is indexed by
 // transformer layer (0 = first block); `attn_entropy[layer]` holds one value per
@@ -49,6 +58,14 @@ pub struct Diagnostics {
     pub emb_cos_mean: f32,
     pub emb_cos_p5: f32,
     pub emb_cos_p95: f32,
+    // Activation-distribution histogram of the deepest block's residual stream,
+    // z-scored: `ACT_HIST_BINS` fractions (summing to ~1) over the ±ACT_HIST_RANGE
+    // window. One per report → a distribution-over-time heatmap on the frontend.
+    pub act_hist: Vec<f32>,
+    // 2-D PCA projection of the most-frequent tokens' current embedding vectors
+    // (one [x, y] per token, same order as `frequent_tokens`) — the latest report's
+    // is scatter-plotted to show the embedding geometry.
+    pub emb_pca: Vec<[f32; 2]>,
 }
 
 // The `ANISOTROPY_TOKENS` most-frequent token ids in `corpus`, high→low. Computed
@@ -86,7 +103,12 @@ pub fn compute(
     let update_ratio_layers = gpu_update_ratios(ws, layers, lr, step);
     let act_rms_layers = activation_rms(ws, layers, seq_len);
     let attn_entropy = attention_entropy(ws, layers, seq_len);
-    let (emb_cos_mean, emb_cos_p5, emb_cos_p95) = embedding_anisotropy(ws, freq_tokens);
+    let act_hist = activation_histogram(ws, layers, seq_len);
+
+    // Sync the embedding table once, then derive both embedding metrics from it.
+    let emb = ws.d_embedding.to_f32_vec();
+    let (emb_cos_mean, emb_cos_p5, emb_cos_p95) = embedding_anisotropy(&emb, ws.d, freq_tokens);
+    let emb_pca = embedding_pca(&emb, ws.d, freq_tokens);
 
     Diagnostics {
         grad_global: grad.global,
@@ -99,6 +121,8 @@ pub fn compute(
         emb_cos_mean,
         emb_cos_p5,
         emb_cos_p95,
+        act_hist,
+        emb_pca,
     }
 }
 
@@ -141,16 +165,47 @@ fn attention_entropy(ws: &Workspace, layers: usize, seq_len: usize) -> Vec<Vec<f
         .collect()
 }
 
-// Embedding anisotropy: sync the embedding table once, then average the pairwise
-// cosine similarity among the chosen frequent tokens. A high mean cosine means the
-// embeddings are collapsing toward a common direction (poor separation); a healthy
-// space keeps most pairs near-orthogonal. Returns (mean, p5, p95) of the cosines.
-fn embedding_anisotropy(ws: &Workspace, freq_tokens: &[u32]) -> (f32, f32, f32) {
-    let d = ws.d;
+// Activation-distribution histogram of the deepest block's residual stream. The
+// cached activations are z-scored (mean/std over the live rows) and binned into a
+// fixed ±ACT_HIST_RANGE window, so the result describes the distribution *shape*
+// over time independent of scale (the RMS chart carries the scale). Returns
+// per-bin fractions summing to ~1.
+fn activation_histogram(ws: &Workspace, layers: usize, seq_len: usize) -> Vec<f32> {
+    let n = seq_len * ws.d;
+    if layers == 0 || n == 0 {
+        return vec![0.0; ACT_HIST_BINS];
+    }
+    let full = ws.layer_inputs[layers - 1].to_f32_vec();
+    let vals = &full[..n.min(full.len())];
+    if vals.is_empty() {
+        return vec![0.0; ACT_HIST_BINS];
+    }
+
+    let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+    let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32;
+    let std = var.sqrt().max(1e-6);
+
+    let mut hist = vec![0u32; ACT_HIST_BINS];
+    for &v in vals {
+        let z = (v - mean) / std;
+        // Map [-RANGE, RANGE] → [0, BINS); values outside land in the end bins.
+        let t = ((z + ACT_HIST_RANGE) / (2.0 * ACT_HIST_RANGE)).clamp(0.0, 0.999_999);
+        let bin = (t * ACT_HIST_BINS as f32) as usize;
+        hist[bin.min(ACT_HIST_BINS - 1)] += 1;
+    }
+    let total = vals.len() as f32;
+    hist.iter().map(|&c| c as f32 / total).collect()
+}
+
+// Embedding anisotropy: average the pairwise cosine similarity among the chosen
+// frequent tokens. A high mean cosine means the embeddings are collapsing toward a
+// common direction (poor separation); a healthy space keeps most pairs
+// near-orthogonal. Returns (mean, p5, p95) of the cosines. `emb` is the already
+// host-synced embedding table (`[vocab, d]` row-major).
+fn embedding_anisotropy(emb: &[f32], d: usize, freq_tokens: &[u32]) -> (f32, f32, f32) {
     if freq_tokens.len() < 2 {
         return (0.0, 0.0, 0.0);
     }
-    let emb = ws.d_embedding.to_f32_vec();
 
     // Pre-normalize each chosen token's row so a cosine is a plain dot product.
     let units: Vec<Vec<f32>> = freq_tokens
@@ -184,6 +239,107 @@ fn embedding_anisotropy(ws: &Workspace, freq_tokens: &[u32]) -> (f32, f32, f32) 
         cosines[idx]
     };
     (mean, pct(0.05), pct(0.95))
+}
+
+// 2-D PCA of the chosen frequent tokens' embeddings, for the scatter plot. Because
+// the token count N is small (≤ ANISOTROPY_TOKENS) and the model dim d can be
+// large, this uses the N×N Gram matrix trick: for a centered data matrix X, the
+// top eigenvectors u of G = XXᵀ (eigenvalues λ) give the sample coordinates on the
+// principal axes directly as uᵢ·√λ — no d×d covariance needed. Returns one [x, y]
+// per token in `freq_tokens` order. Sign of an axis is arbitrary (a mirror), which
+// doesn't matter for a scatter.
+fn embedding_pca(emb: &[f32], d: usize, freq_tokens: &[u32]) -> Vec<[f32; 2]> {
+    let n = freq_tokens.len();
+    if n < 2 {
+        return vec![[0.0, 0.0]; n];
+    }
+
+    // Gather the rows and center them (subtract the per-dimension mean).
+    let mut rows: Vec<Vec<f32>> = freq_tokens
+        .iter()
+        .map(|&id| emb[id as usize * d..id as usize * d + d].to_vec())
+        .collect();
+    let mut mean = vec![0.0f32; d];
+    for r in &rows {
+        for j in 0..d {
+            mean[j] += r[j];
+        }
+    }
+    for m in &mut mean {
+        *m /= n as f32;
+    }
+    for r in &mut rows {
+        for j in 0..d {
+            r[j] -= mean[j];
+        }
+    }
+
+    // Gram matrix G = X Xᵀ  (N×N, symmetric).
+    let mut g = vec![vec![0.0f32; n]; n];
+    for i in 0..n {
+        for k in i..n {
+            let dot: f32 = rows[i].iter().zip(&rows[k]).map(|(a, b)| a * b).sum();
+            g[i][k] = dot;
+            g[k][i] = dot;
+        }
+    }
+
+    let (u1, l1) = top_eigenvector(&g, n, None);
+    let (u2, l2) = top_eigenvector(&g, n, Some((&u1, l1)));
+    let s1 = l1.max(0.0).sqrt();
+    let s2 = l2.max(0.0).sqrt();
+    (0..n).map(|i| [u1[i] * s1, u2[i] * s2]).collect()
+}
+
+// Power iteration for the top eigenvector/eigenvalue of a small symmetric matrix,
+// with optional deflation of an already-found (eigenvector, eigenvalue) pair so the
+// second call returns the second principal axis. Fixed iteration count — the Gram
+// matrix is tiny (N ≤ 32) and this runs once per report, so convergence is cheap.
+fn top_eigenvector(g: &[Vec<f32>], n: usize, deflate: Option<(&[f32], f32)>) -> (Vec<f32>, f32) {
+    // Asymmetric init so a symmetric matrix doesn't leave the iterate on a saddle.
+    let mut v: Vec<f32> = (0..n).map(|i| 1.0 + 0.01 * i as f32).collect();
+    normalize(&mut v);
+
+    let apply = |v: &[f32]| -> Vec<f32> {
+        let mut w = vec![0.0f32; n];
+        for i in 0..n {
+            w[i] = (0..n).map(|k| g[i][k] * v[k]).sum();
+        }
+        if let Some((u, l)) = deflate {
+            let uv: f32 = u.iter().zip(v).map(|(a, b)| a * b).sum();
+            for i in 0..n {
+                w[i] -= l * uv * u[i];
+            }
+        }
+        w
+    };
+
+    for _ in 0..100 {
+        let mut w = apply(&v);
+        let norm = (w.iter().map(|x| x * x).sum::<f32>()).sqrt();
+        if norm < 1e-12 {
+            break;
+        }
+        for x in &mut w {
+            *x /= norm;
+        }
+        v = w;
+    }
+
+    // Rayleigh quotient λ = vᵀ (G' v) with the same deflation applied.
+    let gv = apply(&v);
+    let lambda: f32 = v.iter().zip(&gv).map(|(a, b)| a * b).sum();
+    (v, lambda)
+}
+
+// L2-normalize a vector in place (no-op on a zero vector).
+fn normalize(v: &mut [f32]) {
+    let norm = (v.iter().map(|x| x * x).sum::<f32>()).sqrt();
+    if norm > 0.0 {
+        for x in v {
+            *x /= norm;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +397,18 @@ mod tests {
         }
         assert!(diag.emb_cos_mean.is_finite() && (-1.01..=1.01).contains(&diag.emb_cos_mean));
         assert!(diag.emb_cos_p5 <= diag.emb_cos_p95 + 1e-3, "p5 must not exceed p95");
+
+        // Histogram: fixed bin count, non-negative fractions summing to ~1.
+        assert_eq!(diag.act_hist.len(), ACT_HIST_BINS);
+        let hist_sum: f32 = diag.act_hist.iter().sum();
+        assert!((hist_sum - 1.0).abs() < 1e-3, "histogram should sum to 1: {hist_sum}");
+        assert!(diag.act_hist.iter().all(|&f| f.is_finite() && f >= 0.0));
+
+        // PCA: one finite 2-D point per frequent token.
+        assert_eq!(diag.emb_pca.len(), freq.len());
+        for [x, y] in &diag.emb_pca {
+            assert!(x.is_finite() && y.is_finite(), "PCA coord not finite");
+        }
         eprintln!(
             "✓ diagnostics finite & shaped (grad_global={:.4}, emb_cos_mean={:.4})",
             diag.grad_global, diag.emb_cos_mean

@@ -90,3 +90,11 @@ export const MUTED_SERIES = "var(--muted-foreground)"
 // Embedding-anisotropy figure: one blue hue (`--chart-3`) for the mean line and
 // its p5–p95 band fill.
 export const EMB_COLOR = "var(--chart-3)"
+
+// Rank ramp for the PCA biplot's token arrows: the same blue family swept by
+// frequency rank, most-frequent (rank 0) darkest → least-frequent lightest, so the
+// eye can tell the salient tokens from the tail.
+export function embRankColor(rank: number, total: number): string {
+  const t = total > 1 ? 1 - rank / (total - 1) : 1
+  return sequential(212, 48, t)
+}

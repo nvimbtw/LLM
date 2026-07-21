@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { Button } from "@/components/ui/button"
 import { Appendix } from "@/components/training/appendix"
+import { DiagnosticsPanel } from "@/components/training/diagnostics-panel"
 import { ParamsRail } from "@/components/training/params-rail"
 import { Telemetry } from "@/components/training/telemetry"
 import { TrainingShell } from "@/components/training/training-shell"
@@ -22,6 +23,9 @@ export default function TrainingPage() {
   // one exists (so a reattached run reads right), else what's staged in the form.
   const runIsSft =
     t.runConfig?.mode === "sft" || t.tokenize.conversations != null
+  // The diagnostics stack appears once training starts (not during phase-1
+  // tokenization), mirroring where the hero loss chart takes over.
+  const showDiagnostics = t.status != null && t.status !== "tokenizing"
   // The phase stepper follows the staged form when idle and the run when active.
   const displayMode = t.isActive ? (t.runConfig?.mode ?? cfg.mode) : cfg.mode
   const displayName = t.isActive
@@ -91,11 +95,11 @@ export default function TrainingPage() {
               loss={t.loss}
               vocabSeries={t.vocabSeries}
               batchSeries={t.batchSeries}
-              diag={t.diag}
             />
           </>
         )
       }
+      diagnostics={showDiagnostics ? <DiagnosticsPanel diag={t.diag} /> : null}
       appendix={<Appendix log={t.log} checkpoints={t.checkpoints} />}
     />
   )

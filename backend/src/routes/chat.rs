@@ -95,6 +95,10 @@ struct SendMessageFrame {
     // Which trained model should generate the reply. Required for a real turn;
     // resolves to the model's on-disk weights.
     model_id: Option<Uuid>,
+    // Optional system prompt to steer the reply. Absent/empty => no system turn;
+    // the client omits it when the user hasn't set one.
+    #[serde(default)]
+    system: Option<String>,
 }
 
 // Sampling knobs for a chat turn. A reply runs until the model emits
@@ -213,6 +217,19 @@ async fn handle_message(
         return session.text(ws::error_frame("message content too long")).await;
     }
 
+    // Normalize the optional system prompt: trim, drop if blank, length-check.
+    let system = frame
+        .system
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(ref s) = system {
+        if validate::max_len("system prompt", s, validate::MAX_MESSAGE_LEN).is_err() {
+            return session.text(ws::error_frame("system prompt too long")).await;
+        }
+    }
+
     let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
         return Ok(());
     };
@@ -227,7 +244,7 @@ async fn handle_message(
     };
 
     let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
-    let Some(reply) = stream_reply(session, &model_dir, history).await? else {
+    let Some(reply) = stream_reply(session, &model_dir, history, system).await? else {
         return Ok(());
     };
 
@@ -379,18 +396,18 @@ async fn stream_reply(
     session: &mut actix_ws::Session,
     model_dir: &std::path::Path,
     history: Vec<llm::chat_template::Turn>,
+    system: Option<String>,
 ) -> Result<Option<StreamedReply>, actix_ws::Closed> {
     let model_dir = model_dir.to_path_buf();
     let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (done_tx, done_rx) =
         tokio::sync::oneshot::channel::<Result<llm::infer::GenerationOutput, String>>();
     std::thread::spawn(move || {
-        // System prompt slot is supported by the template; passing None until the
-        // SFT data includes system turns, so we don't spend the tiny context
-        // window on text the model was never trained to act on.
+        // The system prompt (if the user set one) is rendered into the prompt by
+        // the chat template; None means no system turn.
         let result = llm::infer::generate_chat_response_streaming(
             &model_dir,
-            None,
+            system.as_deref(),
             &history,
             MAX_TOKENS,
             TEMPERATURE,

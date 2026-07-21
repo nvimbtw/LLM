@@ -18,15 +18,9 @@ import {
   VOCAB_COLOR,
   yAxisProps,
 } from "@/components/training/chart-theme"
-import { DiagnosticsPanel } from "@/components/training/diagnostics-panel"
 import { Figure, FigurePlaceholder, StatRun, type Stat } from "@/components/training/stat-run"
 import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
-import type {
-  DiagPoint,
-  JobStatus,
-  TokenizeStats,
-  TrainStats,
-} from "@/lib/training-socket"
+import type { JobStatus, TokenizeStats, TrainStats } from "@/lib/training-socket"
 
 function compact(n: number | undefined): string {
   if (n == null) return "—"
@@ -66,7 +60,6 @@ export interface TelemetryProps {
   loss: LossPoint[]
   vocabSeries: VocabPoint[]
   batchSeries: BatchPoint[]
-  diag: DiagPoint[]
 }
 
 // The main column's live telemetry: a stat run pinned at the top, a thin progress
@@ -81,7 +74,6 @@ export function Telemetry({
   loss,
   vocabSeries,
   batchSeries,
-  diag,
 }: TelemetryProps) {
   const tokenizing = status === "tokenizing"
   // The training figure is the hero from the moment training starts through done.
@@ -317,9 +309,6 @@ export function Telemetry({
           )}
         </Figure>
       )}
-
-      {/* Deep-dive diagnostics — tabbed, below the loss/spread heroes. */}
-      {trainPhase && <DiagnosticsPanel diag={diag} />}
     </div>
   )
 }

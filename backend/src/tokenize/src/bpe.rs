@@ -3,7 +3,20 @@ use std::fs::File;
 use std::io;
 use std::io::Write;
 
-use crate::pretokenize::lookup_special;
+use crate::pretokenize::{lookup_special, special_char_from_id, special_id, NUM_SPECIAL};
+
+/// First id available to BPE merges: raw bytes fill `[0,256)` and the reserved
+/// special-token block fills `[256, 256+NUM_SPECIAL)`, so learned merges start
+/// here. `train` counts up from this, and `vocab_size` folds the same offset in.
+pub const MERGE_BASE: u32 = 256 + NUM_SPECIAL as u32;
+
+/// Total vocabulary size for a tokenizer with `num_merges` learned merges:
+/// bytes + reserved special tokens + merges. The single source of truth for
+/// vocab sizing — every caller (model init, job metadata) routes through here so
+/// the offset can't drift between the tokenizer and the model.
+pub fn vocab_size(num_merges: usize) -> i64 {
+    MERGE_BASE as i64 + num_merges as i64
+}
 
 pub fn train(
     pre_tokenized: Vec<Vec<char>>,
@@ -14,8 +27,10 @@ pub fn train(
     let (mut pair_counts, mut pair_index) = count_pairs(&corpus);
     let mut heap = create_heap(pair_counts.clone());
 
-    let max = max_vocab_size.unwrap_or(32768).max(256);
-    let mut token: u32 = 256;
+    let max = max_vocab_size.unwrap_or(32768).max(MERGE_BASE);
+    // Merge ids start above the reserved byte + special-token block, so a learned
+    // merge can never collide with a raw byte or an atomic special-token id.
+    let mut token: u32 = MERGE_BASE;
     let mut merges: Vec<((u32, u32), u32)> = Vec::new();
 
     let log_every = ((max - 256) / 50).max(1);
@@ -58,7 +73,7 @@ pub fn train(
     println!();
     println!("Training complete! {} merges performed.", merges.len());
 
-    let vocab = merges.len() as i64 + 256;
+    let vocab = vocab_size(merges.len());
 
     Ok((vocab, corpus, merges))
 }
@@ -68,12 +83,13 @@ fn convert_to_bytes(pre_tokenized: Vec<Vec<char>>) -> Vec<Vec<u32>> {
         .iter()
         .map(|word| {
             word.iter()
-                .flat_map(|c| {
-                    let s = c.to_string();
-                    s.into_bytes()
-                        .into_iter()
-                        .map(|b| b as u32)
-                        .collect::<Vec<u32>>()
+                .flat_map(|c| match special_id(*c) {
+                    // A special token enters BPE as its atomic reserved id, not its
+                    // raw bytes — since the pretokenizer isolates it into its own
+                    // word it has no neighbours to pair with, so it's never merged
+                    // and keeps that id straight through training.
+                    Some(id) => vec![id],
+                    None => c.to_string().into_bytes().into_iter().map(|b| b as u32).collect(),
                 })
                 .collect()
         })
@@ -223,6 +239,17 @@ pub fn encode(text: &str, merges: &[((u32, u32), u32)]) -> Vec<u32> {
     let words = crate::pretokenize::pre_tokenize_str(text);
     let mut result = Vec::new();
     for word in words {
+        // The pretokenizer isolates each special token into its own word, so a
+        // one-char word that is a special PUA char maps straight to its atomic
+        // reserved id — matching exactly how `convert_to_bytes` fed it to BPE.
+        let mut chars = word.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if let Some(id) = special_id(c) {
+                result.push(id);
+                continue;
+            }
+        }
+
         let mut ids: Vec<u32> = word
             .chars()
             .flat_map(|c| {
@@ -267,6 +294,12 @@ pub fn decode(ids: &[u32], merges: &[((u32, u32), u32)]) -> String {
         while let Some(t) = stack.pop() {
             if t < 256 {
                 bytes.push(t as u8);
+            } else if let Some(ch) = special_char_from_id(t) {
+                // Atomic special-token id → its PUA char's utf-8 bytes; the
+                // `replace_special_chars` post-pass turns that back into the
+                // marker string (e.g. `<|assistant|>`).
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
             } else if let Some(&(a, b)) = token_to_pair.get(&t) {
                 stack.push(b);
                 stack.push(a);
@@ -518,13 +551,14 @@ mod tests {
         assert!(vocab > 256, "vocab should grow beyond byte-only tokens");
         assert!(!merges.is_empty(), "should have at least one merge");
 
-        // The first merge should combine 'a' (97) with itself
+        // The first merge should combine 'a' (97) with itself, and take the first
+        // id above the reserved byte + special-token block.
         let first = &merges[0];
         assert_eq!(first.0, (97, 97));
-        assert_eq!(first.1, 256);
+        assert_eq!(first.1, MERGE_BASE);
 
         // corpus should contain the merged token
-        assert_eq!(corpus, vec![vec![256]]);
+        assert_eq!(corpus, vec![vec![MERGE_BASE]]);
     }
 
     #[test]
@@ -547,7 +581,8 @@ mod tests {
         let pre_tokenized = vec![vec!['a']];
         let (vocab, corpus, merges) = train(pre_tokenized, None, |_| {}).unwrap();
 
-        assert_eq!(vocab, 256);
+        // No merges → vocab is just the bytes + reserved special-token block.
+        assert_eq!(vocab, vocab_size(0));
         assert!(merges.is_empty());
         assert_eq!(corpus, vec![vec![97]]);
     }
@@ -586,8 +621,10 @@ mod tests {
 
     #[test]
     fn test_decode_simple() {
-        let merges = vec![((97u32, 97u32), 256u32)];
-        let decoded = decode(&[256], &merges);
+        // Merge ids live above the reserved block now; use MERGE_BASE so the id
+        // isn't mistaken for an atomic special token.
+        let merges = vec![((97u32, 97u32), MERGE_BASE)];
+        let decoded = decode(&[MERGE_BASE], &merges);
         assert_eq!(decoded, "aa");
     }
 
@@ -596,6 +633,31 @@ mod tests {
         let merges = vec![];
         let decoded = decode(&[97, 98, 99], &merges);
         assert_eq!(decoded, "abc");
+    }
+
+    // The core of fix 1: a special token is one atomic id (in the reserved block),
+    // not the three shared bytes it used to shred into — and it roundtrips through
+    // encode/decode even with no merges, gluing cleanly to adjacent text.
+    #[test]
+    fn test_special_token_is_atomic_id() {
+        use crate::pretokenize::special_id;
+        let merges: Vec<((u32, u32), u32)> = vec![];
+
+        // `<|assistant|>` → exactly one id, and it's its reserved id (< MERGE_BASE).
+        let ids = encode("<|assistant|>", &merges);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], special_id('\u{E006}').unwrap());
+        assert!(ids[0] < MERGE_BASE && ids[0] >= 256);
+
+        // Two different markers get two different ids (they no longer alias on a
+        // shared `[0xEE,0x80]` prefix).
+        assert_ne!(encode("<|par|>", &merges)[0], encode("<|/par|>", &merges)[0]);
+
+        // A marker glued to text splits into [marker id, …text tokens], and the
+        // whole thing decodes back to the original string.
+        let glued = encode("<|assistant|>hi", &merges);
+        assert_eq!(glued[0], special_id('\u{E006}').unwrap());
+        assert_eq!(decode(&glued, &merges), "<|assistant|>hi");
     }
 
     #[test]

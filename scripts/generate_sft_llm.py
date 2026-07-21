@@ -14,12 +14,12 @@ document markup the frontend renders (lib/message-parser.ts + rich-message.tsx):
     <|par|>...<|/par|>                paragraph (every prose block)
     <|heading|> / <|subheading|>      section headings
     <|list|><|item|>...<|/item|>...   bulleted list
-    <|codeblock|lang='python'|>...    fenced code block
+    <|codeblock|>...<|/codeblock|>    fenced code block
     <|code|>...<|/code|>              inline code
     <|bold|> / <|italic|>             emphasis
     <|quote|>...<|/quote|>            blockquote
     <|divider|>                       horizontal rule (void tag)
-    <|link|href='...'|>...<|/link|>   hyperlink
+    <|link|>dest<|/link|>             hyperlink (the text is the destination)
     <|thinking|>...<|/thinking|>      hidden reasoning, start of a reply only
 
 Assistant turns must be fully marked up (all prose inside <|par|> etc.); user
@@ -127,14 +127,14 @@ SHAPES = [
 
 FEATURES = [
     "a bulleted <|list|> of <|item|>s",
-    "a <|codeblock|lang='python'|> (or another fitting lang) code block",
+    "a <|codeblock|> code block (no language attribute — just the code inside)",
     "<|code|> inline code for a command, key, or term",
     "<|bold|> on the one or two key terms",
     "<|italic|> for light emphasis or a title",
     "a <|quote|> block quoting a saying or the user's own words back",
     "an answer in two parts under <|heading|> or <|subheading|> headings",
     "a <|divider|> between two distinct sections",
-    "a <|link|href='https://example.com/...'|> to a plausible reference page",
+    "a <|link|>example.com/page<|/link|> whose text is the destination itself",
     "plain short <|par|> paragraphs only, no other markup",
 ]
 
@@ -161,13 +161,16 @@ Hard rules (a line breaking any of these is discarded):
   wrapped in a tag, no bare text between blocks:
     <|par|>a paragraph<|/par|>
     <|list|><|item|>bullet<|/item|><|item|>bullet<|/item|><|/list|>
-    <|codeblock|lang='python'|>code here\\n<|/codeblock|>
+    <|codeblock|>code here\\n<|/codeblock|>
     <|code|>inline code<|/code|>  <|bold|>bold<|/bold|>  <|italic|>italic<|/italic|>
     <|heading|>section heading<|/heading|>  <|subheading|>smaller heading<|/subheading|>
     <|quote|>a quoted line<|/quote|>  <|divider|>
-    <|link|href='https://example.com/page'|>link text<|/link|>
+    <|link|>example.com/page<|/link|>
   Never use <|user|>, <|assistant|>, <|system|>, <|endoftext|>, or any tag not
   listed above. Every opened tag must be closed. Escape newlines in JSON as \\n.
+  Write every tag BARE, with no attributes: use <|codeblock|> (not
+  <|codeblock|lang='python'|>) and <|link|>example.com/x<|/link|> (not
+  <|link|href='...'|>). A tag containing '=' or a second '|' is rejected.
 
 For about @THINK_PCT@% of conversations, the FINAL assistant reply must START
 with a hidden reasoning block before the first <|par|>:
@@ -231,7 +234,13 @@ def valid_assistant_markup(text: str) -> bool:
     stack = []
     for inner in tags:
         closing = inner.startswith("/")
-        name = (inner[1:] if closing else inner).split("|")[0].strip()
+        raw = inner[1:] if closing else inner
+        # Bare tags only. An attribute form like `codeblock|lang='python'` or
+        # `link|href='...'` no longer tokenizes to a single id (it byte-shreds
+        # into the raw markup), so it's rejected outright.
+        if "|" in raw or "=" in raw:
+            return False
+        name = raw.strip()
         if closing:
             if not stack or stack.pop() != name:
                 return False

@@ -6,6 +6,7 @@ import { apiFetch } from "@/lib/api"
 import { streamChat } from "@/lib/chat-socket"
 import { hasVisibleContent } from "@/lib/message-parser"
 import { useChats } from "@/components/chat/chats-provider"
+import { useSettings } from "@/components/settings/settings-provider"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -18,6 +19,13 @@ export interface ChatMessage {
 
 export function useChat(chatId: string) {
   const { takePendingMessage } = useChats()
+  const { settings } = useSettings()
+  // Read the system prompt at send time via a ref, so changing it (or any other
+  // setting) doesn't churn sendMessage's identity and re-fire the send effects.
+  const systemRef = React.useRef(settings.systemPrompt)
+  React.useEffect(() => {
+    systemRef.current = settings.systemPrompt
+  }, [settings.systemPrompt])
   const [messages, setMessages] = React.useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSending, setIsSending] = React.useState(false)
@@ -95,7 +103,7 @@ export function useChat(chatId: string) {
         })
 
       return new Promise<void>((resolve) => {
-        streamChat(chatId, content, modelId, {
+        streamChat(chatId, content, modelId, systemRef.current, {
           onToken: appendToAssistant,
           onDone: async () => {
             // Replace the streamed approximation with the authoritative,

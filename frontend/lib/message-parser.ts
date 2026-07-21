@@ -17,7 +17,7 @@
 // `<|divider|>` is void (no closing tag).
 
 // Backend token name -> render node type. Names not listed pass through
-// unchanged (quote, divider, italic, bold, list, item, link, url, …).
+// unchanged (quote, divider, italic, bold, list, item, link, …).
 const TOKEN_NAME_MAP: Record<string, string> = {
   par: "paragraph",
   title: "heading 1",
@@ -59,6 +59,22 @@ const THINKING_TAIL_RE = /<\|thinking\|>[^]*$/ // an unclosed, still-streaming o
 /** Removes thinking blocks (complete and partially-streamed) from the text. */
 export function stripThinking(content: string): string {
   return content.replace(THINKING_RE, "").replace(THINKING_TAIL_RE, "")
+}
+
+const THINKING_OPEN = "<|thinking|>"
+const THINKING_CLOSE = "<|/thinking|>"
+
+/**
+ * The reasoning inside the leading `<|thinking|>…<|/thinking|>` block, or "" if
+ * there is none. Handles the still-streaming case (no closing marker yet) by
+ * returning everything after the opener, so the reasoning can be shown live.
+ */
+export function extractThinking(content: string): string {
+  const start = content.indexOf(THINKING_OPEN)
+  if (start === -1) return ""
+  const afterOpen = start + THINKING_OPEN.length
+  const end = content.indexOf(THINKING_CLOSE, afterOpen)
+  return (end === -1 ? content.slice(afterOpen) : content.slice(afterOpen, end)).trim()
 }
 
 const TAG_RE = /<\|(.*?)\|>/g

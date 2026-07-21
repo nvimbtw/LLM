@@ -1,3 +1,10 @@
+// The protected vocabulary: each marker → a Private-Use-Area char it's swapped
+// for before tokenization, and (via `special_id`) a reserved single token id.
+// Only markers something actually emits are listed — the chat scaffold, the
+// document markup the frontend renders, and the thinking block. The PUA
+// codepoints are stable, otherwise-arbitrary labels; the gaps (e.g. E008–E00B)
+// are ids that once held tool-call / search scaffolding and were pruned. Re-add
+// an entry here (and re-pretrain) when a feature genuinely needs a new marker.
 pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     ("<|endoftext|>", '\u{E000}'),
     ("<|par|>", '\u{E001}'),
@@ -7,14 +14,8 @@ pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     ("<|/user|>", '\u{E005}'),
     ("<|assistant|>", '\u{E006}'),
     ("<|/assistant|>", '\u{E007}'),
-    ("<|tool_call|>", '\u{E008}'),
-    ("<|/tool_call|>", '\u{E009}'),
-    ("<|tool_result|>", '\u{E00A}'),
-    ("<|/tool_result|>", '\u{E00B}'),
     ("<|system|>", '\u{E00C}'),
     ("<|/system|>", '\u{E00D}'),
-    ("<|search|>", '\u{E00E}'),
-    ("<|bash|>", '\u{E00F}'),
     ("<|title|>", '\u{E010}'),
     ("<|/title|>", '\u{E011}'),
     ("<|heading|>", '\u{E012}'),
@@ -25,17 +26,12 @@ pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     ("<|/codeblock|>", '\u{E017}'),
     ("<|link|>", '\u{E018}'),
     ("<|/link|>", '\u{E019}'),
-    ("<|url|>", '\u{E01A}'),
     ("<|list|>", '\u{E01B}'),
     ("<|/list|>", '\u{E01C}'),
     ("<|item|>", '\u{E01D}'),
     ("<|/item|>", '\u{E01E}'),
     ("<|quote|>", '\u{E01F}'),
     ("<|/quote|>", '\u{E020}'),
-    ("<|math|>", '\u{E021}'),
-    ("<|/math|>", '\u{E022}'),
-    ("<|lang|>", '\u{E023}'),
-    ("<|/lang|>", '\u{E024}'),
     ("<|/par|>", '\u{E025}'),
     ("<|divider|>", '\u{E026}'),
     ("<|italic|>", '\u{E027}'),
@@ -55,6 +51,36 @@ pub fn lookup_special(ch: char) -> Option<&'static str> {
         .iter()
         .find(|&&(_, c)| c == ch)
         .map(|&(s, _)| s)
+}
+
+/// How many reserved special-token ids exist. The vocabulary is laid out as
+/// `[0,256)` raw bytes, `[256, 256+NUM_SPECIAL)` the special tokens (this block),
+/// then BPE merges above that (see `bpe::MERGE_BASE`). Reserving a dedicated,
+/// corpus-independent id per special token means `<|assistant|>`, `<|par|>`, … are
+/// each a *single* token with their own trainable embedding — instead of being
+/// shredded into the byte triple `[0xEE,0x80,0xNN]` that every marker used to
+/// share, which the model couldn't tell apart or learn cleanly.
+pub const NUM_SPECIAL: usize = SPECIAL_TOKENS.len();
+
+/// The reserved id for a special token's PUA char, or `None` for ordinary chars.
+/// Special token `i` (in `SPECIAL_TOKENS` order) owns id `256 + i`.
+pub fn special_id(ch: char) -> Option<u32> {
+    SPECIAL_TOKENS
+        .iter()
+        .position(|&(_, c)| c == ch)
+        .map(|i| 256 + i as u32)
+}
+
+/// Inverse of `special_id`: a reserved id back to its PUA char, or `None` if the
+/// id isn't in the special-token block. Used by `decode` to turn an atomic
+/// special id back into its marker text.
+pub fn special_char_from_id(id: u32) -> Option<char> {
+    let idx = id.checked_sub(256)? as usize;
+    if idx < NUM_SPECIAL {
+        Some(SPECIAL_TOKENS[idx].1)
+    } else {
+        None
+    }
 }
 
 fn replace_special_tokens(text: &str) -> String {
@@ -132,7 +158,16 @@ fn split_punctuation(words: Vec<String>) -> Vec<String> {
         let mut current = String::new();
 
         for c in word.chars() {
-            if matches!(c, ',' | '.' | '!' | '?' | '"' | ':' | ';' | 'Ċ' | 'ĉ') {
+            if lookup_special(c).is_some() {
+                // A special-token PUA char is always its own pretoken unit, so it
+                // maps to a single reserved id and never glues to adjacent text
+                // (e.g. `<|assistant|>Hello` → `[<|assistant|>]` + `[Hello]`).
+                if !current.is_empty() {
+                    result.push(current.clone());
+                    current.clear();
+                }
+                result.push(c.to_string());
+            } else if matches!(c, ',' | '.' | '!' | '?' | '"' | ':' | ';' | 'Ċ' | 'ĉ') {
                 if !current.is_empty() {
                     result.push(current.clone());
                     current.clear();

@@ -21,14 +21,8 @@ pub enum Marker {
     EndUser,
     Assistant,
     EndAssistant,
-    ToolCall,
-    EndToolCall,
-    ToolResult,
-    EndToolResult,
     System,
     EndSystem,
-    Search,
-    Bash,
     Unknown(String),
 }
 
@@ -55,14 +49,8 @@ fn marker_from_str(s: &str) -> Marker {
         "<|/user|>" => Marker::EndUser,
         "<|assistant|>" => Marker::Assistant,
         "<|/assistant|>" => Marker::EndAssistant,
-        "<|tool_call|>" => Marker::ToolCall,
-        "<|/tool_call|>" => Marker::EndToolCall,
-        "<|tool_result|>" => Marker::ToolResult,
-        "<|/tool_result|>" => Marker::EndToolResult,
         "<|system|>" => Marker::System,
         "<|/system|>" => Marker::EndSystem,
-        "<|search|>" => Marker::Search,
-        "<|bash|>" => Marker::Bash,
         _ => Marker::Unknown(s.to_string()),
     }
 }
@@ -286,23 +274,9 @@ mod tests {
     }
 
     #[test]
-    fn test_marker_from_str_tool() {
-        assert!(matches!(marker_from_str("<|tool_call|>"), Marker::ToolCall));
-        assert!(matches!(marker_from_str("<|/tool_call|>"), Marker::EndToolCall));
-        assert!(matches!(marker_from_str("<|tool_result|>"), Marker::ToolResult));
-        assert!(matches!(marker_from_str("<|/tool_result|>"), Marker::EndToolResult));
-    }
-
-    #[test]
     fn test_marker_from_str_system() {
         assert!(matches!(marker_from_str("<|system|>"), Marker::System));
         assert!(matches!(marker_from_str("<|/system|>"), Marker::EndSystem));
-    }
-
-    #[test]
-    fn test_marker_from_str_search_and_bash() {
-        assert!(matches!(marker_from_str("<|search|>"), Marker::Search));
-        assert!(matches!(marker_from_str("<|bash|>"), Marker::Bash));
     }
 
     #[test]

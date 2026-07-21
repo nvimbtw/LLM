@@ -108,6 +108,9 @@ export interface TrainingShellProps {
   primaryAction?: React.ReactNode
   rail: React.ReactNode
   main: React.ReactNode
+  // Full-width deep-dive section rendered below the rail+main grid, spanning the
+  // whole content width (the diagnostics charts stack here).
+  diagnostics?: React.ReactNode
   appendix: React.ReactNode
 }
 
@@ -123,6 +126,7 @@ export function TrainingShell({
   primaryAction,
   rail,
   main,
+  diagnostics,
   appendix,
 }: TrainingShellProps) {
   return (
@@ -152,11 +156,17 @@ export function TrainingShell({
       {/* Body: fixed rail + fluid main */}
       <div className="grid grid-cols-1 gap-8 pt-6 lg:grid-cols-[340px_minmax(0,1fr)] lg:gap-12">
         <aside className="lg:sticky lg:top-6 lg:self-start">{rail}</aside>
-        <main className="min-w-0 space-y-8">
-          {main}
-          {appendix}
-        </main>
+        <main className="min-w-0 space-y-8">{main}</main>
       </div>
+
+      {/* Full-width deep-dive: the diagnostics stack, then the appendix, both
+          spanning the whole content width below the rail+hero section. */}
+      {(diagnostics || appendix) && (
+        <div className="mt-8 space-y-8">
+          {diagnostics}
+          {appendix}
+        </div>
+      )}
     </div>
   )
 }

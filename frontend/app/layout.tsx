@@ -7,6 +7,9 @@ import { cn } from "@/lib/utils";
 import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ChatsProvider } from "@/components/chat/chats-provider";
+import { ToastProvider } from "@/components/ui/toast";
+import { SettingsProvider } from "@/components/settings/settings-provider";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 
 const geist = Geist({ subsets: ['latin'], variable: '--font-sans' })
 
@@ -38,9 +41,12 @@ export default function RootLayout({
     >
       <body>
         <ThemeProvider>
-          <ChatsProvider>
-            <SidebarProvider>
-              <AppSidebar />
+          <ToastProvider>
+            <SettingsProvider>
+              <SettingsDialog />
+              <ChatsProvider>
+                <SidebarProvider>
+                  <AppSidebar />
               {/* h-svh + overflow-hidden bound the column so page content
                   scrolls inside <main>, keeping the header (and the chat
                   composer) pinned instead of scrolling the document body. */}
@@ -56,8 +62,10 @@ export default function RootLayout({
                   {children}
                 </main>
               </SidebarInset>
-            </SidebarProvider>
-          </ChatsProvider>
+                </SidebarProvider>
+              </ChatsProvider>
+            </SettingsProvider>
+          </ToastProvider>
         </ThemeProvider>
       </body>
     </html>

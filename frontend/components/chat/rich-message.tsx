@@ -128,9 +128,11 @@ function renderNode(node: MNode, streaming: boolean): React.ReactNode {
     case "divider":
       return <hr className="border-border" />
     case "link":
+      // Bare <|link|>dest<|/link|> carries no href attribute, so the visible
+      // text is the destination. Legacy data with an explicit href still wins.
       return (
         <a
-          href={el.attrs?.href}
+          href={el.attrs?.href ?? textContent(el)}
           target="_blank"
           rel="noopener noreferrer"
           className="font-medium break-all text-primary underline underline-offset-2 hover:text-primary/80"

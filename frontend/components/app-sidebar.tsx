@@ -13,6 +13,7 @@ import { NavMain } from "./sidebar/nav-main";
 import { NavConversations } from "./sidebar/nav-conversations";
 import { NavAdmin } from "./sidebar/nav-admin";
 import { NavProfile } from "./sidebar/nav-profile";
+import { SidebarSettingsButton } from "./settings/settings-menu-button";
 
 // Brand shown in the sidebar header. Change these to rename the app:
 // APP_NAME is shown when expanded, APP_NAME_SHORT when collapsed to icons.
@@ -46,6 +47,7 @@ export function AppSidebar() {
         <NavConversations />
       </SidebarContent>
       <SidebarFooter>
+        <SidebarSettingsButton />
         <NavProfile />
       </SidebarFooter>
       <SidebarRail />

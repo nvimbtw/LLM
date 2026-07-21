@@ -82,6 +82,11 @@ export interface DiagPoint {
   emb_cos_mean: number
   emb_cos_p5: number
   emb_cos_p95: number
+  // Z-scored activation-distribution histogram (fixed bin count, fractions summing
+  // to ~1) of the deepest block's residual stream — one per report.
+  act_hist: number[]
+  // 2-D PCA projection of the frequent tokens' embeddings ([x, y] per token).
+  emb_pca: [number, number][]
 }
 
 export interface TrainStats {

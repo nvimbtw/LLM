@@ -8,7 +8,8 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 // Wire protocol:
 //   client → { token }                            (first frame, auth)
 //   server → { type: "ready" }
-//   client → { chat_id, content, model_id }       (chat_id null = new chat)
+//   client → { chat_id, content, model_id, system }  (chat_id null = new chat;
+//                                                      system optional/omitted)
 //   server → { type: "token", value }             (decoded token text, repeated)
 //   server → { type: "done", chat_id, id_message }
 //   server → { type: "error", message }           (at any point)
@@ -24,6 +25,7 @@ export function streamChat(
   chatId: string | null,
   content: string,
   modelId: string | null,
+  system: string | null,
   handlers: ChatStreamHandlers
 ): () => void {
   const ws = new WebSocket(`${WS_URL}/chat/ws`)
@@ -53,9 +55,20 @@ export function streamChat(
     }
 
     switch (msg.type) {
-      case "ready":
-        ws.send(JSON.stringify({ chat_id: chatId, content, model_id: modelId }))
+      case "ready": {
+        // Omit `system` unless it's a non-empty prompt, so the backend treats a
+        // blank setting as "no system prompt" rather than an empty turn.
+        const trimmedSystem = system?.trim()
+        ws.send(
+          JSON.stringify({
+            chat_id: chatId,
+            content,
+            model_id: modelId,
+            ...(trimmedSystem ? { system: trimmedSystem } : {}),
+          })
+        )
         break
+      }
       case "token":
         handlers.onToken(msg.value ?? "")
         break

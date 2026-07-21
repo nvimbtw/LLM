@@ -3,8 +3,11 @@
 Generate synthetic thinking-trace training data in an assistant style.
 
 Each file is a short assistant interaction: an inner-monologue <|thinking|> block
-where the assistant reasons at length about how to help, followed by a <|par|>
-reply. The substance is deliberately plain natural-language prose — no math,
+where the assistant reasons at length about how to help, followed by a reply
+rendered in the full document markup (<|par|>, <|heading|>, <|list|>, <|bold|>,
+<|quote|>, <|divider|>, <|code|>, … — see render_reply) so every structural token
+gets a trained embedding during pretraining instead of being met cold at SFT time.
+The substance is deliberately plain natural-language prose — no math,
 equations, or symbols — because the point is to teach the *thinking pattern*
 (open the block, reason step by step in words, weigh options, self-correct,
 then answer), not to teach arithmetic. Math-heavy content pollutes the BPE
@@ -602,6 +605,95 @@ LEADINS = [
 ]
 
 
+# ── Reply markup enrichment (ISSUE: pretrain must see the whole tag vocabulary) ──
+#
+# Pretraining used to render every reply as a single <|par|> block, so the other
+# structural tokens (<|heading|>, <|list|>, <|bold|>, …) never appeared in the
+# pretrain corpus and their embeddings stayed at init — then SFT had to learn them
+# cold. render_reply wraps the same plain prose in a randomly chosen subset of the
+# real document tags so each one gets a trained embedding before SFT. Content stays
+# plain words (no math/symbol soup, per this module's philosophy); code/codeblock
+# use short, clean command-ish text purely so those tokens are exercised too.
+
+# Generic section leads for headings — real words, no symbols.
+HEADING_LEADS = [
+    "The short version", "What to do", "Why it works", "In practice",
+    "The gist", "How to think about it", "A simple way to put it",
+]
+
+# Short sayings for <|quote|> blocks.
+SAYINGS = [
+    "small steps beat big intentions", "clear beats clever", "start where you are",
+    "less, but better", "done is better than perfect", "keep it simple",
+]
+
+# Clean, low-symbol snippets so <|code|>/<|codeblock|> get exposure without
+# polluting the vocabulary with equation-like noise.
+CODE_TERMS = ["git status", "ls", "cd", "README", "print", "today"]
+CODE_LINES = ["git status", "ls -a", "cd projects", "print done"]
+
+
+def _emphasize(rng, text: str) -> str:
+    """Wrap one ordinary word in <|bold|> or <|italic|> to exercise emphasis tags."""
+    words = text.split(" ")
+    cands = [i for i, w in enumerate(words) if w.isalpha() and len(w) > 4]
+    if not cands:
+        return text
+    i = rng.choice(cands)
+    tag = rng.choice(["bold", "italic"])
+    words[i] = f"<|{tag}|>{words[i]}<|/{tag}|>"
+    return " ".join(words)
+
+
+def render_reply(rng, reply: str) -> str:
+    """Render one reply as well-formed document markup, exercising a random subset
+    of the structural tags. Always yields at least one <|par|>, and every opened tag
+    is closed (mirrors the shape the SFT validator enforces)."""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", reply) if s.strip()]
+    if not sentences:
+        sentences = [reply.strip()]
+    blocks: list[str] = []
+
+    # Optional section heading.
+    if rng.random() < 0.4:
+        tag = rng.choice(["heading", "subheading"])
+        blocks.append(f"<|{tag}|>{rng.choice(HEADING_LEADS)}<|/{tag}|>")
+
+    # Optional lead-in quote.
+    if rng.random() < 0.25:
+        blocks.append(f"<|quote|>{rng.choice(SAYINGS).capitalize()}.<|/quote|>")
+
+    # Body: a short intro paragraph plus a bulleted list, or one/two paragraphs.
+    if len(sentences) >= 3 and rng.random() < 0.35:
+        blocks.append(f"<|par|>{sentences[0]}<|/par|>")
+        items = "".join(f"<|item|>{s}<|/item|>" for s in sentences[1:])
+        blocks.append(f"<|list|>{items}<|/list|>")
+    elif len(sentences) >= 2 and rng.random() < 0.5:
+        cut = len(sentences) // 2
+        para1 = _emphasize(rng, " ".join(sentences[:cut])) if rng.random() < 0.5 else " ".join(sentences[:cut])
+        blocks.append(f"<|par|>{para1}<|/par|>")
+        if rng.random() < 0.3:
+            blocks.append("<|divider|>")
+        blocks.append(f"<|par|>{' '.join(sentences[cut:])}<|/par|>")
+    else:
+        para = " ".join(sentences)
+        blocks.append(f"<|par|>{_emphasize(rng, para) if rng.random() < 0.5 else para}<|/par|>")
+
+    # Optional inline code aside.
+    if rng.random() < 0.2:
+        blocks.append(f"<|par|>Handy one: <|code|>{rng.choice(CODE_TERMS)}<|/code|>.<|/par|>")
+
+    # Optional short code block.
+    if rng.random() < 0.12:
+        blocks.append(f"<|codeblock|>{rng.choice(CODE_LINES)}<|/codeblock|>")
+
+    # Optional bare link (exposes <|link|>/<|/link|>; SFT uses the href form).
+    if rng.random() < 0.15:
+        blocks.append("<|par|>More on this: <|link|>a short guide<|/link|>.<|/par|>")
+
+    return "\n".join(blocks)
+
+
 def expand_thinking(rng, ask: str, beats: list[str], reply: str) -> list[tuple[str, str]]:
     """Weave one (ask, beats, reply) turn into a long inner-monologue block and a reply."""
     parts = [f"{rng.choice(OPENERS)} {ask}"]
@@ -623,13 +715,13 @@ def expand_thinking(rng, ask: str, beats: list[str], reply: str) -> list[tuple[s
     return [(" ".join(parts), reply)]
 
 
-def format_file(title: str, thought_pairs: list[tuple[str, str]]) -> str:
-    """Format a file with alternating thinking and par blocks."""
+def format_file(rng, title: str, thought_pairs: list[tuple[str, str]]) -> str:
+    """Format a file with alternating thinking blocks and marked-up replies."""
     lines = [f"<|title|>{title}<|/title|>", ""]
     for thought_text, response_text in thought_pairs:
         lines.append(f"<|thinking|>{thought_text}<|/thinking|>")
         lines.append("")
-        lines.append(f"<|par|>{response_text}<|/par|>")
+        lines.append(render_reply(rng, response_text))
         lines.append("")
     lines.append("<|endoftext|>")
     lines.append("")
@@ -659,7 +751,7 @@ def main():
         all_pairs = []
         for ask, beats, reply in topic["steps"]:
             all_pairs.extend(expand_thinking(rng, ask, beats, reply))
-        content = format_file(topic["title"], all_pairs)
+        content = format_file(rng, topic["title"], all_pairs)
         fname = f"synthetic{idx:04d}.txt"
         with open(os.path.join(args.out, fname), "w", encoding="utf-8") as f:
             f.write(content)

@@ -384,7 +384,7 @@ fn handle_tokenize_event(job: &Job, event: TokenizeEvent) {
             let obj = {
                 let mut st = lock(&job.state);
                 if let Some(map) = st.tokenize.as_object_mut() {
-                    map.insert("vocab".into(), serde_json::json!(256 + done as i64));
+                    map.insert("vocab".into(), serde_json::json!(tokenize::bpe::vocab_size(done as usize)));
                     map.insert("merges".into(), serde_json::json!(done));
                     map.insert("progress".into(), serde_json::json!(progress));
                 }
@@ -417,6 +417,8 @@ fn diag_frame(step: u64, d: &llm::training::diagnostics::Diagnostics) -> serde_j
         "emb_cos_mean": d.emb_cos_mean,
         "emb_cos_p5": d.emb_cos_p5,
         "emb_cos_p95": d.emb_cos_p95,
+        "act_hist": d.act_hist,
+        "emb_pca": d.emb_pca,
     })
 }
 

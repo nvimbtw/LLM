@@ -24,7 +24,6 @@ fn test_lookup_special_roundtrip() {
     assert_eq!(lookup_special('\u{E004}'), Some("<|user|>"));
     assert_eq!(lookup_special('\u{E005}'), Some("<|/user|>"));
     assert_eq!(lookup_special('\u{E006}'), Some("<|assistant|>"));
-    assert_eq!(lookup_special('\u{E00F}'), Some("<|bash|>"));
     assert_eq!(lookup_special('a'), None);
 }
 

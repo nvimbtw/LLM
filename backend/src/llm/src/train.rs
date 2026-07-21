@@ -96,7 +96,7 @@ pub fn train(
         .collect();
 
     let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
-    let vocab = merges.len() as i64 + 256;
+    let vocab = tokenize::bpe::vocab_size(merges.len());
 
     // The caller owns the layout (via the backend's storage module); we only
     // create the run directory and stash a copy of the tokenizer merges next to
