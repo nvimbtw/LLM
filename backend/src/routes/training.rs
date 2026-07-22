@@ -45,6 +45,20 @@ async fn start_training(
     HttpResponse::Created().json(serde_json::json!({ "job_id": job_id }))
 }
 
+// Lists the selectable pretrain datasets — the subfolders of uploads/, each with
+// its .txt count — so the params rail can render a checkbox per dataset with an
+// "n / <files>" sample cap.
+#[get("/datasets")]
+async fn list_datasets(_admin: AdminUser) -> impl Responder {
+    match crate::training::list_datasets() {
+        Ok(list) => HttpResponse::Ok().json(list),
+        Err(e) => {
+            eprintln!("list datasets error: {}", e);
+            HttpResponse::InternalServerError().body("failed to list datasets")
+        }
+    }
+}
+
 // Lists known runs so the page can offer to re-attach to one already in flight.
 #[get("")]
 async fn list_jobs(_admin: AdminUser, registry: web::Data<JobRegistry>) -> impl Responder {
@@ -270,6 +284,16 @@ fn validate_config(cfg: &TrainConfig) -> Result<(), &'static str> {
     if cfg.max_vocab < 256 {
         return Err("max_vocab must be at least 256");
     }
+    // Pretrain builds its corpus from the selected upload datasets; SFT ignores
+    // them (it fine-tunes on chat data), so only require a selection for pretrain.
+    if cfg.mode != TrainMode::Sft {
+        if cfg.datasets.is_empty() {
+            return Err("select at least one dataset to train on");
+        }
+        if cfg.datasets.iter().any(|d| d.name.trim().is_empty()) {
+            return Err("dataset name is required");
+        }
+    }
     Ok(())
 }
 
@@ -299,6 +323,7 @@ fn validate_sft(cfg: &TrainConfig) -> Result<(), &'static str> {
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(training_ws);
+    cfg.service(list_datasets);
     cfg.service(start_training);
     cfg.service(list_jobs);
 }

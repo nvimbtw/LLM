@@ -1,6 +1,6 @@
 import { API_URL, authHeaders } from "./api"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
-import type { TrainConfig } from "./training-socket"
+import type { DatasetSelection, TrainConfig } from "./training-socket"
 
 // A named, reusable training-parameter set. `config` is a TrainConfig-shaped blob
 // the backend stores opaquely (validated only when a run actually starts). Mirrors
@@ -74,6 +74,26 @@ function num(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback
 }
 
+// Coerce a stored blob's dataset selection into a clean DatasetSelection[],
+// dropping any entry that isn't a named object and clamping its count to a
+// non-negative integer (0 = all). Missing/garbage yields an empty selection.
+function datasets(v: unknown): DatasetSelection[] {
+  if (!Array.isArray(v)) return []
+  const out: DatasetSelection[] = []
+  for (const item of v) {
+    if (!item || typeof item !== "object") continue
+    const name = (item as { name?: unknown }).name
+    if (typeof name !== "string" || !name.trim()) continue
+    const rawCount = (item as { count?: unknown }).count
+    const count =
+      typeof rawCount === "number" && Number.isFinite(rawCount) && rawCount > 0
+        ? Math.floor(rawCount)
+        : 0
+    out.push({ name, count })
+  }
+  return out
+}
+
 // Pick the TrainConfig fields out of a stored blob, defaulting anything missing —
 // so a preset saved before a field existed, or a model config that only carries a
 // subset, still loads cleanly. Shared by preset-load and model-load. Never trusts
@@ -97,8 +117,7 @@ export function toTrainConfig(
     lr: num(b.lr, DEFAULT_CONFIG.lr),
     ff_multiplier: num(b.ff_multiplier, DEFAULT_CONFIG.ff_multiplier),
     max_vocab: num(b.max_vocab, DEFAULT_CONFIG.max_vocab),
-    num_books: num(b.num_books, DEFAULT_CONFIG.num_books),
-    num_synthetic: num(b.num_synthetic, DEFAULT_CONFIG.num_synthetic),
+    datasets: datasets(b.datasets),
     mode,
     base_model_id:
       typeof b.base_model_id === "string" ? b.base_model_id : undefined,

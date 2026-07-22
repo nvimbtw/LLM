@@ -49,20 +49,36 @@ pub struct TrainConfig {
     // the route boundary for SFT.
     #[serde(default)]
     pub base_model_id: Option<Uuid>,
-    // How many uploaded books to train on, chosen at random. 0 (or >= the number
-    // available) means "use all of them". Lets the user keep a big pile of data
-    // in uploads and dial the training set size per run.
+    // Which upload datasets (subfolders of uploads/) go into this run's corpus,
+    // each with how many of its .txt files to sample at random (0 => all of that
+    // dataset). Pretrain only — SFT ignores it. `#[serde(default)]` keeps
+    // pre-existing meta.json (written before this field, or from an SFT run)
+    // deserializing as an empty selection.
     #[serde(default)]
-    pub num_books: usize,
-    // How many synthetic documents (from the synthetic dir) to mix in, chosen at
-    // random. 0 means none — synthetic data is opt-in per run.
-    #[serde(default)]
-    pub num_synthetic: usize,
+    pub datasets: Vec<DatasetSelection>,
     // The model's id, which names its on-disk directory. Set server-side by the
     // start route (reused on retrain, freshly generated for a new model), never
     // by the client — hence skipped on deserialize.
     #[serde(skip_deserializing)]
     pub storage_id: Uuid,
+}
+
+// One entry in a run's dataset selection: the name of an uploads/ subfolder and
+// how many of its .txt files to sample at random. `count == 0` means "use all of
+// them" (see `select_txt`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetSelection {
+    pub name: String,
+    #[serde(default)]
+    pub count: usize,
+}
+
+// A dataset the UI can offer: one subfolder of uploads/ and its total .txt count
+// (so the picker can show "n / <files>" when dialing a per-dataset sample size).
+#[derive(Debug, Clone, Serialize)]
+pub struct DatasetInfo {
+    pub name: String,
+    pub files: usize,
 }
 
 // Summary of what tokenization produced, for the dashboard + meta.json.
@@ -140,23 +156,74 @@ fn select_txt(dir: &Path, num: usize, zero_means_all: bool) -> io::Result<Vec<Pa
     Ok(paths)
 }
 
+// Rejects a dataset name that isn't a plain, single-segment folder name, so a
+// request can't escape the uploads dir via path traversal (`..`, absolute paths,
+// nested segments). Every selected name is checked before it's joined to
+// uploads/.
+fn is_safe_dataset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
+// Scans uploads/ for its immediate subfolders — each one a selectable dataset —
+// and counts the `.txt` files in each. Sorted by name for a stable UI order; a
+// missing uploads dir yields an empty list rather than an error.
+pub fn list_datasets() -> io::Result<Vec<DatasetInfo>> {
+    let uploads = storage::uploads_dir();
+    if !uploads.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&uploads)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue; // loose files at the uploads root aren't datasets
+        }
+        // A non-UTF-8 dir name can't round-trip to JSON / a request — skip it.
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let files = fs::read_dir(entry.path())?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("txt"))
+            .count();
+        out.push(DatasetInfo { name, files });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
 // writes the two files `llm::train` consumes: a flat token-id `corpus.bin` in
 // `datasets/` and `merges.bin` in `artifacts/tokenizer/`. Progress is pushed
 // through `on_event` (synchronous; runs on the caller's thread).
 pub fn build_dataset(
     max_vocab: u32,
-    num_books: usize,
-    num_synthetic: usize,
+    datasets: &[DatasetSelection],
     on_event: impl Fn(TokenizeEvent),
 ) -> io::Result<DatasetStats> {
-    // Books from uploads (0 => all) plus a chosen number of synthetic docs.
-    let mut paths = select_txt(&storage::uploads_dir(), num_books, true)?;
-    paths.extend(select_txt(&storage::synthetic_dir(), num_synthetic, false)?);
+    // Each selected dataset is a subfolder of uploads/; pull `count` .txt files
+    // from each (0 => all of that dataset), concatenated in selection order.
+    let uploads = storage::uploads_dir();
+    let mut paths = Vec::new();
+    for sel in datasets {
+        if !is_safe_dataset_name(&sel.name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid dataset name",
+            ));
+        }
+        paths.extend(select_txt(&uploads.join(&sel.name), sel.count, true)?);
+    }
 
     if paths.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "no .txt files found in uploads or synthetic",
+            "no .txt files found in the selected datasets",
         ));
     }
 

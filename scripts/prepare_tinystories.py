@@ -33,7 +33,10 @@ import uuid
 from huggingface_hub import hf_hub_download
 
 REPO_ID = "roneneldan/TinyStories"
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads"
+# Datasets now live in their own subfolder of uploads/ (each is a checkbox in the
+# training UI); write to uploads/TinyStories so clear_previous only ever touches
+# this dataset and leaves sibling datasets (Synthetic, Wikipedia, …) alone.
+OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads/TinyStories"
 EOT = "<|endoftext|>"
 
 # The dataset's raw text files. V2 is the GPT-4-only regeneration (higher quality

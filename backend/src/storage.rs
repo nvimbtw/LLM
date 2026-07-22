@@ -24,14 +24,12 @@ fn root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("data"))
 }
 
+// Parent of the pretrain dataset subfolders. Each immediate subdirectory
+// (e.g. uploads/TinyStories, uploads/Synthetic) is one selectable dataset; a run
+// picks which subfolders — and how many files from each — go into its corpus
+// (see training::list_datasets / build_dataset).
 pub fn uploads_dir() -> PathBuf {
     root().join("raw").join("uploads")
-}
-
-// Synthetic training documents, kept separate from user uploads so a run can mix
-// in a chosen number of them independently.
-pub fn synthetic_dir() -> PathBuf {
-    root().join("raw").join("synthetic")
 }
 
 // Chat-conversation datasets (JSONL) for supervised fine-tuning, kept separate

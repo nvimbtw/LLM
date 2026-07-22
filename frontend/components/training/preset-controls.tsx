@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useModels } from "@/hooks/use-models"
 import { useTrainingPresets } from "@/hooks/use-training-presets"
-import { loadModelConfig } from "@/lib/training-presets"
+import { loadModelConfig, toTrainConfig } from "@/lib/training-presets"
 import type { TrainConfig } from "@/lib/training-socket"
 
 // The preset controls that live at the top of the params rail: a picker to load a
@@ -90,7 +90,14 @@ export function PresetControls({
                 presets.map((p) => (
                   <DropdownMenuItem
                     key={p.id_preset}
-                    onClick={() => onLoad(p.config)}
+                    onClick={() =>
+                      onLoad(
+                        toTrainConfig(
+                          p.config as unknown as Record<string, unknown>,
+                          p.config?.model_name ?? "my-model"
+                        )
+                      )
+                    }
                     className="justify-between"
                   >
                     <span className="truncate">{p.name}</span>

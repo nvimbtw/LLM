@@ -28,8 +28,7 @@ export const DEFAULT_CONFIG: TrainConfig = {
   lr: 0.0001,
   ff_multiplier: 4,
   max_vocab: 1024,
-  num_books: 0,
-  num_synthetic: 0,
+  datasets: [],
   mode: "pretrain",
 }
 

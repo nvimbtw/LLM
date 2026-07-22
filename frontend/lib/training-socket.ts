@@ -21,6 +21,20 @@ import { API_URL, WS_URL, authHeaders, getToken } from "./api"
 // lowercase). Absent on older clients → the backend defaults to "pretrain".
 export type TrainMode = "pretrain" | "sft"
 
+// One picked dataset: the name of an uploads/ subfolder and how many of its .txt
+// files to sample at random (0 = all of that dataset).
+export interface DatasetSelection {
+  name: string
+  count: number
+}
+
+// A selectable dataset returned by GET /training/datasets: an uploads/ subfolder
+// and its total .txt count (the cap the picker shows as "n / files").
+export interface DatasetInfo {
+  name: string
+  files: number
+}
+
 export interface TrainConfig {
   model_name: string
   dimensions: number
@@ -31,10 +45,9 @@ export interface TrainConfig {
   lr: number
   ff_multiplier: number
   max_vocab: number
-  // How many uploaded books to train on, picked at random. 0 = use all.
-  num_books: number
-  // How many synthetic documents to mix in, picked at random. 0 = none.
-  num_synthetic: number
+  // Which upload datasets (subfolders of uploads/) to train on, each with how
+  // many of its files to sample (0 = all of that dataset). Pretrain only.
+  datasets: DatasetSelection[]
   // Pretrain (default) vs SFT fine-tune.
   mode: TrainMode
   // For SFT only: the id of the base model to fine-tune from. Omitted for
@@ -174,6 +187,14 @@ export async function startTraining(config: TrainConfig): Promise<string> {
   }
   const data = (await res.json()) as { job_id: string }
   return data.job_id
+}
+
+export async function listDatasets(): Promise<DatasetInfo[]> {
+  const res = await fetch(`${API_URL}/training/datasets`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) return []
+  return (await res.json()) as DatasetInfo[]
 }
 
 export async function listJobs(): Promise<JobSummary[]> {

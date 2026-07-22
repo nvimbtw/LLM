@@ -15,10 +15,10 @@ them cold, which destabilizes the model (the "SFT turns coherent output into
 gibberish" failure). Emitting the scaffold here, in the exact shape SFT uses,
 gives every one of those tokens a trained embedding before fine-tuning.
 
-These docs are written to the *synthetic* dir and are only ever a tunable
-minority of the pretrain corpus (build_dataset mixes `num_synthetic` of them in
-alongside `num_books` TinyStories) — the simple stories stay the backbone; this
-just teaches the scaffold. The substance is deliberately plain natural-language
+These docs are written to the uploads/Synthetic dataset and are only ever a
+tunable minority of the pretrain corpus (a run checks the Synthetic dataset and
+samples some of it alongside a larger dataset like TinyStories) — the simple
+stories stay the backbone; this just teaches the scaffold. The substance is deliberately plain natural-language
 prose — no math, equations, or symbols — because the point is to teach the
 *thinking pattern* (open the block, reason step by step in words, weigh options,
 self-correct, then answer), not arithmetic. Math-heavy content pollutes the BPE
@@ -41,7 +41,7 @@ import random
 import re
 
 SEED = 42
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/synthetic"
+OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads/Synthetic"
 
 # Generic assistant system prompts. A fraction of conversations open with one so
 # the <|system|>/<|/system|> tokens (and this framing) are trained in pretraining

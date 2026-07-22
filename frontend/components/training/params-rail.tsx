@@ -3,12 +3,19 @@
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { PresetControls } from "@/components/training/preset-controls"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
+import { useDatasets } from "@/hooks/use-datasets"
 import { useModels } from "@/hooks/use-models"
 import { cn } from "@/lib/utils"
-import type { TrainConfig, TrainMode } from "@/lib/training-socket"
+import type {
+  DatasetInfo,
+  DatasetSelection,
+  TrainConfig,
+  TrainMode,
+} from "@/lib/training-socket"
 
 // Numeric fields split by which mode they apply to. Architecture + dataset knobs
 // only make sense for a fresh pretrain; a fine-tune inherits the base model's
@@ -34,8 +41,6 @@ const ARCH_FIELDS: Field[] = [
   // Vocab can be far larger than a model dimension — GPT-2 is ~50k (2^16). Allow
   // up to 2^20 (~1M).
   { key: "max_vocab", label: "Max vocab", pow2: true, maxExp: 20 },
-  { key: "num_books", label: "Books (0 = all)" },
-  { key: "num_synthetic", label: "Synthetic (0 = none)" },
 ]
 
 const RUN_FIELDS: Field[] = [
@@ -103,6 +108,129 @@ function Pow2Input({
   )
 }
 
+// The pretrain dataset picker: one checkbox row per uploads/ subfolder. Checking
+// a dataset adds it to the run; the count field then dials how many of its files
+// to sample (blank/0 = all), with the total shown as "/ <files>". Reads as an
+// extension of the spec-sheet rail — a hairline list, tabular figures, muted
+// labels — rather than a separate form.
+function DatasetPicker({
+  available,
+  loading,
+  value,
+  disabled,
+  onChange,
+}: {
+  available: DatasetInfo[]
+  loading: boolean
+  value: DatasetSelection[]
+  disabled: boolean
+  onChange: (next: DatasetSelection[]) => void
+}) {
+  const selected = new Map(value.map((d) => [d.name, d.count]))
+
+  const toggle = (name: string, on: boolean) => {
+    if (on) onChange([...value, { name, count: 0 }])
+    else onChange(value.filter((d) => d.name !== name))
+  }
+
+  const setCount = (name: string, count: number, max: number) => {
+    const clamped = Number.isFinite(count)
+      ? Math.min(max, Math.max(0, Math.floor(count)))
+      : 0
+    onChange(value.map((d) => (d.name === name ? { ...d, count: clamped } : d)))
+  }
+
+  const totalFiles = value.reduce((sum, d) => {
+    const info = available.find((a) => a.name === d.name)
+    if (!info) return sum
+    return sum + (d.count > 0 ? Math.min(d.count, info.files) : info.files)
+  }, 0)
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">Datasets</span>
+        {value.length > 0 && (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {totalFiles.toLocaleString()} files
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
+          Loading datasets…
+        </p>
+      ) : available.length === 0 ? (
+        <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
+          No datasets found. Add a folder of .txt files under
+          <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
+            data/raw/uploads/
+          </code>
+          .
+        </p>
+      ) : (
+        <ul className="divide-y rounded-lg border">
+          {available.map((d) => {
+            const checked = selected.has(d.name)
+            const count = selected.get(d.name) ?? 0
+            const rowId = `dataset-${d.name}`
+            return (
+              <li
+                key={d.name}
+                className="flex items-center justify-between gap-3 px-2.5 py-2"
+              >
+                <label
+                  htmlFor={rowId}
+                  className={cn(
+                    "flex min-w-0 items-center gap-2",
+                    !disabled && "cursor-pointer"
+                  )}
+                >
+                  <Checkbox
+                    id={rowId}
+                    checked={checked}
+                    disabled={disabled}
+                    onCheckedChange={(on) => toggle(d.name, on)}
+                  />
+                  <span className="truncate text-sm">{d.name}</span>
+                </label>
+
+                <span className="flex w-32 shrink-0 items-center justify-end gap-1.5 tabular-nums">
+                  {checked ? (
+                    <>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={d.files}
+                        step={1}
+                        value={count === 0 ? "" : String(count)}
+                        placeholder="all"
+                        disabled={disabled}
+                        onChange={(e) =>
+                          setCount(d.name, Number(e.target.value), d.files)
+                        }
+                        className="h-8 w-16 text-right tabular-nums"
+                      />
+                      <span className="w-12 text-xs text-muted-foreground">
+                        / {d.files.toLocaleString()}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="pr-1 text-xs text-muted-foreground">
+                      {d.files.toLocaleString()} files
+                    </span>
+                  )}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // Name is a display label only (weights live under the model's UUID), so spaces
 // and dots like "Opal 1.1" are allowed — just no surrounding whitespace or
 // control characters. Shared by both modes.
@@ -158,10 +286,14 @@ function validate(cfg: TrainConfig): string[] {
     errs.push("Learning rate must be positive.")
   if (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
     errs.push("Max vocab must be at least 256.")
-  if (!Number.isInteger(cfg.num_books) || cfg.num_books < 0)
-    errs.push("Books must be 0 (all) or a positive whole number.")
-  if (!Number.isInteger(cfg.num_synthetic) || cfg.num_synthetic < 0)
-    errs.push("Synthetic files must be 0 (none) or a positive whole number.")
+  // Defensive: a config from a stale source (e.g. a preset saved before this
+  // field existed) may lack `datasets`; treat missing as an empty selection so it
+  // surfaces as a normal validation error rather than a crash.
+  const selected = cfg.datasets ?? []
+  if (selected.length === 0)
+    errs.push("Select at least one dataset to train on.")
+  if (selected.some((d) => !Number.isInteger(d.count) || d.count < 0))
+    errs.push("Each dataset count must be 0 (all) or a positive whole number.")
   return errs
 }
 
@@ -208,6 +340,8 @@ export function ParamsRail({
   modelsRefreshKey,
 }: ParamsRailProps) {
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
+  const { datasets: availableDatasets, isLoading: datasetsLoading } =
+    useDatasets()
 
   const setField = (key: keyof TrainConfig, value: string) => {
     onChange({
@@ -343,6 +477,16 @@ export function ParamsRail({
           )
         )}
       </dl>
+
+      {!isSft && (
+        <DatasetPicker
+          available={availableDatasets}
+          loading={datasetsLoading}
+          value={cfg.datasets ?? []}
+          disabled={disabled}
+          onChange={(datasets) => onChange({ ...cfg, datasets })}
+        />
+      )}
 
       {isSft ? (
         <p className="text-xs text-muted-foreground">
