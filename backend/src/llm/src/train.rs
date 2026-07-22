@@ -175,6 +175,71 @@ pub fn continue_train(
     )
 }
 
+// The chat-scaffold markers. The chat template (chat_template.rs) is the *only*
+// thing that emits these, so a prose / document / TinyStories pretrain corpus
+// never contains them — their input embeddings reach SFT still at random init.
+const SCAFFOLD_MARKERS: [&str; 6] = [
+    "<|user|>",
+    "<|/user|>",
+    "<|assistant|>",
+    "<|/assistant|>",
+    "<|system|>",
+    "<|/system|>",
+];
+
+/// Warm-start the chat-scaffold input embeddings before SFT.
+///
+/// Pretraining is prose + document markup + TinyStories; the chat scaffold
+/// (`<|user|>`/`<|assistant|>`/`<|system|>` and their closers) is introduced
+/// only at SFT, so those six rows are still at random Glorot init and inject
+/// noise the instant SFT feeds them — destabilizing the shared trunk and, at the
+/// usual SFT LR, wrecking the pretrained weights (the "SFT turns coherent output
+/// into gibberish" failure). Reset just those rows to the mean embedding (a
+/// "typical token" vector), the standard added-token initialization, so SFT
+/// starts from a sane point. Returns the number of rows reset.
+///
+/// This targets a **fixed, tiny id set derived from the tokenizer** — NOT a
+/// weight heuristic. An earlier version tried to *detect* untrained rows by "all
+/// components within the init bound `sqrt(6/(d+vocab))`", but on a small model
+/// that bound is ~0.03 and around half of all legitimately-trained-but-small
+/// embeddings (rare bytes, infrequent merges, lightly-used markup) never cross
+/// it — so it reset ~half the vocabulary onto one mean vector and *caused* the
+/// gibberish it was meant to prevent. "Never trained" is not recoverable from a
+/// weight value; only the scaffold markers are knowably absent from a prose
+/// pretrain, so only they are touched. Ids come from `encode` (special tokens
+/// are atomic, so the merge list is irrelevant — pass an empty one), which stays
+/// correct if `SPECIAL_TOKENS` is ever reordered.
+fn warm_start_scaffold_embeddings(model: &mut Model) -> usize {
+    let vocab = model.embedding_table.len();
+    let d = model.embedding_table.first().map_or(0, |r| r.len());
+    if vocab == 0 || d == 0 {
+        return 0;
+    }
+
+    // Mean over the whole table — a stable "typical token" vector to seed from.
+    let mut mean = vec![0.0f32; d];
+    for row in &model.embedding_table {
+        for (m, &w) in mean.iter_mut().zip(row) {
+            *m += w;
+        }
+    }
+    for m in &mut mean {
+        *m /= vocab as f32;
+    }
+
+    let mut reset = 0usize;
+    for marker in SCAFFOLD_MARKERS {
+        // A lone special marker encodes to exactly its one reserved id.
+        if let Some(&id) = tokenize::bpe::encode(marker, &[]).first() {
+            if (id as usize) < vocab {
+                model.embedding_table[id as usize].clone_from(&mean);
+                reset += 1;
+            }
+        }
+    }
+    reset
+}
+
 /// Fine-tune (supervised fine-tuning) a **pretrained base model** on a masked
 /// chat dataset. Loads the base weights from `base_model_dir`, then runs the
 /// training loop over `sft_corpus_path` (flat little-endian `u32` ids, exactly
@@ -209,7 +274,6 @@ pub fn sft_train(
     let mut transformer = Model::load(&base_model_dir.to_string_lossy())?;
     let ctx_window = transformer.positional_table.len() as i64;
     let layers = transformer.layers;
-    let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
     let corpus_bytes = fs::read(sft_corpus_path)?;
     let corpus: Vec<u32> = corpus_bytes
@@ -231,6 +295,15 @@ pub fn sft_train(
             ),
         ));
     }
+
+    // Warm-start the chat-scaffold input embeddings (absent from a prose pretrain)
+    // BEFORE the workspace uploads weights to the GPU.
+    let reset = warm_start_scaffold_embeddings(&mut transformer);
+    if reset > 0 {
+        println!("SFT warm-start: reset {reset} chat-scaffold input embedding(s) to the table mean");
+    }
+
+    let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
     // Copy the base tokenizer next to the fine-tuned weights so inference can
     // load both from `out_model_dir` alone (mirrors what `train` does).
@@ -703,5 +776,47 @@ mod tests {
         }
         // Past warmup it pins to the floor rather than going out of range.
         assert!((lr_at_step(base, WARMUP_STEPS + 1, total) - base * MIN_LR_RATIO).abs() < 1e-9);
+    }
+
+    #[test]
+    fn warm_start_resets_exactly_the_scaffold_rows_to_the_table_mean() {
+        // A vocab large enough to cover the reserved special-token block. d=4.
+        let d = 4usize;
+        let vocab = 300usize;
+        // Give every row a distinct, non-mean value so "was it overwritten with
+        // the table mean?" is unambiguous.
+        let mut rows: Vec<Vec<f32>> = (0..vocab)
+            .map(|i| vec![i as f32, (i * 2) as f32, (i * 3) as f32, (i * 4) as f32])
+            .collect();
+        // Force a known mean by making the table symmetric around a center value:
+        // simplest is to just compute the expected mean from `rows` below.
+        let mut mean = vec![0.0f32; d];
+        for r in &rows {
+            for (m, &w) in mean.iter_mut().zip(r) {
+                *m += w;
+            }
+        }
+        for m in &mut mean {
+            *m /= vocab as f32;
+        }
+
+        let mut model = Model::init(d as i64, vocab as i64, 4, 1, 1, 1);
+        model.embedding_table = std::mem::take(&mut rows);
+
+        let reset = warm_start_scaffold_embeddings(&mut model);
+        assert_eq!(reset, SCAFFOLD_MARKERS.len(), "all six scaffold rows reset");
+
+        // Every scaffold id now equals the table mean; a non-scaffold id doesn't.
+        for marker in SCAFFOLD_MARKERS {
+            let id = tokenize::bpe::encode(marker, &[])[0] as usize;
+            for j in 0..d {
+                assert!(
+                    (model.embedding_table[id][j] - mean[j]).abs() < 1e-3,
+                    "{marker} (id {id}) not set to table mean"
+                );
+            }
+        }
+        // A plain byte token (id 65 = 'A') is untouched.
+        assert!((model.embedding_table[65][0] - 65.0).abs() < 1e-6);
     }
 }

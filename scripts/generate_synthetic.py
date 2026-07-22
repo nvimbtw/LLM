@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-Generate synthetic thinking-trace training data in an assistant style.
+Generate synthetic chat-scaffolded training data in an assistant style.
 
-Each file is a short assistant interaction: an inner-monologue <|thinking|> block
-where the assistant reasons at length about how to help, followed by a reply
-rendered in the full document markup (<|par|>, <|heading|>, <|list|>, <|bold|>,
-<|quote|>, <|divider|>, <|code|>, … — see render_reply) so every structural token
-gets a trained embedding during pretraining instead of being met cold at SFT time.
-The substance is deliberately plain natural-language prose — no math,
-equations, or symbols — because the point is to teach the *thinking pattern*
-(open the block, reason step by step in words, weigh options, self-correct,
-then answer), not to teach arithmetic. Math-heavy content pollutes the BPE
+Each file is one short conversation rendered in the *canonical chat template*
+(backend/src/llm/src/chat_template.rs): an optional <|system|> block, a first-
+person <|user|> turn, then an <|assistant|> turn holding an inner-monologue
+<|thinking|> block followed by a reply in the full document markup (<|par|>,
+<|heading|>, <|list|>, <|bold|>, <|quote|>, <|divider|>, <|code|>, … — see
+render_reply). This is deliberate: pretraining is otherwise plain prose +
+TinyStories, so the chat *scaffold* tokens (<|user|>, <|assistant|>, <|system|>
+and their closers) and the structural markup tokens would never appear in the
+pretrain corpus, leaving their embeddings at random init — and SFT then meets
+them cold, which destabilizes the model (the "SFT turns coherent output into
+gibberish" failure). Emitting the scaffold here, in the exact shape SFT uses,
+gives every one of those tokens a trained embedding before fine-tuning.
+
+These docs are written to the *synthetic* dir and are only ever a tunable
+minority of the pretrain corpus (build_dataset mixes `num_synthetic` of them in
+alongside `num_books` TinyStories) — the simple stories stay the backbone; this
+just teaches the scaffold. The substance is deliberately plain natural-language
+prose — no math, equations, or symbols — because the point is to teach the
+*thinking pattern* (open the block, reason step by step in words, weigh options,
+self-correct, then answer), not arithmetic. Math-heavy content pollutes the BPE
 vocabulary and a small model just learns to emit broken equations, so it's
 avoided entirely.
 
@@ -32,16 +43,32 @@ import re
 SEED = 42
 OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/synthetic"
 
+# Generic assistant system prompts. A fraction of conversations open with one so
+# the <|system|>/<|/system|> tokens (and this framing) are trained in pretraining
+# too — SFT data also carries system prompts on some lines.
+SYSTEM_PROMPTS = [
+    "You are a helpful assistant. Answer clearly and concisely.",
+    "You are a friendly, practical assistant. Keep replies short and useful.",
+    "You are a helpful assistant. Explain things simply and kindly.",
+    "You are a warm, concise assistant. Get to the point without being curt.",
+    "You are a helpful assistant. Prefer plain language and concrete steps.",
+]
+# Fraction of conversations that open with a <|system|> block.
+SYSTEM_FRAC = 0.35
 
-# Each topic is one short assistant turn. A step is a triple:
-#   ask   — the user's request, restated so the monologue has something to chew on
+
+# Each topic is one short user/assistant exchange. A step is a 4-tuple:
+#   user  — the user's request in natural first person (wrapped in <|user|>)
+#   ask   — the same request restated in third person, as monologue fuel so the
+#           assistant's <|thinking|> block has something to chew on
 #   think — the assistant's reasoning, as a list of one-sentence beats (plain prose)
-#   reply — the helpful answer that goes in the <|par|> block
+#   reply — the helpful answer that goes in the reply markup
 TOPICS = [
     {
         "title": "A Book Recommendation",
         "steps": [
             (
+                "i just finished a really fast, suspenseful mystery and loved it. what should i read next?",
                 "They loved a fast, suspenseful mystery and want something similar to read next.",
                 [
                     "What they enjoyed most was the pace and the pull of not knowing what happens next, so that pull is the thing to protect.",
@@ -59,6 +86,7 @@ TOPICS = [
         "title": "Wording a Polite Decline",
         "steps": [
             (
+                "how do i say no to an invitation without coming across as rude?",
                 "They want help saying no to an invitation without sounding rude.",
                 [
                     "The real worry underneath this is sounding cold or ungrateful, so warmth has to come first.",
@@ -75,6 +103,7 @@ TOPICS = [
         "title": "Calming Pre-Presentation Nerves",
         "steps": [
             (
+                "i have to give a presentation tomorrow and i'm really nervous, any advice?",
                 "They're nervous before giving a presentation tomorrow and want advice.",
                 [
                     "Nerves like this usually come from feeling underprepared or from picturing the worst outcome.",
@@ -92,6 +121,7 @@ TOPICS = [
         "title": "Choosing Between Two Cafes",
         "steps": [
             (
+                "i can't decide between a quiet cafe that's a bit far or a lively one nearby. which should i pick?",
                 "They can't decide between a quiet cafe far away and a lively one nearby.",
                 [
                     "There's no objectively correct choice here; it hinges on what they want from the visit.",
@@ -108,6 +138,7 @@ TOPICS = [
         "title": "How to Start Reading More",
         "steps": [
             (
+                "i keep saying i want to read more but i never find the time. how do i actually do it?",
                 "They say they want to read more but never seem to find the time.",
                 [
                     "The stated problem is time, but usually the real obstacles are friction and goals that are too big.",
@@ -125,6 +156,7 @@ TOPICS = [
         "title": "Comforting a Friend Who Did Poorly",
         "steps": [
             (
+                "my friend just failed an important test. what do i even say to them?",
                 "Their friend just failed an important test and they want to know what to say.",
                 [
                     "The instinct to jump straight to fixing it or offering study tips is the wrong first move.",
@@ -142,6 +174,7 @@ TOPICS = [
         "title": "A Gift for a Gardener",
         "steps": [
             (
+                "i need a gift idea for someone who's really into gardening",
                 "They need a gift idea for someone who loves gardening.",
                 [
                     "Keen gardeners usually already own the basic tools, so a generic trowel could easily miss.",
@@ -158,6 +191,7 @@ TOPICS = [
         "title": "Explaining a Metaphor Simply",
         "steps": [
             (
+                "what's a metaphor, in plain terms?",
                 "They ask what a metaphor is, in plain terms.",
                 [
                     "The trap is defining it with jargon like tenor and vehicle, which helps no one.",
@@ -174,6 +208,7 @@ TOPICS = [
         "title": "Getting Better Sleep",
         "steps": [
             (
+                "i've been sleeping badly lately, got a couple practical tips?",
                 "They've been sleeping badly and want a couple of practical tips.",
                 [
                     "Sleep advice can balloon into an enormous checklist, which is overwhelming and rarely acted on.",
@@ -191,6 +226,7 @@ TOPICS = [
         "title": "How to Apologize Sincerely",
         "steps": [
             (
+                "i hurt a friend's feelings and want to apologize properly. how should i do it?",
                 "They hurt a friend's feelings and want to apologize the right way.",
                 [
                     "A good apology isn't about clever wording; it's about taking responsibility without excuses.",
@@ -208,6 +244,7 @@ TOPICS = [
         "title": "A Thank-You Note",
         "steps": [
             (
+                "can you help me write a short thank-you note for a gift?",
                 "They want help writing a short thank-you note for a gift.",
                 [
                     "These feel hard mainly because people overthink them and reach for grand phrasing.",
@@ -224,6 +261,7 @@ TOPICS = [
         "title": "Staying Focused While Studying",
         "steps": [
             (
+                "i keep getting distracted when i study, how do i fix that?",
                 "They keep getting distracted while studying and want to fix it.",
                 [
                     "Distraction here tends to have two sources: the phone within reach and sessions that run too long.",
@@ -241,6 +279,7 @@ TOPICS = [
         "title": "First Day at a New Job",
         "steps": [
             (
+                "i'm anxious about my first day at a new job tomorrow. any advice?",
                 "They're anxious about their first day at a new job and want advice.",
                 [
                     "First-day anxiety is mostly about the unknown rather than any real risk.",
@@ -258,6 +297,7 @@ TOPICS = [
         "title": "Being a Better Listener",
         "steps": [
             (
+                "how can i become a better listener in conversations?",
                 "They want to become a better listener in conversations.",
                 [
                     "The most common listening mistake is drafting your reply while the other person is still talking.",
@@ -275,6 +315,7 @@ TOPICS = [
         "title": "Congratulating Someone",
         "steps": [
             (
+                "my friend just got a promotion and i want to say something more than just congrats",
                 "A friend got a promotion and they want to say something more than just congrats.",
                 [
                     "A bare congrats is perfectly fine but instantly forgettable.",
@@ -291,6 +332,7 @@ TOPICS = [
         "title": "Breaking Down a Big Task",
         "steps": [
             (
+                "i'm stuck on a big project and have no idea where to start",
                 "They feel stuck on a big project and don't know where to start.",
                 [
                     "Feeling stuck usually means the task is too vague and too large to hold in your head.",
@@ -308,6 +350,7 @@ TOPICS = [
         "title": "Choosing a Movie for a Group",
         "steps": [
             (
+                "our group can't agree on a movie, everyone likes totally different stuff. help?",
                 "A group with very different tastes can't agree on a movie.",
                 [
                     "Trying to find one film everyone loves almost always fails with mixed tastes.",
@@ -324,6 +367,7 @@ TOPICS = [
         "title": "Asking for Help Politely",
         "steps": [
             (
+                "i need to ask a really busy coworker for help but i don't want to impose",
                 "They need to ask a busy coworker for help and don't want to impose.",
                 [
                     "The worry is imposing, so the request should visibly respect the coworker's time.",
@@ -341,6 +385,7 @@ TOPICS = [
         "title": "Encouraging a New Musician",
         "steps": [
             (
+                "i just started learning guitar and i'm discouraged, progress feels so slow",
                 "They just started learning an instrument and feel discouraged by slow progress.",
                 [
                     "Early discouragement almost always comes from comparing where you are to where you want to be.",
@@ -358,6 +403,7 @@ TOPICS = [
         "title": "Keeping a Conversation Going",
         "steps": [
             (
+                "i always run out of things to say in conversations, any tips?",
                 "They run out of things to say in conversations and want help.",
                 [
                     "Conversations stall when the questions can be answered in a single word.",
@@ -374,6 +420,7 @@ TOPICS = [
         "title": "Giving Feedback Kindly",
         "steps": [
             (
+                "i need to give a friend some honest feedback but i don't want to hurt them",
                 "They need to give a friend honest feedback without hurting them.",
                 [
                     "The tension here is between honesty and kindness, and they aren't actually opposites.",
@@ -391,6 +438,7 @@ TOPICS = [
         "title": "Unwinding After a Stressful Day",
         "steps": [
             (
+                "rough day today. what are some ways to unwind that aren't just scrolling my phone?",
                 "They had a rough day and want a few ways to unwind that aren't just scrolling.",
                 [
                     "They've already ruled out scrolling, so I should skip suggesting a screen entirely.",
@@ -408,6 +456,7 @@ TOPICS = [
         "title": "Affect Versus Effect",
         "steps": [
             (
+                "i always mix up affect and effect, is there an easy way to remember which is which?",
                 "They always mix up affect and effect and want an easy way to remember.",
                 [
                     "A full grammar rule with all its exceptions would only overwhelm them.",
@@ -424,6 +473,7 @@ TOPICS = [
         "title": "Setting a Small Daily Habit",
         "steps": [
             (
+                "i want to build a new daily habit but i always give up after a few days",
                 "They want to build a new daily habit but keep giving up after a few days.",
                 [
                     "Habits usually collapse because they're too ambitious and anchored to nothing.",
@@ -441,6 +491,7 @@ TOPICS = [
         "title": "An Overwhelming To-Do List",
         "steps": [
             (
+                "my to-do list feels endless and i don't know what to do first",
                 "Their to-do list feels endless and they don't know what to do first.",
                 [
                     "When everything feels urgent, the real problem is that nothing has been prioritized.",
@@ -457,6 +508,7 @@ TOPICS = [
         "title": "Making a Good First Impression",
         "steps": [
             (
+                "i'm meeting someone important soon, how do i make a good first impression?",
                 "They're meeting someone important soon and want to make a good impression.",
                 [
                     "People overthink this and try to impress, which tends to backfire.",
@@ -474,6 +526,7 @@ TOPICS = [
         "title": "What to Pack for a Short Trip",
         "steps": [
             (
+                "i'm going away for a couple nights and i always overpack. what should i actually bring?",
                 "They're going away for a couple of nights and always overpack.",
                 [
                     "Overpacking comes from packing for imagined scenarios instead of the actual trip.",
@@ -491,6 +544,7 @@ TOPICS = [
         "title": "A Name for a New Pet",
         "steps": [
             (
+                "i just got a puppy and i can't settle on a name, help",
                 "They just got a puppy and can't settle on a name.",
                 [
                     "Naming is personal, so handing over a random list isn't the most helpful thing.",
@@ -508,6 +562,7 @@ TOPICS = [
         "title": "Explaining Why the Sky Is Blue",
         "steps": [
             (
+                "my kid asked me why the sky is blue and i want a simple way to explain it",
                 "A child asked them why the sky is blue and they want a simple way to explain it.",
                 [
                     "The audience is a child, so this has to be simple and picture-friendly, not a lecture.",
@@ -524,6 +579,7 @@ TOPICS = [
         "title": "Planning a Relaxing Weekend",
         "steps": [
             (
+                "i want to actually relax this weekend but i always end up either busy or bored",
                 "They want to actually relax this weekend but usually end up busy or bored.",
                 [
                     "The two failure modes they named are overbooking and drifting into doing nothing.",
@@ -541,6 +597,7 @@ TOPICS = [
         "title": "Remembering People's Names",
         "steps": [
             (
+                "i'm terrible at remembering names right after i meet someone, any tricks?",
                 "They're bad at remembering names right after meeting someone.",
                 [
                     "Names slip because we're barely paying attention in the moment of introduction.",
@@ -691,11 +748,15 @@ def render_reply(rng, reply: str) -> str:
     if rng.random() < 0.15:
         blocks.append("<|par|>More on this: <|link|>a short guide<|/link|>.<|/par|>")
 
-    return "\n".join(blocks)
+    # Tag-adjacent, no separators — exactly how assistant markup appears in the
+    # SFT data and the chat template, so pretrain and SFT see the same shape.
+    return "".join(blocks)
 
 
-def expand_thinking(rng, ask: str, beats: list[str], reply: str) -> list[tuple[str, str]]:
-    """Weave one (ask, beats, reply) turn into a long inner-monologue block and a reply."""
+def expand_thinking(
+    rng, user: str, ask: str, beats: list[str], reply: str
+) -> list[tuple[str, str, str]]:
+    """Weave one exchange into (user turn, inner-monologue block, reply)."""
     parts = [f"{rng.choice(OPENERS)} {ask}"]
 
     # First half of the reasoning.
@@ -712,24 +773,33 @@ def expand_thinking(rng, ask: str, beats: list[str], reply: str) -> list[tuple[s
         parts.append(rng.choice(CHECKS))
     parts.append(rng.choice(LEADINS))
 
-    return [(" ".join(parts), reply)]
+    return [(user, " ".join(parts), reply)]
 
 
-def format_file(rng, title: str, thought_pairs: list[tuple[str, str]]) -> str:
-    """Format a file with alternating thinking blocks and marked-up replies."""
-    lines = [f"<|title|>{title}<|/title|>", ""]
-    for thought_text, response_text in thought_pairs:
-        lines.append(f"<|thinking|>{thought_text}<|/thinking|>")
-        lines.append("")
-        lines.append(render_reply(rng, response_text))
-        lines.append("")
-    lines.append("<|endoftext|>")
-    lines.append("")
-    return "\n".join(lines)
+def format_file(rng, turns: list[tuple[str, str, str]]) -> str:
+    """Render one conversation in the canonical chat template.
+
+    Markers are tag-adjacent (no separators), exactly like chat_template.rs and
+    the SFT data, so the scaffold tokens are pretrained in the shape they're
+    fine-tuned in. Each assistant turn carries its <|thinking|> block then the
+    marked-up reply; an optional <|system|> block opens the conversation.
+    """
+    parts: list[str] = []
+    if rng.random() < SYSTEM_FRAC:
+        parts.append(f"<|system|>{rng.choice(SYSTEM_PROMPTS)}<|/system|>")
+    for user, thought_text, reply in turns:
+        parts.append(f"<|user|>{user}<|/user|>")
+        parts.append(
+            f"<|assistant|><|thinking|>{thought_text}<|/thinking|>"
+            f"{render_reply(rng, reply)}<|/assistant|>"
+        )
+    # <|endoftext|> separates conversations in the concatenated pretrain corpus.
+    parts.append("<|endoftext|>\n")
+    return "".join(parts)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate synthetic thinking-trace training data.")
+    ap = argparse.ArgumentParser(description="Generate synthetic chat-scaffolded pretraining data.")
     ap.add_argument("--count", type=int, default=100, help="Number of files to generate")
     ap.add_argument("--out", default=OUT_DIR, help="Output directory")
     ap.add_argument("--seed", type=int, default=SEED, help="Random seed")
@@ -748,10 +818,10 @@ def main():
     for i in range(args.count):
         topic = rng.choice(TOPICS)
         idx = start + i
-        all_pairs = []
-        for ask, beats, reply in topic["steps"]:
-            all_pairs.extend(expand_thinking(rng, ask, beats, reply))
-        content = format_file(rng, topic["title"], all_pairs)
+        turns = []
+        for user, ask, beats, reply in topic["steps"]:
+            turns.extend(expand_thinking(rng, user, ask, beats, reply))
+        content = format_file(rng, turns)
         fname = f"synthetic{idx:04d}.txt"
         with open(os.path.join(args.out, fname), "w", encoding="utf-8") as f:
             f.write(content)

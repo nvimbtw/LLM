@@ -1,10 +1,11 @@
 import { cn } from "@/lib/utils"
 
 /**
- * The model's raw reasoning (the `<|thinking|>` block), shown above the reply
- * when "Show reasoning" is on. Deliberately quiet — a hairline left rail and
- * muted text — so it reads as a margin note next to the answer, not a second
- * answer. Streams in place, so it also renders partial reasoning mid-thought.
+ * A single `<|thinking|>` block, rendered inline at the point in the reply
+ * where the model reasoned (there may be several per message). Deliberately
+ * quiet — a hairline left rail and muted text — so it reads as a margin note
+ * next to the answer, not a second answer. Streams in place, so it also
+ * renders partial reasoning mid-thought.
  */
 export function ReasoningPanel({
   text,
@@ -17,7 +18,10 @@ export function ReasoningPanel({
   return (
     <div
       className={cn(
-        "mb-2 border-l-2 border-border/70 pl-3 text-muted-foreground",
+        // Symmetric vertical margin for calm breathing room above and below the
+        // reply text. Tailwind v4's `space-y` uses a zero-specificity `:where()`
+        // selector, so this `my` reliably overrides the parent's flow gap.
+        "my-4 border-l-2 border-border/70 pl-3 text-muted-foreground",
         className
       )}
     >
