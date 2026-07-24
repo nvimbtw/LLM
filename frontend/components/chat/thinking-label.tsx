@@ -43,7 +43,11 @@ export function ThinkingLabel() {
   }, [])
 
   return (
-    <span className="text-shimmer min-w-0 truncate font-medium">
+    // Fixed-width column. The labels range from "Mining" to "Crystallizing", and
+    // the leader rule beside this fills whatever space is left — so without a
+    // stable width the rule would visibly resize every time the word cycles.
+    // Wide enough for the longest label at this size, with a little slack.
+    <span className="text-shimmer inline-block min-w-[7.5rem] shrink-0 truncate font-medium">
       {LABELS[index]}…
     </span>
   )

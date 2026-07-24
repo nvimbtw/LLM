@@ -56,11 +56,41 @@ pub struct TrainConfig {
     // deserializing as an empty selection.
     #[serde(default)]
     pub datasets: Vec<DatasetSelection>,
+    // Curriculum stages: train the model on each stage's datasets in order, for
+    // that stage's own epoch count (e.g. TinyStories for 3 epochs, then Wikipedia
+    // for 2). Empty => a single implicit stage from `datasets` + `epochs` (the
+    // legacy behaviour). Pretrain only. `#[serde(default)]` for meta.json
+    // back-compat.
+    #[serde(default)]
+    pub curriculum: Vec<CurriculumStage>,
+    // Reorder the documents fed to the model each epoch (with an <|endoftext|>
+    // separator between them), so it doesn't see a fixed data order and never
+    // learns to predict across a document boundary. `#[serde(default)]` => a body
+    // or meta.json written before this field deserializes as `false`, exactly
+    // reproducing the old fixed-order runs.
+    #[serde(default)]
+    pub shuffle: bool,
+    // PRNG seed for the per-epoch shuffle, persisted so a run is reproducible. `0`
+    // means "pick a fresh time-based seed at run start" (resolved server-side into
+    // this field before the run's meta.json is written).
+    #[serde(default)]
+    pub seed: u64,
     // The model's id, which names its on-disk directory. Set server-side by the
     // start route (reused on retrain, freshly generated for a new model), never
     // by the client — hence skipped on deserialize.
     #[serde(skip_deserializing)]
     pub storage_id: Uuid,
+}
+
+// One curriculum stage: a set of datasets trained for a fixed number of epochs
+// before moving on to the next stage. Reuses `DatasetSelection` for per-dataset
+// file sampling, exactly like the flat (non-curriculum) selection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurriculumStage {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub datasets: Vec<DatasetSelection>,
+    pub epochs: i64,
 }
 
 // One entry in a run's dataset selection: the name of an uploads/ subfolder and
@@ -89,6 +119,35 @@ pub struct DatasetStats {
     pub vocab_size: i64,
     pub merges: usize,
     pub corpus_len: usize,
+    // Number of documents (source files) whose token spans were recorded in
+    // segments.json for per-epoch shuffling / curriculum staging.
+    pub documents: usize,
+}
+
+// Per-run sidecar written next to corpus.bin: the document boundaries (content
+// spans into the flat corpus, exclusive of the baked-in <|endoftext|>
+// separators) tagged with the curriculum stage they belong to. The training loop
+// reads this to shuffle documents per epoch and to feed one stage at a time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Segments {
+    pub eot_id: u32,
+    pub stages: Vec<StageMeta>,
+    pub documents: Vec<DocSpan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageMeta {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub epochs: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocSpan {
+    pub stage: usize,
+    pub dataset: String,
+    pub start: usize,
+    pub len: usize,
 }
 
 // What `build_dataset` reports as it runs, so the caller can stream progress.
@@ -119,12 +178,42 @@ fn xorshift_next(state: &mut u64) -> u64 {
     *state
 }
 
-// Fisher–Yates shuffle using the shared xorshift PRNG.
+// Fisher–Yates shuffle using the shared xorshift PRNG, seeded fresh each run.
 fn shuffle<T>(items: &mut [T]) {
-    let mut state = rng_seed();
+    shuffle_seeded(items, rng_seed());
+}
+
+// Fisher–Yates shuffle from an explicit seed, so callers that need a
+// reproducible order (the per-epoch training shuffle) can derive one from a
+// stored seed. `| 1` keeps xorshift out of its fixed zero state.
+fn shuffle_seeded<T>(items: &mut [T], seed: u64) {
+    let mut state = seed | 1;
     for i in (1..items.len()).rev() {
         let j = (xorshift_next(&mut state) % (i as u64 + 1)) as usize;
         items.swap(i, j);
+    }
+}
+
+// Resolve a run's shuffle seed: `0` (the request/meta default) means "pick a
+// fresh time seed"; any other value is used as-is. Called once at run start so
+// the resolved seed can be persisted to meta.json for reproducibility.
+pub fn resolve_seed(seed: u64) -> u64 {
+    if seed == 0 { rng_seed() } else { seed }
+}
+
+// The stages a run trains over. A curriculum run uses its stages verbatim; a
+// plain run collapses to a single implicit stage from the flat dataset selection
+// and top-level epoch count. Every downstream consumer (dataset build + training
+// loop) works purely in terms of stages, so the two paths share one code path.
+pub fn resolve_stages(cfg: &TrainConfig) -> Vec<CurriculumStage> {
+    if cfg.curriculum.is_empty() {
+        vec![CurriculumStage {
+            name: None,
+            datasets: cfg.datasets.clone(),
+            epochs: cfg.epochs,
+        }]
+    } else {
+        cfg.curriculum.clone()
     }
 }
 
@@ -198,51 +287,84 @@ pub fn list_datasets() -> io::Result<Vec<DatasetInfo>> {
     Ok(out)
 }
 
-// writes the two files `llm::train` consumes: a flat token-id `corpus.bin` in
-// `datasets/` and `merges.bin` in `artifacts/tokenizer/`. Progress is pushed
-// through `on_event` (synchronous; runs on the caller's thread).
+// writes the files `llm::train` consumes: a flat token-id `corpus.bin` in
+// `datasets/`, `merges.bin` in `artifacts/tokenizer/`, and a `segments.json`
+// sidecar recording each document's token span + curriculum stage. Progress is
+// pushed through `on_event` (synchronous; runs on the caller's thread).
+//
+// One BPE tokenizer is trained over ALL stages' files (a shared vocabulary is
+// mandatory — the token ids must line up across stages so the model's embeddings
+// mean the same thing throughout). We pre-tokenize each file on its own so we can
+// map its words back to a token span after BPE, and bake a single <|endoftext|>
+// separator between documents so the default (unshuffled) corpus already reads
+// with document boundaries.
 pub fn build_dataset(
     max_vocab: u32,
-    datasets: &[DatasetSelection],
+    stages: &[CurriculumStage],
     on_event: impl Fn(TokenizeEvent),
 ) -> io::Result<DatasetStats> {
-    // Each selected dataset is a subfolder of uploads/; pull `count` .txt files
-    // from each (0 => all of that dataset), concatenated in selection order.
+    // Gather every selected file tagged with the stage it belongs to. A dataset
+    // is a subfolder of uploads/; `select_txt` pulls `count` .txt files from it
+    // (0 => all). Files keep their per-stage grouping so the training loop can
+    // feed one stage at a time.
     let uploads = storage::uploads_dir();
-    let mut paths = Vec::new();
-    for sel in datasets {
-        if !is_safe_dataset_name(&sel.name) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid dataset name",
-            ));
+    // (stage index, dataset name, file path)
+    let mut tagged: Vec<(usize, String, PathBuf)> = Vec::new();
+    for (stage_idx, stage) in stages.iter().enumerate() {
+        for sel in &stage.datasets {
+            if !is_safe_dataset_name(&sel.name) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid dataset name",
+                ));
+            }
+            for path in select_txt(&uploads.join(&sel.name), sel.count, true)? {
+                tagged.push((stage_idx, sel.name.clone(), path));
+            }
         }
-        paths.extend(select_txt(&uploads.join(&sel.name), sel.count, true)?);
     }
 
-    if paths.is_empty() {
+    if tagged.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "no .txt files found in the selected datasets",
         ));
     }
 
-    let mut combined = String::new();
-    for path in &paths {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(&fs::read_to_string(path)?);
+    // Pre-tokenize each file individually into words, remembering each file's
+    // contiguous word range in the concatenated `pre` list, so once BPE has run
+    // we can sum the per-word token lengths back into a per-document token span.
+    struct DocWords {
+        stage: usize,
+        dataset: String,
+        word_start: usize,
+        words: usize,
+    }
+    let mut pre: Vec<Vec<char>> = Vec::new();
+    let mut doc_words: Vec<DocWords> = Vec::new();
+    let mut chars = 0usize;
+    for (stage_idx, dataset, path) in &tagged {
+        let text = fs::read_to_string(path)?;
+        chars += text.chars().count();
+        let words = tokenize::pretokenize::pre_tokenize_text(&text);
+        let word_start = pre.len();
+        let count = words.len();
+        pre.extend(words);
+        doc_words.push(DocWords {
+            stage: *stage_idx,
+            dataset: dataset.clone(),
+            word_start,
+            words: count,
+        });
     }
 
-    let files = paths.len();
-    let chars = combined.chars().count();
+    let files = tagged.len();
     on_event(TokenizeEvent::Start { files, chars });
 
-    // Pre-tokenize, then train BPE. The crate reports progress as a plain log
-    // string ("BPE merge x/y"); we forward the raw line for the log panel and
-    // parse the counts out for the numeric dashboard.
-    let pre = tokenize::pretokenize::pre_tokenize_text(&combined);
+    // Train BPE once over all files' words. The crate reports progress as a plain
+    // log string ("BPE merge x/y"); forward the raw line for the log panel and
+    // parse the counts out for the numeric dashboard. `corpus` comes back split
+    // per word, in the same order as `pre`.
     let (vocab_size, corpus, merges) = tokenize::bpe::train(pre, Some(max_vocab), |line| {
         if let Some((done, total)) = parse_merge_progress(line) {
             on_event(TokenizeEvent::Merge { done, total });
@@ -250,17 +372,59 @@ pub fn build_dataset(
         on_event(TokenizeEvent::Log(line));
     })?;
 
-    // `bpe::train` keeps the corpus split per word; flatten into the single
-    // token stream `llm::train` reads via chunks_exact(4).
-    let flat: Vec<u32> = corpus.into_iter().flatten().collect();
+    // A lone <|endoftext|> encodes to its single reserved id (256); use it as the
+    // document separator, exactly like the SFT boundary between conversations.
+    let eot = tokenize::bpe::encode("<|endoftext|>", &merges);
+    let eot_id = *eot.first().unwrap_or(&256);
+
+    // Assemble the flat corpus by concatenating each document's tokens with an
+    // <|endoftext|> baked in between documents, recording each document's content
+    // span (exclusive of separators) tagged with its stage.
+    let mut flat: Vec<u32> = Vec::new();
+    let mut documents: Vec<DocSpan> = Vec::new();
+    for d in &doc_words {
+        let tokens: usize = corpus[d.word_start..d.word_start + d.words]
+            .iter()
+            .map(|w| w.len())
+            .sum();
+        if tokens == 0 {
+            continue; // empty file — no span to record, no separator to add
+        }
+        if !flat.is_empty() {
+            flat.push(eot_id);
+        }
+        let start = flat.len();
+        for w in &corpus[d.word_start..d.word_start + d.words] {
+            flat.extend(w);
+        }
+        documents.push(DocSpan {
+            stage: d.stage,
+            dataset: d.dataset.clone(),
+            start,
+            len: tokens,
+        });
+    }
     let corpus_len = flat.len();
 
-    let datasets = storage::datasets_dir();
+    let segments = Segments {
+        eot_id,
+        stages: stages
+            .iter()
+            .map(|s| StageMeta {
+                name: s.name.clone(),
+                epochs: s.epochs,
+            })
+            .collect(),
+        documents,
+    };
+
+    let datasets_dir = storage::datasets_dir();
     let tokenizer = storage::tokenizer_dir();
-    fs::create_dir_all(&datasets)?;
+    fs::create_dir_all(&datasets_dir)?;
     fs::create_dir_all(&tokenizer)?;
-    tokenize::bpe::save_corpus(&flat, &datasets.join("corpus.bin").to_string_lossy())?;
+    tokenize::bpe::save_corpus(&flat, &datasets_dir.join("corpus.bin").to_string_lossy())?;
     tokenize::bpe::save_merges(&merges, &tokenizer.join("merges.bin").to_string_lossy())?;
+    save_segments(&segments, &datasets_dir.join("segments.json"))?;
 
     Ok(DatasetStats {
         files,
@@ -268,7 +432,30 @@ pub fn build_dataset(
         vocab_size,
         merges: merges.len(),
         corpus_len,
+        documents: segments.documents.len(),
     })
+}
+
+// Writes the document-boundary sidecar as pretty JSON next to corpus.bin.
+fn save_segments(segments: &Segments, path: &Path) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(segments)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(path, json)
+}
+
+// Loads the document-boundary sidecar. Returns `Ok(None)` when it's absent — a
+// dataset built before this feature existed — so the training loop can fall back
+// to treating the whole corpus as one document (full back-compat).
+fn load_segments(path: &Path) -> io::Result<Option<Segments>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let segments: Segments = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            Ok(Some(segments))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 // Parses the tokenize crate's "BPE merge {done}/{total}" line into numbers.
@@ -287,22 +474,47 @@ pub fn run_training(
     cancel: Arc<AtomicBool>,
 ) -> io::Result<bool> {
     let model_dir = storage::models_dir().join(cfg.storage_id.to_string());
-    let corpus_path = storage::datasets_dir().join("corpus.bin");
+    let datasets_dir = storage::datasets_dir();
+    let corpus_path = datasets_dir.join("corpus.bin");
     let merges_path = storage::tokenizer_dir().join("merges.bin");
     let checkpoints_dir = model_dir.join("checkpoints");
+
+    // The document/stage plan for the training loop. A dataset built before this
+    // feature (no segments.json) falls back to one stage of `epochs` epochs over
+    // the whole corpus as a single document — identical to the old behaviour.
+    let plan = match load_segments(&datasets_dir.join("segments.json"))? {
+        Some(segments) => llm::train::DataPlan {
+            stages: (0..segments.stages.len())
+                .map(|si| llm::train::Stage {
+                    name: segments.stages[si].name.clone(),
+                    epochs: segments.stages[si].epochs,
+                    docs: segments
+                        .documents
+                        .iter()
+                        .filter(|d| d.stage == si)
+                        .map(|d| llm::train::DocSpan { start: d.start, len: d.len })
+                        .collect(),
+                })
+                .collect(),
+            eot_id: segments.eot_id,
+            shuffle: cfg.shuffle,
+            seed: resolve_seed(cfg.seed),
+        },
+        None => llm::train::DataPlan::whole_corpus(cfg.epochs),
+    };
 
     llm::train::train(
         cfg.dimensions,
         cfg.ctx_window,
         cfg.heads,
         cfg.layers,
-        cfg.epochs,
         cfg.lr,
         cfg.ff_multiplier,
         &model_dir,
         &corpus_path,
         &merges_path,
         Some(&checkpoints_dir),
+        plan,
         on_progress,
         Some(cancel),
     )

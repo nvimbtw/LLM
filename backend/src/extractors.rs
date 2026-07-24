@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use std::future::{Ready, ready};
 
 use actix_web::{

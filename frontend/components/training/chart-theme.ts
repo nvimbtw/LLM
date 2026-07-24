@@ -49,6 +49,28 @@ export function lossEpochColor(epoch: number, totalEpochs: number): string {
   return sequential(220, 34, t)
 }
 
+// Loss overlay for a CURRICULUM run: each stage trains on a different dataset, so
+// stages ARE distinct categories (the one place identity, not magnitude, matters)
+// and get distinct hues. Within a stage the same light→dark sweep applies across
+// its epochs, so a stage still reads as a deepening progression, just in its own
+// colour. Hues are spaced around the wheel and kept clear of the amber batch band;
+// `sat` is tuned per hue so they read at even strength. Cycles past its length.
+const STAGE_HUES: [number, number][] = [
+  [220, 34], // blue (the classic loss hue — first stage keeps the familiar look)
+  [150, 42], // green
+  [280, 40], // violet
+  [338, 46], // rose
+  [190, 44], // teal
+  [28, 60], // warm ochre (kept off the batch amber at 41)
+]
+
+// `stage` selects the hue; `tWithinStage` (0 = first epoch of the stage → 1 = last)
+// sweeps lightness within it.
+export function lossStageColor(stage: number, tWithinStage: number): string {
+  const [hue, sat] = STAGE_HUES[((stage % STAGE_HUES.length) + STAGE_HUES.length) % STAGE_HUES.length]
+  return sequential(hue, sat, tWithinStage)
+}
+
 // Intra-batch spread band. min ≤ avg ≤ max is an ordered magnitude, so it's the
 // same single-hue ramp (amber family, `--chart-1` #de9800): min light, max dark.
 export const batchRamp = {

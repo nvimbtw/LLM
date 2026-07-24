@@ -8,6 +8,8 @@ export interface ChatSummary {
   id: string
   title: string
   createdAt: string
+  /** Cumulative tokens across the chat's messages (0 for a brand-new chat). */
+  tokens: number
 }
 
 export interface PendingMessage {
@@ -34,10 +36,16 @@ interface RawChat {
   id_chat: string | number
   title: string
   created_at: string
+  tokens?: number
 }
 
 function mapChat(raw: RawChat): ChatSummary {
-  return { id: String(raw.id_chat), title: raw.title, createdAt: raw.created_at }
+  return {
+    id: String(raw.id_chat),
+    title: raw.title,
+    createdAt: raw.created_at,
+    tokens: raw.tokens ?? 0,
+  }
 }
 
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
@@ -46,6 +54,14 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = React.useState<string | null>(null)
 
   const refresh = React.useCallback(async () => {
+    // This provider lives in the root layout, so it mounts on unauthenticated
+    // pages (/login, /signup) too. Skip the fetch when there's no token: an
+    // unauthenticated /chat call 401s, which would redirect to /login and,
+    // once the token is cleared, spin in an endless reload loop.
+    if (!getToken()) {
+      setIsLoading(false)
+      return
+    }
     try {
       const response = await apiFetch(`/chat`)
       if (!response.ok) throw new Error("Unable to load your chats.")

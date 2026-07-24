@@ -66,6 +66,10 @@ pub struct Diagnostics {
     // (one [x, y] per token, same order as `frequent_tokens`) — the latest report's
     // is scatter-plotted to show the embedding geometry.
     pub emb_pca: Vec<[f32; 2]>,
+    // 3-D PCA projection of the same tokens (one [x, y, z] per token, same order and
+    // same top principal axes — `emb_pca` is just its first two columns). Drives the
+    // rotating "embedding globe" on the frontend, whose vertices are these points.
+    pub emb_pca3: Vec<[f32; 3]>,
 }
 
 // The `ANISOTROPY_TOKENS` most-frequent token ids in `corpus`, high→low. Computed
@@ -108,7 +112,10 @@ pub fn compute(
     // Sync the embedding table once, then derive both embedding metrics from it.
     let emb = ws.d_embedding.to_f32_vec();
     let (emb_cos_mean, emb_cos_p5, emb_cos_p95) = embedding_anisotropy(&emb, ws.d, freq_tokens);
-    let emb_pca = embedding_pca(&emb, ws.d, freq_tokens);
+    // One projection to the top-3 principal axes; the 2-D biplot is its first two
+    // columns, so both charts read the same geometry without computing PCA twice.
+    let emb_pca3 = embedding_pca(&emb, ws.d, freq_tokens);
+    let emb_pca = emb_pca3.iter().map(|&[x, y, _]| [x, y]).collect();
 
     Diagnostics {
         grad_global: grad.global,
@@ -123,6 +130,7 @@ pub fn compute(
         emb_cos_p95,
         act_hist,
         emb_pca,
+        emb_pca3,
     }
 }
 
@@ -241,17 +249,18 @@ fn embedding_anisotropy(emb: &[f32], d: usize, freq_tokens: &[u32]) -> (f32, f32
     (mean, pct(0.05), pct(0.95))
 }
 
-// 2-D PCA of the chosen frequent tokens' embeddings, for the scatter plot. Because
-// the token count N is small (≤ ANISOTROPY_TOKENS) and the model dim d can be
-// large, this uses the N×N Gram matrix trick: for a centered data matrix X, the
-// top eigenvectors u of G = XXᵀ (eigenvalues λ) give the sample coordinates on the
-// principal axes directly as uᵢ·√λ — no d×d covariance needed. Returns one [x, y]
-// per token in `freq_tokens` order. Sign of an axis is arbitrary (a mirror), which
-// doesn't matter for a scatter.
-fn embedding_pca(emb: &[f32], d: usize, freq_tokens: &[u32]) -> Vec<[f32; 2]> {
+// Top-3 PCA of the chosen frequent tokens' embeddings, for the scatter plot and the
+// rotating embedding globe. Because the token count N is small (≤ ANISOTROPY_TOKENS)
+// and the model dim d can be large, this uses the N×N Gram matrix trick: for a
+// centered data matrix X, the top eigenvectors u of G = XXᵀ (eigenvalues λ) give the
+// sample coordinates on the principal axes directly as uᵢ·√λ — no d×d covariance
+// needed. Returns one [x, y, z] per token in `freq_tokens` order; the 2-D biplot uses
+// the first two columns. Sign of an axis is arbitrary (a mirror), which doesn't matter
+// for a scatter or a rotating body.
+fn embedding_pca(emb: &[f32], d: usize, freq_tokens: &[u32]) -> Vec<[f32; 3]> {
     let n = freq_tokens.len();
     if n < 2 {
-        return vec![[0.0, 0.0]; n];
+        return vec![[0.0, 0.0, 0.0]; n];
     }
 
     // Gather the rows and center them (subtract the per-dimension mean).
@@ -284,18 +293,20 @@ fn embedding_pca(emb: &[f32], d: usize, freq_tokens: &[u32]) -> Vec<[f32; 2]> {
         }
     }
 
-    let (u1, l1) = top_eigenvector(&g, n, None);
-    let (u2, l2) = top_eigenvector(&g, n, Some((&u1, l1)));
+    let (u1, l1) = top_eigenvector(&g, n, &[]);
+    let (u2, l2) = top_eigenvector(&g, n, &[(&u1, l1)]);
+    let (u3, l3) = top_eigenvector(&g, n, &[(&u1, l1), (&u2, l2)]);
     let s1 = l1.max(0.0).sqrt();
     let s2 = l2.max(0.0).sqrt();
-    (0..n).map(|i| [u1[i] * s1, u2[i] * s2]).collect()
+    let s3 = l3.max(0.0).sqrt();
+    (0..n).map(|i| [u1[i] * s1, u2[i] * s2, u3[i] * s3]).collect()
 }
 
 // Power iteration for the top eigenvector/eigenvalue of a small symmetric matrix,
-// with optional deflation of an already-found (eigenvector, eigenvalue) pair so the
-// second call returns the second principal axis. Fixed iteration count — the Gram
+// with deflation of any already-found (eigenvector, eigenvalue) pairs so successive
+// calls return the second, third, … principal axes. Fixed iteration count — the Gram
 // matrix is tiny (N ≤ 32) and this runs once per report, so convergence is cheap.
-fn top_eigenvector(g: &[Vec<f32>], n: usize, deflate: Option<(&[f32], f32)>) -> (Vec<f32>, f32) {
+fn top_eigenvector(g: &[Vec<f32>], n: usize, deflate: &[(&[f32], f32)]) -> (Vec<f32>, f32) {
     // Asymmetric init so a symmetric matrix doesn't leave the iterate on a saddle.
     let mut v: Vec<f32> = (0..n).map(|i| 1.0 + 0.01 * i as f32).collect();
     normalize(&mut v);
@@ -305,7 +316,7 @@ fn top_eigenvector(g: &[Vec<f32>], n: usize, deflate: Option<(&[f32], f32)>) -> 
         for i in 0..n {
             w[i] = (0..n).map(|k| g[i][k] * v[k]).sum();
         }
-        if let Some((u, l)) = deflate {
+        for &(u, l) in deflate {
             let uv: f32 = u.iter().zip(v).map(|(a, b)| a * b).sum();
             for i in 0..n {
                 w[i] -= l * uv * u[i];
@@ -404,10 +415,15 @@ mod tests {
         assert!((hist_sum - 1.0).abs() < 1e-3, "histogram should sum to 1: {hist_sum}");
         assert!(diag.act_hist.iter().all(|&f| f.is_finite() && f >= 0.0));
 
-        // PCA: one finite 2-D point per frequent token.
+        // PCA: one finite 2-D point per frequent token, plus the 3-D projection whose
+        // first two columns must match the 2-D biplot exactly (same principal axes).
         assert_eq!(diag.emb_pca.len(), freq.len());
-        for [x, y] in &diag.emb_pca {
+        assert_eq!(diag.emb_pca3.len(), freq.len());
+        for (i, [x, y]) in diag.emb_pca.iter().enumerate() {
             assert!(x.is_finite() && y.is_finite(), "PCA coord not finite");
+            let [x3, y3, z3] = diag.emb_pca3[i];
+            assert!(z3.is_finite(), "PCA z coord not finite");
+            assert_eq!([*x, *y], [x3, y3], "2-D biplot must be the 3-D projection's first two columns");
         }
         eprintln!(
             "✓ diagnostics finite & shaped (grad_global={:.4}, emb_cos_mean={:.4})",

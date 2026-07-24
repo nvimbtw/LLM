@@ -13,6 +13,9 @@ struct ChatResponse {
     id_chat: Uuid,
     title: String,
     created_at: DateTime<Utc>,
+    // Cumulative tokens across the chat's messages. A freshly created chat (the
+    // From<Chat> path) has none yet, so it reports 0.
+    tokens: i64,
 }
 
 impl From<db::chat::Chat> for ChatResponse {
@@ -21,6 +24,18 @@ impl From<db::chat::Chat> for ChatResponse {
             id_chat: chat.id_chat,
             title: chat.title,
             created_at: chat.created_at,
+            tokens: 0,
+        }
+    }
+}
+
+impl From<db::chat::ChatListItem> for ChatResponse {
+    fn from(chat: db::chat::ChatListItem) -> Self {
+        ChatResponse {
+            id_chat: chat.id_chat,
+            title: chat.title,
+            created_at: chat.created_at,
+            tokens: chat.tokens,
         }
     }
 }
@@ -233,17 +248,23 @@ async fn handle_message(
     let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
         return Ok(());
     };
-    if !persist_user_message(session, pool, chat_id, user_id, content).await? {
-        return Ok(());
-    }
+    // Resolve the model before persisting, so we can tokenize the user message
+    // with its tokenizer and store the count alongside the row.
     let Some(model) = resolve_model(session, pool, frame.model_id, is_admin).await? else {
         return Ok(());
     };
+    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
+
+    // Non-fatal: if the tokenizer can't be read the message is still saved, just
+    // with a 0 token count rather than blocking the turn.
+    let user_tokens = llm::infer::encode_count(&model_dir, content).unwrap_or(0) as i32;
+    if !persist_user_message(session, pool, chat_id, user_id, content, user_tokens).await? {
+        return Ok(());
+    }
     let Some(history) = load_history(session, pool, chat_id).await? else {
         return Ok(());
     };
 
-    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
     let Some(reply) = stream_reply(session, &model_dir, history, system).await? else {
         return Ok(());
     };
@@ -309,8 +330,10 @@ async fn persist_user_message(
     chat_id: Uuid,
     user_id: Uuid,
     content: &str,
+    tokens: i32,
 ) -> Result<bool, actix_ws::Closed> {
-    if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content).await {
+    if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content, tokens).await
+    {
         eprintln!("create user message db error: {}", e);
         session.text(ws::error_frame("failed to save message")).await?;
         return Ok(false);
@@ -459,10 +482,15 @@ async fn finalize_turn(
     model_id: Uuid,
     reply: StreamedReply,
 ) -> Result<(), actix_ws::Closed> {
-    let assistant =
-        match db::message::create_assistant_message(pool, chat_id, Some(model_id), &reply.text)
-            .await
-        {
+    let assistant = match db::message::create_assistant_message(
+        pool,
+        chat_id,
+        Some(model_id),
+        &reply.text,
+        reply.output_tokens as i32,
+    )
+    .await
+    {
             Ok(message) => message,
             Err(e) => {
                 eprintln!("create assistant message db error: {}", e);

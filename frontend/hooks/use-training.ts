@@ -29,6 +29,10 @@ export const DEFAULT_CONFIG: TrainConfig = {
   ff_multiplier: 4,
   max_vocab: 1024,
   datasets: [],
+  curriculum: [],
+  // Shuffle documents each epoch by default: it isolates documents (an
+  // <|endoftext|> separator between them) and removes fixed-order bias at no cost.
+  shuffle: true,
   mode: "pretrain",
 }
 

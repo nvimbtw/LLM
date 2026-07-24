@@ -50,24 +50,25 @@
 }
 
 :root {
-    /* Kanagawa Lotus (light) */
-    --background: #e5ddb0;
+    /* Warm paper (light) — #f7f4e4 is the dominant base on every main surface;
+       #efeacd is a sparse secondary reserved for hover/active + muted chips. */
+    --background: #f7f4e4;
     --foreground: #545464;
-    --card: #dcd5ac;
+    --card: #f7f4e4;
     --card-foreground: #545464;
-    --popover: #dcd5ac;
+    --popover: #f7f4e4;
     --popover-foreground: #545464;
     --primary: #4d699b;
-    --primary-foreground: #f2ecbc;
-    --secondary: #8a8980;
+    --primary-foreground: #f7f4e4;
+    --secondary: #efeacd;
     --secondary-foreground: #545464;
-    --muted: #d5cea3;
-    --muted-foreground: #716e61;
-    --accent: #766b90;
-    --accent-foreground: #f2ecbc;
+    --muted: #efeacd;
+    --muted-foreground: #83816f;
+    --accent: #efeacd;
+    --accent-foreground: #545464;
     --destructive: #c84053;
-    --border: #716e61;
-    --input: #716e61;
+    --border: #e2dab2;
+    --input: #d5cc9e;
     --ring: #4d699b;
     --chart-1: #de9800;
     --chart-2: #6f894e;
@@ -75,13 +76,13 @@
     --chart-4: #b35b79;
     --chart-5: #766b90;
     --radius: 0.625rem;
-    --sidebar: #d5cea3;
+    --sidebar: #f7f4e4;
     --sidebar-foreground: #545464;
     --sidebar-primary: #4d699b;
-    --sidebar-primary-foreground: #f2ecbc;
-    --sidebar-accent: #dcd5ac;
+    --sidebar-primary-foreground: #f7f4e4;
+    --sidebar-accent: #efeacd;
     --sidebar-accent-foreground: #545464;
-    --sidebar-border: #716e61;
+    --sidebar-border: #e2dab2;
     --sidebar-ring: #4d699b;
 }
 

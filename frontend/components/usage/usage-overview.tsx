@@ -19,29 +19,22 @@ export function UsageOverview() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-4">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-28 rounded-xl" />
-          ))}
-        </div>
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Skeleton className="h-80 rounded-xl lg:col-span-2" />
-          <Skeleton className="h-80 rounded-xl" />
-        </div>
+      <div className="flex flex-col gap-6">
+        <Skeleton className="h-32 rounded-xl" />
+        <Skeleton className="h-80 rounded-xl" />
+        <Skeleton className="h-40 rounded-xl" />
       </div>
     )
   }
 
+  // Chart first, models underneath — the per-model breakdown is secondary to the
+  // trend, and full-width lets a long list flow into columns instead of a tall
+  // side rail that quadruples the page height.
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <UsageStats usage={usage} />
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <UsageChart series={usage.series} />
-        </div>
-        <UsageByModel models={usage.byModel} />
-      </div>
+      <UsageChart series={usage.series} />
+      <UsageByModel models={usage.byModel} />
     </div>
   )
 }

@@ -16,6 +16,11 @@ pub struct Message {
     #[allow(dead_code)]
     pub id_model: Option<Uuid>,
     pub content: String,
+    // Token length under the generating model's tokenizer; summed per chat (via
+    // the aggregate in db::chat::list_for_user) for the sidebar's usage display.
+    // Read there rather than per-row, so it's dead on the Message struct itself.
+    #[allow(dead_code)]
+    pub tokens: i32,
     pub created_at: DateTime<Utc>,
 }
 
@@ -24,14 +29,16 @@ pub async fn create_user_message(
     id_chat: Uuid,
     id_user: Uuid,
     content: &str,
+    tokens: i32,
 ) -> Result<Message, sqlx::Error> {
     sqlx::query_as!(
         Message,
-        r#"INSERT INTO messages (id_chat, id_user, content) VALUES ($1, $2, $3)
-           RETURNING id_message, id_chat, id_user, id_model, content, created_at"#,
+        r#"INSERT INTO messages (id_chat, id_user, content, tokens) VALUES ($1, $2, $3, $4)
+           RETURNING id_message, id_chat, id_user, id_model, content, tokens, created_at"#,
         id_chat,
         id_user,
         content,
+        tokens,
     )
     .fetch_one(pool)
     .await
@@ -45,14 +52,16 @@ pub async fn create_assistant_message(
     id_chat: Uuid,
     id_model: Option<Uuid>,
     content: &str,
+    tokens: i32,
 ) -> Result<Message, sqlx::Error> {
     sqlx::query_as!(
         Message,
-        r#"INSERT INTO messages (id_chat, id_model, content) VALUES ($1, $2, $3)
-           RETURNING id_message, id_chat, id_user, id_model, content, created_at"#,
+        r#"INSERT INTO messages (id_chat, id_model, content, tokens) VALUES ($1, $2, $3, $4)
+           RETURNING id_message, id_chat, id_user, id_model, content, tokens, created_at"#,
         id_chat,
         id_model,
         content,
+        tokens,
     )
     .fetch_one(pool)
     .await
@@ -62,7 +71,7 @@ pub async fn list_for_chat(pool: &PgPool, id_chat: Uuid) -> Result<Vec<Message>,
     // Oldest first, so the frontend renders the conversation top-to-bottom.
     sqlx::query_as!(
         Message,
-        r#"SELECT id_message, id_chat, id_user, id_model, content, created_at
+        r#"SELECT id_message, id_chat, id_user, id_model, content, tokens, created_at
            FROM messages WHERE id_chat = $1 ORDER BY created_at ASC"#,
         id_chat,
     )

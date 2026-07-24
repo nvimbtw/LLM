@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 import { useChats, type ChatSummary } from "@/components/chat/chats-provider"
 
 function formatDate(iso: string) {
@@ -34,7 +35,14 @@ function formatDate(iso: string) {
   })
 }
 
-export function ConversationItem({ chat }: { chat: ChatSummary }) {
+// Compact token count: 812, 1.2k, 48k.
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n)
+  const k = n / 1000
+  return `${k >= 10 ? Math.round(k) : k.toFixed(1)}k`
+}
+
+export function ConversationItem({ chat, index }: { chat: ChatSummary; index: number }) {
   const { renameChat, deleteChat } = useChats()
 
   const [isRenaming, setRenaming] = React.useState(false)
@@ -57,52 +65,67 @@ export function ConversationItem({ chat }: { chat: ChatSummary }) {
   }
 
   return (
-    <li className="flex items-center gap-2 px-4 py-3">
-      {isRenaming ? (
-        <Input
-          autoFocus
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault()
-              commitRename()
-            } else if (e.key === "Escape") {
-              setTitle(chat.title)
-              setRenaming(false)
-            }
-          }}
-          className="h-8"
-        />
-      ) : (
-        <Link
-          href={`/chat/${chat.id}`}
-          className="min-w-0 flex-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="block truncate text-sm font-medium">
-            {chat.title}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {formatDate(chat.createdAt)}
-          </span>
-        </Link>
-      )}
+    <li className="group relative border-b border-border/60 before:absolute before:left-0 before:top-1/2 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-[''] hover:before:h-9">
+      <div className="flex items-baseline gap-5 py-5 pr-1 pl-4">
+        {/* Editorial index numeral — a table-of-contents cue. */}
+        <span className="w-7 shrink-0 font-display text-xs tabular-nums text-muted-foreground/40 transition-colors group-hover:text-primary">
+          {String(index + 1).padStart(2, "0")}
+        </span>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Chat options"
-              className="shrink-0 text-muted-foreground"
-            >
-              <MoreHorizontal />
-            </Button>
-          }
-        />
-        <DropdownMenuContent align="end">
+        {isRenaming ? (
+          <Input
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                commitRename()
+              } else if (e.key === "Escape") {
+                setTitle(chat.title)
+                setRenaming(false)
+              }
+            }}
+            className="h-9 flex-1"
+          />
+        ) : (
+          <Link
+            href={`/chat/${chat.id}`}
+            className="min-w-0 flex-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span className="block truncate font-display text-lg leading-snug tracking-tight underline-offset-4 group-hover:underline">
+              {chat.title}
+            </span>
+            <span className="mt-1.5 flex items-center gap-2.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60 tabular-nums">
+              <span>{formatDate(chat.createdAt)}</span>
+              {chat.tokens > 0 && (
+                <>
+                  <span className="text-muted-foreground/30">·</span>
+                  <span>{formatTokens(chat.tokens)} tokens</span>
+                </>
+              )}
+            </span>
+          </Link>
+        )}
+
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Chat options"
+                className={cn(
+                  "shrink-0 self-center text-muted-foreground opacity-0 transition-opacity",
+                  "group-hover:opacity-100 focus-visible:opacity-100 data-open:opacity-100 data-[popup-open]:opacity-100"
+                )}
+              >
+                <MoreHorizontal />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => setRenaming(true)}>
             <Pencil />
             Rename
@@ -114,8 +137,9 @@ export function ConversationItem({ chat }: { chat: ChatSummary }) {
             <Trash2 />
             Delete
           </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>

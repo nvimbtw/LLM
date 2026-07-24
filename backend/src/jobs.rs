@@ -215,13 +215,20 @@ fn run_job(job: Arc<Job>, config: TrainConfig) {
 // Runs both phases for a pretrain job on a dedicated thread. Both crate calls are
 // synchronous and blocking, which is exactly why this is a plain OS thread and
 // not a task on the actix runtime.
-fn run_pretrain_job(job: Arc<Job>, config: TrainConfig) {
+fn run_pretrain_job(job: Arc<Job>, mut config: TrainConfig) {
     let created_at = Utc::now().to_rfc3339();
 
+    // Resolve the shuffle seed now (0 => a fresh time seed) so the value that
+    // actually drives the run is the one persisted to meta.json — a shuffled run
+    // must be reproducible from its recorded config.
+    config.seed = training::resolve_seed(config.seed);
+
     // ---- Phase 1: tokenize / build the dataset ----
+    // Curriculum runs build per-stage document spans; a plain run collapses to a
+    // single implicit stage. `resolve_stages` unifies the two.
     eprintln!("[training] {}: tokenizing uploads…", config.model_name);
-    let dataset =
-        training::build_dataset(config.max_vocab, &config.datasets, |event| {
+    let stages = training::resolve_stages(&config);
+    let dataset = training::build_dataset(config.max_vocab, &stages, |event| {
         handle_tokenize_event(&job, event);
     });
 
@@ -232,6 +239,7 @@ fn run_pretrain_job(job: Arc<Job>, config: TrainConfig) {
                 "chars": stats.chars,
                 "vocab": stats.vocab_size,
                 "merges": stats.merges,
+                "documents": stats.documents,
                 "progress": 1.0,
                 "done": true,
             });
@@ -419,11 +427,16 @@ fn diag_frame(step: u64, d: &llm::training::diagnostics::Diagnostics) -> serde_j
         "emb_cos_p95": d.emb_cos_p95,
         "act_hist": d.act_hist,
         "emb_pca": d.emb_pca,
+        "emb_pca3": d.emb_pca3,
     })
 }
 
 fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
-    let step = p.epoch.saturating_sub(1) * p.total_chunks + p.chunk;
+    // Run-global chunk count: a monotonic x-axis across all curriculum stages
+    // (per-epoch `chunk` resets and `total_chunks` differs between stages, so the
+    // old (epoch-1)*total_chunks+chunk formula would jump backwards at a stage
+    // boundary).
+    let step = p.global_step;
     // Render the diagnostics (present only on mid-epoch report frames) before the
     // main object so it can be embedded in the live frame and stored for reattach.
     let diag = p.diagnostics.as_ref().map(|d| diag_frame(step, d));
@@ -432,6 +445,8 @@ fn handle_train_progress(job: &Job, p: llm::train::TrainingProgress) {
         "total_epochs": p.total_epochs,
         "chunk": p.chunk,
         "total_chunks": p.total_chunks,
+        "stage": p.stage,
+        "stage_name": p.stage_name,
         "loss": p.loss,
         "avg_loss": p.avg_loss,
         "min_loss": p.min_loss,

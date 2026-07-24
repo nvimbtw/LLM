@@ -95,6 +95,8 @@ export default function TrainingPage() {
               loss={t.loss}
               vocabSeries={t.vocabSeries}
               batchSeries={t.batchSeries}
+              curriculum={t.runConfig?.curriculum ?? cfg.curriculum ?? []}
+              emb3Frames={t.diag.map((d) => d.emb_pca3)}
             />
           </>
         )

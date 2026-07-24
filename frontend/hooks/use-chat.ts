@@ -4,7 +4,6 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import { streamChat } from "@/lib/chat-socket"
-import { hasVisibleContent } from "@/lib/message-parser"
 import { useChats } from "@/components/chat/chats-provider"
 import { useSettings } from "@/components/settings/settings-provider"
 
@@ -75,12 +74,16 @@ export function useChat(chatId: string) {
         { role: "assistant", content: "" },
       ])
 
-      // Counts every token frame the socket delivers for this turn.
-      // thinkingTokens freezes once real answer text appears (hasVisibleContent
-      // flips true), so it ends up as "tokens spent before the visible reply
-      // started" and totalTokens as "thinking + generating" throughout.
+      // Counts every token frame the socket delivers for this turn. A token is
+      // counted as "thinking" when it falls inside a <|thinking|>…<|/thinking|>
+      // block (the opening and closing markers included). We track the block
+      // state from the raw token values rather than inferring it from "no
+      // visible answer yet" — the model can think after it starts answering,
+      // and can open several thinking blocks per reply, so the position of the
+      // first visible word tells us nothing reliable about thinking length.
       let totalTokens = 0
       let thinkingTokens = 0
+      let insideThinking = false
 
       const appendToAssistant = (value: string) =>
         setMessages((prev) => {
@@ -88,7 +91,9 @@ export function useChat(chatId: string) {
           const last = next[next.length - 1]
           if (last?.role === "assistant") {
             totalTokens += 1
-            if (!hasVisibleContent(last.content)) thinkingTokens += 1
+            if (value.includes("<|thinking|>")) insideThinking = true
+            if (insideThinking) thinkingTokens += 1
+            if (value.includes("<|/thinking|>")) insideThinking = false
             // Tokens are whitespace-split words; rejoin with spaces to
             // approximate the structured markup while it streams.
             const sep = last.content ? " " : ""

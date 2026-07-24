@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -11,6 +12,7 @@ import { useDatasets } from "@/hooks/use-datasets"
 import { useModels } from "@/hooks/use-models"
 import { cn } from "@/lib/utils"
 import type {
+  CurriculumStage,
   DatasetInfo,
   DatasetSelection,
   TrainConfig,
@@ -231,6 +233,181 @@ function DatasetPicker({
   )
 }
 
+// The curriculum builder: an ordered list of stages, each its own dataset
+// selection + epoch count, trained in sequence. Reuses DatasetPicker per stage so
+// a stage reads exactly like the flat picker. Stages can be reordered (the order
+// IS the curriculum) and removed; "Add stage" appends an empty one.
+function CurriculumBuilder({
+  available,
+  loading,
+  value,
+  disabled,
+  onChange,
+}: {
+  available: DatasetInfo[]
+  loading: boolean
+  value: CurriculumStage[]
+  disabled: boolean
+  onChange: (next: CurriculumStage[]) => void
+}) {
+  // Collapsed stages, tracked by index — a purely visual state so the rail can be
+  // kept compact. A freshly-added stage starts expanded so it can be configured.
+  const [collapsed, setCollapsed] = React.useState<Set<number>>(new Set())
+
+  const toggleCollapsed = (i: number) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+
+  const update = (i: number, patch: Partial<CurriculumStage>) =>
+    onChange(value.map((s, idx) => (idx === i ? { ...s, ...patch } : s)))
+
+  const remove = (i: number) => onChange(value.filter((_, idx) => idx !== i))
+
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir
+    if (j < 0 || j >= value.length) return
+    const next = [...value]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    onChange(next)
+  }
+
+  const add = () => onChange([...value, { datasets: [], epochs: 1 }])
+
+  // One-line summary of a collapsed stage: its datasets and epoch count.
+  const summary = (stage: CurriculumStage) => {
+    const names = stage.datasets.map((d) => d.name)
+    const datasets = names.length > 0 ? names.join(", ") : "no datasets"
+    return `${datasets} · ${stage.epochs} ep`
+  }
+
+  return (
+    <div className="space-y-3">
+      <span className="text-xs text-muted-foreground">Curriculum stages</span>
+
+      {value.map((stage, i) => {
+        const isCollapsed = collapsed.has(i)
+        const title = stage.name?.trim() || `Stage ${i + 1}`
+        return (
+          <div key={i} className="rounded-lg border">
+            {/* Header: click the title to collapse/expand; reorder + remove stay
+                on the right. Kept compact so a long curriculum doesn't dominate. */}
+            <div className="flex items-center justify-between gap-2 p-2.5">
+              <button
+                type="button"
+                onClick={() => toggleCollapsed(i)}
+                aria-expanded={!isCollapsed}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              >
+                {isCollapsed ? (
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                )}
+                <span className="min-w-0 truncate">
+                  <span className="text-xs font-medium tabular-nums">
+                    {i + 1}.
+                  </span>{" "}
+                  <span className="text-sm">{title}</span>
+                  {isCollapsed && (
+                    <span className="ml-1.5 truncate text-xs text-muted-foreground">
+                      {summary(stage)}
+                    </span>
+                  )}
+                </span>
+              </button>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-7"
+                  disabled={disabled || i === 0}
+                  onClick={() => move(i, -1)}
+                  aria-label="Move stage up"
+                >
+                  <ChevronUp className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-7"
+                  disabled={disabled || i === value.length - 1}
+                  onClick={() => move(i, 1)}
+                  aria-label="Move stage down"
+                >
+                  <ChevronDown className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-7 text-muted-foreground hover:text-destructive"
+                  disabled={disabled}
+                  onClick={() => remove(i)}
+                  aria-label="Remove stage"
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+            </div>
+
+            {!isCollapsed && (
+              <div className="space-y-2.5 border-t p-2.5">
+                <Input
+                  value={stage.name ?? ""}
+                  onChange={(e) =>
+                    update(i, { name: e.target.value || undefined })
+                  }
+                  placeholder={`Stage ${i + 1} label (optional)`}
+                  disabled={disabled}
+                  className="h-8 text-sm"
+                />
+
+                <DatasetPicker
+                  available={available}
+                  loading={loading}
+                  value={stage.datasets}
+                  disabled={disabled}
+                  onChange={(datasets) => update(i, { datasets })}
+                />
+
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-muted-foreground">Epochs</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={String(stage.epochs)}
+                    onChange={(e) => update(i, { epochs: Number(e.target.value) })}
+                    disabled={disabled}
+                    className="h-8 w-24 text-right tabular-nums"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="w-full"
+        disabled={disabled}
+        onClick={add}
+      >
+        <Plus className="size-4" /> Add stage
+      </Button>
+    </div>
+  )
+}
+
 // Name is a display label only (weights live under the model's UUID), so spaces
 // and dots like "Opal 1.1" are allowed — just no surrounding whitespace or
 // control characters. Shared by both modes.
@@ -286,14 +463,30 @@ function validate(cfg: TrainConfig): string[] {
     errs.push("Learning rate must be positive.")
   if (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
     errs.push("Max vocab must be at least 256.")
-  // Defensive: a config from a stale source (e.g. a preset saved before this
-  // field existed) may lack `datasets`; treat missing as an empty selection so it
-  // surfaces as a normal validation error rather than a crash.
-  const selected = cfg.datasets ?? []
-  if (selected.length === 0)
-    errs.push("Select at least one dataset to train on.")
-  if (selected.some((d) => !Number.isInteger(d.count) || d.count < 0))
-    errs.push("Each dataset count must be 0 (all) or a positive whole number.")
+
+  // Curriculum runs supply their datasets per stage; a plain run uses the flat
+  // selection. Validate whichever is active (mirrors the backend).
+  const curriculum = cfg.curriculum ?? []
+  if (curriculum.length > 0) {
+    curriculum.forEach((stage, i) => {
+      const ds = stage.datasets ?? []
+      if (!Number.isFinite(stage.epochs) || stage.epochs <= 0)
+        errs.push(`Stage ${i + 1}: epochs must be positive.`)
+      if (ds.length === 0)
+        errs.push(`Stage ${i + 1}: select at least one dataset.`)
+      if (ds.some((d) => !Number.isInteger(d.count) || d.count < 0))
+        errs.push(`Stage ${i + 1}: each dataset count must be 0 (all) or positive.`)
+    })
+  } else {
+    // Defensive: a config from a stale source (e.g. a preset saved before this
+    // field existed) may lack `datasets`; treat missing as an empty selection so
+    // it surfaces as a normal validation error rather than a crash.
+    const selected = cfg.datasets ?? []
+    if (selected.length === 0)
+      errs.push("Select at least one dataset to train on.")
+    if (selected.some((d) => !Number.isInteger(d.count) || d.count < 0))
+      errs.push("Each dataset count must be 0 (all) or a positive whole number.")
+  }
   return errs
 }
 
@@ -363,7 +556,30 @@ export function ParamsRail({
   }
 
   const isSft = cfg.mode === "sft"
-  const numFields = isSft ? RUN_FIELDS : [...ARCH_FIELDS, ...RUN_FIELDS]
+  const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
+  // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
+  const runFields = curriculumOn
+    ? RUN_FIELDS.filter((f) => f.key !== "epochs")
+    : RUN_FIELDS
+  const numFields = isSft ? RUN_FIELDS : [...ARCH_FIELDS, ...runFields]
+
+  // Toggle curriculum mode: turning it on seeds a first stage from the current
+  // flat selection (so nothing is lost); turning it off clears the stages and
+  // restores the flat selection from the first stage.
+  const setCurriculum = (on: boolean) => {
+    if (on) {
+      onChange({
+        ...cfg,
+        curriculum: [{ datasets: cfg.datasets ?? [], epochs: cfg.epochs }],
+      })
+    } else {
+      onChange({
+        ...cfg,
+        curriculum: [],
+        datasets: cfg.curriculum?.[0]?.datasets ?? cfg.datasets ?? [],
+      })
+    }
+  }
 
   // The base id is derived: if the user hasn't explicitly picked one, default to
   // the first available model, keeping the select controlled and the submit correct.
@@ -479,13 +695,57 @@ export function ParamsRail({
       </dl>
 
       {!isSft && (
-        <DatasetPicker
-          available={availableDatasets}
-          loading={datasetsLoading}
-          value={cfg.datasets ?? []}
-          disabled={disabled}
-          onChange={(datasets) => onChange({ ...cfg, datasets })}
-        />
+        <div className="space-y-3">
+          {/* Data-order controls: shuffle each epoch + curriculum staging. */}
+          <div className="space-y-2 rounded-lg border p-2.5">
+            <label className="flex items-center justify-between gap-2">
+              <span className="min-w-0 text-sm">
+                Shuffle documents each epoch
+                <span className="block text-xs text-muted-foreground">
+                  Reorder docs every epoch, separated by an end-of-text token.
+                </span>
+              </span>
+              <Checkbox
+                checked={cfg.shuffle ?? true}
+                disabled={disabled}
+                onCheckedChange={(on) =>
+                  onChange({ ...cfg, shuffle: on === true })
+                }
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2 border-t pt-2">
+              <span className="min-w-0 text-sm">
+                Curriculum
+                <span className="block text-xs text-muted-foreground">
+                  Train staged datasets in order, each for its own epochs.
+                </span>
+              </span>
+              <Checkbox
+                checked={curriculumOn}
+                disabled={disabled}
+                onCheckedChange={(on) => setCurriculum(on === true)}
+              />
+            </label>
+          </div>
+
+          {curriculumOn ? (
+            <CurriculumBuilder
+              available={availableDatasets}
+              loading={datasetsLoading}
+              value={cfg.curriculum ?? []}
+              disabled={disabled}
+              onChange={(curriculum) => onChange({ ...cfg, curriculum })}
+            />
+          ) : (
+            <DatasetPicker
+              available={availableDatasets}
+              loading={datasetsLoading}
+              value={cfg.datasets ?? []}
+              disabled={disabled}
+              onChange={(datasets) => onChange({ ...cfg, datasets })}
+            />
+          )}
+        </div>
       )}
 
       {isSft ? (

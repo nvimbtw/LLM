@@ -65,3 +65,13 @@ pub fn tokenizer_dir() -> PathBuf {
 pub fn models_dir() -> PathBuf {
     root().join("artifacts").join("models")
 }
+
+// Benchmark fixtures. `eval/corpus/*.txt` is the reference prose a run scores
+// against — held-out text the model was **not** trained on — and `eval/blimp/`
+// optionally holds real BLiMP JSONL alongside the built-in minimal-pair suite.
+// Kept out of `raw/uploads` on purpose: anything under uploads is selectable as
+// training data, and a held-out set that can be accidentally trained on is not a
+// held-out set.
+pub fn eval_dir() -> PathBuf {
+    root().join("eval")
+}

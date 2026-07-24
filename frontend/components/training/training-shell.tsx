@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { FluxThrobber } from "@/components/chat/flux-throbber"
+import { Throbber } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 import type { JobStatus, TrainMode } from "@/lib/training-socket"
 
@@ -132,16 +132,8 @@ export function TrainingShell({
   return (
     <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 sm:px-8">
       {/* Masthead */}
-      <header className="flex flex-wrap items-center justify-between gap-4 border-b pb-4">
+      <header className="flex flex-wrap items-center justify-between gap-4 pb-3">
         <div className="flex min-w-0 items-center gap-3">
-          <FluxThrobber
-            mode={
-              status === "tokenizing" || status === "training"
-                ? "training"
-                : "idle"
-            }
-            className="h-8 w-14 shrink-0"
-          />
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
             {modelName || "Train a model"}
           </h1>
@@ -152,6 +144,13 @@ export function TrainingShell({
           {primaryAction}
         </div>
       </header>
+      {/* The masthead's rule *is* the indicator: at rest it's the hairline border
+          the header always had, and while a run is live the carriage travels it.
+          Replaces the old `border-b`, so nothing is added to the layout. */}
+      <Throbber
+        mode={status === "tokenizing" || status === "training" ? "training" : "idle"}
+        className="h-5 w-full"
+      />
 
       {/* Body: fixed rail + fluid main */}
       <div className="grid grid-cols-1 gap-8 pt-6 lg:grid-cols-[340px_minmax(0,1fr)] lg:gap-12">

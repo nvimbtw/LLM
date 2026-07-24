@@ -38,6 +38,7 @@ import {
   MUTED_SERIES,
   yAxisProps,
 } from "@/components/training/chart-theme"
+import { EmbeddingGlobe } from "@/components/training/embedding-globe"
 import { Figure, FigurePlaceholder } from "@/components/training/stat-run"
 import type { DiagPoint } from "@/lib/training-socket"
 
@@ -168,7 +169,7 @@ function TraceChart({
             key={t.key}
             dataKey={t.key}
             name={t.name}
-            type="monotone"
+            type="linear"
             stroke={t.color}
             strokeWidth={t.width ?? 1.5}
             strokeDasharray={t.dash}
@@ -685,7 +686,7 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                 <Area
                   dataKey="band"
                   name="p5–p95"
-                  type="monotone"
+                  type="linear"
                   stroke="none"
                   fill={EMB_COLOR}
                   fillOpacity={0.15}
@@ -695,7 +696,7 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                 <Line
                   dataKey="mean"
                   name="Mean cosine"
-                  type="monotone"
+                  type="linear"
                   stroke={EMB_COLOR}
                   strokeWidth={1.5}
                   dot={false}
@@ -707,7 +708,7 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
           </Figure>
 
           <Figure
-            caption="Embedding PCA — frequent tokens as vectors from the mean embedding (latest report)"
+            caption="Embedding geometry — frequent tokens on the top principal axes (latest report)"
             aside={
               <RampLegend
                 from={embRankColor(0, pcaCount)}
@@ -716,22 +717,42 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
               />
             }
           >
-            <EmbeddingBiplot
-              frames={diag.map((d) => d.emb_pca)}
-              steps={diag.map((d) => d.step)}
-            />
-            <p className="mx-auto mt-3 max-w-[560px] text-xs leading-relaxed text-muted-foreground">
-              Each arrow runs from the{" "}
-              <span className="text-foreground">mean embedding</span> (centre) to a
-              frequent token, in the plane of the top-2 principal components.{" "}
-              <span className="text-foreground">Direction</span> is the token&apos;s
-              embedding orientation,{" "}
-              <span className="text-foreground">length</span> is how far it sits
-              from the average, and the{" "}
-              <span className="text-foreground">angle</span> between two arrows
-              tracks their similarity. PC1 (→) and PC2 (↑) are the directions of
-              greatest variance; their sign and scale are arbitrary.
-            </p>
+            {/* Two lenses on the same PCA cloud: the flat top-2 biplot, and the
+                rotating top-3 solid. The biplot is square, so they sit side by side
+                on wide screens and stack on narrow ones. */}
+            <div className="grid gap-8 lg:grid-cols-2 lg:items-start">
+              <div>
+                <EmbeddingBiplot
+                  frames={diag.map((d) => d.emb_pca)}
+                  steps={diag.map((d) => d.step)}
+                />
+                <p className="mx-auto mt-3 max-w-[440px] text-xs leading-relaxed text-muted-foreground">
+                  Each arrow runs from the{" "}
+                  <span className="text-foreground">mean embedding</span> (centre) to
+                  a frequent token, in the plane of the top-2 principal components.{" "}
+                  <span className="text-foreground">Direction</span> is the
+                  token&apos;s embedding orientation,{" "}
+                  <span className="text-foreground">length</span> is how far it sits
+                  from the average, and the{" "}
+                  <span className="text-foreground">angle</span> between two arrows
+                  tracks their similarity. PC1 (→) and PC2 (↑) are the directions of
+                  greatest variance; their sign and scale are arbitrary.
+                </p>
+              </div>
+              <div>
+                <EmbeddingGlobe frames={diag.map((d) => d.emb_pca3)} variant="full" />
+                <p className="mx-auto mt-3 max-w-[440px] text-xs leading-relaxed text-muted-foreground">
+                  The same tokens as an{" "}
+                  <span className="text-foreground">icosphere</span>, adding{" "}
+                  <span className="text-foreground">PC3</span> as depth — each token
+                  sits on the sphere in the{" "}
+                  <span className="text-foreground">direction</span> its embedding
+                  points, and the surface is triangulated between them. Tokens that
+                  point alike sit close together; the gentle bulges track how far each
+                  sits from the average. Drag to orbit, or let it turn.
+                </p>
+              </div>
+            </div>
           </Figure>
         </div>
       )}

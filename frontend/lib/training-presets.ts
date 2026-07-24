@@ -1,6 +1,10 @@
 import { API_URL, authHeaders } from "./api"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
-import type { DatasetSelection, TrainConfig } from "./training-socket"
+import type {
+  CurriculumStage,
+  DatasetSelection,
+  TrainConfig,
+} from "./training-socket"
 
 // A named, reusable training-parameter set. `config` is a TrainConfig-shaped blob
 // the backend stores opaquely (validated only when a run actually starts). Mirrors
@@ -94,6 +98,31 @@ function datasets(v: unknown): DatasetSelection[] {
   return out
 }
 
+// Coerce a stored blob's curriculum into a clean CurriculumStage[], dropping any
+// stage without a valid dataset selection and clamping epochs to a positive
+// integer. Missing/garbage yields an empty curriculum (the plain single-pass run).
+function curriculum(v: unknown): CurriculumStage[] {
+  if (!Array.isArray(v)) return []
+  const out: CurriculumStage[] = []
+  for (const item of v) {
+    if (!item || typeof item !== "object") continue
+    const stageDatasets = datasets((item as { datasets?: unknown }).datasets)
+    if (stageDatasets.length === 0) continue
+    const rawEpochs = (item as { epochs?: unknown }).epochs
+    const epochs =
+      typeof rawEpochs === "number" && Number.isFinite(rawEpochs) && rawEpochs > 0
+        ? Math.floor(rawEpochs)
+        : 1
+    const name = (item as { name?: unknown }).name
+    out.push({
+      datasets: stageDatasets,
+      epochs,
+      ...(typeof name === "string" && name.trim() ? { name } : {}),
+    })
+  }
+  return out
+}
+
 // Pick the TrainConfig fields out of a stored blob, defaulting anything missing —
 // so a preset saved before a field existed, or a model config that only carries a
 // subset, still loads cleanly. Shared by preset-load and model-load. Never trusts
@@ -118,6 +147,8 @@ export function toTrainConfig(
     ff_multiplier: num(b.ff_multiplier, DEFAULT_CONFIG.ff_multiplier),
     max_vocab: num(b.max_vocab, DEFAULT_CONFIG.max_vocab),
     datasets: datasets(b.datasets),
+    curriculum: curriculum(b.curriculum),
+    shuffle: typeof b.shuffle === "boolean" ? b.shuffle : DEFAULT_CONFIG.shuffle,
     mode,
     base_model_id:
       typeof b.base_model_id === "string" ? b.base_model_id : undefined,

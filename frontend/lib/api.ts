@@ -53,7 +53,11 @@ export function authHeaders(): HeadersInit {
 /** Clears the session and lands the user on /login (token expired/invalid). */
 export function handleSessionExpired() {
   clearSession()
-  window.location.assign("/login")
+  // Guard against a redirect loop: a 401 on the login page (e.g. a stray
+  // background fetch) must not reload it, or we spin reloading /login forever.
+  if (window.location.pathname !== "/login") {
+    window.location.assign("/login")
+  }
 }
 
 /**

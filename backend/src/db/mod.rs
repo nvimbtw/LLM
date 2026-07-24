@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod chat;
 pub mod message;
 pub mod model;
@@ -5,6 +6,7 @@ pub mod preset;
 pub mod usage;
 pub mod user;
 
+use crate::crypto::password;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -14,6 +16,23 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .await?;
 
     sqlx::migrate!("./src/db/migrations").run(&pool).await?;
+
+    let pwd_hash = match password::hash_password("admin") {
+        Ok(hash) => hash,
+        Err(e) => panic!("Failed to hash password {}", e),
+    };
+
+    match user::create(
+        &pool,
+        "admin",
+        pwd_hash.as_str(),
+        Some(user::AccessLevel::Admin),
+    )
+    .await
+    {
+        Ok(_) => println!("Created admin!"),
+        Err(_) => println!("Admin already exists"),
+    }
 
     Ok(pool)
 }

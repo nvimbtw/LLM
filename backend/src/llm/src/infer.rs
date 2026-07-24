@@ -64,6 +64,17 @@ pub struct GenerationOutput {
     pub output_tokens: usize,
 }
 
+// Token length of `text` under a model's BPE merges. Loads only the merges
+// (a small file) — not the model weights — so it's cheap enough to call on the
+// async executor when persisting a message. Used to record per-message token
+// counts for the chat's cumulative usage display.
+pub fn encode_count(model_dir: &Path, text: &str) -> Result<usize, String> {
+    let merges_path = model_dir.join("merges.bin");
+    let merges =
+        tokenize::bpe::load_merges(&merges_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    Ok(tokenize::bpe::encode(text, &merges).len())
+}
+
 pub fn generate_response(
     model_dir: &Path,
     prompt: &str,

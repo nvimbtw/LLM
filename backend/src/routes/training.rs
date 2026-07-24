@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use actix_web::{HttpRequest, HttpResponse, Responder, get, post, web};
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -30,16 +32,15 @@ async fn start_training(
 
     // Resolve the storage id (which names the on-disk weights dir): reuse the
     // existing model's id on a retrain of the same name, else mint a new one.
-    config.storage_id = match crate::db::model::find_id_by_name(pool.get_ref(), &config.model_name)
-        .await
-    {
-        Ok(Some(id)) => id,
-        Ok(None) => uuid::Uuid::new_v4(),
-        Err(e) => {
-            eprintln!("resolve model id db error: {}", e);
-            return HttpResponse::InternalServerError().body("failed to start training");
-        }
-    };
+    config.storage_id =
+        match crate::db::model::find_id_by_name(pool.get_ref(), &config.model_name).await {
+            Ok(Some(id)) => id,
+            Ok(None) => uuid::Uuid::new_v4(),
+            Err(e) => {
+                eprintln!("resolve model id db error: {}", e);
+                return HttpResponse::InternalServerError().body("failed to start training");
+            }
+        };
 
     let job_id = registry.start(config);
     HttpResponse::Created().json(serde_json::json!({ "job_id": job_id }))
@@ -286,12 +287,27 @@ fn validate_config(cfg: &TrainConfig) -> Result<(), &'static str> {
     }
     // Pretrain builds its corpus from the selected upload datasets; SFT ignores
     // them (it fine-tunes on chat data), so only require a selection for pretrain.
+    // A curriculum run supplies its datasets per stage instead of the flat list.
     if cfg.mode != TrainMode::Sft {
-        if cfg.datasets.is_empty() {
-            return Err("select at least one dataset to train on");
-        }
-        if cfg.datasets.iter().any(|d| d.name.trim().is_empty()) {
-            return Err("dataset name is required");
+        if cfg.curriculum.is_empty() {
+            if cfg.datasets.is_empty() {
+                return Err("select at least one dataset to train on");
+            }
+            if cfg.datasets.iter().any(|d| d.name.trim().is_empty()) {
+                return Err("dataset name is required");
+            }
+        } else {
+            for stage in &cfg.curriculum {
+                if stage.epochs <= 0 {
+                    return Err("each curriculum stage needs at least one epoch");
+                }
+                if stage.datasets.is_empty() {
+                    return Err("each curriculum stage needs at least one dataset");
+                }
+                if stage.datasets.iter().any(|d| d.name.trim().is_empty()) {
+                    return Err("dataset name is required");
+                }
+            }
         }
     }
     Ok(())
@@ -313,7 +329,9 @@ fn validate_sft(cfg: &TrainConfig) -> Result<(), &'static str> {
     if cfg.mode != TrainMode::Sft {
         return Ok(());
     }
-    let base_id = cfg.base_model_id.ok_or("base_model_id is required for an SFT run")?;
+    let base_id = cfg
+        .base_model_id
+        .ok_or("base_model_id is required for an SFT run")?;
     let base_dir = storage::models_dir().join(base_id.to_string());
     if !base_dir.join("model.bin").is_file() {
         return Err("base_model_id does not resolve to an existing model");

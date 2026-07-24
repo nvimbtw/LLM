@@ -69,11 +69,11 @@ export function estimateParams(raw: RawModel): number {
   return Math.round(2 * vocab * d + ctx * d + c.layers * perLayer)
 }
 
-// Bucket by hidden size so the card glyph/badge varies with model scale.
+// Bucket by parameter count: flagship > 100M, balanced > 50M, fast below.
 export function tierFor(raw: RawModel): ModelTier {
-  const d = raw.parameters?.config?.dimensions ?? raw.context ?? 0
-  if (d >= 256) return "flagship"
-  if (d >= 96) return "balanced"
+  const params = estimateParams(raw)
+  if (params >= 100_000_000) return "flagship"
+  if (params >= 50_000_000) return "balanced"
   return "fast"
 }
 

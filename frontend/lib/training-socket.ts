@@ -35,6 +35,14 @@ export interface DatasetInfo {
   files: number
 }
 
+// One curriculum stage: a set of datasets trained for a fixed number of epochs
+// before the run advances to the next stage. Mirrors the backend `CurriculumStage`.
+export interface CurriculumStage {
+  name?: string
+  datasets: DatasetSelection[]
+  epochs: number
+}
+
 export interface TrainConfig {
   model_name: string
   dimensions: number
@@ -48,6 +56,13 @@ export interface TrainConfig {
   // Which upload datasets (subfolders of uploads/) to train on, each with how
   // many of its files to sample (0 = all of that dataset). Pretrain only.
   datasets: DatasetSelection[]
+  // Ordered curriculum stages (pretrain only). When non-empty, the run trains
+  // each stage's datasets for its own epoch count instead of the flat `datasets`
+  // + `epochs`. Empty = the plain single-pass behaviour.
+  curriculum: CurriculumStage[]
+  // Reorder documents each epoch (with an <|endoftext|> separator between them)
+  // so the model doesn't see a fixed data order. Pretrain only.
+  shuffle: boolean
   // Pretrain (default) vs SFT fine-tune.
   mode: TrainMode
   // For SFT only: the id of the base model to fine-tune from. Omitted for
@@ -100,6 +115,9 @@ export interface DiagPoint {
   act_hist: number[]
   // 2-D PCA projection of the frequent tokens' embeddings ([x, y] per token).
   emb_pca: [number, number][]
+  // 3-D PCA projection of the same tokens ([x, y, z] per token, same principal axes
+  // as `emb_pca`) — the vertices of the rotating embedding globe.
+  emb_pca3: [number, number, number][]
 }
 
 export interface TrainStats {
@@ -107,6 +125,10 @@ export interface TrainStats {
   total_epochs: number
   chunk: number
   total_chunks: number
+  // Curriculum stage this frame belongs to (0-based) and its optional label, so
+  // the chart can mark stage transitions. A non-curriculum run is a single stage 0.
+  stage: number
+  stage_name: string | null
   loss: number
   avg_loss: number
   min_loss: number

@@ -53,6 +53,14 @@ pub struct TrainingProgress {
     pub total_epochs: u64,
     pub chunk: u64,
     pub total_chunks: u64,
+    // Curriculum stage this frame belongs to (0-based) and its optional label, so
+    // the UI can mark stage transitions. A non-curriculum run is a single stage 0.
+    pub stage: u64,
+    pub stage_name: Option<String>,
+    // Chunks completed across the WHOLE run (all stages), a monotonically
+    // increasing x-axis for the charts — `chunk` alone resets each epoch and
+    // `total_chunks` differs between stages.
+    pub global_step: u64,
     pub loss: f64,
     pub eta_secs: f64,
     pub epoch_done: bool,
@@ -74,18 +82,70 @@ pub struct TrainingProgress {
 
 pub type ProgressCallback = Box<dyn Fn(TrainingProgress) + Send>;
 
+/// A contiguous span of the on-disk corpus that forms one training document.
+/// `start`/`len` index the flat token stream, exclusive of the `<|endoftext|>`
+/// separators baked between documents.
+pub struct DocSpan {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// One curriculum stage: a set of documents trained for `epochs` epochs before
+/// the run moves on to the next stage.
+pub struct Stage {
+    pub name: Option<String>,
+    pub epochs: i64,
+    pub docs: Vec<DocSpan>,
+}
+
+/// How to order and segment the corpus for a run. Every training entry point
+/// funnels through this: pretraining passes a real multi-stage plan; SFT and
+/// resume pass a single-stage, whole-corpus, unshuffled plan (`whole_corpus`).
+pub struct DataPlan {
+    pub stages: Vec<Stage>,
+    /// Token id inserted between documents when they're reordered.
+    pub eot_id: u32,
+    /// Reshuffle document order every epoch.
+    pub shuffle: bool,
+    /// Seed for the per-epoch shuffle (reproducible).
+    pub seed: u64,
+}
+
+impl DataPlan {
+    /// A trivial plan: one stage of `epochs` epochs over the whole corpus as a
+    /// single document, no shuffling. Used by resume/SFT and as the fallback for
+    /// datasets built before document boundaries were recorded. `start`/`len` are
+    /// filled in against the actual corpus length inside `train`/the loop.
+    pub fn whole_corpus(epochs: i64) -> DataPlan {
+        DataPlan {
+            stages: vec![Stage { name: None, epochs, docs: Vec::new() }],
+            eot_id: 0,
+            shuffle: false,
+            seed: 0,
+        }
+    }
+
+    /// True when this is the single-stage whole-corpus fallback (its one stage
+    /// carries no explicit document spans), so the loop can synthesize a single
+    /// document covering the entire corpus.
+    fn is_whole_corpus(&self) -> bool {
+        self.stages.len() == 1 && self.stages[0].docs.is_empty()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn train(
     dimensions: i64,
     ctx_window: i64,
     heads: i64,
     layers: i64,
-    epochs: i64,
     lr: f32,
     ff_multiplier: i64,
     model_dir: &Path,
     corpus_path: &Path,
     merges_path: &Path,
     checkpoints_dir: Option<&Path>,
+    plan: DataPlan,
     on_progress: ProgressCallback,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<bool, io::Error> {
@@ -118,9 +178,9 @@ pub fn train(
         &mut ws,
         &corpus,
         None,
+        &plan,
         ctx_window,
         layers,
-        epochs,
         lr,
         model_dir,
         checkpoints_dir,
@@ -159,14 +219,17 @@ pub fn continue_train(
         fs::create_dir_all(cp_dir)?;
     }
 
+    // Resume trains over the whole corpus in fixed order (per-epoch shuffle for
+    // the resume path is a follow-up; the fresh `train` path shuffles).
+    let plan = DataPlan::whole_corpus(additional_epochs);
     run_training_loop(
         &mut transformer,
         &mut ws,
         &corpus,
         None,
+        &plan,
         ctx_window,
         layers,
-        additional_epochs,
         lr,
         model_dir,
         checkpoints_dir,
@@ -317,14 +380,17 @@ pub fn sft_train(
         fs::create_dir_all(cp_dir)?;
     }
 
+    // SFT trains the whole masked corpus in built order (conversations already
+    // carry <|endoftext|> boundaries); no per-epoch shuffle this pass.
+    let plan = DataPlan::whole_corpus(epochs);
     run_training_loop(
         &mut transformer,
         &mut ws,
         &corpus,
         Some(&mask),
+        &plan,
         ctx_window,
         layers,
-        epochs,
         lr,
         out_model_dir,
         checkpoints_dir,
@@ -338,6 +404,9 @@ struct EpochStats {
     min_loss: f32,
     max_loss: f32,
     duration_secs: f64,
+    // Chunks actually trained this epoch (== the stage's chunk count), used to
+    // advance the run-global chunk counter for the chart x-axis and ETA.
+    chunks: usize,
 }
 
 // Running min / mean / max over a set of per-chunk losses. Used both for the
@@ -423,10 +492,18 @@ fn train_epoch(
     lr: f32,
     // The run's whole planned optimizer-step budget, for the cosine-decay curve.
     total_opt_steps: i32,
+    // Global (whole-run) epoch index and total, for progress display.
     epoch: i64,
     epochs: i64,
+    // Curriculum stage this epoch belongs to and its label, forwarded on frames.
+    stage: u64,
+    stage_name: Option<&str>,
+    // Chunks in THIS epoch's stream (this stage), and the whole-run chunk total.
     total_chunks: usize,
     total_chunks_all: u64,
+    // Chunks completed before this epoch, so a monotonic global step can be
+    // reported across stages/epochs.
+    chunks_done_base: u64,
     training_start: Instant,
     adam_step: &mut i32,
     // The corpus's most-frequent token ids, for the embedding-anisotropy metric.
@@ -502,8 +579,8 @@ fn train_epoch(
                 )
             });
             report_chunk_progress(
-                epoch, epochs, total_chunks, total_chunks_all, training_start, loss,
-                &epoch_stats, &window, diag, on_progress,
+                epoch, epochs, stage, stage_name, total_chunks, chunks_done_base,
+                total_chunks_all, training_start, loss, &epoch_stats, &window, diag, on_progress,
             );
             // Start a fresh window for the next report.
             window = LossStats::new();
@@ -515,6 +592,7 @@ fn train_epoch(
         min_loss: epoch_stats.min,
         max_loss: epoch_stats.max,
         duration_secs: epoch_start.elapsed().as_secs_f64(),
+        chunks: epoch_stats.n as usize,
     }
 }
 
@@ -565,7 +643,10 @@ fn step_optimizer(ws: &mut Workspace, layers: i64, lr: f32, total_opt_steps: i32
 fn report_chunk_progress(
     epoch: i64,
     epochs: i64,
+    stage: u64,
+    stage_name: Option<&str>,
     total_chunks: usize,
+    chunks_done_base: u64,
     total_chunks_all: u64,
     training_start: Instant,
     loss: f32,
@@ -574,12 +655,15 @@ fn report_chunk_progress(
     diagnostics: Option<Diagnostics>,
     on_progress: &ProgressCallback,
 ) {
-    let chunks_done_global = (epoch as u64) * (total_chunks as u64) + epoch_stats.n;
+    let chunks_done_global = chunks_done_base + epoch_stats.n;
     on_progress(TrainingProgress {
         epoch: (epoch + 1) as u64,
         total_epochs: epochs as u64,
         chunk: epoch_stats.n,
         total_chunks: total_chunks as u64,
+        stage,
+        stage_name: stage_name.map(str::to_string),
+        global_step: chunks_done_global,
         loss: loss as f64,
         eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
         epoch_done: false,
@@ -598,6 +682,69 @@ fn report_chunk_progress(
     });
 }
 
+// Number of training chunks a token stream of length `len` yields under
+// `corpus.chunks(ctx)` filtered to `len >= 2` — the last chunk is skipped when
+// it holds a single token (nothing to predict). Order-independent, so it can be
+// precomputed per stage for the step/ETA budget.
+fn chunks_in(len: usize, ctx: usize) -> usize {
+    if len < 2 {
+        return 0;
+    }
+    let full = len / ctx;
+    let rem = len % ctx;
+    full + usize::from(rem >= 2)
+}
+
+// Length of a stage's assembled token stream: every document's tokens plus one
+// <|endoftext|> separator between adjacent documents.
+fn stage_stream_len(docs: &[DocSpan]) -> usize {
+    docs.iter().map(|d| d.len).sum::<usize>() + docs.len().saturating_sub(1)
+}
+
+// Fisher–Yates shuffle of document indices from an explicit seed, so each epoch's
+// order is reproducible from `seed`. `| 1` keeps xorshift out of its zero state.
+fn shuffle_seeded(order: &mut [usize], seed: u64) {
+    let mut state = seed | 1;
+    for i in (1..order.len()).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let j = (state % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+}
+
+// Assemble one epoch's token stream (and aligned mask, for SFT) by walking the
+// documents in `order`, concatenating each document's corpus slice with an
+// `eot_id` (mask byte 0) inserted between adjacent documents. The default order
+// reproduces the on-disk corpus exactly, since build baked the same separators
+// in the same places.
+fn assemble_epoch(
+    corpus: &[u32],
+    mask: Option<&[u8]>,
+    docs: &[DocSpan],
+    order: &[usize],
+    eot_id: u32,
+) -> (Vec<u32>, Option<Vec<u8>>) {
+    let total = stage_stream_len(docs);
+    let mut out = Vec::with_capacity(total);
+    let mut out_mask = mask.map(|_| Vec::with_capacity(total));
+    for (i, &di) in order.iter().enumerate() {
+        let d = &docs[di];
+        if i > 0 {
+            out.push(eot_id);
+            if let Some(m) = out_mask.as_mut() {
+                m.push(0);
+            }
+        }
+        out.extend_from_slice(&corpus[d.start..d.start + d.len]);
+        if let (Some(m), Some(src)) = (out_mask.as_mut(), mask) {
+            m.extend_from_slice(&src[d.start..d.start + d.len]);
+        }
+    }
+    (out, out_mask)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_training_loop(
     transformer: &mut Model,
@@ -606,9 +753,9 @@ fn run_training_loop(
     // SFT loss mask aligned 1:1 with `corpus`, threaded to `train_epoch`; `None`
     // for pretraining (`train`/`continue_train`).
     mask: Option<&[u8]>,
+    plan: &DataPlan,
     ctx_window: i64,
     layers: i64,
-    epochs: i64,
     lr: f32,
     model_dir: &Path,
     checkpoints_dir: Option<&Path>,
@@ -620,51 +767,114 @@ fn run_training_loop(
     // over the fixed corpus and reused every report so the metric tracks the same
     // token set across the whole run.
     let freq_tokens = diagnostics::frequent_tokens(corpus);
-    let total_chunks: usize = corpus
-        .chunks(ctx_window as usize)
-        .filter(|c| c.len() >= 2)
-        .count();
-    let total_chunks_all: u64 = (epochs as u64) * (total_chunks as u64);
-    // Whole-run optimizer-step budget for the LR cosine-decay curve. The step
-    // fires once per ACCUM_STEPS chunks plus once at each epoch's tail, i.e.
-    // ceil(total_chunks / ACCUM_STEPS) steps per epoch.
-    let total_opt_steps: i32 = (total_chunks.div_ceil(ACCUM_STEPS) as i32) * epochs as i32;
+
+    // Resolve the stages' document spans. The whole-corpus fallback (resume/SFT,
+    // or a legacy dataset with no segments.json) has no explicit docs, so
+    // synthesize one document covering the entire corpus.
+    let ctx = ctx_window as usize;
+    let fallback_docs = [DocSpan { start: 0, len: corpus.len() }];
+    let stage_docs: Vec<&[DocSpan]> = if plan.is_whole_corpus() {
+        vec![&fallback_docs]
+    } else {
+        plan.stages.iter().map(|s| s.docs.as_slice()).collect()
+    };
+
+    // Whole-run budgets for the LR cosine curve and ETA: sum over every stage of
+    // (its chunks per epoch × its epochs). Order doesn't affect chunk counts, so
+    // these are stable regardless of per-epoch shuffling.
+    let stage_chunks: Vec<usize> = stage_docs
+        .iter()
+        .map(|docs| chunks_in(stage_stream_len(docs), ctx))
+        .collect();
+    let total_epochs: i64 = plan.stages.iter().map(|s| s.epochs.max(0)).sum();
+    let total_chunks_all: u64 = plan
+        .stages
+        .iter()
+        .zip(&stage_chunks)
+        .map(|(s, &c)| c as u64 * s.epochs.max(0) as u64)
+        .sum();
+    // The optimizer steps once per ACCUM_STEPS chunks plus once at each epoch's
+    // tail, i.e. ceil(chunks / ACCUM_STEPS) steps per epoch.
+    let total_opt_steps: i32 = plan
+        .stages
+        .iter()
+        .zip(&stage_chunks)
+        .map(|(s, &c)| c.div_ceil(ACCUM_STEPS) as i32 * s.epochs.max(0) as i32)
+        .sum();
+
     let training_start = Instant::now();
-    let mut best_loss = f32::INFINITY;
-    let mut epochs_since_best = 0;
-    // Global optimizer-step counter for Adam bias correction (persists across
-    // epochs, advanced inside train_epoch).
+    // Global counters that persist across stages/epochs: Adam step (for bias
+    // correction + the LR curve) and chunks completed (for a monotonic chart x-axis
+    // and ETA).
     let mut adam_step: i32 = 0;
+    let mut chunks_done_global: u64 = 0;
+    let mut global_epoch: i64 = 0;
 
-    for epoch in 0..epochs {
-        let stats = train_epoch(
-            transformer, ws, corpus, mask, ctx_window, layers, lr, total_opt_steps, epoch, epochs,
-            total_chunks, total_chunks_all, training_start, &mut adam_step, &freq_tokens,
-            &on_progress,
-        );
-        println!(
-            "Epoch {}: avg loss = {:.6} (min={:.4} max={:.4})",
-            epoch + 1,
-            stats.avg_loss,
-            stats.min_loss,
-            stats.max_loss
-        );
+    for (stage_idx, docs) in stage_docs.iter().enumerate() {
+        let stage = &plan.stages[stage_idx];
+        let stage_total_chunks = stage_chunks[stage_idx];
+        // Early-stopping is scoped to a stage: loss legitimately jumps when a new
+        // corpus begins, so patience must not carry across a stage boundary.
+        let mut best_loss = f32::INFINITY;
+        let mut epochs_since_best = 0;
 
-        let checkpoint_path = save_checkpoint(transformer, ws, model_dir, checkpoints_dir, epoch);
-        report_epoch_progress(
-            epoch, epochs, total_chunks, total_chunks_all, training_start, &stats,
-            checkpoint_path, &on_progress,
-        );
-
-        if let Some(ref cancel) = cancel {
-            if cancel.load(Ordering::SeqCst) {
-                println!("Training cancelled by user at epoch {}", epoch + 1);
-                return Ok(true);
+        for stage_epoch in 0..stage.epochs.max(0) {
+            // Order the stage's documents for this epoch (shuffled reproducibly
+            // from the run seed + global epoch when enabled), then assemble the
+            // epoch's token stream (+ aligned mask for SFT).
+            let mut order: Vec<usize> = (0..docs.len()).collect();
+            if plan.shuffle {
+                let seed = plan
+                    .seed
+                    .wrapping_add((global_epoch as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                shuffle_seeded(&mut order, seed);
             }
-        }
+            let (epoch_corpus, epoch_mask) =
+                assemble_epoch(corpus, mask, docs, &order, plan.eot_id);
 
-        if should_stop_early(stats.avg_loss, epoch, &mut best_loss, &mut epochs_since_best) {
-            break;
+            let stats = train_epoch(
+                transformer, ws, &epoch_corpus, epoch_mask.as_deref(), ctx_window, layers, lr,
+                total_opt_steps, global_epoch, total_epochs, stage_idx as u64,
+                stage.name.as_deref(), stage_total_chunks, total_chunks_all, chunks_done_global,
+                training_start, &mut adam_step, &freq_tokens, &on_progress,
+            );
+            chunks_done_global += stats.chunks as u64;
+            println!(
+                "Stage {} epoch {}/{} (global {}): avg loss = {:.6} (min={:.4} max={:.4})",
+                stage_idx + 1,
+                stage_epoch + 1,
+                stage.epochs.max(0),
+                global_epoch + 1,
+                stats.avg_loss,
+                stats.min_loss,
+                stats.max_loss
+            );
+
+            let checkpoint_path =
+                save_checkpoint(transformer, ws, model_dir, checkpoints_dir, global_epoch);
+            report_epoch_progress(
+                global_epoch, total_epochs, stage_idx as u64, stage.name.as_deref(),
+                stage_total_chunks, chunks_done_global, total_chunks_all, training_start, &stats,
+                checkpoint_path, &on_progress,
+            );
+
+            global_epoch += 1;
+
+            if let Some(ref cancel) = cancel {
+                if cancel.load(Ordering::SeqCst) {
+                    println!("Training cancelled by user at epoch {}", global_epoch);
+                    return Ok(true);
+                }
+            }
+
+            if should_stop_early(
+                stats.avg_loss,
+                global_epoch - 1,
+                &mut best_loss,
+                &mut epochs_since_best,
+            ) {
+                break;
+            }
         }
     }
 
@@ -677,19 +887,24 @@ fn run_training_loop(
 fn report_epoch_progress(
     epoch: i64,
     epochs: i64,
+    stage: u64,
+    stage_name: Option<&str>,
     total_chunks: usize,
+    chunks_done_global: u64,
     total_chunks_all: u64,
     training_start: Instant,
     stats: &EpochStats,
     checkpoint_path: Option<String>,
     on_progress: &ProgressCallback,
 ) {
-    let chunks_done_global = ((epoch + 1) as u64) * (total_chunks as u64);
     on_progress(TrainingProgress {
         epoch: (epoch + 1) as u64,
         total_epochs: epochs as u64,
         chunk: total_chunks as u64,
         total_chunks: total_chunks as u64,
+        stage,
+        stage_name: stage_name.map(str::to_string),
+        global_step: chunks_done_global,
         loss: stats.avg_loss as f64,
         eta_secs: compute_eta(training_start, chunks_done_global, total_chunks_all),
         epoch_done: true,
@@ -776,6 +991,66 @@ mod tests {
         }
         // Past warmup it pins to the floor rather than going out of range.
         assert!((lr_at_step(base, WARMUP_STEPS + 1, total) - base * MIN_LR_RATIO).abs() < 1e-9);
+    }
+
+    // chunks_in must match what `corpus.chunks(ctx).filter(|c| c.len() >= 2)`
+    // actually yields — the last chunk is dropped only when it holds one token.
+    #[test]
+    fn chunks_in_matches_slice_chunks() {
+        let ctx = 4usize;
+        for len in 0..40usize {
+            let stream: Vec<u32> = (0..len as u32).collect();
+            let actual = stream.chunks(ctx).filter(|c| c.len() >= 2).count();
+            assert_eq!(chunks_in(len, ctx), actual, "len={len}");
+        }
+    }
+
+    // A seeded shuffle is a deterministic permutation: same seed => same order,
+    // and every index survives exactly once.
+    #[test]
+    fn shuffle_seeded_is_a_deterministic_permutation() {
+        let mut a: Vec<usize> = (0..50).collect();
+        let mut b = a.clone();
+        shuffle_seeded(&mut a, 12345);
+        shuffle_seeded(&mut b, 12345);
+        assert_eq!(a, b, "same seed must give the same order");
+
+        let mut sorted = a.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..50).collect::<Vec<_>>(), "must be a permutation");
+
+        let mut c: Vec<usize> = (0..50).collect();
+        shuffle_seeded(&mut c, 999);
+        assert_ne!(a, c, "different seeds should (practically) differ");
+    }
+
+    // The default (identity) order reassembles the exact on-disk corpus, since
+    // build baked an <|endoftext|> between the same documents; the mask rides
+    // along 1:1. A shuffled order still yields a valid permutation of documents
+    // separated by the eot.
+    #[test]
+    fn assemble_epoch_reproduces_and_separates() {
+        // corpus: docA=[10,11] eot=1 docB=[20,21,22] eot=1 docC=[30]
+        let corpus: Vec<u32> = vec![10, 11, 1, 20, 21, 22, 1, 30];
+        let docs = [
+            DocSpan { start: 0, len: 2 },
+            DocSpan { start: 3, len: 3 },
+            DocSpan { start: 7, len: 1 },
+        ];
+        // Identity order round-trips the on-disk bytes exactly.
+        let (out, _) = assemble_epoch(&corpus, None, &docs, &[0, 1, 2], 1);
+        assert_eq!(out, corpus);
+
+        // A reorder keeps each document intact, separated by a single eot.
+        let (out, _) = assemble_epoch(&corpus, None, &docs, &[2, 0, 1], 1);
+        assert_eq!(out, vec![30, 1, 10, 11, 1, 20, 21, 22]);
+
+        // Mask assembly stays aligned and marks separators as ignore (0).
+        let mask: Vec<u8> = vec![1, 1, 0, 1, 1, 1, 0, 1];
+        let (out, m) = assemble_epoch(&corpus, Some(&mask), &docs, &[2, 0, 1], 1);
+        let m = m.unwrap();
+        assert_eq!(out.len(), m.len());
+        assert_eq!(m, vec![1, 0, 1, 1, 0, 1, 1, 1]);
     }
 
     #[test]

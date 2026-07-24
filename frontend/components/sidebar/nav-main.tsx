@@ -12,6 +12,9 @@ const items = [
   { title: "New", href: "/", icon: MessageSquarePlus },
   { title: "Models", href: "/models", icon: Boxes },
   { title: "Usage", href: "/usage", icon: ChartColumn },
+  // Always visible (expanded and collapsed) — the entry point to the full
+  // archive. The recent-chats list (NavConversations) sits below it when expanded.
+  { title: "Conversations", href: "/conversations", icon: MessagesSquare },
 ]
 
 export function NavMain() {
@@ -24,23 +27,13 @@ export function NavMain() {
               <SidebarMenuButton
                 tooltip={item.title}
                 render={<Link href={item.href} />}
+                className="[&>svg]:opacity-70 data-active:[&>svg]:opacity-100"
               >
                 <item.icon />
                 <span>{item.title}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
-          {/* Only shown when the sidebar is collapsed to icons; the full
-              conversation list (NavConversations) is hidden in that state. */}
-          <SidebarMenuItem className="hidden group-data-[collapsible=icon]:block">
-            <SidebarMenuButton
-              tooltip="Conversations"
-              render={<Link href="/conversations" />}
-            >
-              <MessagesSquare />
-              <span>Conversations</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>

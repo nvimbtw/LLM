@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
 import { matchStandaloneCommand, runSlashCommand } from "@/lib/commands"
 import { useSettings } from "@/components/settings/settings-provider"
-import { FluxThrobber } from "./flux-throbber"
+import { Throbber } from "@/components/ui/throbber"
 import { ModelSelector } from "./model-selector"
 
 // Tab / Shift+Tab indent / outdent list items. Enter and Shift+Enter are
@@ -161,10 +161,13 @@ export function ChatComposer({
           onClick={submit}
         >
           {disabled ? (
-            <FluxThrobber
+            // The one place the rule can't span a real width. At button size the
+            // carriage still reads as motion, and `accent="currentColor"` keeps it
+            // visible against the primary fill.
+            <Throbber
               mode="thinking"
-              size={18}
-              className="rounded-full bg-transparent"
+              className="h-4 w-4 text-primary-foreground"
+              accent="currentColor"
             />
           ) : (
             <ArrowUp />

@@ -61,6 +61,19 @@ export function stripThinking(content: string): string {
   return content.replace(THINKING_RE, "").replace(THINKING_TAIL_RE, "")
 }
 
+/**
+ * True when the content currently ends inside an open `<|thinking|>` block —
+ * i.e. the most recent `<|thinking|>` has no `<|/thinking|>` after it. Unlike
+ * hasVisibleContent (which latches once the answer starts), this tracks the
+ * live thinking state, so a model that reasons mid-reply is detected too.
+ */
+export function isInThinkingBlock(content: string): boolean {
+  const open = content.lastIndexOf("<|thinking|>")
+  if (open === -1) return false
+  // `<|/thinking|>` contains a slash, so it never matches the opener search.
+  return content.lastIndexOf("<|/thinking|>") < open
+}
+
 const TAG_RE = /<\|(.*?)\|>/g
 const ATTR_RE = /(\w+)\s*=\s*'([^']*)'/g
 
