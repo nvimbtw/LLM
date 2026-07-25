@@ -17,8 +17,8 @@ import { SidebarSettingsButton } from "./settings/settings-menu-button";
 
 // Brand shown in the sidebar header. Change these to rename the app:
 // APP_NAME is shown when expanded, APP_NAME_SHORT when collapsed to icons.
-const APP_NAME = "Lattice"
-const APP_NAME_SHORT = "L"
+const APP_NAME = "Slate"
+const APP_NAME_SHORT = "S"
 
 export function AppSidebar() {
   return (
@@ -36,7 +36,7 @@ export function AppSidebar() {
                   {APP_NAME}
                 </span>
                 <span className="mt-1 text-[0.6rem] font-medium uppercase tracking-[0.22em] text-sidebar-foreground/45">
-                  Workbench
+                  LLM Project
                 </span>
               </span>
               <span className="hidden font-display text-lg font-semibold tracking-tight group-data-[collapsible=icon]:inline">

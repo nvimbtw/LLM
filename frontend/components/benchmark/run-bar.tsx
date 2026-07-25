@@ -73,15 +73,18 @@ export function RunBar({ suite, active, isStarting, onStart }: RunBarProps) {
         </div>
       </div>
 
-      {/* The bar's own divider is the instrument: a hairline rule at rest, the
-          carriage stepping along its full width while a run is live. Always
-          mounted, so starting a run morphs it rather than reflowing the bar. */}
-      <Throbber mode={active ? "benchmarking" : "idle"} className="h-5 w-full" />
+      {/* The bar keeps its own divider. It used to *be* the throbber — a
+          full-width rule — which is what made the indicator read as a bar rather
+          than as one mark. */}
+      <div className="border-b border-border/60" />
 
       {active && (
         <div className="px-5 pb-3 pt-1">
-          <div className="flex items-baseline justify-between gap-4">
-            <span className="truncate text-xs text-muted-foreground">
+          <div className="flex items-baseline gap-3">
+            {/* Always mounted while a run is live, so stage changes morph the mark
+                rather than remounting it. */}
+            <Throbber mode="benchmarking" className="h-5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
               {active.progress?.stage ?? "Starting…"}
             </span>
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground/70">

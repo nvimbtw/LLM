@@ -7,13 +7,13 @@ import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 
 const MODES: { mode: ThrobberMode; description: string }[] = [
-  { mode: "idle", description: "At rest. The rule a page already has, barely breathing." },
-  { mode: "loading", description: "A full-width sweep, decelerating into each turn." },
-  { mode: "thinking", description: "Hovering near centre, drifting. Undecided, never cyclic." },
-  { mode: "generating", description: "Advancing steadily, inking the rule behind it." },
-  { mode: "tool", description: "Snapping between fixed stops and holding. Mechanical." },
-  { mode: "training", description: "Repeated passes, the rule building weight and releasing." },
-  { mode: "benchmarking", description: "Stepping between graduations, dwelling on each reading." },
+  { mode: "idle", description: "Still. Three faint ticks, no motion at all." },
+  { mode: "loading", description: "A low wave passing along the ticks." },
+  { mode: "thinking", description: "Irregular breathing. Undecided, never cyclic." },
+  { mode: "generating", description: "A sharp peak handed along, wrapping." },
+  { mode: "tool", description: "The middle tick snaps up and holds. Mechanical." },
+  { mode: "training", description: "All three as one, building and relaxing." },
+  { mode: "benchmarking", description: "One reading at a time, dwelling on each." },
 ]
 
 export function ThrobberShowcase() {
@@ -23,8 +23,10 @@ export function ThrobberShowcase() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Panel title="Morph" description="Switch state — the carriage travels, it never jumps">
-        <Throbber mode={mode} className="h-10 w-full" />
+      <Panel title="Morph" description="Switch state — the ticks travel, they never jump">
+        <div className="flex justify-center py-2">
+          <Throbber mode={mode} className="h-10" />
+        </div>
         <div className="mt-5 flex flex-wrap gap-2">
           {MODES.map(({ mode: option }) => (
             <button
@@ -51,7 +53,9 @@ export function ThrobberShowcase() {
               <span className="text-sm font-medium capitalize">{option}</span>
               <span className="text-[11px] text-muted-foreground/70">{description}</span>
             </div>
-            <Throbber mode={option} className="mt-3 h-7 w-full" />
+            <div className="mt-3 flex justify-center">
+              <Throbber mode={option} className="h-7" />
+            </div>
           </div>
         ))}
       </div>

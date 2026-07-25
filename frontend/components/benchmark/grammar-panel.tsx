@@ -1,10 +1,22 @@
+"use client"
+
+import { Info } from "lucide-react"
+
 import { Panel } from "@/components/ui/panel"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   type GrammarMetrics,
+  type ParadigmResult,
   NO_VALUE,
   formatPercent,
   humanizeParadigm,
 } from "@/lib/benchmark"
+import { paradigmGloss } from "@/lib/grammar-glossary"
 
 // Per-paradigm accuracy, drawn as a deviation from chance rather than as a bar
 // from zero.
@@ -25,22 +37,30 @@ export function GrammarPanel({ grammar }: { grammar: GrammarMetrics }) {
       {sorted.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">No paradigms evaluated.</p>
       ) : (
-        <ul className="flex flex-col gap-4">
-          {sorted.map((paradigm) => (
-            <li key={paradigm.name}>
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="truncate text-sm font-medium" title={paradigm.description}>
-                  {humanizeParadigm(paradigm.name)}
-                </span>
-                <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                  {formatPercent(paradigm.accuracy)}
-                  <span className="ml-2 text-muted-foreground/50">{paradigm.pairs}</span>
-                </span>
-              </div>
-              <DivergingBar accuracy={paradigm.accuracy} />
-            </li>
-          ))}
-        </ul>
+        // One Provider for the whole list so moving between rows re-opens without
+        // re-serving the open delay — the rows read as one glossary, not ten
+        // independent popups.
+        <TooltipProvider delay={150} closeDelay={80}>
+          <ul className="flex flex-col gap-4">
+            {sorted.map((paradigm) => (
+              <li key={paradigm.name}>
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="truncate text-sm font-medium">
+                      {humanizeParadigm(paradigm.name)}
+                    </span>
+                    <ParadigmInfo paradigm={paradigm} />
+                  </span>
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {formatPercent(paradigm.accuracy)}
+                    <span className="ml-2 text-muted-foreground/50">{paradigm.pairs}</span>
+                  </span>
+                </div>
+                <DivergingBar accuracy={paradigm.accuracy} />
+              </li>
+            ))}
+          </ul>
+        </TooltipProvider>
       )}
 
       <p className="mt-6 border-t border-border/60 pt-4 text-[11px] leading-relaxed text-muted-foreground/70">
@@ -49,6 +69,50 @@ export function GrammarPanel({ grammar }: { grammar: GrammarMetrics }) {
         Chance is 50%; the centre line marks it.
       </p>
     </Panel>
+  )
+}
+
+// The hoverable gloss for one paradigm row. A real <button> rather than a bare icon
+// so the explanation is reachable by keyboard and by tap, not only by mouse — the
+// content here is the only place the paradigm's name is explained, so it can't be
+// hover-only.
+function ParadigmInfo({ paradigm }: { paradigm: ParadigmResult }) {
+  const gloss = paradigmGloss(paradigm.name)
+
+  return (
+    <Tooltip>
+      {/* TooltipTrigger already renders a <button>, so it is focusable as-is. */}
+      <TooltipTrigger
+        aria-label={`What ${humanizeParadigm(paradigm.name)} means`}
+        className="shrink-0 rounded-full text-muted-foreground/35 transition-colors hover:text-muted-foreground focus-visible:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <Info className="size-3" />
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        className="max-w-80 flex-col items-start gap-2 px-3.5 py-3 text-left"
+      >
+        <p className="text-xs leading-relaxed">{gloss?.summary ?? paradigm.description}</p>
+        {gloss && (
+          // The pair itself, marked by a leading ✓ / ✗ rather than by colour alone:
+          // the tooltip surface is the inverted foreground, where the theme's
+          // good/bad hues don't hold their contrast.
+          <div className="flex flex-col gap-1 border-t border-background/20 pt-2 text-[11px] leading-snug">
+            <span className="flex gap-2">
+              <span aria-hidden className="opacity-60">
+                ✓
+              </span>
+              <span>{gloss.good}</span>
+            </span>
+            <span className="flex gap-2 opacity-60">
+              <span aria-hidden>✗</span>
+              <span className="line-through decoration-background/40">{gloss.bad}</span>
+            </span>
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 

@@ -6,8 +6,9 @@ export default function ThrobberPage() {
       <header className="mb-8 border-b border-border/60 pb-6">
         <h1 className="font-display text-3xl font-semibold tracking-tight">Throbber</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          The Carriage — one rule, one travelling mark. Every state is the same
-          drawing with different numbers, so they morph rather than swap.
+          Ledger ticks — three graduations in a fixed footprint. Every state is
+          the same three marks with different numbers, so they morph rather than
+          swap.
         </p>
       </header>
       <ThrobberShowcase />

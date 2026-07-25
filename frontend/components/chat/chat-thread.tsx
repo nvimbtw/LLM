@@ -83,8 +83,8 @@ export function ChatThread({ chatId }: { chatId: string }) {
       >
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-6">
           {isLoading ? (
-            <div className="px-1 py-8">
-              <Throbber mode="loading" className="h-6 w-full" />
+            <div className="flex justify-center px-1 py-8">
+              <Throbber mode="loading" className="h-5" />
             </div>
           ) : (
             messages.map((message, i) => (
@@ -103,16 +103,23 @@ export function ChatThread({ chatId }: { chatId: string }) {
           {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}
           {(showThinking || showGenerating || showIdle) && (
-            // Set as a leader rule: label left, count right, the carriage running
-            // the full space between them. One Throbber instance rather than one
-            // per state — that's what lets thinking → generating → idle morph
-            // instead of swapping, since the element is never unmounted.
-            <div className="flex h-11 items-center gap-3 px-1 text-sm">
-              {showThinking && <ThinkingLabel />}
+            // Mark, label, then the token count pushed to the right edge. One
+            // Throbber instance rather than one per state — that's what lets
+            // thinking → generating → idle morph instead of swapping, since the
+            // element is never unmounted.
+            //
+            // items-baseline, not items-center: the mark's bottom edge is its own
+            // baseline (see throbber.tsx), so this sits the ticks on the same line as
+            // the label instead of centring two boxes of different heights.
+            <div className="flex h-11 items-baseline gap-3 px-1 text-sm">
               <Throbber
                 mode={showThinking ? "thinking" : showGenerating ? "generating" : "idle"}
-                className="h-6 min-w-0 flex-1"
+                className="h-5 shrink-0"
               />
+              {showThinking && <ThinkingLabel />}
+              {/* Pushes the token count to the far edge, which the throbber used to
+                  do by spanning the gap itself. */}
+              <span className="min-w-0 flex-1" />
               {statusTokens !== null && (
                 <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                   {statusTokens.toLocaleString("en-US")} tokens

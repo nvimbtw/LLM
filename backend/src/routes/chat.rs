@@ -45,11 +45,14 @@ struct MessageResponse {
     id_message: Uuid,
     role: &'static str,
     content: String,
+    // Display name of the model that wrote this reply, for the byline under it.
+    // Null on a user's own message.
+    model_name: Option<String>,
     created_at: DateTime<Utc>,
 }
 
-impl From<db::message::Message> for MessageResponse {
-    fn from(message: db::message::Message) -> Self {
+impl From<db::message::MessageWithModel> for MessageResponse {
+    fn from(message: db::message::MessageWithModel) -> Self {
         // The schema encodes authorship by which FK is set; we collapse that
         // into a simple role string the frontend can switch on. id_user set =>
         // a person sent it; otherwise it's an assistant reply.
@@ -63,6 +66,7 @@ impl From<db::message::Message> for MessageResponse {
             id_message: message.id_message,
             role,
             content: message.content,
+            model_name: message.model_name,
             created_at: message.created_at,
         }
     }

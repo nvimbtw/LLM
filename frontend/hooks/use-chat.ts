@@ -14,6 +14,19 @@ export interface ChatMessage {
   // on messages loaded from history, since the backend doesn't persist counts.
   tokenCount?: number
   thinkingTokenCount?: number
+  // The model that wrote this reply, for the byline beneath it. Only ever present
+  // on assistant messages that came back from the server — a reply still streaming
+  // has no byline, and gains one when `onDone` refetches the persisted message.
+  modelName?: string
+}
+
+// What GET /chat/:id returns per message. Kept separate from ChatMessage because the
+// two differ: the wire is snake_case and knows nothing about token counts, which are
+// tallied on this side.
+interface MessageWire {
+  role: "user" | "assistant"
+  content: string
+  model_name: string | null
 }
 
 export function useChat(chatId: string) {
@@ -33,7 +46,14 @@ export function useChat(chatId: string) {
   const fetchMessages = React.useCallback(async () => {
     const response = await apiFetch(`/chat/${chatId}`)
     if (!response.ok) throw new Error("Unable to load this chat.")
-    return (await response.json()) as ChatMessage[]
+    const rows = (await response.json()) as MessageWire[]
+    return rows.map<ChatMessage>((row) => ({
+      role: row.role,
+      content: row.content,
+      // Normalized to undefined so the byline's presence check is a single
+      // truthiness test rather than having to know about null as well.
+      modelName: row.model_name ?? undefined,
+    }))
   }, [chatId])
 
   // Flips true once the initial DB load settles. The pending-first-message send

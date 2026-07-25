@@ -23,28 +23,35 @@ pub struct BenchmarkRun {
     pub score: Option<f64>,
     pub report: Option<Value>,
     pub error: Option<String>,
+    // Tokens the model was trained on, snapshotted at run start (see the migration
+    // that added the column). None for a model whose config didn't record it.
+    pub train_tokens: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
 
 // Opens a run. The id is chosen by the caller so the spawned worker thread can
 // report progress against it before this insert has necessarily landed.
+// `train_tokens` comes from db::model::train_tokens on the model being scored.
 pub async fn create(
     pool: &PgPool,
     id_run: Uuid,
     id_model: Uuid,
     model_name: &str,
+    train_tokens: Option<i64>,
 ) -> Result<BenchmarkRun, sqlx::Error> {
     sqlx::query_as!(
         BenchmarkRun,
-        r#"INSERT INTO benchmark_runs (id_run, id_model, model_name, status)
-           VALUES ($1, $2, $3, 'running')
+        r#"INSERT INTO benchmark_runs (id_run, id_model, model_name, status, train_tokens)
+           VALUES ($1, $2, $3, 'running', $4)
            RETURNING id_run, id_model, model_name,
                      status as "status: BenchmarkStatus", score,
-                     report as "report: Value", error, created_at, completed_at"#,
+                     report as "report: Value", error, train_tokens,
+                     created_at, completed_at"#,
         id_run,
         id_model,
         model_name,
+        train_tokens,
     )
     .fetch_one(pool)
     .await
@@ -94,6 +101,7 @@ pub struct BenchmarkSummary {
     pub status: BenchmarkStatus,
     pub score: Option<f64>,
     pub error: Option<String>,
+    pub train_tokens: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -103,7 +111,7 @@ pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<BenchmarkSummary>, sq
         BenchmarkSummary,
         r#"SELECT id_run, id_model, model_name,
                   status as "status: BenchmarkStatus", score, error,
-                  created_at, completed_at
+                  train_tokens, created_at, completed_at
            FROM benchmark_runs
            ORDER BY created_at DESC
            LIMIT $1"#,
@@ -118,7 +126,8 @@ pub async fn find_by_id(pool: &PgPool, id_run: Uuid) -> Result<Option<BenchmarkR
         BenchmarkRun,
         r#"SELECT id_run, id_model, model_name,
                   status as "status: BenchmarkStatus", score,
-                  report as "report: Value", error, created_at, completed_at
+                  report as "report: Value", error, train_tokens,
+                  created_at, completed_at
            FROM benchmark_runs WHERE id_run = $1"#,
         id_run,
     )

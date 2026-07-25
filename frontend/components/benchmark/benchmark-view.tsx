@@ -6,10 +6,12 @@ import { useBenchmark } from "@/hooks/use-benchmark"
 import { formatDuration } from "@/lib/benchmark"
 
 import { CorpusPanel } from "./corpus-panel"
+import { DurationPanel } from "./duration-panel"
 import { GenerationPanel } from "./generation-panel"
 import { GrammarPanel } from "./grammar-panel"
 import { HistoryPanel } from "./history-panel"
 import { RunBar } from "./run-bar"
+import { ScalingPanel } from "./scaling-panel"
 import { ScoreCard } from "./score-card"
 
 export function BenchmarkView() {
@@ -59,8 +61,8 @@ export function BenchmarkView() {
         // The first run of all has no earlier report to sit under, which would
         // otherwise leave the page empty while the GPU works. The mark fills that
         // space and reads as "measuring" rather than "stalled".
-        <div className="flex flex-col gap-5 rounded-xl border border-dashed border-border/60 px-6 py-12">
-          <Throbber mode="benchmarking" className="h-6 w-full" />
+        <div className="flex flex-col items-center gap-5 rounded-xl border border-dashed border-border/60 px-6 py-12">
+          <Throbber mode="benchmarking" className="h-7" />
           <p className="text-center text-sm text-muted-foreground">
             {active.progress?.stage ?? "Starting…"}
           </p>
@@ -77,6 +79,11 @@ export function BenchmarkView() {
             : "Select a run below, or benchmark a model to get started."}
         </p>
       )}
+
+      {/* Cross-run views: outside the report branch above, since they read the
+          whole history rather than the selected run. */}
+      <ScalingPanel runs={runs} />
+      <DurationPanel runs={runs} />
 
       <HistoryPanel runs={runs} selectedId={selectedId} onSelect={select} onDelete={remove} />
     </div>

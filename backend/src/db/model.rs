@@ -33,6 +33,22 @@ pub struct NewModel {
     pub family: Option<String>,
 }
 
+// How many tokens the model's training corpus held, dug out of the `parameters`
+// JSON. Recorded on a benchmark run so the eval page can plot score against
+// training tokens.
+//
+// A pretrain run stores this as `dataset.corpus_len`, an SFT run as
+// `dataset.total_tokens` (DatasetStats / SftDatasetStats in training.rs). Returns
+// None for a model registered before those stats were written, or one whose
+// parameters are absent — the caller renders that as "unknown", never as 0.
+pub fn train_tokens(model: &Model) -> Option<i64> {
+    let dataset = model.parameters.as_ref()?.get("dataset")?;
+    let tokens = dataset
+        .get("corpus_len")
+        .or_else(|| dataset.get("total_tokens"))?;
+    tokens.as_i64()
+}
+
 // Inserts a model, or updates it in place if the name already exists. Retraining
 // reuses the model_name (and overwrites its on-disk directory), so a second run
 // of the same name should refresh the registry row rather than collide on the

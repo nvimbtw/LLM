@@ -79,6 +79,11 @@ export interface BenchmarkRun {
   status: BenchmarkStatus
   score: number | null
   error: string | null
+  // Tokens in the corpus the model was trained on, snapshotted when the run
+  // started (so retraining the model doesn't relabel past runs). `null` for a model
+  // whose training config never recorded a corpus size — such a run is left off the
+  // scaling chart rather than plotted at zero.
+  train_tokens: number | null
   created_at: string
   completed_at: string | null
   progress: BenchmarkProgress | null
@@ -163,6 +168,24 @@ export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(1)}s`
   const minutes = Math.floor(seconds / 60)
   return `${minutes}m ${Math.round(seconds % 60)}s`
+}
+
+/**
+ * A duration at its shortest unambiguous length, for axis ticks where
+ * `formatDuration`'s "45.0s" is a decimal place too many: `45s`, `2m`, `1m 40s`,
+ * `1h 5m`. Every value formats without a decimal point, so a tick reads as a round
+ * time even when the number that produced it isn't round.
+ */
+export function formatDurationCompact(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60)
+    const rest = Math.round(seconds % 60)
+    return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`
+  }
+  const hours = Math.floor(seconds / 3600)
+  const rest = Math.round((seconds % 3600) / 60)
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`
 }
 
 export function formatDate(iso: string): string {

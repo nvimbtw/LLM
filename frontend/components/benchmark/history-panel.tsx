@@ -1,18 +1,24 @@
 "use client"
 
 import { Trash2 } from "lucide-react"
-import { CartesianGrid, Scatter, ScatterChart, XAxis, YAxis, ZAxis } from "recharts"
 
-import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart"
 import { Panel } from "@/components/ui/panel"
-import { axisProps, gridProps, yAxisProps } from "@/components/training/chart-theme"
-import { type BenchmarkRun, NO_VALUE, formatDate, formatNumber } from "@/lib/benchmark"
+import {
+  type BenchmarkRun,
+  NO_VALUE,
+  formatCompact,
+  formatDate,
+  formatNumber,
+} from "@/lib/benchmark"
 import { cn } from "@/lib/utils"
 
-const chartConfig = {
-  score: { label: "Eval score", color: "var(--primary)" },
-} satisfies ChartConfig
-
+// Every run as a league table, best score first.
+//
+// Ranked by score rather than by date because the question asked of this table is
+// "which model is the best one so far", and a ranking answers it by position — the
+// top row *is* the answer, with no scanning. Recency is still on every row for the
+// times the question is "what did I just run"; the scaling panel above covers the
+// against-corpus-size reading that an ordering by date used to hint at.
 export interface HistoryPanelProps {
   runs: BenchmarkRun[]
   selectedId: string | null
@@ -20,75 +26,75 @@ export interface HistoryPanelProps {
   onDelete: (id: string) => void
 }
 
-interface Point {
-  time: number
-  score: number
-  name: string
-  id: string
-}
-
 export function HistoryPanel({ runs, selectedId, onSelect, onDelete }: HistoryPanelProps) {
-  // Only finished runs with a score belong on the chart; a failed or in-flight run
-  // has no y value and would either vanish or plot at zero.
-  const points: Point[] = runs
-    .filter((run) => run.status === "done" && run.score !== null)
-    .map((run) => ({
-      time: new Date(run.created_at).getTime(),
-      score: run.score as number,
-      name: run.model_name,
-      id: run.id_run,
-    }))
-    .sort((a, b) => a.time - b.time)
+  // Scored runs rank by score, descending. A run with no score can't take part in the
+  // ranking, so the unscored ones sit below the table's body in date order — still
+  // reachable (a failed run carries its error, a running one its progress) without
+  // interleaving blanks into the ranking.
+  const ranked = [...runs].sort((a, b) => {
+    if (a.score === null || b.score === null) {
+      if (a.score !== null) return -1
+      if (b.score !== null) return 1
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    }
+    return b.score - a.score
+  })
 
   return (
-    <Panel title="History" description={`${runs.length} ${runs.length === 1 ? "run" : "runs"}`}>
-      {points.length > 1 && (
-        // Scatter, not a line: consecutive runs are usually *different models*, so
-        // joining them would draw a trajectory through things that aren't a series.
-        // Position over time still shows whether the project is getting better.
-        <ChartContainer config={chartConfig} className="mb-6 aspect-auto h-48 w-full">
-          <ScatterChart margin={{ left: 4, right: 12, top: 8, bottom: 4 }}>
-            <CartesianGrid {...gridProps} stroke="var(--border)" strokeOpacity={0.6} />
-            <XAxis
-              {...axisProps}
-              dataKey="time"
-              type="number"
-              domain={["dataMin", "dataMax"]}
-              tickFormatter={(value: number) =>
-                new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" })
-              }
-              className="text-[10px]"
-            />
-            <YAxis
-              {...yAxisProps}
-              dataKey="score"
-              type="number"
-              domain={[0, 100]}
-              className="text-[10px]"
-            />
-            <ZAxis range={[48, 48]} />
-            <ChartTooltip cursor={{ stroke: "var(--border)" }} content={<PointTooltip />} />
-            <Scatter data={points} fill="var(--primary)" fillOpacity={0.75} />
-          </ScatterChart>
-        </ChartContainer>
-      )}
-
+    <Panel
+      title="Models by score"
+      description={`${runs.length} ${runs.length === 1 ? "run" : "runs"}`}
+      bodyClassName="p-0"
+    >
       {runs.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">
+        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
           No benchmarks yet. Pick a model above and run one.
         </p>
       ) : (
-        <ul className="flex flex-col gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60">
-          {runs.map((run) => (
-            <HistoryRow
-              key={run.id_run}
-              run={run}
-              selected={run.id_run === selectedId}
-              onSelect={onSelect}
-              onDelete={onDelete}
-            />
-          ))}
-        </ul>
+        // A real table: four aligned columns of the same kind of thing per row, which
+        // is what makes two models comparable at a glance down a column.
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border/60 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                <th scope="col" className="w-10 py-2.5 pl-5 pr-2 text-right font-medium">
+                  #
+                </th>
+                <th scope="col" className="py-2.5 pr-3 text-left font-medium">
+                  Model
+                </th>
+                <th scope="col" className="hidden py-2.5 pr-3 text-right font-medium sm:table-cell">
+                  Tokens
+                </th>
+                <th scope="col" className="hidden py-2.5 pr-3 text-right font-medium sm:table-cell">
+                  Run
+                </th>
+                <th scope="col" className="py-2.5 pr-3 text-right font-medium">
+                  Score
+                </th>
+                {/* The delete column's header is its own row's action, named for
+                    screen readers rather than shown. */}
+                <th scope="col" className="w-10 py-2.5 pr-4">
+                  <span className="sr-only">Delete</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.map((run, index) => (
+                <HistoryRow
+                  key={run.id_run}
+                  run={run}
+                  // Only scored runs are ranked, so the unscored ones below them get
+                  // no number rather than a misleading one.
+                  rank={run.score !== null ? index + 1 : null}
+                  selected={run.id_run === selectedId}
+                  onSelect={onSelect}
+                  onDelete={onDelete}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Panel>
   )
@@ -96,87 +102,91 @@ export function HistoryPanel({ runs, selectedId, onSelect, onDelete }: HistoryPa
 
 function HistoryRow({
   run,
+  rank,
   selected,
   onSelect,
   onDelete,
 }: {
   run: BenchmarkRun
+  rank: number | null
   selected: boolean
   onSelect: (id: string) => void
   onDelete: (id: string) => void
 }) {
   const score = run.score
+
   return (
-    <li className={cn("group flex items-center gap-3 bg-background px-4", selected && "bg-secondary/60")}>
-      <button
-        type="button"
-        onClick={() => onSelect(run.id_run)}
-        className="flex min-w-0 flex-1 items-center gap-4 py-3 text-left"
-      >
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{run.model_name}</span>
-          <span className="block text-[11px] text-muted-foreground/60 tabular-nums">
-            {formatDate(run.created_at)}
-            {run.status === "failed" && run.error && ` · ${run.error}`}
+    <tr
+      onClick={() => onSelect(run.id_run)}
+      className={cn(
+        "group cursor-pointer border-b border-border/40 last:border-0 transition-colors hover:bg-secondary/40",
+        selected && "bg-secondary/60"
+      )}
+    >
+      <td className="py-3 pl-5 pr-2 text-right text-xs tabular-nums text-muted-foreground/50">
+        {rank ?? NO_VALUE}
+      </td>
+
+      <td className="min-w-0 py-3 pr-3">
+        {/* The button carries the accessible name and the keyboard path; the row's
+            own onClick is the mouse convenience on top of it. */}
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onSelect(run.id_run)
+          }}
+          className="block max-w-full truncate text-left font-medium hover:underline"
+        >
+          {run.model_name}
+        </button>
+        {run.status === "failed" && run.error && (
+          <span className="mt-0.5 block truncate text-[11px] text-destructive/70">
+            {run.error}
           </span>
-        </span>
+        )}
+      </td>
 
-        {/* Length carries the score; the number is right there for the exact value. */}
-        <span className="hidden w-28 shrink-0 sm:block">
-          {score !== null && (
-            <span className="block h-1 w-full overflow-hidden rounded-full bg-secondary">
-              <span
-                className="block h-full rounded-full bg-primary"
-                style={{ width: `${Math.max(Math.min(score, 100), 2)}%` }}
-              />
-            </span>
-          )}
-        </span>
+      <td className="hidden py-3 pr-3 text-right text-xs tabular-nums text-muted-foreground sm:table-cell">
+        {run.train_tokens === null ? NO_VALUE : formatCompact(run.train_tokens)}
+      </td>
 
-        <span className="w-20 shrink-0 text-right">
-          {run.status === "running" ? (
-            <span className="text-xs text-muted-foreground">
-              {run.progress ? `${Math.round(run.progress.fraction * 100)}%` : "…"}
-            </span>
-          ) : (
-            <span
-              className={cn(
-                "font-display text-lg font-semibold tabular-nums",
-                run.status === "failed" && "text-destructive/70",
-                score === null && "text-muted-foreground/30"
-              )}
-            >
-              {run.status === "failed" ? "failed" : formatNumber(score, 1)}
-            </span>
-          )}
-        </span>
-      </button>
+      <td className="hidden py-3 pr-3 text-right text-[11px] tabular-nums text-muted-foreground/60 sm:table-cell">
+        {formatDate(run.created_at)}
+      </td>
 
-      <button
-        type="button"
-        onClick={() => onDelete(run.id_run)}
-        disabled={run.status === "running"}
-        aria-label={`Delete benchmark of ${run.model_name}`}
-        className="shrink-0 rounded p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/50 hover:!text-destructive disabled:pointer-events-none"
-      >
-        <Trash2 className="size-3.5" />
-      </button>
-    </li>
-  )
-}
+      <td className="py-3 pr-3 text-right">
+        {run.status === "running" ? (
+          <span className="text-xs text-muted-foreground">
+            {run.progress ? `${Math.round(run.progress.fraction * 100)}%` : "…"}
+          </span>
+        ) : (
+          <span
+            className={cn(
+              "font-display text-lg font-semibold tabular-nums",
+              run.status === "failed" && "text-destructive/70",
+              score === null && "text-muted-foreground/30"
+            )}
+          >
+            {run.status === "failed" ? "failed" : formatNumber(score, 1)}
+          </span>
+        )}
+      </td>
 
-function PointTooltip({ active, payload }: { active?: boolean; payload?: { payload: Point }[] }) {
-  if (!active || !payload?.length) return null
-  const point = payload[0].payload
-  return (
-    <div className="min-w-36 rounded-lg border border-border/60 bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
-      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
-        {formatDate(new Date(point.time).toISOString())}
-      </div>
-      <div className="flex items-baseline justify-between gap-6">
-        <span className="truncate">{point.name}</span>
-        <span className="font-medium tabular-nums">{formatNumber(point.score, 1) || NO_VALUE}</span>
-      </div>
-    </div>
+      <td className="py-3 pr-4 text-right">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onDelete(run.id_run)
+          }}
+          disabled={run.status === "running"}
+          aria-label={`Delete benchmark of ${run.model_name}`}
+          className="rounded p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/50 hover:!text-destructive disabled:pointer-events-none"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      </td>
+    </tr>
   )
 }

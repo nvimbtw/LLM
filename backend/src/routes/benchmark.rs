@@ -26,6 +26,9 @@ struct RunSummary {
     status: BenchmarkStatus,
     score: Option<f64>,
     error: Option<String>,
+    // Tokens the model was trained on. Drives the scaling chart (score against
+    // training tokens); null for a model whose config never recorded a corpus size.
+    train_tokens: Option<i64>,
     created_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
     progress: Option<Progress>,
@@ -41,6 +44,7 @@ struct RunDetail {
     score: Option<f64>,
     report: Option<Value>,
     error: Option<String>,
+    train_tokens: Option<i64>,
     created_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
     progress: Option<Progress>,
@@ -95,7 +99,8 @@ async fn start_benchmark(
     }
 
     let id_run = Uuid::new_v4();
-    match db::benchmark::create(pool.get_ref(), id_run, id_model, &model.name).await {
+    let train_tokens = db::model::train_tokens(&model);
+    match db::benchmark::create(pool.get_ref(), id_run, id_model, &model.name, train_tokens).await {
         Ok(run) => {
             registry.start(id_run, model_dir);
             HttpResponse::Accepted().json(RunSummary {
@@ -105,6 +110,7 @@ async fn start_benchmark(
                 status: run.status,
                 score: run.score,
                 error: run.error,
+                train_tokens: run.train_tokens,
                 created_at: run.created_at,
                 completed_at: run.completed_at,
                 progress: registry.progress(id_run),
@@ -139,6 +145,7 @@ async fn list_runs(
                     status: run.status,
                     score: run.score,
                     error: run.error,
+                    train_tokens: run.train_tokens,
                     created_at: run.created_at,
                     completed_at: run.completed_at,
                 })
@@ -173,6 +180,7 @@ async fn get_run(
             score: run.score,
             report: run.report,
             error: run.error,
+            train_tokens: run.train_tokens,
             created_at: run.created_at,
             completed_at: run.completed_at,
         }),

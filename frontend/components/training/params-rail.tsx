@@ -640,7 +640,10 @@ export function ParamsRail({
         <Input
           value={cfg.model_name}
           onChange={(e) => setField("model_name", e.target.value)}
-          placeholder="my-model"
+          // Weight classes are the size convention: Feather · Light · Welter ·
+          // Middle · Heavy, smallest to largest. Only a naming convention — nothing
+          // validates it, and the field takes any name.
+          placeholder="Slate Feather"
           disabled={disabled}
           className="h-10 font-heading text-lg font-semibold"
         />
