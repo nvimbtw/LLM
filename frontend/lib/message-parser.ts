@@ -1,14 +1,35 @@
 // Parses the model's custom markup into a small tree the UI can render.
 //
-// Markup looks like:
-//   <|heading 1|>Title<|/heading 1|>
-//   <|paragraph|>Text with <|bold|>bold<|/bold|> and
-//     <|code inline | lang='rs'|>String<|/code inline|>.<|/paragraph|>
-//   <|code block | lang='rs'|>...code...<|/code block|>
+// The model emits the backend tokenizer's protected vocabulary (SPECIAL_TOKENS
+// in backend/src/tokenize/src/pretokenize.rs), which is terse and space-free:
+//   <|title|>Title<|/title|>
+//   <|par|>Text with <|bold|>bold<|/bold|> and <|code|>String<|/code|>.<|/par|>
+//   <|codeblock|>...code...<|/codeblock|>
 //   <|divider|>
 //
-// Tags may carry attributes after a `|` separator (e.g. `lang='rs'`,
-// `href='...'`). `<|divider|>` is void (no closing tag).
+// Those token names are mapped here onto the render vocabulary shared with the
+// user-input parser (lib/user-parser.ts) and the renderer (rich-message.tsx) —
+// e.g. `par` -> `paragraph`, `title` -> `heading 1`. See TOKEN_NAME_MAP. This
+// keeps the renderer as the single place that knows how each node type looks,
+// while the backend stays the single source of truth for token names.
+//
+// Tags may carry attributes after a `|` separator (e.g. `href='...'`).
+// `<|divider|>` is void (no closing tag).
+
+// Backend token name -> render node type. Names not listed pass through
+// unchanged (quote, divider, italic, bold, list, item, link, …).
+const TOKEN_NAME_MAP: Record<string, string> = {
+  par: "paragraph",
+  title: "heading 1",
+  heading: "heading 2",
+  subheading: "heading 3",
+  code: "code inline",
+  codeblock: "code block",
+}
+
+function mapTokenName(name: string): string {
+  return TOKEN_NAME_MAP[name] ?? name
+}
 
 export interface MText {
   type: "text"
@@ -27,29 +48,30 @@ export function isText(node: MNode): node is MText {
   return node.type === "text"
 }
 
-const VOID_TAGS = new Set(["divider", "thinking"])
+const VOID_TAGS = new Set(["divider"])
 
-// Thinking tokens: `<|thinking | 'the current thought'|>` (self-contained).
-const THINKING_RE = /<\|thinking\b[^]*?\|>/g // a complete token
-const THINKING_TAIL_RE = /<\|thinking\b[^]*$/ // an unclosed, still-streaming one
-const THOUGHT_RE = /<\|thinking\s*\|\s*'([^']*)'\s*\|>/g
+// Thinking blocks: `<|thinking|>...reasoning...<|/thinking|>`. The content is
+// never shown — the UI displays a themed status label while the model is in a
+// thinking block — so we only need to strip these out of the rendered message.
+const THINKING_RE = /<\|thinking\|>[^]*?<\|\/thinking\|>/g // a complete block
+const THINKING_TAIL_RE = /<\|thinking\|>[^]*$/ // an unclosed, still-streaming one
 
-/** Removes thinking tokens (complete and partially-streamed) from the text. */
+/** Removes thinking blocks (complete and partially-streamed) from the text. */
 export function stripThinking(content: string): string {
   return content.replace(THINKING_RE, "").replace(THINKING_TAIL_RE, "")
 }
 
 /**
- * The most recent *complete* thought to surface in the indicator. Partial,
- * still-streaming thinking tokens are ignored, so the displayed thought only
- * changes once a full new thinking block arrives.
+ * True when the content currently ends inside an open `<|thinking|>` block —
+ * i.e. the most recent `<|thinking|>` has no `<|/thinking|>` after it. Unlike
+ * hasVisibleContent (which latches once the answer starts), this tracks the
+ * live thinking state, so a model that reasons mid-reply is detected too.
  */
-export function latestThought(content: string): string {
-  let thought = ""
-  let m: RegExpExecArray | null
-  THOUGHT_RE.lastIndex = 0
-  while ((m = THOUGHT_RE.exec(content))) thought = m[1]
-  return thought.trim()
+export function isInThinkingBlock(content: string): boolean {
+  const open = content.lastIndexOf("<|thinking|>")
+  if (open === -1) return false
+  // `<|/thinking|>` contains a slash, so it never matches the opener search.
+  return content.lastIndexOf("<|/thinking|>") < open
 }
 
 const TAG_RE = /<\|(.*?)\|>/g
@@ -57,7 +79,7 @@ const ATTR_RE = /(\w+)\s*=\s*'([^']*)'/g
 
 function parseOpenTag(inner: string): { name: string; attrs?: Record<string, string> } {
   const bar = inner.indexOf("|")
-  const name = (bar === -1 ? inner : inner.slice(0, bar)).trim()
+  const name = mapTokenName((bar === -1 ? inner : inner.slice(0, bar)).trim())
   const attrStr = bar === -1 ? "" : inner.slice(bar + 1)
 
   let attrs: Record<string, string> | undefined
@@ -89,8 +111,9 @@ export function parseMessage(input: string): MElement {
 
     const inner = m[1]
     if (inner.startsWith("/")) {
-      // Closing tag — unwind to the nearest matching open element.
-      const name = inner.slice(1).trim()
+      // Closing tag — unwind to the nearest matching open element. Map the
+      // name so `<|/par|>` matches the `paragraph` node opened by `<|par|>`.
+      const name = mapTokenName(inner.slice(1).trim())
       for (let i = stack.length - 1; i > 0; i--) {
         if (stack[i].type === name) {
           stack.length = i

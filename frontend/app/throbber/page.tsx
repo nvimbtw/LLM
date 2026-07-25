@@ -1,56 +1,16 @@
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { FluxThrobber, type ThrobberMode } from "@/components/chat/flux-throbber";
-
-const MODES: { mode: ThrobberMode; description: string }[] = [
-  {
-    mode: "thinking",
-    description: "Generating a response — fast motion, frequent scene switches.",
-  },
-  {
-    mode: "loading",
-    description: "Fetching chat history — a steadier, medium pace.",
-  },
-  {
-    mode: "idle",
-    description: "Ambient resting state — slow and calm.",
-  },
-  {
-    mode: "training",
-    description: "Reserved for a future training state — very slow.",
-  },
-];
+import { ThrobberShowcase } from "@/components/throbber/throbber-showcase";
 
 export default function ThrobberPage() {
   return (
-    <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
-      <header className="mb-8">
-        <h1 className="font-heading text-2xl font-semibold tracking-tight">
-          Throbber
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Every mode of the generative loading panel.
+    <div className="mx-auto w-full max-w-3xl flex-1 px-5 py-12 sm:px-8">
+      <header className="mb-8 border-b border-border/60 pb-6">
+        <h1 className="font-display text-3xl font-semibold tracking-tight">Throbber</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The Carriage — one rule, one travelling mark. Every state is the same
+          drawing with different numbers, so they morph rather than swap.
         </p>
       </header>
-
-      <div className="grid gap-6 sm:grid-cols-2">
-        {MODES.map(({ mode, description }) => (
-          <Card key={mode}>
-            <CardHeader>
-              <CardTitle className="capitalize">{mode}</CardTitle>
-              <CardDescription>{description}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <FluxThrobber mode={mode} className="h-40 w-full" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <ThrobberShowcase />
     </div>
   );
 }

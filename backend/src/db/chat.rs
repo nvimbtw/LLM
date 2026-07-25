@@ -9,6 +9,17 @@ pub struct Chat {
     pub created_at: DateTime<Utc>,
 }
 
+// A chat plus its cumulative token usage (sum over its messages), for the
+// sidebar list. Separate from `Chat` because it carries a joined aggregate that
+// the base table doesn't, and it drops id_user (the list is already scoped to
+// the caller).
+pub struct ChatListItem {
+    pub id_chat: Uuid,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub tokens: i64,
+}
+
 pub async fn create(pool: &PgPool, id_user: Uuid, title: &str) -> Result<Chat, sqlx::Error> {
     sqlx::query_as!(
         Chat,
@@ -31,12 +42,18 @@ pub async fn find_by_id(pool: &PgPool, id_chat: Uuid) -> Result<Option<Chat>, sq
     .await
 }
 
-pub async fn list_for_user(pool: &PgPool, id_user: Uuid) -> Result<Vec<Chat>, sqlx::Error> {
-    // Most-recent first, for the sidebar/recency UI on the frontend.
+pub async fn list_for_user(pool: &PgPool, id_user: Uuid) -> Result<Vec<ChatListItem>, sqlx::Error> {
+    // Most-recent first, for the sidebar/recency UI on the frontend. LEFT JOIN so
+    // brand-new chats with no messages still appear, with a 0 token sum.
     sqlx::query_as!(
-        Chat,
-        r#"SELECT id_chat, id_user, title, created_at
-           FROM chats WHERE id_user = $1 ORDER BY created_at DESC"#,
+        ChatListItem,
+        r#"SELECT c.id_chat, c.title, c.created_at,
+                  COALESCE(SUM(m.tokens), 0)::int8 AS "tokens!"
+           FROM chats c
+           LEFT JOIN messages m ON m.id_chat = c.id_chat
+           WHERE c.id_user = $1
+           GROUP BY c.id_chat
+           ORDER BY c.created_at DESC"#,
         id_user,
     )
     .fetch_all(pool)

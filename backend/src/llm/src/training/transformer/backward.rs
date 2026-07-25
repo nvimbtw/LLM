@@ -1,0 +1,237 @@
+//! GPU backward pass for one training step — gradients through the output
+//! projection, the feed-forward and attention sublayers, and accumulation of the
+//! embedding gradient, plus the per-step gradient-norm clip. These are
+//! `pub(super)` stage helpers driven by `run_step` in the parent module.
+//!
+//! SAFETY CONTRACT (shared by every `unsafe` block below): all `d_*`, `b_*`,
+//! `g_*`, `head_*` pointers are Workspace device allocations sized for the
+//! configured maximum dims, and `s <= ctx_window`, so every kernel stays within
+//! its buffers; each CUDA kernel is bounded by the size arguments passed
+//! alongside the pointers. Individual blocks add a note only where they do
+//! something beyond "call a kernel over ws buffers with valid dims".
+
+use super::*;
+
+impl Model {
+    pub(super) fn backward_unembed(&self, ws: &mut Workspace, dims: StepDims, d_x: *mut c_void) -> *mut c_void {
+        let StepDims { s, d, vocab, .. } = dims;
+        // SAFETY: see contract.
+        unsafe {
+            cuda_d_weight(
+                d_x,
+                ws.d_dlogits.ptr as *const c_void,
+                ws.d_dw_output.ptr,
+                s as i32,
+                d as i32,
+                vocab as i32,
+            );
+            cuda_matmul_bt(
+                ws.d_dlogits.ptr as *const c_void,
+                ws.d_w_output.ptr as *const c_void,
+                ws.d_dhidden.ptr as *mut c_void,
+                s as i32,
+                vocab as i32,
+                d as i32,
+            );
+            cuda_add_inplace_f32(ws.g_dw_output.ptr, ws.d_dw_output.ptr, (d * vocab) as i32);
+        }
+        ws.d_dhidden.ptr as *mut c_void
+    }
+
+    // Feed-forward sublayer backward: FF backward → LN2 backward → residual.
+    // Takes the incoming gradient and returns the gradient out of the FF sublayer
+    // (which the attention sublayer backward then consumes).
+    pub(super) fn ffn_sublayer_backward(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        layer_idx: usize,
+        d_dx: *mut c_void,
+    ) -> *mut c_void {
+        let StepDims { s, d, ff, .. } = dims;
+
+        // Feed-forward backward, accumulate its weight/bias gradients.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_feed_forward_backward(
+                ws.ff_inputs[layer_idx].ptr as *const c_void,
+                ws.pre_gelus[layer_idx].ptr as *const c_void,
+                d_dx,
+                ws.d_w1[layer_idx].ptr as *const c_void,
+                ws.d_w2[layer_idx].ptr as *const c_void,
+                ws.b_sd[0].ptr as *mut c_void,
+                ws.b_dff[0].ptr,
+                ws.b_dff[1].ptr,
+                ws.b_ff.ptr,
+                ws.b_d[0].ptr,
+                s as i32,
+                d as i32,
+                ff as i32,
+            );
+            cuda_add_inplace_f32(ws.g_dw1[layer_idx].ptr, ws.b_dff[0].ptr, (d * ff) as i32);
+            cuda_add_inplace_f32(ws.g_dw2[layer_idx].ptr, ws.b_dff[1].ptr, (ff * d) as i32);
+            cuda_add_inplace_f32(ws.g_db1[layer_idx].ptr, ws.b_ff.ptr, ff as i32);
+            cuda_add_inplace_f32(ws.g_db2[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
+            cuda_clamp_f16(ws.b_sd[0].ptr as *mut c_void, (s * d) as i32);
+        }
+
+        // Layer norm 2 backward, accumulate its gamma/beta gradients.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm_backward(
+                ws.post_attn_residuals[layer_idx].ptr as *const c_void,
+                ws.b_sd[0].ptr as *const c_void,
+                ws.d_ln_gamma[layer_idx].ptr as *const c_void,
+                ws.b_dd.ptr as *mut c_void,
+                ws.b_d[0].ptr,
+                ws.b_d[1].ptr,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
+            cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
+            cuda_clamp_f16(ws.b_dd.ptr as *mut c_void, (s * d) as i32);
+        }
+
+        // Residual: d_dx + LN2 backprop → b_sd[2].
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(ws.b_sd[2].ptr as *mut c_void, d_dx, (s * d * 2) as usize);
+            cuda_add_inplace_f16(
+                ws.b_sd[2].ptr as *mut c_void,
+                ws.b_dd.ptr as *const c_void,
+                (s * d) as i32,
+            );
+            cuda_clamp_f16(ws.b_sd[2].ptr as *mut c_void, (s * d) as i32);
+        }
+        ws.b_sd[2].ptr as *mut c_void
+    }
+
+    // Attention sublayer backward: wo → multi-head attention → LN1, accumulating
+    // weight gradients and returning the block's input gradient (for the next,
+    // earlier block). Takes the gradient out of the FF sublayer.
+    pub(super) fn attn_sublayer_backward(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        layer_idx: usize,
+        d_dx: *mut c_void,
+    ) -> *mut c_void {
+        let StepDims { s, d, h, hd, .. } = dims;
+
+        // Wo backward (accumulate its gradient), then d_wo_x = d_post_attn @ wo^T.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_d_weight(
+                ws.concat_outputs[layer_idx].ptr as *const c_void,
+                d_dx as *const c_void,
+                ws.b_dd.ptr,
+                s as i32,
+                d as i32,
+                d as i32,
+            );
+            cuda_add_inplace_f32(ws.g_dwo[layer_idx].ptr, ws.b_dd.ptr, (d * d) as i32);
+            cuda_matmul(
+                d_dx as *const c_void,
+                ws.d_wo[layer_idx].ptr as *const c_void,
+                ws.d_wo_x.ptr as *mut c_void,
+                s as i32,
+                d as i32,
+                d as i32,
+            );
+        }
+
+        // Batched multi-head attention backward. Weight gradients accumulate into
+        // g_wq_all/g_wk_all/g_wv_all (β=1 inside the kernel); dX goes to b_sd_head.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_attention_backward_batched(
+                ws.post_ff_residuals[layer_idx].ptr as *const c_void,
+                ws.d_wq_all[layer_idx].ptr as *const c_void,
+                ws.d_wk_all[layer_idx].ptr as *const c_void,
+                ws.d_wv_all[layer_idx].ptr as *const c_void,
+                ws.head_p_all[layer_idx].ptr as *const c_void,
+                ws.d_wo_x.ptr as *const c_void,
+                ws.b_sd_head.ptr as *mut c_void,
+                ws.g_wq_all[layer_idx].ptr,
+                ws.g_wk_all[layer_idx].ptr,
+                ws.g_wv_all[layer_idx].ptr,
+                s as i32, d as i32, hd as i32, h as i32,
+            );
+            cuda_clamp_f16(ws.b_sd_head.ptr as *mut c_void, (s * d) as i32);
+        }
+
+        // Layer norm 1 backward, accumulate its gamma/beta gradients.
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm_backward(
+                ws.layer_inputs[layer_idx].ptr as *const c_void,
+                ws.b_sd_head.ptr as *const c_void,
+                ws.d_ln_gamma[layer_idx].ptr as *const c_void,
+                ws.b_sd[1].ptr as *mut c_void,
+                ws.b_d[0].ptr,
+                ws.b_d[1].ptr,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
+            cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
+        }
+
+        // Residual: layer_input gradient = incoming FF-sublayer gradient (d_dx)
+        // + LN1 backprop (b_sd[1]).
+        // SAFETY: see contract.
+        unsafe {
+            cuda_add_inplace_f16(
+                ws.b_sd[1].ptr as *mut c_void,
+                d_dx as *const c_void,
+                (s * d) as i32,
+            );
+            cuda_clamp_f16(ws.b_sd[1].ptr as *mut c_void, (s * d) as i32);
+        }
+        ws.b_sd[1].ptr as *mut c_void
+    }
+
+    // Clip every accumulated gradient buffer to unit norm before the optimizer
+    // step (the per-step loss-spike guard).
+    pub(super) fn clip_gradients(&self, ws: &mut Workspace, dims: StepDims, layers: usize) {
+        let StepDims { d, h, hd, ff, vocab, .. } = dims;
+        let max_norm = TRAIN_STEP_CLIP_NORM;
+        // SAFETY: see contract; each buffer's element count is passed alongside.
+        unsafe {
+            cuda_clip_norm(ws.g_dw_output.ptr, (d * vocab) as i32, max_norm);
+            for layer_idx in 0..layers {
+                cuda_clip_norm(ws.g_wq_all[layer_idx].ptr, (h * d * hd) as i32, max_norm);
+                cuda_clip_norm(ws.g_wk_all[layer_idx].ptr, (h * d * hd) as i32, max_norm);
+                cuda_clip_norm(ws.g_wv_all[layer_idx].ptr, (h * d * hd) as i32, max_norm);
+                cuda_clip_norm(ws.g_dwo[layer_idx].ptr, (d * d) as i32, max_norm);
+                cuda_clip_norm(ws.g_dw1[layer_idx].ptr, (d * ff) as i32, max_norm);
+                cuda_clip_norm(ws.g_dw2[layer_idx].ptr, (ff * d) as i32, max_norm);
+                cuda_clip_norm(ws.g_db1[layer_idx].ptr, ff as i32, max_norm);
+                cuda_clip_norm(ws.g_db2[layer_idx].ptr, d as i32, max_norm);
+                cuda_clip_norm(ws.g_dln_gamma[layer_idx].ptr, d as i32, max_norm);
+                cuda_clip_norm(ws.g_dln_beta[layer_idx].ptr, d as i32, max_norm);
+            }
+        }
+    }
+
+    // Scatter-add the input gradient into the embedding gradient (by token id)
+    // and clip it, closing out the backward pass.
+    pub(super) fn accumulate_embedding_grad(&self, ws: &mut Workspace, dims: StepDims, d_dx: *mut c_void) {
+        let StepDims { s, d, vocab, .. } = dims;
+        // SAFETY: see contract; d_token_ids holds the s token ids scattered into.
+        unsafe {
+            cuda_scatter_add_embedding_grad(
+                d_dx as *const c_void,
+                ws.d_token_ids.ptr as *const i32,
+                ws.g_d_embedding.ptr,
+                s as i32,
+                d as i32,
+                vocab as i32,
+            );
+            cuda_clip_norm(ws.g_d_embedding.ptr, (vocab * d) as i32, TRAIN_STEP_CLIP_NORM);
+        }
+    }
+}

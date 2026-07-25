@@ -1,59 +1,41 @@
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import type { Usage } from "@/hooks/use-usage"
 import { formatCompact, formatCurrency, formatNumber } from "./format"
 
-function StatCard({
-  label,
-  value,
-  hint,
-}: {
-  label: string
-  value: string
-  hint?: string
-}) {
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <Card className="gap-2">
-      <CardHeader>
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
-        {hint && (
-          <p className="text-xs text-muted-foreground tabular-nums">{hint}</p>
-        )}
-      </CardHeader>
-    </Card>
+    <div className="bg-background px-5 py-5">
+      <dt className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/60">
+        {label}
+      </dt>
+      <dd className="mt-2 font-display text-3xl font-semibold tracking-tight tabular-nums">
+        {value}
+      </dd>
+      {hint && <p className="mt-1 text-[11px] text-muted-foreground/70 tabular-nums">{hint}</p>}
+    </div>
   )
 }
 
 export function UsageStats({ usage }: { usage: Usage }) {
-  const avgPerRequest = Math.round(usage.totalTokens / usage.totalRequests)
+  const avgPerRequest = usage.totalRequests
+    ? Math.round(usage.totalTokens / usage.totalRequests)
+    : 0
 
+  // gap-px over a border-toned background paints hairline rules between cells —
+  // a divided ledger rather than four boxes.
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <StatCard
-        label="Requests"
-        value={formatNumber(usage.totalRequests)}
-        hint="Last 30 days"
-      />
-      <StatCard
+    <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 sm:grid-cols-4">
+      <Stat label="Requests" value={formatNumber(usage.totalRequests)} hint="Last 30 days" />
+      <Stat
         label="Tokens"
         value={formatCompact(usage.totalTokens)}
         hint={`${formatNumber(usage.totalTokens)} total`}
       />
-      <StatCard
-        label="Cost"
-        value={formatCurrency(usage.totalCost)}
-        hint="Last 30 days"
-      />
-      <StatCard
+      <Stat label="Cost" value={formatCurrency(usage.totalCost)} hint="Last 30 days" />
+      <Stat
         label="Avg / request"
         value={formatCompact(avgPerRequest)}
         hint="Tokens per request"
       />
-    </div>
+    </dl>
   )
 }

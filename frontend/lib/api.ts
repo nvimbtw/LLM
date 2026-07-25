@@ -11,8 +11,18 @@ export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
 
+// Fired on the window whenever the session is set or cleared, so providers
+// mounted above the auth flow (e.g. ChatsProvider in the root layout) can
+// refetch — the "storage" event only fires in *other* tabs.
+export const SESSION_CHANGED_EVENT = "session-changed"
+
+function emitSessionChanged() {
+  window.dispatchEvent(new Event(SESSION_CHANGED_EVENT))
+}
+
 export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token)
+  emitSessionChanged()
 }
 
 export function getAccessLevel(): AccessLevel | null {
@@ -29,6 +39,7 @@ export function setAccessLevel(level: AccessLevel) {
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(ACCESS_LEVEL_KEY)
+  emitSessionChanged()
 }
 
 export function authHeaders(): HeadersInit {
@@ -37,4 +48,33 @@ export function authHeaders(): HeadersInit {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
+}
+
+/** Clears the session and lands the user on /login (token expired/invalid). */
+export function handleSessionExpired() {
+  clearSession()
+  // Guard against a redirect loop: a 401 on the login page (e.g. a stray
+  // background fetch) must not reload it, or we spin reloading /login forever.
+  if (window.location.pathname !== "/login") {
+    window.location.assign("/login")
+  }
+}
+
+/**
+ * Authenticated fetch for API routes: attaches auth headers and, on a 401,
+ * logs the user out and redirects to /login instead of surfacing a generic
+ * error on a broken page. Use this instead of raw fetch for every
+ * authenticated call; the thrown error still rejects the caller's promise so
+ * in-flight UI settles.
+ */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { ...authHeaders(), ...(init.headers ?? {}) },
+  })
+  if (response.status === 401) {
+    handleSessionExpired()
+    throw new Error("Your session has expired. Please log in again.")
+  }
+  return response
 }

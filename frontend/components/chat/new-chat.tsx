@@ -12,11 +12,11 @@ export function NewChat() {
   const [isSending, setIsSending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  async function handleSend(content: string) {
+  async function handleSend(content: string, modelId: string) {
     setIsSending(true)
     setError(null)
     try {
-      const chatId = await createChat(content)
+      const chatId = await createChat(content, modelId)
       router.push(`/chat/${chatId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start a chat.")

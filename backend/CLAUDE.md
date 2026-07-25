@@ -1,5 +1,10 @@
 # CLAUDE.md
 
+> **Role:** See [`AGENTS.md`](../AGENTS.md) at the project root for the agent
+> role system. Unless told otherwise, you are the **Fixer** — the only role
+> that edits application code. Adhere to the coding rules in
+> [`.claude/skills/rules/SKILL.md`](../.claude/skills/rules/SKILL.md).
+
 Guidance for Claude Code when working in this repository.
 
 ## Project overview
@@ -60,6 +65,68 @@ backend/
 Actual data (scraped HTML, processed text, tokenized output, model weights) lives on the filesystem under `backend/data/scraped/`, `backend/data/processed/`, `backend/data/tokenized/`, `backend/data/models/` — not in Postgres — needed for manual inspection during crawling/debugging. Postgres only stores tracking metadata:
 - `documents` table: one row per crawled page, tracks status, file paths, crawl depth/parent, content hash for dedup.
 - `jobs` table: tracks long-running async operations (crawl, tokenize, train) — status, progress, config, for frontend polling and lineage.
+
+## Training modes (pretrain vs SFT)
+
+A run has a `mode` (`TrainConfig.mode` in `training.rs`): **pretrain** (default) or
+**sft** (supervised fine-tuning). Both are two-phase — build a dataset, then train
+on the GPU — and share the job/WebSocket progress plumbing (`jobs.rs`); they differ
+only in phase 1 and which `llm::train` entry point phase 2 drives. The route
+(`routes/training.rs::start_training`) branches on `mode`.
+
+- **Pretrain** — `build_dataset` (trains a fresh BPE tokenizer over the uploaded
+  books + synthetic docs → `datasets/corpus.bin` + `artifacts/tokenizer/merges.bin`)
+  then `llm::train::train` (fresh random weights). Loss is computed over every
+  position.
+- **SFT** — fine-tunes an *existing* base model on chat conversations, training the
+  loss **only on the assistant's reply tokens**. The request carries a
+  `base_model_id` (validated present + resolvable, else `400`). Phase 1 is
+  `build_sft_dataset(base_model_dir)`; phase 2 is `llm::train::sft_train`, which
+  loads the base weights and drives the masked step. SFT reuses the base's
+  tokenizer — it never retrains BPE (that would renumber the vocab and make the
+  fine-tune gibberish) — and copies `merges.bin` next to the fine-tuned weights so
+  the output model loads standalone. SFT typically wants a lower `lr` and fewer
+  `epochs` than pretraining.
+
+**The masking convention** (shared by the whole SFT path, from
+`chat_template::build_training_example` through the CUDA loss kernels): predicting
+token `i+1` from position `i`, `mask[i] = 1` iff token `i+1` is an assistant-reply
+token — from the first token after an `<|assistant|>` marker through the closing
+`<|/assistant|>` marker inclusive — and `0` everywhere else (system, user,
+scaffold, cross-example boundaries). Masked-out positions contribute no loss and no
+gradient.
+
+**SFT dataset layout** (all under `data/`):
+- Input: `raw/sft/*.jsonl` — one conversation per line,
+  `{"system"?: string, "turns": [{"role": "user"|"assistant", "text": string}, …]}`,
+  ending on an assistant turn. `training.rs::synthetic` can generate a templated
+  starter set.
+- Output (built by `build_sft_dataset`, consumed by `sft_train`):
+  `datasets/sft_corpus.bin` (flat little-endian `u32` token ids, same format as
+  `corpus.bin`) and `datasets/sft_mask.bin` (one `u8` per token, `1`=train /
+  `0`=ignore) — the two are aligned 1:1 and length-checked before training.
+
+## Mixed-precision (f32 master weights)
+
+GPU training keeps **all compute in f16** but holds an **f32 master copy of every
+*trained* weight** as the source of truth (ISSUE-0052). Each trained parameter has
+three parts in `GpuWorkspace`: the f32 master (`m_*`), the f16 view the matmuls
+read (`d_*`), and the f32 Adam moments (`v_*` = 1st, `s_*` = 2nd). The invariant:
+
+- **The master is canonical; the f16 `d_*` weight is a derived, disposable view.**
+  `adam_kernel` accumulates the step into the f32 master and refreshes the f16 view
+  from it in the same pass (fused — no extra kernel launch). `upload_weights` seeds
+  the master from the full-precision f32 CPU weights (not the f16 round-trip), and
+  `sync_weights_from_gpu` reads the master back on save (so save is lossless).
+- Only the 12 weights `gpu_adam_update` steps get a master (2 shared + 10×layers).
+  `d_positional` is never updated, so it has **no** master and stays f16-only.
+
+Why: before this, the master lived in f16, so an Adam step below the f16 ULP near
+the weight (~1e-3 at w≈1.0) rounded away entirely — updates vanished at small LR
+and diverged in coarse quanta at large LR, capping the usable LR at ~1e-5. The f32
+master lets a sub-ULP `Δw` accumulate, lifting the cap (pretrain default is now
+1e-4; see `use-training.ts`). Cost: **14 B/param** (f16 `w` 2 B + f32 `m`/`v` 8 B +
+f32 master 4 B), ~+40 MB on a 10M-param model; compute throughput is unchanged.
 
 ## Error handling
 

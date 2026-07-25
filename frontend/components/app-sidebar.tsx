@@ -13,39 +13,46 @@ import { NavMain } from "./sidebar/nav-main";
 import { NavConversations } from "./sidebar/nav-conversations";
 import { NavAdmin } from "./sidebar/nav-admin";
 import { NavProfile } from "./sidebar/nav-profile";
+import { SidebarSettingsButton } from "./settings/settings-menu-button";
 
 // Brand shown in the sidebar header. Change these to rename the app:
 // APP_NAME is shown when expanded, APP_NAME_SHORT when collapsed to icons.
-const APP_NAME = "Gork"
-const APP_NAME_SHORT = "G"
+const APP_NAME = "Lattice"
+const APP_NAME_SHORT = "L"
 
 export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader>
+      <SidebarHeader className="border-b border-sidebar-border/60 px-3 pt-4 pb-3 group-data-[collapsible=icon]:px-2">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip={APP_NAME}
               render={<Link href="/" />}
-              className="font-display text-lg font-semibold tracking-tight"
+              className="h-auto py-0 hover:bg-transparent active:bg-transparent"
             >
-              <span className="group-data-[collapsible=icon]:hidden">
-                {APP_NAME}
+              <span className="flex flex-col group-data-[collapsible=icon]:hidden">
+                <span className="font-display text-xl font-semibold leading-none tracking-tight">
+                  {APP_NAME}
+                </span>
+                <span className="mt-1 text-[0.6rem] font-medium uppercase tracking-[0.22em] text-sidebar-foreground/45">
+                  Workbench
+                </span>
               </span>
-              <span className="hidden group-data-[collapsible=icon]:inline">
+              <span className="hidden font-display text-lg font-semibold tracking-tight group-data-[collapsible=icon]:inline">
                 {APP_NAME_SHORT}
               </span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarContent>
+      <SidebarContent className="gap-0.5 px-1 py-2">
         <NavMain />
         <NavAdmin />
         <NavConversations />
       </SidebarContent>
-      <SidebarFooter>
+      <SidebarFooter className="border-t border-sidebar-border/60 px-1 py-2">
+        <SidebarSettingsButton />
         <NavProfile />
       </SidebarFooter>
       <SidebarRail />

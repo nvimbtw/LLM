@@ -7,11 +7,12 @@ import { cn } from "@/lib/utils"
 import {
   isText,
   parseMessage,
-  stripThinking,
   textContent,
   type MElement,
   type MNode,
 } from "@/lib/message-parser"
+import { useSettings } from "@/components/settings/settings-provider"
+import { ReasoningPanel } from "./reasoning-panel"
 
 export function RichMessage({
   content,
@@ -20,7 +21,7 @@ export function RichMessage({
   content: string
   streaming?: boolean
 }) {
-  const tree = React.useMemo(() => parseMessage(stripThinking(content)), [content])
+  const tree = React.useMemo(() => parseMessage(content), [content])
   return <RichContent root={tree} streaming={streaming} />
 }
 
@@ -32,9 +33,10 @@ export function RichContent({
   root: MElement
   streaming?: boolean
 }) {
+  const { settings } = useSettings()
   return (
-    <div className="space-y-3 text-sm leading-relaxed">
-      {renderChildren(root, streaming)}
+    <div className="space-y-3 text-sm leading-relaxed break-words">
+      {renderChildren(root, streaming, settings.showReasoning)}
     </div>
   )
 }
@@ -56,21 +58,29 @@ function fadeWords(value: string): React.ReactNode {
   )
 }
 
-function renderChildren(node: MElement, streaming: boolean): React.ReactNode {
+function renderChildren(
+  node: MElement,
+  streaming: boolean,
+  showReasoning: boolean
+): React.ReactNode {
   const children = BLOCK_CONTAINERS.has(node.type)
     ? node.children.filter((c) => !(isText(c) && c.value.trim() === ""))
     : node.children
 
   return children.map((child, i) => (
-    <React.Fragment key={i}>{renderNode(child, streaming)}</React.Fragment>
+    <React.Fragment key={i}>{renderNode(child, streaming, showReasoning)}</React.Fragment>
   ))
 }
 
-function renderNode(node: MNode, streaming: boolean): React.ReactNode {
+function renderNode(
+  node: MNode,
+  streaming: boolean,
+  showReasoning: boolean
+): React.ReactNode {
   if (isText(node)) return streaming ? fadeWords(node.value) : node.value
 
   const el = node
-  const kids = renderChildren(el, streaming)
+  const kids = renderChildren(el, streaming, showReasoning)
 
   if (el.type.startsWith("heading ")) {
     const level = el.type.slice("heading ".length).trim()
@@ -90,9 +100,14 @@ function renderNode(node: MNode, streaming: boolean): React.ReactNode {
   }
 
   switch (el.type) {
-    case "thinking":
-      // The model's reasoning is surfaced as a "Thinking…" indicator, not text.
-      return null
+    case "thinking": {
+      // Rendered in place, at the point in the reply where the model actually
+      // reasoned — not hoisted above the whole message — so text/reasoning/text
+      // sequences stay in their original order.
+      if (!showReasoning) return null
+      const text = textContent(el).trim()
+      return text ? <ReasoningPanel text={text} /> : null
+    }
     case "paragraph":
       return <p>{kids}</p>
     case "bold":
@@ -103,7 +118,7 @@ function renderNode(node: MNode, streaming: boolean): React.ReactNode {
       return <span className="font-medium text-foreground">{kids}</span>
     case "code inline":
       return (
-        <code className="rounded bg-chart-4/10 px-1.5 py-0.5 font-mono text-[0.85em] text-chart-4">
+        <code className="rounded bg-chart-4/10 px-1.5 py-0.5 font-mono text-[0.85em] break-all text-chart-4">
           {textContent(el)}
         </code>
       )
@@ -128,12 +143,14 @@ function renderNode(node: MNode, streaming: boolean): React.ReactNode {
     case "divider":
       return <hr className="border-border" />
     case "link":
+      // Bare <|link|>dest<|/link|> carries no href attribute, so the visible
+      // text is the destination. Legacy data with an explicit href still wins.
       return (
         <a
-          href={el.attrs?.href}
+          href={el.attrs?.href ?? textContent(el)}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+          className="font-medium break-all text-primary underline underline-offset-2 hover:text-primary/80"
         >
           {kids}
         </a>

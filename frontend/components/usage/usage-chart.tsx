@@ -2,90 +2,92 @@
 
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart"
+import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart"
 import type { UsageDay } from "@/hooks/use-usage"
+import { Panel } from "@/components/ui/panel"
 
+// One series — total tokens — in the single accent. The input/output split isn't
+// dropped, it moves into the tooltip: a plot stays legible with one hue, and the
+// theme's muted chart tokens can't reliably separate two categories in dark mode.
 const chartConfig = {
-  input: { label: "Input", color: "var(--chart-3)" },
-  output: { label: "Output", color: "var(--chart-1)" },
+  total: { label: "Tokens", color: "var(--primary)" },
 } satisfies ChartConfig
 
+type Point = UsageDay & { total: number }
+
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  })
+  return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+}
+
+function Row({ label, value, strong }: { label: string; value: number; strong?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-6">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={strong ? "font-medium tabular-nums" : "tabular-nums text-muted-foreground"}>
+        {value.toLocaleString("en-US")}
+      </span>
+    </div>
+  )
+}
+
+function TokenTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean
+  payload?: { payload: Point }[]
+  label?: string
+}) {
+  if (!active || !payload?.length) return null
+  const d = payload[0].payload
+  return (
+    <div className="min-w-36 rounded-lg border border-border/60 bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
+        {formatDate(label ?? "")}
+      </div>
+      <div className="flex flex-col gap-0.5">
+        <Row label="Total" value={d.total} strong />
+        <Row label="Input" value={d.input} />
+        <Row label="Output" value={d.output} />
+      </div>
+    </div>
+  )
 }
 
 export function UsageChart({ series }: { series: UsageDay[] }) {
+  const data: Point[] = series.map((d) => ({ ...d, total: d.input + d.output }))
+
   return (
-    <Card className="gap-4">
-      <CardHeader>
-        <CardTitle>Tokens over time</CardTitle>
-        <CardDescription>Input and output tokens, last 30 days</CardDescription>
-      </CardHeader>
-      <div className="px-(--card-spacing)">
-        <ChartContainer config={chartConfig} className="aspect-auto h-64 w-full">
-          <AreaChart data={series} margin={{ left: 4, right: 4, top: 4 }}>
-            <defs>
-              <linearGradient id="fillInput" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="var(--color-input)" stopOpacity={0.7} />
-                <stop offset="95%" stopColor="var(--color-input)" stopOpacity={0.05} />
-              </linearGradient>
-              <linearGradient id="fillOutput" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="var(--color-output)" stopOpacity={0.7} />
-                <stop offset="95%" stopColor="var(--color-output)" stopOpacity={0.05} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid vertical={false} />
-            <XAxis
-              dataKey="date"
-              tickLine={false}
-              axisLine={false}
-              tickMargin={8}
-              minTickGap={32}
-              tickFormatter={formatDate}
-            />
-            <ChartTooltip
-              cursor={false}
-              content={
-                <ChartTooltipContent
-                  labelFormatter={(value) => formatDate(value as string)}
-                  indicator="dot"
-                />
-              }
-            />
-            <Area
-              dataKey="input"
-              type="natural"
-              stackId="tokens"
-              stroke="var(--color-input)"
-              fill="url(#fillInput)"
-            />
-            <Area
-              dataKey="output"
-              type="natural"
-              stackId="tokens"
-              stroke="var(--color-output)"
-              fill="url(#fillOutput)"
-            />
-            <ChartLegend content={<ChartLegendContent />} />
-          </AreaChart>
-        </ChartContainer>
-      </div>
-    </Card>
+    <Panel title="Tokens over time" description="Total, last 30 days" bodyClassName="px-2 py-3">
+      <ChartContainer config={chartConfig} className="aspect-auto h-64 w-full">
+        <AreaChart data={data} margin={{ left: 4, right: 4, top: 8 }}>
+          <defs>
+            <linearGradient id="fillTotal" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.28} />
+              <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.6} />
+          <XAxis
+            dataKey="date"
+            tickLine={false}
+            axisLine={false}
+            tickMargin={10}
+            minTickGap={32}
+            tickFormatter={formatDate}
+            className="text-[10px]"
+          />
+          <ChartTooltip cursor={{ stroke: "var(--border)" }} content={<TokenTooltip />} />
+          <Area
+            dataKey="total"
+            type="monotone"
+            stroke="var(--primary)"
+            strokeWidth={2}
+            fill="url(#fillTotal)"
+          />
+        </AreaChart>
+      </ChartContainer>
+    </Panel>
   )
 }

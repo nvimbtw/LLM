@@ -10,7 +10,9 @@ import Placeholder from "@tiptap/extension-placeholder"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
-import { FluxThrobber } from "./flux-throbber"
+import { matchStandaloneCommand, runSlashCommand } from "@/lib/commands"
+import { useSettings } from "@/components/settings/settings-provider"
+import { Throbber } from "@/components/ui/throbber"
 import { ModelSelector } from "./model-selector"
 
 // Tab / Shift+Tab indent / outdent list items. Enter and Shift+Enter are
@@ -31,14 +33,18 @@ const ComposerKeys = Extension.create({
 export function ChatComposer({
   onSend,
   disabled = false,
-  placeholder = "Talk to Gork...",
+  placeholder = "Investigate the Lattice...",
 }: {
-  onSend: (content: string) => Promise<void> | void
+  onSend: (content: string, modelId: string) => Promise<void> | void
   disabled?: boolean
   placeholder?: string
 }) {
   const [model, setModel] = React.useState("")
   const [isEmpty, setIsEmpty] = React.useState(true)
+  // True when the current content is a standalone, recognised slash command —
+  // drives the blue highlight and the "run as command instead of send" path.
+  const [isCommand, setIsCommand] = React.useState(false)
+  const { settings, setSetting, setCommandOpen } = useSettings()
 
   const onSendRef = React.useRef(onSend)
   onSendRef.current = onSend
@@ -87,18 +93,38 @@ export function ChatComposer({
       },
     },
     onCreate: ({ editor }) => setIsEmpty(editor.isEmpty),
-    onUpdate: ({ editor }) => setIsEmpty(editor.isEmpty),
+    onUpdate: ({ editor }) => {
+      setIsEmpty(editor.isEmpty)
+      setIsCommand(matchStandaloneCommand(editor.getText()) !== null)
+    },
   })
   editorRef.current = editor
 
   const submit = React.useCallback(() => {
     if (!editor || editor.isEmpty || disabled) return
+
+    // A standalone, recognised slash command runs locally and is never sent to
+    // the model. Anything else (including a "/" mid-sentence) is an ordinary
+    // message.
+    const text = editor.getText()
+    if (matchStandaloneCommand(text)) {
+      runSlashCommand(text, {
+        settings,
+        setSetting,
+        openSettings: () => setCommandOpen(true),
+      })
+      editor.commands.clearContent()
+      setIsEmpty(true)
+      setIsCommand(false)
+      return
+    }
+
     const markdown = docToMarkdown(editor.getJSON())
     if (!markdown.trim()) return
     editor.commands.clearContent()
     setIsEmpty(true)
-    onSendRef.current(markdown)
-  }, [editor, disabled])
+    onSendRef.current(markdown, model)
+  }, [editor, disabled, model, settings, setSetting, setCommandOpen])
   submitRef.current = submit
 
   React.useEffect(() => {
@@ -115,7 +141,16 @@ export function ChatComposer({
         disabled && "opacity-70"
       )}
     >
-      <EditorContent editor={editor} />
+      {/* A recognised standalone command colours the whole line blue (primary),
+          signalling it'll run as a command rather than be sent to the model. */}
+      <div
+        className={cn(
+          isCommand &&
+            "[&_.tiptap]:text-primary [&_.tiptap]:caret-primary [&_.tiptap]:font-medium"
+        )}
+      >
+        <EditorContent editor={editor} />
+      </div>
       <div className="flex items-center gap-2 px-2.5 pb-2">
         <ModelSelector value={model} onValueChange={setModel} />
         <Button
@@ -126,10 +161,13 @@ export function ChatComposer({
           onClick={submit}
         >
           {disabled ? (
-            <FluxThrobber
+            // The one place the rule can't span a real width. At button size the
+            // carriage still reads as motion, and `accent="currentColor"` keeps it
+            // visible against the primary fill.
+            <Throbber
               mode="thinking"
-              size={18}
-              className="rounded-full bg-transparent"
+              className="h-4 w-4 text-primary-foreground"
+              accent="currentColor"
             />
           ) : (
             <ArrowUp />

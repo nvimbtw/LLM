@@ -1,17 +1,21 @@
-use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, put, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, post, put, web};
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{crypto, db, extractors::AuthUser};
+use crate::routes::validate;
+use crate::{db, db::user::AccessLevel, extractors::AuthUser, ws};
 
 #[derive(Serialize)]
 struct ChatResponse {
     id_chat: Uuid,
     title: String,
     created_at: DateTime<Utc>,
+    // Cumulative tokens across the chat's messages. A freshly created chat (the
+    // From<Chat> path) has none yet, so it reports 0.
+    tokens: i64,
 }
 
 impl From<db::chat::Chat> for ChatResponse {
@@ -20,6 +24,18 @@ impl From<db::chat::Chat> for ChatResponse {
             id_chat: chat.id_chat,
             title: chat.title,
             created_at: chat.created_at,
+            tokens: 0,
+        }
+    }
+}
+
+impl From<db::chat::ChatListItem> for ChatResponse {
+    fn from(chat: db::chat::ChatListItem) -> Self {
+        ChatResponse {
+            id_chat: chat.id_chat,
+            title: chat.title,
+            created_at: chat.created_at,
+            tokens: chat.tokens,
         }
     }
 }
@@ -85,66 +101,28 @@ fn derive_title(content: &str) -> String {
     }
 }
 
-// The very first frame a client sends over the socket: the encrypted token,
-// same value the HTTP routes pass as `Authorization: Bearer`. We auth here
-// because browsers can't set headers on a WebSocket handshake.
-#[derive(Deserialize)]
-struct AuthFrame {
-    token: String,
-}
-
 // Every subsequent inbound frame is a chat turn.
 #[derive(Deserialize)]
 struct SendMessageFrame {
     // Absent => start a new chat; present => append to an existing one.
     chat_id: Option<Uuid>,
     content: String,
+    // Which trained model should generate the reply. Required for a real turn;
+    // resolves to the model's on-disk weights.
+    model_id: Option<Uuid>,
+    // Optional system prompt to steer the reply. Absent/empty => no system turn;
+    // the client omits it when the user hasn't set one.
+    #[serde(default)]
+    system: Option<String>,
 }
 
-// Placeholder that mimics a real model's structured-token output. The <|...|>
-// markers are the generated control tokens the frontend parses into rich
-// content. Real model text replaces this once inference integration lands.
-const PLACEHOLDER_REPLY: &str = r#"<|thinking | 'Thinking about the scope of the question'|>
-<|thinking | 'Recalling the relevant standard library file APIs'|>
-<|thinking | 'Weighing read_to_string against a buffered reader'|>
-<|thinking | 'Considering error handling with Result and the question mark operator'|>
-<|thinking | 'Deciding whether to also show the raw bytes variant fs::read'|>
-<|thinking | 'Sketching a minimal runnable example that compiles'|>
-<|thinking | 'Noting the memory cost of reading a whole file at once'|>
-<|thinking | 'Deciding which caveats are worth flagging to the user'|>
-<|thinking | 'Picking a documentation link to point at'|>
-<|thinking | 'Settling on the final structure of the answer'|>
-<|heading 1|>Reading a File in Rust<|/heading 1|>
-<|paragraph|>Here is a quick overview of how to read a file into a <|code inline | lang='rs'|>String<|/code inline|> using only the standard library. It is one of the most common <|bold|>I/O<|/bold|> tasks you will run into.<|/paragraph|>
-<|heading 2|>Steps<|/heading 2|>
-<|ordered list|>
-<|item|>Bring <|code inline | lang='rs'|>std::fs<|/code inline|> into scope.<|/item|>
-<|item|>Call <|code inline | lang='rs'|>fs::read_to_string<|/code inline|> with your path.<|/item|>
-<|item|>Handle the <|code inline | lang='rs'|>Result<|/code inline|> it returns.<|/item|>
-<|/ordered list|>
-<|heading 2|>Example<|/heading 2|>
-<|code block | lang='rs'|>use std::fs;
-
-fn main() -> std::io::Result<()> {
-    let contents = fs::read_to_string("hello.txt")?;
-    println!("{contents}");
-    Ok(())
-}<|/code block|>
-<|divider|>
-<|paragraph|>A few things worth remembering: this reads the <|italic|>entire<|/italic|> file into memory, so for large inputs you should <|inline|>prefer a streaming approach<|/inline|> instead.<|/paragraph|>
-<|list|>
-<|item|>Use <|code inline | lang='rs'|>BufReader<|/code inline|> for line-by-line reading.<|/item|>
-<|item|>Use <|code inline | lang='rs'|>fs::read<|/code inline|> when you need the raw bytes.<|/item|>
-<|/list|>
-<|paragraph|>For the full API, see the <|link | href='https://doc.rust-lang.org/std/fs/fn.read_to_string.html'|>official documentation<|/link|>.<|/paragraph|>
-<|quote|>Tip: handle errors explicitly rather than unwrapping in production code.<|/quote|>"#;
-
-// Delay between streamed tokens, to fake generation latency.
-const TOKEN_DELAY_MS: u64 = 150;
-
-fn error_frame(message: &str) -> String {
-    serde_json::json!({ "type": "error", "message": message }).to_string()
-}
+// Sampling knobs for a chat turn. A reply runs until the model emits
+// <|endoftext|>; MAX_TOKENS is only a safety ceiling so a model that never emits
+// it can't generate forever (the sliding context window means it otherwise
+// wouldn't stop on its own).
+const MAX_TOKENS: usize = 4096;
+const TEMPERATURE: f32 = 0.8;
+const TOP_K: u32 = 40;
 
 // WebSocket entrypoint. The handshake is a GET upgrade; we hand the socket off
 // to a spawned task and return the upgrade response immediately. Auth happens
@@ -177,7 +155,8 @@ async fn chat_session(
     pool: PgPool,
     secret: String,
 ) {
-    let mut user_id: Option<Uuid> = None;
+    // (user id, is_admin) once authenticated. is_admin gates use of private models.
+    let mut auth: Option<(Uuid, bool)> = None;
 
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
@@ -185,24 +164,29 @@ async fn chat_session(
                 // Message::Text carries a ByteString; bind it as &str once so the
                 // helpers below get the type they expect.
                 let text: &str = &text;
-                match user_id {
+                match auth {
                     // Not yet authenticated: this frame must be the auth token.
-                    None => match authenticate(text, &secret) {
-                        Some(uid) => {
-                            user_id = Some(uid);
+                    None => match ws::authenticate(text, &secret) {
+                        Some(claims) => {
+                            let is_admin = matches!(claims.access_level, AccessLevel::Admin);
+                            auth = Some((claims.sub, is_admin));
+                            // Best-effort: if the client vanished between frames,
+                            // the next stream read ends the loop anyway.
                             let _ = session
                                 .text(serde_json::json!({ "type": "ready" }).to_string())
                                 .await;
                         }
                         None => {
-                            let _ = session.text(error_frame("authentication failed")).await;
+                            // Best-effort notify + close; we return regardless of
+                            // whether the peer is still there to receive them.
+                            let _ = session.text(ws::error_frame("authentication failed")).await;
                             let _ = session.close(None).await;
                             return;
                         }
                     },
                     // Authenticated: handle a chat turn, streaming tokens back.
-                    Some(uid) => {
-                        if handle_message(&mut session, &pool, uid, text)
+                    Some((uid, is_admin)) => {
+                        if handle_message(&mut session, &pool, uid, is_admin, text)
                             .await
                             .is_err()
                         {
@@ -213,6 +197,7 @@ async fn chat_session(
                 }
             }
             actix_ws::Message::Ping(bytes) => {
+                // Best-effort pong; a dead peer just ends the loop on next read.
                 let _ = session.pong(&bytes).await;
             }
             actix_ws::Message::Close(_) => break,
@@ -220,84 +205,312 @@ async fn chat_session(
         }
     }
 
+    // Best-effort close on the way out; the socket may already be gone.
     let _ = session.close(None).await;
 }
 
-// Decrypts + verifies the token frame, yielding the caller's user id. None on
-// any failure (bad JSON, bad/expired token) — same all-or-nothing stance as
-// the AuthUser extractor.
-fn authenticate(text: &str, secret: &str) -> Option<Uuid> {
-    let frame: AuthFrame = serde_json::from_str(text).ok()?;
-    let jwt = crypto::token_cipher::decrypt(&frame.token, secret)?;
-    let claims = crypto::jwt::verify_token(&jwt, secret).ok()?;
-    Some(claims.sub)
-}
-
 // Processes one chat turn: resolve/create the chat, persist the user message,
-// stream the assistant reply word-by-word, then persist the full reply.
-// Returns Err only when sending to the socket fails (client disconnected), so
-// the caller can stop the session.
+// stream the assistant reply word-by-word, then persist the full reply. Each
+// stage below sends its own error frame and signals "stop this turn" when it
+// fails, so this stays a readable sequence. Returns Err only when sending to the
+// socket fails (client disconnected), so the caller can stop the session.
 async fn handle_message(
     session: &mut actix_ws::Session,
     pool: &PgPool,
     user_id: Uuid,
+    is_admin: bool,
     text: &str,
 ) -> Result<(), actix_ws::Closed> {
-    let frame: SendMessageFrame = match serde_json::from_str(text) {
-        Ok(frame) => frame,
-        Err(_) => return session.text(error_frame("invalid message frame")).await,
+    let Some(frame) = parse_frame(session, text).await? else {
+        return Ok(());
     };
-
     let content = frame.content.trim();
     if content.is_empty() {
-        return session.text(error_frame("message content is empty")).await;
+        return session.text(ws::error_frame("message content is empty")).await;
+    }
+    if validate::max_len("message", content, validate::MAX_MESSAGE_LEN).is_err() {
+        return session.text(ws::error_frame("message content too long")).await;
     }
 
-    // Resolve the target chat: an existing one the caller owns, or a new chat
-    // seeded with a title derived from this first message.
-    let chat_id = match frame.chat_id {
+    // Normalize the optional system prompt: trim, drop if blank, length-check.
+    let system = frame
+        .system
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(ref s) = system {
+        if validate::max_len("system prompt", s, validate::MAX_MESSAGE_LEN).is_err() {
+            return session.text(ws::error_frame("system prompt too long")).await;
+        }
+    }
+
+    let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
+        return Ok(());
+    };
+    // Resolve the model before persisting, so we can tokenize the user message
+    // with its tokenizer and store the count alongside the row.
+    let Some(model) = resolve_model(session, pool, frame.model_id, is_admin).await? else {
+        return Ok(());
+    };
+    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
+
+    // Non-fatal: if the tokenizer can't be read the message is still saved, just
+    // with a 0 token count rather than blocking the turn.
+    let user_tokens = llm::infer::encode_count(&model_dir, content).unwrap_or(0) as i32;
+    if !persist_user_message(session, pool, chat_id, user_id, content, user_tokens).await? {
+        return Ok(());
+    }
+    let Some(history) = load_history(session, pool, chat_id).await? else {
+        return Ok(());
+    };
+
+    let Some(reply) = stream_reply(session, &model_dir, history, system).await? else {
+        return Ok(());
+    };
+
+    finalize_turn(session, pool, user_id, chat_id, model.id_model, reply).await
+}
+
+// Parse the incoming frame; sends an error and returns None if it's malformed.
+async fn parse_frame(
+    session: &mut actix_ws::Session,
+    text: &str,
+) -> Result<Option<SendMessageFrame>, actix_ws::Closed> {
+    match serde_json::from_str(text) {
+        Ok(frame) => Ok(Some(frame)),
+        Err(_) => {
+            session.text(ws::error_frame("invalid message frame")).await?;
+            Ok(None)
+        }
+    }
+}
+
+// Resolve the target chat: an existing one the caller owns, or a new chat seeded
+// with a title derived from this first message. None => an error was sent.
+async fn resolve_chat(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    user_id: Uuid,
+    chat_id: Option<Uuid>,
+    content: &str,
+) -> Result<Option<Uuid>, actix_ws::Closed> {
+    match chat_id {
         Some(id) => match db::chat::find_by_id(pool, id).await {
-            Ok(Some(chat)) if chat.id_user == user_id => chat.id_chat,
-            Ok(Some(_)) => return session.text(error_frame("forbidden")).await,
-            Ok(None) => return session.text(error_frame("chat not found")).await,
+            Ok(Some(chat)) if chat.id_user == user_id => Ok(Some(chat.id_chat)),
+            Ok(Some(_)) => {
+                session.text(ws::error_frame("forbidden")).await?;
+                Ok(None)
+            }
+            Ok(None) => {
+                session.text(ws::error_frame("chat not found")).await?;
+                Ok(None)
+            }
             Err(e) => {
                 eprintln!("chat lookup db error: {}", e);
-                return session.text(error_frame("failed to load chat")).await;
+                session.text(ws::error_frame("failed to load chat")).await?;
+                Ok(None)
             }
         },
         None => match db::chat::create(pool, user_id, &derive_title(content)).await {
-            Ok(chat) => chat.id_chat,
+            Ok(chat) => Ok(Some(chat.id_chat)),
             Err(e) => {
                 eprintln!("create chat db error: {}", e);
-                return session.text(error_frame("failed to create chat")).await;
+                session.text(ws::error_frame("failed to create chat")).await?;
+                Ok(None)
             }
         },
-    };
+    }
+}
 
-    // Persist the user's message.
-    if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content).await {
+// Persist the user's message. Returns false (after sending an error) on failure.
+async fn persist_user_message(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    chat_id: Uuid,
+    user_id: Uuid,
+    content: &str,
+    tokens: i32,
+) -> Result<bool, actix_ws::Closed> {
+    if let Err(e) = db::message::create_user_message(pool, chat_id, user_id, content, tokens).await
+    {
         eprintln!("create user message db error: {}", e);
-        return session.text(error_frame("failed to save message")).await;
+        session.text(ws::error_frame("failed to save message")).await?;
+        return Ok(false);
     }
+    Ok(true)
+}
 
-    // TODO: create model response — stream real tokens from the model here
-    // instead of chopping a fixed placeholder on whitespace. "token = one word"
-    // is a stand-in; a real tokenizer won't split the <|...|> control tokens.
-    let reply = PLACEHOLDER_REPLY;
-    for word in reply.split_whitespace() {
-        actix_web::rt::time::sleep(std::time::Duration::from_millis(TOKEN_DELAY_MS)).await;
-        let token = serde_json::json!({ "type": "token", "value": word }).to_string();
-        session.text(token).await?;
-    }
-
-    // Persist the full assistant reply (not the chunked stream).
-    let assistant = match db::message::create_assistant_message(pool, chat_id, reply).await {
-        Ok(message) => message,
-        Err(e) => {
-            eprintln!("create assistant message db error: {}", e);
-            return session.text(error_frame("failed to save response")).await;
+// Resolve the model to run, enforcing that a private model is only visible to an
+// admin (reported as "not found" to others). None => an error was sent.
+async fn resolve_model(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    model_id: Option<Uuid>,
+    is_admin: bool,
+) -> Result<Option<db::model::Model>, actix_ws::Closed> {
+    let model = match model_id {
+        Some(id) => match db::model::find_by_id(pool, id).await {
+            Ok(Some(model)) => model,
+            Ok(None) => {
+                session.text(ws::error_frame("model not found")).await?;
+                return Ok(None);
+            }
+            Err(e) => {
+                eprintln!("model lookup db error: {}", e);
+                session.text(ws::error_frame("failed to load model")).await?;
+                return Ok(None);
+            }
+        },
+        None => {
+            session.text(ws::error_frame("no model selected")).await?;
+            return Ok(None);
         }
     };
+    if !model.published && !is_admin {
+        session.text(ws::error_frame("model not found")).await?;
+        return Ok(None);
+    }
+    Ok(Some(model))
+}
+
+// Load the whole conversation (oldest-first, including the user message just
+// persisted) as template turns. The inference layer renders and truncates them
+// to the model's context window. None => an error was sent.
+async fn load_history(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    chat_id: Uuid,
+) -> Result<Option<Vec<llm::chat_template::Turn>>, actix_ws::Closed> {
+    let messages = match db::message::list_for_chat(pool, chat_id).await {
+        Ok(messages) => messages,
+        Err(e) => {
+            eprintln!("list messages db error: {}", e);
+            session.text(ws::error_frame("failed to load history")).await?;
+            return Ok(None);
+        }
+    };
+    let history = messages
+        .into_iter()
+        .map(|m| llm::chat_template::Turn {
+            // id_user set => a person sent it; otherwise it's an assistant reply.
+            role: if m.id_user.is_some() {
+                llm::chat_template::Role::User
+            } else {
+                llm::chat_template::Role::Assistant
+            },
+            text: m.content,
+        })
+        .collect();
+    Ok(Some(history))
+}
+
+// The streamed reply plus its token counts, produced by one generation.
+struct StreamedReply {
+    text: String,
+    input_tokens: usize,
+    output_tokens: usize,
+}
+
+// Run inference on a dedicated thread (CUDA is blocking and must not run on the
+// async executor), forwarding decoded tokens to the socket as they arrive. None
+// => generation failed and an error was sent.
+async fn stream_reply(
+    session: &mut actix_ws::Session,
+    model_dir: &std::path::Path,
+    history: Vec<llm::chat_template::Turn>,
+    system: Option<String>,
+) -> Result<Option<StreamedReply>, actix_ws::Closed> {
+    let model_dir = model_dir.to_path_buf();
+    let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (done_tx, done_rx) =
+        tokio::sync::oneshot::channel::<Result<llm::infer::GenerationOutput, String>>();
+    std::thread::spawn(move || {
+        // The system prompt (if the user set one) is rendered into the prompt by
+        // the chat template; None means no system turn.
+        let result = llm::infer::generate_chat_response_streaming(
+            &model_dir,
+            system.as_deref(),
+            &history,
+            MAX_TOKENS,
+            TEMPERATURE,
+            TOP_K,
+            |token| {
+                // Best-effort: if the receiver was dropped (client disconnected
+                // or the turn aborted) the token is discarded and generation
+                // winds down on its own — nothing here can act on the failure.
+                let _ = tok_tx.send(token.to_string());
+            },
+        );
+        // Same: the oneshot receiver may be gone if the turn was abandoned.
+        let _ = done_tx.send(result);
+    });
+
+    while let Some(token) = tok_rx.recv().await {
+        let out = serde_json::json!({ "type": "token", "value": token }).to_string();
+        session.text(out).await?;
+    }
+
+    // Prefer the authoritative full text over the streamed concatenation, and
+    // surface a failure instead of persisting an empty reply. done_rx only errs
+    // if the worker thread panicked.
+    match done_rx.await {
+        Ok(Ok(out)) => Ok(Some(StreamedReply {
+            text: out.text,
+            input_tokens: out.input_tokens,
+            output_tokens: out.output_tokens,
+        })),
+        Ok(Err(e)) => {
+            eprintln!("inference error: {}", e);
+            session.text(ws::error_frame("inference failed")).await?;
+            Ok(None)
+        }
+        Err(_) => {
+            eprintln!("inference thread panicked");
+            session.text(ws::error_frame("inference failed")).await?;
+            Ok(None)
+        }
+    }
+}
+
+// Persist the assistant reply, record usage (non-fatal), and send the done frame.
+async fn finalize_turn(
+    session: &mut actix_ws::Session,
+    pool: &PgPool,
+    user_id: Uuid,
+    chat_id: Uuid,
+    model_id: Uuid,
+    reply: StreamedReply,
+) -> Result<(), actix_ws::Closed> {
+    let assistant = match db::message::create_assistant_message(
+        pool,
+        chat_id,
+        Some(model_id),
+        &reply.text,
+        reply.output_tokens as i32,
+    )
+    .await
+    {
+            Ok(message) => message,
+            Err(e) => {
+                eprintln!("create assistant message db error: {}", e);
+                return session.text(ws::error_frame("failed to save response")).await;
+            }
+        };
+
+    // Non-fatal: a tracking failure shouldn't sink a reply the user already
+    // received and we already persisted.
+    if let Err(e) = db::usage::record(
+        pool,
+        user_id,
+        Some(model_id),
+        reply.input_tokens as i32,
+        reply.output_tokens as i32,
+    )
+    .await
+    {
+        eprintln!("record usage db error: {}", e);
+    }
 
     let done = serde_json::json!({
         "type": "done",
@@ -306,6 +519,39 @@ async fn handle_message(
     })
     .to_string();
     session.text(done).await
+}
+
+#[derive(Deserialize)]
+struct CreateChatPayload {
+    // The first message — used only to derive a provisional title here. The
+    // message itself is NOT persisted by this endpoint; it's saved by the WS
+    // turn that follows. Splitting chat creation from generation lets the client
+    // navigate to the new chat (and start streaming the reply there) immediately
+    // instead of waiting for the whole reply to finish.
+    content: String,
+}
+
+#[post("")]
+async fn create_chat(
+    auth: AuthUser,
+    payload: web::Json<CreateChatPayload>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    let content = payload.content.trim();
+    if content.is_empty() {
+        return HttpResponse::BadRequest().body("message content is empty");
+    }
+    if let Err(msg) = validate::max_len("message", content, validate::MAX_MESSAGE_LEN) {
+        return HttpResponse::BadRequest().body(msg);
+    }
+
+    match db::chat::create(pool.get_ref(), auth.claims.sub, &derive_title(content)).await {
+        Ok(chat) => HttpResponse::Created().json(ChatResponse::from(chat)),
+        Err(e) => {
+            eprintln!("create chat db error: {}", e);
+            HttpResponse::InternalServerError().body("failed to create chat")
+        }
+    }
 }
 
 #[get("")]
@@ -406,6 +652,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // chat_ws (GET /chat/ws) must be registered before get_messages (GET
     // /chat/{id}), otherwise "ws" would be captured by the "{id}" pattern.
     cfg.service(chat_ws);
+    cfg.service(create_chat);
     cfg.service(list_chats);
     cfg.service(get_messages);
     cfg.service(update_chat);
