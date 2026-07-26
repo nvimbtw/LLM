@@ -33,10 +33,15 @@ const ComposerKeys = Extension.create({
 export function ChatComposer({
   onSend,
   disabled = false,
+  onCancel,
   placeholder = "Message Slate…",
 }: {
   onSend: (content: string, modelId: string) => Promise<void> | void
   disabled?: boolean
+  // Stops the turn in flight. A reply is a queued job now, so it can be waiting
+  // behind a long run with nothing to watch — being able to take it back out of
+  // the line matters more than it did when a turn started instantly.
+  onCancel?: () => void
   placeholder?: string
 }) {
   const [model, setModel] = React.useState("")
@@ -154,11 +159,13 @@ export function ChatComposer({
       <div className="flex items-center gap-2 px-2.5 pb-2">
         <ModelSelector value={model} onValueChange={setModel} />
         <Button
-          aria-label="Send"
+          aria-label={disabled && onCancel ? "Stop" : "Send"}
           size="icon-sm"
           className="ml-auto rounded-full"
-          disabled={!canSend}
-          onClick={submit}
+          // While a turn is in flight the button becomes the way to stop it, so
+          // it stays live rather than going inert with a mark spinning on it.
+          disabled={disabled ? !onCancel : !canSend}
+          onClick={disabled ? onCancel : submit}
         >
           {disabled ? (
             // The one place the rule can't span a real width. At button size the

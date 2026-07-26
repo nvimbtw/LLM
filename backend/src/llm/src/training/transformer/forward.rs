@@ -11,6 +11,24 @@
 
 use super::*;
 
+// Where the loss stage reads its per-position mask from, and how many positions it
+// actually trains.
+//
+// `active` is the loss normalizer, and for preference training it doubles as the
+// factor converting the kernel's per-token *mean* gradient into the whole-sequence
+// *sum* gradient KTO's reward is defined over.
+pub(super) struct LossTargets {
+    // Null for pretraining, meaning "every row is active".
+    mask_ptr: *const f32,
+    active: i32,
+}
+
+impl LossTargets {
+    pub(super) fn active(&self) -> i32 {
+        self.active
+    }
+}
+
 impl Model {
     // Embedding lookup + positional add for the input tokens, producing the
     // initial hidden state in b_sd[0]; returns the pointer to it.
@@ -241,6 +259,10 @@ impl Model {
     // Cross-entropy loss over positions 0..s-1 (position i predicts token i+1),
     // plus its gradient into d_dlogits (final row zeroed — no target). Returns
     // the scalar loss.
+    //
+    // Pretraining and SFT use this; preference training drives the three pieces
+    // below separately, because its gradient scale can only be computed once the
+    // loss is known and so has to land between the two halves.
     pub(super) fn compute_loss(
         &self,
         ws: &mut Workspace,
@@ -248,7 +270,26 @@ impl Model {
         chunk: &[u32],
         mask: Option<&[u8]>,
     ) -> f32 {
-        let StepDims { s, vocab, .. } = dims;
+        let targets = self.upload_loss_targets(ws, dims, chunk, mask);
+        match self.loss_value(ws, dims, &targets) {
+            None => 0.0,
+            Some(loss) => {
+                self.loss_gradient(ws, dims, &targets, 1.0);
+                loss
+            }
+        }
+    }
+
+    // Uploads the targets (and the mask, if any) the loss reads, and counts the
+    // trained rows.
+    pub(super) fn upload_loss_targets(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        chunk: &[u32],
+        mask: Option<&[u8]>,
+    ) -> LossTargets {
+        let StepDims { s, .. } = dims;
         let flat_targets_f32: Vec<f32> = chunk[1..].iter().map(|&t| t as f32).collect();
         // SAFETY: see contract; flat_targets_f32 holds s-1 f32 targets.
         unsafe {
@@ -283,14 +324,27 @@ impl Model {
             }
         };
 
-        // No trained positions in this chunk: produce no loss and a zero gradient
-        // (guards the kernels' divide-by-`active`).
-        if active == 0 {
+        LossTargets { mask_ptr, active }
+    }
+
+    // The scalar loss, or `None` when the chunk trains nothing.
+    //
+    // The `None` case also zeroes the gradient buffer, so a caller that stops here
+    // still leaves `d_dlogits` in the state the backward expects — and it guards
+    // both kernels' divide-by-`active`.
+    pub(super) fn loss_value(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        targets: &LossTargets,
+    ) -> Option<f32> {
+        let StepDims { s, vocab, .. } = dims;
+        if targets.active == 0 {
             // SAFETY: see contract; zeroing the whole s*vocab f16 dlogits buffer.
             unsafe {
                 cudaMemset(ws.d_dlogits.ptr as *mut c_void, 0, s * vocab * 2);
             }
-            return 0.0;
+            return None;
         }
 
         // SAFETY: see contract.
@@ -298,21 +352,39 @@ impl Model {
             cuda_cross_entropy_loss(
                 ws.d_logits.ptr as *const c_void,
                 ws.d_targets.ptr as *const f32,
-                mask_ptr,
+                targets.mask_ptr,
                 (s - 1) as i32,
                 vocab as i32,
-                active,
+                targets.active,
             )
         };
+        Some(loss)
+    }
+
+    // Writes the loss gradient into `d_dlogits`, scaled by `scale`.
+    //
+    // `scale == 1.0` is ordinary cross-entropy descent (pretrain and SFT). KTO
+    // passes its per-example scalar here, negative when the reply should be made
+    // less likely — see `crate::kto`.
+    pub(super) fn loss_gradient(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        targets: &LossTargets,
+        scale: f32,
+    ) {
+        let StepDims { s, vocab, .. } = dims;
+        // SAFETY: see contract.
         unsafe {
             cuda_cross_entropy_backward(
                 ws.d_logits.ptr as *const c_void,
                 ws.d_targets.ptr as *const f32,
-                mask_ptr,
+                targets.mask_ptr,
                 ws.d_dlogits.ptr as *mut c_void,
                 (s - 1) as i32,
                 vocab as i32,
-                active,
+                targets.active,
+                scale,
             );
             // SAFETY: offset (s-1)*vocab*2 bytes lands on the final (no-target)
             // logit row inside d_dlogits (s*vocab f16 = s*vocab*2 bytes); zero it.
@@ -322,7 +394,6 @@ impl Model {
                 vocab * 2,
             );
         }
-        loss
     }
 
     // Backprop through the output projection: accumulate the d_w_output gradient

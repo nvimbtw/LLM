@@ -48,14 +48,59 @@ pub async fn continue_prompt(
     prompt: &str,
     config: SamplingConfig,
 ) -> String {
+    let seq = tokenize::bpe::encode(prompt, merges);
+    continue_tokens(model, merges, seq, config).await.text
+}
+
+/// What one generation produced.
+pub struct Continuation {
+    /// The newly generated text, terminal marker included (the caller decides
+    /// whether that belongs in what it stores).
+    pub text: String,
+    /// Whether generation stopped because the model emitted an end-of-turn marker,
+    /// as opposed to running out of `max_tokens`.
+    ///
+    /// This is signal in its own right, not bookkeeping: a model that never closes
+    /// its turn is producing a runaway reply, and that is exactly the failure the
+    /// auto-labeller wants to score down. It is not recoverable from the text alone
+    /// once the marker is stripped.
+    pub stopped_on_marker: bool,
+}
+
+/// `continue_tokens` for a caller already on its own thread.
+///
+/// The async here is an implementation detail of the GPU path, not something the
+/// backend should have to know about — same reason `kto::reference_logprob` is
+/// blocking. Callers that drive this are worker threads, never the actix runtime.
+pub fn continue_tokens_blocking(
+    model: &Model,
+    merges: &[((u32, u32), u32)],
+    seq: Vec<u32>,
+    config: SamplingConfig,
+) -> Continuation {
+    pollster::block_on(continue_tokens(model, merges, seq, config))
+}
+
+/// `continue_prompt` over already-tokenized input.
+///
+/// Split out because the chat path needs it: a chat prompt is assembled by
+/// `chat_template::build_prompt`, which returns ids rather than a string, and
+/// re-encoding its rendered text would shift the token boundaries at the marker
+/// seams (see `build_training_example`'s note on why markers are encoded apart).
+pub async fn continue_tokens(
+    model: &Model,
+    merges: &[((u32, u32), u32)],
+    mut seq: Vec<u32>,
+    config: SamplingConfig,
+) -> Continuation {
     let ctx = model.positional_table.len();
     let layers = model.layers as usize;
-    let mut seq = tokenize::bpe::encode(prompt, merges);
 
     // Seeded per prompt-length so each prompt gets its own stream while the run as
     // a whole stays reproducible.
     let mut rng = StdRng::seed_from_u64(config.seed);
     let mut generated: Vec<u32> = Vec::new();
+    let mut stopped_on_marker = false;
 
     for _ in 0..config.max_tokens {
         let hidden = model.forward_seq(&seq, layers, ctx).await;
@@ -74,11 +119,15 @@ pub async fn continue_prompt(
         // An end-of-text or end-of-turn marker means the model considers the
         // passage finished; continuing past it would score scaffolding as prose.
         if is_terminal(next) {
+            stopped_on_marker = true;
             break;
         }
     }
 
-    tokenize::bpe::decode(&generated, merges)
+    Continuation {
+        text: tokenize::bpe::decode(&generated, merges),
+        stopped_on_marker,
+    }
 }
 
 // The reserved ids that end a passage. Compared as ids rather than by decoding,

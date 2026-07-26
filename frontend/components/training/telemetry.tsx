@@ -25,10 +25,10 @@ import { cn } from "@/lib/utils"
 import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
 import type {
   CurriculumStage,
-  JobStatus,
+  RunPhase,
   TokenizeStats,
   TrainStats,
-} from "@/lib/training-socket"
+} from "@/lib/training"
 
 function compact(n: number | undefined): string {
   if (n == null) return "—"
@@ -165,7 +165,7 @@ function CurriculumProgress({
 }
 
 export interface TelemetryProps {
-  status: JobStatus | null
+  status: RunPhase | null
   isSft: boolean
   tokenize: Partial<TokenizeStats>
   train: Partial<TrainStats>

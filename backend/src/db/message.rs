@@ -2,6 +2,16 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+// A user's verdict on one assistant reply. Two-valued, and always carried as an
+// `Option` — `None` is "not rated", which is what almost every reply is.
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, sqlx::Type)]
+#[sqlx(type_name = "message_feedback", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum Feedback {
+    Up,
+    Down,
+}
+
 // One row of the messages table, as returned by the two inserts below.
 //
 // Only `id_message` is actually read (the assistant-reply frame sends it back to the
@@ -84,6 +94,9 @@ pub struct MessageWithModel {
     pub created_at: DateTime<Utc>,
     // None on a user's own message, and on a reply whose model row is gone.
     pub model_name: Option<String>,
+    // The thumbs verdict, so a reload shows the rating the user already gave.
+    // Always None on a user's own message — only replies are rateable.
+    pub feedback: Option<Feedback>,
 }
 
 pub async fn list_for_chat(
@@ -97,12 +110,120 @@ pub async fn list_for_chat(
         // for every user message, but sqlx would otherwise infer NOT NULL from the
         // models.name column and hand back a String that panics on the first user row.
         r#"SELECT m.id_message, m.id_user, m.content, m.created_at,
-                  model.name as "model_name?"
+                  model.name as "model_name?",
+                  m.feedback as "feedback: Feedback"
            FROM messages m
            LEFT JOIN models model ON model.id_model = m.id_model
            WHERE m.id_chat = $1
            ORDER BY m.created_at ASC"#,
         id_chat,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+// Which chat a message belongs to, and whether a person wrote it. The feedback
+// route needs both before it will write: the chat to check ownership against, and
+// the author to reject a thumbs on the user's own message.
+pub struct MessageOrigin {
+    pub id_chat: Uuid,
+    // Some => a person wrote it; None => it's an assistant reply.
+    pub id_user: Option<Uuid>,
+}
+
+pub async fn find_origin(
+    pool: &PgPool,
+    id_message: Uuid,
+) -> Result<Option<MessageOrigin>, sqlx::Error> {
+    sqlx::query_as!(
+        MessageOrigin,
+        r#"SELECT id_chat, id_user FROM messages WHERE id_message = $1"#,
+        id_message,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+// Sets or clears the thumbs on one reply. `None` un-rates it — the user changing
+// their mind has to be able to get back to "no opinion", or the export would keep
+// counting a verdict they withdrew.
+pub async fn set_feedback(
+    pool: &PgPool,
+    id_message: Uuid,
+    feedback: Option<Feedback>,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"UPDATE messages SET feedback = $2 WHERE id_message = $1"#,
+        id_message,
+        feedback as Option<Feedback>,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+// Distinct user turns, newest first, for the auto-labeller to generate against.
+//
+// Real prompts rather than a synthetic list: the point of preference data is to
+// improve the model on the distribution it is actually used on, and a fixed prompt
+// set would tune it for questions nobody asks.
+//
+// Deduplicated on the trimmed text because the same message gets re-sent while
+// someone is testing, and generating six candidates for twenty copies of "hi" would
+// spend the whole run teaching the model about one prompt.
+pub async fn distinct_user_prompts(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT DISTINCT ON (btrim(content)) btrim(content) as "content!"
+           FROM messages
+           WHERE id_user IS NOT NULL AND btrim(content) <> ''
+           ORDER BY btrim(content), created_at DESC
+           LIMIT $1"#,
+        limit,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|r| r.content).collect())
+}
+
+// One rated reply together with the user turn it answered — the shape the
+// benchmark's preference stage scores.
+pub struct RatedReply {
+    pub prompt: Option<String>,
+    pub response: String,
+    pub feedback: Option<Feedback>,
+}
+
+// Every rated assistant reply across every chat, oldest first.
+//
+// The prompt comes from a LATERAL subquery rather than a join on some stored
+// parent id, because a message has no parent: the conversation is an ordered list,
+// so "the prompt this answered" is by definition the most recent user turn before
+// it in the same chat. Replies with no preceding user turn (the model spoke first)
+// come back with `prompt: None` and the caller drops them — a response scored
+// without its prompt measures the wrong conditional.
+pub async fn list_rated(pool: &PgPool) -> Result<Vec<RatedReply>, sqlx::Error> {
+    sqlx::query_as!(
+        RatedReply,
+        r#"SELECT prompt.content as "prompt?",
+                  m.content as response,
+                  m.feedback as "feedback: Feedback"
+           FROM messages m
+           LEFT JOIN LATERAL (
+               SELECT p.content
+               FROM messages p
+               WHERE p.id_chat = m.id_chat
+                 AND p.id_user IS NOT NULL
+                 AND p.created_at < m.created_at
+               ORDER BY p.created_at DESC
+               LIMIT 1
+           ) prompt ON true
+           WHERE m.feedback IS NOT NULL AND m.id_user IS NULL
+           ORDER BY m.created_at ASC"#,
     )
     .fetch_all(pool)
     .await

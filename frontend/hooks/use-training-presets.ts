@@ -9,7 +9,7 @@ import {
   updatePreset,
   type Preset,
 } from "@/lib/training-presets"
-import type { TrainConfig } from "@/lib/training-socket"
+import type { TrainConfig } from "@/lib/training"
 
 // Owns the user's preset list and the CRUD callbacks. Components consume the list
 // + callbacks; they don't fetch themselves. Mutations refetch the list so the

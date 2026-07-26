@@ -7,11 +7,6 @@ import { apiFetch } from "./api"
 
 export type BenchmarkStatus = "running" | "done" | "failed"
 
-export interface BenchmarkProgress {
-  stage: string
-  fraction: number
-}
-
 export interface ModelInfo {
   dimensions: number
   layers: number
@@ -86,7 +81,6 @@ export interface BenchmarkRun {
   train_tokens: number | null
   created_at: string
   completed_at: string | null
-  progress: BenchmarkProgress | null
 }
 
 export interface BenchmarkRunDetail extends BenchmarkRun {
@@ -117,19 +111,6 @@ export async function getRun(id: string): Promise<BenchmarkRunDetail> {
 export async function getSuite(): Promise<SuiteInfo> {
   const res = await apiFetch("/benchmark/suite")
   if (!res.ok) throw new Error("Failed to load suite info.")
-  return res.json()
-}
-
-export async function startRun(modelId: string): Promise<BenchmarkRun> {
-  const res = await apiFetch("/benchmark", {
-    method: "POST",
-    body: JSON.stringify({ id_model: modelId }),
-  })
-  if (!res.ok) {
-    // 409 carries a specific reason (another run, or training holding the GPU)
-    // that the user can act on, so it's surfaced verbatim rather than generically.
-    throw new Error((await res.text()) || "Failed to start benchmark.")
-  }
   return res.json()
 }
 

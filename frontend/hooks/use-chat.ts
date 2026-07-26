@@ -4,12 +4,19 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import { streamChat } from "@/lib/chat-socket"
+import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
 import { useSettings } from "@/components/settings/settings-provider"
 
 export interface ChatMessage {
   role: "user" | "assistant"
   content: string
+  // Server id. Absent on a reply that is still streaming and on the optimistic
+  // user message, which is exactly why rating is gated on it: a reply with no id
+  // yet has no row to attach a verdict to.
+  id?: string
+  // The thumbs the user has given this reply, or undefined for none.
+  feedback?: Feedback
   // Counted client-side as tokens stream in (see sendMessage below); absent
   // on messages loaded from history, since the backend doesn't persist counts.
   tokenCount?: number
@@ -24,9 +31,11 @@ export interface ChatMessage {
 // two differ: the wire is snake_case and knows nothing about token counts, which are
 // tallied on this side.
 interface MessageWire {
+  id_message: string
   role: "user" | "assistant"
   content: string
   model_name: string | null
+  feedback: Feedback | null
 }
 
 export function useChat(chatId: string) {
@@ -41,18 +50,29 @@ export function useChat(chatId: string) {
   const [messages, setMessages] = React.useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSending, setIsSending] = React.useState(false)
+  // How many jobs sit in front of this turn, once it has been queued. Null when
+  // nothing is in flight; 0 means it is next (or already generating). A reply is a
+  // job on the GPU queue now, so a turn really can wait — and saying so is the
+  // difference between "waiting its turn" and "broken".
+  const [queuedAhead, setQueuedAhead] = React.useState<number | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+
+  // Stops the in-flight turn. Held in a ref rather than state because nothing
+  // renders from it — it only needs to survive between the send and the stop.
+  const cancelRef = React.useRef<(() => void) | null>(null)
 
   const fetchMessages = React.useCallback(async () => {
     const response = await apiFetch(`/chat/${chatId}`)
     if (!response.ok) throw new Error("Unable to load this chat.")
     const rows = (await response.json()) as MessageWire[]
     return rows.map<ChatMessage>((row) => ({
+      id: row.id_message,
       role: row.role,
       content: row.content,
       // Normalized to undefined so the byline's presence check is a single
       // truthiness test rather than having to know about null as well.
       modelName: row.model_name ?? undefined,
+      feedback: row.feedback ?? undefined,
     }))
   }, [chatId])
 
@@ -128,8 +148,14 @@ export function useChat(chatId: string) {
         })
 
       return new Promise<void>((resolve) => {
-        streamChat(chatId, content, modelId, systemRef.current, {
-          onToken: appendToAssistant,
+        cancelRef.current = streamChat(chatId, content, modelId, systemRef.current, {
+          onQueued: ({ ahead }) => setQueuedAhead(ahead),
+          onToken: (value) => {
+            // The first token is proof the turn reached the GPU, whatever the
+            // queue said a moment ago.
+            setQueuedAhead(0)
+            appendToAssistant(value)
+          },
           onDone: async () => {
             // Replace the streamed approximation with the authoritative,
             // intact content saved on the server, but keep the token counts
@@ -149,11 +175,13 @@ export function useChat(chatId: string) {
               // Keep the approximation if the refetch fails.
             }
             setIsSending(false)
+            setQueuedAhead(null)
             resolve()
           },
           onError: (message) => {
             setError(message)
             setIsSending(false)
+            setQueuedAhead(null)
             resolve()
           },
         })
@@ -174,5 +202,53 @@ export function useChat(chatId: string) {
     if (pending) sendMessage(pending.content, pending.modelId)
   }, [loadedOnce, chatId, takePendingMessage, sendMessage])
 
-  return { messages, isLoading, isSending, error, sendMessage }
+  // Rate a reply, or clear the rating by passing the value it already has —
+  // clicking thumbs-up twice means "never mind", not "up, but harder".
+  //
+  // Applied optimistically and rolled back on failure. A thumbs is a one-click
+  // aside from whatever the user was actually doing; making them wait on a round
+  // trip to see the button fill in would cost more than the write is worth, and a
+  // silent no-op on a dropped request would quietly lose training data.
+  const rateMessage = React.useCallback(
+    async (messageId: string, feedback: Feedback) => {
+      let previous: Feedback | undefined
+      let next: Feedback | undefined
+      setMessages((prev) =>
+        prev.map((message) => {
+          if (message.id !== messageId) return message
+          previous = message.feedback
+          next = message.feedback === feedback ? undefined : feedback
+          return { ...message, feedback: next }
+        })
+      )
+
+      try {
+        await setMessageFeedback(messageId, next ?? null)
+      } catch {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === messageId ? { ...message, feedback: previous } : message
+          )
+        )
+        setError("Your feedback could not be saved.")
+      }
+    },
+    []
+  )
+
+  const cancel = React.useCallback(() => {
+    cancelRef.current?.()
+    cancelRef.current = null
+  }, [])
+
+  return {
+    messages,
+    isLoading,
+    isSending,
+    queuedAhead,
+    error,
+    sendMessage,
+    cancel,
+    rateMessage,
+  }
 }

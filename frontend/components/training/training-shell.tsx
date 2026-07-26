@@ -4,7 +4,7 @@ import * as React from "react"
 
 import { Throbber } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
-import type { JobStatus, TrainMode } from "@/lib/training-socket"
+import type { RunPhase, TrainMode } from "@/lib/training"
 
 // A step in the Pretrain › SFT masthead stepper. `state` drives the editorial
 // rendering: a filled rule/dot for done, a solid dot for active, muted otherwise.
@@ -42,7 +42,7 @@ function PhaseStepper({
   mode,
   pretrainDone,
 }: {
-  status: JobStatus | null
+  status: RunPhase | null
   mode: TrainMode
   pretrainDone: boolean
 }) {
@@ -74,7 +74,7 @@ function PhaseStepper({
   )
 }
 
-const STATUS_LABEL: Record<JobStatus, string> = {
+const STATUS_LABEL: Record<RunPhase, string> = {
   tokenizing: "tokenizing",
   training: "training",
   done: "done",
@@ -82,7 +82,7 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   failed: "failed",
 }
 
-function StatusDot({ status }: { status: JobStatus | null }) {
+function StatusDot({ status }: { status: RunPhase | null }) {
   const running = status === "tokenizing" || status === "training"
   return (
     <span className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -102,7 +102,7 @@ function StatusDot({ status }: { status: JobStatus | null }) {
 
 export interface TrainingShellProps {
   modelName: string
-  status: JobStatus | null
+  status: RunPhase | null
   mode: TrainMode
   pretrainDone: boolean
   primaryAction?: React.ReactNode

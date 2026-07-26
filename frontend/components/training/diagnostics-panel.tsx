@@ -40,7 +40,7 @@ import {
 } from "@/components/training/chart-theme"
 import { EmbeddingGlobe } from "@/components/training/embedding-globe"
 import { Figure, FigurePlaceholder } from "@/components/training/stat-run"
-import type { DiagPoint } from "@/lib/training-socket"
+import type { DiagPoint } from "@/lib/training"
 
 // A positive-only reading for a log axis: non-finite or ≤0 values become null so
 // the point is dropped rather than breaking the log scale (recharts can't place 0

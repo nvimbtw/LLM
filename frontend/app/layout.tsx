@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ChatsProvider } from "@/components/chat/chats-provider";
+import { JobsProvider } from "@/components/jobs/jobs-provider";
 import { ToastProvider } from "@/components/ui/toast";
 import { SettingsProvider } from "@/components/settings/settings-provider";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
@@ -45,6 +46,7 @@ export default function RootLayout({
             <SettingsProvider>
               <SettingsDialog />
               <ChatsProvider>
+                <JobsProvider>
                 <SidebarProvider>
                   <AppSidebar />
               {/* h-svh + overflow-hidden bound the column so page content
@@ -63,6 +65,7 @@ export default function RootLayout({
                 </main>
               </SidebarInset>
                 </SidebarProvider>
+                </JobsProvider>
               </ChatsProvider>
             </SettingsProvider>
           </ToastProvider>

@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LoaderCircle, FileUp, Dumbbell, Gauge } from "lucide-react"
+import { Gauge, ListOrdered } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -12,13 +12,20 @@ import {
   SidebarMenuItem,
   SidebarMenuButton,
 } from "@/components/ui/sidebar"
+import { Throbber } from "@/components/ui/throbber"
+import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useAuth } from "@/hooks/use-auth"
+import { throbberMode } from "@/lib/jobs"
 
+// Train is not here on purpose: it is a way of putting work on the GPU, and every
+// one of those now starts from Jobs. Two doors to the same queue is how a
+// benchmark used to be launchable into a running training job.
+//
+// Files and Throbber were dropped to keep this list to the things worth a
+// permanent slot. Both pages still exist at /files and /throbber.
 const items = [
-  { title: "Files", href: "/files", icon: FileUp },
-  { title: "Train", href: "/training", icon: Dumbbell },
   { title: "Benchmark", href: "/benchmark", icon: Gauge },
-  { title: "Throbber", href: "/throbber", icon: LoaderCircle },
+  { title: "Jobs", href: "/jobs", icon: ListOrdered },
 ]
 
 export function NavAdmin() {
@@ -44,11 +51,33 @@ export function NavAdmin() {
               >
                 <item.icon />
                 <span>{item.title}</span>
+                {item.href === "/jobs" && <QueueTell />}
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
+  )
+}
+
+/**
+ * The GPU's state on the Jobs row itself.
+ *
+ * Redundant with the Active group below it while the sidebar is expanded — and
+ * that is exactly when it earns its keep, because that group is hidden when the
+ * sidebar collapses to icons. Then this mark is the only thing left saying the
+ * machine is busy.
+ */
+function QueueTell() {
+  const { running } = useJobsContext()
+  if (!running) return null
+
+  return (
+    <Throbber
+      mode={throbberMode(running)}
+      accent="var(--sidebar-foreground)"
+      className="ml-auto h-3.5"
+    />
   )
 }

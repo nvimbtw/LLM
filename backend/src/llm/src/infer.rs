@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::chat_template::{build_prompt, Turn};
 use crate::training::transformer::Model;
@@ -100,8 +101,10 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
 
     let seq = tokenize::bpe::encode(prompt, &c.merges);
     let input_tokens = seq.len();
+    // The bare-prompt path has no job behind it to cancel; only the chat path,
+    // which runs as a queued job, passes a flag.
     Ok(stream_generation(
-        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, on_token,
+        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, None, on_token,
     ))
 }
 
@@ -109,6 +112,11 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
 // through the canonical template, truncating oldest-first to the loaded model's
 // context window, then generates the next assistant turn. This is what the chat
 // route uses so the model actually sees the conversation, not just the last line.
+// `cancel`, when supplied, is checked once per generated token: a cancelled turn
+// returns the text produced so far rather than erroring, since a partial reply is
+// still a real thing the user watched arrive and the caller decides what to do
+// with it.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     model_dir: &Path,
     system: Option<&str>,
@@ -116,6 +124,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     max_tokens: usize,
     temperature: f32,
     top_k: u32,
+    cancel: Option<&AtomicBool>,
     on_token: F,
 ) -> Result<GenerationOutput, String> {
     ensure_loaded(model_dir)?;
@@ -130,7 +139,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     let seq = build_prompt(system, history, &c.merges, ctx_window, reserve);
     let input_tokens = seq.len();
     Ok(stream_generation(
-        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, on_token,
+        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, cancel, on_token,
     ))
 }
 
@@ -166,6 +175,7 @@ fn stream_generation<F: FnMut(&str)>(
     max_tokens: usize,
     temperature: f32,
     top_k: u32,
+    cancel: Option<&AtomicBool>,
     mut on_token: F,
 ) -> GenerationOutput {
     pollster::block_on(async {
@@ -177,6 +187,11 @@ fn stream_generation<F: FnMut(&str)>(
         let mut response = String::new();
 
         for _ in 0..max_tokens {
+            // Checked before the forward pass rather than after, so a cancel lands
+            // at the cost of at most one token rather than one more full pass.
+            if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                break;
+            }
             let hidden = model.forward_seq(&seq, model.layers as usize, ctx_window).await;
             if hidden.is_empty() {
                 break;

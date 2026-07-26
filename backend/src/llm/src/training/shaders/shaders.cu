@@ -229,11 +229,19 @@ __global__ void f32_to_f16_kernel(const float *src, __half *dst, int n) {
 // active". Masked rows contribute a zero gradient. The gradient is normalized by
 // `active` — the number of trained rows — so it matches the loss normalizer
 // (SFT trains on a subset of positions; pretraining passes mask=null, active=seq_len).
+//
+// `scale` multiplies the whole gradient. Pretraining and SFT pass 1.0, which is
+// exactly the old behaviour. Preference training (KTO) passes a per-example scalar
+// it can only know *after* the forward pass — the derivative of its loss with
+// respect to the sequence log-probability — because a KTO gradient is precisely
+// this cross-entropy gradient times a scalar, and negative for a rejected reply
+// (push the sequence down rather than up). That is the whole reason this parameter
+// exists: no separate preference kernel is needed.
 __global__ void cross_entropy_bw_kernel(const __half *logits,
                                          const float *targets,
                                          const float *mask,
                                          __half *dlogits, int seq_len,
-                                         int vocab, int active) {
+                                         int vocab, int active, float scale) {
   int row = blockIdx.x * blockDim.x + threadIdx.x;
   if (row >= seq_len)
     return;
@@ -258,7 +266,8 @@ __global__ void cross_entropy_bw_kernel(const __half *logits,
   float inv_sum = 1.0f / sum;
   for (int j = 0; j < vocab; j++) {
     float softmax_j = expf(__half2float(logits[row * vocab + j]) - max_val) * inv_sum;
-    dlogits[row * vocab + j] = __float2half((softmax_j - (j == target ? 1.0f : 0.0f)) / active);
+    dlogits[row * vocab + j] =
+        __float2half(scale * (softmax_j - (j == target ? 1.0f : 0.0f)) / active);
   }
 }
 
@@ -266,9 +275,9 @@ extern "C" void cuda_cross_entropy_backward(const __half *logits,
                                              const float *targets,
                                              const float *mask,
                                              __half *dlogits, int seq_len,
-                                             int vocab, int active) {
+                                             int vocab, int active, float scale) {
   cross_entropy_bw_kernel<<<(seq_len + 255) / 256, 256>>>(
-      logits, targets, mask, dlogits, seq_len, vocab, active);
+      logits, targets, mask, dlogits, seq_len, vocab, active, scale);
 }
 
 // ─── cross-entropy loss (GPU, async-friendly via event) ─────────────────

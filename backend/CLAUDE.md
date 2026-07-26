@@ -64,7 +64,44 @@ backend/
 
 Actual data (scraped HTML, processed text, tokenized output, model weights) lives on the filesystem under `backend/data/scraped/`, `backend/data/processed/`, `backend/data/tokenized/`, `backend/data/models/` — not in Postgres — needed for manual inspection during crawling/debugging. Postgres only stores tracking metadata:
 - `documents` table: one row per crawled page, tracks status, file paths, crawl depth/parent, content hash for dedup.
-- `jobs` table: tracks long-running async operations (crawl, tokenize, train) — status, progress, config, for frontend polling and lineage.
+- `jobs` table: the GPU queue (see below).
+
+## The GPU queue
+
+There is one GPU, so there is one runner and one line. **Every** use of the device —
+a training run, a benchmark, a chat turn — is a row in `jobs`, and `queue.rs` is the
+only thing that starts one. Before this, the "one job at a time" rule was enforced by
+route handlers asking two in-memory registries whether they were busy: true only for
+the paths that remembered to ask (chat never did), and forgotten across a restart.
+
+- **`jobs` owns scheduling; the domain tables own results.** A row carries status,
+  `queue_rank`, coarse `progress`/`stage`, the `config` it was queued with, and a
+  nullable `ref_id` naming what it produced — `models.id_model`, `benchmark_runs.id_run`,
+  or `messages.id_message`. Not a foreign key: it points into three different tables.
+- **`queue.rs` is an async task owning the pool**, so every durable write happens
+  there: claiming (`FOR UPDATE SKIP LOCKED`), throttled progress, the terminal row,
+  and each kind's domain record. Workers are blocking CUDA on plain OS threads and
+  never touch the pool; they report through a `broadcast` of live frames and an
+  `mpsc` of coarse progress ticks.
+- **Live state is in memory and only while a job runs** (`Queue::live`): the cancel
+  flag, the frame broadcast, the accumulated snapshot. Nothing in flight survives a
+  restart, so there is nothing to persist about it — what survives is the queue.
+  High-frequency frames (loss series, per-layer diagnostics, tokens) must **never**
+  be written per-frame to Postgres.
+- **`queue_rank` is a float.** A new job goes in at `max+1` over the live band; a
+  drag writes the midpoint of its new neighbours, so reordering is one row rather
+  than renumbering the tail. `db::job::reorder` renormalizes when bisection runs out
+  of f64 precision.
+- **On startup** `db::job::fail_orphaned` closes out rows still marked `running`
+  (their process died); `queued` rows are deliberately untouched and the runner
+  drains them, honouring the single-row `queue_state.paused`.
+- **Cancellation** is cooperative at a step boundary. `llm::train`, `llm::eval::run`
+  and `generate_chat_response_streaming` all take `Option<Arc<AtomicBool>>` /
+  `Option<&AtomicBool>`; `eval::run` returns `Ok(None)` when it stops early, which is
+  a distinct outcome from `Err`.
+
+`train_worker.rs` holds the training-specific half (the two-phase run and its
+telemetry) — it was `jobs.rs` before scheduling moved out of it.
 
 ## Training modes (pretrain vs SFT)
 

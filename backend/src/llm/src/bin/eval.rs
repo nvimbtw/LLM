@@ -27,8 +27,12 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("data/eval"));
 
     let config = llm::eval::EvalConfig::new(model_dir, &eval_dir);
-    let report = match llm::eval::run(&config, Box::new(print_progress)) {
-        Ok(report) => report,
+    // Nothing can flip a cancel flag in a one-shot CLI run — Ctrl-C kills the
+    // process outright — so there is none to pass, and `Ok(None)` is unreachable
+    // here rather than a case worth inventing an exit code for.
+    let report = match llm::eval::run(&config, Box::new(print_progress), None) {
+        Ok(Some(report)) => report,
+        Ok(None) => unreachable!("a CLI run has no cancel flag to trip"),
         Err(e) => {
             eprintln!("benchmark failed: {e}");
             std::process::exit(1);
@@ -89,6 +93,24 @@ fn print_report(report: &llm::eval::Report) {
         println!("    {}⟨{}⟩", sample.prompt, sample.completion.trim());
     }
 
+    println!("\n── preference ───────────────────────────────────────");
+    match &report.preference {
+        Some(p) => {
+            println!("  approved         {:.3} logprob/token  ({} replies)", p.approved_logprob, p.approved);
+            println!("  rejected         {:.3} logprob/token  ({} replies)", p.rejected_logprob, p.rejected);
+            println!("  margin           {:+.3}", p.margin);
+            if p.pairs > 0 {
+                println!(
+                    "  paired accuracy  {:.1}%  ({} judgements, chance = 50%)",
+                    p.paired_accuracy * 100.0,
+                    p.pairs
+                );
+            }
+        }
+        None => println!("  (no thumbs-up/down feedback collected yet)"),
+    }
+
     println!("\n── score ────────────────────────────────────────────");
     println!("  {:.1} / 100   ({:.1}s)", report.score, report.duration_secs);
+    println!("  (preference is reported but deliberately not part of the score)");
 }

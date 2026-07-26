@@ -113,6 +113,38 @@ export const MUTED_SERIES = "var(--muted-foreground)"
 // its p5–p95 band fill.
 export const EMB_COLOR = "var(--chart-3)"
 
+// ── Preference catalogue figures ────────────────────────────────────────────
+// Approved vs rejected is the one *polarity* pair in the app: two opposed classes,
+// not a progression and not arbitrary categories. Two rules govern it.
+//
+//   1. **Not red/green.** The obvious good/bad pair is the classic colourblind
+//      failure — the site's own olive `--chart-2` against rose `--chart-4` measures
+//      ΔE 5.8 under deuteranopia, well under the 8 floor, i.e. one in twelve men
+//      would read the two series as one. Blue/amber is the canonical CVD-safe
+//      opposition and measures ΔE 29.4 (protan) / 30.1 (tritan) instead.
+//   2. **Dark mode is selected, not flipped.** The dark band is tighter
+//      (OKLCH L 0.48–0.67 vs 0.43–0.77), so the light steps sit outside it and
+//      lightening them by rule would fail the chroma floor. These are their own
+//      steps, validated against the dark surface #282727.
+//
+// Both pairs pass all six checks of the dataviz validator (lightness band, chroma
+// floor, CVD separation, normal-vision floor, contrast vs surface). Re-run it
+// before changing either value:
+//
+//   node scripts/validate_palette.js "#3f6bb8,#de9800" --mode light --surface "#f7f4e4"
+//   node scripts/validate_palette.js "#6d92da,#b98a2c" --mode dark  --surface "#282727"
+//
+// Colour is never the only cue regardless: both figures carry a legend, and the
+// feed states the verdict in words.
+//
+// Referenced as CSS vars rather than literals so they track the theme: dark mode
+// here is a `.dark` class, not `color-scheme`, so `light-dark()` would never
+// switch. The values live in app/globals.css beside the other chart tokens.
+export const verdictColors = {
+  approved: "var(--chart-approved)",
+  rejected: "var(--chart-rejected)",
+} as const
+
 // Rank ramp for the PCA biplot's token arrows: the same blue family swept by
 // frequency rank, most-frequent (rank 0) darkest → least-frequent lightest, so the
 // eye can tell the salient tokens from the tail.

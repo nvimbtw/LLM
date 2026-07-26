@@ -1,25 +1,24 @@
-import { API_URL, WS_URL, authHeaders, getToken } from "./api"
+import { API_URL, authHeaders } from "./api"
 
-// REST starts a run; the WebSocket only *attaches* to it. That split is what
-// makes a run survive a tab close: the job keeps going on the backend and a
-// fresh socket re-attaches by id.
+// The shape of a training run: its config, and the frames it reports while it
+// executes.
 //
-// Socket wire protocol:
-//   client → { token }                          (first frame, auth)
-//   server → { type: "ready" }
-//   client → { job_id }                         (attach to a run)
-//   server → { type: "snapshot", ... }          (catch-up on attach)
-//   server → { type: "tokenize", ... }          (phase 1 stat updates)
-//   server → { type: "log", line }              (raw tokenizer log line)
-//   server → { type: "train", ... }             (phase 2 progress)
-//   server → { type: "done", status, model_dir }
-//   server → { type: "error", message }
-//   client → { action: "cancel" }               (stop the run)
+// Starting and following a run now belong to the queue — a run is a `train` job,
+// started through `lib/jobs.ts` and followed through `lib/jobs-socket.ts`. What
+// stays here is the vocabulary both of those speak about training specifically,
+// plus the dataset list the composer needs.
 
-// Which kind of run: pretrain a fresh model, or supervised-fine-tune (SFT) an
-// existing one on chat data. Matches the backend `TrainMode` (serialized
-// lowercase). Absent on older clients → the backend defaults to "pretrain".
-export type TrainMode = "pretrain" | "sft"
+// Which kind of run: pretrain a fresh model, supervised-fine-tune (SFT) an
+// existing one on chat data, or preference-tune (KTO) one on thumbs-rated replies.
+// Matches the backend `TrainMode` (serialized lowercase). Absent on older clients →
+// the backend defaults to "pretrain".
+export type TrainMode = "pretrain" | "sft" | "kto"
+
+// The two modes that start from an existing model rather than random weights.
+// Both inherit the base's architecture and both require a `base_model_id`.
+export function isFineTune(mode: TrainMode): boolean {
+  return mode === "sft" || mode === "kto"
+}
 
 // One picked dataset: the name of an uploads/ subfolder and how many of its .txt
 // files to sample at random (0 = all of that dataset).
@@ -63,14 +62,20 @@ export interface TrainConfig {
   // Reorder documents each epoch (with an <|endoftext|> separator between them)
   // so the model doesn't see a fixed data order. Pretrain only.
   shuffle: boolean
-  // Pretrain (default) vs SFT fine-tune.
+  // Pretrain (default), SFT fine-tune, or KTO preference tune.
   mode: TrainMode
-  // For SFT only: the id of the base model to fine-tune from. Omitted for
-  // pretrain; the backend rejects an SFT request without a resolvable one.
+  // For the fine-tuning modes: the id of the base model to start from. Omitted for
+  // pretrain; the backend rejects a fine-tune request without a resolvable one.
   base_model_id?: string
+  // KTO only: strength of the KL anchor holding the tune near the base model.
+  // Higher keeps it closer. Ignored by the other two modes.
+  beta?: number
 }
 
-export type JobStatus =
+// Where a run is *within itself*. Deliberately not the same thing as the job's
+// `JobStatus` in lib/jobs.ts: that says whether the queue is running this row,
+// this says which of the run's two phases it is in. A queued run has no phase.
+export type RunPhase =
   | "tokenizing"
   | "training"
   | "done"
@@ -147,7 +152,7 @@ export interface TrainStats {
 }
 
 export interface TrainingSnapshot {
-  status: JobStatus
+  status: RunPhase
   config: TrainConfig
   tokenize: Partial<TokenizeStats>
   train: Partial<TrainStats>
@@ -165,52 +170,6 @@ export interface TrainingSnapshot {
   model_name?: string | null
 }
 
-// The identifiers of a model a completed run produced. Absent when a run
-// cancelled/failed or hasn't finished.
-export interface FinishedModel {
-  id: string
-  name: string
-}
-
-export interface JobSummary {
-  job_id: string
-  status: JobStatus
-  model_name: string
-}
-
-export interface TrainingHandlers {
-  onSnapshot: (snap: TrainingSnapshot) => void
-  onTokenize: (stats: TokenizeStats) => void
-  onLog: (line: string) => void
-  onTrain: (stats: TrainStats) => void
-  onDone: (info: {
-    status: string
-    model_dir: string
-    id_model?: string | null
-    model_name?: string | null
-  }) => void
-  onError: (message: string) => void
-}
-
-export interface Attachment {
-  cancel: () => void
-  detach: () => void
-}
-
-export async function startTraining(config: TrainConfig): Promise<string> {
-  const res = await fetch(`${API_URL}/training`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(config),
-  })
-  if (!res.ok) {
-    const message = await res.text()
-    throw new Error(message || "Failed to start training.")
-  }
-  const data = (await res.json()) as { job_id: string }
-  return data.job_id
-}
-
 export async function listDatasets(): Promise<DatasetInfo[]> {
   const res = await fetch(`${API_URL}/training/datasets`, {
     headers: authHeaders(),
@@ -219,87 +178,3 @@ export async function listDatasets(): Promise<DatasetInfo[]> {
   return (await res.json()) as DatasetInfo[]
 }
 
-export async function listJobs(): Promise<JobSummary[]> {
-  const res = await fetch(`${API_URL}/training`, { headers: authHeaders() })
-  if (!res.ok) return []
-  return (await res.json()) as JobSummary[]
-}
-
-/** Attaches to a run's progress stream. Returns cancel + detach controls. */
-export function attachTraining(
-  jobId: string,
-  handlers: TrainingHandlers
-): Attachment {
-  const ws = new WebSocket(`${WS_URL}/training/ws`)
-  let closed = false
-
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ token: getToken() }))
-  }
-
-  ws.onmessage = (event) => {
-    let msg: Record<string, unknown>
-    try {
-      msg = JSON.parse(event.data) as Record<string, unknown>
-    } catch {
-      return
-    }
-
-    switch (msg.type) {
-      case "ready":
-        ws.send(JSON.stringify({ job_id: jobId }))
-        break
-      case "snapshot":
-        handlers.onSnapshot(msg as unknown as TrainingSnapshot)
-        break
-      case "tokenize":
-        handlers.onTokenize(msg as unknown as TokenizeStats)
-        break
-      case "log":
-        handlers.onLog(typeof msg.line === "string" ? msg.line : "")
-        break
-      case "train":
-        handlers.onTrain(msg as unknown as TrainStats)
-        break
-      case "done":
-        handlers.onDone({
-          status: String(msg.status ?? ""),
-          model_dir: String(msg.model_dir ?? ""),
-          id_model:
-            typeof msg.id_model === "string" ? msg.id_model : null,
-          model_name:
-            typeof msg.model_name === "string" ? msg.model_name : null,
-        })
-        break
-      case "error":
-        handlers.onError(
-          typeof msg.message === "string"
-            ? msg.message
-            : "Something went wrong."
-        )
-        break
-    }
-  }
-
-  ws.onerror = () => {
-    if (!closed) handlers.onError("Connection error.")
-  }
-
-  return {
-    cancel: () => {
-      try {
-        ws.send(JSON.stringify({ action: "cancel" }))
-      } catch {
-        // socket not open; nothing to cancel
-      }
-    },
-    detach: () => {
-      closed = true
-      try {
-        ws.close()
-      } catch {
-        // already closing
-      }
-    },
-  }
-}

@@ -13,7 +13,16 @@ import { Throbber } from "@/components/ui/throbber"
 import { ThinkingLabel } from "./thinking-label"
 
 export function ChatThread({ chatId }: { chatId: string }) {
-  const { messages, isLoading, isSending, error, sendMessage } = useChat(chatId)
+  const {
+    messages,
+    isLoading,
+    isSending,
+    queuedAhead,
+    error,
+    sendMessage,
+    cancel,
+    rateMessage,
+  } = useChat(chatId)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   // Whether to keep the thread pinned to the bottom. Driven by the user's own
   // wheel/touch gestures (see trackStickIntent) so our programmatic scrolls
@@ -25,7 +34,12 @@ export function ChatThread({ chatId }: { chatId: string }) {
   const lastMessage = messages[messages.length - 1]
   const showIdle =
     !isLoading && !isSending && lastMessage?.role === "assistant"
-  const streaming = isSending && lastMessage?.role === "assistant"
+  // Waiting in line is not the same as generating: no tokens are coming yet, and
+  // the reason is the queue rather than a slow model. It gets its own state so the
+  // thread can say which, instead of showing a "generating" mark for a turn that
+  // hasn't reached the GPU.
+  const waiting = isSending && queuedAhead !== null && queuedAhead > 0
+  const streaming = isSending && !waiting && lastMessage?.role === "assistant"
   // Show "Thinking…" whenever the model is *currently* inside a <|thinking|>
   // block (its content is hidden), or before any answer text has appeared at
   // all (the initial wait). Otherwise it's actively producing the answer, so
@@ -87,22 +101,32 @@ export function ChatThread({ chatId }: { chatId: string }) {
               <Throbber mode="loading" className="h-5" />
             </div>
           ) : (
-            messages.map((message, i) => (
-              <ChatMessageBubble
-                key={i}
-                message={message}
-                streaming={
-                  isSending &&
-                  i === messages.length - 1 &&
-                  message.role === "assistant"
-                }
-              />
-            ))
+            messages.map((message, i) => {
+              const id = message.id
+              return (
+                <ChatMessageBubble
+                  key={i}
+                  message={message}
+                  streaming={
+                    isSending &&
+                    i === messages.length - 1 &&
+                    message.role === "assistant"
+                  }
+                  // Only assistant replies that exist server-side are rateable —
+                  // there is nothing to attach a verdict to otherwise.
+                  onRate={
+                    id && message.role === "assistant"
+                      ? (feedback) => void rateMessage(id, feedback)
+                      : undefined
+                  }
+                />
+              )
+            })
           )}
 
           {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}
-          {(showThinking || showGenerating || showIdle) && (
+          {(showThinking || showGenerating || showIdle || waiting) && (
             // Mark, label, then the token count pushed to the right edge. One
             // Throbber instance rather than one per state — that's what lets
             // thinking → generating → idle morph instead of swapping, since the
@@ -113,9 +137,23 @@ export function ChatThread({ chatId }: { chatId: string }) {
             // the label instead of centring two boxes of different heights.
             <div className="flex h-11 items-baseline gap-3 px-1 text-sm">
               <Throbber
-                mode={showThinking ? "thinking" : showGenerating ? "generating" : "idle"}
+                mode={
+                  waiting
+                    ? "loading"
+                    : showThinking
+                      ? "thinking"
+                      : showGenerating
+                        ? "generating"
+                        : "idle"
+                }
                 className="h-5 shrink-0"
               />
+              {waiting && (
+                <span className="text-muted-foreground">
+                  Queued — {queuedAhead} {queuedAhead === 1 ? "job" : "jobs"} ahead on the
+                  GPU. You can close this tab; the reply will be here.
+                </span>
+              )}
               {showThinking && <ThinkingLabel />}
               {/* Pushes the token count to the far edge, which the throbber used to
                   do by spanning the gap itself. */}
@@ -133,7 +171,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
       </div>
 
       <div className="mx-auto w-full max-w-2xl px-4 pb-4">
-        <ChatComposer onSend={sendMessage} disabled={isSending} />
+        <ChatComposer onSend={sendMessage} disabled={isSending} onCancel={cancel} />
       </div>
     </div>
   )

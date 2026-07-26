@@ -399,6 +399,270 @@ pub fn sft_train(
     )
 }
 
+/// Preference fine-tuning (KTO) of an existing model on thumbs-rated replies.
+///
+/// The third training mode, and the closest sibling of `sft_train`: same two-phase
+/// shape, same base-model loading, same tokenizer copy, same checkpointing. Two
+/// things differ.
+///
+/// **The unit of training is an example, not a chunk.** Each rated reply is one
+/// span, trained whole, because KTO's reward is a property of a complete sequence —
+/// slicing a reply across two context windows would compute a reward for half a
+/// reply and compare it against a reference logprob for the whole thing. The
+/// dataset builder guarantees every span fits the context window.
+///
+/// **The gradient is scaled per example.** See `crate::kto`; the short version is
+/// that a KTO gradient is the ordinary cross-entropy gradient times a scalar, so
+/// nothing about the backward pass changes except its magnitude and, for a rejected
+/// reply, its sign.
+///
+/// Unlike pretrain and SFT, there is **no early stopping** on average loss. KTO's
+/// loss is bounded and saturating, so it flattens out while the model is still
+/// moving; "loss stopped improving" does not mean the same thing here, and the
+/// signal worth watching is the reward margin the benchmark reports instead.
+#[allow(clippy::too_many_arguments)]
+pub fn kto_train(
+    base_model_dir: &Path,
+    corpus_path: &Path,
+    mask_path: &Path,
+    index_path: &Path,
+    out_model_dir: &Path,
+    epochs: i64,
+    lr: f32,
+    beta: f64,
+    checkpoints_dir: Option<&Path>,
+    on_progress: ProgressCallback,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<bool, io::Error> {
+    let transformer_owned = Model::load(&base_model_dir.to_string_lossy())?;
+    let mut transformer = transformer_owned;
+    let ctx_window = transformer.positional_table.len() as i64;
+    let layers = transformer.layers;
+
+    let corpus_bytes = fs::read(corpus_path)?;
+    let corpus: Vec<u32> = corpus_bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let mask: Vec<u8> = fs::read(mask_path)?;
+    if corpus.len() != mask.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "KTO corpus/mask length mismatch: {} tokens vs {} mask bytes",
+                corpus.len(),
+                mask.len()
+            ),
+        ));
+    }
+
+    let index: crate::kto::KtoIndex = serde_json::from_str(&fs::read_to_string(index_path)?)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad KTO index: {e}")))?;
+    if index.examples.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "KTO dataset holds no examples",
+        ));
+    }
+    // Every span must land inside the corpus and inside one context window; a bad
+    // index would otherwise slice out of bounds or silently train a truncated reply
+    // against a whole-reply reference logprob.
+    for example in &index.examples {
+        let end = example.offset + example.len;
+        if end > corpus.len() || example.len < 2 || example.len > ctx_window as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "KTO example span {}..{} is invalid for a {}-token corpus and {}-token context",
+                    example.offset, end, corpus.len(), ctx_window
+                ),
+            ));
+        }
+    }
+
+    // Balanced from the dataset's actual composition rather than configured:
+    // whether the thumbs skew up or down is a property of the data, not a knob
+    // anyone should have to set by hand.
+    let params = crate::kto::KtoParams::balanced(beta, index.desirable(), index.undesirable());
+    println!(
+        "KTO: {} examples ({} up / {} down), beta={:.3}, lambda={:.3}/{:.3}",
+        index.examples.len(),
+        index.desirable(),
+        index.undesirable(),
+        params.beta,
+        params.lambda_desirable,
+        params.lambda_undesirable,
+    );
+
+    // The scaffold markers are already trained by the SFT this runs on top of, but
+    // a KTO run started from a bare pretrain would still meet them cold.
+    let reset = warm_start_scaffold_embeddings(&mut transformer);
+    if reset > 0 {
+        println!("KTO warm-start: reset {reset} chat-scaffold input embedding(s) to the table mean");
+    }
+
+    let mut ws = Workspace::new(&transformer, ctx_window as usize);
+    ws.ensure_layer_caches(layers as usize);
+
+    fs::create_dir_all(out_model_dir)?;
+    let base_merges = base_model_dir.join("merges.bin");
+    if base_merges.is_file() {
+        fs::copy(&base_merges, out_model_dir.join("merges.bin"))?;
+    }
+    if let Some(cp_dir) = checkpoints_dir {
+        fs::create_dir_all(cp_dir)?;
+    }
+
+    let total_examples = index.examples.len();
+    let total_all = (total_examples as u64) * epochs.max(0) as u64;
+    let total_opt_steps = (total_examples.div_ceil(ACCUM_STEPS) as i32) * epochs.max(0) as i32;
+    let training_start = Instant::now();
+
+    // The KL baseline persists across epochs: it is an estimate of how far the
+    // policy has drifted from the reference overall, and resetting it each epoch
+    // would keep yanking the reference point back to zero.
+    let mut kl = crate::kto::KlEstimate::new();
+    let mut adam_step: i32 = 0;
+    let mut done_global: u64 = 0;
+
+    for epoch in 0..epochs.max(0) {
+        let mut order: Vec<usize> = (0..total_examples).collect();
+        // Shuffled every epoch: the export is ordered by time, so consecutive
+        // examples come from the same conversation and often carry the same label.
+        // Training them in that order makes each accumulation window one-sided.
+        shuffle_seeded(&mut order, 0x4B54_4F00u64.wrapping_add(epoch as u64));
+
+        let mut epoch_stats = LossStats::new();
+        let mut window = LossStats::new();
+        let epoch_start = Instant::now();
+        let mut reward_total = 0.0f64;
+        let mut trained = 0u64;
+        ws.zero_accumulators();
+
+        for idx in order {
+            let example = index.examples[idx];
+            let span = &corpus[example.offset..example.offset + example.len];
+            let mask_span = &mask[example.offset..example.offset + example.len];
+
+            let step = pollster::block_on(transformer.train_step_kto(
+                &mut ws,
+                span,
+                mask_span,
+                layers as usize,
+                example.ref_logprob,
+                example.desirable,
+                kl.value(),
+                &params,
+            ));
+            // No reply tokens, or a diverged forward: nothing was accumulated, so
+            // the example is skipped rather than counted as a zero-loss step.
+            let Some(step) = step else {
+                continue;
+            };
+
+            kl.record(step.logprob, example.ref_logprob);
+            reward_total += step.reward;
+            epoch_stats.record(step.loss as f32);
+            window.record(step.loss as f32);
+            trained += 1;
+            done_global += 1;
+
+            let step_due = trained % ACCUM_STEPS as u64 == 0 || trained == total_examples as u64;
+            let report_due =
+                trained % PROGRESS_REPORT_INTERVAL == 0 || trained == total_examples as u64;
+
+            let grad_norms = if report_due {
+                Some(gpu_grad_norms(&ws, layers as usize))
+            } else {
+                None
+            };
+            if step_due {
+                step_optimizer(&mut ws, layers, lr, total_opt_steps, &mut adam_step);
+            }
+            if report_due {
+                let step_lr = lr_at_step(lr, adam_step, total_opt_steps);
+                let diag = grad_norms.map(|g| {
+                    diagnostics::compute(
+                        &ws, g, layers as usize, span.len(), step_lr, adam_step, &[],
+                    )
+                });
+                on_progress(TrainingProgress {
+                    epoch: epoch as u64,
+                    total_epochs: epochs.max(0) as u64,
+                    chunk: trained,
+                    total_chunks: total_examples as u64,
+                    stage: 0,
+                    // The mean implicit reward is the number that actually says
+                    // whether the tune is working, and KTO's loss does not — so it
+                    // rides along on the stage label, which is already displayed.
+                    stage_name: Some(format!(
+                        "KTO · mean reward {:+.4}",
+                        reward_total / trained as f64
+                    )),
+                    global_step: done_global,
+                    loss: step.loss,
+                    eta_secs: compute_eta(training_start, done_global, total_all),
+                    epoch_done: false,
+                    avg_loss: epoch_stats.avg(),
+                    min_loss: epoch_stats.min,
+                    max_loss: epoch_stats.max,
+                    batch_min: window.min,
+                    batch_avg: window.avg(),
+                    batch_max: window.max,
+                    epoch_duration_secs: epoch_start.elapsed().as_secs_f64(),
+                    checkpoint_path: None,
+                    diagnostics: diag,
+                });
+                window = LossStats::new();
+            }
+        }
+
+        let checkpoint_path =
+            save_checkpoint(&mut transformer, &ws, out_model_dir, checkpoints_dir, epoch);
+        let mean_reward = if trained == 0 { f64::NAN } else { reward_total / trained as f64 };
+        println!(
+            "KTO epoch {}/{}: avg loss = {:.6}, mean reward = {:+.4} ({} examples)",
+            epoch + 1,
+            epochs.max(0),
+            epoch_stats.avg(),
+            mean_reward,
+            trained,
+        );
+        on_progress(TrainingProgress {
+            epoch: epoch as u64,
+            total_epochs: epochs.max(0) as u64,
+            chunk: trained,
+            total_chunks: total_examples as u64,
+            stage: 0,
+            stage_name: Some(format!("KTO · mean reward {mean_reward:+.4}")),
+            global_step: done_global,
+            loss: epoch_stats.avg() as f64,
+            eta_secs: compute_eta(training_start, done_global, total_all),
+            epoch_done: true,
+            avg_loss: epoch_stats.avg(),
+            min_loss: epoch_stats.min,
+            max_loss: epoch_stats.max,
+            batch_min: f32::NAN,
+            batch_avg: f32::NAN,
+            batch_max: f32::NAN,
+            epoch_duration_secs: epoch_start.elapsed().as_secs_f64(),
+            checkpoint_path,
+            diagnostics: None,
+        });
+
+        if let Some(ref cancel) = cancel {
+            if cancel.load(Ordering::SeqCst) {
+                println!("KTO cancelled by user at epoch {}", epoch + 1);
+                return Ok(true);
+            }
+        }
+    }
+
+    sync_weights_from_gpu(&ws, &mut transformer);
+    transformer.save(&out_model_dir.to_string_lossy())?;
+    Ok(false)
+}
+
 struct EpochStats {
     avg_loss: f32,
     min_loss: f32,

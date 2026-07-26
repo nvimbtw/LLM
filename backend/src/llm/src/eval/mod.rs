@@ -20,18 +20,25 @@
 //      chance exactly 50%. The headline capability number.
 //   4. **Surface metrics** (`surface`) — real-word rate, repetition, marker
 //      validity over text the model actually generated.
+//   5. **Preference** (`preference`) — the only stage that looks at chat-shaped
+//      text: does the model assign higher likelihood to the replies people gave a
+//      thumbs up than to the ones they gave a thumbs down? Reported but kept out
+//      of the composite (see `preference`'s header for why).
 //
-// Stages 1–3 are all sums of `log p(token | prefix)` over supplied text, which is
-// why `score` is the only forward path in the module.
+// Stages 1–3 and 5 are all sums of `log p(token | prefix)` over supplied text,
+// which is why `score` is the only forward path in the module.
 
 pub mod corpus;
 pub mod generate;
 pub mod minimal_pairs;
 pub mod ngram;
+pub mod preference;
 pub mod score;
 pub mod surface;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -72,6 +79,9 @@ pub struct EvalConfig {
     pub corpus_dir: PathBuf,
     // Optional real BLiMP JSONL, evaluated alongside the built-in suite.
     pub blimp_dir: PathBuf,
+    // Rated replies exported from the chat feedback, as JSONL. Empty/absent until
+    // someone has clicked a thumbs, in which case the stage is simply skipped.
+    pub preference_dir: PathBuf,
     pub max_heldout_bytes: usize,
     pub max_baseline_bytes: usize,
     pub sampling: generate::SamplingConfig,
@@ -83,6 +93,7 @@ impl EvalConfig {
             model_dir,
             corpus_dir: eval_dir.join("corpus"),
             blimp_dir: eval_dir.join("blimp"),
+            preference_dir: eval_dir.join("preference"),
             max_heldout_bytes: DEFAULT_MAX_HELDOUT_BYTES,
             max_baseline_bytes: DEFAULT_MAX_BASELINE_BYTES,
             sampling: generate::SamplingConfig::default(),
@@ -94,11 +105,25 @@ impl EvalConfig {
 // caller doesn't have to know the stage weights.
 pub type ProgressCallback = Box<dyn Fn(&str, f64) + Send>;
 
+// A run is interruptible between forward passes, not during one — the same
+// granularity training cancels at. Mirrors `train::train`'s convention: an
+// `Option<Arc<AtomicBool>>` the caller flips, checked at each stage boundary and
+// inside the two long loops.
+type Cancel = Option<Arc<AtomicBool>>;
+
+fn cancelled(cancel: &Cancel) -> bool {
+    cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst))
+}
+
 // Stage weights for the overall progress fraction. Grammar dominates because it is
-// by far the most forward passes (two per pair, hundreds of pairs).
-const W_CORPUS: f64 = 0.40;
-const W_GRAMMAR: f64 = 0.45;
-const W_GENERATION: f64 = 0.15;
+// by far the most forward passes (two per pair, hundreds of pairs). Preference gets
+// the smallest slice: it is one forward pass per rated reply, and there are rarely
+// many. These affect only the progress bar — `composite_score` carries its own,
+// separate weights.
+const W_CORPUS: f64 = 0.38;
+const W_GRAMMAR: f64 = 0.42;
+const W_GENERATION: f64 = 0.14;
+const W_PREFERENCE: f64 = 0.06;
 
 // ── the report ──────────────────────────────────────────────────────────────
 
@@ -173,6 +198,9 @@ pub struct Report {
     pub corpus: Option<CorpusMetrics>,
     pub grammar: GrammarMetrics,
     pub generation: GenerationMetrics,
+    // Absent when no thumbs have been collected yet — which is every run until the
+    // chat UI has been used. Never folded into `score`; see `preference`'s header.
+    pub preference: Option<preference::PreferenceMetrics>,
     pub duration_secs: f64,
 }
 
@@ -181,7 +209,15 @@ pub struct Report {
 // Runs the whole suite. Blocking and GPU-bound (every stage drives CUDA through
 // `forward_seq`), so callers must give it its own OS thread rather than an async
 // task — the same constraint training has.
-pub fn run(config: &EvalConfig, progress: ProgressCallback) -> Result<Report, String> {
+// `Ok(None)` means the caller asked for a cancel and the run stopped early — a
+// distinct outcome from `Err`, which is a genuine failure. A partial report is
+// never returned: half a benchmark is not a score, and storing one would put a
+// meaningless point on the trend chart.
+pub fn run(
+    config: &EvalConfig,
+    progress: ProgressCallback,
+    cancel: Cancel,
+) -> Result<Option<Report>, String> {
     let started = Instant::now();
 
     let dir = config.model_dir.to_string_lossy().to_string();
@@ -199,10 +235,24 @@ pub fn run(config: &EvalConfig, progress: ProgressCallback) -> Result<Report, St
         progress("Scoring held-out text", 0.0);
         let corpus_report = corpus::evaluate(&model, &merges, &split).await;
         progress("Scoring held-out text", W_CORPUS);
+        if cancelled(&cancel) {
+            return Ok(None);
+        }
 
-        let grammar = run_grammar(&model, &merges, config, &progress).await;
+        let Some(grammar) = run_grammar(&model, &merges, config, &progress, &cancel).await else {
+            return Ok(None);
+        };
 
-        let generation = run_generation(&model, &merges, config, &split, &progress).await;
+        let Some(generation) =
+            run_generation(&model, &merges, config, &split, &progress, &cancel).await
+        else {
+            return Ok(None);
+        };
+
+        let Some(preference) = run_preference(&model, &merges, config, &progress, &cancel).await
+        else {
+            return Ok(None);
+        };
         progress("Done", 1.0);
 
         let corpus_metrics = corpus_report.map(|c| CorpusMetrics {
@@ -216,26 +266,31 @@ pub fn run(config: &EvalConfig, progress: ProgressCallback) -> Result<Report, St
             files: c.files,
         });
 
-        Ok(Report {
+        Ok(Some(Report {
             score: composite_score(&corpus_metrics, &grammar, &generation),
             model: describe(&model),
             corpus: corpus_metrics,
             grammar,
             generation,
+            preference,
             duration_secs: started.elapsed().as_secs_f64(),
-        })
+        }))
     })
 }
 
 // Forced-choice grammar judgements. One pair costs two full-sequence scores; the
 // model is correct when it assigns the grammatical sentence the higher total
 // log-probability.
+// `None` => cancelled partway. Checked on the same 25-pair cadence as the progress
+// report rather than every pair, so the atomic load doesn't sit in the inner loop
+// beside two forward passes it would be noise against.
 async fn run_grammar(
     model: &Model,
     merges: &[((u32, u32), u32)],
     config: &EvalConfig,
     progress: &ProgressCallback,
-) -> GrammarMetrics {
+    cancel: &Cancel,
+) -> Option<GrammarMetrics> {
     let mut paradigms = minimal_pairs::suite();
     paradigms.extend(minimal_pairs::load_external(&config.blimp_dir));
 
@@ -261,6 +316,9 @@ async fn run_grammar(
             }
             done += 1;
             if done % 25 == 0 && total_pairs > 0 {
+                if cancelled(cancel) {
+                    return None;
+                }
                 let fraction = done as f64 / total_pairs as f64;
                 progress(
                     &format!("Grammar: {} ({done}/{total_pairs})", paradigm.name),
@@ -277,22 +335,24 @@ async fn run_grammar(
         });
     }
 
-    GrammarMetrics {
+    Some(GrammarMetrics {
         accuracy: rate(correct_total, total_pairs),
         pairs: total_pairs,
         paradigms: results,
-    }
+    })
 }
 
 // Generate from the fixed prompt set and measure the surface properties of what
 // came back.
+// `None` => cancelled partway, checked once per prompt.
 async fn run_generation(
     model: &Model,
     merges: &[((u32, u32), u32)],
     config: &EvalConfig,
     split: &corpus::CorpusSplit,
     progress: &ProgressCallback,
-) -> GenerationMetrics {
+    cancel: &Cancel,
+) -> Option<GenerationMetrics> {
     // The lexicon comes from the *training* slice, never the held-out one: it is a
     // reference vocabulary, and building it from the same bytes the perplexity is
     // measured on would couple two metrics that should be independent.
@@ -300,6 +360,9 @@ async fn run_generation(
 
     let mut samples = Vec::new();
     for (i, prompt) in DEFAULT_PROMPTS.iter().enumerate() {
+        if cancelled(cancel) {
+            return None;
+        }
         let fraction = i as f64 / DEFAULT_PROMPTS.len() as f64;
         progress(
             &format!("Generating samples ({}/{})", i + 1, DEFAULT_PROMPTS.len()),
@@ -315,7 +378,7 @@ async fn run_generation(
     let texts: Vec<String> = samples.iter().map(|s| s.completion.clone()).collect();
     let metrics = surface::analyze(&texts, &lexicon);
 
-    GenerationMetrics {
+    Some(GenerationMetrics {
         real_word_rate: metrics.real_word_rate,
         distinct_1: metrics.distinct_1,
         distinct_2: metrics.distinct_2,
@@ -326,7 +389,53 @@ async fn run_generation(
         words_scored: metrics.words_scored,
         lexicon_size: lexicon.len(),
         samples,
+    })
+}
+
+// Score every rated reply and reduce them to the preference metrics.
+//
+// The return is nested and the two layers mean different things: the outer `None`
+// is "cancelled partway", matching the other stages; the inner `None` is "there is
+// no feedback to score", which is the normal state of a fresh install and must not
+// look like a failure or a zero.
+async fn run_preference(
+    model: &Model,
+    merges: &[((u32, u32), u32)],
+    config: &EvalConfig,
+    progress: &ProgressCallback,
+    cancel: &Cancel,
+) -> Option<Option<preference::PreferenceMetrics>> {
+    let base = W_CORPUS + W_GRAMMAR + W_GENERATION;
+    let examples = preference::load(&config.preference_dir);
+    if examples.is_empty() {
+        progress("No feedback to score", base + W_PREFERENCE);
+        return Some(None);
     }
+
+    let layers = model.layers as usize;
+    let mut scored = Vec::with_capacity(examples.len());
+
+    for (i, example) in examples.iter().enumerate() {
+        // One forward pass per example here, against two per pair in the grammar
+        // stage, so cancellation is checked every example rather than every 25th.
+        if cancelled(cancel) {
+            return None;
+        }
+        progress(
+            &format!("Preference ({}/{})", i + 1, examples.len()),
+            base + W_PREFERENCE * (i as f64 / examples.len() as f64),
+        );
+        // An unscoreable example (empty reply, misaligned scoring) is dropped
+        // rather than counted, so it can't drag a mean toward zero.
+        if let Some(logprob) = preference::score_example(model, merges, example, layers).await {
+            scored.push((example.good, example.prompt.clone(), logprob));
+        }
+    }
+
+    if scored.is_empty() {
+        return Some(None);
+    }
+    Some(Some(preference::summarize(&scored)))
 }
 
 // ── scoring ─────────────────────────────────────────────────────────────────

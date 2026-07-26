@@ -25,6 +25,17 @@ pub enum TrainMode {
     #[default]
     Pretrain,
     Sft,
+    // Preference tuning on thumbs-rated replies (KTO). Like SFT it fine-tunes an
+    // existing model named by `base_model_id`, but from the chat feedback rather
+    // than from a conversation corpus.
+    Kto,
+}
+
+// The KTO default, matching `llm::kto::KtoParams::default`. 0.1 is the paper's
+// value and the usual starting point: low enough that the tune can move, high
+// enough that the KL anchor still holds.
+fn default_beta() -> f64 {
+    0.1
 }
 
 // Hyperparameters + dataset knobs for one run. Deserialized from the POST body,
@@ -49,6 +60,11 @@ pub struct TrainConfig {
     // the route boundary for SFT.
     #[serde(default)]
     pub base_model_id: Option<Uuid>,
+    // KTO only: strength of the KL anchor holding the tune near the base model.
+    // Defaulted rather than required so a body written for the other two modes
+    // still deserializes; see `llm::kto::KtoParams::beta` for what it does.
+    #[serde(default = "default_beta")]
+    pub beta: f64,
     // Which upload datasets (subfolders of uploads/) go into this run's corpus,
     // each with how many of its .txt files to sample at random (0 => all of that
     // dataset). Pretrain only — SFT ignores it. `#[serde(default)]` keeps
@@ -76,9 +92,13 @@ pub struct TrainConfig {
     #[serde(default)]
     pub seed: u64,
     // The model's id, which names its on-disk directory. Set server-side by the
-    // start route (reused on retrain, freshly generated for a new model), never
-    // by the client — hence skipped on deserialize.
-    #[serde(skip_deserializing)]
+    // enqueue route (reused on retrain, freshly generated for a new model), which
+    // overwrites whatever arrived in the request body — so a client cannot choose
+    // it even though this deserializes. It has to deserialize: the config makes a
+    // round trip through the job row's JSONB between being queued and being run,
+    // and `skip_deserializing` silently reset the id to nil on the way back out,
+    // which would have pointed the run at the wrong weights directory.
+    #[serde(default)]
     pub storage_id: Uuid,
 }
 
@@ -783,6 +803,206 @@ pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
         total_tokens: corpus.len(),
         trainable_tokens,
     })
+}
+
+#[derive(Debug, Serialize)]
+pub struct KtoDatasetStats {
+    pub examples: usize,
+    pub desirable: usize,
+    pub undesirable: usize,
+    pub total_tokens: usize,
+    pub trainable_tokens: usize,
+    // Rated replies that were read but could not be used, and why — surfaced
+    // because on a dataset this small, silently dropping half the feedback is the
+    // difference between a tune that can work and one that cannot.
+    pub skipped_too_long: usize,
+    pub skipped_no_reply: usize,
+}
+
+// One rated reply as exported by `queue::export_preference_data`.
+#[derive(Deserialize)]
+struct RatedLine {
+    prompt: String,
+    response: String,
+    label: String,
+}
+
+// Builds the KTO dataset from the exported thumbs feedback: token spans, the reply
+// mask, and each example's reference log-probability under the base model.
+//
+// **Why the base model is loaded here.** KTO needs `log π_ref(reply | prompt)` for
+// every example. Computing it now, once, and storing it in the index means the
+// training loop never holds two models on the GPU — the alternative (a resident
+// frozen copy) would double weight memory and add a forward pass per step for a
+// number that never changes.
+//
+// **Why examples longer than the context window are dropped rather than truncated.**
+// A KTO reward is a property of a whole reply. A truncated example would be trained
+// against a reference log-probability computed over a different span, so its reward
+// would be measuring two different things — worse than not training on it at all.
+pub fn build_kto_dataset(base_model_dir: &Path) -> io::Result<KtoDatasetStats> {
+    let merges_path = base_model_dir.join("merges.bin");
+    let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
+
+    // The *training* slice only. The held-out slice lives under `eval/preference/`
+    // and is the benchmark's alone — training on it would make the reported margin
+    // meaningless.
+    let dir = storage::preference_dir();
+    let mut files: Vec<PathBuf> = if dir.is_dir() {
+        fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    files.sort();
+
+    let mut lines: Vec<RatedLine> = Vec::new();
+    for path in &files {
+        let content = fs::read_to_string(path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // A malformed line is skipped rather than fatal: this file is a machine
+            // export, and one bad row should not block a tune over hundreds of good
+            // ones.
+            if let Ok(parsed) = serde_json::from_str::<RatedLine>(line) {
+                lines.push(parsed);
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no rated replies found — collect some thumbs up/down in the chat first",
+        ));
+    }
+
+    let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
+    let ctx = model.positional_table.len();
+    let layers = model.layers as usize;
+
+    let mut corpus: Vec<u32> = Vec::new();
+    let mut mask: Vec<u8> = Vec::new();
+    let mut examples: Vec<llm::kto::KtoExample> = Vec::new();
+    let mut skipped_too_long = 0usize;
+    let mut skipped_no_reply = 0usize;
+
+    for line in &lines {
+        let desirable = match line.label.as_str() {
+            "up" => true,
+            "down" => false,
+            _ => continue,
+        };
+
+        let turns = vec![
+            llm::chat_template::Turn {
+                role: llm::chat_template::Role::User,
+                text: line.prompt.clone(),
+            },
+            llm::chat_template::Turn {
+                role: llm::chat_template::Role::Assistant,
+                text: line.response.clone(),
+            },
+        ];
+        let (ids, m) = llm::chat_template::build_training_example(None, &turns, &merges);
+
+        if ids.len() < 2 || ids.len() > ctx {
+            skipped_too_long += 1;
+            continue;
+        }
+        if !m.iter().any(|&b| b != 0) {
+            skipped_no_reply += 1;
+            continue;
+        }
+
+        // The reference log-probability over exactly the masked (reply) positions —
+        // the same positions `train_step_kto` will sum over, so the two are
+        // comparable.
+        let Some(ref_logprob) = llm::kto::reference_logprob(&model, &ids, &m, layers) else {
+            skipped_no_reply += 1;
+            continue;
+        };
+
+        examples.push(llm::kto::KtoExample {
+            offset: corpus.len(),
+            len: ids.len(),
+            desirable,
+            ref_logprob,
+        });
+        corpus.extend(&ids);
+        mask.extend(&m);
+    }
+
+    if examples.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "every rated reply was unusable ({skipped_too_long} too long for the \
+                 {ctx}-token context, {skipped_no_reply} with no reply tokens)"
+            ),
+        ));
+    }
+
+    let datasets = storage::datasets_dir();
+    fs::create_dir_all(&datasets)?;
+    tokenize::bpe::save_corpus(&corpus, &datasets.join("kto_corpus.bin").to_string_lossy())?;
+    fs::write(datasets.join("kto_mask.bin"), &mask)?;
+
+    let desirable = examples.iter().filter(|e| e.desirable).count();
+    let undesirable = examples.len() - desirable;
+    let index = llm::kto::KtoIndex { examples };
+    fs::write(
+        datasets.join("kto_index.json"),
+        serde_json::to_string(&index).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("could not encode index: {e}"))
+        })?,
+    )?;
+
+    Ok(KtoDatasetStats {
+        examples: index.examples.len(),
+        desirable,
+        undesirable,
+        total_tokens: corpus.len(),
+        trainable_tokens: mask.iter().filter(|&&b| b != 0).count(),
+        skipped_too_long,
+        skipped_no_reply,
+    })
+}
+
+// `run_sft_training`'s preference twin. The dataset must already have been built
+// by `build_kto_dataset` — the caller runs that as phase 1.
+pub fn run_kto_training(
+    cfg: &TrainConfig,
+    on_progress: llm::train::ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<bool> {
+    let base_id = cfg.base_model_id.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "KTO run requires a base_model_id")
+    })?;
+    let base_model_dir = storage::models_dir().join(base_id.to_string());
+    let datasets = storage::datasets_dir();
+    let out_model_dir = storage::models_dir().join(cfg.storage_id.to_string());
+    let checkpoints_dir = out_model_dir.join("checkpoints");
+
+    llm::train::kto_train(
+        &base_model_dir,
+        &datasets.join("kto_corpus.bin"),
+        &datasets.join("kto_mask.bin"),
+        &datasets.join("kto_index.json"),
+        &out_model_dir,
+        cfg.epochs,
+        cfg.lr,
+        cfg.beta,
+        Some(&checkpoints_dir),
+        on_progress,
+        Some(cancel),
+    )
 }
 
 // ── Synthetic SFT data generator (ISSUE-0036) ───────────────────────────────

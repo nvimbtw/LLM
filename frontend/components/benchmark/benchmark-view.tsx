@@ -10,24 +10,12 @@ import { DurationPanel } from "./duration-panel"
 import { GenerationPanel } from "./generation-panel"
 import { GrammarPanel } from "./grammar-panel"
 import { HistoryPanel } from "./history-panel"
-import { RunBar } from "./run-bar"
 import { ScalingPanel } from "./scaling-panel"
 import { ScoreCard } from "./score-card"
 
 export function BenchmarkView() {
-  const {
-    runs,
-    suite,
-    active,
-    detail,
-    selectedId,
-    select,
-    start,
-    remove,
-    isLoading,
-    isStarting,
-    error,
-  } = useBenchmark()
+  const { runs, active, detail, selectedId, select, remove, isLoading, error } =
+    useBenchmark()
 
   if (isLoading) {
     return (
@@ -43,8 +31,6 @@ export function BenchmarkView() {
 
   return (
     <div className="flex flex-col gap-6">
-      <RunBar suite={suite} active={active} isStarting={isStarting} onStart={start} />
-
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       {report && detail ? (
@@ -64,7 +50,7 @@ export function BenchmarkView() {
         <div className="flex flex-col items-center gap-5 rounded-xl border border-dashed border-border/60 px-6 py-12">
           <Throbber mode="benchmarking" className="h-7" />
           <p className="text-center text-sm text-muted-foreground">
-            {active.progress?.stage ?? "Starting…"}
+            Scoring in progress.
           </p>
           <p className="text-center text-[11px] text-muted-foreground/60">
             Scoring {active.model_name}. This takes a minute or two on the GPU.
@@ -76,7 +62,7 @@ export function BenchmarkView() {
         <p className="rounded-xl border border-dashed border-border/60 px-5 py-10 text-center text-sm text-muted-foreground">
           {detail?.status === "failed"
             ? (detail.error ?? "This run failed.")
-            : "Select a run below, or benchmark a model to get started."}
+            : "Select a run below, or queue a benchmark from the jobs page."}
         </p>
       )}
 

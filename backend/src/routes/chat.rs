@@ -3,8 +3,10 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::queue::{ChatRequest, Queue};
 use crate::routes::validate;
 use crate::{db, db::user::AccessLevel, extractors::AuthUser, ws};
 
@@ -48,6 +50,9 @@ struct MessageResponse {
     // Display name of the model that wrote this reply, for the byline under it.
     // Null on a user's own message.
     model_name: Option<String>,
+    // The thumbs the user already gave this reply, so a reload renders the
+    // rating rather than an empty pair of buttons. Null when unrated.
+    feedback: Option<db::message::Feedback>,
     created_at: DateTime<Utc>,
 }
 
@@ -67,6 +72,7 @@ impl From<db::message::MessageWithModel> for MessageResponse {
             role,
             content: message.content,
             model_name: message.model_name,
+            feedback: message.feedback,
             created_at: message.created_at,
         }
     }
@@ -120,13 +126,13 @@ struct SendMessageFrame {
     system: Option<String>,
 }
 
-// Sampling knobs for a chat turn. A reply runs until the model emits
-// <|endoftext|>; MAX_TOKENS is only a safety ceiling so a model that never emits
-// it can't generate forever (the sliding context window means it otherwise
-// wouldn't stop on its own).
-const MAX_TOKENS: usize = 4096;
-const TEMPERATURE: f32 = 0.8;
-const TOP_K: u32 = 40;
+// An inbound `{ "action": "cancel" }` while a turn is in flight. The turn is a
+// queued job, so this is the same cancel the /jobs page offers, reachable from
+// where the user actually is.
+#[derive(Deserialize)]
+struct ActionFrame {
+    action: String,
+}
 
 // WebSocket entrypoint. The handshake is a GET upgrade; we hand the socket off
 // to a spawned task and return the upgrade response immediately. Auth happens
@@ -137,6 +143,7 @@ async fn chat_ws(
     req: HttpRequest,
     body: web::Payload,
     pool: web::Data<PgPool>,
+    queue: web::Data<Arc<Queue>>,
     jwt_secret: web::Data<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, msg_stream) = actix_ws::handle(&req, body)?;
@@ -144,9 +151,10 @@ async fn chat_ws(
     // Owned clones for the 'static task: PgPool is an Arc internally (cheap to
     // clone), and we copy the secret string.
     let pool = pool.get_ref().clone();
+    let queue = queue.get_ref().clone();
     let secret = jwt_secret.get_ref().clone();
 
-    actix_web::rt::spawn(chat_session(session, msg_stream, pool, secret));
+    actix_web::rt::spawn(chat_session(session, msg_stream, pool, queue, secret));
 
     Ok(response)
 }
@@ -157,6 +165,7 @@ async fn chat_session(
     mut session: actix_ws::Session,
     mut stream: actix_ws::MessageStream,
     pool: PgPool,
+    queue: Arc<Queue>,
     secret: String,
 ) {
     // (user id, is_admin) once authenticated. is_admin gates use of private models.
@@ -190,9 +199,17 @@ async fn chat_session(
                     },
                     // Authenticated: handle a chat turn, streaming tokens back.
                     Some((uid, is_admin)) => {
-                        if handle_message(&mut session, &pool, uid, is_admin, text)
-                            .await
-                            .is_err()
+                        if handle_message(
+                            &mut session,
+                            &mut stream,
+                            &pool,
+                            &queue,
+                            uid,
+                            is_admin,
+                            text,
+                        )
+                        .await
+                        .is_err()
                         {
                             // Client went away mid-stream; tear the session down.
                             return;
@@ -213,14 +230,23 @@ async fn chat_session(
     let _ = session.close(None).await;
 }
 
-// Processes one chat turn: resolve/create the chat, persist the user message,
-// stream the assistant reply word-by-word, then persist the full reply. Each
-// stage below sends its own error frame and signals "stop this turn" when it
+// Processes one chat turn: resolve/create the chat, persist the user message, then
+// queue the generation and forward its tokens as they arrive.
+//
+// The generation itself is a `chat` job on the GPU queue rather than a thread
+// started here. That costs a wait when something long is already running — the
+// turn sits in line behind it — and buys two things: the turn can no longer
+// collide with a training run on the one device, and the reply survives the tab
+// being closed, because the runner persists it whether or not anyone is listening.
+//
+// Each stage below sends its own error frame and signals "stop this turn" when it
 // fails, so this stays a readable sequence. Returns Err only when sending to the
 // socket fails (client disconnected), so the caller can stop the session.
 async fn handle_message(
     session: &mut actix_ws::Session,
+    stream: &mut actix_ws::MessageStream,
     pool: &PgPool,
+    queue: &Arc<Queue>,
     user_id: Uuid,
     is_admin: bool,
     text: &str,
@@ -265,15 +291,198 @@ async fn handle_message(
     if !persist_user_message(session, pool, chat_id, user_id, content, user_tokens).await? {
         return Ok(());
     }
-    let Some(history) = load_history(session, pool, chat_id).await? else {
-        return Ok(());
+
+    // Subscribed *before* the job exists. The runner announces a job going live on
+    // this channel, and a short turn can reach the GPU before the enqueue call even
+    // returns here — subscribing afterwards would miss the announcement and leave
+    // this socket waiting for a stream that had already started.
+    let events = queue.subscribe();
+
+    let request = ChatRequest {
+        id_chat: chat_id,
+        id_model: model.id_model,
+        id_user: Some(user_id),
+        system,
+    };
+    let config = match serde_json::to_value(&request) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("serialize chat request error: {}", e);
+            return session.text(ws::error_frame("failed to queue reply")).await;
+        }
     };
 
-    let Some(reply) = stream_reply(session, &model_dir, history, system).await? else {
-        return Ok(());
+    let job = match db::job::create(
+        pool,
+        db::job::JobKind::Chat,
+        &derive_title(content),
+        &config,
+        Some(user_id),
+    )
+    .await
+    {
+        Ok(job) => job,
+        Err(e) => {
+            eprintln!("queue chat job db error: {}", e);
+            return session.text(ws::error_frame("failed to queue reply")).await;
+        }
+    };
+    queue.wake();
+    queue.notify_changed();
+
+    // Tell the client where it is in line before anything else. A turn that starts
+    // immediately still gets this frame with `ahead: 0`, so the client has one code
+    // path rather than two.
+    let ahead = jobs_ahead(pool, job.queue_rank).await;
+    session
+        .text(
+            serde_json::json!({
+                "type": "queued",
+                "job_id": job.id_job,
+                "chat_id": chat_id,
+                "ahead": ahead,
+            })
+            .to_string(),
+        )
+        .await?;
+
+    follow_job(session, stream, pool, queue, events, job.id_job, chat_id).await
+}
+
+// How many live jobs sit in front of this one. Best-effort: a failed count reports
+// zero rather than sinking the turn over a number that is only ever a hint.
+async fn jobs_ahead(pool: &PgPool, rank: f64) -> usize {
+    match db::job::list_active(pool).await {
+        Ok(jobs) => jobs.iter().filter(|j| j.queue_rank < rank).count(),
+        Err(e) => {
+            eprintln!("count queued jobs db error: {}", e);
+            0
+        }
+    }
+}
+
+// Waits for the turn to reach the GPU, then forwards its frames to the client.
+//
+// Two things can happen while waiting, and both are handled here: the job goes
+// live (attach to its broadcast), or it reaches a terminal state without this
+// socket ever seeing it run (cancelled in the queue, or finished so fast the
+// attach lost the race). The second case falls back to the durable row, which is
+// the point of persisting the reply in the first place.
+async fn follow_job(
+    session: &mut actix_ws::Session,
+    stream: &mut actix_ws::MessageStream,
+    pool: &PgPool,
+    queue: &Arc<Queue>,
+    mut events: tokio::sync::broadcast::Receiver<String>,
+    id_job: Uuid,
+    chat_id: Uuid,
+) -> Result<(), actix_ws::Closed> {
+    use actix_ws::Message;
+
+    // ---- wait for the job to go live ----
+    let mut frames = loop {
+        if let Some(live) = queue.live_for(id_job) {
+            break Some(live.tx.subscribe());
+        }
+        // Not running. Either it hasn't started, or it is already over.
+        match db::job::find_by_id(pool, id_job).await {
+            Ok(Some(job)) if job.status.is_terminal() => break None,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("poll chat job db error: {}", e);
+                return session.text(ws::error_frame("failed to track the reply")).await;
+            }
+        }
+
+        tokio::select! {
+            biased;
+            // A cancel while queued has to be honoured here: nothing is running, so
+            // there is no worker flag to set.
+            incoming = stream.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    if is_cancel(&text) {
+                        let _ = db::job::cancel_queued(pool, id_job).await;
+                        queue.request_cancel(id_job);
+                        queue.notify_changed();
+                    }
+                }
+                Some(Ok(Message::Ping(bytes))) => {
+                    let _ = session.pong(&bytes).await;
+                }
+                Some(Ok(Message::Close(_))) | None => return Err(actix_ws::Closed),
+                _ => {}
+            },
+            event = events.recv() => match event {
+                // Any board change is a reason to re-check; the loop head does the
+                // actual deciding, so the payload doesn't need inspecting.
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break None,
+            },
+        }
     };
 
-    finalize_turn(session, pool, user_id, chat_id, model.id_model, reply).await
+    // ---- forward frames until the turn ends ----
+    if let Some(rx) = frames.as_mut() {
+        loop {
+            tokio::select! {
+                biased;
+                incoming = stream.next() => match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if is_cancel(&text) {
+                            queue.request_cancel(id_job);
+                        }
+                    }
+                    Some(Ok(Message::Ping(bytes))) => {
+                        let _ = session.pong(&bytes).await;
+                    }
+                    Some(Ok(Message::Close(_))) | None => return Err(actix_ws::Closed),
+                    _ => {}
+                },
+                msg = rx.recv() => match msg {
+                    Ok(text) => {
+                        // The runner's frames are already in this socket's wire
+                        // shape — `token`, `done`, `error` — so they forward
+                        // verbatim rather than being re-rendered here.
+                        let terminal = text.contains("\"type\":\"done\"")
+                            || text.contains("\"type\":\"error\"");
+                        session.text(text).await?;
+                        if terminal {
+                            return Ok(());
+                        }
+                    }
+                    // The job ended without a terminal frame reaching us (or this
+                    // socket fell behind). The row is authoritative.
+                    Err(_) => break,
+                },
+            }
+        }
+    }
+
+    // ---- fell through: report the outcome from the durable row ----
+    match db::job::find_by_id(pool, id_job).await {
+        Ok(Some(job)) => {
+            let done = serde_json::json!({
+                "type": "done",
+                "chat_id": chat_id,
+                // Present once the reply was persisted. The client reloads the
+                // conversation when it gets a `done` it has no streamed text for.
+                "id_message": job.ref_id,
+            });
+            session.text(done.to_string()).await
+        }
+        Ok(None) => session.text(ws::error_frame("the reply was cancelled")).await,
+        Err(e) => {
+            eprintln!("resolve chat job db error: {}", e);
+            session.text(ws::error_frame("failed to track the reply")).await
+        }
+    }
+}
+
+fn is_cancel(text: &str) -> bool {
+    serde_json::from_str::<ActionFrame>(text)
+        .map(|f| f.action == "cancel")
+        .unwrap_or(false)
 }
 
 // Parse the incoming frame; sends an error and returns None if it's malformed.
@@ -378,152 +587,6 @@ async fn resolve_model(
     Ok(Some(model))
 }
 
-// Load the whole conversation (oldest-first, including the user message just
-// persisted) as template turns. The inference layer renders and truncates them
-// to the model's context window. None => an error was sent.
-async fn load_history(
-    session: &mut actix_ws::Session,
-    pool: &PgPool,
-    chat_id: Uuid,
-) -> Result<Option<Vec<llm::chat_template::Turn>>, actix_ws::Closed> {
-    let messages = match db::message::list_for_chat(pool, chat_id).await {
-        Ok(messages) => messages,
-        Err(e) => {
-            eprintln!("list messages db error: {}", e);
-            session.text(ws::error_frame("failed to load history")).await?;
-            return Ok(None);
-        }
-    };
-    let history = messages
-        .into_iter()
-        .map(|m| llm::chat_template::Turn {
-            // id_user set => a person sent it; otherwise it's an assistant reply.
-            role: if m.id_user.is_some() {
-                llm::chat_template::Role::User
-            } else {
-                llm::chat_template::Role::Assistant
-            },
-            text: m.content,
-        })
-        .collect();
-    Ok(Some(history))
-}
-
-// The streamed reply plus its token counts, produced by one generation.
-struct StreamedReply {
-    text: String,
-    input_tokens: usize,
-    output_tokens: usize,
-}
-
-// Run inference on a dedicated thread (CUDA is blocking and must not run on the
-// async executor), forwarding decoded tokens to the socket as they arrive. None
-// => generation failed and an error was sent.
-async fn stream_reply(
-    session: &mut actix_ws::Session,
-    model_dir: &std::path::Path,
-    history: Vec<llm::chat_template::Turn>,
-    system: Option<String>,
-) -> Result<Option<StreamedReply>, actix_ws::Closed> {
-    let model_dir = model_dir.to_path_buf();
-    let (tok_tx, mut tok_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let (done_tx, done_rx) =
-        tokio::sync::oneshot::channel::<Result<llm::infer::GenerationOutput, String>>();
-    std::thread::spawn(move || {
-        // The system prompt (if the user set one) is rendered into the prompt by
-        // the chat template; None means no system turn.
-        let result = llm::infer::generate_chat_response_streaming(
-            &model_dir,
-            system.as_deref(),
-            &history,
-            MAX_TOKENS,
-            TEMPERATURE,
-            TOP_K,
-            |token| {
-                // Best-effort: if the receiver was dropped (client disconnected
-                // or the turn aborted) the token is discarded and generation
-                // winds down on its own — nothing here can act on the failure.
-                let _ = tok_tx.send(token.to_string());
-            },
-        );
-        // Same: the oneshot receiver may be gone if the turn was abandoned.
-        let _ = done_tx.send(result);
-    });
-
-    while let Some(token) = tok_rx.recv().await {
-        let out = serde_json::json!({ "type": "token", "value": token }).to_string();
-        session.text(out).await?;
-    }
-
-    // Prefer the authoritative full text over the streamed concatenation, and
-    // surface a failure instead of persisting an empty reply. done_rx only errs
-    // if the worker thread panicked.
-    match done_rx.await {
-        Ok(Ok(out)) => Ok(Some(StreamedReply {
-            text: out.text,
-            input_tokens: out.input_tokens,
-            output_tokens: out.output_tokens,
-        })),
-        Ok(Err(e)) => {
-            eprintln!("inference error: {}", e);
-            session.text(ws::error_frame("inference failed")).await?;
-            Ok(None)
-        }
-        Err(_) => {
-            eprintln!("inference thread panicked");
-            session.text(ws::error_frame("inference failed")).await?;
-            Ok(None)
-        }
-    }
-}
-
-// Persist the assistant reply, record usage (non-fatal), and send the done frame.
-async fn finalize_turn(
-    session: &mut actix_ws::Session,
-    pool: &PgPool,
-    user_id: Uuid,
-    chat_id: Uuid,
-    model_id: Uuid,
-    reply: StreamedReply,
-) -> Result<(), actix_ws::Closed> {
-    let assistant = match db::message::create_assistant_message(
-        pool,
-        chat_id,
-        Some(model_id),
-        &reply.text,
-        reply.output_tokens as i32,
-    )
-    .await
-    {
-            Ok(message) => message,
-            Err(e) => {
-                eprintln!("create assistant message db error: {}", e);
-                return session.text(ws::error_frame("failed to save response")).await;
-            }
-        };
-
-    // Non-fatal: a tracking failure shouldn't sink a reply the user already
-    // received and we already persisted.
-    if let Err(e) = db::usage::record(
-        pool,
-        user_id,
-        Some(model_id),
-        reply.input_tokens as i32,
-        reply.output_tokens as i32,
-    )
-    .await
-    {
-        eprintln!("record usage db error: {}", e);
-    }
-
-    let done = serde_json::json!({
-        "type": "done",
-        "chat_id": chat_id,
-        "id_message": assistant.id_message,
-    })
-    .to_string();
-    session.text(done).await
-}
 
 #[derive(Deserialize)]
 struct CreateChatPayload {
@@ -597,6 +660,62 @@ async fn get_messages(
     }
 }
 
+// `{"feedback": "up" | "down" | null}` — null clears the rating. The field is
+// `Option` *and* `#[serde(default)]` so an omitted key and an explicit null both
+// mean "un-rate", rather than the omission being a 400 the client has to avoid.
+#[derive(Deserialize)]
+struct FeedbackPayload {
+    #[serde(default)]
+    feedback: Option<db::message::Feedback>,
+}
+
+// Thumbs up/down on one assistant reply.
+//
+// Idempotent, hence PUT: the client sends the state it wants rather than a toggle,
+// so a double-click or a retry can't leave the rating flipped from what the user
+// sees. Mounted under /chat/message/… rather than /chat/{id}/… because a message id
+// identifies its chat on its own — the client would otherwise have to carry a chat
+// id it doesn't need.
+#[put("/message/{id}/feedback")]
+async fn set_message_feedback(
+    auth: AuthUser,
+    path: web::Path<Uuid>,
+    payload: web::Json<FeedbackPayload>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    let id_message = path.into_inner();
+
+    let origin = match db::message::find_origin(pool.get_ref(), id_message).await {
+        Ok(Some(origin)) => origin,
+        Ok(None) => return HttpResponse::NotFound().body("message not found"),
+        Err(e) => {
+            eprintln!("message origin db error: {}", e);
+            return HttpResponse::InternalServerError().body("failed to load message");
+        }
+    };
+
+    // Ownership is a property of the chat, not the message, so this is the same
+    // owner-only check every other handler in this file runs.
+    if let Err(resp) = owned_chat(pool.get_ref(), origin.id_chat, auth.claims.sub).await {
+        return resp;
+    }
+
+    // Rating your own message would put a user turn into the preference export
+    // labelled as if a model wrote it.
+    if origin.id_user.is_some() {
+        return HttpResponse::BadRequest().body("only an assistant reply can be rated");
+    }
+
+    match db::message::set_feedback(pool.get_ref(), id_message, payload.feedback).await {
+        Ok(true) => HttpResponse::NoContent().finish(),
+        Ok(false) => HttpResponse::NotFound().body("message not found"),
+        Err(e) => {
+            eprintln!("set message feedback db error: {}", e);
+            HttpResponse::InternalServerError().body("failed to save feedback")
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct UpdateChatPayload {
     title: String,
@@ -658,6 +777,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(chat_ws);
     cfg.service(create_chat);
     cfg.service(list_chats);
+    // Same reason as chat_ws: PUT /chat/message/{id}/feedback is two segments
+    // deeper than PUT /chat/{id}, so it must be registered first to avoid "message"
+    // being captured as a chat id.
+    cfg.service(set_message_feedback);
     cfg.service(get_messages);
     cfg.service(update_chat);
     cfg.service(delete_chat);

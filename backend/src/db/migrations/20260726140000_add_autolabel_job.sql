@@ -1,0 +1,12 @@
+-- A fourth kind of GPU work: generate several candidate replies per prompt, score
+-- them with the rule-based judge in `llm::autolabel`, and write the best/worst pair
+-- out as preference training data.
+--
+-- It is a job like everything else that touches the device, so it queues behind
+-- (and blocks) training, benchmarks and chat turns rather than fighting them.
+--
+-- ALTER TYPE ... ADD VALUE cannot run inside a transaction block on older
+-- PostgreSQL, and sqlx wraps each migration in one. IF NOT EXISTS makes this
+-- re-runnable; on PG 12+ the in-transaction restriction is lifted for a type that
+-- was not created in the same transaction, which is the case here.
+ALTER TYPE job_type ADD VALUE IF NOT EXISTS 'autolabel';

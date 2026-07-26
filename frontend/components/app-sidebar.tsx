@@ -12,6 +12,7 @@ import {
 import { NavMain } from "./sidebar/nav-main";
 import { NavConversations } from "./sidebar/nav-conversations";
 import { NavAdmin } from "./sidebar/nav-admin";
+import { NavJobs } from "./sidebar/nav-jobs";
 import { NavProfile } from "./sidebar/nav-profile";
 import { SidebarSettingsButton } from "./settings/settings-menu-button";
 
@@ -49,6 +50,9 @@ export function AppSidebar() {
       <SidebarContent className="gap-0.5 px-1 py-2">
         <NavMain />
         <NavAdmin />
+        {/* Directly under Admin, so the queue sits with the page it belongs to.
+            Renders nothing at all when nothing is running or waiting. */}
+        <NavJobs />
         <NavConversations />
       </SidebarContent>
       <SidebarFooter className="border-t border-sidebar-border/60 px-1 py-2">

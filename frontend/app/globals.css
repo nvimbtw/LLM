@@ -75,6 +75,13 @@
     --chart-3: #4d699b;
     --chart-4: #b35b79;
     --chart-5: #766b90;
+    /* Approved/rejected in the preference figures. A polarity pair, kept out of
+       the numbered chart slots because it means one specific thing. Blue/amber
+       rather than green/red: that pair collides under deuteranopia (ΔE 5.8, under
+       the 8 floor) where this measures 29.4. Validated in both modes — see
+       components/training/chart-theme.ts for the commands. */
+    --chart-approved: #3f6bb8;
+    --chart-rejected: #de9800;
     --radius: 0.625rem;
     --sidebar: #f7f4e4;
     --sidebar-foreground: #545464;
@@ -111,6 +118,10 @@
     --chart-3: #8ba4b0;
     --chart-4: #a292a3;
     --chart-5: #8992a7;
+    /* Own steps, not lightened light-mode ones: the dark band is tighter
+       (OKLCH L 0.48–0.67) and a rule-based flip lands outside it. */
+    --chart-approved: #6d92da;
+    --chart-rejected: #b98a2c;
     --sidebar: #12120f;
     --sidebar-foreground: #c5c9c5;
     --sidebar-primary: #8ba4b0;

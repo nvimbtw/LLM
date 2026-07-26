@@ -157,9 +157,10 @@ function HistoryRow({
 
       <td className="py-3 pr-3 text-right">
         {run.status === "running" ? (
-          <span className="text-xs text-muted-foreground">
-            {run.progress ? `${Math.round(run.progress.fraction * 100)}%` : "…"}
-          </span>
+          // Live progress belongs to the job producing this run, and /jobs is
+          // where it is shown; repeating it here would mean polling for a number
+          // that is already being pushed somewhere better.
+          <span className="text-xs text-muted-foreground">…</span>
         ) : (
           <span
             className={cn(

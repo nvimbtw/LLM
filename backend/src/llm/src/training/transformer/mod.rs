@@ -357,6 +357,83 @@ impl Model {
         self.run_step(ws, chunk, Some(mask), layers).await
     }
 
+    /// One preference-training step over `chunk`: forward, then a backward whose
+    /// gradient is scaled by KTO's per-example scalar.
+    ///
+    /// This is the same work as `train_step_masked` with one thing inserted in the
+    /// middle. The masked cross-entropy the forward already produces is
+    /// `-log π(reply) / active`, so the sequence log-probability KTO needs is free —
+    /// it falls out of the loss, no extra forward pass. That value plus the
+    /// precomputed `ref_logprob` gives the gradient scale, which the backward then
+    /// applies. Hence one forward and one backward per example, the same cost as SFT.
+    ///
+    /// `ref_logprob` is `log π_ref(reply | prompt)` under the frozen base model,
+    /// computed when the dataset was built. `kl` is the detached KL baseline.
+    ///
+    /// Returns `None` when the chunk has no reply tokens to train on (nothing was
+    /// accumulated, and the caller should skip it rather than count a zero).
+    pub async fn train_step_kto(
+        &self,
+        ws: &mut Workspace,
+        chunk: &[u32],
+        mask: &[u8],
+        layers: usize,
+        ref_logprob: f64,
+        desirable: bool,
+        kl: f64,
+        params: &crate::kto::KtoParams,
+    ) -> Option<crate::kto::KtoStep> {
+        let dims = self.step_dims(chunk, layers);
+        ws.ensure_layer_caches(layers);
+
+        let mut d_x = self.embed_forward(ws, dims, chunk);
+        for layer_idx in 0..layers {
+            let x = self.attn_sublayer_forward(ws, dims, layer_idx, d_x);
+            d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
+        }
+        self.project_logits(ws, dims, d_x);
+
+        let targets = self.upload_loss_targets(ws, dims, chunk, Some(mask));
+        let loss = self.loss_value(ws, dims, &targets)?;
+        let active = targets.active() as usize;
+
+        // The masked loss is the *mean* cross-entropy over the reply's tokens, and
+        // cross-entropy is the negative log-probability, so the sequence total is
+        // just the mean scaled back up by the token count.
+        let logprob = -(loss as f64) * active as f64;
+        let step = crate::kto::step(logprob, ref_logprob, desirable, kl, active, params);
+
+        // A non-finite forward (a diverged run) would otherwise write NaNs into
+        // every accumulator, and the caller cannot tell that from a real step.
+        if !step.grad_scale.is_finite() {
+            return None;
+        }
+        self.loss_gradient(ws, dims, &targets, step.grad_scale as f32);
+
+        let mut d_dx = self.backward_unembed(ws, dims, d_x);
+        for layer_idx in (0..layers).rev() {
+            let g = self.ffn_sublayer_backward(ws, dims, layer_idx, d_dx);
+            d_dx = self.attn_sublayer_backward(ws, dims, layer_idx, g);
+        }
+        self.clip_gradients(ws, dims, layers);
+        self.accumulate_embedding_grad(ws, dims, d_dx);
+
+        Some(step)
+    }
+
+    // The per-step tensor dimensions, shared by every step entry point so the
+    // three of them cannot drift apart.
+    fn step_dims(&self, chunk: &[u32], _layers: usize) -> StepDims {
+        StepDims {
+            s: chunk.len(),
+            d: self.wo[0].len(),
+            h: self.heads as usize,
+            hd: self.head_dim as usize,
+            ff: self.w1[0][0].len(),
+            vocab: self.w_output[0].len(),
+        }
+    }
+
     // Shared forward+backward body for both the pretraining (`mask == None`) and
     // SFT (`mask == Some`) steps. Only the loss stage differs between them.
     async fn run_step(
@@ -366,14 +443,7 @@ impl Model {
         mask: Option<&[u8]>,
         layers: usize,
     ) -> f32 {
-        let dims = StepDims {
-            s: chunk.len(),
-            d: self.wo[0].len(),
-            h: self.heads as usize,
-            hd: self.head_dim as usize,
-            ff: self.w1[0][0].len(),
-            vocab: self.w_output[0].len(),
-        };
+        let dims = self.step_dims(chunk, layers);
         ws.ensure_layer_caches(layers);
 
         let mut d_x = self.embed_forward(ws, dims, chunk);
@@ -419,6 +489,9 @@ unsafe extern "C" {
         seq_len: i32,
         vocab: i32,
         active: i32,
+        // Multiplies the whole gradient. 1.0 for pretrain/SFT; KTO's per-example
+        // scalar (negative for a rejected reply) otherwise.
+        scale: f32,
     );
 
     fn cuda_cross_entropy_loss(

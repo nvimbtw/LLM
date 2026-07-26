@@ -38,6 +38,17 @@ pub fn sft_dir() -> PathBuf {
     root().join("raw").join("sft")
 }
 
+// The training side of the thumbs feedback, exported from `messages.feedback` as
+// JSONL and consumed by `training::build_kto_dataset`.
+//
+// Deliberately a sibling of `sft_dir` under `raw/` rather than living beside the
+// held-out slice in `eval/preference/`: the two must never be read by the same
+// consumer, and putting them in one directory means one glob away from a benchmark
+// that scores the examples the tune trained on.
+pub fn preference_dir() -> PathBuf {
+    root().join("raw").join("preference")
+}
+
 pub fn crawled_dir() -> PathBuf {
     root().join("raw").join("crawled")
 }

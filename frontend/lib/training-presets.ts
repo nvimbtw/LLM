@@ -4,7 +4,7 @@ import type {
   CurriculumStage,
   DatasetSelection,
   TrainConfig,
-} from "./training-socket"
+} from "./training"
 
 // A named, reusable training-parameter set. `config` is a TrainConfig-shaped blob
 // the backend stores opaquely (validated only when a run actually starts). Mirrors

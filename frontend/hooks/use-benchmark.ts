@@ -10,13 +10,13 @@ import {
   getRun,
   getSuite,
   listRuns,
-  startRun,
 } from "@/lib/benchmark"
 
-// Poll interval while a run is in flight. A run takes tens of seconds and its
-// progress is reported at stage boundaries, so a second is responsive without
-// hammering the API; polling stops entirely once nothing is running.
-const POLL_MS = 1000
+// Poll interval while a run is in flight. This page is history: it only needs to
+// notice a run *finishing* so it can select the fresh report. Live progress is on
+// /jobs, which is pushed rather than polled — so a couple of seconds is plenty,
+// and polling stops entirely once nothing is running.
+const POLL_MS = 2000
 
 export function useBenchmark() {
   const [runs, setRuns] = React.useState<BenchmarkRun[]>([])
@@ -27,7 +27,6 @@ export function useBenchmark() {
   // previous run's report — without having to clear state from an effect.
   const [fetched, setFetched] = React.useState<BenchmarkRunDetail | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
-  const [isStarting, setIsStarting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const active = runs.find((run) => run.status === "running") ?? null
@@ -103,23 +102,6 @@ export function useBenchmark() {
     }
   }, [selectedId, runs])
 
-  const start = React.useCallback(
-    async (modelId: string) => {
-      setIsStarting(true)
-      setError(null)
-      try {
-        const run = await startRun(modelId)
-        setSelectedId(run.id_run)
-        await refresh()
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to start benchmark.")
-      } finally {
-        setIsStarting(false)
-      }
-    },
-    [refresh]
-  )
-
   const remove = React.useCallback(
     async (id: string) => {
       setError(null)
@@ -143,10 +125,8 @@ export function useBenchmark() {
     detail: fetched?.id_run === selectedId ? fetched : null,
     selectedId,
     select: setSelectedId,
-    start,
     remove,
     isLoading,
-    isStarting,
     error,
     dismissError: () => setError(null),
   }

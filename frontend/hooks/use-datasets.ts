@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { listDatasets, type DatasetInfo } from "@/lib/training-socket"
+import { listDatasets, type DatasetInfo } from "@/lib/training"
 
 // Loads the selectable pretrain datasets (subfolders of uploads/, each with its
 // .txt count) for the params rail's checkbox picker. Fetched once on mount; the

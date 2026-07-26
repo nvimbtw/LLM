@@ -99,13 +99,38 @@ The chat WebSocket lives in `lib/chat-socket.ts` and follows this wire protocol:
 client → { token }                            (auth frame)
 server → { type: "ready" }
 client → { chat_id, content, model_id }       (chat_id null = new chat)
+server → { type: "queued", job_id, chat_id, ahead }
 server → { type: "token", value }             (repeated)
 server → { type: "done", chat_id, id_message }
 server → { type: "error", message }
+client → { action: "cancel" }
 ```
 
-The training socket follows a similar pattern but broadcasts progress frames
-(`type: "progress"`) — see `lib/training-socket.ts`.
+A reply is a job on the GPU queue, so `queued` always arrives before the first
+token — with `ahead: 0` when the turn starts immediately, so there is one code path
+rather than two. Because the job outlives the socket, closing the tab no longer
+loses the reply: the runner persists it either way.
+
+### The jobs queue
+
+Everything that uses the GPU — training, benchmarks, chat turns — is a job. See
+`lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one socket, two
+subscriptions: the whole board, or one job's frames).
+
+- **Board events are nudges, not payloads.** The socket sends `{ type: "changed" }`
+  and the client refetches `GET /jobs`, so there is exactly one description of a job
+  rather than a REST shape and a socket shape that drift apart.
+- `hooks/use-jobs.ts` owns the board; `hooks/use-job.ts` owns one job — its durable
+  row plus whatever it is broadcasting. **Panels render from the row first and treat
+  live state as an enrichment**, because a queued or finished job has no frames at
+  all (the socket answers `inactive`).
+- Composers live at `/jobs/new/*` and are *only* forms: submitting queues a job and
+  hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>` seeds a
+  composer from a previous run's stored config.
+- `/benchmark` is history and analysis only — it no longer starts runs.
+- The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are how
+  a running job says what it is. Give **one** instance a changing `mode` so it morphs
+  between them as the queue advances rather than cutting.
 
 ### Scripts
 
