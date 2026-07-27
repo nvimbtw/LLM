@@ -1,4 +1,5 @@
 import { JobDetail } from "@/components/jobs/job-detail"
+import { PageShell } from "@/components/ui/page-shell"
 
 export default async function JobPage({
   params,
@@ -7,8 +8,8 @@ export default async function JobPage({
 }) {
   const { id } = await params
   return (
-    <div className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-12 sm:px-8">
+    <PageShell>
       <JobDetail idJob={id} />
-    </div>
+    </PageShell>
   )
 }

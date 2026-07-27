@@ -1,4 +1,5 @@
 import { CycleDetail } from "@/components/cycles/cycle-detail"
+import { PageShell } from "@/components/ui/page-shell"
 
 export default async function CyclePage({
   params,
@@ -7,8 +8,8 @@ export default async function CyclePage({
 }) {
   const { id } = await params
   return (
-    <div className="mx-auto w-full max-w-5xl flex-1 px-5 py-12 sm:px-8">
+    <PageShell>
       <CycleDetail idCycle={id} />
-    </div>
+    </PageShell>
   )
 }

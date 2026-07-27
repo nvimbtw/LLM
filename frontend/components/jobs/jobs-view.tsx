@@ -13,10 +13,16 @@ import { QueueBand } from "./queue-band"
  * The three bands share a single frame rather than sitting in separate cards,
  * because they are one sequence read top to bottom — a job moves down it, and a
  * border between each stage would make that continuity into three lists.
+ *
+ * Queue above history, always. They were briefly side by side to use the width,
+ * but a history row carries seven columns of its own — time, label, kind, ran,
+ * status, menu — and squeezing that into a third of the page cost more than the
+ * empty margin did. The width is better spent letting each row breathe.
  */
 export function JobsView() {
   const {
     running,
+    runningNetwork,
     queued,
     history,
     paused,
@@ -37,12 +43,16 @@ export function JobsView() {
         </p>
       )}
 
-      <section className="overflow-hidden rounded-xl border border-border/60 bg-background">
-        <header className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border/60 px-5 py-4">
+      <section className="overflow-hidden rounded-lg border border-border bg-card">
+        <header className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border px-5 py-4">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
-            <p className="mt-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
-              {summarize(queued.length, running !== null, paused)}
+            <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+              {summarize(
+                queued.length,
+                running !== null || runningNetwork !== null,
+                paused
+              )}
             </p>
           </div>
 
@@ -62,6 +72,12 @@ export function JobsView() {
         </header>
 
         <NowBand job={running} paused={paused} onCancel={cancel} />
+        {/* The network lane gets its own band rather than a slot in the same one:
+            it is a second thing happening at the same time, and folding it into
+            "what is running" would imply the two are taking turns. */}
+        {runningNetwork && (
+          <NowBand job={runningNetwork} paused={paused} onCancel={cancel} />
+        )}
         <QueueBand
           jobs={queued}
           paused={paused}
@@ -70,17 +86,17 @@ export function JobsView() {
           onDelete={remove}
         />
 
-        {!isLoading && !running && queued.length === 0 && (
+        {!isLoading && !running && !runningNetwork && queued.length === 0 && (
           <p className="px-5 py-8 text-center text-sm text-muted-foreground">
             Nothing queued. Add a job to put the GPU to work.
           </p>
         )}
       </section>
 
-      <section className="overflow-hidden rounded-xl border border-border/60 bg-background">
-        <header className="border-b border-border/60 px-5 py-4">
+      <section className="overflow-hidden rounded-lg border border-border bg-card">
+        <header className="border-b border-border px-5 py-4">
           <h2 className="text-sm font-semibold tracking-tight">History</h2>
-          <p className="mt-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
+          <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
             {history.length} {history.length === 1 ? "job" : "jobs"}
           </p>
         </header>
