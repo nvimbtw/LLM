@@ -13,6 +13,13 @@ export interface Settings {
    * animation. On: the streamed reasoning text shown above the reply too.
    */
   showReasoning: boolean
+  /**
+   * Toast when a queued job finishes. Off by default: on the chat-only path a
+   * job is your own reply arriving, and announcing that is noise. It earns its
+   * keep once you are running training and cycles, which is where the wait is
+   * long enough to have gone and done something else.
+   */
+  notifyOnFinish: boolean
   /** Prepended to every conversation to steer the assistant (empty = none). */
   systemPrompt: string
 }
@@ -52,6 +59,15 @@ export const SETTINGS: SettingDef[] = [
       "Reveal the model’s full reasoning above the reply as it thinks. The “Thinking…” animation shows either way.",
     default: false,
     command: "thinking",
+  },
+  {
+    kind: "toggle",
+    key: "notifyOnFinish",
+    label: "Notify when a job finishes",
+    description:
+      "Raise a toast as each queued job lands, including the ones a cycle queued for you.",
+    default: false,
+    command: "notify",
   },
   {
     kind: "text",
