@@ -67,6 +67,13 @@ pub struct AutolabelRequest {
     pub max_prompts: i64,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    // Refit the threshold from the current human ratings instead of reusing the
+    // frozen one. The move at a plateau: once the model clears the old bar, that
+    // bar has nothing left to say, and a new one is fitted from replies rated at
+    // the new quality level. Explicit because it resets the yardstick every earlier
+    // round was measured against.
+    #[serde(default)]
+    pub recalibrate: bool,
 }
 
 fn default_candidates() -> usize {
@@ -143,7 +150,7 @@ pub fn run(
     let judge = llm::autolabel::Judge::build(&reference);
 
     on_progress("Calibrating against your ratings", 0.0);
-    let calibration = calibrate(&judge)?;
+    let calibration = calibrate(&judge, request.recalibrate)?;
     on_calibration(&calibration);
 
     let ctx_window = model.positional_table.len();
@@ -245,6 +252,44 @@ pub fn run(
 // and would report near-perfect agreement no matter how wrong it was.
 const HUMAN_FILE: &str = "feedback.jsonl";
 
+// Where the fitted threshold is frozen.
+const CALIBRATION_FILE: &str = "calibration.json";
+
+// The frozen bar, plus what it was fitted from.
+//
+// **Why it is frozen rather than refitted each run.** The threshold is what a
+// round's labels are decided against, so it is the loop's target. Refitting it
+// every round against the current model's output would move the target with the
+// model: whatever it produces becomes the new definition of good, the same
+// fraction is labelled bad forever, and the loop can neither converge nor say how
+// far it has come. Frozen, "fraction of replies clearing the bar" is a real
+// learning curve against a fixed reference — and when almost everything clears it,
+// the catalogue goes one-sided and the run refuses, which is the loop reporting
+// that it has extracted what this bar can teach.
+//
+// The provenance fields are not decoration: a bar is only meaningful next to the
+// ratings it came from, and at a plateau the question is always "what quality level
+// was this fitted at". `--recalibrate` is how a new one is fitted, deliberately an
+// explicit act.
+#[derive(Deserialize, Serialize)]
+pub struct FrozenCalibration {
+    pub calibration: llm::autolabel::Calibration,
+    pub fitted_at: String,
+    // How many human ratings it was fitted from, so a later run can tell a bar fitted
+    // from 30 judgements from one fitted from 300.
+    pub ratings: usize,
+}
+
+pub fn calibration_path() -> std::path::PathBuf {
+    storage::preference_dir().join(CALIBRATION_FILE)
+}
+
+/// The frozen bar, if one has been fitted. `None` before the first catalogue run.
+pub fn frozen_calibration() -> Option<FrozenCalibration> {
+    let content = std::fs::read_to_string(calibration_path()).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 // Below this there is not enough human signal to place a threshold: the boundary
 // would be fit to a handful of replies and would move wildly with one more rating.
 const MIN_HUMAN_RATINGS: usize = 24;
@@ -259,7 +304,30 @@ const MIN_HUMAN_RATINGS: usize = 24;
 // to the token cap is missing those points and falls below a boundary fit on
 // replies that had them, so runaway replies get labelled bad. Which is correct —
 // they are.
-fn calibrate(judge: &llm::autolabel::Judge) -> Result<llm::autolabel::Calibration, String> {
+fn calibrate(
+    judge: &llm::autolabel::Judge,
+    recalibrate: bool,
+) -> Result<llm::autolabel::Calibration, String> {
+    // The frozen bar wins unless this run was explicitly asked to refit one. This
+    // is the whole point of freezing: round 7 labels against the same threshold as
+    // round 1, so "48% clear the bar" means something next to round 1's "12%".
+    if !recalibrate {
+        if let Some(frozen) = frozen_calibration() {
+            return Ok(frozen.calibration);
+        }
+    }
+
+    let (calibration, ratings) = fit_calibration(judge)?;
+    freeze(calibration, ratings);
+    Ok(calibration)
+}
+
+// Fits a threshold from the human ratings on disk. Pure: reads, computes, returns.
+// Returns the ratings count alongside so the caller can record what it was fitted
+// from.
+fn fit_calibration(
+    judge: &llm::autolabel::Judge,
+) -> Result<(llm::autolabel::Calibration, usize), String> {
     let path = storage::preference_dir().join(HUMAN_FILE);
     let content = std::fs::read_to_string(&path).map_err(|_| {
         format!(
@@ -322,7 +390,31 @@ fn calibrate(judge: &llm::autolabel::Judge) -> Result<llm::autolabel::Calibratio
         ));
     }
 
-    Ok(calibration)
+    Ok((calibration, total))
+}
+
+// Freezes a freshly fitted bar to disk.
+//
+// Separate from `fit_calibration` so that fitting has no side effects: the
+// diagnostic below answers "what would the bar be right now" and must not
+// silently replace the number every earlier round was measured against.
+fn freeze(calibration: llm::autolabel::Calibration, ratings: usize) {
+    let frozen = FrozenCalibration {
+        calibration,
+        fitted_at: chrono::Utc::now().to_rfc3339(),
+        ratings,
+    };
+    match serde_json::to_string_pretty(&frozen) {
+        Ok(encoded) => {
+            if let Err(e) = std::fs::write(calibration_path(), encoded) {
+                // Not fatal: this run has its threshold and can label with it. The
+                // next run refits, which costs a second of CPU — worth reporting,
+                // not worth refusing over.
+                eprintln!("[autolabel] could not freeze the calibration: {e}");
+            }
+        }
+        Err(e) => eprintln!("[autolabel] could not encode the calibration: {e}"),
+    }
 }
 
 // One line of the human ratings file, as `queue::export_preference_data` writes it.
@@ -362,7 +454,24 @@ pub fn catalogue_counts() -> (i64, i64) {
     (approved, rejected)
 }
 
-// The reference prose the judge is fit on: the benchmark's held-out corpus dir.
+// The reference text the judge is fit on: the benchmark's prose corpus, plus the
+// assistant turns of the curated SFT conversations.
+//
+// **Why both.** Prose alone is what this used to be, and it made the judge score
+// the wrong thing. The corpus is children's-story English; the replies being judged
+// are chat answers full of paths, flags, identifiers and markup. Measured against a
+// prose-only reference, a correct technical reply scored *below* a degenerate
+// repeating loop, so the catalogue it produced selected against every property SFT
+// had just taught. Adding the assistant turns puts that register in the reference.
+//
+// **Why the prose stays.** It is ~50× the volume, and the lexicon needs volume: a
+// frequency-thresholded word list built from the SFT turns alone is a few hundred
+// words, which marks most correct output "unreal". The prose carries the statistics;
+// the SFT turns carry the domain.
+//
+// Markers are stripped from the SFT side — `<|par|>` is structure, not vocabulary,
+// and `Judge::fluency` strips them from the reply for the same reason. Leaving them
+// in would make marker text part of what "fluent English" means.
 fn load_reference() -> Result<String, String> {
     let dir = storage::eval_dir().join("corpus");
     let entries = std::fs::read_dir(&dir)
@@ -391,7 +500,64 @@ fn load_reference() -> Result<String, String> {
             dir.display()
         ));
     }
+
+    // Absent or unreadable SFT conversations are not an error: the judge still works
+    // on prose alone, exactly as it did before, just with the old genre blind spot.
+    for reply in sft_assistant_turns() {
+        text.push_str(&reply);
+        text.push('\n');
+    }
     Ok(text)
+}
+
+// Every assistant turn in `raw/sft/*.jsonl`, markers stripped. Only the assistant
+// side: user turns in these conversations are pasted logs, terminal dumps and file
+// listings, which are not a model of anything the model should be rewarded for
+// writing.
+fn sft_assistant_turns() -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Turn {
+        role: String,
+        text: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Conversation {
+        turns: Vec<Turn>,
+    }
+
+    let dir = storage::sft_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .collect();
+    paths.sort();
+
+    let mut out = Vec::new();
+    for path in paths {
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // A malformed line is skipped rather than failing the run — the same
+            // tolerance the generator's own validator applies on the way in.
+            if let Ok(conv) = serde_json::from_str::<Conversation>(line) {
+                for turn in conv.turns {
+                    if turn.role == "assistant" {
+                        out.push(llm::eval::surface::strip_markers(&turn.text));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 // Appends to the auto-label file rather than replacing it, so successive runs
@@ -436,8 +602,11 @@ mod tests {
     fn calibration_report() {
         let reference = super::load_reference().expect("a reference corpus in data/eval/corpus");
         let judge = llm::autolabel::Judge::build(&reference);
-        match super::calibrate(&judge) {
-            Ok(c) => println!(
+        // `true` = fit fresh from the ratings rather than reporting back the frozen
+        // number, which is what makes this a diagnostic: it answers "what would the
+        // bar be if fitted right now", which at a plateau is exactly the question.
+        match super::fit_calibration(&judge) {
+            Ok((c, _)) => println!(
                 "agreement (AUC) {:.3} over {} approved / {} rejected\n\
                  threshold {:.4}, separation {:.4} — {}",
                 c.auc,

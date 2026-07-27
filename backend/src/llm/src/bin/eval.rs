@@ -88,7 +88,12 @@ fn print_report(report: &llm::eval::Report) {
     println!("  real words       {:.1}%", g.real_word_rate * 100.0);
     println!("  distinct-3       {:.1}%", g.distinct_3 * 100.0);
     println!("  repetition       {:.1}%", g.repeat_rate * 100.0);
-    println!("  markup valid     {:.1}%", g.marker_validity * 100.0);
+    // Unknown when no sample attempted markup at all — printing "0.0%" or "NaN%"
+    // would both read as a verdict, and it isn't one.
+    match g.marker_validity {
+        v if v.is_finite() => println!("  markup valid     {:.1}%", v * 100.0),
+        _ => println!("  markup valid     —  (no sample emitted markup)"),
+    }
     for sample in g.samples.iter().take(3) {
         println!("    {}⟨{}⟩", sample.prompt, sample.completion.trim());
     }

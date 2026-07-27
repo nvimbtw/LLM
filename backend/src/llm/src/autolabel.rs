@@ -16,10 +16,14 @@
 //!   3. **Format** — did the model close its turn, and are its markers balanced.
 //!      Exactly decidable, no scoring needed.
 //!
-//! **Candidates are ranked against each other, never against an absolute
-//! threshold.** Only the ordering within one prompt matters, so the composite never
-//! has to be calibrated — it just has to put a better reply above a worse one. This
-//! is what makes a hand-weighted formula defensible here.
+//! **Two ways to turn scores into labels, and the second is the one in use.**
+//! `label` ranks a prompt's candidates against each other, which needs no
+//! calibration but yields only two examples per prompt and can never say "all of
+//! these are bad". `label_absolute` compares each candidate to a threshold fitted
+//! to replies a person rated — which yields a verdict per candidate, and *can* say
+//! that. The threshold is fitted once and then frozen (see `Calibration`): a bar
+//! refitted per round would move with the model, and a target that moves with the
+//! thing chasing it can never be cleared.
 //!
 //! **What this can and cannot teach.** It can only teach what it measures: real
 //! words, no looping, well-formed turns that end. Those happen to be the actual
@@ -35,7 +39,7 @@
 //! computed purely from human thumbs. If the tune games the heuristic, the human
 //! margin will not move — and that divergence is the signal to look at.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::eval::{ngram, surface};
 
@@ -43,14 +47,21 @@ use crate::eval::{ngram, surface};
 /// at all" anchor the fluency score is normalized against.
 const UNIFORM_BITS_PER_BYTE: f64 = 8.0;
 
-/// Component weights. Fluency dominates because it is the one signal that a reply
-/// cannot satisfy without actually resembling English; the rest are cheap to game
-/// individually and are here to catch specific failure shapes fluency alone misses
-/// (a fluent-looking loop, an unterminated turn).
-const W_FLUENCY: f64 = 0.40;
-const W_REAL_WORDS: f64 = 0.25;
-const W_VARIETY: f64 = 0.20;
-const W_FORMAT: f64 = 0.15;
+/// Component weights. Fluency still leads: it is the one signal a reply cannot
+/// satisfy without actually resembling English.
+///
+/// Format is weighted twice what it was. It used to be half dead — `marker_validity`
+/// scanned for characters that never appear in decoded text, so it returned 1.0 for
+/// every candidate ever judged, and half of this component was a constant. Now that
+/// it reads real markup, "well-formed markers, turn properly closed" is the one
+/// judgement here that is *exactly decidable* and *domain-correct* for a chat model,
+/// rather than inferred from statistics of a prose corpus. The weight comes off
+/// fluency and real-words, which are the two most sensitive to the reference corpus
+/// being a different genre from the replies being judged.
+const W_FLUENCY: f64 = 0.35;
+const W_REAL_WORDS: f64 = 0.20;
+const W_VARIETY: f64 = 0.15;
+const W_FORMAT: f64 = 0.30;
 
 /// The minimum best-worst score gap for a prompt's candidates to be labelled.
 ///
@@ -83,8 +94,17 @@ pub struct Score {
 }
 
 impl Judge {
-    /// Fits the rule set to `reference` — the same held-out-adjacent prose the
-    /// benchmark's lexicon and n-gram baseline are built from.
+    /// Fits the rule set to `reference` — the text this judge treats as "what good
+    /// output looks like".
+    ///
+    /// The caller assembles it (see `autolabel::load_reference` on the backend
+    /// side) from the benchmark's prose corpus *plus* the assistant turns of the
+    /// curated SFT conversations, markers stripped. Prose alone was the original
+    /// choice, on the reasoning that the reference should describe English rather
+    /// than this model's diet — but the target output is chat replies, and judging
+    /// those against children's-story statistics scored a correct technical answer
+    /// below a degenerate loop. The prose still supplies nearly all the volume; the
+    /// SFT turns supply the vocabulary and register that prose has no examples of.
     pub fn build(reference: &str) -> Judge {
         let bytes = reference.as_bytes();
         let ngram = ngram::ByteNgram::fit(bytes, ngram::MAX_ORDER);
@@ -122,8 +142,18 @@ impl Judge {
 
         // Two independent format faults, weighted equally: markers that don't nest,
         // and a turn that never ends.
-        let format = 0.5 * finite_or_zero(metrics.marker_validity)
-            + 0.5 * if stopped_on_marker { 1.0 } else { 0.0 };
+        //
+        // A reply containing no markers at all leaves the first unmeasurable
+        // (`marker_validity` is NaN, not 0). Scoring that as a fault would punish
+        // plain-prose replies for markup they never attempted, so the weight falls
+        // to the half that *is* observable — the same "a missing measurement is not
+        // a failed one" rule `eval::composite_score` follows.
+        let ended = if stopped_on_marker { 1.0 } else { 0.0 };
+        let format = if metrics.marker_validity.is_finite() {
+            0.5 * metrics.marker_validity + 0.5 * ended
+        } else {
+            ended
+        };
 
         let total = W_FLUENCY * fluency
             + W_REAL_WORDS * real_words
@@ -140,8 +170,15 @@ impl Judge {
     /// A reply that somehow beats the reference is clamped rather than rewarded
     /// beyond 1 — scoring *below* the reference's entropy means degenerate
     /// repetition, not exceptional prose, and that is variety's job to catch.
+    ///
+    /// Measured on the reply with its markers stripped, for the same reason
+    /// `surface::analyze` strips them: `<|par|>` reaches here as that literal text,
+    /// and charging its bytes to a prose n-gram scores correct markup as
+    /// disfluency. Markup is judged by `format`, prose by this — one property per
+    /// component.
     fn fluency(&self, reply: &str) -> f64 {
-        let bits = self.ngram.bits_per_byte(reply.as_bytes());
+        let prose = surface::strip_markers(reply);
+        let bits = self.ngram.bits_per_byte(prose.as_bytes());
         if !bits.is_finite() {
             return 0.0;
         }
@@ -189,7 +226,12 @@ pub const MIN_AUC: f64 = 0.65;
 pub const UNCERTAIN_BAND: f64 = 0.03;
 
 /// What the human ratings say about this rule set.
-#[derive(Clone, Copy, Serialize)]
+///
+/// `Deserialize` because this gets **frozen**: fitted once and written to disk,
+/// then reused by every later run. A threshold that were refitted each round would
+/// move with the model — and a target that moves with the thing chasing it can
+/// never be reached, so the loop could neither converge nor report progress.
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Calibration {
     /// P(a random approved reply scores above a random rejected one). 0.5 is
     /// chance, 1.0 is perfect agreement. Rank-based, so it measures *ordering*
