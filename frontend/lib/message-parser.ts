@@ -7,6 +7,15 @@
 //   <|codeblock|>...code...<|/codeblock|>
 //   <|divider|>
 //
+// Three of them are rendered here but not yet emitted by any model — the parser
+// and the renderer come first so there is something to generate SFT *against*:
+//   <|quote|>Quoted text<|/quote|>
+//   <|warn|>Something the reader should not miss<|/warn|>
+//   <|reply|>message-id<|/reply|>
+// `reply` names an earlier message in the same conversation; resolving the id is
+// the renderer's job (components/chat/message-refs.tsx), not the parser's, which
+// only has to hand over the id as text.
+//
 // Those token names are mapped here onto the render vocabulary shared with the
 // user-input parser (lib/user-parser.ts) and the renderer (rich-message.tsx) —
 // e.g. `par` -> `paragraph`, `title` -> `heading 1`. See TOKEN_NAME_MAP. This
@@ -77,7 +86,10 @@ export function isInThinkingBlock(content: string): boolean {
 const TAG_RE = /<\|(.*?)\|>/g
 const ATTR_RE = /(\w+)\s*=\s*'([^']*)'/g
 
-function parseOpenTag(inner: string): { name: string; attrs?: Record<string, string> } {
+function parseOpenTag(inner: string): {
+  name: string
+  attrs?: Record<string, string>
+} {
   const bar = inner.indexOf("|")
   const name = mapTokenName((bar === -1 ? inner : inner.slice(0, bar)).trim())
   const attrStr = bar === -1 ? "" : inner.slice(bar + 1)

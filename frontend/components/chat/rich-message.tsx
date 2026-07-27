@@ -5,6 +5,7 @@ import { Check, Copy } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import {
+  isInThinkingBlock,
   isText,
   parseMessage,
   textContent,
@@ -12,33 +13,78 @@ import {
   type MNode,
 } from "@/lib/message-parser"
 import { useSettings } from "@/components/settings/settings-provider"
+import { MessageAside } from "./message-aside"
+import { MessageReplyRef } from "./message-reply-ref"
 import { ReasoningPanel } from "./reasoning-panel"
 
 export function RichMessage({
   content,
   streaming = false,
+  className,
 }: {
   content: string
   streaming?: boolean
+  className?: string
 }) {
   const tree = React.useMemo(() => parseMessage(content), [content])
-  return <RichContent root={tree} streaming={streaming} />
+  // Whether the *reasoning* is what is currently arriving, as opposed to the
+  // answer. A message can hold several thinking blocks and only the open one is
+  // live, so this is combined with "is the last node" below rather than applied
+  // to every block in the message.
+  const liveThinking = streaming && isInThinkingBlock(content)
+  return (
+    <RichContent
+      root={tree}
+      streaming={streaming}
+      liveThinking={liveThinking}
+      className={className}
+    />
+  )
 }
 
-/** Renders an already-parsed node tree (model markup or user markdown). */
+/**
+ * Renders an already-parsed node tree (model markup or user markdown).
+ *
+ * The type size is *not* fixed here. This is the app's one long-form reading
+ * surface and it wants a larger measure than a table row does — but the same
+ * renderer also has to sit inside a preview card, so the size comes from the
+ * caller and everything below sizes in `em` off it.
+ */
 export function RichContent({
   root,
   streaming = false,
+  liveThinking = false,
+  className,
 }: {
   root: MElement
   streaming?: boolean
+  liveThinking?: boolean
+  className?: string
 }) {
   const { settings } = useSettings()
+  const ctx: Ctx = {
+    streaming,
+    liveThinking,
+    showReasoning: settings.showReasoning,
+  }
   return (
-    <div className="space-y-3 text-sm leading-relaxed break-words">
-      {renderChildren(root, streaming, settings.showReasoning)}
+    <div className={cn("space-y-3.5 break-words", className)}>
+      {renderChildren(root, ctx)}
     </div>
   )
+}
+
+/**
+ * What every node needs to know about the render as a whole. An object rather
+ * than positional arguments: this is threaded through every branch of the
+ * renderer, and each new flag was another parameter to add in nine places.
+ */
+interface Ctx {
+  streaming: boolean
+  liveThinking: boolean
+  showReasoning: boolean
+  /** True when this node is the last child of the message — see `liveThinking`. */
+  isLast?: boolean
 }
 
 // Block containers where whitespace between children is just formatting noise.
@@ -58,40 +104,44 @@ function fadeWords(value: string): React.ReactNode {
   )
 }
 
-function renderChildren(
-  node: MElement,
-  streaming: boolean,
-  showReasoning: boolean
-): React.ReactNode {
+function renderChildren(node: MElement, ctx: Ctx): React.ReactNode {
   const children = BLOCK_CONTAINERS.has(node.type)
     ? node.children.filter((c) => !(isText(c) && c.value.trim() === ""))
     : node.children
 
   return children.map((child, i) => (
-    <React.Fragment key={i}>{renderNode(child, streaming, showReasoning)}</React.Fragment>
+    <React.Fragment key={i}>
+      {renderNode(child, {
+        ...ctx,
+        // Only meaningful at the top level: a thinking block nested inside a
+        // paragraph is not the message's trailing node whatever its index says.
+        isLast: node.type === "root" && i === children.length - 1,
+      })}
+    </React.Fragment>
   ))
 }
 
-function renderNode(
-  node: MNode,
-  streaming: boolean,
-  showReasoning: boolean
-): React.ReactNode {
-  if (isText(node)) return streaming ? fadeWords(node.value) : node.value
+function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
+  if (isText(node)) return ctx.streaming ? fadeWords(node.value) : node.value
 
   const el = node
-  const kids = renderChildren(el, streaming, showReasoning)
+  const kids = renderChildren(el, ctx)
 
   if (el.type.startsWith("heading ")) {
     const level = el.type.slice("heading ".length).trim()
     const Tag = level === "1" ? "h2" : level === "2" ? "h3" : "h4"
+    // Sized in `em` so a heading stays proportional to whatever the surface set
+    // its body at, and set in the display face — a reply with a title in it is
+    // the one place in the app that reads like a page rather than a UI.
     return (
       <Tag
         className={cn(
-          "font-heading font-semibold",
-          level === "1" && "text-xl",
-          level === "2" && "text-lg",
-          level !== "1" && level !== "2" && "text-base"
+          "font-display font-semibold tracking-tight",
+          // Extra space above, none below: a heading belongs to what follows it.
+          "mt-5 -mb-1 first:mt-0",
+          level === "1" && "text-[1.5em]",
+          level === "2" && "text-[1.25em]",
+          level !== "1" && level !== "2" && "text-[1.08em]"
         )}
       >
         {kids}
@@ -104,9 +154,14 @@ function renderNode(
       // Rendered in place, at the point in the reply where the model actually
       // reasoned — not hoisted above the whole message — so text/reasoning/text
       // sequences stay in their original order.
-      if (!showReasoning) return null
+      if (!ctx.showReasoning) return null
       const text = textContent(el).trim()
-      return text ? <ReasoningPanel text={text} /> : null
+      return text ? (
+        <ReasoningPanel
+          text={text}
+          streaming={ctx.liveThinking && ctx.isLast === true}
+        />
+      ) : null
     }
     case "paragraph":
       return <p>{kids}</p>
@@ -124,7 +179,10 @@ function renderNode(
       )
     case "code block":
       return (
-        <CodeBlock code={stripEdgeNewlines(textContent(el))} lang={el.attrs?.lang} />
+        <CodeBlock
+          code={stripEdgeNewlines(textContent(el))}
+          lang={el.attrs?.lang}
+        />
       )
     case "ordered list":
       return (
@@ -157,10 +215,18 @@ function renderNode(
       )
     case "quote":
       return (
-        <blockquote className="rounded-r-md border-l-2 border-chart-2 bg-chart-2/10 px-3 py-2 text-muted-foreground italic">
-          {kids}
-        </blockquote>
+        <MessageAside tone="quote">
+          <blockquote>{kids}</blockquote>
+        </MessageAside>
       )
+    case "warn":
+      return <MessageAside tone="warn">{kids}</MessageAside>
+    case "reply": {
+      // The id is the element's only content, so it is read as text rather than
+      // rendered — there is nothing here to mark up.
+      const id = textContent(el).trim()
+      return id ? <MessageReplyRef id={id} /> : null
+    }
     default:
       // Unknown tag — render its contents so nothing is lost.
       return <>{kids}</>

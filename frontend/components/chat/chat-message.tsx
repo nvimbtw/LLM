@@ -8,6 +8,7 @@ import type { Feedback } from "@/lib/feedback"
 import { parseUserMarkdown } from "@/lib/user-parser"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { messageDomId } from "./message-refs"
 import { RichContent, RichMessage } from "./rich-message"
 
 export function ChatMessageBubble({
@@ -20,21 +21,46 @@ export function ChatMessageBubble({
   // Absent on a reply that can't be rated (no server id yet).
   onRate?: (feedback: Feedback) => void
 }) {
+  // The anchor a `<|reply|>` elsewhere in the thread scrolls to.
+  //
+  // It goes on the *bubble*, not the row that positions it: the arrival sweep
+  // draws on the anchored element's own border, and anchoring the full-width
+  // flex row would frame the empty half of the line along with the message.
+  // `scroll-mt` keeps it clear of the top edge when it is scrolled to.
+  const anchor = message.id ? messageDomId(message.id) : undefined
+
   // User messages use a markdown subset; assistant messages use the model's markup.
   if (message.role === "user") {
     const tree = parseUserMarkdown(message.content)
     return (
       <div className="flex w-full justify-end">
-        <div className="min-w-0 max-w-[85%] rounded-2xl bg-card px-4 py-3 text-card-foreground ring-1 ring-border/50">
-          <RichContent root={tree} />
+        {/* Capped in `ch` as well as `%`: a percentage alone means a two-word
+            question and a five-line one get wildly different shapes, and the long
+            one runs to a measure nobody wants to read right-aligned.
+
+            The bottom-right corner is tightened to a quarter of the others. That
+            asymmetry is the whole reason it reads as *said by someone* rather than
+            as a rounded rectangle — a tail, without drawing a tail. */}
+        <div
+          id={anchor}
+          className="max-w-[min(52ch,85%)] min-w-0 scroll-mt-6 rounded-2xl rounded-br-md border border-border bg-card px-4 py-2.5 text-card-foreground"
+        >
+          <RichContent root={tree} className="text-[0.95rem] leading-relaxed" />
         </div>
       </div>
     )
   }
 
   return (
-    <div className="w-full min-w-0">
-      <RichMessage content={message.content} streaming={streaming} />
+    <div id={anchor} className="w-full min-w-0 scroll-mt-6 rounded-lg">
+      {/* No bubble on the assistant side, and no measure cap: the reply is the
+          page, not a quote on it. It gets the larger size of the two — this is
+          the text that actually gets read. */}
+      <RichMessage
+        content={message.content}
+        streaming={streaming}
+        className="text-base leading-relaxed"
+      />
       {/* Nothing under a reply that is still being written: the byline's figures
           aren't known yet, and a thumbs on half a reply would rate text the user
           hasn't finished reading. */}
@@ -105,7 +131,7 @@ function FeedbackButton({
       title={active ? `${label} — click to undo` : label}
       onClick={onClick}
       className={cn(
-        "text-muted-foreground/50 hover:text-foreground",
+        "text-muted-foreground hover:text-foreground",
         active && "text-foreground"
       )}
     >
@@ -134,15 +160,19 @@ function Byline({ message }: { message: ChatMessage }) {
     figures.push(`${message.tokenCount.toLocaleString("en-US")} tokens`)
   }
   if (message.thinkingTokenCount) {
-    figures.push(`${message.thinkingTokenCount.toLocaleString("en-US")} thinking`)
+    figures.push(
+      `${message.thinkingTokenCount.toLocaleString("en-US")} thinking`
+    )
   }
   if (!message.modelName && figures.length === 0) return null
 
   return (
-    <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground/70">
+    <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground">
       {message.modelName && (
         // The one part that's a name rather than a number, so it carries the weight.
-        <span className="font-medium text-muted-foreground">{message.modelName}</span>
+        <span className="font-medium text-muted-foreground">
+          {message.modelName}
+        </span>
       )}
       {figures.map((figure, i) => (
         <React.Fragment key={figure}>
