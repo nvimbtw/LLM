@@ -2,6 +2,7 @@
 
 import * as React from "react"
 
+import { toast } from "@/components/ui/toast"
 import {
   type BenchmarkRun,
   type BenchmarkRunDetail,
@@ -47,10 +48,16 @@ export function useBenchmark() {
         setSuite(info)
         // Land on the newest finished run so the page has something to show
         // instead of an empty frame.
-        setSelectedId((current) => current ?? list.find((r) => r.status === "done")?.id_run ?? null)
+        setSelectedId(
+          (current) =>
+            current ?? list.find((r) => r.status === "done")?.id_run ?? null
+        )
       })
       .catch((err) => {
-        if (alive) setError(err instanceof Error ? err.message : "Failed to load benchmarks.")
+        if (alive)
+          setError(
+            err instanceof Error ? err.message : "Failed to load benchmarks."
+          )
       })
       .finally(() => {
         if (alive) setIsLoading(false)
@@ -71,7 +78,9 @@ export function useBenchmark() {
           setRuns(list)
           // The moment the run we were watching finishes, select it — the whole
           // point of starting a run is to see its report.
-          const finished = list.find((r) => r.id_run === active.id_run && r.status !== "running")
+          const finished = list.find(
+            (r) => r.id_run === active.id_run && r.status !== "running"
+          )
           if (finished) setSelectedId(finished.id_run)
         })
         .catch(() => {
@@ -95,7 +104,8 @@ export function useBenchmark() {
         if (alive) setFetched(run)
       })
       .catch((err) => {
-        if (alive) setError(err instanceof Error ? err.message : "Failed to load run.")
+        if (alive)
+          setError(err instanceof Error ? err.message : "Failed to load run.")
       })
     return () => {
       alive = false
@@ -104,15 +114,20 @@ export function useBenchmark() {
 
   const remove = React.useCallback(
     async (id: string) => {
-      setError(null)
       try {
         await apiDeleteRun(id)
+        toast.success("Run deleted.")
         const list = await refresh()
         setSelectedId((current) =>
-          current === id ? (list.find((r) => r.status === "done")?.id_run ?? null) : current
+          current === id
+            ? (list.find((r) => r.status === "done")?.id_run ?? null)
+            : current
         )
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to delete run.")
+        toast.error(
+          "Couldn't delete the run",
+          err instanceof Error ? err.message : "Something went wrong."
+        )
       }
     },
     [refresh]

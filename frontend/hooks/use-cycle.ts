@@ -2,12 +2,21 @@
 
 import * as React from "react"
 
+import { toast } from "@/components/ui/toast"
 import {
   getCycle,
   setCycleStatus,
   type CycleDetail,
   type CycleStatus,
 } from "@/lib/cycles"
+
+// What each transition actually did, which is not what the verb implies: neither
+// pausing nor halting interrupts the stage already on the GPU.
+const STATUS_DONE: Record<"running" | "paused" | "halted", string> = {
+  running: "Cycle resumed.",
+  paused: "Cycle paused after the current stage.",
+  halted: "Cycle stopping. The best model so far is kept.",
+}
 
 /**
  * One cycle, with its rounds and the jobs it has spawned.
@@ -21,7 +30,9 @@ export function useCycle(idCycle: string, intervalMs = 8000) {
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
 
-  const live = cycle ? cycle.status === "running" || cycle.status === "paused" : true
+  const live = cycle
+    ? cycle.status === "running" || cycle.status === "paused"
+    : true
 
   React.useEffect(() => {
     let active = true
@@ -35,7 +46,9 @@ export function useCycle(idCycle: string, intervalMs = 8000) {
         })
         .catch((e: unknown) => {
           if (active) {
-            setError(e instanceof Error ? e.message : "Failed to load the cycle.")
+            setError(
+              e instanceof Error ? e.message : "Failed to load the cycle."
+            )
           }
         })
         .finally(() => {
@@ -67,9 +80,16 @@ export function useCycle(idCycle: string, intervalMs = 8000) {
     async (status: Extract<CycleStatus, "running" | "paused" | "halted">) => {
       try {
         await setCycleStatus(idCycle, status)
+        // The page's own `error` stays for "the cycle could not be loaded". This
+        // is an outcome, and one whose effect is delayed — pausing lets the
+        // current stage finish — so it has to say so rather than look inert.
+        toast.success(STATUS_DONE[status])
         await refresh()
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to update the cycle.")
+        toast.error(
+          "Couldn't update the cycle",
+          e instanceof Error ? e.message : "Something went wrong."
+        )
       }
     },
     [idCycle, refresh]

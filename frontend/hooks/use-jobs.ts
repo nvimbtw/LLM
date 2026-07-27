@@ -2,6 +2,7 @@
 
 import * as React from "react"
 
+import { toast } from "@/components/ui/toast"
 import {
   cancelJob,
   deleteJob,
@@ -80,13 +81,21 @@ export function useJobs(enabled = true) {
   // Every mutation refetches rather than patching local state: the server decides
   // ordering and status, and a queued job the runner claimed mid-request would
   // make an optimistic patch wrong in exactly the moment it matters.
+  //
+  // Outcomes are toasts, not the `error` banner above — that one is reserved for
+  // "the board could not be loaded", which is a state of the page. Whether a
+  // cancel took is an event, and an event that silently repaints a row four
+  // seconds later is indistinguishable from nothing happening.
   const act = React.useCallback(
-    async (run: () => Promise<unknown>) => {
+    async (run: () => Promise<unknown>, done: string) => {
       try {
         await run()
-        setError(null)
+        toast.success(done)
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Something went wrong.")
+        toast.error(
+          "That didn't work",
+          e instanceof Error ? e.message : "Something went wrong."
+        )
       } finally {
         await refresh()
       }
@@ -94,27 +103,49 @@ export function useJobs(enabled = true) {
     [refresh]
   )
 
-  const cancel = React.useCallback((id: string) => act(() => cancelJob(id)), [act])
-  const remove = React.useCallback((id: string) => act(() => deleteJob(id)), [act])
-  const retry = React.useCallback((id: string) => act(() => retryJob(id)), [act])
+  const cancel = React.useCallback(
+    (id: string) => act(() => cancelJob(id), "Cancelling the job."),
+    [act]
+  )
+  const remove = React.useCallback(
+    (id: string) => act(() => deleteJob(id), "Job deleted."),
+    [act]
+  )
+  const retry = React.useCallback(
+    (id: string) => act(() => retryJob(id), "Re-queued."),
+    [act]
+  )
 
   const reorder = React.useCallback(
-    (id: string, afterId: string | null) => act(() => reorderJob(id, afterId)),
+    (id: string, afterId: string | null) =>
+      act(() => reorderJob(id, afterId), "Queue reordered."),
     [act]
   )
 
   const pause = React.useCallback(
-    (paused: boolean) => act(() => setPaused(paused)),
+    (paused: boolean) =>
+      act(
+        () => setPaused(paused),
+        paused ? "Queue paused. The running job carries on." : "Queue resumed."
+      ),
     [act]
   )
 
+  // One running job *per lane*, not one overall: the two runners proceed
+  // independently, so a generation run and a training run are both "now", and
+  // picking the first of them would leave the other showing nowhere on the page.
+  const isLive = (job: Job) =>
+    job.status === "running" || job.status === "cancelling"
   const running: Job | null =
-    board.active.find((j) => j.status === "running" || j.status === "cancelling") ?? null
+    board.active.find((j) => isLive(j) && j.lane === "device") ?? null
+  const runningNetwork: Job | null =
+    board.active.find((j) => isLive(j) && j.lane === "network") ?? null
   const queued = board.active.filter((j) => j.status === "queued")
 
   return {
     board,
     running,
+    runningNetwork,
     queued,
     history: board.history,
     paused: board.paused,

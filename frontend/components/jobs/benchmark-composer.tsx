@@ -6,6 +6,7 @@ import { Play } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Panel } from "@/components/ui/panel"
+import { toast } from "@/components/ui/toast"
 import {
   Select,
   SelectContent,
@@ -31,7 +32,6 @@ export function BenchmarkComposer() {
   const [suite, setSuite] = React.useState<SuiteInfo | null>(null)
   const [chosenId, setChosenId] = React.useState("")
   const [isSubmitting, setIsSubmitting] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
 
   // Only the *explicit* choice is stored; the default is derived from the list.
   // Storing the default instead would mean writing state from an effect the moment
@@ -50,14 +50,21 @@ export function BenchmarkComposer() {
     }
   }, [])
 
+  // Success navigates to the new job, so the confirmation has to outlive the
+  // page it was triggered from — which is what a toast is. A rejection is
+  // likewise an event, not a property of the form, and the message is the
+  // server's own 400 body.
   const submit = async () => {
     setIsSubmitting(true)
-    setError(null)
     try {
       const job = await queueBenchmark(modelId)
+      toast.success("Benchmark queued.", job.label)
       router.push(`/jobs/${job.id_job}`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to queue the benchmark.")
+      toast.error(
+        "Couldn't queue the benchmark",
+        e instanceof Error ? e.message : "Something went wrong."
+      )
       setIsSubmitting(false)
     }
   }
@@ -93,23 +100,25 @@ export function BenchmarkComposer() {
             </SelectContent>
           </Select>
 
-          <Button onClick={submit} disabled={isSubmitting || !modelId} className="gap-2">
+          <Button
+            onClick={submit}
+            disabled={isSubmitting || !modelId}
+            className="gap-2"
+          >
             <Play className="size-3.5" />
             {isSubmitting ? "Queueing…" : "Queue benchmark"}
           </Button>
         </div>
-
-        {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
       </Panel>
 
       {/* Said before the run rather than after it: an absent corpus makes the
           perplexity half of the report empty, and finding that out by spending a
           run is the wrong order. */}
       {suite && suite.corpus_files === 0 && (
-        <p className="rounded-lg border border-dashed border-border/60 px-4 py-3 text-sm text-muted-foreground">
+        <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
           No reference corpus is installed in{" "}
-          <code className="text-xs">{suite.corpus_dir}</code>, so this run will score
-          grammar and generation but not held-out perplexity.
+          <code className="text-xs">{suite.corpus_dir}</code>, so this run will
+          score grammar and generation but not held-out perplexity.
         </p>
       )}
     </div>

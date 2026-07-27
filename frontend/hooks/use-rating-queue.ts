@@ -2,6 +2,7 @@
 
 import * as React from "react"
 
+import { toast } from "@/components/ui/toast"
 import {
   listPendingSamples,
   rateSample,
@@ -52,7 +53,9 @@ export function useRatingQueue(idJob?: string, nudge?: unknown) {
       })
       setError(null)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load samples to rate.")
+      setError(
+        e instanceof Error ? e.message : "Failed to load samples to rate."
+      )
     } finally {
       setIsLoading(false)
     }
@@ -82,7 +85,12 @@ export function useRatingQueue(idJob?: string, nudge?: unknown) {
       } catch (e) {
         judgedIds.current.delete(sample.id_sample)
         setQueue((prev) => [sample, ...prev])
-        setError(e instanceof Error ? e.message : "Failed to save the rating.")
+        // The sample reappearing at the head is the visible consequence, and on
+        // its own it looks like a misclick rather than a failed write.
+        toast.error(
+          "Rating not saved",
+          e instanceof Error ? e.message : "The sample is back at the front."
+        )
       }
     },
     [current]

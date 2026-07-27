@@ -7,6 +7,7 @@ import { Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Panel } from "@/components/ui/panel"
+import { toast } from "@/components/ui/toast"
 import {
   Select,
   SelectContent,
@@ -44,7 +45,6 @@ export function AutolabelComposer() {
   const [maxPrompts, setMaxPrompts] = React.useState(DEFAULT_MAX_PROMPTS)
   const [temperature, setTemperature] = React.useState(DEFAULT_TEMPERATURE)
   const [isSubmitting, setIsSubmitting] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
 
   const modelId = chosenId || models[0]?.id || ""
 
@@ -62,7 +62,6 @@ export function AutolabelComposer() {
 
   const submit = async () => {
     setIsSubmitting(true)
-    setError(null)
     try {
       const job = await queueAutolabel({
         id_model: modelId,
@@ -70,9 +69,13 @@ export function AutolabelComposer() {
         max_prompts: maxPrompts,
         temperature,
       })
+      toast.success("Catalogue run queued.", job.label)
       router.push(`/jobs/${job.id_job}`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to queue the run.")
+      toast.error(
+        "Couldn't queue the run",
+        e instanceof Error ? e.message : "Something went wrong."
+      )
       setIsSubmitting(false)
     }
   }
@@ -107,7 +110,10 @@ export function AutolabelComposer() {
         </div>
       </Panel>
 
-      <Panel title="Sampling" description="How many replies to compare, and how varied">
+      <Panel
+        title="Sampling"
+        description="How many replies to compare, and how varied"
+      >
         <dl className="space-y-3">
           <Field
             label="Candidates per prompt"
@@ -153,13 +159,15 @@ export function AutolabelComposer() {
         </dl>
 
         <div className="mt-5 flex items-center gap-3">
-          <Button onClick={submit} disabled={isSubmitting || !valid} className="gap-2">
+          <Button
+            onClick={submit}
+            disabled={isSubmitting || !valid}
+            className="gap-2"
+          >
             <Play className="size-3.5" />
             {isSubmitting ? "Queueing…" : "Queue auto-labelling"}
           </Button>
         </div>
-
-        {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
       </Panel>
 
       {/* Said before the run rather than after it: with no reference prose the
@@ -167,7 +175,7 @@ export function AutolabelComposer() {
           than emitting near-random labels. Finding that out by spending a run is
           the wrong order. */}
       {suite && suite.corpus_files === 0 && (
-        <p className="rounded-lg border border-dashed border-border/60 px-4 py-3 text-sm text-muted-foreground">
+        <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
           No reference corpus is installed in{" "}
           <code className="text-xs">{suite.corpus_dir}</code>. The judge scores
           replies against real English — the same corpus the benchmark uses — so

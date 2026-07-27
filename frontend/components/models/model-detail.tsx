@@ -20,18 +20,24 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { toast } from "@/components/ui/toast"
 import { useAuth } from "@/hooks/use-auth"
 import { useModel } from "@/hooks/use-model"
 import { useModels } from "@/hooks/use-models"
 import { ModelSizeMeter } from "./model-glyph"
 import { ModelEditSheet } from "./model-edit-sheet"
-import { formatContext, formatCount, formatNumber, formatParams } from "./format"
+import {
+  formatContext,
+  formatCount,
+  formatNumber,
+  formatParams,
+} from "./format"
 
 function BackLink() {
   return (
     <Link
       href="/models"
-      className="mb-8 inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70 transition-colors hover:text-foreground"
+      className="mb-8 inline-flex items-center gap-1.5 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase transition-colors hover:text-foreground"
     >
       <ArrowLeft className="size-3.5" />
       Models
@@ -44,16 +50,24 @@ function Dot() {
   return <span className="text-muted-foreground/30">·</span>
 }
 
-function HeroStat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function HeroStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
   return (
     <div className="bg-background px-5 py-4">
-      <dt className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/60">
+      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
         {label}
       </dt>
       <dd className="mt-1.5 font-display text-2xl font-semibold tracking-tight tabular-nums">
         {value}
       </dd>
-      {hint && <p className="mt-0.5 text-[11px] text-muted-foreground/60">{hint}</p>}
+      {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }
@@ -61,10 +75,12 @@ function HeroStat({ label, value, hint }: { label: string; value: string; hint?:
 function Spec({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
+      <dt className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
         {label}
       </dt>
-      <dd className="mt-0.5 font-display text-sm font-semibold tabular-nums">{value}</dd>
+      <dd className="mt-0.5 font-display text-sm font-semibold tabular-nums">
+        {value}
+      </dd>
     </div>
   )
 }
@@ -78,9 +94,9 @@ function SpecPanel({
 }) {
   if (specs.length === 0) return null
   return (
-    <section className="rounded-xl border border-border/60 bg-background">
-      <header className="border-b border-border/60 px-5 py-3.5">
-        <h2 className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground/70">
+    <section className="rounded-lg border border-border bg-background">
+      <header className="border-b border-border px-5 py-3.5">
+        <h2 className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
           {title}
         </h2>
       </header>
@@ -117,23 +133,25 @@ export function ModelDetail({ modelId }: { modelId: string }) {
   // Existing families across all models, offered as suggestions in the editor.
   const { models } = useModels()
   const families = React.useMemo(
-    () => Array.from(new Set(models.map((m) => m.family).filter(Boolean))).sort(),
+    () =>
+      Array.from(new Set(models.map((m) => m.family).filter(Boolean))).sort(),
     [models]
   )
 
   const [editing, setEditing] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
-  const [deleteError, setDeleteError] = React.useState<string | null>(null)
   const [isPublishing, setIsPublishing] = React.useState(false)
-  const [actionError, setActionError] = React.useState<string | null>(null)
 
   async function handleTogglePublished(next: boolean) {
     setIsPublishing(true)
-    setActionError(null)
     try {
       await setPublished(next)
+      toast.success(next ? "Model published." : "Model unpublished.")
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Unable to update visibility.")
+      toast.error(
+        "Couldn't update visibility",
+        err instanceof Error ? err.message : "Something went wrong."
+      )
     } finally {
       setIsPublishing(false)
     }
@@ -141,12 +159,17 @@ export function ModelDetail({ modelId }: { modelId: string }) {
 
   async function handleDelete() {
     setIsDeleting(true)
-    setDeleteError(null)
     try {
       await remove()
+      // The page is about to unmount, so the confirmation has to be the toast —
+      // anything rendered here goes with it.
+      toast.success("Model deleted.")
       router.push("/models")
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "Unable to delete the model.")
+      toast.error(
+        "Couldn't delete the model",
+        err instanceof Error ? err.message : "Something went wrong."
+      )
       setIsDeleting(false)
     }
   }
@@ -160,10 +183,10 @@ export function ModelDetail({ modelId }: { modelId: string }) {
             <Skeleton className="h-9 w-64" />
             <Skeleton className="h-4 w-80" />
           </div>
-          <Skeleton className="h-24 rounded-xl" />
+          <Skeleton className="h-24 rounded-lg" />
           <div className="grid gap-4 sm:grid-cols-2">
-            <Skeleton className="h-44 rounded-xl" />
-            <Skeleton className="h-44 rounded-xl" />
+            <Skeleton className="h-44 rounded-lg" />
+            <Skeleton className="h-44 rounded-lg" />
           </div>
         </div>
       </>
@@ -174,7 +197,9 @@ export function ModelDetail({ modelId }: { modelId: string }) {
     return (
       <>
         <BackLink />
-        <p className="text-sm text-muted-foreground">This model doesn&apos;t exist.</p>
+        <p className="text-sm text-muted-foreground">
+          This model doesn&apos;t exist.
+        </p>
       </>
     )
   }
@@ -195,17 +220,23 @@ export function ModelDetail({ modelId }: { modelId: string }) {
   // Parameters / Context / Vocabulary are surfaced in the hero strip; this panel
   // carries the finer architectural shape.
   const architecture: { label: string; value: string }[] = []
-  if (c?.dimensions) architecture.push({ label: "Dimensions", value: `${c.dimensions}` })
+  if (c?.dimensions)
+    architecture.push({ label: "Dimensions", value: `${c.dimensions}` })
   if (c?.layers) architecture.push({ label: "Layers", value: `${c.layers}` })
   if (c?.heads) architecture.push({ label: "Heads", value: `${c.heads}` })
-  if (c?.ff_multiplier) architecture.push({ label: "FF multiplier", value: `${c.ff_multiplier}×` })
+  if (c?.ff_multiplier)
+    architecture.push({ label: "FF multiplier", value: `${c.ff_multiplier}×` })
 
   const d = model.dataset
   const training: { label: string; value: string }[] = []
-  if (d?.files) training.push({ label: "Training files", value: formatNumber(d.files) })
-  if (d?.chars) training.push({ label: "Characters", value: formatCount(d.chars) })
-  if (d?.corpus_len) training.push({ label: "Corpus tokens", value: formatCount(d.corpus_len) })
-  if (d?.merges) training.push({ label: "BPE merges", value: formatNumber(d.merges) })
+  if (d?.files)
+    training.push({ label: "Training files", value: formatNumber(d.files) })
+  if (d?.chars)
+    training.push({ label: "Characters", value: formatCount(d.chars) })
+  if (d?.corpus_len)
+    training.push({ label: "Corpus tokens", value: formatCount(d.corpus_len) })
+  if (d?.merges)
+    training.push({ label: "BPE merges", value: formatNumber(d.merges) })
   if (c?.epochs) training.push({ label: "Epochs", value: `${c.epochs}` })
   if (c?.lr) training.push({ label: "Learning rate", value: formatLr(c.lr) })
 
@@ -213,12 +244,8 @@ export function ModelDetail({ modelId }: { modelId: string }) {
     <>
       <BackLink />
 
-      {(deleteError || actionError) && (
-        <p className="mb-4 text-sm text-destructive">{deleteError ?? actionError}</p>
-      )}
-
       <div className="flex flex-col gap-8">
-        <header className="border-b border-border/60 pb-6">
+        <header className="border-b border-border pb-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="flex items-center gap-3">
@@ -227,7 +254,7 @@ export function ModelDetail({ modelId }: { modelId: string }) {
                 </h1>
                 <ModelSizeMeter tier={model.tier} className="mb-1 shrink-0" />
               </div>
-              <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/60">
+              <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
                 <span>{model.family}</span>
                 <Dot />
                 <span>{model.tier}</span>
@@ -258,7 +285,11 @@ export function ModelDetail({ modelId }: { modelId: string }) {
                   )}
                   {model.published ? "Unpublish" : "Publish"}
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditing(true)}
+                >
                   <Pencil className="size-3.5" />
                   Edit
                 </Button>
@@ -276,8 +307,8 @@ export function ModelDetail({ modelId }: { modelId: string }) {
                       <AlertDialogTitle>Delete {model.name}?</AlertDialogTitle>
                       <AlertDialogDescription>
                         This permanently removes the model from the registry and
-                        deletes its weights from disk. Existing messages are kept
-                        but detached. This cannot be undone.
+                        deletes its weights from disk. Existing messages are
+                        kept but detached. This cannot be undone.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -298,13 +329,22 @@ export function ModelDetail({ modelId }: { modelId: string }) {
         </header>
 
         {/* Headline figures — the divided ledger shared with the usage page. */}
-        <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 sm:grid-cols-3">
+        <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-3">
           <HeroStat
             label="Parameters"
-            value={model.estimatedParams ? formatParams(model.estimatedParams) : "—"}
+            value={
+              model.estimatedParams ? formatParams(model.estimatedParams) : "—"
+            }
           />
-          <HeroStat label="Context" value={formatContext(model.contextWindow)} hint="tokens" />
-          <HeroStat label="Vocabulary" value={vocab ? formatCount(vocab) : "—"} />
+          <HeroStat
+            label="Context"
+            value={formatContext(model.contextWindow)}
+            hint="tokens"
+          />
+          <HeroStat
+            label="Vocabulary"
+            value={vocab ? formatCount(vocab) : "—"}
+          />
         </dl>
 
         <div className="grid gap-4 sm:grid-cols-2">

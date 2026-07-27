@@ -5,6 +5,7 @@ import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { toast } from "@/components/ui/toast"
 import {
   Sheet,
   SheetClose,
@@ -49,6 +50,10 @@ export function ModelEditSheet({
     }
   }, [open, initialName, initialDescription, initialFamily])
 
+  // The split, in one function: an empty field is a property of the form and
+  // stays inline next to it, because you fix it here. A save that the server
+  // refused is an event, and the sheet closes on success — so both halves of
+  // that outcome are toasts, which outlive the sheet.
   async function handleSave() {
     const trimmedName = name.trim()
     const trimmedFamily = family.trim()
@@ -64,9 +69,13 @@ export function ModelEditSheet({
     setError(null)
     try {
       await onSave(trimmedName, description.trim(), trimmedFamily)
+      toast.success("Model updated.", trimmedName)
       onOpenChange(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save changes.")
+      toast.error(
+        "Couldn't save changes",
+        err instanceof Error ? err.message : "Something went wrong."
+      )
     } finally {
       setIsSaving(false)
     }

@@ -3,6 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 
+import { toast } from "@/components/ui/toast"
 import { queueTraining } from "@/lib/jobs"
 import type { TrainConfig } from "@/lib/training"
 
@@ -71,25 +72,27 @@ export interface BatchPoint {
 export function useTrainingComposer() {
   const router = useRouter()
   const [isSubmitting, setIsSubmitting] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
 
   const start = React.useCallback(
     async (config: TrainConfig) => {
       setIsSubmitting(true)
-      setError(null)
       try {
         const job = await queueTraining(config)
+        toast.success("Training run queued.", job.label)
         router.push(`/jobs/${job.id_job}`)
       } catch (e) {
         // The backend's 400 names the offending field ("dimensions must be a
         // power of two"), which is the whole value of validating at enqueue —
         // so it is shown as-is rather than replaced with something generic.
-        setError(e instanceof Error ? e.message : "Failed to queue the run.")
+        toast.error(
+          "Couldn't queue the run",
+          e instanceof Error ? e.message : "Something went wrong."
+        )
         setIsSubmitting(false)
       }
     },
     [router]
   )
 
-  return { start, isSubmitting, error }
+  return { start, isSubmitting }
 }
