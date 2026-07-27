@@ -50,7 +50,10 @@ export interface Attachment {
   detach: () => void
 }
 
-function connect(subscribe: Record<string, unknown>, onMessage: (msg: Record<string, unknown>) => void) {
+function connect(
+  subscribe: Record<string, unknown>,
+  onMessage: (msg: Record<string, unknown>) => void
+) {
   const ws = new WebSocket(`${WS_URL}/jobs/ws`)
 
   ws.onopen = () => {
@@ -172,7 +175,10 @@ function connectBoard(
 }
 
 /** Follows one job's live frames. Returns cancel + detach controls. */
-export function attachJob(idJob: string, handlers: JobFrameHandlers): Attachment {
+export function attachJob(
+  idJob: string,
+  handlers: JobFrameHandlers
+): Attachment {
   let closed = false
 
   const ws = connect({ job_id: idJob }, (msg) => {

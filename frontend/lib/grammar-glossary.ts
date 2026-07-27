@@ -48,7 +48,7 @@ export const PARADIGM_GLOSSARY: Record<string, ParadigmGloss> = {
   },
   irregular_past_tense: {
     summary:
-      "Irregular verbs don't take -ed. A model that has learned only the rule says \"writed\"; getting this right means the individual word has beaten the pattern.",
+      'Irregular verbs don\'t take -ed. A model that has learned only the rule says "writed"; getting this right means the individual word has beaten the pattern.',
     good: "She wrote a long letter yesterday.",
     bad: "She writed a long letter yesterday.",
   },
@@ -60,7 +60,7 @@ export const PARADIGM_GLOSSARY: Record<string, ParadigmGloss> = {
   },
   filler_gap: {
     summary:
-      "A what-question leaves a hole later in the sentence, and that hole must stay empty. The model has to connect \"what\" at the start to something missing several words away — a genuinely long-distance dependency, and usually the last thing a small model gets.",
+      'A what-question leaves a hole later in the sentence, and that hole must stay empty. The model has to connect "what" at the start to something missing several words away — a genuinely long-distance dependency, and usually the last thing a small model gets.',
     good: "I know what the boy ate very quickly.",
     bad: "I know what the boy ate the bread.",
   },

@@ -45,7 +45,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
 
   if (!job) {
     return (
-      <div className="flex items-center gap-3 border-b border-border/60 px-5 py-6">
+      <div className="flex items-center gap-3 border-b border-border px-5 py-6">
         <Throbber mode="idle" className="h-4" />
         <p className="text-sm text-muted-foreground">
           {paused ? "The queue is paused." : "The GPU is idle."}
@@ -59,7 +59,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
   const stopping = job.status === "cancelling"
 
   return (
-    <div className="border-b border-border/60 bg-secondary/25">
+    <div className="border-b border-border bg-secondary/25">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-5">
         <Throbber mode={throbberMode(job)} className="h-5 shrink-0" />
 
@@ -71,22 +71,24 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
             >
               {job.label}
             </Link>
-            <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/60">
+            <span className="shrink-0 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
               {KIND_LABEL[job.kind]}
             </span>
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {stopping ? "Stopping at the next step boundary…" : (job.stage ?? "Starting…")}
+            {stopping
+              ? "Stopping at the next step boundary…"
+              : (job.stage ?? "Starting…")}
           </p>
         </div>
 
         <div className="flex items-center gap-4">
           <div className="text-right">
-            <div className="font-display text-lg font-semibold tabular-nums leading-none">
+            <div className="font-display text-lg leading-none font-semibold tabular-nums">
               {percent}%
             </div>
             {elapsed !== null && (
-              <div className="mt-1 text-[11px] tabular-nums text-muted-foreground/60">
+              <div className="mt-1 text-xs text-muted-foreground tabular-nums">
                 {formatElapsed(elapsed)}
               </div>
             )}

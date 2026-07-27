@@ -69,7 +69,9 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
       setConversations(data.map(mapChat))
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load your chats.")
+      setError(
+        err instanceof Error ? err.message : "Unable to load your chats."
+      )
     } finally {
       setIsLoading(false)
     }
@@ -88,7 +90,8 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
       }
     }
     window.addEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
-    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
+    return () =>
+      window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
   }, [refresh])
 
   // Pending first messages, keyed by the new chat id. A ref (not state) so the

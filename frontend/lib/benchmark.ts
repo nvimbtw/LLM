@@ -124,13 +124,21 @@ export async function deleteRun(id: string): Promise<void> {
 /** Em dash for an unmeasured metric — never 0, which would read as a real value. */
 export const NO_VALUE = "—"
 
-export function formatNumber(value: number | null | undefined, digits = 2): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return NO_VALUE
+export function formatNumber(
+  value: number | null | undefined,
+  digits = 2
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value))
+    return NO_VALUE
   return value.toFixed(digits)
 }
 
-export function formatPercent(value: number | null | undefined, digits = 1): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return NO_VALUE
+export function formatPercent(
+  value: number | null | undefined,
+  digits = 1
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value))
+    return NO_VALUE
   return `${(value * 100).toFixed(digits)}%`
 }
 

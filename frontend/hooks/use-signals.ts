@@ -22,7 +22,9 @@ export function useSignals(refreshKey?: unknown) {
       setStatus(await getSignalStatus())
       setError(null)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load the signal count.")
+      setError(
+        e instanceof Error ? e.message : "Failed to load the signal count."
+      )
     } finally {
       setIsLoading(false)
     }
@@ -41,7 +43,9 @@ export function useSignals(refreshKey?: unknown) {
       })
       .catch((e: unknown) => {
         if (!active) return
-        setError(e instanceof Error ? e.message : "Failed to load the signal count.")
+        setError(
+          e instanceof Error ? e.message : "Failed to load the signal count."
+        )
       })
       .finally(() => {
         if (active) setIsLoading(false)

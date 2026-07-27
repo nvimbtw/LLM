@@ -31,7 +31,9 @@ export function JobChatPanel({ job, run }: JobChatPanelProps) {
       bodyClassName="p-0"
     >
       {text ? (
-        <p className="whitespace-pre-wrap px-5 py-4 text-sm leading-relaxed">{text}</p>
+        <p className="px-5 py-4 text-sm leading-relaxed whitespace-pre-wrap">
+          {text}
+        </p>
       ) : (
         <p className="px-5 py-8 text-center text-sm text-muted-foreground">
           {job.status === "queued"

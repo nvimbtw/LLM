@@ -85,7 +85,10 @@ export function CatalogueFigures({ scores, threshold }: CatalogueFiguresProps) {
         }
       >
         {cumulative.length > 1 ? (
-          <ChartContainer config={chartConfig} className="aspect-auto h-56 w-full">
+          <ChartContainer
+            config={chartConfig}
+            className="aspect-auto h-56 w-full"
+          >
             <AreaChart data={cumulative} margin={{ left: 4, right: 4, top: 4 }}>
               <CartesianGrid {...gridProps} />
               <XAxis
@@ -144,7 +147,10 @@ export function CatalogueFigures({ scores, threshold }: CatalogueFiguresProps) {
         }
       >
         {histogram.length > 0 ? (
-          <ChartContainer config={chartConfig} className="aspect-auto h-56 w-full">
+          <ChartContainer
+            config={chartConfig}
+            className="aspect-auto h-56 w-full"
+          >
             {/* Extra top margin so the boundary label has somewhere to sit. */}
             <BarChart data={histogram} margin={{ left: 4, right: 4, top: 16 }}>
               <CartesianGrid {...gridProps} />

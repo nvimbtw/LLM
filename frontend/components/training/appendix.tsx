@@ -64,7 +64,7 @@ export function Appendix({
                 No checkpoints yet.
               </span>
             ) : (
-              <ul className="max-h-40 overflow-y-auto space-y-0.5 font-mono text-xs text-muted-foreground">
+              <ul className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-xs text-muted-foreground">
                 {checkpoints.map((cp) => (
                   <li key={cp} className="truncate">
                     {cp}

@@ -71,7 +71,7 @@ export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
   return (
     <Panel title="Score" description={detail?.model_name ?? "Benchmark"}>
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <span className="font-display text-5xl font-semibold tabular-nums leading-none">
+        <span className="font-display text-5xl leading-none font-semibold tabular-nums">
           {formatNumber(detail?.score ?? null, 1)}
         </span>
         <span className="text-sm text-muted-foreground">/ 100</span>

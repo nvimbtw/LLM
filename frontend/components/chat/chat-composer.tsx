@@ -141,7 +141,7 @@ export function ChatComposer({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-input shadow-sm transition-colors",
+        "rounded-[0.875rem] border border-input shadow-sm transition-colors",
         "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
         disabled && "opacity-70"
       )}
@@ -151,7 +151,7 @@ export function ChatComposer({
       <div
         className={cn(
           isCommand &&
-            "[&_.tiptap]:text-primary [&_.tiptap]:caret-primary [&_.tiptap]:font-medium"
+            "[&_.tiptap]:font-medium [&_.tiptap]:text-primary [&_.tiptap]:caret-primary"
         )}
       >
         <EditorContent editor={editor} />

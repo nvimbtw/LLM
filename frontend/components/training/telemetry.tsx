@@ -20,7 +20,12 @@ import {
   yAxisProps,
 } from "@/components/training/chart-theme"
 import { EmbeddingGlobe } from "@/components/training/embedding-globe"
-import { Figure, FigurePlaceholder, StatRun, type Stat } from "@/components/training/stat-run"
+import {
+  Figure,
+  FigurePlaceholder,
+  StatRun,
+  type Stat,
+} from "@/components/training/stat-run"
 import { cn } from "@/lib/utils"
 import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
 import type {
@@ -121,14 +126,17 @@ function CurriculumProgress({
         </span>
         <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
           Stage {activeIdx + 1} / {stages.length}
-          <span className="mx-1.5 text-muted-foreground/40">·</span>
+          <span className="mx-1.5 text-muted-foreground">·</span>
           <span className="text-foreground">{activeName}</span>
         </span>
       </div>
 
       <div className="flex items-stretch gap-1">
         {stages.map((stage, i) => {
-          const frac = Math.min(1, Math.max(0, (epochPos - starts[i]) / weights[i]))
+          const frac = Math.min(
+            1,
+            Math.max(0, (epochPos - starts[i]) / weights[i])
+          )
           const isActive = i === activeIdx && !done
           return (
             <div
@@ -150,8 +158,8 @@ function CurriculumProgress({
               </div>
               <span
                 className={cn(
-                  "truncate text-[10px] tabular-nums",
-                  isActive ? "text-foreground" : "text-muted-foreground/70"
+                  "truncate text-xs tabular-nums",
+                  isActive ? "text-foreground" : "text-muted-foreground"
                 )}
               >
                 {stage.name?.trim() || `Stage ${i + 1}`}
@@ -378,7 +386,9 @@ export function Telemetry({
                     background: `linear-gradient(to right, ${lossEpochColor(1, totalEpochs)}, ${lossEpochColor(totalEpochs, totalEpochs)})`,
                   }}
                 />
-                <span style={{ color: lossEpochColor(totalEpochs, totalEpochs) }}>
+                <span
+                  style={{ color: lossEpochColor(totalEpochs, totalEpochs) }}
+                >
                   late
                 </span>
               </span>
@@ -386,7 +396,10 @@ export function Telemetry({
           }
         >
           {loss.length > 1 ? (
-            <ChartContainer config={lossChartConfig} className="aspect-auto h-64 w-full">
+            <ChartContainer
+              config={lossChartConfig}
+              className="aspect-auto h-64 w-full"
+            >
               <LineChart data={rows} margin={{ left: 4, right: 4, top: 4 }}>
                 <CartesianGrid {...gridProps} />
                 <XAxis
@@ -403,7 +416,9 @@ export function Telemetry({
                 />
                 <ChartTooltip
                   cursor={false}
-                  content={<ChartTooltipContent labelFormatter={(v) => `Chunk ${v}`} />}
+                  content={
+                    <ChartTooltipContent labelFormatter={(v) => `Chunk ${v}`} />
+                  }
                 />
                 {epochs.map((e) => (
                   <Line
@@ -421,7 +436,9 @@ export function Telemetry({
               </LineChart>
             </ChartContainer>
           ) : (
-            <FigurePlaceholder>Waiting for the first loss values…</FigurePlaceholder>
+            <FigurePlaceholder>
+              Waiting for the first loss values…
+            </FigurePlaceholder>
           )}
         </Figure>
       ) : (
@@ -433,11 +450,20 @@ export function Telemetry({
           }
         >
           {!isSft && vocabSeries.length > 1 ? (
-            <ChartContainer config={vocabChartConfig} className="aspect-auto h-64 w-full">
-              <LineChart data={vocabSeries} margin={{ left: 4, right: 4, top: 4 }}>
+            <ChartContainer
+              config={vocabChartConfig}
+              className="aspect-auto h-64 w-full"
+            >
+              <LineChart
+                data={vocabSeries}
+                margin={{ left: 4, right: 4, top: 4 }}
+              >
                 <CartesianGrid {...gridProps} />
                 <XAxis dataKey="merges" {...axisProps} />
-                <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
+                <ChartTooltip
+                  cursor={false}
+                  content={<ChartTooltipContent />}
+                />
                 <Line
                   dataKey="vocab"
                   type="linear"
@@ -467,8 +493,14 @@ export function Telemetry({
           minHeight="12rem"
         >
           {batchSeries.length > 1 ? (
-            <ChartContainer config={batchChartConfig} className="aspect-auto h-48 w-full">
-              <LineChart data={batchSeries} margin={{ left: 4, right: 4, top: 4 }}>
+            <ChartContainer
+              config={batchChartConfig}
+              className="aspect-auto h-48 w-full"
+            >
+              <LineChart
+                data={batchSeries}
+                margin={{ left: 4, right: 4, top: 4 }}
+              >
                 <CartesianGrid {...gridProps} />
                 <XAxis
                   dataKey="step"
@@ -479,7 +511,9 @@ export function Telemetry({
                 <YAxis domain={["auto", "auto"]} {...yAxisProps} />
                 <ChartTooltip
                   cursor={false}
-                  content={<ChartTooltipContent labelFormatter={(v) => `Step ${v}`} />}
+                  content={
+                    <ChartTooltipContent labelFormatter={(v) => `Step ${v}`} />
+                  }
                 />
                 {(["max", "avg", "min"] as const).map((key) => (
                   <Line

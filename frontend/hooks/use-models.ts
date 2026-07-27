@@ -116,7 +116,10 @@ export function useModels(refreshKey?: unknown) {
         if (active) setModels(data.map(mapModel))
       })
       .catch((err) => {
-        if (active) setError(err instanceof Error ? err : new Error("Unable to load models."))
+        if (active)
+          setError(
+            err instanceof Error ? err : new Error("Unable to load models.")
+          )
       })
       .finally(() => {
         if (active) setIsLoading(false)

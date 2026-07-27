@@ -21,7 +21,7 @@ import type { TrainConfig } from "@/lib/training"
 export function TrainComposer() {
   const params = useSearchParams()
   const from = params.get("from")
-  const { start, isSubmitting, error } = useTrainingComposer()
+  const { start, isSubmitting } = useTrainingComposer()
 
   const [cfg, setCfg] = React.useState<TrainConfig>(DEFAULT_CONFIG)
 
@@ -45,14 +45,14 @@ export function TrainComposer() {
     }
   }, [from])
 
+  // Client-side validation stays inside the rail, next to the field it is about.
+  // A rejection from the server is an outcome and arrives as a toast.
   return (
-    <>
-      {error && (
-        <p className="mb-6 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      <ParamsRail cfg={cfg} onChange={setCfg} disabled={isSubmitting} onStart={start} />
-    </>
+    <ParamsRail
+      cfg={cfg}
+      onChange={setCfg}
+      disabled={isSubmitting}
+      onStart={start}
+    />
   )
 }

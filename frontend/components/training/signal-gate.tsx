@@ -49,7 +49,12 @@ export interface SignalGateProps {
   disabled?: boolean
 }
 
-export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps) {
+export function SignalGate({
+  status,
+  modelId,
+  mode,
+  disabled,
+}: SignalGateProps) {
   const router = useRouter()
   const [isQueueing, setIsQueueing] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -69,7 +74,11 @@ export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps)
 
   // Each trainer has its own bar, and step 3 has to gate on the right one or the
   // button and the enqueue check disagree.
-  const ready = status ? (mode === "raft" ? status.raft_ready : status.ready) : false
+  const ready = status
+    ? mode === "raft"
+      ? status.raft_ready
+      : status.ready
+    : false
   const trainBar = status
     ? mode === "raft"
       ? { have: status.catalogue_approved, need: status.raft_required }
@@ -78,7 +87,7 @@ export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps)
 
   if (!status) {
     return (
-      <div className="rounded-lg border border-dashed border-border/60 px-4 py-3 text-xs text-muted-foreground">
+      <div className="rounded-lg border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">
         Checking the preference catalogue…
       </div>
     )
@@ -97,13 +106,16 @@ export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps)
       >
         <p className="text-xs text-muted-foreground">
           Not the training data — the seed. These are what the auto-scorer gets
-          checked against, so it has to agree with you before it labels anything.
+          checked against, so it has to agree with you before it labels
+          anything.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
             size="sm"
-            onClick={() => void queue(() => queueGather({ id_model: modelId! }))}
+            onClick={() =>
+              void queue(() => queueGather({ id_model: modelId! }))
+            }
             disabled={disabled || isQueueing || !modelId}
           >
             {isQueueing ? "Queueing…" : "Gather signals"}
@@ -136,8 +148,8 @@ export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps)
           The model writes {CATALOGUE_CANDIDATES} replies to each of{" "}
           {CATALOGUE_PROMPTS} prompts, and each one is scored against the same
           English benchmark the model is graded on — n-gram fluency, real words,
-          repetition, whether the turn closes. The run stops before writing anything
-          if the judge disagrees with your ratings.
+          repetition, whether the turn closes. The run stops before writing
+          anything if the judge disagrees with your ratings.
         </p>
         {/* The bar that is actually blocking, for the trainer actually selected —
             showing the other one's shortfall would send you to fix the wrong thing. */}
@@ -167,7 +179,11 @@ export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps)
 
       <Step
         n={3}
-        title={mode === "raft" ? "Self-train on the winners" : "Preference-tune on the split"}
+        title={
+          mode === "raft"
+            ? "Self-train on the winners"
+            : "Preference-tune on the split"
+        }
         done={false}
         active={ready}
         count={
@@ -182,8 +198,8 @@ export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps)
         }
       >
         <p className="text-xs text-muted-foreground">
-          Ready. Epochs are capped at {status.max_epochs} for a catalogue this size —
-          repeated passes over too little data is what narrows a model.
+          Ready. Epochs are capped at {status.max_epochs} for a catalogue this
+          size — repeated passes over too little data is what narrows a model.
           {mode === "raft"
             ? " Run a preference tune after this one: it suppresses what stayed bad, which self-training cannot express."
             : " Run this after a self-train pass: the good replies already sit high by then, so the gradient goes into pushing the bad ones down."}
@@ -230,7 +246,7 @@ function Step({
         <span className="flex items-center gap-2 text-sm">
           <span
             className={cn(
-              "flex size-4 shrink-0 items-center justify-center rounded-full border text-[0.6rem] tabular-nums",
+              "flex size-4 shrink-0 items-center justify-center rounded-full border text-xs tabular-nums",
               done && "border-transparent bg-foreground text-background"
             )}
           >
@@ -238,7 +254,9 @@ function Step({
           </span>
           {title}
         </span>
-        <span className="text-xs text-muted-foreground tabular-nums">{count}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {count}
+        </span>
       </div>
 
       {fraction !== undefined && (

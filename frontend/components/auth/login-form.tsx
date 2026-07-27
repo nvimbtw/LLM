@@ -8,8 +8,15 @@ import { AuthCard } from "./auth-card"
 import { AuthField } from "./auth-field"
 
 export function LoginForm() {
-  const { username, setUsername, password, setPassword, isSubmitting, error, onSubmit } =
-    useLogin()
+  const {
+    username,
+    setUsername,
+    password,
+    setPassword,
+    isSubmitting,
+    error,
+    onSubmit,
+  } = useLogin()
 
   return (
     <AuthCard

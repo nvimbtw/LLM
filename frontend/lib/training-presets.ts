@@ -1,10 +1,6 @@
 import { API_URL, authHeaders } from "./api"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
-import type {
-  CurriculumStage,
-  DatasetSelection,
-  TrainConfig,
-} from "./training"
+import type { CurriculumStage, DatasetSelection, TrainConfig } from "./training"
 
 // A named, reusable training-parameter set. `config` is a TrainConfig-shaped blob
 // the backend stores opaquely (validated only when a run actually starts). Mirrors
@@ -110,7 +106,9 @@ function curriculum(v: unknown): CurriculumStage[] {
     if (stageDatasets.length === 0) continue
     const rawEpochs = (item as { epochs?: unknown }).epochs
     const epochs =
-      typeof rawEpochs === "number" && Number.isFinite(rawEpochs) && rawEpochs > 0
+      typeof rawEpochs === "number" &&
+      Number.isFinite(rawEpochs) &&
+      rawEpochs > 0
         ? Math.floor(rawEpochs)
         : 1
     const name = (item as { name?: unknown }).name
@@ -148,7 +146,8 @@ export function toTrainConfig(
     max_vocab: num(b.max_vocab, DEFAULT_CONFIG.max_vocab),
     datasets: datasets(b.datasets),
     curriculum: curriculum(b.curriculum),
-    shuffle: typeof b.shuffle === "boolean" ? b.shuffle : DEFAULT_CONFIG.shuffle,
+    shuffle:
+      typeof b.shuffle === "boolean" ? b.shuffle : DEFAULT_CONFIG.shuffle,
     mode,
     base_model_id:
       typeof b.base_model_id === "string" ? b.base_model_id : undefined,

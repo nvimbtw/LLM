@@ -67,7 +67,10 @@ const STAGE_HUES: [number, number][] = [
 // `stage` selects the hue; `tWithinStage` (0 = first epoch of the stage → 1 = last)
 // sweeps lightness within it.
 export function lossStageColor(stage: number, tWithinStage: number): string {
-  const [hue, sat] = STAGE_HUES[((stage % STAGE_HUES.length) + STAGE_HUES.length) % STAGE_HUES.length]
+  const [hue, sat] =
+    STAGE_HUES[
+      ((stage % STAGE_HUES.length) + STAGE_HUES.length) % STAGE_HUES.length
+    ]
   return sequential(hue, sat, tWithinStage)
 }
 

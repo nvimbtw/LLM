@@ -3,7 +3,12 @@
 import { Panel } from "@/components/ui/panel"
 import { type BenchmarkRun, formatDurationCompact } from "@/lib/benchmark"
 
-import { type ScorePoint, ScoreScatter, logDomain, pickDensest } from "./score-scatter"
+import {
+  type ScorePoint,
+  ScoreScatter,
+  logDomain,
+  pickDensest,
+} from "./score-scatter"
 
 // Round durations, in seconds, sparsest tier first. Time isn't round at powers of ten —
 // the generic 1/2/5 ladder labels a 40-minute axis "33m 20s · 16m 40s · 8m 20s", which
@@ -14,14 +19,22 @@ import { type ScorePoint, ScoreScatter, logDomain, pickDensest } from "./score-s
 const DURATION_TIERS = [
   [1, 10, 60, 600, 3600, 86_400],
   [1, 5, 10, 30, 60, 300, 600, 1800, 3600, 21_600, 86_400],
-  [1, 2, 5, 10, 15, 30, 45, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21_600, 43_200, 86_400],
-  [5, 10, 15, 20, 30, 45, 60, 75, 90, 120, 150, 180, 240, 300, 450, 600, 900, 1200, 1800, 2700, 3600, 5400, 7200],
+  [
+    1, 2, 5, 10, 15, 30, 45, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21_600,
+    43_200, 86_400,
+  ],
+  [
+    5, 10, 15, 20, 30, 45, 60, 75, 90, 120, 150, 180, 240, 300, 450, 600, 900,
+    1200, 1800, 2700, 3600, 5400, 7200,
+  ],
 ]
 
 function durationTicks(domain: [number, number]): number[] {
   const [min, max] = domain
   return pickDensest(
-    DURATION_TIERS.map((tier) => tier.filter((value) => value >= min && value <= max)),
+    DURATION_TIERS.map((tier) =>
+      tier.filter((value) => value >= min && value <= max)
+    ),
     domain
   )
 }
@@ -41,9 +54,15 @@ export function DurationPanel({ runs }: { runs: BenchmarkRun[] }) {
   // zero-or-negative gap (a clock adjustment, a run that completed inside the same
   // millisecond) has no place on a log axis, so it's dropped rather than clamped.
   const points: ScorePoint[] = runs
-    .filter((run) => run.status === "done" && run.score !== null && run.completed_at !== null)
+    .filter(
+      (run) =>
+        run.status === "done" && run.score !== null && run.completed_at !== null
+    )
     .map((run) => ({
-      x: (new Date(run.completed_at as string).getTime() - new Date(run.created_at).getTime()) / 1000,
+      x:
+        (new Date(run.completed_at as string).getTime() -
+          new Date(run.created_at).getTime()) /
+        1000,
       score: run.score as number,
       name: run.model_name,
       created_at: run.created_at,
@@ -68,7 +87,10 @@ export function DurationPanel({ runs }: { runs: BenchmarkRun[] }) {
   const domain = logDomain(points.map((p) => p.x))
 
   return (
-    <Panel title="Cost" description={`Score vs time to complete · ${points.length} models`}>
+    <Panel
+      title="Cost"
+      description={`Score vs time to complete · ${points.length} models`}
+    >
       <ScoreScatter
         points={points}
         domain={domain}
@@ -77,11 +99,11 @@ export function DurationPanel({ runs }: { runs: BenchmarkRun[] }) {
         xLabel="to complete"
       />
 
-      <p className="mt-4 border-t border-border/60 pt-4 text-[11px] leading-relaxed text-muted-foreground/70">
+      <p className="mt-4 border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">
         Time multiplies to the left: the slowest runs are the leftmost, and each
-        labelled step is a fixed factor. A point high and to the right earned its score
-        cheaply. Wall clock, so it includes any wait for the GPU and is only comparable
-        between runs on the same machine.
+        labelled step is a fixed factor. A point high and to the right earned
+        its score cheaply. Wall clock, so it includes any wait for the GPU and
+        is only comparable between runs on the same machine.
       </p>
     </Panel>
   )

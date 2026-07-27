@@ -1,7 +1,7 @@
 "use client"
 
-import Link from "next/link";
-import { LogIn, User } from "lucide-react";
+import Link from "next/link"
+import { LogIn, User } from "lucide-react"
 import {
   SidebarMenu,
   SidebarMenuItem,

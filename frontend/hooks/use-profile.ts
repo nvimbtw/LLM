@@ -30,7 +30,9 @@ export function useProfile() {
         if (active) setUser(data)
       } catch (err) {
         if (active) {
-          setError(err instanceof Error ? err.message : "Unable to load your profile.")
+          setError(
+            err instanceof Error ? err.message : "Unable to load your profile."
+          )
         }
       } finally {
         if (active) setIsLoading(false)

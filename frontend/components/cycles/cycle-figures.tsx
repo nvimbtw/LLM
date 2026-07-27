@@ -67,15 +67,22 @@ export function CycleFigures({ rounds }: CycleFiguresProps) {
         aside={
           yieldPoints.length > 0 ? (
             <span className="tabular-nums">
-              {(yieldPoints[yieldPoints.length - 1].yield * 100).toFixed(0)}% latest
+              {(yieldPoints[yieldPoints.length - 1].yield * 100).toFixed(0)}%
+              latest
             </span>
           ) : undefined
         }
         minHeight="13rem"
       >
         {yieldPoints.length > 0 ? (
-          <ChartContainer config={yieldConfig} className="aspect-auto h-52 w-full">
-            <LineChart data={yieldPoints} margin={{ left: 4, right: 12, top: 8 }}>
+          <ChartContainer
+            config={yieldConfig}
+            className="aspect-auto h-52 w-full"
+          >
+            <LineChart
+              data={yieldPoints}
+              margin={{ left: 4, right: 12, top: 8 }}
+            >
               <CartesianGrid {...gridProps} />
               <XAxis
                 dataKey="round"
@@ -93,7 +100,9 @@ export function CycleFigures({ rounds }: CycleFiguresProps) {
                 content={
                   <ChartTooltipContent
                     labelFormatter={(v) => `Round ${v}`}
-                    formatter={(value) => `${(Number(value) * 100).toFixed(1)}%`}
+                    formatter={(value) =>
+                      `${(Number(value) * 100).toFixed(1)}%`
+                    }
                   />
                 }
               />
@@ -130,8 +139,14 @@ export function CycleFigures({ rounds }: CycleFiguresProps) {
         minHeight="13rem"
       >
         {scorePoints.length > 0 ? (
-          <ChartContainer config={scoreConfig} className="aspect-auto h-52 w-full">
-            <LineChart data={scorePoints} margin={{ left: 4, right: 12, top: 8 }}>
+          <ChartContainer
+            config={scoreConfig}
+            className="aspect-auto h-52 w-full"
+          >
+            <LineChart
+              data={scorePoints}
+              margin={{ left: 4, right: 12, top: 8 }}
+            >
               <CartesianGrid {...gridProps} />
               <XAxis
                 dataKey="round"

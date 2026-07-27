@@ -1,5 +1,9 @@
 import { Panel } from "@/components/ui/panel"
-import { type GenerationMetrics, formatNumber, formatPercent } from "@/lib/benchmark"
+import {
+  type GenerationMetrics,
+  formatNumber,
+  formatPercent,
+} from "@/lib/benchmark"
 
 // What the model actually wrote, and the surface properties of it.
 //
@@ -7,13 +11,17 @@ import { type GenerationMetrics, formatNumber, formatPercent } from "@/lib/bench
 // ones most likely to be gamed by an artifact (a model that emits one very common
 // word forever scores well on real-word rate), and one glance at the text tells
 // you whether to believe them.
-export function GenerationPanel({ generation }: { generation: GenerationMetrics }) {
+export function GenerationPanel({
+  generation,
+}: {
+  generation: GenerationMetrics
+}) {
   return (
     <Panel
       title="Generation"
       description={`${generation.samples.length} prompts · ${generation.words_scored} words`}
     >
-      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60 sm:grid-cols-3 lg:grid-cols-5">
+      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
           label="Real words"
           value={formatPercent(generation.real_word_rate)}
@@ -42,37 +50,50 @@ export function GenerationPanel({ generation }: { generation: GenerationMetrics 
       </dl>
 
       {generation.samples.length > 0 && (
-        <ul className="mt-6 flex flex-col gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60">
+        <ul className="mt-6 flex flex-col gap-px overflow-hidden rounded-lg border border-border bg-border/60">
           {generation.samples.map((sample, i) => (
-            <li key={i} className="bg-background px-4 py-3 text-sm leading-relaxed">
-              <span className="text-muted-foreground/60">{sample.prompt}</span>
-              <span className="whitespace-pre-wrap">{sample.completion || " …"}</span>
+            <li
+              key={i}
+              className="bg-background px-4 py-3 text-sm leading-relaxed"
+            >
+              <span className="text-muted-foreground">{sample.prompt}</span>
+              <span className="whitespace-pre-wrap">
+                {sample.completion || " …"}
+              </span>
             </li>
           ))}
         </ul>
       )}
 
-      <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground/70">
-        Sampled at temperature 0.8, top-k 40, from a fixed seed — the same prompts and
-        the same draws on every run, so these numbers are comparable across models.
-        The lexicon is built from the reference corpus, so &ldquo;real words&rdquo;
-        means &ldquo;strings that occur as words in real English text&rdquo;, not
-        &ldquo;in a dictionary&rdquo;.
+      <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+        Sampled at temperature 0.8, top-k 40, from a fixed seed — the same
+        prompts and the same draws on every run, so these numbers are comparable
+        across models. The lexicon is built from the reference corpus, so
+        &ldquo;real words&rdquo; means &ldquo;strings that occur as words in
+        real English text&rdquo;, not &ldquo;in a dictionary&rdquo;.
       </p>
     </Panel>
   )
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint: string
+}) {
   return (
     <div className="bg-background px-4 py-3">
-      <dt className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/60">
+      <dt className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
         {label}
       </dt>
       <dd className="mt-1 font-display text-xl font-semibold tracking-tight tabular-nums">
         {value}
       </dd>
-      <p className="text-[10px] text-muted-foreground/60">{hint}</p>
+      <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
   )
 }

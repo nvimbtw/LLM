@@ -56,7 +56,9 @@ export function useModel(id: string) {
       })
       .catch((err) => {
         if (active)
-          setError(err instanceof Error ? err : new Error("Unable to load this model."))
+          setError(
+            err instanceof Error ? err : new Error("Unable to load this model.")
+          )
       })
       .finally(() => {
         if (active) setIsLoading(false)

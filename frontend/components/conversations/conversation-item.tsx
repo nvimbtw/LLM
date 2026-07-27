@@ -42,7 +42,13 @@ function formatTokens(n: number): string {
   return `${k >= 10 ? Math.round(k) : k.toFixed(1)}k`
 }
 
-export function ConversationItem({ chat, index }: { chat: ChatSummary; index: number }) {
+export function ConversationItem({
+  chat,
+  index,
+}: {
+  chat: ChatSummary
+  index: number
+}) {
   const { renameChat, deleteChat } = useChats()
 
   const [isRenaming, setRenaming] = React.useState(false)
@@ -65,10 +71,10 @@ export function ConversationItem({ chat, index }: { chat: ChatSummary; index: nu
   }
 
   return (
-    <li className="group relative border-b border-border/60 before:absolute before:left-0 before:top-1/2 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-[''] hover:before:h-9">
+    <li className="group relative border-b border-border before:absolute before:top-1/2 before:left-0 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-[''] hover:before:h-9">
       <div className="flex items-baseline gap-5 py-5 pr-1 pl-4">
         {/* Editorial index numeral — a table-of-contents cue. */}
-        <span className="w-7 shrink-0 font-display text-xs tabular-nums text-muted-foreground/40 transition-colors group-hover:text-primary">
+        <span className="w-7 shrink-0 font-display text-xs text-muted-foreground tabular-nums transition-colors group-hover:text-primary">
           {String(index + 1).padStart(2, "0")}
         </span>
 
@@ -97,7 +103,7 @@ export function ConversationItem({ chat, index }: { chat: ChatSummary; index: nu
             <span className="block truncate font-display text-lg leading-snug tracking-tight underline-offset-4 group-hover:underline">
               {chat.title}
             </span>
-            <span className="mt-1.5 flex items-center gap-2.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60 tabular-nums">
+            <span className="mt-1.5 flex items-center gap-2.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase tabular-nums">
               <span>{formatDate(chat.createdAt)}</span>
               {chat.tokens > 0 && (
                 <>
@@ -118,7 +124,7 @@ export function ConversationItem({ chat, index }: { chat: ChatSummary; index: nu
                 aria-label="Chat options"
                 className={cn(
                   "shrink-0 self-center text-muted-foreground opacity-0 transition-opacity",
-                  "group-hover:opacity-100 focus-visible:opacity-100 data-open:opacity-100 data-[popup-open]:opacity-100"
+                  "group-hover:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100 data-open:opacity-100"
                 )}
               >
                 <MoreHorizontal />
@@ -126,17 +132,17 @@ export function ConversationItem({ chat, index }: { chat: ChatSummary; index: nu
             }
           />
           <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => setRenaming(true)}>
-            <Pencil />
-            Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            variant="destructive"
-            onClick={() => setConfirmOpen(true)}
-          >
-            <Trash2 />
-            Delete
-          </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setRenaming(true)}>
+              <Pencil />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => setConfirmOpen(true)}
+            >
+              <Trash2 />
+              Delete
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -146,8 +152,8 @@ export function ConversationItem({ chat, index }: { chat: ChatSummary; index: nu
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this chat?</AlertDialogTitle>
             <AlertDialogDescription>
-              &ldquo;{chat.title}&rdquo; and all its messages will be permanently
-              deleted. This cannot be undone.
+              &ldquo;{chat.title}&rdquo; and all its messages will be
+              permanently deleted. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

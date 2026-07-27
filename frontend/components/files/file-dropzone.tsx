@@ -55,7 +55,9 @@ export function FileDropzone({
         "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-6 py-10 text-center transition-colors",
         "outline-none focus-visible:ring-2 focus-visible:ring-ring",
         dragging ? "border-primary bg-primary/5" : "border-input bg-muted/30",
-        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-muted/50"
+        disabled
+          ? "cursor-not-allowed opacity-60"
+          : "cursor-pointer hover:bg-muted/50"
       )}
     >
       <input

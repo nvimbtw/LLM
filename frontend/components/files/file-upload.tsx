@@ -22,8 +22,16 @@ export function FileUpload() {
   const router = useRouter()
   const { isAdmin, isLoading } = useAuth()
 
-  const { files, status, progress, error, addFiles, removeFile, clear, upload } =
-    useFileUpload()
+  const {
+    files,
+    status,
+    progress,
+    error,
+    addFiles,
+    removeFile,
+    clear,
+    upload,
+  } = useFileUpload()
   const [rejected, setRejected] = React.useState<string[]>([])
 
   // Admin-only: bounce non-admins once auth has resolved. The sidebar already

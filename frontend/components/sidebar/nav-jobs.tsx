@@ -50,9 +50,9 @@ export function NavJobs() {
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-      <SidebarGroupLabel className="text-[0.62rem] font-medium uppercase tracking-[0.16em] text-sidebar-foreground/50">
+      <SidebarGroupLabel className="text-xs font-medium tracking-[0.16em] text-sidebar-foreground/75 uppercase">
         Active
-        <span className="ml-auto tabular-nums text-sidebar-foreground/40">
+        <span className="ml-auto text-sidebar-foreground/75 tabular-nums">
           {active.length}
         </span>
       </SidebarGroupLabel>
@@ -71,7 +71,7 @@ export function NavJobs() {
             <SidebarMenuItem>
               <SidebarMenuButton
                 render={<Link href="/jobs" />}
-                className="h-7 pl-3.5 text-xs text-sidebar-foreground/50"
+                className="h-7 pl-3.5 text-xs text-sidebar-foreground/75"
               >
                 {overflow} more in the queue
               </SidebarMenuButton>
@@ -99,10 +99,11 @@ function JobItem({ job, position }: { job: Job; position: number }) {
           // muted subtitle, with a left marginalia rule that grows on hover and
           // turns accent when active.
           "relative h-auto items-start gap-2 py-1.5 pl-3.5",
-          "before:absolute before:left-1 before:top-1/2 before:h-0 before:w-px before:-translate-y-1/2",
+          "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-px before:-translate-y-1/2",
           "before:rounded-full before:bg-sidebar-foreground/30 before:transition-all before:content-['']",
           "hover:before:h-4",
-          isActive && "before:h-4 before:w-0.5 before:bg-primary hover:before:bg-primary"
+          isActive &&
+            "before:h-4 before:w-0.5 before:bg-primary hover:before:bg-primary"
         )}
       >
         {/* The gutter says which of the two states a row is in without a word:
@@ -116,15 +117,17 @@ function JobItem({ job, position }: { job: Job; position: number }) {
               className="h-3.5"
             />
           ) : (
-            <span className="text-[10px] tabular-nums leading-4 text-sidebar-foreground/35">
+            <span className="text-xs leading-4 text-sidebar-foreground/75 tabular-nums">
               {position}
             </span>
           )}
         </span>
 
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="w-full truncate text-sm leading-tight">{job.label}</span>
-          <span className="flex w-full items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground/70 tabular-nums">
+          <span className="w-full truncate text-sm leading-tight">
+            {job.label}
+          </span>
+          <span className="flex w-full items-center justify-between gap-2 text-xs font-medium tracking-[0.1em] text-muted-foreground uppercase tabular-nums">
             <span className="truncate">
               {KIND_LABEL[job.kind]}
               {live && job.stage ? ` · ${job.stage}` : ""}

@@ -140,12 +140,20 @@ export function TrainingShell({
           <StatusDot status={status} />
         </div>
         <div className="flex items-center gap-6">
-          <PhaseStepper status={status} mode={mode} pretrainDone={pretrainDone} />
+          <PhaseStepper
+            status={status}
+            mode={mode}
+            pretrainDone={pretrainDone}
+          />
           {/* Beside the phase, where the eye already is to find out what's
               happening. The mark is a fixed size, so a run starting doesn't reflow
               the masthead. */}
           <Throbber
-            mode={status === "tokenizing" || status === "training" ? "training" : "idle"}
+            mode={
+              status === "tokenizing" || status === "training"
+                ? "training"
+                : "idle"
+            }
             className="h-5"
           />
           {primaryAction}
@@ -154,7 +162,7 @@ export function TrainingShell({
       {/* The masthead keeps its own hairline. It used to be the throbber itself —
           a full-width rule doubling as the border — which is exactly what made the
           indicator too wide to read as one mark. */}
-      <div className="border-b border-border/60" />
+      <div className="border-b border-border" />
 
       {/* Body: fixed rail + fluid main */}
       <div className="grid grid-cols-1 gap-8 pt-6 lg:grid-cols-[340px_minmax(0,1fr)] lg:gap-12">

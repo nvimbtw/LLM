@@ -1,9 +1,24 @@
 "use client"
 
-import { CartesianGrid, Scatter, ScatterChart, XAxis, YAxis, ZAxis } from "recharts"
+import {
+  CartesianGrid,
+  Scatter,
+  ScatterChart,
+  XAxis,
+  YAxis,
+  ZAxis,
+} from "recharts"
 
-import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart"
-import { axisProps, gridProps, yAxisProps } from "@/components/training/chart-theme"
+import {
+  ChartContainer,
+  ChartTooltip,
+  type ChartConfig,
+} from "@/components/ui/chart"
+import {
+  axisProps,
+  gridProps,
+  yAxisProps,
+} from "@/components/training/chart-theme"
 import { formatDate, formatNumber } from "@/lib/benchmark"
 
 // Score on y against one reversed, logarithmic measure on x. Shared by the scaling
@@ -95,17 +110,23 @@ const PLOT_HEIGHT = 188
 // Works out where each label goes, in normalized plot space, before recharts has drawn
 // anything: the parent is the only place that can see all the points at once, and
 // therefore the only place that can tell whether two of them collide.
-function placeLabels(points: ScorePoint[], [min, max]: [number, number]): PlacedPoint[] {
+function placeLabels(
+  points: ScorePoint[],
+  [min, max]: [number, number]
+): PlacedPoint[] {
   const span = Math.log10(max) - Math.log10(min)
   const placed: PlacedPoint[] = []
 
   for (const point of points) {
     // The axis is reversed, so a large x lands at a *small* screen fraction.
-    const fx = span > 0 ? 1 - (Math.log10(point.x) - Math.log10(min)) / span : 0.5
+    const fx =
+      span > 0 ? 1 - (Math.log10(point.x) - Math.log10(min)) / span : 0.5
     const cy = (1 - Math.min(Math.max(point.score, 0), 100) / 100) * PLOT_HEIGHT
 
     const label =
-      point.name.length > MAX_LABEL ? `${point.name.slice(0, MAX_LABEL - 1)}…` : point.name
+      point.name.length > MAX_LABEL
+        ? `${point.name.slice(0, MAX_LABEL - 1)}…`
+        : point.name
     const side = fx > FLIP_AT ? "left" : "right"
     // Where this label will actually sit. Two dots far enough apart to look unrelated
     // still collide when both labels point inward at each other, so the test has to be
@@ -121,7 +142,9 @@ function placeLabels(points: ScorePoint[], [min, max]: [number, number]): Placed
     const occupied = (y: number) =>
       placed.some(
         (other) =>
-          other.x0 < x1 && x0 < other.x1 && Math.abs(other.labelY - y) < LABEL_ROW
+          other.x0 < x1 &&
+          x0 < other.x1 &&
+          Math.abs(other.labelY - y) < LABEL_ROW
       )
 
     // Alternating rows outward from the dot — up, down, further up — until one is free.
@@ -147,13 +170,23 @@ export interface ScoreScatterProps {
   domain: [number, number]
 }
 
-export function ScoreScatter({ points, formatX, xLabel, ticks, domain }: ScoreScatterProps) {
+export function ScoreScatter({
+  points,
+  formatX,
+  xLabel,
+  ticks,
+  domain,
+}: ScoreScatterProps) {
   const placed = placeLabels(points, domain)
 
   return (
     <ChartContainer config={chartConfig} className="aspect-auto h-56 w-full">
       <ScatterChart margin={{ left: 4, right: 16, top: 8, bottom: 4 }}>
-        <CartesianGrid {...gridProps} stroke="var(--border)" strokeOpacity={0.6} />
+        <CartesianGrid
+          {...gridProps}
+          stroke="var(--border)"
+          strokeOpacity={0.6}
+        />
         <XAxis
           {...axisProps}
           dataKey="x"
@@ -169,14 +202,14 @@ export function ScoreScatter({ points, formatX, xLabel, ticks, domain }: ScoreSc
           // The default 32px gap silently drops labels to avoid collisions; the ticks
           // are already spaced to fit, so only a genuine overlap should cost one.
           minTickGap={4}
-          className="text-[10px]"
+          className="text-xs"
         />
         <YAxis
           {...yAxisProps}
           dataKey="score"
           type="number"
           domain={[0, 100]}
-          className="text-[10px]"
+          className="text-xs"
         />
         {/* Fixed marker size: the z channel carries nothing here, and letting recharts
             scale dots by an absent value would invent a third dimension. */}
@@ -187,7 +220,9 @@ export function ScoreScatter({ points, formatX, xLabel, ticks, domain }: ScoreSc
         />
         <Scatter
           data={placed}
-          shape={(props: unknown) => <LabelledDot {...(props as LabelledDotProps)} />}
+          shape={(props: unknown) => (
+            <LabelledDot {...(props as LabelledDotProps)} />
+          )}
           isAnimationActive={false}
         />
       </ScatterChart>
@@ -231,7 +266,7 @@ function LabelledDot({ cx, cy, payload }: LabelledDotProps) {
         y={cy + payload.dy}
         dy="0.32em"
         textAnchor={toLeft ? "end" : "start"}
-        className="fill-muted-foreground text-[10px]"
+        className="fill-muted-foreground text-xs"
       >
         {payload.label}
       </text>
@@ -278,7 +313,10 @@ export function logTicks(domain: [number, number]): number[] {
  * will produce the former. A measure with its own idea of a round value supplies its
  * own tiers and reuses this.
  */
-export function pickDensest(tiers: number[][], domain: [number, number]): number[] {
+export function pickDensest(
+  tiers: number[][],
+  domain: [number, number]
+): number[] {
   let best: number[] = []
   for (const tier of tiers) {
     if (tier.length > MAX_TICKS) break
@@ -292,7 +330,11 @@ export function pickDensest(tiers: number[][], domain: [number, number]): number
 
 function rungs(ladder: number[], min: number, max: number): number[] {
   const out: number[] = []
-  for (let exponent = Math.floor(Math.log10(min)); exponent <= Math.ceil(Math.log10(max)); exponent++) {
+  for (
+    let exponent = Math.floor(Math.log10(min));
+    exponent <= Math.ceil(Math.log10(max));
+    exponent++
+  ) {
     for (const mantissa of ladder) {
       const value = mantissa * 10 ** exponent
       if (value >= min && value <= max) out.push(value)
@@ -315,15 +357,17 @@ function PointTooltip({
   if (!active || !payload?.length) return null
   const point = payload[0].payload
   return (
-    <div className="min-w-40 rounded-lg border border-border/60 bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
-      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
+    <div className="min-w-40 rounded-lg border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
+      <div className="mb-1 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
         {formatDate(point.created_at)}
       </div>
       <div className="flex items-baseline justify-between gap-6">
         <span className="truncate">{point.name}</span>
-        <span className="font-medium tabular-nums">{formatNumber(point.score, 1)}</span>
+        <span className="font-medium tabular-nums">
+          {formatNumber(point.score, 1)}
+        </span>
       </div>
-      <div className="mt-1 text-[11px] tabular-nums text-muted-foreground">
+      <div className="mt-1 text-xs text-muted-foreground tabular-nums">
         {formatX(point.x)} {xLabel}
       </div>
     </div>

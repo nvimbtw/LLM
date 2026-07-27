@@ -54,73 +54,73 @@ export function JobCataloguePanel({ job, run }: JobCataloguePanelProps) {
 
       <Panel
         title="Catalogue"
-        description={isRunning(job) ? run.stage ?? "Running" : undefined}
+        description={isRunning(job) ? (run.stage ?? "Running") : undefined}
       >
-      {report ? (
-        <>
-          <dl className="space-y-2">
-            <Figure
-              label="Agreement with your ratings"
-              value={`${(report.calibration.auc * 100).toFixed(0)}%`}
-              hint={`Measured over ${report.calibration.approved} approved and ${report.calibration.rejected} rejected replies you rated. 50% is a coin flip; the run refuses below 65%.`}
-            />
-            <Figure
-              label="Examples written"
-              value={report.examples_written.toLocaleString()}
-              hint={`${report.approved.toLocaleString()} good · ${report.rejected.toLocaleString()} bad, from ${report.prompts} prompts.`}
-            />
-            <Figure
-              label="Left unlabelled"
-              value={report.skipped_uncertain.toLocaleString()}
-              hint="Scored too close to the boundary to call. Skipped rather than guessed — a coin-flip label is worse than no label."
-            />
-          </dl>
+        {report ? (
+          <>
+            <dl className="space-y-2">
+              <Figure
+                label="Agreement with your ratings"
+                value={`${(report.calibration.auc * 100).toFixed(0)}%`}
+                hint={`Measured over ${report.calibration.approved} approved and ${report.calibration.rejected} rejected replies you rated. 50% is a coin flip; the run refuses below 65%.`}
+              />
+              <Figure
+                label="Examples written"
+                value={report.examples_written.toLocaleString()}
+                hint={`${report.approved.toLocaleString()} good · ${report.rejected.toLocaleString()} bad, from ${report.prompts} prompts.`}
+              />
+              <Figure
+                label="Left unlabelled"
+                value={report.skipped_uncertain.toLocaleString()}
+                hint="Scored too close to the boundary to call. Skipped rather than guessed — a coin-flip label is worse than no label."
+              />
+            </dl>
 
-          {(report.approved === 0 || report.rejected === 0) && (
-            <p className="mt-4 rounded-lg border border-dashed border-border/60 px-4 py-3 text-sm text-muted-foreground">
-              Everything landed on one side. A preference tune needs both — it
-              learns from the contrast, and with one side empty it just pushes
-              every reply the same way. Rate a few more replies so the boundary
-              moves, then run this again.
-            </p>
-          )}
-        </>
-      ) : (
-        <p className="py-6 text-center text-sm text-muted-foreground">
-          {job.status === "queued"
-            ? "Waiting for the GPU."
-            : isRunning(job)
-              ? "Calibrating and labelling…"
-              : "No report streamed to this page."}
-        </p>
-      )}
-
-      {status && (
-        <div className="mt-4 border-t border-border/40 pt-3 text-sm">
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="text-muted-foreground">Catalogue now holds</span>
-            <span className="tabular-nums">
-              {status.catalogue.toLocaleString()} /{" "}
-              {status.catalogue_required.toLocaleString()}
-            </span>
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {status.ready ? (
-              <>
-                Enough to tune on.{" "}
-                <Link
-                  href="/jobs/new/train"
-                  className="underline-offset-4 hover:underline"
-                >
-                  Start the preference run →
-                </Link>
-              </>
-            ) : (
-              (status.blocked_reason ?? "")
+            {(report.approved === 0 || report.rejected === 0) && (
+              <p className="mt-4 rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+                Everything landed on one side. A preference tune needs both — it
+                learns from the contrast, and with one side empty it just pushes
+                every reply the same way. Rate a few more replies so the
+                boundary moves, then run this again.
+              </p>
             )}
+          </>
+        ) : (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            {job.status === "queued"
+              ? "Waiting for the GPU."
+              : isRunning(job)
+                ? "Calibrating and labelling…"
+                : "No report streamed to this page."}
           </p>
-        </div>
-      )}
+        )}
+
+        {status && (
+          <div className="mt-4 border-t border-border/40 pt-3 text-sm">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-muted-foreground">Catalogue now holds</span>
+              <span className="tabular-nums">
+                {status.catalogue.toLocaleString()} /{" "}
+                {status.catalogue_required.toLocaleString()}
+              </span>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {status.ready ? (
+                <>
+                  Enough to tune on.{" "}
+                  <Link
+                    href="/jobs/new/train"
+                    className="underline-offset-4 hover:underline"
+                  >
+                    Start the preference run →
+                  </Link>
+                </>
+              ) : (
+                (status.blocked_reason ?? "")
+              )}
+            </p>
+          </div>
+        )}
       </Panel>
     </>
   )
@@ -144,7 +144,7 @@ function VerdictFeed({ verdicts }: { verdicts: Verdict[] }) {
         {verdicts.map((v, i) => (
           <li
             key={`${v.score}-${i}`}
-            className="rounded-md border border-border/50 px-3 py-2 text-sm"
+            className="rounded-md border border-border px-3 py-2 text-sm"
           >
             <div className="flex items-baseline justify-between gap-3">
               <span className="truncate text-xs text-muted-foreground">

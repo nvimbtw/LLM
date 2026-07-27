@@ -75,7 +75,9 @@ export async function getSignalStatus(): Promise<SignalStatus> {
  * Unrated samples, oldest first. `idJob` narrows to one batch; omitted, the whole
  * backlog comes back — so a batch left half-rated can be finished from anywhere.
  */
-export async function listPendingSamples(idJob?: string): Promise<PendingSample[]> {
+export async function listPendingSamples(
+  idJob?: string
+): Promise<PendingSample[]> {
   const query = idJob ? `?id_job=${encodeURIComponent(idJob)}` : ""
   const res = await apiFetch(`/signals/pending${query}`)
   if (!res.ok) throw new Error("Failed to load samples to rate.")
@@ -83,12 +85,16 @@ export async function listPendingSamples(idJob?: string): Promise<PendingSample[
 }
 
 /** Records a verdict. `null` clears it and returns the sample to the queue. */
-export async function rateSample(id: string, verdict: Verdict | null): Promise<void> {
+export async function rateSample(
+  id: string,
+  verdict: Verdict | null
+): Promise<void> {
   const res = await apiFetch(`/signals/${id}`, {
     method: "PUT",
     body: JSON.stringify({ feedback: verdict }),
   })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to save the rating.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to save the rating.")
 }
 
 /**
@@ -97,5 +103,6 @@ export async function rateSample(id: string, verdict: Verdict | null): Promise<v
  */
 export async function skipSample(id: string): Promise<void> {
   const res = await apiFetch(`/signals/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to skip the sample.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to skip the sample.")
 }

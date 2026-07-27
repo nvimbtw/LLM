@@ -26,7 +26,12 @@ export interface HistoryPanelProps {
   onDelete: (id: string) => void
 }
 
-export function HistoryPanel({ runs, selectedId, onSelect, onDelete }: HistoryPanelProps) {
+export function HistoryPanel({
+  runs,
+  selectedId,
+  onSelect,
+  onDelete,
+}: HistoryPanelProps) {
   // Scored runs rank by score, descending. A run with no score can't take part in the
   // ranking, so the unscored ones sit below the table's body in date order — still
   // reachable (a failed run carries its error, a running one its progress) without
@@ -56,17 +61,26 @@ export function HistoryPanel({ runs, selectedId, onSelect, onDelete }: HistoryPa
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/60 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
-                <th scope="col" className="w-10 py-2.5 pl-5 pr-2 text-right font-medium">
+              <tr className="border-b border-border text-xs tracking-[0.12em] text-muted-foreground uppercase">
+                <th
+                  scope="col"
+                  className="w-10 py-2.5 pr-2 pl-5 text-right font-medium"
+                >
                   #
                 </th>
                 <th scope="col" className="py-2.5 pr-3 text-left font-medium">
                   Model
                 </th>
-                <th scope="col" className="hidden py-2.5 pr-3 text-right font-medium sm:table-cell">
+                <th
+                  scope="col"
+                  className="hidden py-2.5 pr-3 text-right font-medium sm:table-cell"
+                >
                   Tokens
                 </th>
-                <th scope="col" className="hidden py-2.5 pr-3 text-right font-medium sm:table-cell">
+                <th
+                  scope="col"
+                  className="hidden py-2.5 pr-3 text-right font-medium sm:table-cell"
+                >
                   Run
                 </th>
                 <th scope="col" className="py-2.5 pr-3 text-right font-medium">
@@ -119,11 +133,11 @@ function HistoryRow({
     <tr
       onClick={() => onSelect(run.id_run)}
       className={cn(
-        "group cursor-pointer border-b border-border/40 last:border-0 transition-colors hover:bg-secondary/40",
+        "group cursor-pointer border-b border-border/40 transition-colors last:border-0 hover:bg-secondary/40",
         selected && "bg-secondary/60"
       )}
     >
-      <td className="py-3 pl-5 pr-2 text-right text-xs tabular-nums text-muted-foreground/50">
+      <td className="py-3 pr-2 pl-5 text-right text-xs text-muted-foreground tabular-nums">
         {rank ?? NO_VALUE}
       </td>
 
@@ -141,17 +155,17 @@ function HistoryRow({
           {run.model_name}
         </button>
         {run.status === "failed" && run.error && (
-          <span className="mt-0.5 block truncate text-[11px] text-destructive/70">
+          <span className="mt-0.5 block truncate text-xs text-destructive/70">
             {run.error}
           </span>
         )}
       </td>
 
-      <td className="hidden py-3 pr-3 text-right text-xs tabular-nums text-muted-foreground sm:table-cell">
+      <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums sm:table-cell">
         {run.train_tokens === null ? NO_VALUE : formatCompact(run.train_tokens)}
       </td>
 
-      <td className="hidden py-3 pr-3 text-right text-[11px] tabular-nums text-muted-foreground/60 sm:table-cell">
+      <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums sm:table-cell">
         {formatDate(run.created_at)}
       </td>
 
@@ -183,7 +197,7 @@ function HistoryRow({
           }}
           disabled={run.status === "running"}
           aria-label={`Delete benchmark of ${run.model_name}`}
-          className="rounded p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/50 hover:!text-destructive disabled:pointer-events-none"
+          className="rounded p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground hover:!text-destructive disabled:pointer-events-none"
         >
           <Trash2 className="size-3.5" />
         </button>

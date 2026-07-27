@@ -35,7 +35,8 @@ export function ThinkingLabel() {
       // doesn't feel like a fixed loop.
       setIndex(
         (prev) =>
-          (prev + 1 + Math.floor(Math.random() * (LABELS.length - 1))) % LABELS.length
+          (prev + 1 + Math.floor(Math.random() * (LABELS.length - 1))) %
+          LABELS.length
       )
     }, INTERVAL_MS)
     return () => clearInterval(id)

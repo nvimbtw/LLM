@@ -70,7 +70,10 @@ function parseInline(text: string): MNode[] {
     last = INLINE_RE.lastIndex
 
     if (m[1] !== undefined) {
-      nodes.push({ type: "code inline", children: [{ type: "text", value: m[1] }] })
+      nodes.push({
+        type: "code inline",
+        children: [{ type: "text", value: m[1] }],
+      })
     } else if (m[2] !== undefined) {
       nodes.push({ type: "bold", children: [{ type: "text", value: m[2] }] })
     } else if (m[3] !== undefined) {

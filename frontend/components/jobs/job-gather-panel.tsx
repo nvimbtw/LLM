@@ -109,8 +109,8 @@ export function JobGatherPanel({ job, run }: JobGatherPanelProps) {
               both — so say so, because "bad" reads like something to avoid
               recording. */}
           <p className="mt-3 text-xs text-muted-foreground">
-            Both verdicts are signal: the tune needs examples to push down as much
-            as examples to push up. <Key>↑</Key> good, <Key>↓</Key> bad,{" "}
+            Both verdicts are signal: the tune needs examples to push down as
+            much as examples to push up. <Key>↑</Key> good, <Key>↓</Key> bad,{" "}
             <Key>s</Key> skip.
           </p>
 
@@ -143,7 +143,8 @@ export function JobGatherPanel({ job, run }: JobGatherPanelProps) {
           </>
         ) : (
           <span className="text-sm text-muted-foreground">
-            {status?.blocked_reason ?? "Keep rating to unlock the preference run."}
+            {status?.blocked_reason ??
+              "Keep rating to unlock the preference run."}
           </span>
         )}
       </div>
@@ -190,7 +191,7 @@ export function SignalBar({
 
 function Key({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="rounded border border-border/60 px-1 py-0.5 font-mono text-[0.7rem]">
+    <kbd className="rounded border border-border px-1 py-0.5 font-mono text-[0.7rem]">
       {children}
     </kbd>
   )

@@ -108,7 +108,10 @@ function ConfigRecap({ config }: { config: TrainConfig | null }) {
     <Panel title="Config" description="As queued" bodyClassName="p-0">
       <dl className="divide-y divide-border/40">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-3 px-5 py-2">
+          <div
+            key={label}
+            className="flex items-baseline justify-between gap-3 px-5 py-2"
+          >
             <dt className="text-xs text-muted-foreground">{label}</dt>
             <dd className="text-xs tabular-nums">{value}</dd>
           </div>

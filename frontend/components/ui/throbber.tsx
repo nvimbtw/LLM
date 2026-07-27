@@ -111,7 +111,11 @@ function usePrefersReducedMotion(): boolean {
   )
 }
 
-export function Throbber({ mode = "idle", className, accent = "var(--primary)" }: ThrobberProps) {
+export function Throbber({
+  mode = "idle",
+  className,
+  accent = "var(--primary)",
+}: ThrobberProps) {
   const reduced = usePrefersReducedMotion()
   const ticksRef = React.useRef<(SVGLineElement | null)[]>([])
 

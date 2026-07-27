@@ -64,7 +64,11 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
       return true
     }
     ctx.setSetting(setting.key, next)
-    toast({ title: setting.label, description: next ? "On" : "Off", type: "success" })
+    toast({
+      title: setting.label,
+      description: next ? "On" : "Off",
+      type: "success",
+    })
     return true
   }
 
@@ -76,5 +80,7 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
 export const COMMAND_NAMES = [
   "settings",
   "help",
-  ...SETTINGS.filter((s) => s.kind === "toggle").map((s) => (s as { command: string }).command),
+  ...SETTINGS.filter((s) => s.kind === "toggle").map(
+    (s) => (s as { command: string }).command
+  ),
 ]

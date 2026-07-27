@@ -90,7 +90,9 @@ export function useChat(chatId: string) {
       })
       .catch((err) => {
         if (active)
-          setError(err instanceof Error ? err.message : "Unable to load this chat.")
+          setError(
+            err instanceof Error ? err.message : "Unable to load this chat."
+          )
       })
       .finally(() => {
         if (active) {
@@ -148,43 +150,49 @@ export function useChat(chatId: string) {
         })
 
       return new Promise<void>((resolve) => {
-        cancelRef.current = streamChat(chatId, content, modelId, systemRef.current, {
-          onQueued: ({ ahead }) => setQueuedAhead(ahead),
-          onToken: (value) => {
-            // The first token is proof the turn reached the GPU, whatever the
-            // queue said a moment ago.
-            setQueuedAhead(0)
-            appendToAssistant(value)
-          },
-          onDone: async () => {
-            // Replace the streamed approximation with the authoritative,
-            // intact content saved on the server, but keep the token counts
-            // we tallied — the server doesn't send them back.
-            try {
-              const fresh = await fetchMessages()
-              const lastIdx = fresh.length - 1
-              if (fresh[lastIdx]?.role === "assistant") {
-                fresh[lastIdx] = {
-                  ...fresh[lastIdx],
-                  tokenCount: totalTokens,
-                  thinkingTokenCount: thinkingTokens,
+        cancelRef.current = streamChat(
+          chatId,
+          content,
+          modelId,
+          systemRef.current,
+          {
+            onQueued: ({ ahead }) => setQueuedAhead(ahead),
+            onToken: (value) => {
+              // The first token is proof the turn reached the GPU, whatever the
+              // queue said a moment ago.
+              setQueuedAhead(0)
+              appendToAssistant(value)
+            },
+            onDone: async () => {
+              // Replace the streamed approximation with the authoritative,
+              // intact content saved on the server, but keep the token counts
+              // we tallied — the server doesn't send them back.
+              try {
+                const fresh = await fetchMessages()
+                const lastIdx = fresh.length - 1
+                if (fresh[lastIdx]?.role === "assistant") {
+                  fresh[lastIdx] = {
+                    ...fresh[lastIdx],
+                    tokenCount: totalTokens,
+                    thinkingTokenCount: thinkingTokens,
+                  }
                 }
+                setMessages(fresh)
+              } catch {
+                // Keep the approximation if the refetch fails.
               }
-              setMessages(fresh)
-            } catch {
-              // Keep the approximation if the refetch fails.
-            }
-            setIsSending(false)
-            setQueuedAhead(null)
-            resolve()
-          },
-          onError: (message) => {
-            setError(message)
-            setIsSending(false)
-            setQueuedAhead(null)
-            resolve()
-          },
-        })
+              setIsSending(false)
+              setQueuedAhead(null)
+              resolve()
+            },
+            onError: (message) => {
+              setError(message)
+              setIsSending(false)
+              setQueuedAhead(null)
+              resolve()
+            },
+          }
+        )
       })
     },
     [chatId, fetchMessages]
@@ -227,7 +235,9 @@ export function useChat(chatId: string) {
       } catch {
         setMessages((prev) =>
           prev.map((message) =>
-            message.id === messageId ? { ...message, feedback: previous } : message
+            message.id === messageId
+              ? { ...message, feedback: previous }
+              : message
           )
         )
         setError("Your feedback could not be saved.")
