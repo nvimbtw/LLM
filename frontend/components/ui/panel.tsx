@@ -16,11 +16,16 @@ export function Panel({
   children: React.ReactNode
 }) {
   return (
-    <section className={cn("rounded-xl border border-border/60 bg-background", className)}>
-      <header className="border-b border-border/60 px-5 py-4">
+    // `bg-card`, not `bg-background`: the card token is now a step above the page
+    // in both themes, so a panel is a sheet lying on it rather than an outline
+    // drawn on it. That one step is most of what the flatness was.
+    <section
+      className={cn("rounded-lg border border-border bg-card", className)}
+    >
+      <header className="border-b border-border px-5 py-4">
         <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
         {description && (
-          <p className="mt-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
+          <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
             {description}
           </p>
         )}
