@@ -7,6 +7,7 @@ import { ArrowLeft, RotateCcw, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Throbber } from "@/components/ui/throbber"
+import { useParentTrail } from "@/hooks/use-parent-trail"
 import {
   KIND_LABEL,
   STATUS_LABEL,
@@ -34,6 +35,7 @@ export interface JobHeaderProps {
 
 export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const router = useRouter()
+  const parent = useParentTrail({ href: "/jobs", label: "Queue" })
   const [busy, setBusy] = React.useState(false)
 
   const [now, setNow] = React.useState(() => Date.now())
@@ -62,7 +64,8 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
     setBusy(true)
     try {
       await deleteJob(job.id_job)
-      router.push("/jobs")
+      // The deleted job's page is gone, so leaving goes wherever back would have.
+      router.push(parent.href)
     } catch {
       setBusy(false)
       onChanged()
@@ -70,13 +73,15 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   }
 
   return (
-    <header className="mb-8 border-b border-border/60 pb-6">
+    <header className="mb-8 border-b border-border pb-6">
+      {/* A job is reachable from the queue and from the cycle that queued it, so
+          back follows whoever linked here rather than always the queue. */}
       <Link
-        href="/jobs"
+        href={parent.href}
         className="mb-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="size-3" />
-        Queue
+        {parent.label}
       </Link>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -92,7 +97,9 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
               separators rather than a table — three short facts don't need one. */}
           <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
             <span>{KIND_LABEL[job.kind]}</span>
-            <span aria-hidden className="text-muted-foreground/30">·</span>
+            <span aria-hidden className="text-muted-foreground/30">
+              ·
+            </span>
             <span
               className={cn(
                 job.status === "failed" && "text-destructive/80",
@@ -103,7 +110,9 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
             </span>
             {elapsed !== null && (
               <>
-                <span aria-hidden className="text-muted-foreground/30">·</span>
+                <span aria-hidden className="text-muted-foreground/30">
+                  ·
+                </span>
                 <span className="tabular-nums">{formatElapsed(elapsed)}</span>
               </>
             )}
@@ -123,7 +132,12 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
                   primary action on anything finished. A chat turn is the
                   exception: its answer already exists. */}
               {job.kind !== "chat" && (
-                <Button size="sm" disabled={busy} onClick={retry} className="gap-1.5">
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={retry}
+                  className="gap-1.5"
+                >
                   <RotateCcw className="size-3.5" />
                   Run again
                 </Button>
@@ -140,7 +154,12 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
               </Button>
             </>
           ) : (
-            <Button variant="outline" size="sm" disabled={stopping} onClick={onCancel}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={stopping}
+              onClick={onCancel}
+            >
               {stopping ? "Stopping…" : "Cancel"}
             </Button>
           )}

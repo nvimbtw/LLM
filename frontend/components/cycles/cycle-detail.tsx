@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { Check, Pause, Play, Square } from "lucide-react"
+import { ArrowLeft, Check, Pause, Play, Square } from "lucide-react"
 
 import { CycleFigures } from "@/components/cycles/cycle-figures"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,7 @@ import {
   type CycleJob,
   type CycleRound,
 } from "@/lib/cycles"
+import { withParent } from "@/hooks/use-parent-trail"
 import { KIND_LABEL, STATUS_LABEL } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
@@ -37,7 +38,11 @@ export function CycleDetail({ idCycle }: CycleDetailProps) {
   const { cycle, isLoading, error, setStatus } = useCycle(idCycle)
 
   if (isLoading) {
-    return <p className="py-16 text-center text-sm text-muted-foreground">Loading…</p>
+    return (
+      <p className="py-16 text-center text-sm text-muted-foreground">
+        Loading…
+      </p>
+    )
   }
   if (!cycle) {
     return (
@@ -52,50 +57,63 @@ export function CycleDetail({ idCycle }: CycleDetailProps) {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border/60 pb-6">
-        <div className="min-w-0">
-          <h1 className="font-display text-2xl font-semibold tracking-tight">
-            {cycle.label}
-          </h1>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
-            <span>{CYCLE_STATUS_LABEL[cycle.status]}</span>
-            <span aria-hidden>·</span>
-            <span className="tabular-nums">
-              round {cycle.round} of {cycle.max_rounds}
-            </span>
-            {running && (
+      <header className="border-b border-border pb-6">
+        <Link
+          href="/cycles"
+          className="mb-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft className="size-3" />
+          Cycles
+        </Link>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="font-display text-2xl font-semibold tracking-tight">
+              {cycle.label}
+            </h1>
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+              <span>{CYCLE_STATUS_LABEL[cycle.status]}</span>
+              <span aria-hidden>·</span>
+              <span className="tabular-nums">
+                round {cycle.round} of {cycle.max_rounds}
+              </span>
+              {running && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>{STAGE_LABEL[cycle.stage]}</span>
+                </>
+              )}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {running && <Throbber mode="training" className="mr-1" />}
+            {live && (
               <>
-                <span aria-hidden>·</span>
-                <span>{STAGE_LABEL[cycle.stage]}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => void setStatus(running ? "paused" : "running")}
+                >
+                  {running ? (
+                    <Pause className="size-3.5" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  {running ? "Pause" : "Resume"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => void setStatus("halted")}
+                >
+                  <Square className="size-3.5" />
+                  Stop
+                </Button>
               </>
             )}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {running && <Throbber mode="training" className="mr-1" />}
-          {live && (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2"
-                onClick={() => void setStatus(running ? "paused" : "running")}
-              >
-                {running ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
-                {running ? "Pause" : "Resume"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-2"
-                onClick={() => void setStatus("halted")}
-              >
-                <Square className="size-3.5" />
-                Stop
-              </Button>
-            </>
-          )}
+          </div>
         </div>
       </header>
 
@@ -103,11 +121,15 @@ export function CycleDetail({ idCycle }: CycleDetailProps) {
           visible reason is exactly the "what did this do all night" problem the
           page exists to solve. */}
       {cycle.halt_reason && !live && (
-        <Panel title="Why it stopped" description={CYCLE_STATUS_LABEL[cycle.status]}>
+        <Panel
+          title="Why it stopped"
+          description={CYCLE_STATUS_LABEL[cycle.status]}
+        >
           <p className="text-sm">{cycle.halt_reason}</p>
           {cycle.id_model_best && (
             <p className="mt-3 text-sm text-muted-foreground">
-              The model to keep is the best round&rsquo;s, not the last one&rsquo;s:{" "}
+              The model to keep is the best round&rsquo;s, not the last
+              one&rsquo;s:{" "}
               <Link
                 href={`/models/${cycle.id_model_best}`}
                 className="underline-offset-4 hover:underline"
@@ -115,7 +137,10 @@ export function CycleDetail({ idCycle }: CycleDetailProps) {
                 open it
               </Link>
               {cycle.best_score !== null && (
-                <span className="tabular-nums"> (scored {cycle.best_score.toFixed(4)})</span>
+                <span className="tabular-nums">
+                  {" "}
+                  (scored {cycle.best_score.toFixed(4)})
+                </span>
               )}
               .
             </p>
@@ -134,7 +159,7 @@ export function CycleDetail({ idCycle }: CycleDetailProps) {
       </Panel>
 
       <Panel title="Jobs" description="what it queued" bodyClassName="p-0">
-        <JobList jobs={cycle.jobs} />
+        <JobList jobs={cycle.jobs} idCycle={cycle.id_cycle} />
       </Panel>
 
       <Settings cycle={cycle} />
@@ -154,7 +179,7 @@ function StageTrack({ stage }: { stage: Detail["stage"] }) {
               "flex items-center gap-1.5",
               i < current && "text-muted-foreground",
               i === current && "font-medium",
-              i > current && "text-muted-foreground/50"
+              i > current && "text-muted-foreground"
             )}
           >
             {i < current && <Check className="size-3" strokeWidth={3} />}
@@ -205,12 +230,15 @@ function RoundTable({ rounds }: { rounds: CycleRound[] }) {
                   (r.rejected_after - r.rejected_before)
                 : null
             return (
-              <tr key={r.id_round} className="border-b border-border/20 last:border-0">
+              <tr
+                key={r.id_round}
+                className="border-b border-border/20 last:border-0"
+              >
                 <Td className="tabular-nums">{r.round}</Td>
                 <Td className="tabular-nums">
                   {y === null ? "—" : `${(y * 100).toFixed(0)}%`}
                 </Td>
-                <Td className="tabular-nums text-muted-foreground">
+                <Td className="text-muted-foreground tabular-nums">
                   {added === null ? "—" : `${added.toLocaleString()} examples`}
                 </Td>
                 <Td className="tabular-nums">
@@ -248,7 +276,7 @@ function verdictLabel(verdict: string | null): string {
   }
 }
 
-function JobList({ jobs }: { jobs: CycleJob[] }) {
+function JobList({ jobs, idCycle }: { jobs: CycleJob[]; idCycle: string }) {
   if (jobs.length === 0) {
     return (
       <p className="px-5 py-8 text-center text-sm text-muted-foreground">
@@ -260,9 +288,11 @@ function JobList({ jobs }: { jobs: CycleJob[] }) {
     <ul className="divide-y divide-border/20">
       {jobs.map((job) => (
         <li key={job.id_job}>
+          {/* Carrying the cycle means the job's back link returns here rather
+              than dumping you in the queue you never came from. */}
           <Link
-            href={`/jobs/${job.id_job}`}
-            className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-5 py-3 hover:bg-muted/40"
+            href={withParent(`/jobs/${job.id_job}`, `/cycles/${idCycle}`)}
+            className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-5 py-3 transition-colors hover:bg-muted/40"
           >
             <span className="min-w-0 truncate text-sm">{job.label}</span>
             <span className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -296,7 +326,10 @@ function Settings({ cycle }: { cycle: Detail }) {
     <Panel title="Settings" description="frozen at creation">
       <dl className="space-y-1.5">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-4">
+          <div
+            key={label}
+            className="flex items-baseline justify-between gap-4"
+          >
             <dt className="text-sm text-muted-foreground">{label}</dt>
             <dd className="text-sm tabular-nums">{value}</dd>
           </div>
