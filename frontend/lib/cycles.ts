@@ -2,12 +2,43 @@ import { apiFetch } from "./api"
 import type { JobKind, JobStatus } from "./jobs"
 
 /**
- * Post-training cycles: the layer above the queue.
+ * Cycles: the layer above the queue.
  *
- * A cycle repeats one round — build catalogue, self-train, preference-tune,
- * benchmark, decide — until a round stops improving. It is the thing you leave
- * running overnight, and its page is the memory of what it did.
+ * A cycle is a loop that drives the job queue on your behalf — repeating a round,
+ * judging whether it improved, and halting when it stops paying. It is the thing
+ * you leave running overnight, and its page is the memory of what it did.
+ *
+ * Post-training is the first one, not the only shape of one. `CycleKind` is the
+ * seam that keeps it that way, and it deliberately mirrors `JobKind`: a
+ * discriminant plus an opaque per-kind config, which is what let the queue grow
+ * from three kinds to six without the board learning about any of them.
+ *
+ * The backend has one kind today and does not yet store the column, so this is
+ * currently a routing seam rather than a wire field — `startCycle` posts what it
+ * always did. Adding the second kind means a migration and a match in
+ * `backend/src/cycle.rs`; it does not mean redesigning this page.
  */
+
+export type CycleKind = "post_train"
+
+export interface CycleKindInfo {
+  kind: CycleKind
+  label: string
+  /** One line on what the loop actually repeats. */
+  description: string
+  /** Where its composer lives. */
+  href: string
+}
+
+export const CYCLE_KINDS: readonly CycleKindInfo[] = [
+  {
+    kind: "post_train",
+    label: "Post-train",
+    description:
+      "Build the catalogue, self-train on what cleared the bar, preference-tune away what didn't, benchmark. Repeats until a round stops improving, and keeps the best model rather than the last one.",
+    href: "/cycles/new/post-train",
+  },
+]
 
 export type CycleStatus = "running" | "paused" | "halted" | "done"
 
@@ -92,7 +123,8 @@ export interface CycleDetail extends Cycle {
  * finished, or when it added nothing.
  */
 export function roundYield(round: CycleRound): number | null {
-  const { approved_before, rejected_before, approved_after, rejected_after } = round
+  const { approved_before, rejected_before, approved_after, rejected_after } =
+    round
   if (
     approved_before === null ||
     rejected_before === null ||
@@ -131,7 +163,8 @@ export async function startCycle(input: StartCycleInput): Promise<Cycle> {
     method: "POST",
     body: JSON.stringify(input),
   })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to start the cycle.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to start the cycle.")
   return res.json()
 }
 
@@ -144,12 +177,14 @@ export async function setCycleStatus(
     method: "POST",
     body: JSON.stringify({ status }),
   })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to update the cycle.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to update the cycle.")
 }
 
 export async function deleteCycle(id: string): Promise<void> {
   const res = await apiFetch(`/cycles/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to delete the cycle.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to delete the cycle.")
 }
 
 // ── presentation ────────────────────────────────────────────────────────────
