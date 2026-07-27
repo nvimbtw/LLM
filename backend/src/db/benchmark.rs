@@ -135,6 +135,26 @@ pub async fn find_by_id(pool: &PgPool, id_run: Uuid) -> Result<Option<BenchmarkR
     .await
 }
 
+// The most recent completed score for a model, if it has ever been benchmarked.
+//
+// Used by the cycle to give round 1 something to beat: without it the first round
+// compares against nothing and accepts whatever it produced, however much worse
+// than the model the cycle started from.
+pub async fn latest_score_for_model(
+    pool: &PgPool,
+    id_model: Uuid,
+) -> Result<Option<f64>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT score FROM benchmark_runs
+           WHERE id_model = $1 AND status = 'done' AND score IS NOT NULL
+           ORDER BY created_at DESC LIMIT 1"#,
+        id_model,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|r| r.score))
+}
+
 pub async fn delete(pool: &PgPool, id_run: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM benchmark_runs WHERE id_run = $1", id_run)
         .execute(pool)

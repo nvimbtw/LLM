@@ -36,6 +36,9 @@ const HISTORY_LIMIT: i64 = 200;
 struct JobResponse {
     id_job: Uuid,
     kind: JobKind,
+    // Background jobs yield to interactive work. Surfaced so the board can say why
+    // a queued job is not running even though the device looks free.
+    background: bool,
     status: JobStatus,
     label: String,
     config: Value,
@@ -53,6 +56,7 @@ impl From<Job> for JobResponse {
         JobResponse {
             id_job: job.id_job,
             kind: job.kind,
+            background: job.background,
             status: job.status,
             label: job.label,
             config: job.config,

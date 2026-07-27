@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 mod autolabel;
 mod crypto;
+mod cycle;
 mod db;
 mod extractors;
 mod gather;
@@ -49,6 +50,12 @@ async fn main() -> std::io::Result<()> {
     let queue = Arc::new(queue::Queue::new(pool.clone()));
     actix_web::rt::spawn(queue.clone().run());
 
+    // The layer above the queue: it enqueues the jobs a post-training round is made
+    // of and advances when they finish, and it never touches the device itself — a
+    // driver that held the GPU would deadlock against its own children.
+    let cycles = Arc::new(cycle::Cycles::new(pool.clone(), queue.clone()));
+    cycles.spawn();
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("http://localhost:3000")
@@ -64,6 +71,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
             .app_data(web::Data::new(queue.clone()))
+            .app_data(web::Data::new(cycles.clone()))
             .configure(routes::configure)
     })
     .bind(("127.0.0.1", 8080))?

@@ -1,5 +1,6 @@
 pub mod benchmark;
 pub mod chat;
+pub mod cycle;
 pub mod job;
 pub mod message;
 pub mod model;

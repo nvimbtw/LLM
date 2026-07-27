@@ -49,6 +49,9 @@ impl JobStatus {
 pub struct Job {
     pub id_job: Uuid,
     pub kind: JobKind,
+    // Background jobs run only when no foreground job is waiting. Cycle-spawned
+    // work is background so an unattended overnight run never makes chat unusable.
+    pub background: bool,
     pub status: JobStatus,
     pub label: String,
     pub queue_rank: f64,
@@ -72,20 +75,40 @@ pub async fn create(
     config: &Value,
     id_user: Option<Uuid>,
 ) -> Result<Job, sqlx::Error> {
+    create_in_band(pool, kind, label, config, id_user, false, None, None).await
+}
+
+// Enqueues at the back of a *band*. The rank is `max + 1` over the live jobs in the
+// same band only — a foreground job must not be pushed behind a background one just
+// because the background one happens to hold the highest rank.
+pub async fn create_in_band(
+    pool: &PgPool,
+    kind: JobKind,
+    label: &str,
+    config: &Value,
+    id_user: Option<Uuid>,
+    background: bool,
+    id_cycle: Option<Uuid>,
+    cycle_role: Option<&str>,
+) -> Result<Job, sqlx::Error> {
     sqlx::query_as!(
         Job,
-        r#"INSERT INTO jobs (kind, label, config, id_user, queue_rank)
-           VALUES ($1, $2, $3, $4, (
+        r#"INSERT INTO jobs (kind, label, config, id_user, background, id_cycle, cycle_role, queue_rank)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, (
                SELECT COALESCE(MAX(queue_rank), 0) + 1 FROM jobs
                WHERE status IN ('queued', 'running', 'cancelling')
+                 AND background = $5
            ))
            RETURNING id_job, kind as "kind: JobKind", status as "status: JobStatus",
-                     label, queue_rank, config as "config: Value", progress, stage,
+                     label, queue_rank, background, config as "config: Value", progress, stage,
                      ref_id, error, created_at, started_at, finished_at"#,
         kind as JobKind,
         label,
         config,
         id_user,
+        background,
+        id_cycle,
+        cycle_role,
     )
     .fetch_one(pool)
     .await
@@ -96,11 +119,11 @@ pub async fn list_active(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
         r#"SELECT id_job, kind as "kind: JobKind", status as "status: JobStatus",
-                  label, queue_rank, config as "config: Value", progress, stage,
+                  label, queue_rank, background, config as "config: Value", progress, stage,
                   ref_id, error, created_at, started_at, finished_at
            FROM jobs
            WHERE status IN ('queued', 'running', 'cancelling')
-           ORDER BY queue_rank"#,
+           ORDER BY background, queue_rank"#,
     )
     .fetch_all(pool)
     .await
@@ -112,7 +135,7 @@ pub async fn list_history(pool: &PgPool, limit: i64) -> Result<Vec<Job>, sqlx::E
     sqlx::query_as!(
         Job,
         r#"SELECT id_job, kind as "kind: JobKind", status as "status: JobStatus",
-                  label, queue_rank, config as "config: Value", progress, stage,
+                  label, queue_rank, background, config as "config: Value", progress, stage,
                   ref_id, error, created_at, started_at, finished_at
            FROM jobs
            WHERE status IN ('done', 'cancelled', 'failed')
@@ -128,7 +151,7 @@ pub async fn find_by_id(pool: &PgPool, id_job: Uuid) -> Result<Option<Job>, sqlx
     sqlx::query_as!(
         Job,
         r#"SELECT id_job, kind as "kind: JobKind", status as "status: JobStatus",
-                  label, queue_rank, config as "config: Value", progress, stage,
+                  label, queue_rank, background, config as "config: Value", progress, stage,
                   ref_id, error, created_at, started_at, finished_at
            FROM jobs WHERE id_job = $1"#,
         id_job,
@@ -147,12 +170,15 @@ pub async fn claim_next(pool: &PgPool) -> Result<Option<Job>, sqlx::Error> {
         r#"UPDATE jobs SET status = 'running', started_at = now()
            WHERE id_job = (
                SELECT id_job FROM jobs WHERE status = 'queued'
-               ORDER BY queue_rank
+               -- Band first: a queued foreground job always outranks every
+               -- background one, so a running cycle never delays a chat turn by
+               -- more than the job already on the device.
+               ORDER BY background, queue_rank
                LIMIT 1
                FOR UPDATE SKIP LOCKED
            )
            RETURNING id_job, kind as "kind: JobKind", status as "status: JobStatus",
-                     label, queue_rank, config as "config: Value", progress, stage,
+                     label, queue_rank, background, config as "config: Value", progress, stage,
                      ref_id, error, created_at, started_at, finished_at"#,
     )
     .fetch_optional(pool)
@@ -247,6 +273,7 @@ async fn neighbour_ranks(
     pool: &PgPool,
     moving: Uuid,
     after: Option<Uuid>,
+    background: bool,
 ) -> Result<(Option<f64>, Option<f64>), sqlx::Error> {
     // The anchor's own rank is the lower bound. Front-of-queue has no lower bound.
     let lower = match after {
@@ -263,13 +290,18 @@ async fn neighbour_ranks(
 
     // The next live job after the anchor, excluding the one being moved — it is
     // currently sitting somewhere in this band and must not bound itself.
+    // Bounded within the moving job's own band: ranks only order jobs against
+    // others in the same band, so a neighbour from the other one would bisect
+    // against a number that means nothing here.
     let upper = sqlx::query!(
         r#"SELECT MIN(queue_rank) as "rank" FROM jobs
            WHERE status IN ('queued', 'running', 'cancelling')
              AND id_job <> $1
+             AND background = $3
              AND ($2::double precision IS NULL OR queue_rank > $2)"#,
         moving,
         lower,
+        background,
     )
     .fetch_one(pool)
     .await?
@@ -286,15 +318,23 @@ const MIN_GAP: f64 = 1e-9;
 // row in the common case; renormalizes the whole live band to 1, 2, 3… only when
 // the midpoint would collapse.
 pub async fn reorder(pool: &PgPool, id_job: Uuid, after: Option<Uuid>) -> Result<(), sqlx::Error> {
-    let (lower, upper) = neighbour_ranks(pool, id_job, after).await?;
+    // A job only ever moves within its own band; there is no drag that promotes
+    // background work past foreground work, by construction.
+    let background = sqlx::query!("SELECT background FROM jobs WHERE id_job = $1", id_job)
+        .fetch_optional(pool)
+        .await?
+        .map(|row| row.background)
+        .unwrap_or(false);
+
+    let (lower, upper) = neighbour_ranks(pool, id_job, after, background).await?;
 
     let rank = match (lower, upper) {
         // Between two jobs: the midpoint, unless there's no room left.
         (Some(lo), Some(hi)) if hi - lo > MIN_GAP => (lo + hi) / 2.0,
         (Some(lo), Some(_)) => {
-            renormalize(pool).await?;
+            renormalize(pool, background).await?;
             // Ranks are whole numbers again, so re-bisecting now succeeds.
-            match neighbour_ranks(pool, id_job, after).await? {
+            match neighbour_ranks(pool, id_job, after, background).await? {
                 (Some(lo2), Some(hi2)) => (lo2 + hi2) / 2.0,
                 (Some(lo2), None) => lo2 + 1.0,
                 _ => lo + 1.0,
@@ -320,14 +360,16 @@ pub async fn reorder(pool: &PgPool, id_job: Uuid, after: Option<Uuid>) -> Result
 
 // Rewrites the live band's ranks as 1, 2, 3…, preserving the current order. Only
 // called when bisection runs out of precision.
-async fn renormalize(pool: &PgPool) -> Result<(), sqlx::Error> {
+async fn renormalize(pool: &PgPool, background: bool) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"UPDATE jobs SET queue_rank = ordered.position
            FROM (
                SELECT id_job, ROW_NUMBER() OVER (ORDER BY queue_rank) AS position
-               FROM jobs WHERE status IN ('queued', 'running', 'cancelling')
+               FROM jobs
+               WHERE status IN ('queued', 'running', 'cancelling') AND background = $1
            ) AS ordered
            WHERE jobs.id_job = ordered.id_job"#,
+        background,
     )
     .execute(pool)
     .await?;
