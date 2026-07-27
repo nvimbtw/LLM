@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Gauge, ListOrdered, Repeat } from "lucide-react"
+import { Gauge, ListOrdered, Repeat, Sparkles } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -30,6 +30,9 @@ const items = [
   // here, because the queue is what you check constantly and a cycle is what you
   // check twice a day.
   { title: "Cycles", href: "/cycles", icon: Repeat },
+  // The corpus, not the composer: this page is what you check before deciding to
+  // generate, and generation is queued from the job menu like every other kind.
+  { title: "SFT corpus", href: "/synth", icon: Sparkles },
 ]
 
 export function NavAdmin() {
@@ -40,7 +43,7 @@ export function NavAdmin() {
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel className="text-[0.62rem] font-medium uppercase tracking-[0.16em] text-sidebar-foreground/50">
+      <SidebarGroupLabel className="text-xs font-medium tracking-[0.16em] text-sidebar-foreground/75 uppercase">
         Admin
       </SidebarGroupLabel>
       <SidebarGroupContent>
@@ -72,6 +75,10 @@ export function NavAdmin() {
  * that is exactly when it earns its keep, because that group is hidden when the
  * sidebar collapses to icons. Then this mark is the only thing left saying the
  * machine is busy.
+ *
+ * Which is why it has to survive the collapse without shoving the icon off
+ * centre: expanded it is a trailing mark on the row, collapsed it lifts out of
+ * the flow into the corner of the 32px square and reads as a badge on the glyph.
  */
 function QueueTell() {
   const { running } = useJobsContext()
@@ -81,7 +88,7 @@ function QueueTell() {
     <Throbber
       mode={throbberMode(running)}
       accent="var(--sidebar-foreground)"
-      className="ml-auto h-3.5"
+      className="ml-auto h-3.5 group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-0 group-data-[collapsible=icon]:right-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-2"
     />
   )
 }
