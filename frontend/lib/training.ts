@@ -9,15 +9,21 @@ import { API_URL, authHeaders } from "./api"
 // plus the dataset list the composer needs.
 
 // Which kind of run: pretrain a fresh model, supervised-fine-tune (SFT) an
-// existing one on chat data, or preference-tune (KTO) one on thumbs-rated replies.
+// existing one on chat data, preference-tune (KTO) one on thumbs-rated replies, or
+// self-train (RAFT) one on its own generations that cleared the catalogue's bar.
+//
+// RAFT and KTO are the two halves of a post-training round and run in that order:
+// RAFT moves the model toward the good region (dense signal, full token
+// distribution), then KTO suppresses what stayed bad (one bit per example, but the
+// only thing here that can push probability *down*).
 // Matches the backend `TrainMode` (serialized lowercase). Absent on older clients →
 // the backend defaults to "pretrain".
-export type TrainMode = "pretrain" | "sft" | "kto"
+export type TrainMode = "pretrain" | "sft" | "kto" | "raft"
 
 // The two modes that start from an existing model rather than random weights.
 // Both inherit the base's architecture and both require a `base_model_id`.
 export function isFineTune(mode: TrainMode): boolean {
-  return mode === "sft" || mode === "kto"
+  return mode === "sft" || mode === "kto" || mode === "raft"
 }
 
 // One picked dataset: the name of an uploads/ subfolder and how many of its .txt

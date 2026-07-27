@@ -65,6 +65,12 @@ const SFT_DEFAULT_LR = 0.00001
 // faster than an over-large SFT step, which can only ever pull it toward real text.
 const KTO_DEFAULT_LR = 0.000005
 
+// RAFT is ordinary SFT under the hood — same loss, same masking — so it wants the
+// SFT learning rate, not KTO's much lower one. Named separately because the two
+// modes are adjacent in the UI and reading `SFT_DEFAULT_LR` under a RAFT branch
+// invites someone to "fix" it to the KTO value.
+const RAFT_DEFAULT_LR = SFT_DEFAULT_LR
+
 // The KL anchor's default. See llm::kto::KtoParams::beta.
 const KTO_DEFAULT_BETA = 0.1
 
@@ -74,6 +80,7 @@ const MODE_DEFAULT_LRS: number[] = [DEFAULT_CONFIG.lr, SFT_DEFAULT_LR, KTO_DEFAU
 
 function defaultLrFor(mode: TrainMode): number {
   if (mode === "sft") return SFT_DEFAULT_LR
+  if (mode === "raft") return RAFT_DEFAULT_LR
   if (mode === "kto") return KTO_DEFAULT_LR
   return DEFAULT_CONFIG.lr
 }
@@ -584,6 +591,7 @@ export function ParamsRail({
   }
 
   const isKto = cfg.mode === "kto"
+  const isRaft = cfg.mode === "raft"
   const isSft = isFineTune(cfg.mode)
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
   // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
@@ -649,6 +657,7 @@ export function ParamsRail({
           [
             ["pretrain", "Pretrain"],
             ["sft", "Fine-tune"],
+            ["raft", "Self-train"],
             ["kto", "Preference"],
           ] as [TrainMode, string][]
         ).map(([mode, label]) => (
@@ -783,8 +792,13 @@ export function ParamsRail({
         </div>
       )}
 
-      {isKto && (
-        <SignalGate status={signals} modelId={baseModelId} disabled={disabled} />
+      {(isKto || isRaft) && (
+        <SignalGate
+          status={signals}
+          modelId={baseModelId}
+          mode={isRaft ? "raft" : "kto"}
+          disabled={disabled}
+        />
       )}
 
       {isSft ? (
@@ -797,6 +811,16 @@ export function ParamsRail({
               Trains on the thumbs up/down collected in chat and in a gather run.
               Needs both kinds: one-sided feedback has no contrast to learn from
               and the run will refuse.
+            </>
+          )}
+          {isRaft && (
+            <>
+              {" "}
+              Fine-tunes on the model&rsquo;s own replies that cleared the
+              catalogue&rsquo;s bar — a dense signal, and the fastest way to teach
+              a model at this stage to form English. Run it before a preference
+              tune: afterwards the good replies already sit high, so KTO spends its
+              gradient on suppressing the bad ones instead.
             </>
           )}
         </p>
@@ -832,18 +856,26 @@ export function ParamsRail({
         // `signals === null` (still loading, or the count failed) leaves it
         // enabled: the server is the authority, and disabling on a failed read
         // would strand the run behind a fetch that may never succeed.
-        disabled={disabled || errors.length > 0 || (isKto && signals?.ready === false)}
+        disabled={
+          disabled ||
+          errors.length > 0 ||
+          (isKto && signals?.ready === false) ||
+          (isRaft && signals?.raft_ready === false)
+        }
         className="w-full"
       >
         {disabled
           ? isSft
             ? "Fine-tuning…"
             : "Training…"
-          : isKto && signals?.ready === false
+          : (isKto && signals?.ready === false) ||
+              (isRaft && signals?.raft_ready === false)
             ? "Not enough signals yet"
-            : isSft
-              ? "Start fine-tune"
-              : "Start training"}
+            : isRaft
+              ? "Start self-train"
+              : isSft
+                ? "Start fine-tune"
+                : "Start training"}
       </Button>
     </form>
   )

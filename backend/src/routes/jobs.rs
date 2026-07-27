@@ -239,6 +239,29 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
         }
     }
 
+    // RAFT consumes only the approved half, so it is gated on that count alone —
+    // and capped on it too, since max-likelihood over a handful of replies for five
+    // epochs is the same overfit KTO's cap exists to prevent, with a denser signal
+    // driving it.
+    if config.mode == TrainMode::Raft {
+        let counts = match db::signal::counts(pool).await {
+            Ok(counts) => counts,
+            Err(e) => {
+                eprintln!("signal count db error: {}", e);
+                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
+            }
+        };
+        let (auto_up, _) = crate::autolabel::catalogue_counts();
+        let approved = counts.desirable + auto_up;
+        if let Err(msg) = crate::gather::check_raft(approved) {
+            return Err(HttpResponse::BadRequest().body(msg));
+        }
+        let cap = crate::gather::max_epochs_for(approved);
+        if config.epochs > cap {
+            config.epochs = cap;
+        }
+    }
+
     // Resolve the storage id (which names the on-disk weights dir): reuse the
     // existing model's id on a retrain of the same name, else mint a new one.
     // Done at enqueue so the queued row already says where it will write.

@@ -44,10 +44,12 @@ export interface SignalGateProps {
   status: SignalStatus | null
   /** The base model being tuned — the one whose replies get rated and labelled. */
   modelId?: string
+  /** Which trainer step 3 is gating. They have different bars. */
+  mode: "kto" | "raft"
   disabled?: boolean
 }
 
-export function SignalGate({ status, modelId, disabled }: SignalGateProps) {
+export function SignalGate({ status, modelId, mode, disabled }: SignalGateProps) {
   const router = useRouter()
   const [isQueueing, setIsQueueing] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -64,6 +66,15 @@ export function SignalGate({ status, modelId, disabled }: SignalGateProps) {
       setIsQueueing(false)
     }
   }
+
+  // Each trainer has its own bar, and step 3 has to gate on the right one or the
+  // button and the enqueue check disagree.
+  const ready = status ? (mode === "raft" ? status.raft_ready : status.ready) : false
+  const trainBar = status
+    ? mode === "raft"
+      ? { have: status.catalogue_approved, need: status.raft_required }
+      : { have: status.catalogue, need: status.catalogue_required }
+    : { have: 0, need: 0 }
 
   if (!status) {
     return (
@@ -111,15 +122,15 @@ export function SignalGate({ status, modelId, disabled }: SignalGateProps) {
       <Step
         n={2}
         title="Build the catalogue"
-        done={status.catalogue >= status.catalogue_required}
-        active={status.seeded && status.catalogue < status.catalogue_required}
-        count={`${status.catalogue.toLocaleString()} / ${status.catalogue_required.toLocaleString()}`}
+        done={ready}
+        active={status.seeded && !ready}
+        count={`${trainBar.have.toLocaleString()} / ${trainBar.need.toLocaleString()}`}
         detail={
           status.catalogue_auto > 0
             ? `${status.catalogue_approved} good · ${status.catalogue_rejected} bad · ${status.catalogue_auto.toLocaleString()} auto-labelled`
             : "nothing auto-labelled yet"
         }
-        fraction={status.catalogue / Math.max(1, status.catalogue_required)}
+        fraction={trainBar.have / Math.max(1, trainBar.need)}
       >
         <p className="text-xs text-muted-foreground">
           The model writes {CATALOGUE_CANDIDATES} replies to each of{" "}
@@ -128,6 +139,13 @@ export function SignalGate({ status, modelId, disabled }: SignalGateProps) {
           repetition, whether the turn closes. The run stops before writing anything
           if the judge disagrees with your ratings.
         </p>
+        {/* The bar that is actually blocking, for the trainer actually selected —
+            showing the other one's shortfall would send you to fix the wrong thing. */}
+        {(mode === "raft" ? status.raft_reason : status.blocked_reason) && (
+          <p className="text-xs text-muted-foreground">
+            {mode === "raft" ? status.raft_reason : status.blocked_reason}
+          </p>
+        )}
         <Button
           type="button"
           size="sm"
@@ -149,19 +167,26 @@ export function SignalGate({ status, modelId, disabled }: SignalGateProps) {
 
       <Step
         n={3}
-        title="Train on it"
+        title={mode === "raft" ? "Self-train on the winners" : "Preference-tune on the split"}
         done={false}
-        active={status.ready}
-        count={status.ready ? `${status.max_epochs} epochs max` : ""}
+        active={ready}
+        count={
+          ready
+            ? `${status.max_epochs} epochs max`
+            : `${trainBar.have.toLocaleString()} / ${trainBar.need.toLocaleString()}`
+        }
         detail={
-          status.ready
-            ? "a fifth of your hand ratings is held back to score the result"
-            : ""
+          mode === "raft"
+            ? "approved replies only — self-training has no use for the rejected half"
+            : "a fifth of your hand ratings is held back to score the result"
         }
       >
         <p className="text-xs text-muted-foreground">
           Ready. Epochs are capped at {status.max_epochs} for a catalogue this size —
           repeated passes over too little data is what narrows a model.
+          {mode === "raft"
+            ? " Run a preference tune after this one: it suppresses what stayed bad, which self-training cannot express."
+            : " Run this after a self-train pass: the good replies already sit high by then, so the gradient goes into pushing the bad ones down."}
         </p>
       </Step>
 

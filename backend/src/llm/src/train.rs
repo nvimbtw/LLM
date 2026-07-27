@@ -793,6 +793,17 @@ fn train_epoch(
             Some(m) => {
                 let start = chunk_idx * ctx_window as usize;
                 let mask_slice = &m[start..start + chunk.len()];
+                // Every position in this window is context — a long pasted user
+                // turn fills many such windows back to back. `train_step_masked`
+                // would run a full forward and backward to arrive at a loss of
+                // exactly 0.0, and because 0.0 is finite it would then be folded
+                // into the epoch average (dragging it toward zero) and counted
+                // toward the accumulation window (stepping Adam on nothing but
+                // leftover momentum). `train_step_kto` already skips this case for
+                // the same reason; this is the SFT side of that guard.
+                if !mask_slice[..mask_slice.len() - 1].iter().any(|&b| b != 0) {
+                    continue;
+                }
                 pollster::block_on(transformer.train_step_masked(
                     ws,
                     chunk,
@@ -959,6 +970,23 @@ fn chunks_in(len: usize, ctx: usize) -> usize {
     full + usize::from(rem >= 2)
 }
 
+// Of those chunks, how many actually train something.
+//
+// `chunks_in` counts forward passes; this counts the ones that produce a gradient.
+// For SFT the two diverge sharply: a conversation carrying a long pasted user turn
+// fills whole context windows with nothing but context, and `loss_value` returns
+// `None` for those — a loss of exactly zero, and no gradient. Budgeting the LR
+// curve and the progress bar off `chunks_in` would pace the run against work that
+// does not happen.
+//
+// The `[..len - 1]` mirrors `upload_loss_targets`: mask entry `i` governs position
+// `i`, which predicts token `i + 1`, so the last token's mask byte is never read.
+fn trainable_chunks_in(mask: &[u8], ctx: usize) -> usize {
+    mask.chunks(ctx)
+        .filter(|c| c.len() >= 2 && c[..c.len() - 1].iter().any(|&b| b != 0))
+        .count()
+}
+
 // Length of a stage's assembled token stream: every document's tokens plus one
 // <|endoftext|> separator between adjacent documents.
 fn stage_stream_len(docs: &[DocSpan]) -> usize {
@@ -1046,9 +1074,18 @@ fn run_training_loop(
     // Whole-run budgets for the LR cosine curve and ETA: sum over every stage of
     // (its chunks per epoch × its epochs). Order doesn't affect chunk counts, so
     // these are stable regardless of per-epoch shuffling.
+    // With an SFT mask the budget counts only the chunks that train something, so
+    // the cosine curve and the ETA are paced against real optimizer steps rather
+    // than against forward passes that contribute nothing. A mask is only ever
+    // supplied for a whole-corpus plan — one stage, one synthetic document — where
+    // `assemble_epoch` reproduces the corpus and its mask verbatim, so counting
+    // them here is exactly what `train_epoch` will step on.
     let stage_chunks: Vec<usize> = stage_docs
         .iter()
-        .map(|docs| chunks_in(stage_stream_len(docs), ctx))
+        .map(|docs| match mask {
+            Some(m) => trainable_chunks_in(m, ctx),
+            None => chunks_in(stage_stream_len(docs), ctx),
+        })
         .collect();
     let total_epochs: i64 = plan.stages.iter().map(|s| s.epochs.max(0)).sum();
     let total_chunks_all: u64 = plan
@@ -1259,6 +1296,38 @@ mod tests {
 
     // chunks_in must match what `corpus.chunks(ctx).filter(|c| c.len() >= 2)`
     // actually yields — the last chunk is dropped only when it holds one token.
+    #[test]
+    fn trainable_chunks_counts_only_windows_with_a_target() {
+        let ctx = 4usize;
+        // Three windows: one all-context, one with a target, one all-context.
+        let mask = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        assert_eq!(chunks_in(mask.len(), ctx), 3);
+        assert_eq!(trainable_chunks_in(&mask, ctx), 1);
+    }
+
+    #[test]
+    fn a_target_in_the_final_position_of_a_window_does_not_count() {
+        // Mask entry i governs the position predicting token i+1, so the last
+        // byte of a window is never read — `upload_loss_targets` slices `[..s-1]`.
+        // A window whose only 1 sits there has `active == 0` and trains nothing.
+        assert_eq!(trainable_chunks_in(&[0, 0, 0, 1], 4), 0);
+        assert_eq!(trainable_chunks_in(&[0, 0, 1, 0], 4), 1);
+    }
+
+    #[test]
+    fn an_all_context_mask_trains_nothing() {
+        assert_eq!(trainable_chunks_in(&[0; 64], 8), 0);
+    }
+
+    #[test]
+    fn a_fully_masked_in_stream_matches_the_plain_chunk_count() {
+        let ctx = 8usize;
+        for len in 2..40usize {
+            let mask = vec![1u8; len];
+            assert_eq!(trainable_chunks_in(&mask, ctx), chunks_in(len, ctx), "len={len}");
+        }
+    }
+
     #[test]
     fn chunks_in_matches_slice_chunks() {
         let ctx = 4usize;

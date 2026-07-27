@@ -29,6 +29,23 @@ pub enum TrainMode {
     // existing model named by `base_model_id`, but from the chat feedback rather
     // than from a conversation corpus.
     Kto,
+    // Rejection-sampling fine-tuning (RAFT): ordinary SFT, but on the model's *own*
+    // generations that cleared the catalogue's bar.
+    //
+    // **Why this exists next to KTO rather than instead of it.** They are not
+    // alternatives, they are an engine and a brake. RAFT's signal is the full
+    // token distribution over a good reply — hundreds of bits — so it moves the
+    // model toward the good region fast, which is what teaches a model at this
+    // stage to form English at all. But it can only reinforce; it has no way to
+    // express "don't do this". KTO's signal is one bit per example, far weaker,
+    // but its undesirable term is the only mechanism here that actively pushes
+    // probability *down* on a failure mode.
+    //
+    // Run in that order (RAFT then KTO on the same catalogue) they compose rather
+    // than compete: after RAFT the good examples already sit at high probability,
+    // so KTO's gradient on them saturates (see `llm::kto::step`) and it spends its
+    // budget almost entirely on suppressing the bad half.
+    Raft,
 }
 
 // The KTO default, matching `llm::kto::KtoParams::default`. 0.1 is the paper's
@@ -691,6 +708,45 @@ pub struct SftDatasetStats {
     pub trainable_tokens: usize,
 }
 
+// Longest user turn kept, in bytes; beyond this the head is dropped and the tail
+// kept.
+//
+// Conversations captured from a real session carry pasted logs, file listings and
+// terminal transcripts. In the curated set the median user turn is 126 bytes and
+// the largest is 109,118 — and those giants are almost pure context. They fill
+// whole context windows containing no assistant token at all, so the chunk's loss
+// is exactly zero and the step teaches nothing (`llm::train::trainable_chunks_in`).
+// Before this cap, 85% of the SFT chunks were such windows, one run of 184 of them
+// consecutively.
+//
+// 4000 was chosen against the data rather than picked round: it truncates 5 of 47
+// turns while lifting the assistant's share of the dataset from 12% to ~45% —
+// under the 50% the trainable fraction is documented to sit below. A tighter cap
+// buys little and cuts three times as many turns.
+//
+// **The tail is kept, not the head.** A long turn is pasted context followed by
+// the actual request, and the request is what the reply answers.
+const MAX_USER_TURN_BYTES: usize = 4000;
+
+fn cap_user_turn(text: &str) -> String {
+    if text.len() <= MAX_USER_TURN_BYTES {
+        return text.to_string();
+    }
+    let mut start = text.len() - MAX_USER_TURN_BYTES;
+    // `text.len()` is bytes, so the cut can land inside a multi-byte character.
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &text[start..];
+    // Prefer starting at a line break when one is close, so the kept text doesn't
+    // begin mid-sentence. Far-away breaks are ignored — a log with 3000-byte lines
+    // would otherwise lose most of the budget.
+    match tail.find('\n') {
+        Some(i) if i < 200 => tail[i + 1..].to_string(),
+        _ => tail.to_string(),
+    }
+}
+
 // Map the JSONL role string onto the chat-template Role. Unknown roles are a
 // hard error — bad training data should fail loudly, not train on the wrong mask.
 fn parse_role(role: &str) -> io::Result<llm::chat_template::Role> {
@@ -759,10 +815,12 @@ pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
 
             let mut turns = Vec::with_capacity(conv.turns.len());
             for t in &conv.turns {
-                turns.push(llm::chat_template::Turn {
-                    role: parse_role(&t.role)?,
-                    text: t.text.clone(),
-                });
+                let role = parse_role(&t.role)?;
+                let text = match role {
+                    llm::chat_template::Role::User => cap_user_turn(&t.text),
+                    _ => t.text.clone(),
+                };
+                turns.push(llm::chat_template::Turn { role, text });
             }
 
             let (ids, m) = llm::chat_template::build_training_example(
@@ -802,6 +860,147 @@ pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
         conversations,
         total_tokens: corpus.len(),
         trainable_tokens,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct RaftDatasetStats {
+    pub examples: usize,
+    pub total_tokens: usize,
+    pub trainable_tokens: usize,
+    // Winners dropped as exact repeats of an earlier one. Reported because a high
+    // number is the model saying the same thing to every prompt — which trains fine
+    // and narrows hard, and is invisible from the example count alone.
+    pub duplicates: usize,
+    pub skipped_too_long: usize,
+}
+
+// Builds the RAFT dataset: every catalogue entry labelled `up`, rendered through
+// the same chat template and masking convention SFT uses.
+//
+// **This deliberately writes `sft_corpus.bin` / `sft_mask.bin`.** RAFT *is* SFT —
+// identical loss, identical masking, identical training loop — differing only in
+// where the conversations came from. A separate pair of files would mean a second
+// copy of `sft_train` reading them, and two loops that must not drift apart. Phase
+// 1 always rebuilds these before phase 2 reads them, so an SFT run and a RAFT run
+// overwriting each other's dataset is no more of a problem than two SFT runs are.
+//
+// **Exact duplicates are dropped.** A model that answers three prompts with the
+// same sentence contributes that sentence three times, and max-likelihood training
+// would weight it triple — accelerating exactly the collapse this loop has to avoid.
+// Near-duplicates (same sentence, one word different) are *not* caught here; that
+// wants an edit-distance or n-gram overlap pass, and is the obvious next guard.
+pub fn build_raft_dataset(base_model_dir: &Path) -> io::Result<RaftDatasetStats> {
+    let merges_path = base_model_dir.join("merges.bin");
+    let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
+    let eot = tokenize::bpe::encode("<|endoftext|>", &merges);
+
+    // The same directory `build_kto_dataset` reads, and the same lines — RAFT just
+    // keeps one half of the split instead of both.
+    let dir = storage::preference_dir();
+    let mut files: Vec<PathBuf> = if dir.is_dir() {
+        fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    files.sort();
+
+    let mut lines: Vec<RatedLine> = Vec::new();
+    for path in &files {
+        let content = fs::read_to_string(path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(parsed) = serde_json::from_str::<RatedLine>(line) {
+                lines.push(parsed);
+            }
+        }
+    }
+
+    let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
+    let ctx = model.positional_table.len();
+
+    let mut corpus: Vec<u32> = Vec::new();
+    let mut mask: Vec<u8> = Vec::new();
+    let mut examples = 0usize;
+    let mut duplicates = 0usize;
+    let mut skipped_too_long = 0usize;
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+
+    for line in &lines {
+        if line.label != "up" {
+            continue;
+        }
+        if line.prompt.trim().is_empty() || line.response.trim().is_empty() {
+            continue;
+        }
+        let key = (
+            line.prompt.trim().to_string(),
+            line.response.trim().to_string(),
+        );
+        if !seen.insert(key) {
+            duplicates += 1;
+            continue;
+        }
+
+        let turns = vec![
+            llm::chat_template::Turn {
+                role: llm::chat_template::Role::User,
+                text: line.prompt.clone(),
+            },
+            llm::chat_template::Turn {
+                role: llm::chat_template::Role::Assistant,
+                text: line.response.clone(),
+            },
+        ];
+        let (ids, m) = llm::chat_template::build_training_example(None, &turns, &merges);
+
+        // Unlike KTO — where a truncated example would be scored against a whole-reply
+        // reference log-probability and mean two different things — a long example
+        // here is merely one SFT can't fit in a window. Dropped for the same reason
+        // either way: a half-rendered conversation teaches half a conversation.
+        if ids.len() < 2 || ids.len() > ctx {
+            skipped_too_long += 1;
+            continue;
+        }
+        if !m.iter().any(|&b| b != 0) {
+            continue;
+        }
+
+        if !corpus.is_empty() {
+            corpus.extend(&eot);
+            mask.extend(std::iter::repeat_n(0u8, eot.len()));
+        }
+        corpus.extend(&ids);
+        mask.extend(&m);
+        examples += 1;
+    }
+
+    if examples == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no approved replies in the catalogue — build the catalogue first, or \
+             the bar is set above anything this model currently produces",
+        ));
+    }
+
+    let datasets = storage::datasets_dir();
+    fs::create_dir_all(&datasets)?;
+    tokenize::bpe::save_corpus(&corpus, &datasets.join("sft_corpus.bin").to_string_lossy())?;
+    fs::write(datasets.join("sft_mask.bin"), &mask)?;
+
+    Ok(RaftDatasetStats {
+        examples,
+        total_tokens: corpus.len(),
+        trainable_tokens: mask.iter().filter(|&&b| b != 0).count(),
+        duplicates,
+        skipped_too_long,
     })
 }
 
@@ -1144,6 +1343,43 @@ fn echo_example(state: &mut u64) -> (String, String) {
 mod sft_tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn a_short_user_turn_is_left_alone() {
+        let text = "why is the sky blue?";
+        assert_eq!(cap_user_turn(text), text);
+    }
+
+    #[test]
+    fn a_long_user_turn_keeps_its_tail() {
+        // The request comes after the pasted context, so the tail is the half that
+        // the assistant's reply actually answers.
+        let text = format!("{}\nso what is wrong with it?", "x".repeat(MAX_USER_TURN_BYTES * 2));
+        let capped = cap_user_turn(&text);
+        assert!(capped.len() <= MAX_USER_TURN_BYTES);
+        assert!(capped.ends_with("so what is wrong with it?"), "got {capped:?}");
+    }
+
+    #[test]
+    fn capping_never_splits_a_multibyte_character() {
+        // A paste of emoji: every cut offset lands mid-character unless guarded.
+        for extra in 0..8 {
+            let text = "🙂".repeat(MAX_USER_TURN_BYTES / 2 + extra);
+            let capped = cap_user_turn(&text);
+            assert!(capped.len() <= MAX_USER_TURN_BYTES);
+            assert!(capped.chars().all(|c| c == '🙂'), "cut produced a broken char");
+        }
+    }
+
+    #[test]
+    fn a_far_away_line_break_does_not_eat_the_budget() {
+        // One enormous line: there is no nearby break to align to, so the tail is
+        // kept as-is rather than being trimmed to the next break thousands of
+        // bytes later.
+        let text = "y".repeat(MAX_USER_TURN_BYTES * 3);
+        let capped = cap_user_turn(&text);
+        assert_eq!(capped.len(), MAX_USER_TURN_BYTES);
+    }
 
     // `DATA_DIR` is a process-global that `storage::root()` reads, so tests that
     // set it must not run concurrently. cargo runs tests multi-threaded by

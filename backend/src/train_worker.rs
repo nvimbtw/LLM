@@ -177,6 +177,9 @@ pub fn run(ctx: Arc<TrainCtx>, config: TrainConfig) -> Outcome {
         TrainMode::Pretrain => run_pretrain(ctx, config),
         TrainMode::Sft => run_sft(ctx, config),
         TrainMode::Kto => run_kto(ctx, config),
+        // RAFT is SFT with a different phase 1, so it shares the whole path and
+        // only swaps the dataset builder.
+        TrainMode::Raft => run_sft(ctx, config),
     }
 }
 
@@ -352,32 +355,62 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     }
 
     // ---- Phase 1: render conversations → sft_corpus.bin + sft_mask.bin ----
-    eprintln!("[training] {}: building SFT dataset…", config.model_name);
-    ctx.tick(0.0, "Building SFT dataset");
-    let dataset = match training::build_sft_dataset(&base_model_dir) {
-        Ok(stats) => {
-            let obj = serde_json::json!({
-                "conversations": stats.conversations,
-                "total_tokens": stats.total_tokens,
-                "trainable_tokens": stats.trainable_tokens,
-                "progress": 1.0,
-                "done": true,
-            });
+    //
+    // The two modes differ here and nowhere else: SFT renders the hand-written
+    // conversations in raw/sft/, RAFT renders the catalogue entries this model's own
+    // generations earned an "up" for. Both produce the same two files under the same
+    // masking convention, so phase 2 is byte-for-byte the same run.
+    let is_raft = config.mode == TrainMode::Raft;
+    let what = if is_raft { "RAFT" } else { "SFT" };
+    eprintln!("[training] {}: building {} dataset…", config.model_name, what);
+    ctx.tick(0.0, &format!("Building {} dataset", what));
+    let built = if is_raft {
+        training::build_raft_dataset(&base_model_dir).map(|s| {
+            (
+                serde_json::json!({
+                    "conversations": s.examples,
+                    "total_tokens": s.total_tokens,
+                    "trainable_tokens": s.trainable_tokens,
+                    "duplicates": s.duplicates,
+                    "skipped_too_long": s.skipped_too_long,
+                    "progress": 1.0,
+                    "done": true,
+                }),
+                serde_json::json!(s),
+            )
+        })
+    } else {
+        training::build_sft_dataset(&base_model_dir).map(|s| {
+            (
+                serde_json::json!({
+                    "conversations": s.conversations,
+                    "total_tokens": s.total_tokens,
+                    "trainable_tokens": s.trainable_tokens,
+                    "progress": 1.0,
+                    "done": true,
+                }),
+                serde_json::json!(s),
+            )
+        })
+    };
+    let dataset = match built {
+        Ok((obj, stats)) => {
             {
                 let mut st = lock(&ctx.state);
                 st.tokenize = obj.clone();
                 st.phase = TrainPhase::Training;
             }
             emit(&ctx.tx, frame("tokenize", obj));
-            serde_json::json!(stats)
+            stats
         }
-        Err(e) => return fail(&ctx, format!("SFT dataset build failed: {}", e)),
+        Err(e) => return fail(&ctx, format!("{} dataset build failed: {}", what, e)),
     };
 
     // ---- Phase 2: fine-tune from the base ----
     eprintln!(
-        "[training] {}: starting SFT fine-tune ({} epochs, base {})",
+        "[training] {}: starting {} fine-tune ({} epochs, base {})",
         config.model_name,
+        what,
         config.epochs,
         base_model_dir.display(),
     );
@@ -386,7 +419,7 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
         Box::new(move |p| handle_train_progress(&reporting, p));
 
     let outcome = training::run_sft_training(&config, on_progress, ctx.cancel.clone());
-    eprintln!("[training] {}: SFT returned {:?}", config.model_name, outcome);
+    eprintln!("[training] {}: {} returned {:?}", config.model_name, what, outcome);
     finish(&ctx, &config, &dataset, &created_at, outcome)
 }
 
