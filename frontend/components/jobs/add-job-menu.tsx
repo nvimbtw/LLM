@@ -1,7 +1,14 @@
 "use client"
 
 import Link from "next/link"
-import { Dumbbell, Gauge, MessageSquare, Plus, ThumbsUp } from "lucide-react"
+import {
+  Dumbbell,
+  Gauge,
+  MessageSquare,
+  Plus,
+  Sparkles,
+  ThumbsUp,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -25,6 +32,7 @@ const OPTIONS = [
   { label: "Train a model", href: "/jobs/new/train", icon: Dumbbell },
   { label: "Benchmark a model", href: "/jobs/new/benchmark", icon: Gauge },
   { label: "Auto-label replies", href: "/jobs/new/autolabel", icon: ThumbsUp },
+  { label: "Generate SFT data", href: "/jobs/new/synth", icon: Sparkles },
   { label: "Chat", href: "/chat", icon: MessageSquare },
 ]
 
@@ -41,7 +49,10 @@ export function AddJobMenu() {
       />
       <DropdownMenuContent align="end">
         {OPTIONS.map((option) => (
-          <DropdownMenuItem key={option.href} render={<Link href={option.href} />}>
+          <DropdownMenuItem
+            key={option.href}
+            render={<Link href={option.href} />}
+          >
             <option.icon />
             {option.label}
           </DropdownMenuItem>

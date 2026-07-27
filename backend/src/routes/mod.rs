@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod model;
 pub mod preset;
 pub mod signals;
+pub mod synth;
 pub mod training;
 pub mod usage;
 pub mod user;
@@ -27,6 +28,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/model").configure(model::configure));
     // Registered before "/training" so the more specific prefix matches first.
     cfg.service(web::scope("/signals").configure(signals::configure));
+    cfg.service(web::scope("/synth").configure(synth::configure));
     // Registered before "/training" so the more specific prefix matches first.
     cfg.service(web::scope("/training/presets").configure(preset::configure));
     cfg.service(web::scope("/training").configure(training::configure));

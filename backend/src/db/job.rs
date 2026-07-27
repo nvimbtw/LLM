@@ -21,6 +21,41 @@ pub enum JobKind {
     // Generate short replies for a *person* to rate, so a KTO run has something to
     // train on. The autolabel twin with the judge replaced by a human.
     Gather,
+    // Ask a cheap hosted model for synthetic SFT conversations, validate them, and
+    // append the survivors to the SFT corpus. The only kind that touches no local
+    // compute at all — see `lane`.
+    Synth,
+}
+
+// Which runner executes a kind of work.
+//
+// The GPU line exists because there is one device: a second concurrent CUDA job
+// would fight the first for memory and both would be slower than running them in
+// order. That argument does not extend to waiting on somebody else's HTTP endpoint,
+// which contends for nothing — so network work gets its own runner rather than
+// spending the device's line doing nothing.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, sqlx::Type)]
+#[sqlx(type_name = "job_lane", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum JobLane {
+    Device,
+    Network,
+}
+
+impl JobKind {
+    // A kind belongs to exactly one lane, and always the same one, so this is a
+    // property of the kind rather than something a caller chooses (and could get
+    // wrong, putting a training run on the network runner).
+    pub fn lane(self) -> JobLane {
+        match self {
+            JobKind::Synth => JobLane::Network,
+            JobKind::Train
+            | JobKind::Benchmark
+            | JobKind::Chat
+            | JobKind::Autolabel
+            | JobKind::Gather => JobLane::Device,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, sqlx::Type)]
@@ -49,6 +84,10 @@ impl JobStatus {
 pub struct Job {
     pub id_job: Uuid,
     pub kind: JobKind,
+    // Which runner will execute this row. Derived from `kind` at insert and never
+    // changed after: a job cannot move between lanes any more than a training run
+    // can stop needing the GPU.
+    pub lane: JobLane,
     // Background jobs run only when no foreground job is waiting. Cycle-spawned
     // work is background so an unattended overnight run never makes chat unusable.
     pub background: bool,
@@ -93,13 +132,14 @@ pub async fn create_in_band(
 ) -> Result<Job, sqlx::Error> {
     sqlx::query_as!(
         Job,
-        r#"INSERT INTO jobs (kind, label, config, id_user, background, id_cycle, cycle_role, queue_rank)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, (
+        r#"INSERT INTO jobs (kind, lane, label, config, id_user, background, id_cycle, cycle_role, queue_rank)
+           VALUES ($1, $8, $2, $3, $4, $5, $6, $7, (
                SELECT COALESCE(MAX(queue_rank), 0) + 1 FROM jobs
                WHERE status IN ('queued', 'running', 'cancelling')
-                 AND background = $5
+                 AND lane = $8 AND background = $5
            ))
-           RETURNING id_job, kind as "kind: JobKind", status as "status: JobStatus",
+           RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                     status as "status: JobStatus",
                      label, queue_rank, background, config as "config: Value", progress, stage,
                      ref_id, error, created_at, started_at, finished_at"#,
         kind as JobKind,
@@ -109,21 +149,30 @@ pub async fn create_in_band(
         background,
         id_cycle,
         cycle_role,
+        // Not a parameter of this function: the lane follows from the kind, so
+        // there is no call site that could disagree with the runner about which
+        // line a job is standing in.
+        kind.lane() as JobLane,
     )
     .fetch_one(pool)
     .await
 }
 
 // The live band — running, cancelling and queued — in the order it will execute.
+//
+// With two lanes there are two orders, not one, so the list is grouped by lane
+// first: within a lane the sequence is exactly what that runner will do, and the
+// board renders the groups as the separate lines they are.
 pub async fn list_active(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
-        r#"SELECT id_job, kind as "kind: JobKind", status as "status: JobStatus",
+        r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                  status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
                   ref_id, error, created_at, started_at, finished_at
            FROM jobs
            WHERE status IN ('queued', 'running', 'cancelling')
-           ORDER BY background, queue_rank"#,
+           ORDER BY lane, background, queue_rank"#,
     )
     .fetch_all(pool)
     .await
@@ -134,7 +183,8 @@ pub async fn list_active(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
 pub async fn list_history(pool: &PgPool, limit: i64) -> Result<Vec<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
-        r#"SELECT id_job, kind as "kind: JobKind", status as "status: JobStatus",
+        r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                  status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
                   ref_id, error, created_at, started_at, finished_at
            FROM jobs
@@ -150,7 +200,8 @@ pub async fn list_history(pool: &PgPool, limit: i64) -> Result<Vec<Job>, sqlx::E
 pub async fn find_by_id(pool: &PgPool, id_job: Uuid) -> Result<Option<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
-        r#"SELECT id_job, kind as "kind: JobKind", status as "status: JobStatus",
+        r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                  status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
                   ref_id, error, created_at, started_at, finished_at
            FROM jobs WHERE id_job = $1"#,
@@ -164,12 +215,16 @@ pub async fn find_by_id(pool: &PgPool, id_job: Uuid) -> Result<Option<Job>, sqlx
 // LOCKED` is the standard Postgres queue take: it makes the claim safe if a second
 // backend process ever exists, and costs nothing with one. `None` means the queue
 // is empty — the runner then waits to be woken rather than spinning.
-pub async fn claim_next(pool: &PgPool) -> Result<Option<Job>, sqlx::Error> {
+//
+// Each runner claims only from its own lane. `SKIP LOCKED` is what makes two of
+// them safe against each other even in the moment they claim simultaneously, and
+// the lane filter means they never want the same row anyway.
+pub async fn claim_next(pool: &PgPool, lane: JobLane) -> Result<Option<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
         r#"UPDATE jobs SET status = 'running', started_at = now()
            WHERE id_job = (
-               SELECT id_job FROM jobs WHERE status = 'queued'
+               SELECT id_job FROM jobs WHERE status = 'queued' AND lane = $1
                -- Band first: a queued foreground job always outranks every
                -- background one, so a running cycle never delays a chat turn by
                -- more than the job already on the device.
@@ -177,9 +232,11 @@ pub async fn claim_next(pool: &PgPool) -> Result<Option<Job>, sqlx::Error> {
                LIMIT 1
                FOR UPDATE SKIP LOCKED
            )
-           RETURNING id_job, kind as "kind: JobKind", status as "status: JobStatus",
+           RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                     status as "status: JobStatus",
                      label, queue_rank, background, config as "config: Value", progress, stage,
                      ref_id, error, created_at, started_at, finished_at"#,
+        lane as JobLane,
     )
     .fetch_optional(pool)
     .await
@@ -273,6 +330,7 @@ async fn neighbour_ranks(
     pool: &PgPool,
     moving: Uuid,
     after: Option<Uuid>,
+    lane: JobLane,
     background: bool,
 ) -> Result<(Option<f64>, Option<f64>), sqlx::Error> {
     // The anchor's own rank is the lower bound. Front-of-queue has no lower bound.
@@ -290,18 +348,19 @@ async fn neighbour_ranks(
 
     // The next live job after the anchor, excluding the one being moved — it is
     // currently sitting somewhere in this band and must not bound itself.
-    // Bounded within the moving job's own band: ranks only order jobs against
-    // others in the same band, so a neighbour from the other one would bisect
-    // against a number that means nothing here.
+    // Bounded within the moving job's own lane *and* band: ranks only order jobs
+    // against others they actually queue behind, so a neighbour from another lane
+    // or band would bisect against a number that means nothing here.
     let upper = sqlx::query!(
         r#"SELECT MIN(queue_rank) as "rank" FROM jobs
            WHERE status IN ('queued', 'running', 'cancelling')
              AND id_job <> $1
-             AND background = $3
+             AND lane = $4 AND background = $3
              AND ($2::double precision IS NULL OR queue_rank > $2)"#,
         moving,
         lower,
         background,
+        lane as JobLane,
     )
     .fetch_one(pool)
     .await?
@@ -318,23 +377,31 @@ const MIN_GAP: f64 = 1e-9;
 // row in the common case; renormalizes the whole live band to 1, 2, 3… only when
 // the midpoint would collapse.
 pub async fn reorder(pool: &PgPool, id_job: Uuid, after: Option<Uuid>) -> Result<(), sqlx::Error> {
-    // A job only ever moves within its own band; there is no drag that promotes
-    // background work past foreground work, by construction.
-    let background = sqlx::query!("SELECT background FROM jobs WHERE id_job = $1", id_job)
-        .fetch_optional(pool)
-        .await?
-        .map(|row| row.background)
-        .unwrap_or(false);
+    // A job only ever moves within its own lane and band; there is no drag that
+    // promotes background work past foreground work or moves a job onto the other
+    // runner, by construction.
+    let row = sqlx::query!(
+        r#"SELECT lane as "lane: JobLane", background FROM jobs WHERE id_job = $1"#,
+        id_job,
+    )
+    .fetch_optional(pool)
+    .await?;
+    let (lane, background) = match row {
+        Some(row) => (row.lane, row.background),
+        // The job vanished between the drag and the drop; the UPDATE below will
+        // match nothing, which is the right outcome.
+        None => (JobLane::Device, false),
+    };
 
-    let (lower, upper) = neighbour_ranks(pool, id_job, after, background).await?;
+    let (lower, upper) = neighbour_ranks(pool, id_job, after, lane, background).await?;
 
     let rank = match (lower, upper) {
         // Between two jobs: the midpoint, unless there's no room left.
         (Some(lo), Some(hi)) if hi - lo > MIN_GAP => (lo + hi) / 2.0,
         (Some(lo), Some(_)) => {
-            renormalize(pool, background).await?;
+            renormalize(pool, lane, background).await?;
             // Ranks are whole numbers again, so re-bisecting now succeeds.
-            match neighbour_ranks(pool, id_job, after, background).await? {
+            match neighbour_ranks(pool, id_job, after, lane, background).await? {
                 (Some(lo2), Some(hi2)) => (lo2 + hi2) / 2.0,
                 (Some(lo2), None) => lo2 + 1.0,
                 _ => lo + 1.0,
@@ -360,16 +427,18 @@ pub async fn reorder(pool: &PgPool, id_job: Uuid, after: Option<Uuid>) -> Result
 
 // Rewrites the live band's ranks as 1, 2, 3…, preserving the current order. Only
 // called when bisection runs out of precision.
-async fn renormalize(pool: &PgPool, background: bool) -> Result<(), sqlx::Error> {
+async fn renormalize(pool: &PgPool, lane: JobLane, background: bool) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"UPDATE jobs SET queue_rank = ordered.position
            FROM (
                SELECT id_job, ROW_NUMBER() OVER (ORDER BY queue_rank) AS position
                FROM jobs
-               WHERE status IN ('queued', 'running', 'cancelling') AND background = $1
+               WHERE status IN ('queued', 'running', 'cancelling')
+                 AND lane = $2 AND background = $1
            ) AS ordered
            WHERE jobs.id_job = ordered.id_job"#,
         background,
+        lane as JobLane,
     )
     .execute(pool)
     .await?;

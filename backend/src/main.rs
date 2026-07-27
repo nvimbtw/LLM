@@ -11,6 +11,7 @@ mod gather;
 mod queue;
 mod routes;
 mod storage;
+mod synth;
 mod train_worker;
 mod training;
 mod ws;
@@ -47,8 +48,12 @@ async fn main() -> std::io::Result<()> {
     // The single serialization point for the GPU. Created once and shared across
     // every worker (cloning web::Data clones the Arc, not the queue), so a job
     // enqueued on one worker is visible to a socket that lands on another.
+    // One runner per lane. The device lane is the GPU line, unchanged; the network
+    // lane exists so work that only waits on somebody else's API never occupies it
+    // (see db::job::JobLane).
     let queue = Arc::new(queue::Queue::new(pool.clone()));
-    actix_web::rt::spawn(queue.clone().run());
+    actix_web::rt::spawn(queue.clone().run(db::job::JobLane::Device));
+    actix_web::rt::spawn(queue.clone().run(db::job::JobLane::Network));
 
     // The layer above the queue: it enqueues the jobs a post-training round is made
     // of and advances when they finish, and it never touches the device itself — a

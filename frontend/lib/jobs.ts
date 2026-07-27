@@ -8,7 +8,21 @@ import type { TrainConfig } from "./training"
 // of what the /jobs page renders, and `config` travels with each row so a finished
 // job can seed a new one without a second request.
 
-export type JobKind = "train" | "benchmark" | "chat" | "autolabel" | "gather"
+export type JobKind =
+  | "train"
+  | "benchmark"
+  | "chat"
+  | "autolabel"
+  | "gather"
+  | "synth"
+
+/**
+ * Which runner a job stands in front of. `device` is the GPU line — one job at a
+ * time, and everything that touches the model is in it. `network` is its own line
+ * for work that only waits on somebody else's API, so a generation run never
+ * occupies the device it does not use.
+ */
+export type JobLane = "device" | "network"
 
 export type JobStatus =
   | "queued"
@@ -23,6 +37,7 @@ export type JobStatus =
 export interface Job {
   id_job: string
   kind: JobKind
+  lane: JobLane
   status: JobStatus
   label: string
   // The job's own config: a TrainConfig, a { id_model }, or a chat request. Typed
@@ -176,33 +191,111 @@ export interface CatalogueReport {
   mean_score: number
 }
 
+/** Config for a synthetic SFT generation run. Mirrors the backend `SynthRequest`. */
+export interface SynthConfig {
+  /** An OpenAI-compatible API base, e.g. https://openrouter.ai/api/v1. */
+  base_url: string
+  /** The provider's model id — the one writing the conversations, not ours. */
+  model: string
+  /** How many valid conversations to add before stopping. */
+  count: number
+  /** Conversations per call. Small: a long batch arrives truncated. */
+  batch?: number
+  temperature?: number
+  max_tokens?: number
+  /** Thinking blocks shorter than this are rejected. */
+  min_think_words?: number
+  think_frac?: number
+  system_frac?: number
+  timeout_secs?: number
+  max_calls?: number
+  /**
+   * Our model, whose tokenizer and context window a conversation has to fit.
+   * Without it nothing checks length, which is how a corpus of conversations three
+   * times too long to train on gets written.
+   */
+  id_model?: string
+  /** Name of the server-side env var holding the key. Never the key itself. */
+  api_key_env?: string
+  exemplar_file?: string
+  out_file?: string
+  seed?: number
+}
+
+export function queueSynth(config: SynthConfig): Promise<Job> {
+  return enqueue("synth", config)
+}
+
+/** One model call in a generation run, as it completes. */
+export interface SynthCall {
+  call: number
+  kept: number
+  duplicates: number
+  /** [reason, count] for everything this call's output lost. */
+  rejected: [string, number][]
+  elapsed_ms: number
+  response_chars: number
+  total: number
+  target: number
+}
+
+/** One conversation that survived validation. */
+export interface SynthAccepted {
+  opener: string
+  reply: string
+  turns: number
+  think_words: number
+  /** Rendered length in real tokens, when a base model was named. */
+  tokens: number | null
+  user_chars: number
+  assistant_chars: number
+}
+
+/** What a generation run did, emitted once at the end. */
+export interface SynthReport {
+  added: number
+  calls: number
+  duplicates: number
+  with_thinking: number
+  rejected: [string, number][]
+  out_file: string
+  corpus_total: number
+}
+
 /**
  * Moves a queued job to sit directly after `afterId`, or to the front when that is
  * null. Expressed as a neighbour rather than an index so a drop lands where it was
  * dropped even if the board shifted underneath the drag.
  */
-export async function reorderJob(id: string, afterId: string | null): Promise<void> {
+export async function reorderJob(
+  id: string,
+  afterId: string | null
+): Promise<void> {
   const res = await apiFetch(`/jobs/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ after: afterId }),
   })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to reorder the job.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to reorder the job.")
 }
 
 export async function cancelJob(id: string): Promise<void> {
   const res = await apiFetch(`/jobs/${id}/cancel`, { method: "POST" })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to cancel the job.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to cancel the job.")
 }
 
 export async function retryJob(id: string): Promise<Job> {
   const res = await apiFetch(`/jobs/${id}/retry`, { method: "POST" })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to re-run the job.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to re-run the job.")
   return res.json()
 }
 
 export async function deleteJob(id: string): Promise<void> {
   const res = await apiFetch(`/jobs/${id}`, { method: "DELETE" })
-  if (!res.ok) throw new Error((await res.text()) || "Failed to delete the job.")
+  if (!res.ok)
+    throw new Error((await res.text()) || "Failed to delete the job.")
 }
 
 export async function setPaused(paused: boolean): Promise<void> {
@@ -221,6 +314,27 @@ export const KIND_LABEL: Record<JobKind, string> = {
   chat: "Chat",
   autolabel: "Build catalogue",
   gather: "Gather signals",
+  synth: "Generate SFT data",
+}
+
+/**
+ * The chip classes for a job's kind — its hue as the text, a wash of the same hue
+ * behind it.
+ *
+ * The kind used to be uppercase grey on every row, which meant six different sorts
+ * of work were told apart only by reading them. Colour makes a history of thirty
+ * rows scannable: you find last night's training runs by shape, not by word.
+ *
+ * Written out in full rather than built by interpolation because Tailwind scans
+ * source for complete class names — `text-kind-${job.kind}` compiles to nothing.
+ */
+export const KIND_CHIP: Record<JobKind, string> = {
+  train: "text-kind-train bg-kind-train/14",
+  benchmark: "text-kind-benchmark bg-kind-benchmark/14",
+  chat: "text-kind-chat bg-kind-chat/14",
+  autolabel: "text-kind-autolabel bg-kind-autolabel/14",
+  gather: "text-kind-gather bg-kind-gather/14",
+  synth: "text-kind-synth bg-kind-synth/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
@@ -237,7 +351,9 @@ export const STATUS_LABEL: Record<JobStatus, string> = {
  * motion, so a running job says which kind it is by how it moves — a queued one
  * holds still, which is the honest reading of waiting.
  */
-export function throbberMode(job: Job): "idle" | "training" | "benchmarking" | "generating" {
+export function throbberMode(
+  job: Job
+): "idle" | "training" | "benchmarking" | "generating" {
   if (!isRunning(job)) return "idle"
   switch (job.kind) {
     case "train":
@@ -253,6 +369,10 @@ export function throbberMode(job: Job): "idle" | "training" | "benchmarking" | "
     // Gathering is generation with a person, rather than a rule, doing the
     // judging — and generating is all the GPU is doing either way.
     case "gather":
+      return "generating"
+    // Synthesis is generation too, just somebody else's model doing it. The
+    // throbber says what is happening, not which device it happens on.
+    case "synth":
       return "generating"
   }
 }

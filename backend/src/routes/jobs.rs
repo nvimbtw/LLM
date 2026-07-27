@@ -18,7 +18,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::db;
-use crate::db::job::{Job, JobKind, JobStatus};
+use crate::db::job::{Job, JobKind, JobLane, JobStatus};
 use crate::extractors::AdminUser;
 use crate::queue::Queue;
 use crate::storage;
@@ -36,6 +36,10 @@ const HISTORY_LIMIT: i64 = 200;
 struct JobResponse {
     id_job: Uuid,
     kind: JobKind,
+    // Which runner this row belongs to. Surfaced so the board can show the two
+    // lines as the separate queues they are, rather than one list where a chat turn
+    // appears to be waiting behind a generation run it will in fact overtake.
+    lane: JobLane,
     // Background jobs yield to interactive work. Surfaced so the board can say why
     // a queued job is not running even though the device looks free.
     background: bool,
@@ -56,6 +60,7 @@ impl From<Job> for JobResponse {
         JobResponse {
             id_job: job.id_job,
             kind: job.kind,
+            lane: job.lane,
             background: job.background,
             status: job.status,
             label: job.label,
@@ -164,6 +169,10 @@ async fn create_job(
             Err(response) => return response,
         },
         JobKind::Gather => match prepare_gather(pool.get_ref(), config).await {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        },
+        JobKind::Synth => match prepare_synth(pool.get_ref(), config).await {
             Ok(prepared) => prepared,
             Err(response) => return response,
         },
@@ -411,6 +420,91 @@ async fn prepare_gather(pool: &PgPool, config: Value) -> Result<(String, Value),
         Ok(value) => Ok((model.name, value)),
         Err(e) => {
             eprintln!("serialize gather config error: {}", e);
+            Err(HttpResponse::InternalServerError().body("failed to queue job"))
+        }
+    }
+}
+
+// Validates a synthetic-generation request.
+//
+// Everything checkable without spending a model call is checked here: a run that
+// would write over the gold set, or ask a provider for zero conversations, or read
+// a tokenizer that does not exist, should be a 400 on submit rather than a failed
+// row after the first call comes back.
+async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
+    let parsed: crate::synth::SynthRequest = match serde_json::from_value(config) {
+        Ok(config) => config,
+        Err(e) => {
+            return Err(HttpResponse::BadRequest().body(format!("invalid generation config: {e}")));
+        }
+    };
+
+    if !parsed.base_url.starts_with("http://") && !parsed.base_url.starts_with("https://") {
+        return Err(HttpResponse::BadRequest()
+            .body("the API base must be an http(s) URL, e.g. https://openrouter.ai/api/v1"));
+    }
+    if parsed.model.trim().is_empty() {
+        return Err(HttpResponse::BadRequest().body("name the model to generate with"));
+    }
+    if parsed.count < 1 {
+        return Err(HttpResponse::BadRequest().body("count must be at least 1"));
+    }
+    if parsed.batch < 1 {
+        return Err(HttpResponse::BadRequest().body("batch must be at least 1"));
+    }
+    if !(parsed.temperature.is_finite() && parsed.temperature > 0.0) {
+        // Temperature 0 is argmax, and this is a diversity task: every call would
+        // return the same conversations, all but the first deduplicated away.
+        return Err(HttpResponse::BadRequest().body("temperature must be a positive number"));
+    }
+
+    // File *names*, never paths: a run is not a way to write anywhere on the disk
+    // from a browser form.
+    for name in [&parsed.out_file, &parsed.exemplar_file] {
+        if name.contains('/') || name.contains('\\') || !name.ends_with(".jsonl") {
+            return Err(HttpResponse::BadRequest()
+                .body("file names must be plain .jsonl names inside the SFT directory"));
+        }
+    }
+    // The gold set is hand-curated and irreplaceable; generated output goes beside
+    // it, never into it.
+    if parsed.out_file == parsed.exemplar_file {
+        return Err(HttpResponse::BadRequest()
+            .body("generated conversations cannot be written into the gold exemplar file"));
+    }
+    if !storage::sft_dir().join(&parsed.exemplar_file).exists() {
+        return Err(HttpResponse::BadRequest().body(
+            "no gold conversations to imitate — generation copies the style of real \
+             ones, and with none to show it produces generic chat data",
+        ));
+    }
+
+    // The model whose window the conversations have to fit. Optional, but checked
+    // when present: a run configured against a deleted model would otherwise fail
+    // on its first accepted conversation, minutes in.
+    let mut label = format!("{} × {}", parsed.model, parsed.count);
+    if let Some(id_model) = parsed.id_model {
+        match db::model::find_by_id(pool, id_model).await {
+            Ok(Some(model)) => label = format!("{} → {}", parsed.model, model.name),
+            Ok(None) => return Err(HttpResponse::NotFound().body("model not found")),
+            Err(e) => {
+                eprintln!("synth model lookup db error: {}", e);
+                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
+            }
+        }
+        let model_dir = storage::models_dir().join(id_model.to_string());
+        if !model_dir.join("merges.bin").exists() {
+            return Err(HttpResponse::BadRequest().body(
+                "that model has no tokenizer on disk, so there is no way to measure \
+                 whether a conversation fits its context window",
+            ));
+        }
+    }
+
+    match serde_json::to_value(&parsed) {
+        Ok(value) => Ok((label, value)),
+        Err(e) => {
+            eprintln!("serialize synth config error: {}", e);
             Err(HttpResponse::InternalServerError().body("failed to queue job"))
         }
     }

@@ -35,12 +35,20 @@ export interface QueueBandProps {
   onDelete: (id: string) => void
 }
 
-export function QueueBand({ jobs, paused, onReorder, onCancel, onDelete }: QueueBandProps) {
+export function QueueBand({
+  jobs,
+  paused,
+  onReorder,
+  onCancel,
+  onDelete,
+}: QueueBandProps) {
   const [draggingId, setDraggingId] = React.useState<string | null>(null)
   // Where the dragged row would land: the id it would sit after, or null for the
   // front of the queue. Held separately from `draggingId` so the marker can show
   // a drop above the first row, which has no preceding id to name.
-  const [dropAfter, setDropAfter] = React.useState<string | null | undefined>(undefined)
+  const [dropAfter, setDropAfter] = React.useState<string | null | undefined>(
+    undefined
+  )
 
   if (jobs.length === 0) return null
 
@@ -63,7 +71,9 @@ export function QueueBand({ jobs, paused, onReorder, onCancel, onDelete }: Queue
         // The line lands above this row when the drop target is the row before it.
         const showMarkerAbove =
           dropAfter !== undefined &&
-          (index === 0 ? dropAfter === null : dropAfter === jobs[index - 1].id_job)
+          (index === 0
+            ? dropAfter === null
+            : dropAfter === jobs[index - 1].id_job)
 
         return (
           <li
@@ -82,7 +92,11 @@ export function QueueBand({ jobs, paused, onReorder, onCancel, onDelete }: Queue
               const box = event.currentTarget.getBoundingClientRect()
               const above = event.clientY < box.top + box.height / 2
               setDropAfter(
-                above ? (index === 0 ? null : jobs[index - 1].id_job) : job.id_job
+                above
+                  ? index === 0
+                    ? null
+                    : jobs[index - 1].id_job
+                  : job.id_job
               )
             }}
             onDrop={(event) => {
@@ -106,7 +120,7 @@ export function QueueBand({ jobs, paused, onReorder, onCancel, onDelete }: Queue
                 aria-hidden
               />
 
-              <span className="w-6 shrink-0 text-right text-xs tabular-nums text-muted-foreground/40">
+              <span className="w-6 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
                 {String(index + 1).padStart(2, "0")}
               </span>
 
@@ -119,11 +133,15 @@ export function QueueBand({ jobs, paused, onReorder, onCancel, onDelete }: Queue
                 </Link>
               </div>
 
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/50">
+              <span className="shrink-0 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
                 {KIND_LABEL[job.kind]}
+                {/* Said on the row because position alone would lie: a network job
+                    sits in this list behind GPU work it does not wait for, and will
+                    start the moment its own runner is free. */}
+                {job.lane === "network" && " · network"}
               </span>
 
-              <span className="hidden w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/50 sm:block">
+              <span className="hidden w-14 shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">
                 {formatClock(job.created_at)}
               </span>
 

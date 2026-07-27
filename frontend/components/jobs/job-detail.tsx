@@ -6,6 +6,7 @@ import { JobCataloguePanel } from "./job-catalogue-panel"
 import { JobChatPanel } from "./job-chat-panel"
 import { JobGatherPanel } from "./job-gather-panel"
 import { JobHeader } from "./job-header"
+import { JobSynthPanel } from "./job-synth-panel"
 import { JobTrainPanel } from "./job-train-panel"
 
 /**
@@ -21,7 +22,11 @@ export function JobDetail({ idJob }: JobDetailProps) {
   const { job, isLoading, error } = run
 
   if (isLoading) {
-    return <p className="py-16 text-center text-sm text-muted-foreground">Loading…</p>
+    return (
+      <p className="py-16 text-center text-sm text-muted-foreground">
+        Loading…
+      </p>
+    )
   }
 
   if (!job) {
@@ -40,6 +45,7 @@ export function JobDetail({ idJob }: JobDetailProps) {
       {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
       {job.kind === "gather" && <JobGatherPanel job={job} run={run} />}
       {job.kind === "autolabel" && <JobCataloguePanel job={job} run={run} />}
+      {job.kind === "synth" && <JobSynthPanel job={job} run={run} />}
     </>
   )
 }

@@ -1,11 +1,12 @@
-// The GPU queue: one runner, one job at a time, in `queue_rank` order.
+// The job queue: two runners, each taking one job at a time from its own lane, in
+// `queue_rank` order.
 //
-// There is exactly one device, so there is exactly one line. Before this module
-// that rule was enforced by route handlers asking two in-memory registries whether
-// they were busy — true only for the paths that remembered to ask (chat never
-// did), and forgotten entirely across a restart. Now the rule is structural: this
-// loop is the only thing that starts GPU work, and it runs one job to completion
-// before claiming the next.
+// There is exactly one device, so there is exactly one line for it. Before this
+// module that rule was enforced by route handlers asking two in-memory registries
+// whether they were busy — true only for the paths that remembered to ask (chat
+// never did), and forgotten entirely across a restart. Now the rule is structural:
+// this loop is the only thing that starts GPU work, and it runs one job to
+// completion before claiming the next.
 //
 // The runner is an async task that owns the pool, which is what lets every durable
 // write happen here: claiming, coarse progress, the terminal row, and each kind's
@@ -16,6 +17,15 @@
 // stays in memory, held in `live` for exactly as long as a job is running. Nothing
 // in flight survives a restart, so there is nothing to persist about it; what
 // survives is the queue itself.
+//
+// **Why there are two lines rather than one.** Every kind above is FFI into CUDA,
+// so "one runner" and "one device" were the same statement. Synthetic data
+// generation is not: it waits on somebody else's HTTP endpoint for minutes and uses
+// no local compute at all. Sharing the device's line would mean a generation run
+// idles the GPU and blocks chat for as long as it lasts, which is strictly worse
+// than not having the feature. So a job declares a `JobLane`, each lane has its own
+// runner, and the two contend for nothing — `live` therefore holds up to one job
+// *per lane* rather than one job overall.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,9 +37,10 @@ use uuid::Uuid;
 
 use crate::autolabel;
 use crate::db;
-use crate::db::job::{JobKind, JobStatus};
+use crate::db::job::{JobKind, JobLane, JobStatus};
 use crate::gather;
 use crate::storage;
+use crate::synth;
 use crate::train_worker::{self, TrainCtx, TrainPhase, TrainState};
 
 const BROADCAST_CAPACITY: usize = 256;
@@ -63,7 +74,28 @@ pub struct ProgressTick {
 pub enum Snapshot {
     Train(Arc<TrainCtx>),
     Simple(Arc<Mutex<SimpleState>>),
+    // A generation run accumulates two series and a feed, and a page that attaches
+    // ten minutes in should see the run so far rather than an empty chart — so its
+    // snapshot carries the whole accumulation, like training's does.
+    Synth(Arc<Mutex<SynthState>>),
 }
+
+// Everything a synthetic-data run has produced so far.
+pub struct SynthState {
+    pub stage: String,
+    pub fraction: f64,
+    pub calls: Vec<synth::CallReport>,
+    // The most recent conversations, in full. A live window rather than a log: the
+    // text is what makes the feed worth watching and also what makes it heavy.
+    pub accepted: Vec<synth::Accepted>,
+    pub added: usize,
+    pub target: usize,
+    pub duplicates: usize,
+    pub with_thinking: usize,
+}
+
+// How many accepted conversations the snapshot keeps. A screenful and a bit.
+const SYNTH_FEED: usize = 24;
 
 pub struct SimpleState {
     pub stage: String,
@@ -72,8 +104,8 @@ pub struct SimpleState {
     pub text: String,
 }
 
-// Handles onto the job currently holding the GPU. Dropped the moment it finishes,
-// so `live` being `Some` is the same statement as "the device is busy".
+// Handles onto a job that is running right now. Dropped the moment it finishes, so
+// an entry here is the same statement as "this job's lane is busy with it".
 pub struct Live {
     pub id_job: Uuid,
     pub cancel: Arc<AtomicBool>,
@@ -97,15 +129,38 @@ impl Live {
                 })
                 .to_string()
             }
+            Snapshot::Synth(state) => {
+                let st = lock(state);
+                serde_json::json!({
+                    "type": "snapshot",
+                    "status": "running",
+                    "stage": st.stage,
+                    "fraction": st.fraction,
+                    "calls": st.calls,
+                    "accepted": st.accepted,
+                    "added": st.added,
+                    "target": st.target,
+                    "duplicates": st.duplicates,
+                    "with_thinking": st.with_thinking,
+                })
+                .to_string()
+            }
         }
     }
 }
 
 pub struct Queue {
     pool: PgPool,
-    // Wakes the runner when a job is enqueued, cancelled, or the queue is resumed.
-    wake: Notify,
-    live: Mutex<Option<Arc<Live>>>,
+    // Wakes a runner when a job is enqueued, cancelled, or the queue is resumed.
+    // One per lane: `notify_one` parks a permit when nobody is waiting, and a single
+    // shared `Notify` would let the wrong runner consume the other's wake-up — a
+    // queued chat turn would then sit until the 5s fallback tick.
+    wake_device: Notify,
+    wake_network: Notify,
+    // The jobs currently running, at most one per lane. A `Vec` rather than a map
+    // because it holds two entries at the very most and every read is "find the one
+    // with this id".
+    live: Mutex<Vec<Arc<Live>>>,
     // The board-level change feed. Two consumers: the /jobs page, which refetches
     // when it sees a change, and a chat socket waiting for its own job to go live
     // so it can attach to the token stream without polling for it.
@@ -117,28 +172,35 @@ impl Queue {
         let (events, _rx) = broadcast::channel(BROADCAST_CAPACITY);
         Queue {
             pool,
-            wake: Notify::new(),
-            live: Mutex::new(None),
+            wake_device: Notify::new(),
+            wake_network: Notify::new(),
+            live: Mutex::new(Vec::new()),
             events,
         }
     }
 
-    // Signals the runner that the queue may have work. Safe to call spuriously.
+    // Signals both runners that the queue may have work. Safe to call spuriously,
+    // and cheaper to wake both than to make every caller work out which lane the
+    // job it just touched belongs to.
     pub fn wake(&self) {
-        self.wake.notify_one();
+        self.wake_device.notify_one();
+        self.wake_network.notify_one();
     }
 
-    // The live handles for one specific job, or None if it isn't the one running.
+    // The live handles for one specific job, or None if it isn't currently running.
     pub fn live_for(&self, id_job: Uuid) -> Option<Arc<Live>> {
-        lock(&self.live).clone().filter(|l| l.id_job == id_job)
+        lock(&self.live)
+            .iter()
+            .find(|l| l.id_job == id_job)
+            .cloned()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.events.subscribe()
     }
 
-    // Asks the running job to stop. The worker notices at its next step boundary;
-    // `false` means this job isn't the one on the GPU.
+    // Asks a running job to stop. The worker notices at its next step boundary;
+    // `false` means this job isn't running (queued, or already finished).
     pub fn request_cancel(&self, id_job: Uuid) -> bool {
         match self.live_for(id_job) {
             Some(live) => {
@@ -184,27 +246,33 @@ impl Queue {
 
     // ── the loop ────────────────────────────────────────────────────────────
 
-    pub async fn run(self: Arc<Self>) {
+    // One runner. Spawned once per lane, and identical either way — the lane only
+    // decides which rows it is allowed to claim.
+    //
+    // Pause stops both lanes. It reads as "stop starting work", not "stop using the
+    // GPU", and a pause that left a lane running would be a surprising thing to
+    // discover from the board.
+    pub async fn run(self: Arc<Self>, lane: JobLane) {
         loop {
             match db::job::is_paused(&self.pool).await {
                 Ok(true) => {
-                    self.idle().await;
+                    self.idle(lane).await;
                     continue;
                 }
                 Ok(false) => {}
                 Err(e) => {
                     eprintln!("[queue] could not read pause state: {}", e);
-                    self.idle().await;
+                    self.idle(lane).await;
                     continue;
                 }
             }
 
-            match db::job::claim_next(&self.pool).await {
+            match db::job::claim_next(&self.pool, lane).await {
                 Ok(Some(job)) => self.run_one(job).await,
-                Ok(None) => self.idle().await,
+                Ok(None) => self.idle(lane).await,
                 Err(e) => {
                     eprintln!("[queue] could not claim a job: {}", e);
-                    self.idle().await;
+                    self.idle(lane).await;
                 }
             }
         }
@@ -212,8 +280,12 @@ impl Queue {
 
     // Waits to be woken, with a fallback tick so a missed signal can't wedge the
     // queue.
-    async fn idle(&self) {
-        let _ = tokio::time::timeout(IDLE_POLL, self.wake.notified()).await;
+    async fn idle(&self, lane: JobLane) {
+        let wake = match lane {
+            JobLane::Device => &self.wake_device,
+            JobLane::Network => &self.wake_network,
+        };
+        let _ = tokio::time::timeout(IDLE_POLL, wake.notified()).await;
     }
 
     // Runs one claimed job start to finish, then closes out its row.
@@ -269,11 +341,15 @@ impl Queue {
                 self.run_gather(&job, cancel.clone(), tx, progress_tx, progress_rx)
                     .await
             }
+            JobKind::Synth => {
+                self.run_synth(&job, cancel.clone(), tx, progress_tx, progress_rx)
+                    .await
+            }
         };
 
         // Released before the terminal write, so a client that reacts to the
-        // `changed` event never sees a finished row still claiming the device.
-        *lock(&self.live) = None;
+        // `changed` event never sees a finished row still claiming a runner.
+        lock(&self.live).retain(|l| l.id_job != id_job);
 
         if let Err(e) = db::job::finish(
             &self.pool,
@@ -299,7 +375,14 @@ impl Queue {
     // preparation (loading a model, reading history) happens first and can fail
     // before there is anything to attach to.
     fn go_live(&self, id_job: Uuid, kind: JobKind, live: Live) {
-        *lock(&self.live) = Some(Arc::new(live));
+        {
+            let mut held = lock(&self.live);
+            // Defensive: a lane only ever runs one job, so the id cannot already be
+            // here — but an entry left behind would shadow the new one for every
+            // socket that attaches.
+            held.retain(|l| l.id_job != id_job);
+            held.push(Arc::new(live));
+        }
         let _ = self.events.send(
             serde_json::json!({
                 "type": "started",
@@ -953,6 +1036,134 @@ impl Queue {
         }
     }
 
+    // Asks a cheap hosted model for synthetic SFT conversations, validates them
+    // against the real tag vocabulary and the base model's context window, and
+    // appends the survivors to the SFT corpus. Produces no database record beyond
+    // its own row — its whole output is a JSONL file the next SFT run will read.
+    //
+    // The one kind with no worker thread. Every other job here is blocking CUDA and
+    // has to leave the async runtime to avoid stalling it; this is HTTP and parsing,
+    // so it runs as an ordinary future on the runner's own task. `spawn_worker`
+    // would have to block a whole OS thread on a network wait to achieve nothing.
+    async fn run_synth(
+        self: &Arc<Self>,
+        job: &db::job::Job,
+        cancel: Arc<AtomicBool>,
+        tx: broadcast::Sender<String>,
+        progress_tx: mpsc::UnboundedSender<ProgressTick>,
+        mut progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
+    ) -> Done {
+        let request: synth::SynthRequest = match serde_json::from_value(job.config.clone()) {
+            Ok(request) => request,
+            Err(e) => return Done::failed(format!("stored generation config is unreadable: {e}")),
+        };
+
+        let state = Arc::new(Mutex::new(SynthState {
+            stage: "Starting".to_string(),
+            fraction: 0.0,
+            calls: Vec::new(),
+            accepted: Vec::new(),
+            added: 0,
+            target: request.count,
+            duplicates: 0,
+            with_thinking: 0,
+        }));
+        self.go_live(job.id_job, JobKind::Synth, Live {
+            id_job: job.id_job,
+            cancel: cancel.clone(),
+            tx: tx.clone(),
+            snapshot: Snapshot::Synth(state.clone()),
+        });
+
+        // One clone per callback: each is `move`d into its own closure and they all
+        // outlive this block.
+        let progress_state = state.clone();
+        let progress_frames = tx.clone();
+        let on_progress: synth::ProgressCallback = Box::new(move |stage, fraction| {
+            {
+                let mut st = lock(&progress_state);
+                st.stage = stage.to_string();
+                st.fraction = fraction;
+            }
+            let _ = progress_tx.send(ProgressTick {
+                fraction,
+                stage: stage.to_string(),
+            });
+            emit(&progress_frames, frame(
+                "progress",
+                serde_json::json!({ "stage": stage, "fraction": fraction }),
+            ));
+        });
+
+        // One frame per model call. This is the frame that makes a run diagnosable:
+        // a provider erroring, a model whose output is all rejected for one reason,
+        // and a model repeating itself are three different failures that a progress
+        // bar renders identically.
+        let call_state = state.clone();
+        let call_frames = tx.clone();
+        let on_call: synth::CallCallback = Box::new(move |report| {
+            {
+                let mut st = lock(&call_state);
+                st.calls.push(report.clone());
+                st.added = report.total;
+                st.duplicates += report.duplicates;
+            }
+            emit(&call_frames, frame("call", serde_json::json!(report)));
+        });
+
+        let accepted_state = state.clone();
+        let accepted_frames = tx.clone();
+        let on_accepted: synth::AcceptedCallback = Box::new(move |accepted| {
+            {
+                let mut st = lock(&accepted_state);
+                if accepted.think_words > 0 {
+                    st.with_thinking += 1;
+                }
+                st.accepted.insert(0, accepted.clone());
+                st.accepted.truncate(SYNTH_FEED);
+            }
+            emit(&accepted_frames, frame("accepted", serde_json::json!(accepted)));
+        });
+
+        // Progress is drained concurrently with the run rather than through
+        // `spawn_worker`, which only knows how to await a thread. Same throttle, same
+        // reason: the frames carry the truth, this is so a fresh page load has a
+        // sane bar before its socket attaches.
+        let run = synth::run(&request, on_progress, on_call, on_accepted, cancel.clone());
+        tokio::pin!(run);
+        let mut last_write = Instant::now() - PROGRESS_WRITE_INTERVAL;
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                result = &mut run => break result,
+                Some(tick) = progress_rx.recv() => {
+                    if last_write.elapsed() >= PROGRESS_WRITE_INTERVAL {
+                        last_write = Instant::now();
+                        if let Err(e) =
+                            db::job::set_progress(&self.pool, job.id_job, tick.fraction, &tick.stage).await
+                        {
+                            eprintln!("[queue] could not write progress for {}: {}", job.id_job, e);
+                        }
+                        self.notify_progress(job.id_job, tick.fraction, &tick.stage);
+                    }
+                }
+            }
+        };
+
+        let fraction = lock(&state).fraction;
+        match outcome {
+            Ok(Some(stats)) => {
+                emit(&tx, frame("synth", serde_json::json!(stats)));
+                Done::done()
+            }
+            // Cancelled runs keep what they wrote — the file is appended to as each
+            // conversation is accepted — so this is a partial success reported as a
+            // cancellation, not a loss.
+            Ok(None) => Done::cancelled(fraction),
+            Err(e) => Done::failed(e),
+        }
+    }
+
     // ── worker plumbing ─────────────────────────────────────────────────────
 
     // Runs `work` on its own OS thread and awaits the result, writing coarse
@@ -1097,6 +1308,7 @@ fn kind_name(kind: JobKind) -> &'static str {
         JobKind::Chat => "chat",
         JobKind::Autolabel => "autolabel",
         JobKind::Gather => "gather",
+        JobKind::Synth => "synth",
     }
 }
 

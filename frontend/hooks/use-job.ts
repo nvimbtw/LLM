@@ -9,6 +9,9 @@ import {
   type Calibration,
   type CatalogueReport,
   type Job,
+  type SynthAccepted,
+  type SynthCall,
+  type SynthReport,
   type Verdict,
 } from "@/lib/jobs"
 import { attachJob, type Attachment } from "@/lib/jobs-socket"
@@ -28,6 +31,9 @@ const MAX_DIAG_POINTS = 500
 // Generated replies kept in full for the catalogue feed. A screenful and a bit —
 // it is a live window, not a log.
 const MAX_VERDICT_FEED = 30
+// Generated conversations kept in full. Matches the backend's own snapshot window,
+// so a reattach and a live run show the same depth of feed.
+const MAX_SYNTH_FEED = 24
 
 function downsample<T>(arr: T[], max: number): T[] {
   let out = arr
@@ -104,6 +110,15 @@ export function useJob(idJob: string) {
     { score: number; good: boolean }[]
   >([])
 
+  // A generation run: one record per model call (which the figures are drawn
+  // from), the recent conversations in full, and the report that lands at the end.
+  // The calls are kept in full rather than downsampled — a run is tens of calls,
+  // not thousands of steps.
+  const [synthCalls, setSynthCalls] = React.useState<SynthCall[]>([])
+  const [synthAccepted, setSynthAccepted] = React.useState<SynthAccepted[]>([])
+  const [synthAdded, setSynthAdded] = React.useState(0)
+  const [synth, setSynth] = React.useState<SynthReport | null>(null)
+
   // The live stage line for a benchmark, and the text so far for a chat turn.
   const [stage, setStage] = React.useState<string | null>(null)
   const [fraction, setFraction] = React.useState<number | null>(null)
@@ -143,15 +158,27 @@ export function useJob(idJob: string) {
           )
           const tok = (snap.tokenize ?? {}) as Partial<TokenizeStats>
           setVocabSeries(
-            tok.vocab != null ? [{ merges: tok.merges ?? 0, vocab: tok.vocab }] : []
+            tok.vocab != null
+              ? [{ merges: tok.merges ?? 0, vocab: tok.vocab }]
+              : []
           )
           setBatchSeries(
             ((snap.batch_series as [number, number, number, number][]) ?? [])
               .map(([step, min, avg, max]) => ({ step, min, avg, max }))
               .slice(-MAX_BATCH_POINTS)
           )
-          setDiag(downsample((snap.diag_series as DiagPoint[]) ?? [], MAX_DIAG_POINTS))
+          setDiag(
+            downsample((snap.diag_series as DiagPoint[]) ?? [], MAX_DIAG_POINTS)
+          )
           setLog((snap.log as string[]) ?? [])
+        } else if (Array.isArray(snap.calls)) {
+          // A generation snapshot: the whole accumulation, so a page attaching ten
+          // minutes in draws the run so far rather than starting from empty.
+          setSynthCalls(snap.calls as SynthCall[])
+          setSynthAccepted((snap.accepted as SynthAccepted[]) ?? [])
+          setSynthAdded(typeof snap.added === "number" ? snap.added : 0)
+          if (typeof snap.stage === "string") setStage(snap.stage)
+          if (typeof snap.fraction === "number") setFraction(snap.fraction)
         } else {
           if (typeof snap.stage === "string") setStage(snap.stage)
           if (typeof snap.fraction === "number") setFraction(snap.fraction)
@@ -178,7 +205,9 @@ export function useJob(idJob: string) {
             // Halve resolution when full so the array stays bounded instead of
             // growing without limit over a long run.
             const base =
-              prev.length >= MAX_LOSS_POINTS ? prev.filter((_, i) => i % 2 === 0) : prev
+              prev.length >= MAX_LOSS_POINTS
+                ? prev.filter((_, i) => i % 2 === 0)
+                : prev
             return [...base, { epoch: s.epoch, chunk: s.chunk, loss: s.loss }]
           })
         }
@@ -188,7 +217,12 @@ export function useJob(idJob: string) {
           setBatchSeries((prev) =>
             [
               ...prev,
-              { step: s.step, min: s.batch_min, avg: s.batch_avg, max: s.batch_max },
+              {
+                step: s.step,
+                min: s.batch_min,
+                avg: s.batch_avg,
+                max: s.batch_max,
+              },
             ].slice(-MAX_BATCH_POINTS)
           )
         }
@@ -197,13 +231,17 @@ export function useJob(idJob: string) {
           const point = s.diag
           setDiag((prev) => {
             const base =
-              prev.length >= MAX_DIAG_POINTS ? prev.filter((_, i) => i % 2 === 0) : prev
+              prev.length >= MAX_DIAG_POINTS
+                ? prev.filter((_, i) => i % 2 === 0)
+                : prev
             return [...base, point]
           })
         }
         if (s.epoch_done && s.checkpoint_path) {
           const path = s.checkpoint_path
-          setCheckpoints((prev) => (prev.includes(path) ? prev : [...prev, path]))
+          setCheckpoints((prev) =>
+            prev.includes(path) ? prev : [...prev, path]
+          )
         }
         break
       }
@@ -219,6 +257,20 @@ export function useJob(idJob: string) {
         break
       case "autolabel":
         setCatalogue(frame as unknown as CatalogueReport)
+        break
+      case "call": {
+        const call = frame as unknown as SynthCall
+        setSynthCalls((prev) => [...prev, call])
+        setSynthAdded(call.total)
+        break
+      }
+      case "accepted": {
+        const accepted = frame as unknown as SynthAccepted
+        setSynthAccepted((prev) => [accepted, ...prev].slice(0, MAX_SYNTH_FEED))
+        break
+      }
+      case "synth":
+        setSynth(frame as unknown as SynthReport)
         break
       case "calibration":
         setCalibration(frame as unknown as Calibration)
@@ -299,6 +351,11 @@ export function useJob(idJob: string) {
     text,
     // gather
     sampleTick,
+    // synth
+    synthCalls,
+    synthAccepted,
+    synthAdded,
+    synth,
     // autolabel
     catalogue,
     calibration,
