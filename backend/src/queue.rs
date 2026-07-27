@@ -538,7 +538,14 @@ impl Queue {
         // distribution the model is going to be used on. Reading them here is the
         // only database work this job does; the worker below is a blocking CUDA
         // thread and never touches the pool.
-        let prompts = match db::message::distinct_user_prompts(&self.pool, request.max_prompts)
+        //
+        // Routed through `gather::choose_prompts` rather than used raw, for the two
+        // reasons that function documents: stored turns include follow-ups that lost
+        // their antecedent and prose fragments that are not questions at all, and a
+        // history too thin to fill the batch should top up from the seed list rather
+        // than run short. Both were true here — the catalogue this replaced was
+        // generated substantially against sentence stubs.
+        let history = match db::message::distinct_user_prompts(&self.pool, request.max_prompts)
             .await
         {
             Ok(prompts) => prompts,
@@ -547,9 +554,10 @@ impl Queue {
                 return Done::failed("could not load prompts to generate from".to_string());
             }
         };
+        let prompts = gather::choose_prompts(history, request.max_prompts as usize, 0);
         if prompts.is_empty() {
             return Done::failed(
-                "no user messages to generate from — send some chat turns first".to_string(),
+                "no usable prompts to generate from — send some chat turns first".to_string(),
             );
         }
 

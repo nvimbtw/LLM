@@ -106,6 +106,32 @@ pub fn check_signals(desirable: i64, undesirable: i64) -> Result<(), String> {
     Ok(())
 }
 
+// Approved entries before a RAFT run is worth starting.
+//
+// Lower than the KTO bar because RAFT only consumes one half of the split, and
+// because its signal per example is far denser — a full token distribution over a
+// good reply rather than one bit about it. Still a real floor: max-likelihood on
+// fifty replies memorizes fifty replies.
+pub const MIN_RAFT_EXAMPLES: i64 = 100;
+
+// Whether there are enough winners to fine-tune on.
+//
+// The failure this catches is specific to a frozen bar: if the threshold sits above
+// anything the model currently produces, the catalogue is all rejections and there
+// is nothing to distil. That is not a broken run, it is the bar being too high for
+// this model *yet* — which is worth saying in those words, because the fix is to
+// build more catalogue, not to lower the bar.
+pub fn check_raft(approved: i64) -> Result<(), String> {
+    if approved < MIN_RAFT_EXAMPLES {
+        return Err(format!(
+            "only {approved} approved replies in the catalogue, and a self-train run wants at \
+             least {MIN_RAFT_EXAMPLES}. Build more catalogue — or, if runs keep coming back \
+             nearly all-rejected, the frozen bar is above what this model can currently produce."
+        ));
+    }
+    Ok(())
+}
+
 // Whether the catalogue is big enough to train on — the training bar. Checked
 // *after* `check_signals`, so a caller that fails both reports the seed shortfall
 // first: rating is the step that unblocks auto-labelling, which is the step that
@@ -209,12 +235,42 @@ const SEED_PROMPTS: &[&str] = &[
     "Describe a busy market street.",
 ];
 
+// Is this chat turn usable as a standalone prompt?
+//
+// Chat history is stored one turn at a time, so a follow-up keeps its wording but
+// loses its antecedent: `"And then she"`, `"The book was old, and its pages were"`
+// and `"really?"` are all real rows. Generating against them asks the model to
+// continue a passage it cannot see, and the reply gets judged as though it were an
+// answer — which is how prose-continuation fragments ended up as a third of the
+// auto-label catalogue.
+//
+// Two rules, deliberately blunt: a prompt must be several words long, and must end
+// the way a finished sentence does. That drops the fragments and the one-word
+// interjections. It does *not* catch a well-formed but context-dependent follow-up
+// (`"Are you sure about that?"`) — that needs the surrounding conversation, which
+// this layer does not have. Those at least have the shape of a chat turn.
+const MIN_PROMPT_WORDS: usize = 3;
+
+pub fn is_standalone_prompt(text: &str) -> bool {
+    let text = text.trim();
+    if text.split_whitespace().count() < MIN_PROMPT_WORDS {
+        return false;
+    }
+    matches!(text.chars().last(), Some('?') | Some('.') | Some('!'))
+}
+
 // Fills `batch` prompts, preferring the real ones and topping up from the seed list
 // in order. Real prompts come first so a run with plenty of history never touches
 // the seeds, and the seeds are taken in a stable order so successive top-ups do not
 // keep asking the same first question.
+//
+// History is filtered through `is_standalone_prompt` first, so a thin or fragmentary
+// history tops up from the seeds rather than generating against sentence stubs.
 pub fn choose_prompts(history: Vec<String>, batch: usize, seed_offset: usize) -> Vec<String> {
-    let mut prompts = history;
+    let mut prompts: Vec<String> = history
+        .into_iter()
+        .filter(|p| is_standalone_prompt(p))
+        .collect();
     prompts.truncate(batch);
 
     // Walks the whole seed list once from the offset, so skipping a duplicate costs
@@ -319,11 +375,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sentence_fragments_are_not_standalone_prompts() {
+        // All three are real rows from the chat history, and all three produced
+        // auto-label entries: the model was asked to continue a passage it could
+        // not see, and the continuation was judged as if it were an answer.
+        assert!(!is_standalone_prompt("And then she"));
+        assert!(!is_standalone_prompt("The book was old, and its pages were"));
+        assert!(!is_standalone_prompt("There was once a small house at the edge of the"));
+    }
+
+    #[test]
+    fn one_word_interjections_are_not_standalone_prompts() {
+        assert!(!is_standalone_prompt("really?"));
+        assert!(!is_standalone_prompt("What?"));
+        assert!(!is_standalone_prompt("Please?"));
+    }
+
+    #[test]
+    fn ordinary_questions_are_standalone_prompts() {
+        assert!(is_standalone_prompt("Who invented penicillin?"));
+        assert!(is_standalone_prompt("What do you think about the weather?"));
+        assert!(is_standalone_prompt("Explain why boats float."));
+    }
+
+    #[test]
+    fn a_fragmentary_history_tops_up_from_the_seeds_instead_of_running_short() {
+        let history = vec![
+            "And then she".to_string(),
+            "Who invented penicillin?".to_string(),
+            "really?".to_string(),
+        ];
+        let prompts = choose_prompts(history, 5, 0);
+        assert_eq!(prompts.len(), 5);
+        assert!(prompts.contains(&"Who invented penicillin?".to_string()));
+        assert!(!prompts.contains(&"And then she".to_string()));
+    }
+
+    #[test]
     fn the_seed_bar_and_the_training_bar_are_different_bars() {
         // The exact confusion that produced a tune on thirty examples: enough human
         // ratings to calibrate is not enough data to train on.
         assert!(check_signals(20, 20).is_ok());
         assert!(check_catalogue(20, 20).is_err());
+    }
+
+    #[test]
+    fn self_training_is_gated_on_the_approved_half_alone() {
+        // RAFT consumes only the winners, so a mountain of rejections does not
+        // unblock it — and does not block it either.
+        assert!(check_raft(MIN_RAFT_EXAMPLES).is_ok());
+        assert!(check_raft(MIN_RAFT_EXAMPLES - 1).is_err());
     }
 
     #[test]
@@ -343,18 +444,21 @@ mod tests {
 
     #[test]
     fn history_alone_fills_the_batch() {
-        let history: Vec<String> = (0..10).map(|i| format!("prompt {i}")).collect();
+        // Phrased as real questions: `choose_prompts` now drops history that could
+        // not stand on its own, so a placeholder like "prompt 3" is not a fixture
+        // for "a real prompt" any more.
+        let history: Vec<String> = (0..10).map(|i| format!("What is number {i} made of?")).collect();
         let chosen = choose_prompts(history, 4, 0);
         assert_eq!(chosen.len(), 4);
         // No seed prompt should appear while real ones are available.
-        assert!(chosen.iter().all(|p| p.starts_with("prompt ")));
+        assert!(chosen.iter().all(|p| p.starts_with("What is number ")));
     }
 
     #[test]
     fn seeds_top_up_a_thin_history() {
-        let chosen = choose_prompts(vec!["real one".to_string()], 5, 0);
+        let chosen = choose_prompts(vec!["What is a real one?".to_string()], 5, 0);
         assert_eq!(chosen.len(), 5);
-        assert_eq!(chosen[0], "real one");
+        assert_eq!(chosen[0], "What is a real one?");
         assert_eq!(chosen[1], SEED_PROMPTS[0]);
     }
 

@@ -53,6 +53,12 @@ struct SignalStatus {
     // the training data — it is the most trustworthy part of it.
     catalogue_auto: i64,
     catalogue_required: i64,
+    // RAFT's own bar. Separate from `ready` because self-training consumes only the
+    // approved half and clears at a lower count — and because the composer needs to
+    // know which of the two trainers is currently runnable, not just "is anything".
+    raft_ready: bool,
+    raft_reason: Option<String>,
+    raft_required: i64,
     // Epochs this catalogue allows. Surfaced so the form can say the run will be
     // clamped instead of the clamp being a surprise in the job's config.
     max_epochs: i64,
@@ -84,6 +90,7 @@ async fn get_signals(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Respond
     let approved = counts.desirable + auto_up;
     let rejected = counts.undesirable + auto_down;
     let catalogue_reason = gather::check_catalogue(approved, rejected).err();
+    let raft_reason = gather::check_raft(approved).err();
 
     // Seed first: rating unblocks auto-labelling, which fills the catalogue, so
     // reporting the shortfalls in that order names the step that is actually next.
@@ -103,6 +110,9 @@ async fn get_signals(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Respond
         catalogue_rejected: rejected,
         catalogue_auto: auto_up + auto_down,
         catalogue_required: gather::MIN_CATALOGUE,
+        raft_ready: raft_reason.is_none(),
+        raft_reason,
+        raft_required: gather::MIN_RAFT_EXAMPLES,
         max_epochs: gather::max_epochs_for(approved + rejected),
         ready: blocked_reason.is_none(),
         blocked_reason,

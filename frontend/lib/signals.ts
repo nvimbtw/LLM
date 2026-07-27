@@ -45,6 +45,10 @@ export interface SignalStatus {
   /** How much of the catalogue came from auto-labelling rather than your thumbs. */
   catalogue_auto: number
   catalogue_required: number
+  /** RAFT's own bar: it consumes only the approved half, and clears sooner. */
+  raft_ready: boolean
+  raft_reason: string | null
+  raft_required: number
   /** Epochs this catalogue size allows; a run asking for more is clamped to it. */
   max_epochs: number
 
