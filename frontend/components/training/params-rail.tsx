@@ -66,9 +66,10 @@ const SFT_DEFAULT_LR = 0.00001
 const KTO_DEFAULT_LR = 0.000005
 
 // RAFT is ordinary SFT under the hood — same loss, same masking — so it wants the
-// SFT learning rate, not KTO's much lower one. Named separately because the two
-// modes are adjacent in the UI and reading `SFT_DEFAULT_LR` under a RAFT branch
-// invites someone to "fix" it to the KTO value.
+// SFT learning rate, not KTO's much lower one. Named separately because reading
+// `SFT_DEFAULT_LR` under a RAFT branch invites someone to "fix" it to the KTO
+// value. These two are only reached now when the form is seeded from a cycle's
+// job; the cycle's own runs use `raft_lr` / `kto_lr` from its config instead.
 const RAFT_DEFAULT_LR = SFT_DEFAULT_LR
 
 // The KL anchor's default. See llm::kto::KtoParams::beta.
@@ -76,7 +77,11 @@ const KTO_DEFAULT_BETA = 0.1
 
 // Every learning rate the mode toggle sets on the user's behalf, so switching modes
 // can tell "still on a default" from "the user chose this".
-const MODE_DEFAULT_LRS: number[] = [DEFAULT_CONFIG.lr, SFT_DEFAULT_LR, KTO_DEFAULT_LR]
+const MODE_DEFAULT_LRS: number[] = [
+  DEFAULT_CONFIG.lr,
+  SFT_DEFAULT_LR,
+  KTO_DEFAULT_LR,
+]
 
 function defaultLrFor(mode: TrainMode): number {
   if (mode === "sft") return SFT_DEFAULT_LR
@@ -412,7 +417,9 @@ function CurriculumBuilder({
                     min={1}
                     step={1}
                     value={String(stage.epochs)}
-                    onChange={(e) => update(i, { epochs: Number(e.target.value) })}
+                    onChange={(e) =>
+                      update(i, { epochs: Number(e.target.value) })
+                    }
                     disabled={disabled}
                     className="h-8 w-24 text-right tabular-nums"
                   />
@@ -456,7 +463,10 @@ function validate(cfg: TrainConfig): string[] {
 
   if (isFineTune(cfg.mode)) {
     if (!cfg.base_model_id) errs.push("Select a base model to fine-tune.")
-    if (cfg.mode === "kto" && !(Number.isFinite(cfg.beta) && (cfg.beta ?? 0) > 0)) {
+    if (
+      cfg.mode === "kto" &&
+      !(Number.isFinite(cfg.beta) && (cfg.beta ?? 0) > 0)
+    ) {
       errs.push("Beta must be a positive number.")
     }
     if (!Number.isFinite(cfg.epochs) || cfg.epochs <= 0)
@@ -507,7 +517,9 @@ function validate(cfg: TrainConfig): string[] {
       if (ds.length === 0)
         errs.push(`Stage ${i + 1}: select at least one dataset.`)
       if (ds.some((d) => !Number.isInteger(d.count) || d.count < 0))
-        errs.push(`Stage ${i + 1}: each dataset count must be 0 (all) or positive.`)
+        errs.push(
+          `Stage ${i + 1}: each dataset count must be 0 (all) or positive.`
+        )
     })
   } else {
     // Defensive: a config from a stale source (e.g. a preset saved before this
@@ -517,7 +529,9 @@ function validate(cfg: TrainConfig): string[] {
     if (selected.length === 0)
       errs.push("Select at least one dataset to train on.")
     if (selected.some((d) => !Number.isInteger(d.count) || d.count < 0))
-      errs.push("Each dataset count must be 0 (all) or a positive whole number.")
+      errs.push(
+        "Each dataset count must be 0 (all) or a positive whole number."
+      )
   }
   return errs
 }
@@ -592,6 +606,8 @@ export function ParamsRail({
 
   const isKto = cfg.mode === "kto"
   const isRaft = cfg.mode === "raft"
+  // The two the cycle owns. Reachable here only by seeding from one of its jobs.
+  const isCycleMode = isKto || isRaft
   const isSft = isFineTune(cfg.mode)
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
   // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
@@ -599,7 +615,10 @@ export function ParamsRail({
     ? RUN_FIELDS.filter((f) => f.key !== "epochs")
     : RUN_FIELDS
   const numFields = isKto
-    ? [...RUN_FIELDS, { key: "beta" as const, label: "Beta (KL anchor)", step: 0.05 }]
+    ? [
+        ...RUN_FIELDS,
+        { key: "beta" as const, label: "Beta (KL anchor)", step: 0.05 },
+      ]
     : isSft
       ? RUN_FIELDS
       : [...ARCH_FIELDS, ...runFields]
@@ -651,29 +670,46 @@ export function ParamsRail({
         modelsRefreshKey={modelsRefreshKey}
       />
 
-      {/* Mode toggle */}
-      <div className="inline-flex w-full gap-0.5 rounded-md border p-0.5">
-        {(
-          [
-            ["pretrain", "Pretrain"],
-            ["sft", "Fine-tune"],
-            ["raft", "Self-train"],
-            ["kto", "Preference"],
-          ] as [TrainMode, string][]
-        ).map(([mode, label]) => (
-          <Button
-            key={mode}
-            type="button"
-            size="sm"
-            variant={cfg.mode === mode ? "default" : "ghost"}
-            className="flex-1"
-            disabled={disabled}
-            onClick={() => setMode(mode)}
-          >
-            {label}
-          </Button>
-        ))}
-      </div>
+      {/* Mode toggle — two, not four.
+          Self-train (RAFT) and preference (KTO) are stages of a cycle, not runs a
+          person composes: the cycle decides when the catalogue is ready for each,
+          and queues them with its own learning rates (`backend/src/cycle.rs`).
+          Offering them here presented four peers when there are two decisions.
+
+          They are still rendered when `?from=` seeds this form from a cycle's own
+          job — that config is real and re-runnable, so the mode is shown as a fact
+          rather than silently rewritten to something the run was not. */}
+      {isCycleMode ? (
+        <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+          Seeded from a cycle&rsquo;s{" "}
+          <span className="font-medium text-foreground">
+            {isRaft ? "self-train" : "preference"}
+          </span>{" "}
+          stage. Re-running it here is a one-off — cycles queue these
+          themselves.
+        </p>
+      ) : (
+        <div className="inline-flex w-full gap-0.5 rounded-md border p-0.5">
+          {(
+            [
+              ["pretrain", "Pretrain"],
+              ["sft", "Fine-tune"],
+            ] as [TrainMode, string][]
+          ).map(([mode, label]) => (
+            <Button
+              key={mode}
+              type="button"
+              size="sm"
+              variant={cfg.mode === mode ? "default" : "ghost"}
+              className="flex-1"
+              disabled={disabled}
+              onClick={() => setMode(mode)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      )}
 
       {/* Model name — the rail's headline / run identity */}
       <div className="space-y-1">
@@ -803,24 +839,24 @@ export function ParamsRail({
 
       {isSft ? (
         <p className="text-xs text-muted-foreground">
-          Architecture (dimensions, context, heads, layers) is inherited from the
-          base model — only the run knobs above apply.
+          Architecture (dimensions, context, heads, layers) is inherited from
+          the base model — only the run knobs above apply.
           {isKto && (
             <>
               {" "}
-              Trains on the thumbs up/down collected in chat and in a gather run.
-              Needs both kinds: one-sided feedback has no contrast to learn from
-              and the run will refuse.
+              Trains on the thumbs up/down collected in chat and in a gather
+              run. Needs both kinds: one-sided feedback has no contrast to learn
+              from and the run will refuse.
             </>
           )}
           {isRaft && (
             <>
               {" "}
               Fine-tunes on the model&rsquo;s own replies that cleared the
-              catalogue&rsquo;s bar — a dense signal, and the fastest way to teach
-              a model at this stage to form English. Run it before a preference
-              tune: afterwards the good replies already sit high, so KTO spends its
-              gradient on suppressing the bad ones instead.
+              catalogue&rsquo;s bar — a dense signal, and the fastest way to
+              teach a model at this stage to form English. Run it before a
+              preference tune: afterwards the good replies already sit high, so
+              KTO spends its gradient on suppressing the bad ones instead.
             </>
           )}
         </p>
