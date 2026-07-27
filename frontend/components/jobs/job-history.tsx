@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
+  KIND_CHIP,
   KIND_LABEL,
   STATUS_LABEL,
   durationSeconds,
@@ -58,7 +59,7 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
     <div>
       {[...groups].map(([day, dayJobs]) => (
         <section key={day}>
-          <h3 className="border-b border-border/40 bg-secondary/20 px-5 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/50">
+          <h3 className="border-b border-border/40 bg-secondary/20 px-5 py-1.5 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
             {day}
           </h3>
           <ul>
@@ -91,7 +92,7 @@ function HistoryRow({
   return (
     <li className="group border-b border-border/40 last:border-0">
       <div className="flex items-center gap-3 px-5 py-3">
-        <span className="w-14 shrink-0 text-[11px] tabular-nums text-muted-foreground/40">
+        <span className="w-14 shrink-0 text-xs text-muted-foreground tabular-nums">
           {formatClock(job.created_at)}
         </span>
 
@@ -103,17 +104,22 @@ function HistoryRow({
             {job.label}
           </Link>
           {job.error && (
-            <span className="mt-0.5 block truncate text-[11px] text-destructive/70">
+            <span className="mt-0.5 block truncate text-xs text-destructive/70">
               {job.error}
             </span>
           )}
         </div>
 
-        <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/40">
+        <span
+          className={cn(
+            "shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium tracking-[0.06em]",
+            KIND_CHIP[job.kind]
+          )}
+        >
           {KIND_LABEL[job.kind]}
         </span>
 
-        <span className="hidden w-16 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/40 sm:block">
+        <span className="hidden w-16 shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">
           {ran === null ? "" : formatElapsed(ran)}
         </span>
 
@@ -124,7 +130,7 @@ function HistoryRow({
             "w-20 shrink-0 text-right text-xs",
             job.status === "done" && "text-muted-foreground",
             job.status === "failed" && "text-destructive/70",
-            job.status === "cancelled" && "text-muted-foreground/40"
+            job.status === "cancelled" && "text-muted-foreground"
           )}
         >
           {STATUS_LABEL[job.status]}
@@ -153,7 +159,10 @@ function HistoryRow({
               <RotateCcw />
               Run again
             </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" onClick={() => onDelete(job.id_job)}>
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => onDelete(job.id_job)}
+            >
               <Trash2 />
               Remove
             </DropdownMenuItem>
