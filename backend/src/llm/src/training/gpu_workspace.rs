@@ -1,9 +1,13 @@
+use std::ffi::c_void;
+
 use crate::training::device_buffer::{Buffer, DeviceBufferF16};
 use crate::training::transformer::Model;
 
 unsafe extern "C" {
     fn cublas_init();
     fn cublas_shutdown();
+    fn cuda_malloc(ptr: *mut *mut c_void, size: usize);
+    fn cuda_memcpy_h2d(dst: *mut c_void, src: *const c_void, size: usize);
 }
 
 pub struct Workspace {
@@ -91,6 +95,19 @@ pub struct Workspace {
     pub d_mask: Buffer,
     pub d_dw_output: Buffer,
     pub d_dhidden: DeviceBufferF16,
+    // Gradient-clip state, 3 f32s kept on the device so the clip never
+    // synchronizes: [0] sum-of-squares accumulator, [1] the global gradient
+    // norm, [2] the scale applied to every gradient buffer. Allocated zeroed
+    // because `cuda_clip_finalize` consumes [0] and re-zeros it each step.
+    pub d_clip_state: Buffer,
+    // Device-resident table of the gradient buffers `Model::clip_gradients`
+    // clips, so the whole clip is two launches instead of three per tensor.
+    // Pointers and sizes are built once in `new` — workspace allocations never
+    // move — and `d_clip_norms` holds one accumulator per buffer.
+    pub d_clip_ptrs: *mut c_void,   // [n_clip] device pointers (8 bytes each)
+    pub d_clip_sizes: Buffer,       // [n_clip] i32 element counts
+    pub d_clip_norms: Buffer,       // [n_clip] f32 sum-of-squares accumulators
+    pub n_clip: usize,
 
     // Per-layer forward caches (f16)
     pub layer_inputs: Vec<DeviceBufferF16>,
@@ -211,6 +228,16 @@ impl Workspace {
         let d_mask = Buffer::alloc(max_s);
         let d_dw_output = Buffer::alloc(d * vocab);
         let d_dhidden = DeviceBufferF16::alloc(max_s * d);
+        let d_clip_state = Buffer::alloc_zeroed(3);
+
+        // The buffers `Model::clip_gradients` walks, in the same order: the
+        // shared output projection, then each layer's ten trained tensors.
+        let n_clip = 1 + 10 * layers;
+        let d_clip_sizes = Buffer::alloc(n_clip);
+        let d_clip_norms = Buffer::alloc_zeroed(n_clip);
+        let mut d_clip_ptrs: *mut c_void = std::ptr::null_mut();
+        // SAFETY: out-pointer to a local; allocates n_clip device pointers.
+        unsafe { cuda_malloc(&mut d_clip_ptrs, n_clip * size_of::<*mut f32>()) };
 
         let d_head_ptrs = Buffer::alloc(h * 2);
 
@@ -221,7 +248,7 @@ impl Workspace {
         let b_dd = Buffer::alloc(d * d);
         let b_dff = vec![Buffer::alloc(d * ff), Buffer::alloc(ff * d)];
         let b_ff = Buffer::alloc(ff);
-        let ws = Workspace {
+        let mut ws = Workspace {
             d_wq_all, d_wk_all, d_wv_all, d_wo, d_w1, d_w2, d_b1, d_b2, d_ln_gamma, d_ln_beta, d_w_output,
             d_embedding, d_positional,
             m_wq_all, m_wk_all, m_wv_all, m_wo, m_w1, m_w2, m_b1, m_b2, m_ln_gamma, m_ln_beta,
@@ -233,6 +260,8 @@ impl Workspace {
             s_wq_all, s_wk_all, s_wv_all, s_dw_output, s_d_embedding,
             s_dwo, s_dw1, s_dw2, s_db1, s_db2, s_dln_gamma, s_dln_beta,
             d_logits, d_dlogits, d_targets, d_mask, d_dw_output, d_dhidden,
+            d_clip_state,
+            d_clip_ptrs, d_clip_sizes, d_clip_norms, n_clip,
             layer_inputs: Vec::new(),
             post_attn_residuals: Vec::new(),
             ff_inputs: Vec::new(),
@@ -245,6 +274,7 @@ impl Workspace {
             b_sd, b_d, b_dd, b_dff, b_ff, b_sd_head, d_wo_x,
             max_s, d, h, hd, ff, vocab,
         };
+        ws.fill_clip_table(layers);
         ws.upload_weights(t);
         // SAFETY: cublas_init() takes no arguments and initializes the process-wide
         // cuBLAS handle used by the CUDA kernels; calling it once per `Workspace`
@@ -310,6 +340,55 @@ impl Workspace {
         // `d_positional` is never stepped by Adam, so it has no master.
         let flat_positional: Vec<f32> = t.positional_table.iter().flatten().copied().collect();
         self.d_positional.upload_f32_slice(&flat_positional);
+    }
+
+    // Upload the pointer/size table the batched gradient clip reads. Must list
+    // the buffers in exactly the order `Model::clip_gradients` clips them; the
+    // device allocations are stable for the workspace's life, so this runs once.
+    fn fill_clip_table(&mut self, layers: usize) {
+        let mut ptrs: Vec<*mut f32> = Vec::with_capacity(self.n_clip);
+        let mut sizes: Vec<f32> = Vec::with_capacity(self.n_clip);
+        let (d, h, hd, ff, vocab) = (self.d, self.h, self.hd, self.ff, self.vocab);
+
+        ptrs.push(self.g_dw_output.ptr);
+        sizes.push((d * vocab) as f32);
+        for l in 0..layers {
+            for (p, n) in [
+                (self.g_wq_all[l].ptr, h * d * hd),
+                (self.g_wk_all[l].ptr, h * d * hd),
+                (self.g_wv_all[l].ptr, h * d * hd),
+                (self.g_dwo[l].ptr, d * d),
+                (self.g_dw1[l].ptr, d * ff),
+                (self.g_dw2[l].ptr, ff * d),
+                (self.g_db1[l].ptr, ff),
+                (self.g_db2[l].ptr, d),
+                (self.g_dln_gamma[l].ptr, d),
+                (self.g_dln_beta[l].ptr, d),
+            ] {
+                ptrs.push(p);
+                sizes.push(n as f32);
+            }
+        }
+        debug_assert_eq!(ptrs.len(), self.n_clip);
+
+        // Sizes ride in an f32 buffer (4 bytes, same as the i32 the kernel
+        // reads) so they can reuse `Buffer`; every count here is far below f32's
+        // exact-integer range, so the round trip is lossless.
+        let sizes_i32: Vec<i32> = sizes.iter().map(|&n| n as i32).collect();
+        // SAFETY: both copies are sized from the same `n_clip` the device
+        // buffers were allocated with, and both sources are live local slices.
+        unsafe {
+            cuda_memcpy_h2d(
+                self.d_clip_ptrs,
+                ptrs.as_ptr() as *const c_void,
+                ptrs.len() * size_of::<*mut f32>(),
+            );
+            cuda_memcpy_h2d(
+                self.d_clip_sizes.ptr as *mut c_void,
+                sizes_i32.as_ptr() as *const c_void,
+                sizes_i32.len() * size_of::<i32>(),
+            );
+        }
     }
 
     pub fn zero_accumulators(&self) {

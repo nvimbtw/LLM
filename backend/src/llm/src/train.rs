@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::training::gpu_workspace::Workspace;
 use crate::training::transformer::Model;
-use crate::training::optimizer::{gpu_adam_update, gpu_clip_gradients, gpu_grad_norms};
+use crate::training::optimizer::{gpu_adam_update, gpu_clip_gradients, gpu_grad_norms, read_grad_norm};
 use crate::training::sync::sync_weights_from_gpu;
 use crate::training::diagnostics::{self, Diagnostics};
 
@@ -904,16 +904,31 @@ fn step_optimizer(ws: &mut Workspace, layers: i64, lr: f32, total_opt_steps: i32
     // Clip the accumulated gradient BEFORE the step so a rare huge gradient
     // can't blow the model up (the loss-spike-to-50 case).
     let clip = MAX_GRAD_NORM * ACCUM_STEPS as f32;
-    let gnorm = gpu_clip_gradients(ws, layers as usize, clip);
+    gpu_clip_gradients(ws, layers as usize, clip);
     // Scheduled lr. Adam averages the gradient internally (grad_scale), so pass
     // the full scheduled lr, not lr/ACCUM_STEPS.
     let step_lr = lr_at_step(lr, *adam_step, total_opt_steps);
     gpu_adam_update(ws, step_lr, *adam_step, ACCUM_STEPS, layers as usize);
     ws.zero_accumulators();
-    // Periodic gradient-norm readout (and always on a spike) so a divergent run
-    // is visible: a norm that keeps growing = trouble.
-    if *adam_step % 50 == 0 || gnorm > clip * 20.0 || !gnorm.is_finite() {
-        eprintln!("  step {} grad_norm {:.2}", *adam_step, gnorm);
+    // Periodic gradient-norm readout so a divergent run is visible: a norm that
+    // keeps growing = trouble.
+    //
+    // Reading the norm synchronizes, so this samples every 50th optimizer step
+    // instead of testing it on every one. The old code checked `gnorm` each step
+    // to log spikes immediately, which meant the value had to come back to the
+    // host every step — the exact stall the device-side clip removes. Nothing is
+    // lost numerically: the clip is applied unconditionally on the device
+    // whether or not anyone looks at the norm, and the per-report diagnostics
+    // still carry per-layer gradient norms.
+    if *adam_step % 50 == 0 {
+        let gnorm = read_grad_norm(ws);
+        let spike = !gnorm.is_finite() || gnorm > clip * 20.0;
+        eprintln!(
+            "  step {} grad_norm {:.2}{}",
+            *adam_step,
+            gnorm,
+            if spike { "  ⚠ spike (clipped)" } else { "" }
+        );
     }
 }
 

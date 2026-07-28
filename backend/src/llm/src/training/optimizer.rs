@@ -35,7 +35,12 @@ unsafe extern "C" {
         n: i32,
     );
     fn cuda_l2norm(v: *const f32, n: i32) -> f32;
-    fn cuda_scale(v: *mut f32, s: f32, n: i32);
+    // Device-side global gradient clip — see `gpu_clip_gradients`. All three are
+    // asynchronous; none of them reads back to the host.
+    fn cuda_grad_sumsq_accum(v: *const f32, n: i32, accum: *mut f32);
+    fn cuda_clip_finalize(state: *mut f32, max_norm: f32);
+    fn cuda_scale_by_dev(v: *mut f32, scale: *const f32, n: i32);
+    fn cuda_memcpy_d2h(dst: *mut c_void, src: *const c_void, size: usize);
     // Sum of squares of the AdamW step vector `lr * m_hat/(sqrt(v_hat)+eps)` over
     // the current moment buffers — the applied-update magnitude for the
     // update:weight telemetry (decoupled weight decay excluded). Read-only.
@@ -175,27 +180,48 @@ fn grad_buffers(ws: &Workspace, layers: usize) -> Vec<(*mut f32, usize)> {
 // standard guard against loss spikes: no single step can be large enough to blow
 // the weights up. A non-finite norm (already-overflowed gradient) is zeroed so
 // the step is effectively skipped. Returns the pre-clip norm for logging.
-pub fn gpu_clip_gradients(ws: &Workspace, layers: usize, max_norm: f32) -> f32 {
+pub fn gpu_clip_gradients(ws: &Workspace, layers: usize, max_norm: f32) {
     let bufs = grad_buffers(ws, layers);
 
-    let mut sumsq = 0.0f64;
+    // Sum of squares over every gradient buffer, accumulated into
+    // `d_clip_state[0]`. One async kernel per buffer, no readback.
     for &(ptr, n) in &bufs {
-        let norm = unsafe { cuda_l2norm(ptr, n as i32) } as f64;
-        sumsq += norm * norm;
+        // SAFETY: each `ptr` is a live f32 device allocation of `n` elements
+        // (from `grad_buffers`), and `d_clip_state` is a 3-f32 device buffer.
+        unsafe { cuda_grad_sumsq_accum(ptr, n as i32, ws.d_clip_state.ptr) };
     }
-    let total = sumsq.sqrt() as f32;
 
-    if !total.is_finite() {
-        for &(ptr, n) in &bufs {
-            unsafe { cuda_scale(ptr, 0.0, n as i32) };
-        }
-    } else if total > max_norm {
-        let scale = max_norm / total;
-        for &(ptr, n) in &bufs {
-            unsafe { cuda_scale(ptr, scale, n as i32) };
-        }
+    // norm = sqrt(accum) into [1], clip scale into [2], and [0] re-zeroed for
+    // the next optimizer step. Applies the same policy the host-side version
+    // did: zero on a non-finite norm, scale down when over `max_norm`.
+    // SAFETY: `d_clip_state` is a 3-f32 device buffer.
+    unsafe { cuda_clip_finalize(ws.d_clip_state.ptr, max_norm) };
+
+    for &(ptr, n) in &bufs {
+        // SAFETY: as above; `.add(2)` is the scale slot inside the same 3-f32
+        // allocation, and the kernel only reads it.
+        unsafe { cuda_scale_by_dev(ptr, ws.d_clip_state.ptr.add(2), n as i32) };
     }
-    total
+}
+
+/// The global gradient norm computed by the last `gpu_clip_gradients`.
+///
+/// **This synchronizes** — it is the one readback the clip still needs, so call
+/// it only when the value is actually going to be used (the periodic log line),
+/// never once per step. That per-step readback is what the device-side clip
+/// exists to avoid.
+pub fn read_grad_norm(ws: &Workspace) -> f32 {
+    let mut out = 0.0f32;
+    // SAFETY: copying 4 bytes out of slot [1] of the 3-f32 `d_clip_state`
+    // allocation into a live local f32.
+    unsafe {
+        cuda_memcpy_d2h(
+            &mut out as *mut f32 as *mut c_void,
+            ws.d_clip_state.ptr.add(1) as *const c_void,
+            4,
+        );
+    }
+    out
 }
 
 // AdamW optimizer step. `step` is the 1-based global update count (for bias

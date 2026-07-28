@@ -196,24 +196,24 @@ impl Model {
 
     // Clip every accumulated gradient buffer to unit norm before the optimizer
     // step (the per-step loss-spike guard).
-    pub(super) fn clip_gradients(&self, ws: &mut Workspace, dims: StepDims, layers: usize) {
-        let StepDims { d, h, hd, ff, vocab, .. } = dims;
-        let max_norm = TRAIN_STEP_CLIP_NORM;
-        // SAFETY: see contract; each buffer's element count is passed alongside.
+    pub(super) fn clip_gradients(&self, ws: &mut Workspace, _dims: StepDims, _layers: usize) {
+        // One batched call over the whole gradient-buffer table instead of one
+        // clip per tensor. The table (pointers + sizes, in this exact order) is
+        // uploaded once by `Workspace::fill_clip_table`; the semantics are
+        // unchanged, each tensor still clipped to its own norm.
+        //
+        // The per-tensor form cost 61 x 3 launches per step and measured as
+        // almost pure launch overhead — the kernels had nearly nothing to do.
+        // SAFETY: the table describes live device allocations owned by `ws`, and
+        // `n_clip` is the length all three device arrays were sized with.
         unsafe {
-            cuda_clip_norm(ws.g_dw_output.ptr, (d * vocab) as i32, max_norm);
-            for layer_idx in 0..layers {
-                cuda_clip_norm(ws.g_wq_all[layer_idx].ptr, (h * d * hd) as i32, max_norm);
-                cuda_clip_norm(ws.g_wk_all[layer_idx].ptr, (h * d * hd) as i32, max_norm);
-                cuda_clip_norm(ws.g_wv_all[layer_idx].ptr, (h * d * hd) as i32, max_norm);
-                cuda_clip_norm(ws.g_dwo[layer_idx].ptr, (d * d) as i32, max_norm);
-                cuda_clip_norm(ws.g_dw1[layer_idx].ptr, (d * ff) as i32, max_norm);
-                cuda_clip_norm(ws.g_dw2[layer_idx].ptr, (ff * d) as i32, max_norm);
-                cuda_clip_norm(ws.g_db1[layer_idx].ptr, ff as i32, max_norm);
-                cuda_clip_norm(ws.g_db2[layer_idx].ptr, d as i32, max_norm);
-                cuda_clip_norm(ws.g_dln_gamma[layer_idx].ptr, d as i32, max_norm);
-                cuda_clip_norm(ws.g_dln_beta[layer_idx].ptr, d as i32, max_norm);
-            }
+            cuda_clip_norm_batched(
+                ws.d_clip_ptrs as *mut *mut f32,
+                ws.d_clip_sizes.ptr as *const i32,
+                ws.d_clip_norms.ptr,
+                ws.n_clip as i32,
+                TRAIN_STEP_CLIP_NORM,
+            );
         }
     }
 

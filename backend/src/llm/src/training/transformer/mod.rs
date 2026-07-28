@@ -446,25 +446,124 @@ impl Model {
         let dims = self.step_dims(chunk, layers);
         ws.ensure_layer_caches(layers);
 
+        let t = phase_start();
         let mut d_x = self.embed_forward(ws, dims, chunk);
-        for layer_idx in 0..layers {
-            let x = self.attn_sublayer_forward(ws, dims, layer_idx, d_x);
-            d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
-        }
-        self.project_logits(ws, dims, d_x);
-        let loss = self.compute_loss(ws, dims, chunk, mask);
+        phase_end("1. embed", t);
 
-        let mut d_dx = self.backward_unembed(ws, dims, d_x);
-        for layer_idx in (0..layers).rev() {
-            let g = self.ffn_sublayer_backward(ws, dims, layer_idx, d_dx);
-            d_dx = self.attn_sublayer_backward(ws, dims, layer_idx, g);
+        for layer_idx in 0..layers {
+            let t = phase_start();
+            let x = self.attn_sublayer_forward(ws, dims, layer_idx, d_x);
+            phase_end("2. attn fwd", t);
+
+            let t = phase_start();
+            d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
+            phase_end("3. ffn fwd", t);
         }
+
+        let t = phase_start();
+        self.project_logits(ws, dims, d_x);
+        phase_end("4. logits", t);
+
+        let t = phase_start();
+        let loss = self.compute_loss(ws, dims, chunk, mask);
+        phase_end("5. loss", t);
+
+        let t = phase_start();
+        let mut d_dx = self.backward_unembed(ws, dims, d_x);
+        phase_end("6. unembed bwd", t);
+
+        for layer_idx in (0..layers).rev() {
+            let t = phase_start();
+            let g = self.ffn_sublayer_backward(ws, dims, layer_idx, d_dx);
+            phase_end("7. ffn bwd", t);
+
+            let t = phase_start();
+            d_dx = self.attn_sublayer_backward(ws, dims, layer_idx, g);
+            phase_end("8. attn bwd", t);
+        }
+
+        let t = phase_start();
         self.clip_gradients(ws, dims, layers);
         self.accumulate_embedding_grad(ws, dims, d_dx);
+        phase_end("9. clip + embed grad", t);
 
         loss
     }
 
+}
+
+// ── Optional per-phase step profiling ───────────────────────────────────────
+//
+// CUPTI kernel tracing is unavailable under WSL2, so `nsys` collects the CUDA
+// API trace but cannot attribute time to individual kernels there. This fills
+// that gap at stage granularity: with `LLM_PROFILE_STEP=1` set, every stage of
+// `run_step` is bracketed by a device synchronize and its wall time
+// accumulated, which is enough to say *which stage* a slow step is in.
+//
+// Off by default, and deliberately so: the synchronizes it inserts serialize
+// the pipeline and distort the very number being measured. This is a diagnostic
+// to run on purpose, not a metric to leave on. When off it costs one cached env
+// lookup per stage and nothing else.
+
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+fn profiling_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("LLM_PROFILE_STEP").is_ok_and(|v| v != "0"))
+}
+
+// name -> (total milliseconds, number of calls)
+static PHASE_TOTALS: Mutex<BTreeMap<&'static str, (f64, u64)>> = Mutex::new(BTreeMap::new());
+
+fn phase_start() -> Option<Instant> {
+    if !profiling_enabled() {
+        return None;
+    }
+    // SAFETY: no arguments, no pointers; blocks until the device is idle so the
+    // interval measured is this stage's GPU work rather than queue depth.
+    unsafe { cudaDeviceSynchronize() };
+    Some(Instant::now())
+}
+
+fn phase_end(name: &'static str, start: Option<Instant>) {
+    let Some(start) = start else { return };
+    // SAFETY: as above.
+    unsafe { cudaDeviceSynchronize() };
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mut totals = PHASE_TOTALS.lock().unwrap();
+    let entry = totals.entry(name).or_insert((0.0, 0));
+    entry.0 += ms;
+    entry.1 += 1;
+}
+
+/// Print the accumulated per-stage profile (and reset it), sorted by total time.
+///
+/// Does nothing unless `LLM_PROFILE_STEP` is set. `steps` is the number of
+/// training steps the totals cover, so the report can show per-step cost.
+pub fn dump_step_profile(steps: usize) {
+    if !profiling_enabled() {
+        eprintln!("(step profiling off — set LLM_PROFILE_STEP=1)");
+        return;
+    }
+    let mut totals = PHASE_TOTALS.lock().unwrap();
+    let grand: f64 = totals.values().map(|(ms, _)| *ms).sum();
+    let mut rows: Vec<_> = totals.iter().map(|(n, (ms, c))| (*n, *ms, *c)).collect();
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    eprintln!("\n  stage                  ms/step     % of step    calls/step");
+    for (name, ms, calls) in rows {
+        eprintln!(
+            "  {:<20} {:>9.2} {:>11.1}% {:>12.1}",
+            name,
+            ms / steps as f64,
+            ms / grand * 100.0,
+            calls as f64 / steps as f64,
+        );
+    }
+    eprintln!("  {:<20} {:>9.2}\n", "TOTAL", grand / steps as f64);
+    totals.clear();
 }
 
 // ── Model (de)serialization ─────────────────────────────────────────────────
@@ -473,6 +572,7 @@ impl Model {
 // the writer/reader — so the byte layout is described exactly once.
 
 unsafe extern "C" {
+    fn cudaDeviceSynchronize() -> i32;
     fn cuda_memcpy_d2d(dst: *mut c_void, src: *const c_void, size: usize);
     fn cuda_memcpy_h2d(dst: *mut c_void, src: *const c_void, size: usize);
 
@@ -572,6 +672,15 @@ unsafe extern "C" {
     );
 
     fn cuda_clip_norm(g: *mut f32, n: i32, max_norm: f32);
+    // Batched form: clips every gradient tensor in the workspace's clip table
+    // in two launches. See `Model::clip_gradients`.
+    fn cuda_clip_norm_batched(
+        ptrs: *mut *mut f32,
+        sizes: *const i32,
+        norms: *mut f32,
+        n_buffers: i32,
+        max_norm: f32,
+    );
 
     fn cuda_clamp_f16(buf: *mut c_void, n: i32);
 

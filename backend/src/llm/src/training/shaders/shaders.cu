@@ -41,8 +41,53 @@ static void ensure_attn_cleanup(void) {
     attn.seq = attn.hd = attn.d = attn.h = 0;
 }
 
+// ─── Pre-allocated feed-forward scratch ────────────────────────────────────
+// Same lazily-grown, grow-only pattern as `attn` above, and for the same
+// reason: these buffers used to be cudaMalloc'd and cudaFree'd on every call.
+// At 6 layers that was 18 allocation pairs per training step, and cudaMalloc /
+// cudaFree implicitly synchronize the device — each one drained the pipeline
+// and left the GPU idle while the CPU caught up.
+//
+// Reuse across calls is safe because both buffers are fully written before they
+// are read on every path: `hidden` is a cuBLAS output with beta=0 (a complete
+// overwrite) and `activated` is fully cudaMemcpy'd from pre_gelu. No stale data
+// can survive into a later call. They are two separate buffers, not one reused
+// twice, because the backward holds both live at the same time.
+//
+// This assumes a single stream with forward and backward strictly sequential —
+// the same assumption `attn` already makes. Concurrent streams would need
+// per-stream scratch.
+static struct {
+    __half *hidden;     // [seq * d_ff] — w1 output / dgelu accumulator
+    __half *activated;  // [seq * d_ff] — gelu(pre_gelu), backward only
+    int seq, d_ff;
+} ff = {NULL};
+
+// One f32 accumulator reused across every per-buffer gradient clip. Lazily
+// allocated in cuda_clip_norm, freed with the rest of the persistent scratch.
+static float *clip_scratch = NULL;
+
+static void ensure_ff_cleanup(void) {
+    auto f = [](auto &p) { if (p) { cudaFree(p); p = NULL; } };
+    f(ff.hidden); f(ff.activated);
+    ff.seq = ff.d_ff = 0;
+}
+
+// Grows to the max (seq, d_ff) ever seen and never shrinks, so a later, longer
+// sequence reallocates rather than reading past the end of a smaller buffer.
+static void ensure_ff(int seq, int d_ff) {
+    if (seq <= ff.seq && d_ff <= ff.d_ff && ff.hidden) return;
+    ensure_ff_cleanup();
+    size_t sz = (size_t)seq * d_ff * sizeof(__half);
+    cudaMalloc(&ff.hidden, sz);
+    cudaMalloc(&ff.activated, sz);
+    ff.seq = seq; ff.d_ff = d_ff;
+}
+
 extern "C" void cublas_shutdown() {
     ensure_attn_cleanup();
+    ensure_ff_cleanup();
+    if (clip_scratch) { cudaFree(clip_scratch); clip_scratch = NULL; }
 
     if (g_cublas_init) {
         cublasDestroy(g_cublas);
@@ -99,21 +144,53 @@ static void ensure_attn(int seq, int hd, int d, int h) {
 
 // ─── Fused scale + causal_mask + softmax (f32→f16, single kernel) ──────────
 // Reads f32 scores, writes f16 softmax output. Masks positions col > row to 0.
+// One BLOCK per row of the attention matrix, threads striding the columns.
+//
+// This was one *thread* per row: a 512x512 score matrix was processed by 512
+// threads, each walking a whole row. Two problems, both severe here because the
+// work is s² while the thread count was only s. Parallelism: 512 threads on a
+// device that wants tens of thousands. Memory: adjacent threads read addresses
+// `seq_len * 4` bytes apart, so every load was its own 32-byte transaction for
+// 4 useful bytes — an 8x read amplification on the single largest tensor in the
+// step. This is the dominant cost of a training step, and it gets worse
+// quadratically as the context window grows.
+//
+// The arithmetic is unchanged, including keeping `inv_scale` inside the
+// exponent: exp((x - max(x)) * c) == exp(x*c - max(x*c)) for c > 0, so this is
+// the same softmax the old kernel computed, bit for bit in the same order of
+// operations per element. `sdata` needs `blockDim.x` floats.
 __global__ void fused_scale_causal_softmax_kernel(
     const float *__restrict__ scores_f32, __half *__restrict__ scores_f16,
     float inv_scale, int seq_len) {
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.x;
   if (row >= seq_len) return;
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
 
-  const float *row_in = scores_f32 + row * seq_len;
-  __half *row_out = scores_f16 + row * seq_len;
+  // blockIdx.y selects the head, so all `h` heads go out in one launch instead
+  // of a host-side loop. A 1-D launch leaves gridDim.y == 1 and offset 0, which
+  // is exactly the single-head behaviour the inference path wants.
+  size_t plane = (size_t)blockIdx.y * seq_len * seq_len;
+  const float *row_in = scores_f32 + plane + (size_t)row * seq_len;
+  __half *row_out = scores_f16 + plane + (size_t)row * seq_len;
 
-  float max_val = -1e38f;
-  for (int j = 0; j <= row; j++)
-    if (row_in[j] > max_val) max_val = row_in[j];
+  // Max over the causal prefix [0, row]. Threads with no element in range keep
+  // the sentinel, which loses the max reduction.
+  float m = -1e38f;
+  for (int j = tid; j <= row; j += blockDim.x)
+    if (row_in[j] > m) m = row_in[j];
+  sdata[tid] = m;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s && sdata[tid + s] > sdata[tid]) sdata[tid] = sdata[tid + s];
+    __syncthreads();
+  }
+  float max_val = sdata[0];
+  __syncthreads();
 
+  // exp into the output over the prefix, zeros over the masked tail.
   float sum = 0.0f;
-  for (int j = 0; j < seq_len; j++) {
+  for (int j = tid; j < seq_len; j += blockDim.x) {
     if (j <= row) {
       float e = expf((row_in[j] - max_val) * inv_scale);
       row_out[j] = __float2half(e);
@@ -122,11 +199,17 @@ __global__ void fused_scale_causal_softmax_kernel(
       row_out[j] = __float2half(0.0f);
     }
   }
+  sdata[tid] = sum;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  float inv_sum = 1.0f / sdata[0];
 
-  float inv_sum = 1.0f / sum;
-  for (int j = 0; j < seq_len; j++)
-    if (j <= row)
-      row_out[j] = __float2half(__half2float(row_out[j]) * inv_sum);
+  // Normalize in place, reading back through f16 exactly as before.
+  for (int j = tid; j <= row; j += blockDim.x)
+    row_out[j] = __float2half(__half2float(row_out[j]) * inv_sum);
 }
 
 // ─── Fused bias_add + GELU (f16 in-place) ──────────────────────────────────
@@ -237,36 +320,58 @@ __global__ void f32_to_f16_kernel(const float *src, __half *dst, int n) {
 // this cross-entropy gradient times a scalar, and negative for a rejected reply
 // (push the sequence down rather than up). That is the whole reason this parameter
 // exists: no separate preference kernel is needed.
+// One BLOCK per row (was one thread per row, each scanning all `vocab` logits
+// three times with uncoalesced access — 512 threads for a 512x8192 tensor).
+// The row max and the exp sum are shared-memory reductions; their order changes,
+// so the low bits of dlogits can move. Shared memory: blockDim.x floats.
 __global__ void cross_entropy_bw_kernel(const __half *logits,
                                          const float *targets,
                                          const float *mask,
                                          __half *dlogits, int seq_len,
                                          int vocab, int active, float scale) {
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.x;
   if (row >= seq_len)
     return;
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  __half *row_dlogits = dlogits + (size_t)row * vocab;
 
   // Ignored position: no learning signal — zero its whole gradient row.
   if (mask != nullptr && mask[row] == 0.0f) {
-    for (int j = 0; j < vocab; j++)
-      dlogits[row * vocab + j] = __float2half(0.0f);
+    for (int j = tid; j < vocab; j += blockDim.x)
+      row_dlogits[j] = __float2half(0.0f);
     return;
   }
 
+  const __half *row_logits = logits + (size_t)row * vocab;
   int target = (int)(targets[row]);
 
-  float max_val = __half2float(logits[row * vocab]);
-  for (int j = 1; j < vocab; j++)
-    max_val = fmaxf(max_val, __half2float(logits[row * vocab + j]));
+  float m = -INFINITY;
+  for (int j = tid; j < vocab; j += blockDim.x)
+    m = fmaxf(m, __half2float(row_logits[j]));
+  sdata[tid] = m;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] = fmaxf(sdata[tid], sdata[tid + s]);
+    __syncthreads();
+  }
+  float max_val = sdata[0];
+  __syncthreads();
 
-  float sum = 0.0f;
-  for (int j = 0; j < vocab; j++)
-    sum += expf(__half2float(logits[row * vocab + j]) - max_val);
+  float acc = 0.0f;
+  for (int j = tid; j < vocab; j += blockDim.x)
+    acc += expf(__half2float(row_logits[j]) - max_val);
+  sdata[tid] = acc;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  float inv_sum = 1.0f / sdata[0];
 
-  float inv_sum = 1.0f / sum;
-  for (int j = 0; j < vocab; j++) {
-    float softmax_j = expf(__half2float(logits[row * vocab + j]) - max_val) * inv_sum;
-    dlogits[row * vocab + j] =
+  for (int j = tid; j < vocab; j += blockDim.x) {
+    float softmax_j = expf(__half2float(row_logits[j]) - max_val) * inv_sum;
+    row_dlogits[j] =
         __float2half(scale * (softmax_j - (j == target ? 1.0f : 0.0f)) / active);
   }
 }
@@ -276,7 +381,8 @@ extern "C" void cuda_cross_entropy_backward(const __half *logits,
                                              const float *mask,
                                              __half *dlogits, int seq_len,
                                              int vocab, int active, float scale) {
-  cross_entropy_bw_kernel<<<(seq_len + 255) / 256, 256>>>(
+  int threads = 256;
+  cross_entropy_bw_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
       logits, targets, mask, dlogits, seq_len, vocab, active, scale);
 }
 
@@ -286,41 +392,51 @@ extern "C" void cuda_cross_entropy_backward(const __half *logits,
 // active". Masked rows contribute 0 to the loss, which is normalized by `active`
 // (the trained-row count) rather than seq_len so the reported loss is the mean
 // over trained positions only.
+// One BLOCK per row — see cross_entropy_bw_kernel for the rationale. Each block
+// reduces its own row's max and exp-sum and atomically adds that row's
+// contribution, where before one thread scanned a whole 8192-entry row twice.
+// Shared memory: blockDim.x floats.
 __global__ void cross_entropy_loss_kernel(const __half *logits,
                                            const float *targets,
                                            const float *mask,
                                            float *loss_out, int seq_len,
                                            int vocab, int active) {
+  int row = blockIdx.x;
+  if (row >= seq_len) return;
+  if (mask != nullptr && mask[row] == 0.0f) return;
+
   extern __shared__ float shared[];
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int tid = threadIdx.x;
+  const __half *row_logits = logits + (size_t)row * vocab;
 
-  float contrib = 0.0f;
-  if (row < seq_len && (mask == nullptr || mask[row] != 0.0f)) {
-    int target = (int)targets[row];
-
-    float max_val = __half2float(logits[row * vocab]);
-    for (int j = 1; j < vocab; j++)
-      max_val = fmaxf(max_val, __half2float(logits[row * vocab + j]));
-
-    float sum = 0.0f;
-    for (int j = 0; j < vocab; j++)
-      sum += expf(__half2float(logits[row * vocab + j]) - max_val);
-
-    float log_sum_exp = max_val + logf(sum);
-    contrib = log_sum_exp - __half2float(logits[row * vocab + target]);
+  float m = -INFINITY;
+  for (int j = tid; j < vocab; j += blockDim.x)
+    m = fmaxf(m, __half2float(row_logits[j]));
+  shared[tid] = m;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) shared[tid] = fmaxf(shared[tid], shared[tid + s]);
+    __syncthreads();
   }
-
-  shared[threadIdx.x] = contrib;
+  float max_val = shared[0];
   __syncthreads();
 
+  float acc = 0.0f;
+  for (int j = tid; j < vocab; j += blockDim.x)
+    acc += expf(__half2float(row_logits[j]) - max_val);
+  shared[tid] = acc;
+  __syncthreads();
   for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-    if (threadIdx.x < s)
-      shared[threadIdx.x] += shared[threadIdx.x + s];
+    if (tid < s) shared[tid] += shared[tid + s];
     __syncthreads();
   }
 
-  if (threadIdx.x == 0)
-    atomicAdd(loss_out, shared[0] / active);
+  if (tid == 0) {
+    int target = (int)targets[row];
+    float log_sum_exp = max_val + logf(shared[0]);
+    float contrib = log_sum_exp - __half2float(row_logits[target]);
+    atomicAdd(loss_out, contrib / active);
+  }
 }
 
 extern "C" float cuda_cross_entropy_loss(const __half *logits,
@@ -331,8 +447,7 @@ extern "C" float cuda_cross_entropy_loss(const __half *logits,
   cudaMalloc(&d_loss, sizeof(float));
   cudaMemset(d_loss, 0, sizeof(float));
   int threads = 256;
-  int blocks = (seq_len + threads - 1) / threads;
-  cross_entropy_loss_kernel<<<blocks, threads, threads * sizeof(float)>>>(
+  cross_entropy_loss_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
       logits, targets, mask, d_loss, seq_len, vocab, active);
   float loss;
   cudaMemcpy(&loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
@@ -381,105 +496,166 @@ extern "C" void cuda_bias_grad(const __half *dy, float *db, int rows,
 
 // ─── layer norm backward ───────────────────────────────────────────────────
 
+// One BLOCK per row.
+//
+// This was one *thread* per column, and every one of those threads re-derived
+// the current row's mean, variance, mean(dy) and mean(dy·x_centered) from
+// scratch — so each row's four statistics were computed `cols` times over, by
+// only `cols` threads (256 of the ~43,000 the device wants). The redundancy and
+// the starvation multiply.
+//
+// It runs twice per layer, and measurement put it at the top of the profile by
+// a wide margin: it is why the backward pass cost 15x its forward counterpart
+// in attention and 45x in the feed-forward, against an expected ~2x.
+//
+// The arithmetic is preserved exactly, including the two-pass variance (rather
+// than the less stable E[x²]-E[x]² form) and `1/sqrtf` rather than `rsqrtf`.
+// What changes is that each row's statistics are reduced once in shared memory,
+// and `dx` is written with adjacent threads on adjacent columns — coalesced
+// instead of one 32-byte transaction per useful 2 bytes.
+//
+// `dgamma`/`dbeta` accumulate via atomicAdd across row-blocks, so the wrapper
+// zeroes them first; the old kernel assigned, and the callers rely on that
+// (they pass scratch buffers and add into the real accumulators afterwards).
+// Summation order across rows is consequently nondeterministic, which can move
+// the low bits of the gamma/beta gradients run to run.
+//
+// Shared memory: 2 * blockDim.x floats (two accumulators per reduction pass).
 __global__ void layer_norm_bw_kernel(const __half *x, const __half *dy,
                                       const __half *gamma, __half *dx,
                                       float *dgamma, float *dbeta, int rows,
                                       int cols, float eps) {
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  if (col >= cols)
+  int row = blockIdx.x;
+  if (row >= rows)
     return;
+  extern __shared__ float sm[];
+  float *s1 = sm;
+  float *s2 = sm + blockDim.x;
+  int tid = threadIdx.x;
 
-  float sum_dgamma = 0.0f;
-  float sum_dbeta = 0.0f;
-  for (int r = 0; r < rows; r++) {
-    const __half *row_x = x + r * cols;
-    const __half *row_dy = dy + r * cols;
-    __half *row_dx = dx + r * cols;
+  const __half *row_x = x + (size_t)row * cols;
+  const __half *row_dy = dy + (size_t)row * cols;
+  __half *row_dx = dx + (size_t)row * cols;
 
-    float mean = 0.0f;
-    for (int j = 0; j < cols; j++)
-      mean += __half2float(row_x[j]);
-    mean /= cols;
-
-    float var = 0.0f;
-    for (int j = 0; j < cols; j++) {
-      float diff = __half2float(row_x[j]) - mean;
-      var += diff * diff;
-    }
-    var /= cols;
-
-    float sigma = sqrtf(var + eps);
-    float inv_sigma = 1.0f / sigma;
-
-    float mean_dy = 0.0f;
-    for (int j = 0; j < cols; j++)
-      mean_dy += __half2float(row_dy[j]);
-    mean_dy /= cols;
-
-    float mean_dy_x = 0.0f;
-    for (int j = 0; j < cols; j++) {
-      float x_centered = __half2float(row_x[j]) - mean;
-      mean_dy_x += __half2float(row_dy[j]) * x_centered;
-    }
-    mean_dy_x /= cols;
-
-    float x_centered = __half2float(row_x[col]) - mean;
-    sum_dgamma += __half2float(row_dy[col]) * x_centered * inv_sigma;
-    sum_dbeta += __half2float(row_dy[col]);
-
-    float dx_val =
-        (__half2float(gamma[col]) * inv_sigma) *
-        (__half2float(row_dy[col]) - mean_dy -
-         x_centered * inv_sigma * inv_sigma * mean_dy_x);
-    dx_val = fminf(fmaxf(dx_val, -65504.0f), 65504.0f);
-    row_dx[col] = __float2half(dx_val);
+  // Pass 1: sum(x) and sum(dy) -> mean, mean_dy.
+  float a = 0.0f, b = 0.0f;
+  for (int j = tid; j < cols; j += blockDim.x) {
+    a += __half2float(row_x[j]);
+    b += __half2float(row_dy[j]);
   }
+  s1[tid] = a;
+  s2[tid] = b;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) {
+      s1[tid] += s1[tid + s];
+      s2[tid] += s2[tid + s];
+    }
+    __syncthreads();
+  }
+  float mean = s1[0] / cols;
+  float mean_dy = s2[0] / cols;
+  __syncthreads();
 
-  dgamma[col] = sum_dgamma;
-  dbeta[col] = sum_dbeta;
+  // Pass 2: sum((x-mean)²) and sum(dy·(x-mean)) -> var, mean_dy_x.
+  a = 0.0f;
+  b = 0.0f;
+  for (int j = tid; j < cols; j += blockDim.x) {
+    float xc = __half2float(row_x[j]) - mean;
+    a += xc * xc;
+    b += __half2float(row_dy[j]) * xc;
+  }
+  s1[tid] = a;
+  s2[tid] = b;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) {
+      s1[tid] += s1[tid + s];
+      s2[tid] += s2[tid + s];
+    }
+    __syncthreads();
+  }
+  float var = s1[0] / cols;
+  float mean_dy_x = s2[0] / cols;
+
+  float inv_sigma = 1.0f / sqrtf(var + eps);
+
+  for (int j = tid; j < cols; j += blockDim.x) {
+    float xc = __half2float(row_x[j]) - mean;
+    float dyj = __half2float(row_dy[j]);
+
+    atomicAdd(&dgamma[j], dyj * xc * inv_sigma);
+    atomicAdd(&dbeta[j], dyj);
+
+    float dx_val = (__half2float(gamma[j]) * inv_sigma) *
+                   (dyj - mean_dy - xc * inv_sigma * inv_sigma * mean_dy_x);
+    dx_val = fminf(fmaxf(dx_val, -65504.0f), 65504.0f);
+    row_dx[j] = __float2half(dx_val);
+  }
 }
 
 extern "C" void cuda_layer_norm_backward(const __half *x, const __half *dy,
                                           const __half *gamma, __half *dx,
                                           float *dgamma, float *dbeta,
                                           int rows, int cols, float eps) {
-  layer_norm_bw_kernel<<<(cols + 255) / 256, 256>>>(x, dy, gamma, dx, dgamma,
-                                                      dbeta, rows, cols, eps);
+  // dgamma/dbeta are accumulated with atomicAdd by the row-blocks, so they must
+  // start at zero — the kernel's contract is still "assign", as the callers
+  // expect (they hand in scratch and add into the real accumulators after).
+  cudaMemsetAsync(dgamma, 0, cols * sizeof(float));
+  cudaMemsetAsync(dbeta, 0, cols * sizeof(float));
+  int threads = 256;
+  layer_norm_bw_kernel<<<rows, threads, 2 * threads * sizeof(float)>>>(
+      x, dy, gamma, dx, dgamma, dbeta, rows, cols, eps);
 }
 
 // ─── softmax backward ──────────────────────────────────────────────────────
 
+// One BLOCK per row — see softmax_bw_f32_dP_kernel above for the rationale.
+// Shared memory: blockDim.x floats.
 __global__ void softmax_bw_kernel(const __half *P, const __half *dP, __half *dS,
                                    int rows, int cols) {
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.x;
   if (row >= rows)
     return;
-  const __half *P_row = P + row * cols;
-  const __half *dP_row = dP + row * cols;
-  __half *dS_row = dS + row * cols;
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  const __half *P_row = P + (size_t)row * cols;
+  const __half *dP_row = dP + (size_t)row * cols;
+  __half *dS_row = dS + (size_t)row * cols;
 
-  float dot = 0.0f;
-  for (int i = 0; i < cols; i++)
-    dot += __half2float(P_row[i]) * __half2float(dP_row[i]);
+  float partial = 0.0f;
+  for (int i = tid; i < cols; i += blockDim.x)
+    partial += __half2float(P_row[i]) * __half2float(dP_row[i]);
+  sdata[tid] = partial;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  float dot = sdata[0];
 
-  for (int i = 0; i < cols; i++)
+  for (int i = tid; i < cols; i += blockDim.x)
     dS_row[i] = __float2half(__half2float(P_row[i]) * (__half2float(dP_row[i]) - dot));
 }
 
 extern "C" void cuda_softmax_backward(const __half *P, const __half *dP,
                                        __half *dS, int rows, int cols) {
-  softmax_bw_kernel<<<(rows + 255) / 256, 256>>>(P, dP, dS, rows, cols);
+  int threads = 256;
+  softmax_bw_kernel<<<rows, threads, threads * sizeof(float)>>>(P, dP, dS, rows, cols);
 }
 
 // ─── causal mask backward ──────────────────────────────────────────────────
 
+// blockIdx.z selects the head, so the per-head host loop collapses to one
+// launch. A 2-D launch leaves gridDim.z == 1 and offset 0 (single-head path).
 __global__ void causal_mask_bw_kernel(__half *dS, int seq_len) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   if (row >= seq_len || col >= seq_len)
     return;
   if (col > row)
-    dS[row * seq_len + col] = __float2half(0.0f);
+    dS[(size_t)blockIdx.z * seq_len * seq_len + (size_t)row * seq_len + col] =
+        __float2half(0.0f);
 }
 
 extern "C" void cuda_causal_mask_backward(__half *dS, int seq_len) {
@@ -593,7 +769,7 @@ cuda_attention_head_backward(const __half *X,
       attn.dP, CUDA_R_32F, seq_len, COMPUTE_F32, TENSOR_OP);
 
   // dS = softmax_bw_f32_dP(P, dP)
-  softmax_bw_f32_dP_kernel<<<(seq_len + 255) / 256, 256>>>(P, attn.dP, attn.dS, seq_len, seq_len);
+  softmax_bw_f32_dP_kernel<<<seq_len, 256, 256 * sizeof(float)>>>(P, attn.dP, attn.dS, seq_len, seq_len);
 
   // dS /= sqrt(head_dim)
   float rcp_scale = sqrtf((float)head_dim);
@@ -667,20 +843,37 @@ cuda_attention_head_backward(const __half *X,
 
 // ─── softmax backward with f32 dP (element-wise, keep) ──────────────────────
 
+// One BLOCK per row (was one thread per row, walking the row serially with
+// stride-`cols` uncoalesced access). This runs on the s x s attention matrix,
+// so the work is quadratic in context while the old thread count was linear —
+// the same shape of defect as the forward softmax. The row dot product is now a
+// shared-memory reduction; its summation order changes, which can move the low
+// bits of dS. Shared memory: blockDim.x floats.
 __global__ void softmax_bw_f32_dP_kernel(const __half *P, const float *dP,
                                           __half *dS, int rows, int cols) {
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.x;
   if (row >= rows)
     return;
-  const __half *P_row = P + row * cols;
-  const float *dP_row = dP + row * cols;
-  __half *dS_row = dS + row * cols;
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  // blockIdx.y selects the head — see fused_scale_causal_softmax_kernel.
+  size_t plane = (size_t)blockIdx.y * rows * cols;
+  const __half *P_row = P + plane + (size_t)row * cols;
+  const float *dP_row = dP + plane + (size_t)row * cols;
+  __half *dS_row = dS + plane + (size_t)row * cols;
 
-  float dot = 0.0f;
-  for (int i = 0; i < cols; i++)
-    dot += __half2float(P_row[i]) * dP_row[i];
+  float partial = 0.0f;
+  for (int i = tid; i < cols; i += blockDim.x)
+    partial += __half2float(P_row[i]) * dP_row[i];
+  sdata[tid] = partial;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  float dot = sdata[0];
 
-  for (int i = 0; i < cols; i++) {
+  for (int i = tid; i < cols; i += blockDim.x) {
     float val = __half2float(P_row[i]) * (dP_row[i] - dot);
     val = fminf(fmaxf(val, -65504.0f), 65504.0f);
     dS_row[i] = __float2half(val);
@@ -759,29 +952,57 @@ __global__ void bias_add_kernel(__half *x, const __half *bias, int rows,
 
 // ─── layer norm ─────────────────────────────────────────────────────────────
 
+// One BLOCK per row, threads striding across the columns.
+//
+// This was one *thread* per row, each looping the whole row serially. Two things
+// were wrong with that. Parallelism: a 512-row activation launched 512 threads
+// on a device that wants tens of thousands, so ~1% of the GPU was awake.
+// Memory: thread `row` walked `in + row*cols + i`, so adjacent threads touched
+// addresses `cols` apart and every load became its own 32-byte transaction to
+// use 2 bytes of it — a ~16x read amplification on top of the idle SMs.
+//
+// Block-per-row fixes both: adjacent threads now read adjacent addresses (fully
+// coalesced), and the row's mean/variance come from a shared-memory reduction
+// instead of a serial loop. `sdata` needs `blockDim.x` floats.
 __global__ void layer_norm_kernel(const __half *in, __half *out,
                                   const __half *gamma, const __half *beta,
                                   int rows, int cols, float eps) {
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.x;
   if (row >= rows)
     return;
-  const __half *row_in = in + row * cols;
-  __half *row_out = out + row * cols;
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  const __half *row_in = in + (size_t)row * cols;
+  __half *row_out = out + (size_t)row * cols;
 
-  float mean = 0.0f;
-  for (int i = 0; i < cols; i++)
-    mean += __half2float(row_in[i]);
-  mean /= cols;
-
-  float var = 0.0f;
-  for (int i = 0; i < cols; i++) {
-    float diff = __half2float(row_in[i]) - mean;
-    var += diff * diff;
+  // Sum for the mean.
+  float partial = 0.0f;
+  for (int i = tid; i < cols; i += blockDim.x)
+    partial += __half2float(row_in[i]);
+  sdata[tid] = partial;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
   }
-  var /= cols;
+  float mean = sdata[0] / cols;
+  __syncthreads();
 
-  float inv_std = rsqrtf(var + eps);
-  for (int i = 0; i < cols; i++)
+  // Sum of squared deviations for the variance.
+  partial = 0.0f;
+  for (int i = tid; i < cols; i += blockDim.x) {
+    float diff = __half2float(row_in[i]) - mean;
+    partial += diff * diff;
+  }
+  sdata[tid] = partial;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  float inv_std = rsqrtf(sdata[0] / cols + eps);
+
+  for (int i = tid; i < cols; i += blockDim.x)
     row_out[i] = __float2half(
         (__half2float(row_in[i]) - mean) * inv_std * __half2float(gamma[i]) + __half2float(beta[i]));
 }
@@ -789,8 +1010,11 @@ __global__ void layer_norm_kernel(const __half *in, __half *out,
 extern "C" void cuda_layer_norm(const __half *in, __half *out,
                                 const __half *gamma, const __half *beta,
                                 int rows, int cols, float eps) {
-  layer_norm_kernel<<<(rows + 255) / 256, 256>>>(in, out, gamma, beta, rows,
-                                                   cols, eps);
+  // One block per row; 256 threads stride the columns. Shared memory is one
+  // float per thread for the two reductions.
+  int threads = 256;
+  layer_norm_kernel<<<rows, threads, threads * sizeof(float)>>>(
+      in, out, gamma, beta, rows, cols, eps);
 }
 
 // ─── Scale f32 array element-wise by 1/divisor, copy result to f16 ─────────
@@ -842,7 +1066,7 @@ cuda_attention_head_forward(const __half *embeddings,
   // Fused scale (÷√hd) + causal_mask + softmax (f32→f16, single kernel)
   float inv_scale = 1.0f / sqrtf((float)head_dim);
   int threads = 256;
-  fused_scale_causal_softmax_kernel<<<(seq_len + threads - 1) / threads, threads>>>(
+  fused_scale_causal_softmax_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
       attn.scores_f32, attn.scores_f16, inv_scale, seq_len);
 
   // Copy softmax output to P_out for backward
@@ -891,7 +1115,7 @@ cuda_attention_head(const __half *embeddings,
 
   float inv_scale = 1.0f / sqrtf((float)head_dim);
   int threads = 256;
-  fused_scale_causal_softmax_kernel<<<(seq_len + threads - 1) / threads, threads>>>(
+  fused_scale_causal_softmax_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
       attn.scores_f32, attn.scores_f16, inv_scale, seq_len);
 
   cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
@@ -964,24 +1188,20 @@ extern "C" void cuda_attention_forward_batched(
   {
     float inv_scale = 1.0f / sqrtf((float)hd);
     int t = 256;
-    int g = (seq + t - 1) / t;
-    for (int hi = 0; hi < h; hi++) {
-      fused_scale_causal_softmax_kernel<<<g, t>>>(
-          attn.scores_f32 + hi * seq * seq,
-          attn.scores_f16 + hi * seq * seq,
-          inv_scale, seq);
-    }
+    // Write the softmax straight into P_all. It used to land in the shared
+    // scratch and then be copied here for the backward to use — h*seq*seq
+    // halves per layer, ~12 MB a step at this shape, for nothing. The PV GEMM
+    // below now reads P_all too, so the scratch copy has no remaining reader.
+    // All heads in one launch via the y grid dimension.
+    fused_scale_causal_softmax_kernel<<<dim3(seq, h), t, t * sizeof(float)>>>(
+        attn.scores_f32, P_all, inv_scale, seq);
   }
-
-  // Copy P_all from scratch (needed for backward)
-  cudaMemcpy(P_all, attn.scores_f16, h * seq * seq * sizeof(__half),
-             cudaMemcpyDeviceToDevice);
 
   // 6. Out = softmax(S) @ V (batched f16×f16→f16)
   cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, seq, &alpha,
       attn.v_f16, CUDA_R_16F, hd, seq*hd,
-      attn.scores_f16, CUDA_R_16F, seq, seq*seq,
+      P_all, CUDA_R_16F, seq, seq*seq,
       &beta,
       out_all, CUDA_R_16F, hd, seq*hd,
       h, COMPUTE_F32, TENSOR_OP);
@@ -1023,18 +1243,17 @@ extern "C" void cuda_attention_backward_batched(
   // 2. Per-head: softmax backward + scale + causal_mask (element-wise on f32)
   {
     float rcp = sqrtf((float)hd);
-    for (int hi = 0; hi < h; hi++) {
-      softmax_bw_f32_dP_kernel<<<(seq + 255) / 256, 256>>>(
-          P_all + hi * seq * seq,
-          attn.dP + hi * seq * seq,
-          attn.dS + hi * seq * seq, seq, seq);
-      scale_kernel_f16<<<((seq * seq) + 255) / 256, 256>>>(
-          attn.dS + hi * seq * seq, rcp, seq * seq);
-      {
-        dim3 t16(16, 16);
-        causal_mask_bw_kernel<<<dim3((seq + 15) / 16, (seq + 15) / 16), t16>>>(
-            attn.dS + hi * seq * seq, seq);
-      }
+    // One launch each instead of three per head. The heads are contiguous
+    // planes of seq*seq, so the softmax backward and the mask take the head
+    // from a grid dimension, and the scale is a flat pass over all of them.
+    softmax_bw_f32_dP_kernel<<<dim3(seq, h), 256, 256 * sizeof(float)>>>(
+        P_all, attn.dP, attn.dS, seq, seq);
+    scale_kernel_f16<<<((h * seq * seq) + 255) / 256, 256>>>(
+        attn.dS, rcp, h * seq * seq);
+    {
+      dim3 t16(16, 16);
+      causal_mask_bw_kernel<<<dim3((seq + 15) / 16, (seq + 15) / 16, h), t16>>>(
+          attn.dS, seq);
     }
   }
 
@@ -1180,8 +1399,8 @@ extern "C" void cuda_feed_forward(const __half *input,
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
 
-  __half *d_hidden;
-  cudaMalloc(&d_hidden, seq_len * d_ff * sizeof(__half));
+  ensure_ff(seq_len, d_ff);
+  __half *d_hidden = ff.hidden;
 
   // hidden = input @ w1 (f16×f16→f16)
   cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
@@ -1205,8 +1424,6 @@ extern "C" void cuda_feed_forward(const __half *input,
     bias_add_kernel<<<dim3((d_model + 15) / 16, (seq_len + 15) / 16), t16>>>(
         out, b2, seq_len, d_model);
   }
-
-  cudaFree(d_hidden);
 }
 
 // ─── Feed-forward forward (training, saves pre-gelu for backward) ──────────
@@ -1223,8 +1440,8 @@ cuda_feed_forward_forward(const __half *input,
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
 
-  __half *d_hidden;
-  cudaMalloc(&d_hidden, seq_len * d_ff * sizeof(__half));
+  ensure_ff(seq_len, d_ff);
+  __half *d_hidden = ff.hidden;
 
   // hidden = input @ w1 (f16×f16→f16)
   cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
@@ -1258,8 +1475,6 @@ cuda_feed_forward_forward(const __half *input,
     bias_add_kernel<<<dim3((d_model + 15) / 16, (seq_len + 15) / 16), t16>>>(
         out, b2, seq_len, d_model);
   }
-
-  cudaFree(d_hidden);
 }
 
 // ─── Feed-forward backward (unchanged, but pre_gelu now holds pre-activation) ─
@@ -1279,8 +1494,8 @@ extern "C" void cuda_feed_forward_backward(
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
 
-  __half *d_hidden_gelu;
-  cudaMalloc(&d_hidden_gelu, seq_len * d_ff * sizeof(__half));
+  ensure_ff(seq_len, d_ff);
+  __half *d_hidden_gelu = ff.hidden;
 
   // d_hidden_gelu = dout @ w2^T (f16×f16^T→f16) [seq_len x d_ff]
   cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -1288,9 +1503,9 @@ extern "C" void cuda_feed_forward_backward(
       w2, CUDA_R_16F, d_model, dout, CUDA_R_16F, d_model, &beta,
       d_hidden_gelu, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP);
 
-  // Compute activated = gelu(pre_gelu) dynamically to use for dw2 gradient
-  __half *activated;
-  cudaMalloc(&activated, seq_len * d_ff * sizeof(__half));
+  // Compute activated = gelu(pre_gelu) dynamically to use for dw2 gradient.
+  // Distinct from d_hidden_gelu above: both are live across the dw2 GEMM.
+  __half *activated = ff.activated;
   cudaMemcpy(activated, pre_gelu, seq_len * d_ff * sizeof(__half), cudaMemcpyDeviceToDevice);
   gelu_kernel<<<(seq_len * d_ff + 255) / 256, 256>>>(activated, seq_len * d_ff);
 
@@ -1299,8 +1514,6 @@ extern "C" void cuda_feed_forward_backward(
       d_model, d_ff, seq_len, &alpha,
       dout, CUDA_R_16F, d_model, activated, CUDA_R_16F, d_ff, &beta,
       dw2, CUDA_R_32F, d_model, COMPUTE_F32, TENSOR_OP);
-
-  cudaFree(activated);
 
   cuda_bias_grad(dout, db2, seq_len, d_model);
 
@@ -1322,8 +1535,6 @@ extern "C" void cuda_feed_forward_backward(
       d_model, seq_len, d_ff, &alpha,
       w1, CUDA_R_16F, d_ff, d_hidden_gelu, CUDA_R_16F, d_ff, &beta,
       dinput, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
-
-  cudaFree(d_hidden_gelu);
 }
 
 // ─── Head concatenation kernel ──────────────────────────────────────────────
@@ -1347,44 +1558,207 @@ extern "C" void cuda_concat_heads(__half **head_ptrs, __half *out,
   concat_heads_kernel<<<grid, block>>>(head_ptrs, out, seq_len, heads, head_dim);
 }
 
+// ─── Async global gradient clip (no host synchronization) ──────────────────
+// The clip used to run one `cublasSnrm2` per gradient buffer — 62 of them at 6
+// layers — accumulate the squares host-side, then scale each buffer. snrm2 in
+// host-pointer mode blocks until the device drains, so one optimizer step cost
+// 62 full pipeline stalls, and with accumulation every 4 steps that was ~15
+// stalls per training step.
+//
+// The arithmetic here is identical; it just never leaves the device. Sum of
+// squares accumulates across buffers into one f32, a one-thread kernel turns
+// that into a norm and a clip scale, and each buffer is scaled by that
+// device-resident scalar. Every call is asynchronous, so the queue stays full.
+// The host reads the norm only when it actually wants to print it.
+//
+// `state` is 3 floats: [0] sum-of-squares accumulator, [1] resulting global
+// norm, [2] scale to apply. It must start zeroed (`Buffer::alloc_zeroed`);
+// `clip_finalize_kernel` re-zeros [0] for the next window.
+
+__global__ void grad_sumsq_kernel(const float *__restrict__ v, int n, float *accum) {
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  float val = 0.0f;
+  if (i < n) {
+    float x = v[i];
+    val = x * x;
+  }
+  sdata[tid] = val;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  if (tid == 0) atomicAdd(accum, sdata[0]);
+}
+
+extern "C" void cuda_grad_sumsq_accum(const float *v, int n, float *accum) {
+  int threads = 256;
+  int blocks = (n + threads - 1) / threads;
+  grad_sumsq_kernel<<<blocks, threads, threads * sizeof(float)>>>(v, n, accum);
+}
+
+// Matches the old host-side policy exactly: a non-finite norm scales the whole
+// gradient to zero (dropping a NaN/Inf window rather than stepping on it), a
+// norm above `max_norm` scales down to exactly `max_norm`, anything else passes
+// through untouched.
+__global__ void clip_finalize_kernel(float *state, float max_norm) {
+  float total = sqrtf(state[0]);
+  state[0] = 0.0f;  // reset the accumulator for the next optimizer step
+  state[1] = total;
+  float scale = 1.0f;
+  if (!isfinite(total)) {
+    scale = 0.0f;
+  } else if (total > max_norm) {
+    scale = max_norm / total;
+  }
+  state[2] = scale;
+}
+
+extern "C" void cuda_clip_finalize(float *state, float max_norm) {
+  clip_finalize_kernel<<<1, 1>>>(state, max_norm);
+}
+
+// Scale by a factor that lives in device memory, so applying the clip needs no
+// readback of the norm.
+__global__ void scale_by_dev_kernel(float *v, const float *scale, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) v[i] *= *scale;
+}
+
+extern "C" void cuda_scale_by_dev(float *v, const float *scale, int n) {
+  int threads = 256;
+  scale_by_dev_kernel<<<(n + threads - 1) / threads, threads>>>(v, scale, n);
+}
+
 // ─── Gradient L2-norm clipping ──────────────────────────────────────────────
 
-__global__ void clip_norm_kernel(float *g, int n, float max_norm) {
-  extern __shared__ float shared[];
+// Per-buffer gradient clip, split reduce-then-apply so both halves span the
+// whole device.
+//
+// This was a single-block kernel — `<<<1, 256>>>` — reducing an entire gradient
+// tensor on one SM out of 28, and `Model::clip_gradients` calls it once per
+// gradient buffer, 62 times per step at 6 layers, the largest of them 2.1M
+// elements. After the layer-norm backward was fixed this became the single
+// biggest remaining stage in the step profile.
+//
+// Semantics are unchanged: non-finite elements are zeroed in place *before*
+// they contribute to the sum, and the buffer is rescaled only when its norm
+// exceeds `max_norm`. Because the sanitize pass runs first, the sum is always
+// finite and needs no separate non-finite guard.
+//
+// `scratch` is a single f32 accumulator zeroed by the wrapper. One shared
+// scratch is safe across the 62 calls because they are issued on the same
+// stream and therefore execute in order.
+
+__global__ void clip_sanitize_sumsq_kernel(float *g, int n, float *scratch) {
+  extern __shared__ float sdata[];
   int tid = threadIdx.x;
-  int stride = blockDim.x;
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  float val = 0.0f;
+  if (i < n) {
+    float v = g[i];
+    if (isnan(v) || isinf(v)) v = 0.0f;
+    g[i] = v;
+    val = v * v;
+  }
+  sdata[tid] = val;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (tid < s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+  }
+  if (tid == 0) atomicAdd(scratch, sdata[0]);
+}
+
+// Each thread re-derives the scale from the accumulator: a couple of register
+// ops, cheaper than a third kernel launch to compute it once.
+__global__ void clip_apply_kernel(float *g, int n, const float *scratch,
+                                   float max_norm) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  float norm = sqrtf(*scratch);
+  float scale = (norm > max_norm) ? (max_norm / norm) : 1.0f;
+  g[i] *= scale;
+}
+
+// Batched per-buffer clip: every gradient tensor clipped in two launches.
+//
+// `Model::clip_gradients` clips each tensor independently, and calling
+// cuda_clip_norm once per tensor meant 61 buffers x 3 launches = ~183 launches
+// per step doing almost no work each. At ~12 us of launch cost apiece (WSL2's
+// paravirtualized driver is dearer than native) that stage measured 2.26 ms and
+// was entirely launch-bound rather than compute-bound.
+//
+// Here the buffer list lives on the device (pointers + sizes, built once since
+// the workspace allocations never move) and the buffer index comes from the y
+// grid dimension. The x dimension is a fixed, modest grid that strides through
+// whatever the buffer's length happens to be, so one launch covers tensors from
+// 256 elements to 2.1M without sizing the grid to the largest.
+//
+// Semantics match cuda_clip_norm exactly: non-finite elements zeroed in place
+// before they are summed, then a rescale only if that buffer's norm exceeds
+// max_norm. `norms` is one f32 per buffer, zeroed by the wrapper.
+
+__global__ void clip_batched_sumsq_kernel(float **ptrs, const int *sizes,
+                                           float *norms) {
+  int b = blockIdx.y;
+  float *g = ptrs[b];
+  int n = sizes[b];
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
 
   float sum = 0.0f;
-  for (int i = tid; i < n; i += stride) {
+  for (int i = blockIdx.x * blockDim.x + tid; i < n;
+       i += blockDim.x * gridDim.x) {
     float v = g[i];
     if (isnan(v) || isinf(v)) v = 0.0f;
     g[i] = v;
     sum += v * v;
   }
-
-  shared[tid] = sum;
+  sdata[tid] = sum;
   __syncthreads();
-
   for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-    if (tid < s)
-      shared[tid] += shared[tid + s];
+    if (tid < s) sdata[tid] += sdata[tid + s];
     __syncthreads();
   }
+  if (tid == 0) atomicAdd(&norms[b], sdata[0]);
+}
 
-  if (tid == 0) {
-    float norm = sqrtf(shared[0]);
-    shared[0] = (norm > max_norm) ? (max_norm / norm) : 1.0f;
-  }
-  __syncthreads();
-
-  float scale = shared[0];
-  for (int i = tid; i < n; i += stride)
+__global__ void clip_batched_apply_kernel(float **ptrs, const int *sizes,
+                                           const float *norms, float max_norm) {
+  int b = blockIdx.y;
+  float *g = ptrs[b];
+  int n = sizes[b];
+  float norm = sqrtf(norms[b]);
+  float scale = (norm > max_norm) ? (max_norm / norm) : 1.0f;
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+       i += blockDim.x * gridDim.x)
     g[i] *= scale;
 }
 
-extern "C" void cuda_clip_norm(float *g, int n, float max_norm) {
+extern "C" void cuda_clip_norm_batched(float **d_ptrs, const int *d_sizes,
+                                        float *d_norms, int n_buffers,
+                                        float max_norm) {
+  cudaMemsetAsync(d_norms, 0, n_buffers * sizeof(float));
   int threads = 256;
-  clip_norm_kernel<<<1, threads, threads * sizeof(float)>>>(g, n, max_norm);
+  int gx = 256;  // strided; independent of the largest buffer
+  dim3 grid(gx, n_buffers);
+  clip_batched_sumsq_kernel<<<grid, threads, threads * sizeof(float)>>>(
+      d_ptrs, d_sizes, d_norms);
+  clip_batched_apply_kernel<<<grid, threads>>>(d_ptrs, d_sizes, d_norms,
+                                                max_norm);
+}
+
+extern "C" void cuda_clip_norm(float *g, int n, float max_norm) {
+  if (!clip_scratch) cudaMalloc(&clip_scratch, sizeof(float));
+  cudaMemsetAsync(clip_scratch, 0, sizeof(float));
+  int threads = 256;
+  int blocks = (n + threads - 1) / threads;
+  clip_sanitize_sumsq_kernel<<<blocks, threads, threads * sizeof(float)>>>(
+      g, n, clip_scratch);
+  clip_apply_kernel<<<blocks, threads>>>(g, n, clip_scratch, max_norm);
 }
 
 // ─── Debug: check buffer for NaN/Inf ───────────────────────────────────────
