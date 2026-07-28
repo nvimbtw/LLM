@@ -121,6 +121,50 @@ pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<BenchmarkSummary>, sq
     .await
 }
 
+// Every run of one model, newest first — the model page's "how did it score"
+// section. Same summary shape as `list`, so the two share a response type.
+pub async fn list_for_model(
+    pool: &PgPool,
+    id_model: Uuid,
+    limit: i64,
+) -> Result<Vec<BenchmarkSummary>, sqlx::Error> {
+    sqlx::query_as!(
+        BenchmarkSummary,
+        r#"SELECT id_run, id_model, model_name,
+                  status as "status: BenchmarkStatus", score, error,
+                  train_tokens, created_at, completed_at
+           FROM benchmark_runs
+           WHERE id_model = $1
+           ORDER BY created_at DESC
+           LIMIT $2"#,
+        id_model,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+// The full report of a model's most recent completed run, for the same section:
+// the scores it shows are the detail of one run, and this is the run meant.
+pub async fn latest_report_for_model(
+    pool: &PgPool,
+    id_model: Uuid,
+) -> Result<Option<BenchmarkRun>, sqlx::Error> {
+    sqlx::query_as!(
+        BenchmarkRun,
+        r#"SELECT id_run, id_model, model_name,
+                  status as "status: BenchmarkStatus", score,
+                  report as "report: Value", error, train_tokens,
+                  created_at, completed_at
+           FROM benchmark_runs
+           WHERE id_model = $1 AND status = 'done' AND report IS NOT NULL
+           ORDER BY created_at DESC LIMIT 1"#,
+        id_model,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn find_by_id(pool: &PgPool, id_run: Uuid) -> Result<Option<BenchmarkRun>, sqlx::Error> {
     sqlx::query_as!(
         BenchmarkRun,

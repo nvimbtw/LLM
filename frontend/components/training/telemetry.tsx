@@ -10,6 +10,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { Progress } from "@/components/ui/progress"
+import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import {
   axisProps,
   batchRamp,
@@ -19,7 +20,6 @@ import {
   VOCAB_COLOR,
   yAxisProps,
 } from "@/components/training/chart-theme"
-import { EmbeddingGlobe } from "@/components/training/embedding-globe"
 import {
   Figure,
   FigurePlaceholder,
@@ -183,9 +183,25 @@ export interface TelemetryProps {
   // The run's curriculum stages (empty for a plain single-pass run), for the hero's
   // stage indicator + segmented curriculum progress bar.
   curriculum: CurriculumStage[]
-  // Per-report 3-D embedding projections — the hero's small spinning globe. Empty
-  // until the first diagnostics sample lands.
-  emb3Frames: [number, number, number][][]
+}
+
+/**
+ * Which mark the hero corner shows for a run's phase.
+ *
+ * Deliberately not one throbber mode per `RunPhase`: the mark says what the GPU is
+ * doing, and phase 1 (building a dataset) is not training however the run labels
+ * it. A finished run keeps the mark rather than dropping it, at rest — an empty
+ * corner where something was reads as a component that failed to render.
+ */
+function phaseMode(status: RunPhase | null): ThrobberMode {
+  switch (status) {
+    case "tokenizing":
+      return "loading"
+    case "training":
+      return "training"
+    default:
+      return "idle"
+  }
 }
 
 // The main column's live telemetry: a stat run pinned at the top, a thin progress
@@ -201,7 +217,6 @@ export function Telemetry({
   vocabSeries,
   batchSeries,
   curriculum,
-  emb3Frames,
 }: TelemetryProps) {
   const tokenizing = status === "tokenizing"
   // The training figure is the hero from the moment training starts through done.
@@ -223,7 +238,12 @@ export function Telemetry({
       ]
     : isSft
       ? [
-          { label: "Conversations", value: compact(tokenize.conversations) },
+          {
+            label: "Conversations",
+            // KTO names the same count `examples`; both are "how many of the
+            // things this mode trains on did phase 1 find".
+            value: compact(tokenize.conversations ?? tokenize.examples),
+          },
           { label: "Total tokens", value: compact(tokenize.total_tokens) },
           { label: "Trainable", value: compact(tokenize.trainable_tokens) },
         ]
@@ -313,23 +333,22 @@ export function Telemetry({
     [epochs, epochColor]
   )
 
-  // The hero's spinning embedding globe: only once training is underway and the
-  // first projection has landed, and given the horizontal room beside the stat run.
-  const showGlobe = trainPhase && (emb3Frames.at(-1)?.length ?? 0) >= 2
-
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0 flex-1">
           <StatRun stats={stats} />
         </div>
-        {showGlobe && (
-          <EmbeddingGlobe
-            frames={emb3Frames}
-            variant="mini"
-            className="hidden size-24 shrink-0 self-start sm:block"
-          />
-        )}
+        {/* The site's own mark, where a mini copy of the embedding globe used to
+            sit. The globe is a *figure* — it shows the token cloud's principal
+            axes — and up here, at 96px with no axes or caption, it read as
+            decoration while the real one (with its explanation) sits in the
+            diagnostics panel below. The throbber says the one thing this corner
+            should: which phase the run is in, and that it is still moving. */}
+        <Throbber
+          mode={phaseMode(status)}
+          className="hidden self-start sm:block"
+        />
       </div>
 
       <div className="space-y-1.5">

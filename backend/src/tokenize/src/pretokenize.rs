@@ -44,6 +44,13 @@ pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     // instead, so the model only has to learn the two clean markers.
     ("<|thinking|>", '\u{E02B}'),
     ("<|/thinking|>", '\u{E02C}'),
+    // Callout and reply-reference, rendered by the frontend (lib/message-parser.ts)
+    // ahead of any model emitting them. `<|reply|>`'s content is a message id, not
+    // prose — see `synth::NOT_REPLY_MARKUP` for why generated data stays off it.
+    ("<|warn|>", '\u{E02D}'),
+    ("<|/warn|>", '\u{E02E}'),
+    ("<|reply|>", '\u{E02F}'),
+    ("<|/reply|>", '\u{E030}'),
 ];
 
 pub fn lookup_special(ch: char) -> Option<&'static str> {
@@ -53,14 +60,36 @@ pub fn lookup_special(ch: char) -> Option<&'static str> {
         .map(|&(s, _)| s)
 }
 
-/// How many reserved special-token ids exist. The vocabulary is laid out as
-/// `[0,256)` raw bytes, `[256, 256+NUM_SPECIAL)` the special tokens (this block),
-/// then BPE merges above that (see `bpe::MERGE_BASE`). Reserving a dedicated,
-/// corpus-independent id per special token means `<|assistant|>`, `<|par|>`, … are
-/// each a *single* token with their own trainable embedding — instead of being
-/// shredded into the byte triple `[0xEE,0x80,0xNN]` that every marker used to
-/// share, which the model couldn't tell apart or learn cleanly.
+/// How many special tokens are actually defined. The vocabulary is laid out as
+/// `[0,256)` raw bytes, `[256, 256+SPECIAL_BLOCK)` the reserved special-token
+/// block, then BPE merges above that (see `bpe::MERGE_BASE`). Reserving a
+/// dedicated, corpus-independent id per special token means `<|assistant|>`,
+/// `<|par|>`, … are each a *single* token with their own trainable embedding —
+/// instead of being shredded into the byte triple `[0xEE,0x80,0xNN]` that every
+/// marker used to share, which the model couldn't tell apart or learn cleanly.
 pub const NUM_SPECIAL: usize = SPECIAL_TOKENS.len();
+
+/// Size of the reserved id block, which is deliberately larger than
+/// `NUM_SPECIAL` and **fixed**.
+///
+/// Merge ids are absolute and are baked into every saved `merges.bin`, so if the
+/// block were sized to `NUM_SPECIAL` then adding one marker would shift
+/// `MERGE_BASE` and renumber every learned merge — silently reinterpreting every
+/// existing tokenizer and model against the new layout (the first merges of an
+/// old `merges.bin` would decode as the newly added markers). Padding the block
+/// means a new marker takes the next free slot and nothing below it moves, so
+/// growing the vocabulary no longer invalidates trained models.
+///
+/// Slots between `NUM_SPECIAL` and here are unallocated: `special_char_from_id`
+/// returns `None` for them and nothing emits them, so they cost one embedding row
+/// each and no correctness.
+pub const SPECIAL_BLOCK: usize = 64;
+
+// A marker past the block would collide with merge id space, which is exactly the
+// renumbering this constant exists to prevent — so it must fail the build, not
+// corrupt a corpus. Raising SPECIAL_BLOCK is itself a vocabulary change: it moves
+// MERGE_BASE and so needs a fresh tokenizer and a re-pretrain.
+const _: () = assert!(NUM_SPECIAL <= SPECIAL_BLOCK);
 
 /// The reserved id for a special token's PUA char, or `None` for ordinary chars.
 /// Special token `i` (in `SPECIAL_TOKENS` order) owns id `256 + i`.
@@ -561,5 +590,50 @@ mod tests {
         assert!(combined.contains("options"), "reasoning text lost");
         // The bracket structure must not leak through as literal characters.
         assert!(!combined.contains("<|thinking"), "wrapper leaked as text");
+    }
+
+    // -----------------------------------------------------------------------
+    // The reserved block
+    // -----------------------------------------------------------------------
+
+    // The property the padding exists to buy: every marker's id sits inside the
+    // block, so merge ids (which start at its end) never have to move to make
+    // room for a new one.
+    #[test]
+    fn test_every_special_id_fits_inside_the_reserved_block() {
+        for &(name, pua) in SPECIAL_TOKENS {
+            let id = special_id(pua).expect("marker has no reserved id");
+            assert!(
+                (256..256 + SPECIAL_BLOCK as u32).contains(&id),
+                "{name} at id {id} is outside the reserved block",
+            );
+        }
+        assert!(NUM_SPECIAL <= SPECIAL_BLOCK, "more markers than slots");
+    }
+
+    // The slack between the markers and the end of the block is unallocated, not
+    // a second marker table: an id in it must not decode as some other marker.
+    #[test]
+    fn test_unallocated_block_slots_decode_to_nothing() {
+        for i in NUM_SPECIAL..SPECIAL_BLOCK {
+            let id = 256 + i as u32;
+            assert_eq!(special_char_from_id(id), None, "id {id} decoded as a marker");
+        }
+    }
+
+    #[test]
+    fn test_warn_and_reply_markers_are_protected() {
+        let words = pre_tokenize_str("<|warn|>mind this<|/warn|><|reply|>abc<|/reply|>");
+        let combined: String = words.join("");
+        for marker in ["<|warn|>", "<|/warn|>", "<|reply|>", "<|/reply|>"] {
+            let pua = SPECIAL_TOKENS
+                .iter()
+                .find(|&&(name, _)| name == marker)
+                .map(|&(_, pua)| pua)
+                .expect("marker missing from the vocabulary");
+            assert!(combined.contains(pua), "{marker} was not protected");
+        }
+        assert!(combined.contains("mind"), "callout text lost");
+        assert!(!combined.contains("<|warn"), "wrapper leaked as text");
     }
 }

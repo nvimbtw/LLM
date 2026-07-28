@@ -7,7 +7,7 @@ export default function ModelsPage() {
     <PageShell>
       <PageHeader
         title="Models"
-        description="Every model available for your conversations, by family."
+        description="Every model available for your conversations."
       />
       <ModelsGrid />
     </PageShell>

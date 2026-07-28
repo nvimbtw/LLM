@@ -103,6 +103,67 @@ the paths that remembered to ask (chat never did), and forgotten across a restar
 `train_worker.rs` holds the training-specific half (the two-phase run and its
 telemetry) — it was `jobs.rs` before scheduling moved out of it.
 
+## Corpus ingestion (streaming)
+
+`build_dataset` streams. Peak memory is **constant in corpus size**, measured at
+~1.1 GB whether the corpus is 10 MB or 150 MB, because the two phases are separated:
+
+1. **Learn the merges from a bounded sample.** `plan_bpe_sample` takes
+   `BPE_SAMPLE_BYTES` (16 MiB) stratified **equally per dataset**, not
+   proportionally — proportional would give a large web-text dataset ~99% of the
+   budget and leave an early-curriculum dataset tokenizing at near byte level.
+   `bpe::train`'s peak runs ~50-70x what it is handed (its pair index is ~16 B per
+   input byte and is never compacted), so this constant is the memory lever.
+2. **Stream-encode everything** through one reused `bpe::Encoder`, in ~4 MiB chunks,
+   into a `bpe::CorpusWriter`.
+
+**Chunks cut only on newlines, and that is exact, not approximate.**
+`replace_special_characters` maps `'\n'` to `'Ċ'` and `split_punctuation` splits on
+it, so a newline is already a hard pretoken boundary — chunked encoding is
+byte-identical to encoding a file whole. `bpe::tests::test_chunking_at_newlines_is_seam_free`
+is the guard; if it ever fails the design is invalid. A file with no newline inside
+`CHUNK_MAX_BYTES` has no safe cut point and is refused by name.
+
+Builds are cancellable between chunks and finalize atomically: corpus, merges and
+segments are written to `*.partial` and renamed, so a cancelled or failed build
+leaves the previous dataset untouched.
+
+**Never train on `bpe::train`'s returned corpus.** It applies each merge corpus-wide
+before the next, so it produces a segmentation `Encoder` cannot reproduce — ~33%
+fewer tokens on a repetitive fixture, containing ids inference can never emit. The
+old pipeline saved that corpus while inference used `Encoder`, so models were
+trained and served on different tokenizations. `build_dataset` now discards it and
+encodes with `Encoder`, which is why token counts differ from pre-streaming builds.
+
+## Vocabulary layout
+
+Ids are laid out as `[0,256)` raw bytes, then a **fixed-size reserved block** of
+`pretokenize::SPECIAL_BLOCK` (64) slots for the protected markers, then BPE
+merges from `bpe::MERGE_BASE` upward. Only the first `NUM_SPECIAL` slots are
+allocated; the rest are padding, and `special_char_from_id` returns `None` for
+them.
+
+The block is padded rather than sized to the marker count because **merge ids are
+absolute and are baked into every saved `merges.bin`**. Keying `MERGE_BASE` to
+`NUM_SPECIAL` meant adding one marker shifted every learned merge id, silently
+reinterpreting every tokenizer and model already on disk (an old `merges.bin`'s
+first merges would decode as the newly added markers). With the padding, a new
+marker takes the next free slot and nothing below it moves.
+
+Adding a marker to `SPECIAL_TOKENS` is therefore now safe for existing models.
+Raising `SPECIAL_BLOCK` is **not** — it moves `MERGE_BASE` and needs a fresh
+tokenizer and a re-pretrain. A marker count past the block fails the build via a
+`const` assert rather than corrupting a corpus.
+
+**Corpus files are `u16`.** `corpus.bin` and its SFT/KTO siblings carry an 8-byte
+header (`LLMC`, version, element width) followed by little-endian `u16` ids, and
+the corpus stays `u16` in memory through the training loop — halving both the file
+and the resident `Vec` on a machine where that is the binding constraint. Ids are
+widened to `u32` one chunk at a time at the step boundary, so `train_step` and the
+CUDA path are unchanged. `max_vocab` is clamped to `bpe::MAX_VOCAB` (65,536), and
+`CorpusWriter` rejects an out-of-range id rather than truncating it. A corpus
+written before the header fails to load with a message telling you to rebuild.
+
 ## Training modes (pretrain vs SFT)
 
 A run has a `mode` (`TrainConfig.mode` in `training.rs`): **pretrain** (default) or
@@ -133,6 +194,52 @@ token — from the first token after an `<|assistant|>` marker through the closi
 scaffold, cross-example boundaries). Masked-out positions contribute no loss and no
 gradient.
 
+**The chat split.** `raw/sft/*.jsonl` is one set serving three jobs, partitioned by
+`training::chat_destination` — a hash of each conversation's *content*, so the
+split is idempotent and adding conversations never re-partitions the existing ones:
+
+- **Pretrain (50%)** — rendered through `chat_template::render_conversation` into
+  `datasets/chat/`, one file per conversation, **by `build_dataset` itself at the
+  start of every run**. `Chat` is offered in the curriculum picker as a *virtual*
+  dataset (`training::CHAT_DATASET`); no folder under `uploads/` backs it, and
+  `list_datasets` counts it straight from `raw/sft/`. Place it as the **last
+  stage** so the chat data is annealed in rather than mixed evenly. This is what
+  stops the marker embeddings reaching SFT at random init.
+- **SFT (35%)** — what `build_sft_dataset` trains on. It filters `raw/sft/` itself.
+- **Eval (15%)** — held back from both. `llm::eval::chat` scores
+  `eval/chat/*.jsonl` when a set is installed there; nothing writes it yet.
+
+**A run derives its own inputs.** The chat documents are rendered per run for the
+same reason the tokenizer and the corpus are built per run: a training run is
+self-contained, and derived data that has to be refreshed by hand goes stale
+silently. There is deliberately no endpoint or script to "prepare" the chat data —
+add conversations to `raw/sft/`, start a run, and it uses them. This is also why
+they land in `datasets/` and not in `uploads/`, which holds only what a human put
+there.
+
+Changing the share constants re-partitions the set and moves conversations across
+the train/eval boundary, which invalidates chat-metric comparability with older
+runs. It is not a tuning knob.
+
+**Prose replay.** `build_sft_dataset` also mixes in prose from the base model's
+pretraining corpus, fully masked in, at `REPLAY_TOKENS_PER_CHAT_TOKEN` (1.0 — half
+the gradient signal). Without it a fine-tune on a few hundred conversations has
+nothing anchoring it to prose and trades language ability for the fine-tune's
+register. Replay is **skipped** (and `replay_tokens` reports 0) when
+`corpus.bin`'s tokenizer is not byte-identical to the base model's `merges.bin` —
+its ids would mean something else, and training on them is silent corruption.
+
+**Untrained marker warm-start.** `DatasetStats::special_ids_seen` records which
+special ids a corpus contained; a fine-tune's stats record the union of its own
+corpus and its base's, so the record composes down a pretrain → SFT → KTO chain.
+`training::untrained_marker_ids` diffs that against the fine-tune corpus and hands
+the result to `llm::train::warm_start_embeddings`, which resets exactly those rows
+to the table mean. The llm crate owns no policy here — "never trained" is not
+recoverable from a weight value, only from a record made at pretrain time. A base
+with no record falls back to the chat scaffold, matching the old behaviour. Once
+the chat data is seeded into pretraining this should reset **zero** rows; a
+non-zero count in the log means the corpora drifted or a marker was added.
+
 **SFT dataset layout** (all under `data/`):
 - Input: `raw/sft/*.jsonl` — one conversation per line,
   `{"system"?: string, "turns": [{"role": "user"|"assistant", "text": string}, …]}`,
@@ -142,6 +249,13 @@ gradient.
   `datasets/sft_corpus.bin` (flat little-endian `u32` token ids, same format as
   `corpus.bin`) and `datasets/sft_mask.bin` (one `u8` per token, `1`=train /
   `0`=ignore) — the two are aligned 1:1 and length-checked before training.
+  Alongside them, `datasets/sft_segments.json` records one `{start, len}` span
+  per conversation (exclusive of the `<|endoftext|>` between them), which is what
+  lets `run_sft_training` hand `sft_train` a `DataPlan` that **reshuffles the
+  conversations every epoch** — the SFT counterpart of `segments.json`. SFT always
+  shuffles: there is no curriculum order to preserve, and `cfg.shuffle` is a
+  pretrain knob. A dataset built before the sidecar existed falls back to the
+  whole corpus in built order.
 
 ## Mixed-precision (f32 master weights)
 

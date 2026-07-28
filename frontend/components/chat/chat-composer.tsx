@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowUp } from "lucide-react"
+import { ArrowUp, Square } from "lucide-react"
 import { EditorContent, useEditor } from "@tiptap/react"
 import { Extension } from "@tiptap/core"
 import StarterKit from "@tiptap/starter-kit"
@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
 import { matchStandaloneCommand, runSlashCommand } from "@/lib/commands"
 import { useSettings } from "@/components/settings/settings-provider"
-import { Throbber } from "@/components/ui/throbber"
 import { ModelSelector } from "./model-selector"
 
 // Tab / Shift+Tab indent / outdent list items. Enter and Shift+Enter are
@@ -167,18 +166,11 @@ export function ChatComposer({
           disabled={disabled ? !onCancel : !canSend}
           onClick={disabled ? onCancel : submit}
         >
-          {disabled ? (
-            // The one place the rule can't span a real width. At button size the
-            // carriage still reads as motion, and `accent="currentColor"` keeps it
-            // visible against the primary fill.
-            <Throbber
-              mode="thinking"
-              className="h-4 w-4 text-primary-foreground"
-              accent="currentColor"
-            />
-          ) : (
-            <ArrowUp />
-          )}
+          {/* A stop glyph rather than a mark of activity: while a turn is in
+              flight this button *is* the way to stop it, and its own label says so.
+              What the model is doing is said once, by the throbber in the thread —
+              it does not also need saying at 32px inside a control. */}
+          {disabled ? <Square className="fill-current" /> : <ArrowUp />}
         </Button>
       </div>
     </div>

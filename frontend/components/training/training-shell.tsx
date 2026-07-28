@@ -2,7 +2,6 @@
 
 import * as React from "react"
 
-import { Throbber } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 import type { RunPhase, TrainMode } from "@/lib/training"
 
@@ -144,17 +143,6 @@ export function TrainingShell({
             status={status}
             mode={mode}
             pretrainDone={pretrainDone}
-          />
-          {/* Beside the phase, where the eye already is to find out what's
-              happening. The mark is a fixed size, so a run starting doesn't reflow
-              the masthead. */}
-          <Throbber
-            mode={
-              status === "tokenizing" || status === "training"
-                ? "training"
-                : "idle"
-            }
-            className="h-5"
           />
           {primaryAction}
         </div>

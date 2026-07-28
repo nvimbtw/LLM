@@ -50,3 +50,9 @@ async fn get_corpus(_admin: AdminUser, query: web::Query<CorpusQuery>) -> impl R
         }
     }
 }
+
+// There is deliberately no endpoint to prepare the chat data for training. A
+// pretrain renders its own share of the conversations when it starts
+// (`training::build_dataset`), so the corpus is always derived from the
+// conversations as they are now — the same way the run derives its tokenizer and
+// its embeddings. Nothing to trigger, nothing to forget.

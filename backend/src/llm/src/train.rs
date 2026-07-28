@@ -149,11 +149,7 @@ pub fn train(
     on_progress: ProgressCallback,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<bool, io::Error> {
-    let corpus_bytes = fs::read(corpus_path)?;
-    let corpus: Vec<u32> = corpus_bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let corpus = tokenize::bpe::load_corpus(&corpus_path.to_string_lossy())?;
 
     let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
     let vocab = tokenize::bpe::vocab_size(merges.len());
@@ -209,11 +205,7 @@ pub fn continue_train(
     let layers = transformer.layers;
     let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
-    let corpus_bytes = fs::read(corpus_path)?;
-    let corpus: Vec<u32> = corpus_bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let corpus = tokenize::bpe::load_corpus(&corpus_path.to_string_lossy())?;
 
     if let Some(cp_dir) = checkpoints_dir {
         fs::create_dir_all(cp_dir)?;
@@ -238,44 +230,37 @@ pub fn continue_train(
     )
 }
 
-// The chat-scaffold markers. The chat template (chat_template.rs) is the *only*
-// thing that emits these, so a prose / document / TinyStories pretrain corpus
-// never contains them — their input embeddings reach SFT still at random init.
-const SCAFFOLD_MARKERS: [&str; 6] = [
-    "<|user|>",
-    "<|/user|>",
-    "<|assistant|>",
-    "<|/assistant|>",
-    "<|system|>",
-    "<|/system|>",
-];
-
-/// Warm-start the chat-scaffold input embeddings before SFT.
+/// Warm-start the input embeddings of `ids` before SFT, returning how many rows
+/// were reset.
 ///
-/// Pretraining is prose + document markup + TinyStories; the chat scaffold
-/// (`<|user|>`/`<|assistant|>`/`<|system|>` and their closers) is introduced
-/// only at SFT, so those six rows are still at random Glorot init and inject
-/// noise the instant SFT feeds them — destabilizing the shared trunk and, at the
-/// usual SFT LR, wrecking the pretrained weights (the "SFT turns coherent output
-/// into gibberish" failure). Reset just those rows to the mean embedding (a
-/// "typical token" vector), the standard added-token initialization, so SFT
-/// starts from a sane point. Returns the number of rows reset.
+/// A marker absent from the pretrain corpus reaches SFT with its embedding still
+/// at random Glorot init, and injects noise into the shared trunk the instant SFT
+/// feeds it — at the usual SFT LR, wrecking the pretrained weights (the "SFT turns
+/// coherent output into gibberish" failure). Resetting the row to the mean
+/// embedding (a "typical token" vector) is the standard added-token
+/// initialization, so the fine-tune starts from a sane point instead of noise.
 ///
-/// This targets a **fixed, tiny id set derived from the tokenizer** — NOT a
-/// weight heuristic. An earlier version tried to *detect* untrained rows by "all
-/// components within the init bound `sqrt(6/(d+vocab))`", but on a small model
-/// that bound is ~0.03 and around half of all legitimately-trained-but-small
-/// embeddings (rare bytes, infrequent merges, lightly-used markup) never cross
-/// it — so it reset ~half the vocabulary onto one mean vector and *caused* the
-/// gibberish it was meant to prevent. "Never trained" is not recoverable from a
-/// weight value; only the scaffold markers are knowably absent from a prose
-/// pretrain, so only they are touched. Ids come from `encode` (special tokens
-/// are atomic, so the merge list is irrelevant — pass an empty one), which stays
-/// correct if `SPECIAL_TOKENS` is ever reordered.
-fn warm_start_scaffold_embeddings(model: &mut Model) -> usize {
+/// **The caller supplies the ids and owns the policy.** This deliberately does not
+/// decide which rows are untrained, because that is not decidable here. An earlier
+/// version tried to *detect* untrained rows by "all components within the init
+/// bound `sqrt(6/(d+vocab))`", but on a small model that bound is ~0.03 and around
+/// half of all legitimately-trained-but-small embeddings (rare bytes, infrequent
+/// merges, lightly-used markup) never cross it — so it reset ~half the vocabulary
+/// onto one mean vector and *caused* the gibberish it was meant to prevent. A
+/// weight value does not carry its own history; only a record made at pretrain
+/// time does (`DatasetStats::special_ids_seen`), and that record lives in the
+/// backend, above this crate.
+///
+/// Ids at or past the vocabulary are skipped rather than rejected: a mismatched
+/// record should not fail a run that is otherwise fine.
+///
+/// Once the pretrain corpus contains the chat markers, the correct outcome here is
+/// **zero** — the caller logs that, so a non-zero count is a signal that the
+/// corpora drifted or a marker was added, not routine noise.
+pub fn warm_start_embeddings(model: &mut Model, ids: &[u32]) -> usize {
     let vocab = model.embedding_table.len();
     let d = model.embedding_table.first().map_or(0, |r| r.len());
-    if vocab == 0 || d == 0 {
+    if vocab == 0 || d == 0 || ids.is_empty() {
         return 0;
     }
 
@@ -291,13 +276,10 @@ fn warm_start_scaffold_embeddings(model: &mut Model) -> usize {
     }
 
     let mut reset = 0usize;
-    for marker in SCAFFOLD_MARKERS {
-        // A lone special marker encodes to exactly its one reserved id.
-        if let Some(&id) = tokenize::bpe::encode(marker, &[]).first() {
-            if (id as usize) < vocab {
-                model.embedding_table[id as usize].clone_from(&mean);
-                reset += 1;
-            }
+    for &id in ids {
+        if (id as usize) < vocab {
+            model.embedding_table[id as usize].clone_from(&mean);
+            reset += 1;
         }
     }
     reset
@@ -317,18 +299,29 @@ fn warm_start_scaffold_embeddings(model: &mut Model) -> usize {
 /// they drift). The base `merges.bin` is copied into `out_model_dir` so the
 /// fine-tuned model loads standalone at inference time.
 ///
-/// `lr` and `epochs` are caller-supplied on purpose: SFT typically wants a
-/// *lower* LR and *fewer* epochs than pretraining (a base model is already near
-/// a good minimum). Good starting points are ~1e-4 to 5e-5 for a handful of
-/// epochs — an order of magnitude below a from-scratch run. Returns `Ok(true)`
-/// if training was cancelled, `Ok(false)` if it ran to completion.
+/// `lr` and the plan's epoch count are caller-supplied on purpose: SFT typically
+/// wants a *lower* LR and *fewer* epochs than pretraining (a base model is
+/// already near a good minimum). Good starting points are ~1e-4 to 5e-5 for a
+/// handful of epochs — an order of magnitude below a from-scratch run. Returns
+/// `Ok(true)` if training was cancelled, `Ok(false)` if it ran to completion.
+///
+/// `plan` carries one document per *conversation* when the dataset builder
+/// recorded them, so the conversations are reordered every epoch exactly the way
+/// pretraining reorders its source documents. A dataset built without those spans
+/// (or a caller with nothing to say about order) passes `DataPlan::whole_corpus`
+/// and gets the old fixed-order pass.
 #[allow(clippy::too_many_arguments)]
 pub fn sft_train(
     base_model_dir: &Path,
     sft_corpus_path: &Path,
     sft_mask_path: &Path,
     out_model_dir: &Path,
-    epochs: i64,
+    plan: DataPlan,
+    // Embedding rows to warm-start before the first step — the markers this
+    // dataset uses that the base model's pretrain corpus never contained. Empty is
+    // the healthy case once the two corpora share a marker vocabulary; see
+    // `warm_start_embeddings` for why the caller decides this and not us.
+    warm_start_ids: &[u32],
     lr: f32,
     checkpoints_dir: Option<&Path>,
     on_progress: ProgressCallback,
@@ -338,11 +331,7 @@ pub fn sft_train(
     let ctx_window = transformer.positional_table.len() as i64;
     let layers = transformer.layers;
 
-    let corpus_bytes = fs::read(sft_corpus_path)?;
-    let corpus: Vec<u32> = corpus_bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let corpus = tokenize::bpe::load_corpus(&sft_corpus_path.to_string_lossy())?;
     let mask: Vec<u8> = fs::read(sft_mask_path)?;
 
     // The mask is aligned 1:1 with the corpus tokens; a mismatch means the
@@ -359,11 +348,15 @@ pub fn sft_train(
         ));
     }
 
-    // Warm-start the chat-scaffold input embeddings (absent from a prose pretrain)
-    // BEFORE the workspace uploads weights to the GPU.
-    let reset = warm_start_scaffold_embeddings(&mut transformer);
+    // Warm-start the untrained marker embeddings BEFORE the workspace uploads
+    // weights to the GPU — after that the rows are on the device and a CPU-side
+    // edit would be silently ignored.
+    let reset = warm_start_embeddings(&mut transformer, warm_start_ids);
     if reset > 0 {
-        println!("SFT warm-start: reset {reset} chat-scaffold input embedding(s) to the table mean");
+        println!(
+            "SFT warm-start: reset {reset} input embedding(s) to the table mean — \
+             this dataset uses markers the base model's pretrain corpus never contained"
+        );
     }
 
     let mut ws = Workspace::new(&transformer, ctx_window as usize);
@@ -380,9 +373,6 @@ pub fn sft_train(
         fs::create_dir_all(cp_dir)?;
     }
 
-    // SFT trains the whole masked corpus in built order (conversations already
-    // carry <|endoftext|> boundaries); no per-epoch shuffle this pass.
-    let plan = DataPlan::whole_corpus(epochs);
     run_training_loop(
         &mut transformer,
         &mut ws,
@@ -428,6 +418,10 @@ pub fn kto_train(
     index_path: &Path,
     out_model_dir: &Path,
     epochs: i64,
+    // As `sft_train`'s: the markers this dataset uses that the base never trained.
+    // A KTO run on top of an SFT model normally supplies nothing, since the SFT
+    // trained them; one started from a bare pretrain still meets them cold.
+    warm_start_ids: &[u32],
     lr: f32,
     beta: f64,
     checkpoints_dir: Option<&Path>,
@@ -439,11 +433,7 @@ pub fn kto_train(
     let ctx_window = transformer.positional_table.len() as i64;
     let layers = transformer.layers;
 
-    let corpus_bytes = fs::read(corpus_path)?;
-    let corpus: Vec<u32> = corpus_bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let corpus = tokenize::bpe::load_corpus(&corpus_path.to_string_lossy())?;
     let mask: Vec<u8> = fs::read(mask_path)?;
     if corpus.len() != mask.len() {
         return Err(io::Error::new(
@@ -494,11 +484,12 @@ pub fn kto_train(
         params.lambda_undesirable,
     );
 
-    // The scaffold markers are already trained by the SFT this runs on top of, but
-    // a KTO run started from a bare pretrain would still meet them cold.
-    let reset = warm_start_scaffold_embeddings(&mut transformer);
+    let reset = warm_start_embeddings(&mut transformer, warm_start_ids);
     if reset > 0 {
-        println!("KTO warm-start: reset {reset} chat-scaffold input embedding(s) to the table mean");
+        println!(
+            "KTO warm-start: reset {reset} input embedding(s) to the table mean — \
+             this dataset uses markers the base model's corpus never contained"
+        );
     }
 
     let mut ws = Workspace::new(&transformer, ctx_window as usize);
@@ -541,12 +532,17 @@ pub fn kto_train(
 
         for idx in order {
             let example = index.examples[idx];
-            let span = &corpus[example.offset..example.offset + example.len];
+            // Widened per example for the same reason `train_epoch` widens per
+            // chunk: the corpus is u16 in memory, the step APIs speak u32.
+            let span: Vec<u32> = corpus[example.offset..example.offset + example.len]
+                .iter()
+                .map(|&t| t as u32)
+                .collect();
             let mask_span = &mask[example.offset..example.offset + example.len];
 
             let step = pollster::block_on(transformer.train_step_kto(
                 &mut ws,
-                span,
+                &span,
                 mask_span,
                 layers as usize,
                 example.ref_logprob,
@@ -747,7 +743,7 @@ fn save_checkpoint(
 fn train_epoch(
     transformer: &mut Model,
     ws: &mut Workspace,
-    corpus: &[u32],
+    corpus: &[u16],
     // SFT loss mask aligned 1:1 with `corpus`, or `None` for plain pretraining.
     // When present, each chunk trains only on its masked-in (assistant) tokens.
     mask: Option<&[u8]>,
@@ -782,10 +778,19 @@ fn train_epoch(
 
     ws.zero_accumulators();
 
+    // The corpus is held as u16 (half the resident bytes of a multi-hundred-
+    // million-token run), but every step API speaks u32. Widening one chunk at a
+    // time into a buffer reused across the epoch keeps the saving and costs one
+    // pass over ~ctx_window elements per step, against a full forward and backward.
+    let mut chunk_ids: Vec<u32> = Vec::with_capacity(ctx_window as usize);
+
     for (chunk_idx, chunk) in corpus.chunks(ctx_window as usize).enumerate() {
         if chunk.len() < 2 {
             continue;
         }
+        chunk_ids.clear();
+        chunk_ids.extend(chunk.iter().map(|&t| t as u32));
+        let chunk = chunk_ids.as_slice();
         // Slice the mask with the SAME boundaries as the corpus chunks. Chunks
         // are contiguous and fixed-size (only the last may be shorter), so the
         // chunk's flat offset is `chunk_idx * ctx_window`.
@@ -1012,19 +1017,22 @@ fn shuffle_seeded(order: &mut [usize], seed: u64) {
 // reproduces the on-disk corpus exactly, since build baked the same separators
 // in the same places.
 fn assemble_epoch(
-    corpus: &[u32],
+    corpus: &[u16],
     mask: Option<&[u8]>,
     docs: &[DocSpan],
     order: &[usize],
     eot_id: u32,
-) -> (Vec<u32>, Option<Vec<u8>>) {
+) -> (Vec<u16>, Option<Vec<u8>>) {
     let total = stage_stream_len(docs);
     let mut out = Vec::with_capacity(total);
     let mut out_mask = mask.map(|_| Vec::with_capacity(total));
     for (i, &di) in order.iter().enumerate() {
         let d = &docs[di];
         if i > 0 {
-            out.push(eot_id);
+            // The corpus is u16 on disk and in memory; `eot_id` is carried as u32
+            // because that is the width every token API speaks. It is a reserved
+            // id far below the ceiling, so the narrowing is total.
+            out.push(eot_id as u16);
             if let Some(m) = out_mask.as_mut() {
                 m.push(0);
             }
@@ -1041,7 +1049,7 @@ fn assemble_epoch(
 fn run_training_loop(
     transformer: &mut Model,
     ws: &mut Workspace,
-    corpus: &[u32],
+    corpus: &[u16],
     // SFT loss mask aligned 1:1 with `corpus`, threaded to `train_epoch`; `None`
     // for pretraining (`train`/`continue_train`).
     mask: Option<&[u8]>,
@@ -1076,10 +1084,12 @@ fn run_training_loop(
     // these are stable regardless of per-epoch shuffling.
     // With an SFT mask the budget counts only the chunks that train something, so
     // the cosine curve and the ETA are paced against real optimizer steps rather
-    // than against forward passes that contribute nothing. A mask is only ever
-    // supplied for a whole-corpus plan — one stage, one synthetic document — where
-    // `assemble_epoch` reproduces the corpus and its mask verbatim, so counting
-    // them here is exactly what `train_epoch` will step on.
+    // than against forward passes that contribute nothing. A mask always comes with
+    // a single-stage plan, so counting over the whole mask is counting this stage.
+    // Under a per-epoch shuffle the chunk *boundaries* move, which can shift the
+    // count by a chunk or two either way — the trainable tokens themselves are a
+    // permutation, so the budget stays right to within that rounding, and both
+    // things it feeds (an LR curve and an ETA) are estimates at that resolution.
     let stage_chunks: Vec<usize> = stage_docs
         .iter()
         .map(|docs| match mask {
@@ -1387,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_start_resets_exactly_the_scaffold_rows_to_the_table_mean() {
+    fn warm_start_resets_exactly_the_named_rows_to_the_table_mean() {
         // A vocab large enough to cover the reserved special-token block. d=4.
         let d = 4usize;
         let vocab = 300usize;
@@ -1411,20 +1421,52 @@ mod tests {
         let mut model = Model::init(d as i64, vocab as i64, 4, 1, 1, 1);
         model.embedding_table = std::mem::take(&mut rows);
 
-        let reset = warm_start_scaffold_embeddings(&mut model);
-        assert_eq!(reset, SCAFFOLD_MARKERS.len(), "all six scaffold rows reset");
+        // A mix of markers the caller might name — scaffold and document markup,
+        // which is the point of the caller owning the set.
+        let markers = ["<|assistant|>", "<|/assistant|>", "<|code|>", "<|bold|>"];
+        let ids: Vec<u32> = markers
+            .iter()
+            .map(|m| tokenize::bpe::encode(m, &[])[0])
+            .collect();
 
-        // Every scaffold id now equals the table mean; a non-scaffold id doesn't.
-        for marker in SCAFFOLD_MARKERS {
-            let id = tokenize::bpe::encode(marker, &[])[0] as usize;
+        let reset = warm_start_embeddings(&mut model, &ids);
+        assert_eq!(reset, ids.len(), "every named row reset");
+
+        // Every named id now equals the table mean.
+        for (marker, &id) in markers.iter().zip(&ids) {
             for j in 0..d {
                 assert!(
-                    (model.embedding_table[id][j] - mean[j]).abs() < 1e-3,
+                    (model.embedding_table[id as usize][j] - mean[j]).abs() < 1e-3,
                     "{marker} (id {id}) not set to table mean"
                 );
             }
         }
+        // A marker that was *not* named keeps its value — the regression that
+        // matters, since over-resetting is what wrecked the model last time.
+        let untouched = tokenize::bpe::encode("<|user|>", &[])[0] as usize;
+        assert!(
+            (model.embedding_table[untouched][0] - untouched as f32).abs() < 1e-6,
+            "an unnamed marker was reset"
+        );
         // A plain byte token (id 65 = 'A') is untouched.
         assert!((model.embedding_table[65][0] - 65.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn warm_start_with_nothing_named_changes_nothing() {
+        // The healthy steady state once the pretrain corpus carries the markers:
+        // the caller names no rows and the model is passed through untouched.
+        let mut model = Model::init(4, 300, 4, 1, 1, 1);
+        let before = model.embedding_table.clone();
+        assert_eq!(warm_start_embeddings(&mut model, &[]), 0);
+        assert_eq!(model.embedding_table, before);
+    }
+
+    #[test]
+    fn warm_start_skips_ids_past_the_vocabulary() {
+        // A base model whose recorded marker set disagrees with its actual vocab
+        // should not panic a run that is otherwise fine.
+        let mut model = Model::init(4, 300, 4, 1, 1, 1);
+        assert_eq!(warm_start_embeddings(&mut model, &[299, 300, 100_000]), 1);
     }
 }

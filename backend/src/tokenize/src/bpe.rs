@@ -1,23 +1,43 @@
 use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
 use std::io;
-use std::io::Write;
+use std::io::{BufWriter, Read, Seek, Write};
 
-use crate::pretokenize::{lookup_special, special_char_from_id, special_id, NUM_SPECIAL};
+use crate::pretokenize::{lookup_special, special_char_from_id, special_id, SPECIAL_BLOCK};
 
 /// First id available to BPE merges: raw bytes fill `[0,256)` and the reserved
-/// special-token block fills `[256, 256+NUM_SPECIAL)`, so learned merges start
+/// special-token block fills `[256, 256+SPECIAL_BLOCK)`, so learned merges start
 /// here. `train` counts up from this, and `vocab_size` folds the same offset in.
-pub const MERGE_BASE: u32 = 256 + NUM_SPECIAL as u32;
+///
+/// This is keyed to the block size rather than the marker count on purpose — see
+/// `pretokenize::SPECIAL_BLOCK` for why a moving `MERGE_BASE` invalidates every
+/// tokenizer and model already on disk.
+pub const MERGE_BASE: u32 = 256 + SPECIAL_BLOCK as u32;
 
 /// Total vocabulary size for a tokenizer with `num_merges` learned merges:
-/// bytes + reserved special tokens + merges. The single source of truth for
-/// vocab sizing — every caller (model init, job metadata) routes through here so
-/// the offset can't drift between the tokenizer and the model.
+/// bytes + the reserved special-token block + merges. The single source of truth
+/// for vocab sizing — every caller (model init, job metadata) routes through here
+/// so the offset can't drift between the tokenizer and the model.
 pub fn vocab_size(num_merges: usize) -> i64 {
     MERGE_BASE as i64 + num_merges as i64
 }
 
+/// Learns a merge table, returning `(vocab_size, corpus, merges)`.
+///
+/// **Use the `merges`; do not train a model on the returned `corpus`.** The two
+/// are not the same segmentation. This applies each merge to every occurrence
+/// across the whole corpus before moving to the next, so a word can end up holding
+/// a token that greedy rank-order encoding would never build: "banana" comes out
+/// of here as one token, while `Encoder` produces `["ban", "ana"]`, because by the
+/// time the "banana" merge was learned, the pieces it joins had already been
+/// merged corpus-wide in an order encoding cannot reproduce.
+///
+/// That gap is not cosmetic — it ran ~33% on a repetitive fixture, and it points
+/// the wrong way: a corpus saved from here contains ids that inference, which goes
+/// through `Encoder`, can never emit. A model trained on it spends embedding rows
+/// on tokens it will never see and is served a different tokenization than it was
+/// trained on. Encode the corpus with `Encoder` instead, so the training text and
+/// the inference text are segmented the same way.
 pub fn train(
     pre_tokenized: Vec<Vec<char>>,
     max_vocab_size: Option<u32>,
@@ -27,7 +47,9 @@ pub fn train(
     let (mut pair_counts, mut pair_index) = count_pairs(&corpus);
     let mut heap = create_heap(pair_counts.clone());
 
-    let max = max_vocab_size.unwrap_or(32768).max(MERGE_BASE);
+    // Clamped to what `corpus.bin` can represent — an id past this would be
+    // rejected at write time, after the whole corpus had been encoded.
+    let max = max_vocab_size.unwrap_or(32768).max(MERGE_BASE).min(MAX_VOCAB);
     // Merge ids start above the reserved byte + special-token block, so a learned
     // merge can never collide with a raw byte or an atomic special-token id.
     let mut token: u32 = MERGE_BASE;
@@ -78,12 +100,16 @@ pub fn train(
     Ok((vocab, corpus, merges))
 }
 
+// Consumes the input by value and iterates it by value on purpose: taking it by
+// reference kept the whole `Vec<Vec<char>>` alive alongside the `Vec<Vec<u32>>`
+// being built, doubling the peak at the point in training where it is already
+// highest. Draining lets each word's chars be freed as it is converted.
 fn convert_to_bytes(pre_tokenized: Vec<Vec<char>>) -> Vec<Vec<u32>> {
     pre_tokenized
-        .iter()
+        .into_iter()
         .map(|word| {
-            word.iter()
-                .flat_map(|c| match special_id(*c) {
+            word.into_iter()
+                .flat_map(|c| match special_id(c) {
                     // A special token enters BPE as its atomic reserved id, not its
                     // raw bytes — since the pretokenizer isolates it into its own
                     // word it has no neighbours to pair with, so it's never merged
@@ -195,24 +221,200 @@ fn apply_merge(
 }
 
 pub fn save_merges(merges: &[((u32, u32), u32)], path: &str) -> Result<(), io::Error> {
-    let mut file = File::create(path)?;
+    let mut file = BufWriter::new(File::create(path)?);
     for ((a, b), token) in merges {
         file.write_all(&a.to_le_bytes())?;
         file.write_all(&b.to_le_bytes())?;
         file.write_all(&token.to_le_bytes())?;
     }
+    // BufWriter's Drop discards a failed flush, which would silently truncate the
+    // merge list and make every model trained against it gibberish.
+    file.flush()
+}
+
+// ── the corpus format ───────────────────────────────────────────────────────
+
+/// Marks a file as this project's token stream, so a corpus written under an
+/// older layout fails loudly instead of being read as garbage ids.
+const CORPUS_MAGIC: [u8; 4] = *b"LLMC";
+const CORPUS_VERSION: u16 = 1;
+
+/// Bytes per stored token id.
+///
+/// Two, not four: the vocabulary is `MERGE_BASE + merges`, and `max_vocab` is
+/// capped at `MAX_VOCAB` below, so every id fits in a `u16`. Halving the element
+/// width halves the corpus on disk *and* the resident `Vec` during training,
+/// which on a small machine is the difference between a run that fits and one
+/// that is killed before the first step.
+const CORPUS_WIDTH: u16 = 2;
+
+/// Header bytes preceding the ids: magic, version, element width.
+const CORPUS_HEADER_BYTES: usize = 8;
+
+/// Largest vocabulary the corpus format can represent. Callers that accept a
+/// vocabulary size from a user must reject anything above this **before**
+/// training a tokenizer, or the ids will not round-trip through `corpus.bin`.
+pub const MAX_VOCAB: u32 = u16::MAX as u32 + 1;
+
+const CORPUS_BUF_BYTES: usize = 1 << 20;
+
+/// Streams token ids into `corpus.bin`.
+///
+/// Exists because `save_corpus` needs the whole corpus in memory and issued one
+/// unbuffered 4-byte write per token — at hundreds of millions of tokens that is
+/// both a memory wall and hundreds of millions of syscalls.
+pub struct CorpusWriter {
+    file: BufWriter<File>,
+    tokens: usize,
+}
+
+impl CorpusWriter {
+    /// Truncates `path` and writes the header. One writer covers one build;
+    /// there is deliberately no append mode, which would imply resume semantics
+    /// nothing has specified.
+    pub fn create(path: &str) -> Result<CorpusWriter, io::Error> {
+        let mut file = BufWriter::with_capacity(CORPUS_BUF_BYTES, File::create(path)?);
+        file.write_all(&CORPUS_MAGIC)?;
+        file.write_all(&CORPUS_VERSION.to_le_bytes())?;
+        file.write_all(&CORPUS_WIDTH.to_le_bytes())?;
+        Ok(CorpusWriter { file, tokens: 0 })
+    }
+
+    /// Ids above `u16::MAX` are rejected rather than truncated: a silently
+    /// wrapped id is a valid-looking token pointing at the wrong embedding row,
+    /// which would surface only as a model that never learns.
+    pub fn write(&mut self, tokens: &[u32]) -> Result<(), io::Error> {
+        for &token in tokens {
+            let narrowed = u16::try_from(token).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("token id {token} exceeds the corpus format's {MAX_VOCAB}-id limit"),
+                )
+            })?;
+            self.file.write_all(&narrowed.to_le_bytes())?;
+        }
+        self.tokens += tokens.len();
+        Ok(())
+    }
+
+    /// Tokens written so far — the caller's next document `start` offset.
+    pub fn len(&self) -> usize {
+        self.tokens
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tokens == 0
+    }
+
+    /// Flushes and fsyncs, returning the total written. Explicit rather than left
+    /// to `Drop`, which cannot report a failed flush — and a corpus silently
+    /// missing its last buffer is worse than one that failed to build.
+    pub fn finish(mut self) -> Result<usize, io::Error> {
+        self.file.flush()?;
+        self.file.get_ref().sync_all()?;
+        Ok(self.tokens)
+    }
+}
+
+// Serializes a flat token-id stream in the `corpus.bin` format. Kept for callers
+// that already hold the whole corpus (the SFT/KTO datasets, which are small by
+// construction); the pretrain path streams through `CorpusWriter` instead.
+pub fn save_corpus(corpus: &[u32], path: &str) -> Result<(), io::Error> {
+    let mut writer = CorpusWriter::create(path)?;
+    writer.write(corpus)?;
+    writer.finish()?;
     Ok(())
 }
 
-// Serializes a flat token-id stream as little-endian u32s — the `corpus.bin`
-// format `llm::train` reads back. The BPE `train` returns the corpus split per
-// word (`Vec<Vec<u32>>`); the caller flattens it before saving here.
-pub fn save_corpus(corpus: &[u32], path: &str) -> Result<(), io::Error> {
-    let mut file = File::create(path)?;
-    for token in corpus {
-        file.write_all(&token.to_le_bytes())?;
+/// Reads `len` ids starting at token offset `start`, seeking rather than scanning.
+///
+/// For callers that want a handful of spans out of a corpus far too large to hold
+/// — sampling replay documents out of a pretrain corpus, say. A span running past
+/// the end of the file is truncated to what is there, so a stale `segments.json`
+/// yields short spans rather than an error.
+pub fn load_corpus_span(path: &str, start: usize, len: usize) -> Result<Vec<u16>, io::Error> {
+    let mut file = File::open(path)?;
+    let mut header = [0u8; CORPUS_HEADER_BYTES];
+    file.read_exact(&mut header)?;
+    if header[0..4] != CORPUS_MAGIC || u16::from_le_bytes([header[6], header[7]]) != CORPUS_WIDTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{path}: not a readable corpus (rebuild it)"),
+        ));
     }
-    Ok(())
+
+    let offset = CORPUS_HEADER_BYTES as u64 + (start as u64) * CORPUS_WIDTH as u64;
+    let available = file.metadata()?.len().saturating_sub(offset);
+    let take = len.min((available / CORPUS_WIDTH as u64) as usize);
+    if take == 0 {
+        return Ok(Vec::new());
+    }
+
+    file.seek(io::SeekFrom::Start(offset))?;
+    let mut bytes = vec![0u8; take * CORPUS_WIDTH as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes
+        .chunks_exact(CORPUS_WIDTH as usize)
+        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .collect())
+}
+
+/// Reads a `corpus.bin` back.
+///
+/// Returns `u16` rather than widening to `u32`, and preallocates from the file
+/// length rather than collecting, so the peak is one copy of the corpus instead
+/// of the `Vec<u8>` + `Vec<u32>` pair the old read-then-collect produced.
+/// Callers widen per chunk at the point of use.
+pub fn load_corpus(path: &str) -> Result<Vec<u16>, io::Error> {
+    let mut file = File::open(path)?;
+    let mut header = [0u8; CORPUS_HEADER_BYTES];
+    file.read_exact(&mut header).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("{path}: too short to be a corpus"))
+    })?;
+    if header[0..4] != CORPUS_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{path}: not a corpus file (or written before the u16 format — rebuild it)"),
+        ));
+    }
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    let width = u16::from_le_bytes([header[6], header[7]]);
+    if version != CORPUS_VERSION || width != CORPUS_WIDTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{path}: corpus version {version}/width {width} is not readable here"),
+        ));
+    }
+
+    let bytes = file.metadata()?.len().saturating_sub(CORPUS_HEADER_BYTES as u64);
+    let mut corpus: Vec<u16> = Vec::with_capacity((bytes / CORPUS_WIDTH as u64) as usize);
+    // Read in fixed blocks rather than slurping the file: at corpus scale the
+    // intermediate byte buffer would be as large as the result.
+    let mut block = vec![0u8; CORPUS_BUF_BYTES];
+    let mut carry: Option<u8> = None;
+    loop {
+        let read = file.read(&mut block)?;
+        if read == 0 {
+            break;
+        }
+        let mut chunk = &block[..read];
+        // A block boundary can land mid-id, so the odd byte is held over.
+        if let Some(low) = carry.take() {
+            if let Some((&high, rest)) = chunk.split_first() {
+                corpus.push(u16::from_le_bytes([low, high]));
+                chunk = rest;
+            } else {
+                carry = Some(low);
+                continue;
+            }
+        }
+        let pairs = chunk.chunks_exact(2);
+        if let [last] = pairs.remainder() {
+            carry = Some(*last);
+        }
+        corpus.extend(pairs.map(|p| u16::from_le_bytes([p[0], p[1]])));
+    }
+    Ok(corpus)
 }
 
 pub fn load_merges(path: &str) -> Result<Vec<((u32, u32), u32)>, io::Error> {
@@ -230,39 +432,67 @@ pub fn load_merges(path: &str) -> Result<Vec<((u32, u32), u32)>, io::Error> {
     Ok(merges)
 }
 
-pub fn encode(text: &str, merges: &[((u32, u32), u32)]) -> Vec<u32> {
-    let mut pair_to_token: HashMap<(u32, u32), u32> = HashMap::new();
-    for &((a, b), token) in merges {
-        pair_to_token.insert((a, b), token);
+/// A merge table indexed once for repeated encoding.
+///
+/// The free `encode` rebuilds this map from the merge slice on every call, which
+/// costs nothing for a chat prompt and dominates when encoding a corpus chunk by
+/// chunk — hence a type that holds the index across calls. Encoding is otherwise
+/// identical: `encode` is `Encoder::new(merges).encode(text)`.
+pub struct Encoder {
+    pair_to_token: HashMap<(u32, u32), u32>,
+}
+
+impl Encoder {
+    pub fn new(merges: &[((u32, u32), u32)]) -> Encoder {
+        let mut pair_to_token = HashMap::with_capacity(merges.len());
+        for &((a, b), token) in merges {
+            pair_to_token.insert((a, b), token);
+        }
+        Encoder { pair_to_token }
     }
 
-    let words = crate::pretokenize::pre_tokenize_str(text);
-    let mut result = Vec::new();
-    for word in words {
-        // The pretokenizer isolates each special token into its own word, so a
-        // one-char word that is a special PUA char maps straight to its atomic
-        // reserved id — matching exactly how `convert_to_bytes` fed it to BPE.
-        let mut chars = word.chars();
-        if let (Some(c), None) = (chars.next(), chars.next()) {
-            if let Some(id) = special_id(c) {
-                result.push(id);
-                continue;
+    /// Appends `text`'s ids to `out` **without clearing it**, so a streaming
+    /// caller reuses one buffer across chunks instead of allocating per call.
+    pub fn encode_into(&self, text: &str, out: &mut Vec<u32>) {
+        let words = crate::pretokenize::pre_tokenize_str(text);
+        let mut ids: Vec<u32> = Vec::new();
+        for word in words {
+            // The pretokenizer isolates each special token into its own word, so a
+            // one-char word that is a special PUA char maps straight to its atomic
+            // reserved id — matching exactly how `convert_to_bytes` fed it to BPE.
+            let mut chars = word.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if let Some(id) = special_id(c) {
+                    out.push(id);
+                    continue;
+                }
             }
-        }
 
-        let mut ids: Vec<u32> = word
-            .chars()
-            .flat_map(|c| {
+            ids.clear();
+            ids.extend(word.chars().flat_map(|c| {
                 let s = c.to_string();
                 s.into_bytes().into_iter().map(|b| b as u32)
-            })
-            .collect();
+            }));
+            self.merge_word(&mut ids);
+            out.extend_from_slice(&ids);
+        }
+    }
 
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.encode_into(text, &mut out);
+        out
+    }
+
+    // Repeatedly applies the lowest-id applicable merge until none is left. The
+    // lowest id is the earliest-learned merge, which is the order `train` applied
+    // them in, so the result matches what the trainer would have produced.
+    fn merge_word(&self, ids: &mut Vec<u32>) {
         loop {
             let mut best_pair: Option<(usize, u32)> = None;
             for (pos, w) in ids.windows(2).enumerate() {
                 let key = (w[0], w[1]);
-                if let Some(&token) = pair_to_token.get(&key) {
+                if let Some(&token) = self.pair_to_token.get(&key) {
                     match best_pair {
                         Some((_, best_token)) if token > best_token => {}
                         _ => best_pair = Some((pos, token)),
@@ -277,9 +507,11 @@ pub fn encode(text: &str, merges: &[((u32, u32), u32)]) -> Vec<u32> {
                 _ => break,
             }
         }
-        result.extend(ids);
     }
-    result
+}
+
+pub fn encode(text: &str, merges: &[((u32, u32), u32)]) -> Vec<u32> {
+    Encoder::new(merges).encode(text)
 }
 
 pub fn decode(ids: &[u32], merges: &[((u32, u32), u32)]) -> String {
@@ -748,23 +980,127 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_save_corpus_little_endian_layout() {
-        // 97 -> [0x61,0,0,0], 256 -> [0,1,0,0]: same flat LE-u32 layout
-        // `llm::train` decodes via chunks_exact(4) + u32::from_le_bytes.
+        // Header, then 97 -> [0x61,0], 256 -> [0,1]: flat LE-u16 ids.
         let corpus = vec![97u32, 256u32];
         let path = std::env::temp_dir().join("test_bpe_corpus.bin");
         let _ = std::fs::remove_file(&path);
 
         save_corpus(&corpus, path.to_str().unwrap()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let roundtrip: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
 
-        assert_eq!(bytes, vec![0x61, 0, 0, 0, 0, 1, 0, 0]);
-        assert_eq!(roundtrip, corpus);
+        assert_eq!(&bytes[0..4], b"LLMC");
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), CORPUS_VERSION);
+        assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), CORPUS_WIDTH);
+        assert_eq!(&bytes[CORPUS_HEADER_BYTES..], &[0x61, 0, 0, 1]);
+        assert_eq!(load_corpus(path.to_str().unwrap()).unwrap(), vec![97u16, 256u16]);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // -----------------------------------------------------------------------
+    // the u16 corpus format
+    // -----------------------------------------------------------------------
+
+    // The write path must survive a block boundary landing mid-id: `load_corpus`
+    // reads in fixed blocks, and an id straddling two of them is the one case the
+    // carry logic exists for. A corpus longer than the read buffer forces it.
+    #[test]
+    fn test_corpus_roundtrip_across_read_blocks() {
+        let corpus: Vec<u32> = (0..CORPUS_BUF_BYTES as u32).map(|i| i % 30000).collect();
+        let path = std::env::temp_dir().join(format!("test_corpus_blocks_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut writer = CorpusWriter::create(path.to_str().unwrap()).unwrap();
+        // Written in odd-sized batches so the buffer boundaries don't align with
+        // the batches either.
+        for batch in corpus.chunks(777) {
+            writer.write(batch).unwrap();
+        }
+        assert_eq!(writer.len(), corpus.len());
+        assert_eq!(writer.finish().unwrap(), corpus.len());
+
+        let read = load_corpus(path.to_str().unwrap()).unwrap();
+        let expected: Vec<u16> = corpus.iter().map(|&t| t as u16).collect();
+        assert_eq!(read, expected);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // A corpus written before the header existed must fail loudly. Read as u16 it
+    // would otherwise decode to plausible-looking ids and train a model on noise.
+    #[test]
+    fn test_load_corpus_rejects_a_headerless_file() {
+        let path = std::env::temp_dir().join(format!("test_corpus_old_{}.bin", std::process::id()));
+        std::fs::write(&path, [0x61u8, 0, 0, 0, 0, 1, 0, 0]).unwrap();
+
+        let err = load_corpus(path.to_str().unwrap()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("rebuild"), "unhelpful message: {err}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_corpus_writer_rejects_an_unrepresentable_id() {
+        let path = std::env::temp_dir().join(format!("test_corpus_wide_{}.bin", std::process::id()));
+        let mut writer = CorpusWriter::create(path.to_str().unwrap()).unwrap();
+
+        let err = writer.write(&[MAX_VOCAB]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // -----------------------------------------------------------------------
+    // Encoder
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_encoder_matches_the_free_encode() {
+        let merges = vec![((97u32, 97u32), MERGE_BASE), ((MERGE_BASE, 97u32), MERGE_BASE + 1)];
+        let encoder = Encoder::new(&merges);
+        for text in ["aaaa bb", "<|assistant|>aaa", "", "a\nb", "don't"] {
+            assert_eq!(encoder.encode(text), encode(text, &merges), "differed on {text:?}");
+        }
+    }
+
+    #[test]
+    fn test_encode_into_appends_rather_than_clearing() {
+        let merges: Vec<((u32, u32), u32)> = Vec::new();
+        let encoder = Encoder::new(&merges);
+        let mut out = vec![999u32];
+        encoder.encode_into("a", &mut out);
+        encoder.encode_into("b", &mut out);
+        assert_eq!(out[0], 999);
+        assert_eq!(out, [vec![999u32], encoder.encode("a"), encoder.encode("b")].concat());
+    }
+
+    // The property the streaming corpus build rests on: a newline is a hard
+    // pretoken boundary (`split_punctuation` splits on 'Ċ'), so cutting the input
+    // there and encoding the halves separately must equal encoding it whole. If
+    // this ever fails, chunked ingestion is silently producing a different corpus.
+    #[test]
+    fn test_chunking_at_newlines_is_seam_free() {
+        let merges = vec![
+            ((97u32, 97u32), MERGE_BASE),
+            ((104u32, 101u32), MERGE_BASE + 1),
+            ((MERGE_BASE + 1, 108u32), MERGE_BASE + 2),
+        ];
+        let encoder = Encoder::new(&merges);
+        let text = "hello there\naaa world.\n<|par|>a quote — “héllo”\nend\ndon't stop\n";
+        let whole = encoder.encode(text);
+
+        let mut cuts = 0;
+        for (i, c) in text.char_indices() {
+            if c != '\n' {
+                continue;
+            }
+            let split = i + 1;
+            let joined = [encoder.encode(&text[..split]), encoder.encode(&text[split..])].concat();
+            assert_eq!(joined, whole, "seam at byte {split} changed the tokens");
+            cuts += 1;
+        }
+        assert!(cuts >= 4, "fixture must exercise several newlines, got {cuts}");
     }
 
     // -----------------------------------------------------------------------
@@ -798,3 +1134,4 @@ fn test_overlap() {
     // corpus should match encoded exactly!
     assert_eq!(encoded, corpus[0]);
 }
+

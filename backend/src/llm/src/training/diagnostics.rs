@@ -75,10 +75,14 @@ pub struct Diagnostics {
 // The `ANISOTROPY_TOKENS` most-frequent token ids in `corpus`, high→low. Computed
 // once per run (the corpus is fixed) and reused for every report so the embedding
 // metric tracks the same tokens over training. Ties broken by id for determinism.
-pub fn frequent_tokens(corpus: &[u32]) -> Vec<u32> {
+//
+// Takes the corpus in its stored `u16` width and returns `u32` ids, the width the
+// rest of the model speaks — counting is the whole job here, so there is no reason
+// to widen the corpus first.
+pub fn frequent_tokens(corpus: &[u16]) -> Vec<u32> {
     let mut counts: HashMap<u32, u64> = HashMap::new();
     for &t in corpus {
-        *counts.entry(t).or_insert(0) += 1;
+        *counts.entry(t as u32).or_insert(0) += 1;
     }
     let mut ranked: Vec<(u32, u64)> = counts.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));

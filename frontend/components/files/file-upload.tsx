@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { CheckCircle2, Loader2, Upload } from "lucide-react"
+import { CheckCircle2, Upload } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -96,7 +96,8 @@ export function FileUpload() {
           >
             {uploading ? (
               <>
-                <Loader2 className="size-4 animate-spin" />
+                {/* No mark: the button is disabled and its label has changed,
+                    which is the whole of what a spinner in here was saying. */}
                 Uploading…
               </>
             ) : (

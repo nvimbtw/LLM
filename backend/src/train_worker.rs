@@ -37,6 +37,12 @@ const MAX_DIAG_POINTS: usize = 1000;
 // tokenization so the bar never stalls at the handover.
 const TOKENIZE_SHARE: f64 = 0.1;
 
+// How phase 1's own bar splits between learning the merges and encoding the
+// corpus. Encoding is the long pole at scale — the merge table comes off a bounded
+// sample in minutes while the streaming pass reads every byte — so it owns the
+// larger share and the bar keeps moving through the part that used to be silent.
+const MERGE_SHARE: f64 = 0.35;
+
 // Where a run is within itself. Distinct from the job's own `job_status`: that
 // says whether the queue is running this row, while this says which of the two
 // phases the run is in. The frontend has always switched on these names, so the
@@ -283,12 +289,18 @@ fn run_pretrain(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     eprintln!("[training] {}: tokenizing uploads…", config.model_name);
     ctx.tick(0.0, "Tokenizing");
     let stages = training::resolve_stages(&config);
-    let dataset = training::build_dataset(config.max_vocab, &stages, |event| {
+    let dataset = training::build_dataset(config.max_vocab, &stages, Some(ctx.cancel.clone()), |event| {
         handle_tokenize_event(&ctx, event);
     });
 
     let dataset = match dataset {
-        Ok(stats) => {
+        // Ingestion is now interruptible, so a cancel during phase 1 ends the run
+        // here instead of being noticed only at phase 2's first step boundary.
+        Ok(None) => {
+            lock(&ctx.state).phase = TrainPhase::Cancelled;
+            return Outcome::Cancelled;
+        }
+        Ok(Some(stats)) => {
             let obj = serde_json::json!({
                 "files": stats.files,
                 "chars": stats.chars,
@@ -334,6 +346,12 @@ fn run_pretrain(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
 // progress/finish plumbing with the pretrain path.
 fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     let created_at = Utc::now().to_rfc3339();
+
+    // A fine-tune reshuffles its conversations every epoch, so it has a seed to
+    // resolve for the same reason pretraining does: `0` means "pick a fresh one",
+    // and the value that actually drove the run has to be the one meta.json
+    // records, or the run is not reproducible from its own record.
+    config.seed = training::resolve_seed(config.seed);
 
     // The base model to fine-tune from; its tokenizer renders the dataset and its
     // weights are the starting point. The enqueue route guarantees this is present
@@ -439,7 +457,7 @@ fn handle_tokenize_event(ctx: &TrainCtx, event: TokenizeEvent) {
         }
         TokenizeEvent::Merge { done, total } => {
             let progress = if total > 0 {
-                done as f64 / total as f64
+                MERGE_SHARE * (done as f64 / total as f64)
             } else {
                 0.0
             };
@@ -459,6 +477,28 @@ fn handle_tokenize_event(ctx: &TrainCtx, event: TokenizeEvent) {
             ctx.tick(
                 TOKENIZE_SHARE * progress,
                 &format!("Tokenizing ({}/{} merges)", done, total),
+            );
+            emit(&ctx.tx, frame("tokenize", obj));
+        }
+        TokenizeEvent::Encode { files_done, files, chars } => {
+            let progress = if files > 0 {
+                MERGE_SHARE + (1.0 - MERGE_SHARE) * (files_done as f64 / files as f64)
+            } else {
+                MERGE_SHARE
+            };
+            // Corrects the byte-length estimate `Start` carried, and leaves the
+            // vocab/merges figures at the values the merge phase finished on.
+            let obj = {
+                let mut st = lock(&ctx.state);
+                if let Some(map) = st.tokenize.as_object_mut() {
+                    map.insert("chars".into(), serde_json::json!(chars));
+                    map.insert("progress".into(), serde_json::json!(progress));
+                }
+                st.tokenize.clone()
+            };
+            ctx.tick(
+                TOKENIZE_SHARE * progress,
+                &format!("Encoding ({}/{} files)", files_done, files),
             );
             emit(&ctx.tx, frame("tokenize", obj));
         }

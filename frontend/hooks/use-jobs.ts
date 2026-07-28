@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { toast } from "@/components/ui/toast"
 import {
+  HISTORY_PAGE_SIZE,
   cancelJob,
   deleteJob,
   getBoard,
@@ -15,7 +16,14 @@ import {
 } from "@/lib/jobs"
 import { watchBoard } from "@/lib/jobs-socket"
 
-const EMPTY: JobBoard = { active: [], history: [], paused: false }
+const EMPTY: JobBoard = {
+  active: [],
+  history: [],
+  historyOffset: 0,
+  historyLimit: HISTORY_PAGE_SIZE,
+  historyTotal: 0,
+  paused: false,
+}
 
 /**
  * Owns the queue board and keeps it live.
@@ -30,6 +38,16 @@ export function useJobs(enabled = true) {
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
 
+  // Which page of history is on screen. Held here rather than in the view because
+  // every queue nudge refetches the board, and the refetch has to ask for the page
+  // the reader is on — otherwise finishing a job would silently snap them back to
+  // the first page.
+  const [historyPage, setHistoryPage] = React.useState(0)
+  // Read by `refresh`, which is a stable callback the socket holds for the life of
+  // the subscription: a page in its dependency list would tear down and rebuild the
+  // socket on every page turn.
+  const pageRef = React.useRef(0)
+
   // Guards against a slow refetch landing after a newer one and reviving stale
   // rows — the socket can fire several nudges in quick succession.
   const generation = React.useRef(0)
@@ -37,7 +55,17 @@ export function useJobs(enabled = true) {
   const refresh = React.useCallback(async () => {
     const mine = ++generation.current
     try {
-      const next = await getBoard()
+      let next = await getBoard(pageRef.current * HISTORY_PAGE_SIZE)
+      // A page can empty out under the reader: deleting its last row, or
+      // re-queueing a job, moves the whole tail up by one. Land on the last page
+      // that does exist rather than on a blank one under a pager insisting there is
+      // something there. The response says how many there are, so this corrects in
+      // one hop rather than walking back a page at a time.
+      if (next.history.length === 0 && pageRef.current > 0) {
+        pageRef.current = lastPage(next.historyTotal)
+        setHistoryPage(pageRef.current)
+        next = await getBoard(pageRef.current * HISTORY_PAGE_SIZE)
+      }
       if (mine === generation.current) {
         setBoard(next)
         setError(null)
@@ -131,6 +159,20 @@ export function useJobs(enabled = true) {
     [act]
   )
 
+  // Turning a page is a refetch, not a slice of something already held: the client
+  // only ever has one page, which is the point of paging it server-side.
+  const goToHistoryPage = React.useCallback(
+    (page: number) => {
+      const next = Math.max(0, page)
+      pageRef.current = next
+      setHistoryPage(next)
+      void refresh()
+    },
+    [refresh]
+  )
+
+  const historyPages = lastPage(board.historyTotal) + 1
+
   // One running job *per lane*, not one overall: the two runners proceed
   // independently, so a generation run and a training run are both "now", and
   // picking the first of them would leave the other showing nowhere on the page.
@@ -148,6 +190,10 @@ export function useJobs(enabled = true) {
     runningNetwork,
     queued,
     history: board.history,
+    historyTotal: board.historyTotal,
+    historyPage,
+    historyPages,
+    goToHistoryPage,
     paused: board.paused,
     isLoading,
     error,
@@ -158,4 +204,9 @@ export function useJobs(enabled = true) {
     reorder,
     pause,
   }
+}
+
+/** Zero-based index of the last page of `total` finished jobs. */
+function lastPage(total: number): number {
+  return Math.max(0, Math.ceil(total / HISTORY_PAGE_SIZE) - 1)
 }

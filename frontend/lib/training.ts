@@ -100,6 +100,9 @@ export interface TokenizeStats {
   conversations: number
   total_tokens: number
   trainable_tokens: number
+  // KTO's phase 1 counts rated *examples* rather than conversations, and reports
+  // the split it found. Same frame, one more name for "how many".
+  examples: number
   progress: number
   done: boolean
 }

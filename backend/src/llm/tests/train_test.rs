@@ -1,6 +1,6 @@
 use llm::training::transformer::Model;
 use llm::{infer::generate_response, train::train};
-use llm::train::sft_train;
+use llm::train::{DataPlan, sft_train};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -13,10 +13,11 @@ fn test_training_runs() {
     let corpus_path = std::path::Path::new("../../data/datasets/corpus.bin");
     let merges_path = std::path::Path::new("../../data/artifacts/tokenizer/merges.bin");
 
-    // Use small dimensions, 1 epoch, small context
+    // Use small dimensions, 1 epoch, small context. The epoch count rides in the
+    // DataPlan now rather than as its own argument.
     let result = train(
-        32, 16, 4, 1, 1, 0.01, 2, model_dir, corpus_path, merges_path, None,
-        Box::new(|_| {}), None,
+        32, 16, 4, 1, 0.01, 2, model_dir, corpus_path, merges_path, None,
+        DataPlan::whole_corpus(1), Box::new(|_| {}), None,
     );
     assert!(result.is_ok(), "Training failed: {:?}", result.err());
 
@@ -44,8 +45,8 @@ fn test_sft_train_masked_loss_decreases() {
     let base_dir = std::path::Path::new("target/test_sft/base");
     let _ = std::fs::remove_dir_all(base_dir);
     let base = train(
-        32, 16, 4, 1, 1, 0.01, 2, base_dir, corpus_path, merges_path, None,
-        Box::new(|_| {}), None,
+        32, 16, 4, 1, 0.01, 2, base_dir, corpus_path, merges_path, None,
+        DataPlan::whole_corpus(1), Box::new(|_| {}), None,
     );
     assert!(base.is_ok(), "base pretraining failed: {:?}", base.err());
 
@@ -67,8 +68,10 @@ fn test_sft_train_masked_loss_decreases() {
     let _ = std::fs::remove_dir_all(out_dir);
     let losses: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&losses);
+    // No rows to warm-start: the fixture's ids are synthetic, not markers the base
+    // model never met.
     let result = sft_train(
-        base_dir, &sft_corpus, &sft_mask, out_dir, 8, 0.01, None,
+        base_dir, &sft_corpus, &sft_mask, out_dir, DataPlan::whole_corpus(8), &[], 0.01, None,
         Box::new(move |p| {
             if p.epoch_done && p.avg_loss.is_finite() {
                 sink.lock().unwrap().push(p.avg_loss);
@@ -109,7 +112,7 @@ fn run_sft_fixture(
     let losses: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&losses);
     let r = sft_train(
-        base_dir, corpus_path, mask_path, out_dir, epochs, 0.05, None,
+        base_dir, corpus_path, mask_path, out_dir, DataPlan::whole_corpus(epochs), &[], 0.05, None,
         Box::new(move |p| {
             if p.epoch_done && p.avg_loss.is_finite() {
                 sink.lock().unwrap().push(p.avg_loss);

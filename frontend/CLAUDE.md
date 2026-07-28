@@ -130,7 +130,28 @@ subscriptions: the whole board, or one job's frames).
 - `/benchmark` is history and analysis only — it no longer starts runs.
 - The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are how
   a running job says what it is. Give **one** instance a changing `mode` so it morphs
-  between them as the queue advances rather than cutting.
+  between them as the queue advances rather than cutting. `NowBand` is that instance.
+
+### Throbber or dot
+
+`components/ui/throbber.tsx` is a **figure**, not an icon. It is one fixed size
+everywhere — `THROBBER_PX` (120px), which also fixes the body's radius and its facet
+size — and callers cannot resize it: `className` is for margin, placement and colour
+only. That is deliberate. It used to be sized per call site, and the result was a
+different ball in every row, none of which looked like the same object.
+
+So use it only where a figure belongs — somewhere the waiting *is* the subject, with
+room for it:
+
+- the chat thread (loading, and the thinking/generating status row),
+- the training hero corner (`Telemetry`),
+- the queue's now-band,
+- the benchmark empty state.
+
+Everywhere else — beside a line of text, inside a button, in a sidebar row — use
+`components/ui/running-dot.tsx`. Those places need the *fact* of activity, not
+something to look at. Don't reach for a third indicator: a lucide `Loader2` on a
+button is the thing `RunningDot` replaced.
 
 ### Scripts
 

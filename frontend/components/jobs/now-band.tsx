@@ -46,7 +46,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
   if (!job) {
     return (
       <div className="flex items-center gap-3 border-b border-border px-5 py-6">
-        <Throbber mode="idle" className="h-4" />
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-muted-foreground/40" />
         <p className="text-sm text-muted-foreground">
           {paused ? "The queue is paused." : "The GPU is idle."}
         </p>
@@ -61,7 +61,12 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
   return (
     <div className="border-b border-border bg-secondary/25">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-5">
-        <Throbber mode={throbberMode(job)} className="h-5 shrink-0" />
+        {/* The one place the mark keeps its per-kind mode. This band is the queue
+            page's subject — what the GPU is doing right now — so it is worth a
+            figure rather than a dot, and it is the single instance whose `mode`
+            changes as the queue advances, which is what lets it morph between
+            training, benchmarking and generating instead of cutting. */}
+        <Throbber mode={throbberMode(job)} />
 
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">

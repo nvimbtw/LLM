@@ -17,7 +17,11 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function ModelCard({ model }: { model: Model }) {
+export interface ModelCardProps {
+  model: Model
+}
+
+export function ModelCard({ model }: ModelCardProps) {
   return (
     <Link
       href={`/models/${model.id}`}
@@ -34,6 +38,20 @@ export function ModelCard({ model }: { model: Model }) {
               {model.tier}
             </span>
           </div>
+        </div>
+
+        {/* The grid is flat now, so the card carries the two facts the family and
+            visibility headings used to: which family it belongs to, and whether it
+            is visible to anyone but an admin. Private is called out; published is
+            the expected state and says nothing by being silent. */}
+        <div className="mt-1.5 flex items-center gap-2 text-[10px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
+          <span className="truncate">{model.family || "Custom"}</span>
+          {!model.published && (
+            <>
+              <span className="text-muted-foreground/30">·</span>
+              <span className="shrink-0">Private</span>
+            </>
+          )}
         </div>
 
         <p className="mt-3 line-clamp-2 min-h-[2.5rem] text-sm text-muted-foreground">

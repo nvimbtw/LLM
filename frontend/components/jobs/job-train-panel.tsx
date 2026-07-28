@@ -6,7 +6,7 @@ import { Telemetry } from "@/components/training/telemetry"
 import { Panel } from "@/components/ui/panel"
 import type { useJob } from "@/hooks/use-job"
 import type { Job } from "@/lib/jobs"
-import type { RunPhase, TrainConfig } from "@/lib/training"
+import { isFineTune, type RunPhase, type TrainConfig, type TrainMode } from "@/lib/training"
 
 /**
  * A training job's body: the same telemetry the training page always had, now
@@ -28,7 +28,9 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
   // before that (queued, or reloaded after it finished) the row's stored config is
   // the same thing, and is always present.
   const config = run.runConfig ?? (job.config as TrainConfig | null)
-  const isSft = config?.mode === "sft"
+  // Every fine-tune renders conversations in phase 1 rather than training a BPE
+  // tokenizer, which is the whole of what the figures switch on here.
+  const isSft = config ? isFineTune(config.mode) : false
 
   return (
     <div className="space-y-8">
@@ -43,8 +45,6 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
           vocabSeries={run.vocabSeries}
           batchSeries={run.batchSeries}
           curriculum={config?.curriculum ?? []}
-          // The globe's frames are the per-report 3-D projections, in order.
-          emb3Frames={run.diag.map((d) => d.emb_pca3)}
         />
       </div>
 
@@ -81,11 +81,25 @@ function runPhase(job: Job, run: ReturnType<typeof useJob>): RunPhase | null {
   }
 }
 
+const MODE_LABEL: Record<TrainMode, string> = {
+  pretrain: "Pretrain",
+  sft: "Fine-tune",
+  kto: "Preference tune",
+  raft: "Rejection tune",
+}
+
 function ConfigRecap({ config }: { config: TrainConfig | null }) {
   if (!config) return <div />
 
+  const fineTune = isFineTune(config.mode)
+
+  // A fine-tune's architecture is the base model's — it loads those weights — and
+  // the two knobs below it are pretraining's alone: there is no BPE train to cap a
+  // vocabulary for, and conversation order is always reshuffled. Listing them for a
+  // fine-tune was the whole of the "why does it say 64 dimensions" problem: the
+  // numbers came from a form the fine-tune composers never show.
   const rows: [string, string][] = [
-    ["Mode", config.mode === "sft" ? "Fine-tune" : "Pretrain"],
+    ["Mode", MODE_LABEL[config.mode]],
     ["Dimensions", String(config.dimensions)],
     ["Context", String(config.ctx_window)],
     ["Heads", String(config.heads)],
@@ -93,19 +107,31 @@ function ConfigRecap({ config }: { config: TrainConfig | null }) {
     ["Epochs", String(config.epochs)],
     ["Learning rate", config.lr.toExponential(0)],
     ["FF multiplier", `${config.ff_multiplier}×`],
-    ["Max vocab", String(config.max_vocab)],
-    ["Shuffle", config.shuffle ? "On" : "Off"],
   ]
+  if (!fineTune) {
+    rows.push(["Max vocab", String(config.max_vocab)])
+    rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
+  }
+  if (config.mode === "kto" && config.beta !== undefined) {
+    rows.push(["Beta", String(config.beta)])
+  }
 
-  const datasets =
-    config.curriculum.length > 0
+  // Pretrain builds its corpus from the selected uploads; a fine-tune's data is
+  // the chat corpus or the rated catalogue, neither of which is a dataset pick.
+  const datasets = fineTune
+    ? ""
+    : config.curriculum.length > 0
       ? config.curriculum
           .map((stage, i) => stage.name ?? `Stage ${i + 1}`)
           .join(" → ")
       : config.datasets.map((d) => d.name).join(", ")
 
   return (
-    <Panel title="Config" description="As queued" bodyClassName="p-0">
+    <Panel
+      title="Config"
+      description={fineTune ? "Inherited from the base" : "As queued"}
+      bodyClassName="p-0"
+    >
       <dl className="divide-y divide-border/40">
         {rows.map(([label, value]) => (
           <div

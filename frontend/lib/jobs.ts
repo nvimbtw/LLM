@@ -56,8 +56,22 @@ export interface Job {
 export interface JobBoard {
   // Running and queued, in the order they will execute.
   active: Job[]
-  // Finished, newest first.
+  // One page of finished jobs, newest first — the slice named by the three fields
+  // below. The live band is never paged: it is short by construction.
   history: Job[]
+  historyOffset: number
+  historyLimit: number
+  historyTotal: number
+  paused: boolean
+}
+
+/** The wire shape of the board, before the history fields are camel-cased. */
+interface BoardPayload {
+  active: Job[]
+  history: Job[]
+  history_offset: number
+  history_limit: number
+  history_total: number
   paused: boolean
 }
 
@@ -95,10 +109,25 @@ export function chatId(job: Job): string | null {
 
 // ── requests ────────────────────────────────────────────────────────────────
 
-export async function getBoard(): Promise<JobBoard> {
-  const res = await apiFetch("/jobs")
+/** How many finished jobs a history page holds. Mirrors the server's default. */
+export const HISTORY_PAGE_SIZE = 25
+
+export async function getBoard(offset = 0): Promise<JobBoard> {
+  const params = new URLSearchParams({
+    history_offset: String(Math.max(0, offset)),
+    history_limit: String(HISTORY_PAGE_SIZE),
+  })
+  const res = await apiFetch(`/jobs?${params}`)
   if (!res.ok) throw new Error("Failed to load the queue.")
-  return res.json()
+  const payload: BoardPayload = await res.json()
+  return {
+    active: payload.active,
+    history: payload.history,
+    historyOffset: payload.history_offset,
+    historyLimit: payload.history_limit,
+    historyTotal: payload.history_total,
+    paused: payload.paused,
+  }
 }
 
 export async function getJob(id: string): Promise<Job> {

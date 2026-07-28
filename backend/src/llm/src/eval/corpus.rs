@@ -27,6 +27,11 @@ const BASELINE_ORDER: usize = 5;
 // on text it had memorized and no model could beat it.
 const HELDOUT_FRACTION: f64 = 0.10;
 
+// Cost of a byte under no model at all — a uniform distribution over 256 values.
+// The zero point for `floor_progress`: whatever a model knows about text, it is
+// worth measuring against having predicted nothing.
+const UNMODELLED_BITS_PER_BYTE: f64 = 8.0;
+
 // The reference text, split for evaluation.
 pub struct CorpusSplit {
     pub train: String,
@@ -48,6 +53,17 @@ pub struct CorpusReport {
     // values are clamped away — "worse than a lookup table" is one verdict, not a
     // scale — but `bits_per_byte` vs `baseline_bits_per_byte` still shows it.
     pub advantage: f64,
+    // Where the model sits between predicting nothing (`UNMODELLED_BITS_PER_BYTE`,
+    // = 0.0) and matching the n-gram floor (= 1.0), so the composite has a corpus
+    // number that still moves below the floor.
+    //
+    // `advantage` cannot serve that purpose. On a corpus formulaic enough for an
+    // order-5 counting table to beat every model at this scale — TinyStories is —
+    // it is negative for every checkpoint, clamps to a flat 0.0, and contributes a
+    // constant. That is the correct verdict ("has not beaten a lookup table") and a
+    // useless coordinate: two models three bits apart score the same. This keeps
+    // the floor as the anchor and measures the distance still to run.
+    pub floor_progress: f64,
     pub files: usize,
 }
 
@@ -147,8 +163,18 @@ pub async fn evaluate(
     // With no training slice the baseline degenerates to the uniform byte
     // distribution, which any model beats trivially — report the comparison as
     // unavailable rather than as a flattering advantage.
-    let advantage = if baseline.is_finite() && baseline > 0.0 && !split.train.is_empty() {
+    let measurable = baseline.is_finite() && baseline > 0.0 && !split.train.is_empty();
+    let advantage = if measurable {
         (1.0 - bits_per_byte / baseline).clamp(0.0, 1.0)
+    } else {
+        f64::NAN
+    };
+    // Guarded against a floor at or above the unmodelled cost, which would leave a
+    // zero or negative span to place the model on. That means an unusable baseline
+    // (an empty or pathological training slice), not a perfect model.
+    let span = UNMODELLED_BITS_PER_BYTE - baseline;
+    let floor_progress = if measurable && span > 0.0 {
+        ((UNMODELLED_BITS_PER_BYTE - bits_per_byte) / span).clamp(0.0, 1.0)
     } else {
         f64::NAN
     };
@@ -163,6 +189,7 @@ pub async fn evaluate(
         bytes_scored,
         baseline_bits_per_byte: baseline,
         advantage,
+        floor_progress,
         files: split.files,
     })
 }

@@ -24,6 +24,17 @@ fn root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("data"))
 }
 
+/// Serializes tests that point `DATA_DIR` at a temp root.
+///
+/// `DATA_DIR` is process-global and cargo runs tests multi-threaded, so any test
+/// that sets it must hold this first. It lives here, beside the one function that
+/// reads the variable, because it has to be **one** lock: `training` and `synth`
+/// each had their own, which guarded nothing against each other — a `synth` test
+/// could repoint `DATA_DIR` mid-way through a `training` build and fail it
+/// intermittently.
+#[cfg(test)]
+pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // Parent of the pretrain dataset subfolders. Each immediate subdirectory
 // (e.g. uploads/TinyStories, uploads/Synthetic) is one selectable dataset; a run
 // picks which subfolders — and how many files from each — go into its corpus
@@ -78,11 +89,13 @@ pub fn models_dir() -> PathBuf {
 }
 
 // Benchmark fixtures. `eval/corpus/*.txt` is the reference prose a run scores
-// against — held-out text the model was **not** trained on — and `eval/blimp/`
-// optionally holds real BLiMP JSONL alongside the built-in minimal-pair suite.
+// against — held-out text the model was **not** trained on — `eval/blimp/`
+// optionally holds real BLiMP JSONL alongside the built-in minimal-pair suite,
+// and `eval/chat/*.jsonl` holds held-out conversations in the `raw/sft` shape,
+// scored through the SFT loss mask so a fine-tune has an instrument.
 // Kept out of `raw/uploads` on purpose: anything under uploads is selectable as
 // training data, and a held-out set that can be accidentally trained on is not a
-// held-out set.
+// held-out set. The same applies to `eval/chat` against `raw/sft`.
 pub fn eval_dir() -> PathBuf {
     root().join("eval")
 }

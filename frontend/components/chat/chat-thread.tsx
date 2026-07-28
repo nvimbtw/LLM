@@ -113,7 +113,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-7 px-4 py-8">
             {isLoading ? (
               <div className="flex justify-center px-1 py-8">
-                <Throbber mode="loading" className="h-5" />
+                <Throbber mode="loading" />
               </div>
             ) : (
               messages.map((message, i) => {
@@ -147,10 +147,10 @@ export function ChatThread({ chatId }: { chatId: string }) {
               // thinking → generating → idle morph instead of swapping, since the
               // element is never unmounted.
               //
-              // items-baseline, not items-center: the mark's bottom edge is its own
-              // baseline (see throbber.tsx), so this sits the ticks on the same line as
-              // the label instead of centring two boxes of different heights.
-              <div className="flex h-11 items-baseline gap-3 px-1 text-sm">
+              // items-center, not items-baseline: the mark is a ball, so its
+              // optical centre is its middle rather than its bottom edge, and a
+              // baseline row would hang it below the line of the label.
+              <div className="flex items-center gap-3 px-1 text-sm">
                 <Throbber
                   mode={
                     waiting
@@ -161,7 +161,6 @@ export function ChatThread({ chatId }: { chatId: string }) {
                           ? "generating"
                           : "idle"
                   }
-                  className="h-5 shrink-0"
                 />
                 {waiting && (
                   <span className="text-muted-foreground">

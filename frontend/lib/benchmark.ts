@@ -23,7 +23,13 @@ export interface CorpusMetrics {
   tokens_scored: number
   bytes_scored: number
   baseline_bits_per_byte: number | null
+  // Fraction of the n-gram floor's bits the model removes. Stays 0 for a model
+  // that has not beaten the floor, which at this scale is all of them — it is a
+  // verdict, not a scale. `floor_progress` is the one that moves.
   advantage: number | null
+  // How far the model has come from predicting nothing (0) to matching the n-gram
+  // floor (1). This is the corpus term the composite score reads.
+  floor_progress: number | null
   files: number
 }
 
@@ -58,12 +64,25 @@ export interface GenerationMetrics {
   samples: GenerationSample[]
 }
 
+// Bits per assistant-reply token over held-out conversations, scored through the
+// SFT loss mask. Kept out of the composite score: a base model has never seen the
+// chat scaffold, so this is read as a paired comparison between a base model and
+// its fine-tune, not as a number to rank every run by.
+export interface ChatMetrics {
+  bits_per_token: number | null
+  logprob: number | null
+  conversations: number
+  tokens_scored: number
+}
+
 export interface BenchmarkReport {
   score: number | null
   model: ModelInfo
   corpus: CorpusMetrics | null
   grammar: GrammarMetrics
   generation: GenerationMetrics
+  // Null until a held-out conversation set is installed under `eval/chat/`.
+  chat: ChatMetrics | null
   duration_secs: number
 }
 
@@ -94,11 +113,31 @@ export interface SuiteInfo {
   corpus_files: number
   blimp_dir: string
   blimp_files: number
+  chat_dir: string
+  chat_files: number
 }
 
 export async function listRuns(): Promise<BenchmarkRun[]> {
   const res = await apiFetch("/benchmark/runs")
   if (!res.ok) throw new Error("Failed to load benchmark history.")
+  return res.json()
+}
+
+/**
+ * One model's benchmark record: its latest completed report, and every run of it.
+ *
+ * `latest` is the most recent run that produced a report — deliberately not "the
+ * most recent run", which may be a failure with nothing in it to show. The failed
+ * run is still in `runs`, where its error belongs.
+ */
+export interface ModelBenchmarks {
+  latest: BenchmarkRunDetail | null
+  runs: BenchmarkRun[]
+}
+
+export async function getModelRuns(idModel: string): Promise<ModelBenchmarks> {
+  const res = await apiFetch(`/benchmark/models/${idModel}/runs`)
+  if (!res.ok) throw new Error("Failed to load this model's benchmarks.")
   return res.json()
 }
 

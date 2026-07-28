@@ -25,10 +25,13 @@ use crate::storage;
 use crate::training::{TrainConfig, TrainMode};
 use crate::ws;
 
-// How many finished jobs the board returns. The history is a ledger you scroll,
-// not an archive you page through; a couple of hundred covers weeks of work here
-// and keeps the response small.
-const HISTORY_LIMIT: i64 = 200;
+// One page of history, when the client doesn't say. Sized for a screenful rather
+// than for the archive: the board refetches the current page on every queue nudge,
+// so the page is the unit that has to stay cheap.
+const HISTORY_PAGE: i64 = 25;
+// The most a client may ask for in one page, so a hand-written `history_limit` can't
+// pull the entire jobs table (config JSONB and all) into one response.
+const HISTORY_PAGE_MAX: i64 = 200;
 
 // One job as the frontend sees it. `config` is included so the retry flow can seed
 // a composer from a finished job without a second request.
@@ -84,11 +87,39 @@ impl From<Job> for JobResponse {
 struct BoardResponse {
     active: Vec<JobResponse>,
     history: Vec<JobResponse>,
+    // Which slice of the history this is, and how many finished jobs exist — enough
+    // for the client to draw a pager without a second request or a guess about
+    // whether it is on the last page.
+    history_offset: i64,
+    history_limit: i64,
+    history_total: i64,
     paused: bool,
 }
 
+// Which page of history to return. Both fields are optional: a client that says
+// nothing gets the first page, which is what the board wants on load.
+#[derive(Deserialize)]
+struct BoardQuery {
+    #[serde(default)]
+    history_offset: Option<i64>,
+    #[serde(default)]
+    history_limit: Option<i64>,
+}
+
 #[get("")]
-async fn list_jobs(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Responder {
+async fn list_jobs(
+    _admin: AdminUser,
+    pool: web::Data<PgPool>,
+    query: web::Query<BoardQuery>,
+) -> impl Responder {
+    // Clamped rather than rejected: a nonsensical page is a client bug, and the
+    // useful response to it is the first page, not a 400 that blanks the board.
+    let limit = query
+        .history_limit
+        .unwrap_or(HISTORY_PAGE)
+        .clamp(1, HISTORY_PAGE_MAX);
+    let offset = query.history_offset.unwrap_or(0).max(0);
+
     let active = match db::job::list_active(pool.get_ref()).await {
         Ok(jobs) => jobs,
         Err(e) => {
@@ -96,10 +127,17 @@ async fn list_jobs(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Responder
             return HttpResponse::InternalServerError().body("failed to list jobs");
         }
     };
-    let history = match db::job::list_history(pool.get_ref(), HISTORY_LIMIT).await {
+    let history = match db::job::list_history(pool.get_ref(), limit, offset).await {
         Ok(jobs) => jobs,
         Err(e) => {
             eprintln!("list job history db error: {}", e);
+            return HttpResponse::InternalServerError().body("failed to list jobs");
+        }
+    };
+    let history_total = match db::job::count_history(pool.get_ref()).await {
+        Ok(total) => total,
+        Err(e) => {
+            eprintln!("count job history db error: {}", e);
             return HttpResponse::InternalServerError().body("failed to list jobs");
         }
     };
@@ -114,6 +152,9 @@ async fn list_jobs(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Responder
     HttpResponse::Ok().json(BoardResponse {
         active: active.into_iter().map(JobResponse::from).collect(),
         history: history.into_iter().map(JobResponse::from).collect(),
+        history_offset: offset,
+        history_limit: limit,
+        history_total,
         paused,
     })
 }
@@ -214,6 +255,29 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
     }
     if let Err(msg) = validate_sft(&config) {
         return Err(HttpResponse::BadRequest().body(msg));
+    }
+
+    // A fine-tune loads the base model's weights wholesale, so its architecture *is*
+    // the base's — the request's own dimensions/context/heads/layers are placeholders
+    // the fine-tune composers never collect, and they are what the panels were
+    // showing (a 64d/64ctx run that is in fact whatever the base was). The worker
+    // inherits them too, but too late for the display: the job's stored config is
+    // what every panel reads before the run attaches, and the only thing left once it
+    // has finished. Resolving at enqueue makes the row true from the moment it exists.
+    //
+    // `validate_sft` has already established that a non-pretrain run names a base
+    // that resolves. Best-effort past that: a base whose meta.json is unreadable
+    // still trains correctly, it just carries the request's numbers.
+    if config.mode != TrainMode::Pretrain {
+        if let Some(base_id) = config.base_model_id {
+            let base_dir = storage::models_dir().join(base_id.to_string());
+            if let Err(e) = crate::training::apply_base_architecture(&mut config, &base_dir) {
+                eprintln!(
+                    "queue {}: could not inherit base architecture ({}); the row keeps the requested values",
+                    config.model_name, e
+                );
+            }
+        }
     }
 
     // A KTO run with too little data used to be discovered the expensive way: the

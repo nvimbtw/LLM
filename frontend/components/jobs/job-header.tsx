@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { ArrowLeft, RotateCcw, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Throbber } from "@/components/ui/throbber"
+import { RunningDot } from "@/components/ui/running-dot"
 import { useParentTrail } from "@/hooks/use-parent-trail"
 import {
   KIND_LABEL,
@@ -17,7 +17,6 @@ import {
   isRunning,
   isTerminal,
   retryJob,
-  throbberMode,
   type Job,
 } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
@@ -90,7 +89,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
             <h1 className="truncate font-display text-3xl font-semibold tracking-tight">
               {job.label}
             </h1>
-            <Throbber mode={throbberMode(job)} className="h-5 shrink-0" />
+            {isRunning(job) && <RunningDot />}
           </div>
 
           {/* One line of provenance: kind, state, and how long it took. Dot

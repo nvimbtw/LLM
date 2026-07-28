@@ -11,10 +11,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { Throbber } from "@/components/ui/throbber"
+import { RunningDot } from "@/components/ui/running-dot"
 import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useAuth } from "@/hooks/use-auth"
-import { KIND_LABEL, isRunning, throbberMode, type Job } from "@/lib/jobs"
+import { KIND_LABEL, isRunning, type Job } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
 // Keep the sidebar list short — the rest are one click away on /jobs. Same limit
@@ -109,12 +109,11 @@ function JobItem({ job, position }: { job: Job; position: number }) {
         {/* The gutter says which of the two states a row is in without a word:
             the running job animates in its kind's mode, the waiting ones carry
             their place in line. Fixed width so the labels stay aligned. */}
-        <span className="flex w-4 shrink-0 justify-center pt-0.5">
+        <span className="flex w-4 shrink-0 items-center justify-center pt-0.5">
           {live ? (
-            <Throbber
-              mode={throbberMode(job)}
-              accent="var(--sidebar-foreground)"
-              className="h-3.5"
+            <RunningDot
+              label={`${KIND_LABEL[job.kind]} running`}
+              className="bg-sidebar-foreground"
             />
           ) : (
             <span className="text-xs leading-4 text-sidebar-foreground/75 tabular-nums">

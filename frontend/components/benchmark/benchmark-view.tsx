@@ -106,7 +106,7 @@ export function BenchmarkView() {
           // otherwise leave the page empty while the GPU works. The mark fills that
           // space and reads as "measuring" rather than "stalled".
           <div className="flex flex-col items-center gap-5 rounded-lg border border-dashed border-border px-6 py-12">
-            <Throbber mode="benchmarking" className="h-7" />
+            <Throbber mode="benchmarking" />
             <p className="text-center text-sm text-muted-foreground">
               Scoring in progress.
             </p>

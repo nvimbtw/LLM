@@ -178,9 +178,15 @@ pub async fn list_active(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
     .await
 }
 
-// Finished jobs, newest first. Separate from `list_active` because the two are
-// ordered by different keys and only the history needs a limit.
-pub async fn list_history(pool: &PgPool, limit: i64) -> Result<Vec<Job>, sqlx::Error> {
+// One page of finished jobs, newest first. Separate from `list_active` because the
+// two are ordered by different keys and only the history is paged — the live band
+// is short by construction, the history is every job ever run.
+//
+// Offset paging rather than a keyset cursor: the sort key is `created_at DESC` on a
+// set that only ever grows at the front, and a page of it is read for seconds, so
+// the drift a keyset would prevent has no time to happen. It also keeps "page 4" a
+// thing the client can ask for directly.
+pub async fn list_history(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
@@ -190,11 +196,24 @@ pub async fn list_history(pool: &PgPool, limit: i64) -> Result<Vec<Job>, sqlx::E
            FROM jobs
            WHERE status IN ('done', 'cancelled', 'failed')
            ORDER BY created_at DESC
-           LIMIT $1"#,
+           LIMIT $1 OFFSET $2"#,
         limit,
+        offset,
     )
     .fetch_all(pool)
     .await
+}
+
+// How many finished jobs there are in total, so the client can size the pager it
+// draws rather than discovering the end by walking into an empty page.
+pub async fn count_history(pool: &PgPool) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT count(*) as "count!" FROM jobs
+           WHERE status IN ('done', 'cancelled', 'failed')"#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.count)
 }
 
 pub async fn find_by_id(pool: &PgPool, id_job: Uuid) -> Result<Option<Job>, sqlx::Error> {

@@ -88,6 +88,62 @@ async fn list_runs(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Responder
     }
 }
 
+// One model's benchmark record: its latest full report plus every run of it, for
+// the results section of the model page.
+//
+// One response rather than two requests because the section renders as one thing —
+// a headline score with the runs behind it — and two round trips would let it paint
+// with a score and no history, or history and no score.
+#[derive(Serialize)]
+struct ModelRuns {
+    latest: Option<RunDetail>,
+    runs: Vec<RunSummary>,
+}
+
+// How many of one model's runs to return. A model is benchmarked a handful of times
+// at most; this is a bound, not a page.
+const MODEL_RUNS_LIMIT: i64 = 50;
+
+#[get("/models/{id}/runs")]
+async fn list_model_runs(
+    _admin: AdminUser,
+    path: web::Path<Uuid>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    let id_model = path.into_inner();
+    let runs = match db::benchmark::list_for_model(pool.get_ref(), id_model, MODEL_RUNS_LIMIT).await
+    {
+        Ok(runs) => runs,
+        Err(e) => {
+            eprintln!("list model benchmark runs db error: {}", e);
+            return HttpResponse::InternalServerError().body("failed to list benchmark runs");
+        }
+    };
+    let latest = match db::benchmark::latest_report_for_model(pool.get_ref(), id_model).await {
+        Ok(run) => run.map(|run| RunDetail {
+            id_run: run.id_run,
+            id_model: run.id_model,
+            model_name: run.model_name,
+            status: run.status,
+            score: run.score,
+            report: run.report,
+            error: run.error,
+            train_tokens: run.train_tokens,
+            created_at: run.created_at,
+            completed_at: run.completed_at,
+        }),
+        Err(e) => {
+            eprintln!("latest model benchmark report db error: {}", e);
+            return HttpResponse::InternalServerError().body("failed to load benchmark run");
+        }
+    };
+
+    HttpResponse::Ok().json(ModelRuns {
+        latest,
+        runs: runs.into_iter().map(RunSummary::from).collect(),
+    })
+}
+
 #[get("/runs/{id}")]
 async fn get_run(
     _admin: AdminUser,
@@ -155,6 +211,8 @@ struct SuiteInfo {
     corpus_files: usize,
     blimp_dir: String,
     blimp_files: usize,
+    chat_dir: String,
+    chat_files: usize,
 }
 
 fn count_files(dir: &std::path::Path, extension: &str) -> usize {
@@ -171,16 +229,24 @@ async fn get_suite(_admin: AdminUser) -> impl Responder {
     let eval_dir = storage::eval_dir();
     let corpus_dir = eval_dir.join("corpus");
     let blimp_dir = eval_dir.join("blimp");
+    let chat_dir = eval_dir.join("chat");
     HttpResponse::Ok().json(SuiteInfo {
         corpus_files: count_files(&corpus_dir, "txt"),
         blimp_files: count_files(&blimp_dir, "jsonl"),
+        chat_files: count_files(&chat_dir, "jsonl"),
         corpus_dir: corpus_dir.to_string_lossy().to_string(),
         blimp_dir: blimp_dir.to_string_lossy().to_string(),
+        chat_dir: chat_dir.to_string_lossy().to_string(),
     })
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(list_runs);
+    // Registered before `get_run` (GET /runs/{id}) for the same reason the jobs
+    // scope orders its literal paths first — a distinct prefix here, but keeping the
+    // specific-before-generic order is what stops the next literal route from being
+    // swallowed silently.
+    cfg.service(list_model_runs);
     cfg.service(get_run);
     cfg.service(delete_run);
     cfg.service(get_suite);

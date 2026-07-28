@@ -6,7 +6,7 @@ import { useSettings } from "@/components/settings/settings-provider"
 import { toast } from "@/components/ui/toast"
 import { useAuth } from "@/hooks/use-auth"
 import { useJobs } from "@/hooks/use-jobs"
-import { KIND_LABEL, type Job } from "@/lib/jobs"
+import { KIND_LABEL, getJob, type Job } from "@/lib/jobs"
 
 /**
  * One subscription to the queue for the whole app.
@@ -26,7 +26,7 @@ const JobsContext = React.createContext<JobsContextValue | null>(null)
 export function JobsProvider({ children }: { children: React.ReactNode }) {
   const { isAdmin } = useAuth()
   const value = useJobs(isAdmin)
-  useFinishNotices(value.board.active, value.history)
+  useFinishNotices(value.board.active)
   return <JobsContext.Provider value={value}>{children}</JobsContext.Provider>
 }
 
@@ -37,11 +37,16 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
  * page — a training run that finishes while you are reading the corpus is exactly
  * the case worth announcing, and a /jobs-only watcher would miss it.
  *
- * A transition is detected rather than a status: the board is refetched whole on
- * every nudge, so "is finished" is true for the entire history forever, and only
+ * A transition is detected rather than a status: the board carries only one page
+ * of history, so "is finished" would be true for a whole page forever, and only
  * "was active a moment ago and is not now" happens once.
+ *
+ * The row is looked up by id rather than found in `history`, because history is
+ * paged: a job that finishes while the reader is on page three lands on page one,
+ * where this would never see it. One request per finished job, and jobs finish
+ * minutes apart.
  */
-function useFinishNotices(active: Job[], history: Job[]) {
+function useFinishNotices(active: Job[]) {
   const { settings } = useSettings()
   const enabled = settings.notifyOnFinish
 
@@ -55,21 +60,29 @@ function useFinishNotices(active: Job[], history: Job[]) {
 
   React.useEffect(() => {
     const previous = wasActive.current
-    wasActive.current = new Set(active.map((job) => job.id_job))
+    const current = new Set(active.map((job) => job.id_job))
+    wasActive.current = current
 
     if (!enabledRef.current || previous.size === 0) return
 
-    for (const job of history) {
-      if (!previous.has(job.id_job) || wasActive.current.has(job.id_job))
-        continue
-      const what = `${KIND_LABEL[job.kind]} · ${job.label}`
-      if (job.status === "done") toast.success("Finished", what)
-      else if (job.status === "failed") toast.error("Failed", job.error ?? what)
-      else if (job.status === "cancelled")
-        toast({ title: "Cancelled", description: what })
+    for (const id of previous) {
+      if (current.has(id)) continue
+      // A job that left the live band without a terminal row was deleted, and its
+      // lookup 404s — which is not worth announcing, so the failure is swallowed.
+      void getJob(id).then(announce).catch(noop)
     }
-  }, [active, history])
+  }, [active])
 }
+
+function announce(job: Job) {
+  const what = `${KIND_LABEL[job.kind]} · ${job.label}`
+  if (job.status === "done") toast.success("Finished", what)
+  else if (job.status === "failed") toast.error("Failed", job.error ?? what)
+  else if (job.status === "cancelled")
+    toast({ title: "Cancelled", description: what })
+}
+
+function noop() {}
 
 export function useJobsContext(): JobsContextValue {
   const value = React.useContext(JobsContext)

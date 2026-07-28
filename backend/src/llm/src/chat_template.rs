@@ -58,6 +58,38 @@ fn format_turn(t: &Turn) -> String {
     }
 }
 
+/// Render a whole conversation to text, in the exact shape
+/// `build_training_example` tokenizes.
+///
+/// For seeding conversations into a *pretrain* corpus, which is a directory of
+/// `.txt`: the point of putting them there is that the model meets the chat
+/// scaffold during pretraining instead of first meeting it at SFT, so the text has
+/// to carry the same markers in the same places. Assistant turns are kept verbatim,
+/// thinking blocks included, for the same reason `build_training_example` keeps
+/// them — that is the text SFT will later train on.
+///
+/// Unlike `build_training_example` there is no mask and no per-segment encoding:
+/// the pretrain builder tokenizes whole files in one pass, so a marker seam may
+/// tokenize a token differently here than it does under SFT. That costs nothing —
+/// this exists to expose the markers to training, not to align with a mask.
+pub fn render_conversation(system: Option<&str>, turns: &[Turn]) -> String {
+    let mut out = String::new();
+    if let Some(s) = system.map(str::trim).filter(|s| !s.is_empty()) {
+        out.push_str(&format!("<|system|>{}<|/system|>", s));
+    }
+    for t in turns {
+        match t.role {
+            Role::User => out.push_str(&format!("<|user|>{}<|/user|>", t.text.trim())),
+            Role::Assistant => {
+                out.push_str(ASSISTANT_OPEN);
+                out.push_str(t.text.trim());
+                out.push_str("<|/assistant|>");
+            }
+        }
+    }
+    out
+}
+
 /// Render a conversation into token ids, dropping the oldest whole turns until it
 /// fits `ctx_window - reserve_for_reply` tokens.
 ///
@@ -219,6 +251,42 @@ mod tests {
             text: "<|thinking|>hmm<|/thinking|>hello".into(),
         });
         assert_eq!(a, "<|assistant|>hello<|/assistant|>");
+    }
+
+    // ── render_conversation ──
+
+    // The property that matters: the rendered text must be what
+    // `build_training_example` tokenizes, or the pretrain corpus would teach the
+    // model a different scaffold than SFT uses.
+    #[test]
+    fn test_render_matches_the_training_example_shape() {
+        let turns = vec![
+            Turn { role: Role::User, text: " hi ".into() },
+            Turn { role: Role::Assistant, text: "yo".into() },
+        ];
+        assert_eq!(
+            render_conversation(Some(" be nice "), &turns),
+            "<|system|>be nice<|/system|><|user|>hi<|/user|><|assistant|>yo<|/assistant|>",
+        );
+    }
+
+    #[test]
+    fn test_render_keeps_thinking_unlike_a_prompt() {
+        // `build_prompt` strips historical reasoning; this must not, because the
+        // reasoning is text SFT will train on.
+        let turns = vec![Turn {
+            role: Role::Assistant,
+            text: "<|thinking|>hmm<|/thinking|>hello".into(),
+        }];
+        let rendered = render_conversation(None, &turns);
+        assert!(rendered.contains("<|thinking|>hmm<|/thinking|>"), "{rendered}");
+    }
+
+    #[test]
+    fn test_render_omits_an_empty_system_block() {
+        let turns = vec![Turn { role: Role::User, text: "hi".into() }];
+        assert_eq!(render_conversation(Some("   "), &turns), "<|user|>hi<|/user|>");
+        assert_eq!(render_conversation(None, &turns), "<|user|>hi<|/user|>");
     }
 
     // ── build_training_example ──

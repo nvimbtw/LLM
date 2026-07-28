@@ -7,7 +7,7 @@ import { ArrowLeft, Check, Pause, Play, Square } from "lucide-react"
 import { CycleFigures } from "@/components/cycles/cycle-figures"
 import { Button } from "@/components/ui/button"
 import { Panel } from "@/components/ui/panel"
-import { Throbber } from "@/components/ui/throbber"
+import { RunningDot } from "@/components/ui/running-dot"
 import { useCycle } from "@/hooks/use-cycle"
 import {
   CYCLE_STATUS_LABEL,
@@ -86,7 +86,7 @@ export function CycleDetail({ idCycle }: CycleDetailProps) {
           </div>
 
           <div className="flex items-center gap-2">
-            {running && <Throbber mode="training" className="mr-1" />}
+            {running && <RunningDot className="mr-1" />}
             {live && (
               <>
                 <Button

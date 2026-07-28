@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 
-import { Throbber } from "@/components/ui/throbber"
+import { RunningDot } from "@/components/ui/running-dot"
 import { useCycles } from "@/hooks/use-cycles"
 import { CYCLE_STATUS_LABEL, STAGE_LABEL, isCycleLive } from "@/lib/cycles"
 
@@ -55,7 +55,7 @@ export function CyclesView() {
             className="grid grid-cols-[1fr_auto] items-baseline gap-x-6 gap-y-1 px-5 py-4 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_7rem_9rem_8rem_6rem]"
           >
             <span className="flex min-w-0 items-center gap-2">
-              {cycle.status === "running" && <Throbber mode="training" />}
+              {cycle.status === "running" && <RunningDot />}
               <span className="truncate font-medium">{cycle.label}</span>
             </span>
             {/* Below `sm` the five tracks collapse to one inline run — the same

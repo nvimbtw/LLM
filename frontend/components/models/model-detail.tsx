@@ -24,6 +24,7 @@ import { toast } from "@/components/ui/toast"
 import { useAuth } from "@/hooks/use-auth"
 import { useModel } from "@/hooks/use-model"
 import { useModels } from "@/hooks/use-models"
+import { ModelBenchmarks } from "./model-benchmarks"
 import { ModelSizeMeter } from "./model-glyph"
 import { ModelEditSheet } from "./model-edit-sheet"
 import {
@@ -351,6 +352,10 @@ export function ModelDetail({ modelId }: { modelId: string }) {
           <SpecPanel title="Architecture" specs={architecture} />
           <SpecPanel title="Training data" specs={training} />
         </div>
+
+        {/* What it is, then how well it does it. Admin-only because the benchmark
+            API is: a normal session would collect a 403 per model page. */}
+        {isAdmin && <ModelBenchmarks modelId={modelId} />}
       </div>
 
       {isAdmin && (

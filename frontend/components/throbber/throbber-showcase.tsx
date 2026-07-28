@@ -7,21 +7,27 @@ import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 
 const MODES: { mode: ThrobberMode; description: string }[] = [
-  { mode: "idle", description: "Still. Three faint ticks, no motion at all." },
-  { mode: "loading", description: "A low wave passing along the ticks." },
+  { mode: "idle", description: "Barely turning. Present, not working." },
+  { mode: "loading", description: "A steady, unhurried turn. Smooth surface." },
   {
     mode: "thinking",
-    description: "Irregular breathing. Undecided, never cyclic.",
+    description: "A charge runs the seams. Neurons firing.",
   },
-  { mode: "generating", description: "A sharp peak handed along, wrapping." },
+  {
+    mode: "generating",
+    description: "Fast, with a tight ripple running across the body.",
+  },
   {
     mode: "tool",
-    description: "The middle tick snaps up and holds. Mechanical.",
+    description: "Single faces stab out and withdraw. Spiky.",
   },
-  { mode: "training", description: "All three as one, building and relaxing." },
+  {
+    mode: "training",
+    description: "The whole ball breathes, every face at once.",
+  },
   {
     mode: "benchmarking",
-    description: "One reading at a time, dwelling on each.",
+    description: "One face at a time lifts, holds, settles.",
   },
 ]
 
@@ -34,10 +40,10 @@ export function ThrobberShowcase() {
     <div className="flex flex-col gap-6">
       <Panel
         title="Morph"
-        description="Switch state — the ticks travel, they never jump"
+        description="Switch state — the ball changes pace, it never re-starts"
       >
         <div className="flex justify-center py-2">
-          <Throbber mode={mode} className="h-10" />
+          <Throbber mode={mode} />
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
           {MODES.map(({ mode: option }) => (
@@ -68,7 +74,7 @@ export function ThrobberShowcase() {
               </span>
             </div>
             <div className="mt-3 flex justify-center">
-              <Throbber mode={option} className="h-7" />
+              <Throbber mode={option} />
             </div>
           </div>
         ))}

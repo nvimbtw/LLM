@@ -224,6 +224,12 @@ impl Conversation {
 // are supplied by the chat template itself, `endoftext` separates examples, and
 // `thinking` is handled separately (it is allowed, but only as a leading block).
 // `title` renders as a document title, which a chat reply has no business emitting.
+//
+// `reply` is excluded for a different reason: its content is a message id, not
+// prose. A generated conversation has no real ids to point at, so training on it
+// would teach the model to emit plausible-looking but meaningless uuids — and the
+// id text itself is high-entropy noise no model at this scale can predict. The
+// token stays reserved so the frontend renders it; only generated data avoids it.
 const NOT_REPLY_MARKUP: &[&str] = &[
     "user",
     "assistant",
@@ -231,6 +237,7 @@ const NOT_REPLY_MARKUP: &[&str] = &[
     "endoftext",
     "thinking",
     "title",
+    "reply",
 ];
 
 // Every tag name a reply may use, split by whether it closes.
@@ -738,6 +745,7 @@ const FEATURES: &[&str] = &[
     "an answer in two parts under <|heading|> or <|subheading|> headings",
     "a <|divider|> between two distinct sections",
     "a <|quote|> block quoting the user's own words or an error string back",
+    "a <|warn|> callout for the one caveat that would bite the user if missed",
     "plain prose with only inline <|code|> and <|bold|>, no block structure",
 ];
 
@@ -747,6 +755,86 @@ const SYSTEM_PROMPTS: &[&str] = &[
     "You are an ML engineering assistant. Answer with specifics, no filler.",
     "You are a senior engineer pair-programming over a shared repo. Be direct.",
 ];
+
+// What the previous call taught this one. Empty on the first call of a run.
+//
+// The single biggest lever on yield here: a run makes a dozen-odd independent calls
+// with the same prompt, so without this, a model that misspells its closing tags
+// misspells them in every call and the run burns its whole budget on the same
+// mistake. Feeding the last call's *actual* discard reasons back turns a run into
+// something that converges instead of repeating.
+#[derive(Default)]
+struct Feedback {
+    // Discard reasons from the last call, most frequent first, already phrased the
+    // way `validate` phrases them.
+    reasons: Vec<(String, usize)>,
+    // How many of the last call's conversations were thrown away as repeats of an
+    // opener already in the corpus.
+    duplicates: usize,
+    // Openers already in the corpus, so the model can be told what not to write
+    // again. A sample, not the lot: the corpus runs to thousands and the prompt has
+    // a budget.
+    used_openers: Vec<String>,
+}
+
+// How many previous openers to show. Enough to convey the range already covered
+// without spending more of the window on them than on the exemplars.
+const AVOID_OPENERS: usize = 12;
+// Openers are truncated to this many characters — the opening clause is what
+// carries the repetition, and a pasted 400-line brief in the avoid-list would cost
+// more than the exemplars do.
+const OPENER_PREVIEW_CHARS: usize = 90;
+
+// The corrections section, or an empty string on the first call.
+fn render_feedback(feedback: &Feedback) -> String {
+    let mut out = String::new();
+
+    if !feedback.reasons.is_empty() {
+        out.push_str(
+            "\nYOUR LAST BATCH — the previous response to this exact prompt was parsed\n\
+             and validated, and these conversations were DISCARDED for these reasons:\n",
+        );
+        for (reason, n) in feedback.reasons.iter().take(5) {
+            out.push_str(&format!("  - {n}× {reason}\n"));
+        }
+        out.push_str(
+            "Fix these specifically in this batch. They are the actual output of the\n\
+             validator, not hypotheticals — whatever you did last time, do it differently.\n",
+        );
+    }
+
+    if feedback.duplicates > 0 {
+        out.push_str(&format!(
+            "\n{} conversation(s) from your last batch were discarded as REPEATS: their\n\
+             opening user message was one already in the corpus. Openers are deduplicated\n\
+             verbatim, so a new phrasing of the same question still counts as new — but the\n\
+             same question asked the same way is wasted output.\n",
+            feedback.duplicates
+        ));
+    }
+
+    if !feedback.used_openers.is_empty() {
+        out.push_str(
+            "\nAlready in the corpus — do NOT open a conversation with any of these, or a\n\
+             close variant of one:\n",
+        );
+        for opener in &feedback.used_openers {
+            out.push_str(&format!("  - {opener}\n"));
+        }
+    }
+
+    out
+}
+
+// A one-line preview of an opener for the avoid-list: collapsed whitespace, cut to
+// its first clause, so a pasted brief contributes a line rather than a page.
+fn opener_preview(opener: &str) -> String {
+    let flat: String = opener.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(OPENER_PREVIEW_CHARS) {
+        Some((cut, _)) => format!("{}…", &flat[..cut]),
+        None => flat,
+    }
+}
 
 // A gold conversation in the delimiter format the model must reproduce.
 //
@@ -773,6 +861,7 @@ fn build_prompt(
     request: &SynthRequest,
     exemplars: &[&Conversation],
     capacity: usize,
+    feedback: &Feedback,
     rng: &mut Rng,
 ) -> String {
     let topics = pick(TOPICS, 5, rng).join("; ");
@@ -930,6 +1019,19 @@ fn build_prompt(
            terse question still gets a terse answer.\n\
          - Technical content must be CORRECT and self-contained. Invent plausible file\n\
            paths, run directories, and numbers; no real personal data, no current events.\n\
+         - Every conversation in this batch opens on a DIFFERENT question from the others,\n\
+           in a different voice. Two conversations that differ only in which file path\n\
+           they name are one conversation.\n\
+         {feedback}\
+         \n\
+         Before you emit each conversation, check it against the four things that\n\
+         actually get output thrown away, in this order:\n\
+           1. every {open}tag{close} you opened is closed, and closers are spelled\n\
+              {open}/tag{close} — the slash INSIDE, after the bar,\n\
+           2. the last turn is an assistant turn, and the roles strictly alternate\n\
+              starting from user,\n\
+           3. no {open}…{close} of any kind appears in a user turn,\n\
+           4. the assistant turn uses at least one markup tag from the vocabulary.\n\
          \n\
          Output the {batch} conversations now, starting with {conv}:",
         n_ex = exemplars.len(),
@@ -946,6 +1048,9 @@ fn build_prompt(
         topics = topics,
         shapes = shapes,
         features = features,
+        feedback = render_feedback(feedback),
+        open = "<|",
+        close = "|>",
     )
 }
 
@@ -1287,6 +1392,13 @@ pub async fn run(
     let mut consecutive_failures = 0usize;
     const FAILURE_LIMIT: usize = 3;
 
+    // Carries the previous call's verdicts into the next prompt. Seeded with the
+    // openers already on disk, so even the first call knows what not to write again.
+    let mut feedback = Feedback {
+        used_openers: seen.iter().take(AVOID_OPENERS).map(|o| opener_preview(o)).collect(),
+        ..Feedback::default()
+    };
+
     while added < request.count && calls < max_calls {
         if cancel.load(Ordering::SeqCst) {
             return Ok(None);
@@ -1297,7 +1409,7 @@ pub async fn run(
         on_progress(&format!("Call {calls} · {added}/{}", request.count), fraction);
 
         let exemplars = pick_exemplars(&pool, EXEMPLAR_BUDGET, &mut rng);
-        let prompt = build_prompt(request, &exemplars, capacity, &mut rng);
+        let prompt = build_prompt(request, &exemplars, capacity, &feedback, &mut rng);
 
         let started = std::time::Instant::now();
         // Raced against the cancel flag rather than simply checked between calls: a
@@ -1353,6 +1465,10 @@ pub async fn run(
         let mut call_rejected: Vec<(String, usize)> = Vec::new();
         let mut kept = 0usize;
         let mut call_duplicates = 0usize;
+        // What this call opened its conversations with, for the next call's
+        // avoid-list. The most useful entries there are the freshest ones: the
+        // repetition worth naming is the model's own last answer to the same prompt.
+        let mut call_openers: Vec<String> = Vec::new();
 
         for mut conv in split_delimited(strip_reasoning(&raw)) {
             if added >= request.count {
@@ -1404,6 +1520,7 @@ pub async fn run(
             }
             added += 1;
             kept += 1;
+            call_openers.push(opener_preview(&conv.turns[0].text));
 
             on_accepted(&Accepted {
                 opener: conv.turns[0].text.clone(),
@@ -1427,6 +1544,27 @@ pub async fn run(
         for (reason, n) in &call_rejected {
             tally_n(&mut rejected, reason.clone(), *n);
         }
+
+        // What the next call is told about this one. The avoid-list leads with this
+        // call's own openers and fills from the corpus behind them, so it always
+        // names the repetition that just happened before older ones.
+        let mut reasons = call_rejected.clone();
+        reasons.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut used_openers = call_openers;
+        for older in seen.iter().map(|o| opener_preview(o)) {
+            if used_openers.len() >= AVOID_OPENERS {
+                break;
+            }
+            if !used_openers.contains(&older) {
+                used_openers.push(older);
+            }
+        }
+        used_openers.truncate(AVOID_OPENERS);
+        feedback = Feedback {
+            reasons,
+            duplicates: call_duplicates,
+            used_openers,
+        };
 
         on_call(&CallReport {
             call: calls,
@@ -1806,27 +1944,27 @@ mod tests {
 
         // No model named: nothing was measured, so no limit is invented and the
         // thinking rule stands as configured.
-        let prompt = build_prompt(&request, &refs, 0, &mut rng);
+        let prompt = build_prompt(&request, &refs, 0, &Feedback::default(), &mut rng);
         assert!(prompt.contains("THINKING BLOCKS"));
         assert!(!prompt.contains("WORDS"), "no budget means no length rule");
 
         // A window too small for a real block drops the section outright rather than
         // asking for a stub — a 30-word scratchpad would teach the model to open a
         // thinking block and say nothing.
-        let prompt = build_prompt(&request, &refs, 80, &mut rng);
+        let prompt = build_prompt(&request, &refs, 80, &Feedback::default(), &mut rng);
         assert!(!prompt.contains("THINKING BLOCKS"), "an impossible demand must be dropped");
         assert!(prompt.contains("80 WORDS"), "the real limit must be stated");
 
         // A window with room keeps it, clamped to half the budget so the visible
         // reply still has somewhere to live.
-        let prompt = build_prompt(&request, &refs, 600, &mut rng);
+        let prompt = build_prompt(&request, &refs, 600, &Feedback::default(), &mut rng);
         assert!(prompt.contains("THINKING BLOCKS"));
         assert!(prompt.contains("600 WORDS"));
         assert!(prompt.contains("at least 120 words"), "the request's own floor fits here");
 
         // ...and clamped when the request asks for more than half the window.
         request.min_think_words = 400;
-        let prompt = build_prompt(&request, &refs, 600, &mut rng);
+        let prompt = build_prompt(&request, &refs, 600, &Feedback::default(), &mut rng);
         assert!(prompt.contains("at least 300 words"), "clamped to half of 600");
     }
 
@@ -1927,10 +2065,12 @@ mod e2e {
     /// pointing it at different directories at once means one reads the other's.
     /// Poisoning is ignored deliberately: a panicking test has already failed, and
     /// taking the rest of the module down with it hides which one it was.
-    static DATA_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    /// Shared with `training`'s tests, which also repoint `DATA_DIR` — this module
+    /// and that one each used to hold a private lock over the same process-global,
+    /// so neither excluded the other and a `synth` test could move `DATA_DIR` out
+    /// from under a `training` build mid-run.
     fn exclusive_data_dir() -> std::sync::MutexGuard<'static, ()> {
-        DATA_DIR.lock().unwrap_or_else(|e| e.into_inner())
+        crate::storage::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // A one-shot OpenAI-compatible endpoint returning canned delimiter output.

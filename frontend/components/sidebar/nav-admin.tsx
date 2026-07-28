@@ -12,10 +12,10 @@ import {
   SidebarMenuItem,
   SidebarMenuButton,
 } from "@/components/ui/sidebar"
-import { Throbber } from "@/components/ui/throbber"
+import { RunningDot } from "@/components/ui/running-dot"
 import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useAuth } from "@/hooks/use-auth"
-import { throbberMode } from "@/lib/jobs"
+import { KIND_LABEL } from "@/lib/jobs"
 
 // Train is not here on purpose: it is a way of putting work on the GPU, and every
 // one of those now starts from Jobs. Two doors to the same queue is how a
@@ -85,10 +85,9 @@ function QueueTell() {
   if (!running) return null
 
   return (
-    <Throbber
-      mode={throbberMode(running)}
-      accent="var(--sidebar-foreground)"
-      className="ml-auto h-3.5 group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-0 group-data-[collapsible=icon]:right-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-2"
+    <RunningDot
+      label={`${KIND_LABEL[running.kind]} running`}
+      className="ml-auto bg-sidebar-foreground group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-1 group-data-[collapsible=icon]:right-1 group-data-[collapsible=icon]:ml-0"
     />
   )
 }

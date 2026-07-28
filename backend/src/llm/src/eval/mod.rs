@@ -20,14 +20,18 @@
 //      chance exactly 50%. The headline capability number.
 //   4. **Surface metrics** (`surface`) — real-word rate, repetition, marker
 //      validity over text the model actually generated.
-//   5. **Preference** (`preference`) — the only stage that looks at chat-shaped
-//      text: does the model assign higher likelihood to the replies people gave a
-//      thumbs up than to the ones they gave a thumbs down? Reported but kept out
-//      of the composite (see `preference`'s header for why).
+//   5. **Preference** (`preference`) — does the model assign higher likelihood to
+//      the replies people gave a thumbs up than to the ones they gave a thumbs
+//      down? Reported but kept out of the composite (see `preference`'s header).
+//   6. **Chat** (`chat`) — bits per assistant-reply token over held-out
+//      conversations, scored through the SFT loss mask. The instrument for
+//      supervised fine-tuning, which every other composite stage is blind to.
+//      Also reported outside the composite (see `chat`'s header).
 //
-// Stages 1–3 and 5 are all sums of `log p(token | prefix)` over supplied text,
+// Stages 1–3, 5 and 6 are all sums of `log p(token | prefix)` over supplied text,
 // which is why `score` is the only forward path in the module.
 
+pub mod chat;
 pub mod corpus;
 pub mod generate;
 pub mod minimal_pairs;
@@ -82,6 +86,10 @@ pub struct EvalConfig {
     // Rated replies exported from the chat feedback, as JSONL. Empty/absent until
     // someone has clicked a thumbs, in which case the stage is simply skipped.
     pub preference_dir: PathBuf,
+    // Held-out conversations in the `raw/sft/*.jsonl` shape — text no fine-tune
+    // trained on. Absent until a set is installed, in which case the stage is
+    // skipped like `preference`.
+    pub chat_dir: PathBuf,
     pub max_heldout_bytes: usize,
     pub max_baseline_bytes: usize,
     pub sampling: generate::SamplingConfig,
@@ -94,6 +102,7 @@ impl EvalConfig {
             corpus_dir: eval_dir.join("corpus"),
             blimp_dir: eval_dir.join("blimp"),
             preference_dir: eval_dir.join("preference"),
+            chat_dir: eval_dir.join("chat"),
             max_heldout_bytes: DEFAULT_MAX_HELDOUT_BYTES,
             max_baseline_bytes: DEFAULT_MAX_BASELINE_BYTES,
             sampling: generate::SamplingConfig::default(),
@@ -116,14 +125,15 @@ fn cancelled(cancel: &Cancel) -> bool {
 }
 
 // Stage weights for the overall progress fraction. Grammar dominates because it is
-// by far the most forward passes (two per pair, hundreds of pairs). Preference gets
-// the smallest slice: it is one forward pass per rated reply, and there are rarely
-// many. These affect only the progress bar — `composite_score` carries its own,
-// separate weights.
-const W_CORPUS: f64 = 0.38;
-const W_GRAMMAR: f64 = 0.42;
-const W_GENERATION: f64 = 0.14;
+// by far the most forward passes (two per pair, hundreds of pairs). Preference and
+// chat get the smallest slices: one forward pass per example, and there are rarely
+// many of either. These affect only the progress bar — `composite_score` carries
+// its own, separate weights, and must sum to 1.0.
+const W_CORPUS: f64 = 0.36;
+const W_GRAMMAR: f64 = 0.40;
+const W_GENERATION: f64 = 0.13;
 const W_PREFERENCE: f64 = 0.06;
+const W_CHAT: f64 = 0.05;
 
 // ── the report ──────────────────────────────────────────────────────────────
 
@@ -146,6 +156,7 @@ pub struct CorpusMetrics {
     pub bytes_scored: usize,
     pub baseline_bits_per_byte: f64,
     pub advantage: f64,
+    pub floor_progress: f64,
     pub files: usize,
 }
 
@@ -201,6 +212,9 @@ pub struct Report {
     // Absent when no thumbs have been collected yet — which is every run until the
     // chat UI has been used. Never folded into `score`; see `preference`'s header.
     pub preference: Option<preference::PreferenceMetrics>,
+    // Absent when no held-out conversation set is installed. Never folded into
+    // `score`; see `chat`'s header.
+    pub chat: Option<chat::ChatMetrics>,
     pub duration_secs: f64,
 }
 
@@ -253,6 +267,11 @@ pub fn run(
         else {
             return Ok(None);
         };
+
+        let Some(chat_metrics) = run_chat(&model, &merges, config, &progress, &cancel).await
+        else {
+            return Ok(None);
+        };
         progress("Done", 1.0);
 
         let corpus_metrics = corpus_report.map(|c| CorpusMetrics {
@@ -263,6 +282,7 @@ pub fn run(
             bytes_scored: c.bytes_scored,
             baseline_bits_per_byte: c.baseline_bits_per_byte,
             advantage: c.advantage,
+            floor_progress: c.floor_progress,
             files: c.files,
         });
 
@@ -273,6 +293,7 @@ pub fn run(
             grammar,
             generation,
             preference,
+            chat: chat_metrics,
             duration_secs: started.elapsed().as_secs_f64(),
         }))
     })
@@ -438,6 +459,46 @@ async fn run_preference(
     Some(Some(preference::summarize(&scored)))
 }
 
+// Score every held-out conversation's assistant tokens and reduce them.
+//
+// The nested return means what it does in `run_preference`: the outer `None` is
+// "cancelled partway", the inner is "there is no held-out chat set installed",
+// which is the normal state until one is and must not look like a failure.
+async fn run_chat(
+    model: &Model,
+    merges: &[((u32, u32), u32)],
+    config: &EvalConfig,
+    progress: &ProgressCallback,
+    cancel: &Cancel,
+) -> Option<Option<chat::ChatMetrics>> {
+    let base = W_CORPUS + W_GRAMMAR + W_GENERATION + W_PREFERENCE;
+    let conversations = chat::load(&config.chat_dir);
+    if conversations.is_empty() {
+        progress("No held-out chat set", base + W_CHAT);
+        return Some(None);
+    }
+
+    let layers = model.layers as usize;
+    let mut scored = Vec::with_capacity(conversations.len());
+
+    for (i, conversation) in conversations.iter().enumerate() {
+        // One forward pass per conversation, so cancellation is checked every one —
+        // the same cadence `run_preference` uses, against grammar's every 25th.
+        if cancelled(cancel) {
+            return None;
+        }
+        progress(
+            &format!("Chat ({}/{})", i + 1, conversations.len()),
+            base + W_CHAT * (i as f64 / conversations.len() as f64),
+        );
+        if let Some(scores) = chat::reply_logprob(model, merges, conversation, layers).await {
+            scored.push(scores);
+        }
+    }
+
+    Some(chat::summarize(&scored))
+}
+
 // ── scoring ─────────────────────────────────────────────────────────────────
 
 // One number, on a 0–100 scale, so two checkpoints can be ordered at a glance.
@@ -447,9 +508,19 @@ async fn run_preference(
 //
 //   grammar   (0.40) — accuracy rescaled from its 0.5 chance floor, so a model
 //                      that guesses scores 0 rather than 50.
-//   corpus    (0.25) — the fraction of the n-gram floor's bits the model removes.
+//   corpus    (0.25) — `floor_progress`: how far the model has come from
+//                      predicting nothing toward the n-gram floor.
 //   words     (0.20) — real-word rate of its own output.
 //   variety   (0.15) — distinct-3, which collapses when the model loops.
+//
+// The corpus component reads `floor_progress` rather than `advantage`, which it
+// used to. `advantage` is the fraction of the floor's bits the model removes, and
+// on a corpus where nothing at this scale beats the floor it is negative for every
+// checkpoint, clamps to 0.0, and — being finite — enters as a genuine zero rather
+// than an absent measurement. The effect was a quarter of the score wired to a
+// constant, capping every model at 75 and hiding real movement in bits per byte.
+// `advantage` stays in the report, where "has not beaten a lookup table" is the
+// honest verdict it always was.
 //
 // The weights say grammar is the capability that matters most at this scale and
 // repetition matters least, being the easiest to fix with decoding settings. When
@@ -467,8 +538,8 @@ fn composite_score(
         components.push((0.40, ((grammar.accuracy - 0.5) / 0.5).clamp(0.0, 1.0)));
     }
     if let Some(c) = corpus {
-        if c.advantage.is_finite() {
-            components.push((0.25, c.advantage.clamp(0.0, 1.0)));
+        if c.floor_progress.is_finite() {
+            components.push((0.25, c.floor_progress.clamp(0.0, 1.0)));
         }
     }
     if generation.real_word_rate.is_finite() {
@@ -548,7 +619,9 @@ mod tests {
         }
     }
 
-    fn corpus(advantage: f64) -> Option<CorpusMetrics> {
+    // Named for the component the composite actually reads; `advantage` is carried
+    // alongside at a fixed value precisely because it must no longer move the score.
+    fn corpus(floor_progress: f64) -> Option<CorpusMetrics> {
         Some(CorpusMetrics {
             bits_per_byte: 2.0,
             bits_per_token: 8.0,
@@ -556,7 +629,8 @@ mod tests {
             tokens_scored: 1000,
             bytes_scored: 4000,
             baseline_bits_per_byte: 3.0,
-            advantage,
+            advantage: 0.0,
+            floor_progress,
             files: 1,
         })
     }
@@ -608,6 +682,16 @@ mod tests {
     fn a_report_with_no_usable_components_is_not_a_number() {
         let score = composite_score(&None, &grammar(f64::NAN), &generation(f64::NAN, f64::NAN));
         assert!(score.is_nan());
+    }
+
+    // The regression this component was changed for: a model well short of the
+    // n-gram floor must still be separable from a worse one. Under `advantage` both
+    // clamped to 0.0 and scored identically.
+    #[test]
+    fn two_models_below_the_n_gram_floor_are_still_ordered() {
+        let better = composite_score(&corpus(0.71), &grammar(0.6), &generation(0.5, 0.9));
+        let worse = composite_score(&corpus(0.55), &grammar(0.6), &generation(0.5, 0.9));
+        assert!(better > worse, "{better} vs {worse}");
     }
 
     #[test]

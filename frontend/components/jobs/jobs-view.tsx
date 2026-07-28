@@ -3,6 +3,7 @@
 import { Switch } from "@/components/ui/switch"
 import { useJobsContext } from "./jobs-provider"
 import { AddJobMenu } from "./add-job-menu"
+import { HistoryPager } from "./history-pager"
 import { JobHistory } from "./job-history"
 import { NowBand } from "./now-band"
 import { QueueBand } from "./queue-band"
@@ -25,6 +26,10 @@ export function JobsView() {
     runningNetwork,
     queued,
     history,
+    historyTotal,
+    historyPage,
+    historyPages,
+    goToHistoryPage,
     paused,
     isLoading,
     error,
@@ -96,11 +101,19 @@ export function JobsView() {
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <header className="border-b border-border px-5 py-4">
           <h2 className="text-sm font-semibold tracking-tight">History</h2>
+          {/* The count is the whole ledger, not the page — "25 jobs" on every page
+              of a hundred would be a worse answer to "how much have I run" than no
+              number at all. */}
           <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
-            {history.length} {history.length === 1 ? "job" : "jobs"}
+            {historyTotal} {historyTotal === 1 ? "job" : "jobs"}
           </p>
         </header>
         <JobHistory jobs={history} onRetry={retry} onDelete={remove} />
+        <HistoryPager
+          page={historyPage}
+          pages={historyPages}
+          onGo={goToHistoryPage}
+        />
       </section>
     </div>
   )
