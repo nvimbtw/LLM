@@ -16,8 +16,8 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db;
-use crate::db::benchmark::BenchmarkStatus;
+use db;
+use db::benchmark::BenchmarkStatus;
 use crate::extractors::AdminUser;
 use storage;
 

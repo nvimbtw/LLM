@@ -419,6 +419,7 @@ dependencies = [
  "actix-ws",
  "chrono",
  "crypto",
+ "db",
  "dotenvy",
  "futures-util",
  "jsonwebtoken",
@@ -923,6 +924,18 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "db"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crypto",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
 ]
 
 [[package]]

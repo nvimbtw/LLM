@@ -6,8 +6,8 @@ use sqlx::PgPool;
 use std::fs;
 use uuid::Uuid;
 
-use crate::db;
-use crate::db::user::AccessLevel;
+use db;
+use db::user::AccessLevel;
 use crate::routes::validate;
 use crate::extractors::{AdminUser, AuthUser};
 use storage;

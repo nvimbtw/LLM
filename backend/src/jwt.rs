@@ -2,7 +2,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode}
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::db::user::AccessLevel;
+use db::user::AccessLevel;
 
 #[derive(Serialize, Deserialize)]
 pub struct Claims {

@@ -17,8 +17,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::db;
-use crate::db::job::{Job, JobKind, JobLane, JobStatus};
+use db;
+use db::job::{Job, JobKind, JobLane, JobStatus};
 use crate::extractors::AdminUser;
 use crate::queue::Queue;
 use storage;

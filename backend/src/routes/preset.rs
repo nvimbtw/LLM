@@ -5,7 +5,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db;
+use db;
 use crate::extractors::AuthUser;
 
 // Response shape sent to clients. Kept separate from the db `Preset` struct per

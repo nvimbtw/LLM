@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db;
+use db;
 use crate::extractors::AdminUser;
 use crate::gather;
 

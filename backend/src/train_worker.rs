@@ -19,7 +19,7 @@ use chrono::Utc;
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::db::model::NewModel;
+use db::model::NewModel;
 use crate::queue::{ProgressTick, emit, frame, lock};
 use crate::training::{self, TokenizeEvent, TrainConfig, TrainMode};
 

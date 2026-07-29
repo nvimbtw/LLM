@@ -18,7 +18,7 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(database_url)
         .await?;
 
-    sqlx::migrate!("./src/db/migrations").run(&pool).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     let pwd_hash = match password::hash_password("admin") {
         Ok(hash) => hash,

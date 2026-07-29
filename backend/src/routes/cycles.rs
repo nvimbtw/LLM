@@ -14,8 +14,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::cycle::{CycleConfig, Cycles};
-use crate::db;
-use crate::db::cycle::{CycleStage, CycleStatus};
+use db;
+use db::cycle::{CycleStage, CycleStatus};
 use crate::extractors::AdminUser;
 use storage;
 

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::routes::validate;
-use crate::{db, jwt};
+use crate::jwt;
 
 #[derive(Deserialize)]
 struct LoginPayload {

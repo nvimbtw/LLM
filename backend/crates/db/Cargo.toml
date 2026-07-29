@@ -1,0 +1,19 @@
+[package]
+name = "db"
+version = "0.1.0"
+edition = "2021"
+
+# The SQL layer: one module per entity, raw sqlx with compile-time checked
+# queries. No actix — a query function returns `Result<T, sqlx::Error>` and
+# never an `HttpResponse`; mapping to status codes is the web layer's job.
+#
+# `migrations/` lives beside this manifest because `sqlx::migrate!` resolves its
+# argument against CARGO_MANIFEST_DIR. Moving one without the other still
+# compiles and fails at runtime on startup.
+[dependencies]
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.150"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+crypto = { path = "../crypto" }

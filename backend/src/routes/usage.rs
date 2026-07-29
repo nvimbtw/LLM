@@ -4,7 +4,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use std::collections::HashMap;
 
-use crate::{db, extractors::AuthUser};
+use crate::extractors::AuthUser;
 
 // The usage page shows the trailing 30 days.
 const WINDOW_DAYS: i32 = 30;

@@ -33,9 +33,9 @@ use sqlx::PgPool;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::db;
-use crate::db::cycle::{CycleStage, CycleStatus};
-use crate::db::job::{JobKind, JobStatus};
+use db;
+use db::cycle::{CycleStage, CycleStatus};
+use db::job::{JobKind, JobStatus};
 use crate::gather;
 use crate::queue::Queue;
 use crate::training::{TrainConfig, TrainMode};

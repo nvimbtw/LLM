@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::routes::validate;
-use crate::{db, extractors::AuthUser, jwt};
+use crate::{extractors::AuthUser, jwt};
 
 // Response shape sent to clients. The db `User` struct carries the password
 // hash, so we never serialize it directly — this strips that field.

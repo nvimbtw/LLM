@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 mod autolabel;
 mod cycle;
-mod db;
 mod extractors;
 mod gather;
 // Temporarily a module here rather than in `crypto`: its `Claims` carry a

@@ -36,8 +36,8 @@ use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::autolabel;
-use crate::db;
-use crate::db::job::{JobKind, JobLane, JobStatus};
+use db;
+use db::job::{JobKind, JobLane, JobStatus};
 use crate::gather;
 use storage;
 use crate::synth;

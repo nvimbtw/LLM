@@ -5,7 +5,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::message::Feedback;
+use crate::message::Feedback;
 
 // One generated reply, as the rating panel sees it. No `feedback` field: every row
 // this struct is used for is by definition unrated — freshly inserted, or selected

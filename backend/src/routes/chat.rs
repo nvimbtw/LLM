@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::queue::{ChatRequest, Queue};
 use crate::routes::validate;
-use crate::{db, db::user::AccessLevel, extractors::AuthUser, ws};
+use crate::{extractors::AuthUser, ws};
+use db::user::AccessLevel;
 
 #[derive(Serialize)]
 struct ChatResponse {

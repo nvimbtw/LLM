@@ -12,7 +12,7 @@ use actix_web::{
 
 use crate::jwt::{self, Claims};
 use crypto::token_cipher;
-use crate::db::user::AccessLevel;
+use db::user::AccessLevel;
 
 // Shared verification used by every auth extractor: pull the
 // `Authorization: Bearer <token>` header, decrypt and verify the JWT, and hand
