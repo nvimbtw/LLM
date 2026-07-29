@@ -6,7 +6,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::queue::{ChatRequest, Queue};
+use jobs::queue::{ChatRequest, Queue};
 use crate::routes::validate;
 use crate::{extractors::AuthUser, ws};
 use db::user::AccessLevel;

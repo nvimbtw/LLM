@@ -36,7 +36,7 @@ use uuid::Uuid;
 use db;
 use db::cycle::{CycleStage, CycleStatus};
 use db::job::{JobKind, JobStatus};
-use crate::gather;
+use labeling::gather;
 use crate::queue::Queue;
 use training::{TrainConfig, TrainMode};
 
@@ -221,7 +221,7 @@ impl Cycles {
                     .await
                     .map_err(|e| format!("could not open round: {e}"))?;
 
-                let request = crate::autolabel::AutolabelRequest {
+                let request = labeling::autolabel::AutolabelRequest {
                     id_model: model,
                     candidates: config.candidates,
                     max_prompts: config.max_prompts,
@@ -552,7 +552,7 @@ impl Cycles {
         let counts = db::signal::counts(&self.pool)
             .await
             .map_err(|e| format!("could not count signals: {e}"))?;
-        let (auto_up, auto_down) = crate::autolabel::catalogue_counts();
+        let (auto_up, auto_down) = labeling::autolabel::catalogue_counts();
         Ok((
             counts.desirable + auto_up,
             counts.undesirable + auto_down,

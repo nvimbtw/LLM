@@ -35,12 +35,12 @@ use sqlx::PgPool;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::autolabel;
+use labeling::autolabel;
 use db;
 use db::job::{JobKind, JobLane, JobStatus};
-use crate::gather;
+use labeling::gather;
 use storage;
-use crate::synth;
+use synth;
 use crate::train_worker::{self, TrainCtx, TrainPhase, TrainState};
 
 const BROADCAST_CAPACITY: usize = 256;

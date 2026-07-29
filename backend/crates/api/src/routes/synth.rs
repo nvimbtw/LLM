@@ -14,7 +14,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::extractors::AdminUser;
-use crate::synth;
+use synth;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(get_corpus);

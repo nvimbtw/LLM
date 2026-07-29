@@ -2,19 +2,6 @@ use actix_cors::Cors;
 use actix_web::{App, HttpServer, web};
 use std::sync::Arc;
 
-mod autolabel;
-mod cycle;
-mod extractors;
-mod gather;
-// Temporarily a module here rather than in `crypto`: its `Claims` carry a
-// `db::user::AccessLevel`, and `db` depends on `crypto`. TODO-0103 folds it
-// into the web crate, the only place that issues or verifies a token.
-mod jwt;
-mod queue;
-mod routes;
-mod synth;
-mod train_worker;
-mod ws;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -51,14 +38,14 @@ async fn main() -> std::io::Result<()> {
     // One runner per lane. The device lane is the GPU line, unchanged; the network
     // lane exists so work that only waits on somebody else's API never occupies it
     // (see db::job::JobLane).
-    let queue = Arc::new(queue::Queue::new(pool.clone()));
+    let queue = Arc::new(jobs::queue::Queue::new(pool.clone()));
     actix_web::rt::spawn(queue.clone().run(db::job::JobLane::Device));
     actix_web::rt::spawn(queue.clone().run(db::job::JobLane::Network));
 
     // The layer above the queue: it enqueues the jobs a post-training round is made
     // of and advances when they finish, and it never touches the device itself — a
     // driver that held the GPU would deadlock against its own children.
-    let cycles = Arc::new(cycle::Cycles::new(pool.clone(), queue.clone()));
+    let cycles = Arc::new(jobs::cycle::Cycles::new(pool.clone(), queue.clone()));
     cycles.spawn();
 
     HttpServer::new(move || {
@@ -77,7 +64,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(jwt_secret.clone()))
             .app_data(web::Data::new(queue.clone()))
             .app_data(web::Data::new(cycles.clone()))
-            .configure(routes::configure)
+            .configure(api::configure)
     })
     .bind(("127.0.0.1", 8080))?
     .run()

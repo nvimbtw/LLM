@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::cycle::{CycleConfig, Cycles};
+use jobs::cycle::{CycleConfig, Cycles};
 use db;
 use db::cycle::{CycleStage, CycleStatus};
 use crate::extractors::AdminUser;
@@ -126,7 +126,7 @@ async fn create_cycle(
             return HttpResponse::InternalServerError().body("failed to start the cycle");
         }
     };
-    if let Err(msg) = crate::gather::check_signals(counts.desirable, counts.undesirable) {
+    if let Err(msg) = labeling::gather::check_signals(counts.desirable, counts.undesirable) {
         return HttpResponse::BadRequest().body(msg);
     }
 

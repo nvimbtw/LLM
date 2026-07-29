@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use db;
 use crate::extractors::AdminUser;
-use crate::gather;
+use labeling::gather;
 
 // How many unrated samples one request returns. A batch is 16, so this covers a
 // couple of them — enough that the panel never runs dry mid-session without
@@ -86,7 +86,7 @@ async fn get_signals(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Respond
     // The catalogue is the seed plus whatever auto-labelling has written. The seed
     // is counted in because it is genuinely part of the training data — and the
     // best part of it, being the only labels a person actually gave.
-    let (auto_up, auto_down) = crate::autolabel::catalogue_counts();
+    let (auto_up, auto_down) = labeling::autolabel::catalogue_counts();
     let approved = counts.desirable + auto_up;
     let rejected = counts.undesirable + auto_down;
     let catalogue_reason = gather::check_catalogue(approved, rejected).err();

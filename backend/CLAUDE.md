@@ -16,42 +16,64 @@ Backend API for an LLM project (crawler, data pipeline, tokenizer, and model tra
 - **Web framework**: Actix-web. Not Axum — deliberately avoided for its extractor/trait-bound complexity.
 - **Database**: PostgreSQL via `sqlx`. Not an ORM (no Diesel, no SeaORM) — raw SQL with compile-time query checking via `query_as!`/`query!`.
 - **Auth**: JWT via `jsonwebtoken` (rust_crypto backend), passwords hashed with `argon2`.
-- **Migrations**: `sqlx::migrate!`, embedded in the binary, run automatically on startup. Migration files live in `backend/migrations/`.
+- **Migrations**: `sqlx::migrate!`, embedded at compile time, run automatically on startup from `db::create_pool`. Migration files live in `backend/crates/db/migrations/`. The macro resolves its argument against `CARGO_MANIFEST_DIR`, so the directory and the `"./migrations"` literal must move together — mismatching them still compiles and fails at runtime.
 
 ## Directory structure
 
+```
 backend/
-├── Cargo.toml          (also the workspace root)
-├── migrations/
-├── src/
-│   ├── main.rs          thin entrypoint only: HttpServer setup, CORS, app_data registration
-│   ├── routes/           one file per resource, HTTP layer only
-│   │   ├── mod.rs         composes all route modules
-│   │   ├── auth.rs
-│   │   ├── users.rs
-│   │   └── chats.rs
-│   ├── db/                one file per entity, pure SQL queries
-│   │   ├── mod.rs
-│   │   ├── user.rs
-│   │   └── model.rs
-│   └── crypto/
-│       ├── mod.rs
-│       ├── password.rs    argon2 hash/verify
-│       └── jwt.rs          token generation/verification
-└── crates/                 nested under backend, NOT siblings of backend/
-    ├── crawler/
-    ├── data_pipeline/
-    ├── tokenization/
-    └── llm/
+├── Cargo.toml         workspace root AND the binary package
+├── src/main.rs        the only file here: HttpServer setup, CORS, app_data
+└── crates/
+    ├── storage/       on-disk layout under data/ — no dependencies at all
+    ├── crypto/        argon2 hashing, AES token cipher
+    ├── tokenize/      BPE tokenizer
+    ├── llm/           model, CUDA kernels, training/eval          → tokenize
+    ├── training/      dataset building + entry points into llm    → llm, tokenize, storage
+    ├── synth/         synthetic SFT/chat generation (HTTP)        → llm, tokenize, storage
+    ├── labeling/      autolabel + gather → raw/preference/        → llm, tokenize, storage
+    ├── db/            one module per entity, sqlx + migrations/   → crypto
+    ├── jobs/          queue + train_worker + cycle (owns the pool) → db, training, synth, labeling
+    └── api/           routes + extractors + ws + jwt              → jobs, db, crypto, …
+```
 
-`crates/*` are Cargo workspace members declared in `backend/Cargo.toml`. They are subordinate to `backend`, not independent top-level projects — never create a new crate outside `backend/crates/`.
+**Dependency order, strictly one-directional:**
+
+```
+storage · crypto · tokenize  →  llm  →  training · synth · labeling  →  db  →  jobs  →  api  →  backend
+```
+
+Nothing may depend on a crate to its right. Cargo enforces this for free — a
+cycle simply fails to compile — so if a new edge does not build, the layering is
+wrong, not Cargo.
+
+`crates/*` are workspace members declared in `backend/Cargo.toml`. They are
+subordinate to `backend`, not independent top-level projects — **never create a
+new crate outside `backend/crates/`**, and never add a dependency to
+`backend/Cargo.toml` that belongs to a crate. The binary depends on exactly
+three crates (`api`, `db`, `jobs`); if that list grows, logic has leaked back
+into `main.rs`.
+
+Two boundaries that are not obvious and are load-bearing:
+
+- **`jobs` is three modules, not three crates.** `train_worker` reads
+  `queue::{ProgressTick, emit, frame, lock}` and `queue` calls
+  `train_worker::{run, snapshot_frame}` and matches its `Outcome`. That is a
+  cycle; separating them means first extracting the shared progress types.
+- **`jwt` lives in `api`, not `crypto`.** Its `Claims` carry a
+  `db::user::AccessLevel`, and `db` depends on `crypto` for password hashing, so
+  `crypto::jwt` would close a loop. `api` is the only layer that issues or
+  verifies a token, so it belongs there regardless.
+
+The crate is named `api` rather than `web` because `web` collides with
+`actix_web::web`, which every route file imports.
 
 ## Layering rules (strict)
 
-- **`routes/*.rs`**: HTTP handlers only. Parses requests, calls `db::` functions, maps results to `HttpResponse` with correct status codes. Each file exposes a `pub fn configure(cfg: &mut web::ServiceConfig)`, registered in `routes/mod.rs` via `web::scope(...)`.
-- **`db/*.rs`**: Pure SQL queries via `sqlx`. Functions return `Result<T, sqlx::Error>` or `Result<Option<T>, sqlx::Error>` — never return `HttpResponse` or `impl Responder` from this layer. Db structs (e.g. `User`) may carry sensitive fields (password hash) — never serialize a db struct directly back to a client; use a separate response struct.
-- **`crypto/*.rs`**: Self-contained crypto helpers (hashing, JWT). No DB or HTTP awareness.
-- Composite operations that span multiple concerns (e.g. login: lookup user + verify password + issue token) live in `routes/`, not `db/`, since they aren't pure SQL.
+- **`api/routes/*.rs`**: HTTP handlers only. Parses requests, calls `db::` functions, maps results to `HttpResponse` with correct status codes. Each file exposes a `pub fn configure(cfg: &mut web::ServiceConfig)`, registered in `routes/mod.rs` via `web::scope(...)` and re-exported as `api::configure`.
+- **`db/*.rs`**: Pure SQL queries via `sqlx`. Functions return `Result<T, sqlx::Error>` or `Result<Option<T>, sqlx::Error>` — never return `HttpResponse` or `impl Responder` from this layer. Db structs (e.g. `User`) may carry sensitive fields (password hash) — never serialize a db struct directly back to a client; use a separate response struct. This rule now spans a crate boundary, so `pub` here means "visible to the whole workspace".
+- **`crypto/*.rs`**: Self-contained crypto helpers (hashing, symmetric cipher). No DB or HTTP awareness — and this is now enforced rather than asserted, since the crate's manifest names neither `sqlx` nor `actix-web`.
+- Composite operations that span multiple concerns (e.g. login: lookup user + verify password + issue token) live in `api/routes/`, not `db/`, since they aren't pure SQL.
 
 ## Database conventions
 

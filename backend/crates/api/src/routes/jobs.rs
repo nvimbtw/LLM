@@ -20,7 +20,7 @@ use uuid::Uuid;
 use db;
 use db::job::{Job, JobKind, JobLane, JobStatus};
 use crate::extractors::AdminUser;
-use crate::queue::Queue;
+use jobs::queue::Queue;
 use storage;
 use training::{TrainConfig, TrainMode};
 use crate::ws;
@@ -296,21 +296,21 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
                 return Err(HttpResponse::InternalServerError().body("failed to queue job"));
             }
         };
-        if let Err(msg) = crate::gather::check_signals(counts.desirable, counts.undesirable) {
+        if let Err(msg) = labeling::gather::check_signals(counts.desirable, counts.undesirable) {
             return Err(HttpResponse::BadRequest().body(msg));
         }
 
-        let (auto_up, auto_down) = crate::autolabel::catalogue_counts();
+        let (auto_up, auto_down) = labeling::autolabel::catalogue_counts();
         let (approved, rejected) =
             (counts.desirable + auto_up, counts.undesirable + auto_down);
-        if let Err(msg) = crate::gather::check_catalogue(approved, rejected) {
+        if let Err(msg) = labeling::gather::check_catalogue(approved, rejected) {
             return Err(HttpResponse::BadRequest().body(msg));
         }
 
         // The backstop under the catalogue bar. Clamped rather than refused: the
         // config is otherwise fine, and silently running it five times over a
         // small catalogue is the failure — not the request itself.
-        let cap = crate::gather::max_epochs_for(approved + rejected);
+        let cap = labeling::gather::max_epochs_for(approved + rejected);
         if config.epochs > cap {
             config.epochs = cap;
         }
@@ -328,12 +328,12 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
                 return Err(HttpResponse::InternalServerError().body("failed to queue job"));
             }
         };
-        let (auto_up, _) = crate::autolabel::catalogue_counts();
+        let (auto_up, _) = labeling::autolabel::catalogue_counts();
         let approved = counts.desirable + auto_up;
-        if let Err(msg) = crate::gather::check_raft(approved) {
+        if let Err(msg) = labeling::gather::check_raft(approved) {
             return Err(HttpResponse::BadRequest().body(msg));
         }
-        let cap = crate::gather::max_epochs_for(approved);
+        let cap = labeling::gather::max_epochs_for(approved);
         if config.epochs > cap {
             config.epochs = cap;
         }
@@ -401,7 +401,7 @@ async fn prepare_benchmark(pool: &PgPool, config: Value) -> Result<(String, Valu
 // must exist and have a tokenizer on disk, and the run must ask for enough
 // candidates per prompt to have a best and a worst.
 async fn prepare_autolabel(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: crate::autolabel::AutolabelRequest = match serde_json::from_value(config) {
+    let parsed: labeling::autolabel::AutolabelRequest = match serde_json::from_value(config) {
         Ok(config) => config,
         Err(_) => {
             return Err(HttpResponse::BadRequest().body("an autolabel job needs an id_model"));
@@ -449,7 +449,7 @@ async fn prepare_autolabel(pool: &PgPool, config: Value) -> Result<(String, Valu
 // exist and be able to generate — minus the candidate count, since a gather run
 // produces one reply per prompt and there is nothing to rank them against.
 async fn prepare_gather(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: crate::gather::GatherRequest = match serde_json::from_value(config) {
+    let parsed: labeling::gather::GatherRequest = match serde_json::from_value(config) {
         Ok(config) => config,
         Err(_) => {
             return Err(HttpResponse::BadRequest().body("a gather job needs an id_model"));
@@ -496,7 +496,7 @@ async fn prepare_gather(pool: &PgPool, config: Value) -> Result<(String, Value),
 // a tokenizer that does not exist, should be a 400 on submit rather than a failed
 // row after the first call comes back.
 async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: crate::synth::SynthRequest = match serde_json::from_value(config) {
+    let parsed: synth::SynthRequest = match serde_json::from_value(config) {
         Ok(config) => config,
         Err(e) => {
             return Err(HttpResponse::BadRequest().body(format!("invalid generation config: {e}")));
