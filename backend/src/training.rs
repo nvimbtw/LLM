@@ -1798,7 +1798,7 @@ pub fn build_raft_dataset(base_model_dir: &Path) -> io::Result<RaftDatasetStats>
     }
 
     let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
-    let ctx = model.positional_table.len();
+    let ctx = model.ctx_window();
 
     let mut corpus: Vec<u32> = Vec::new();
     let mut mask: Vec<u8> = Vec::new();
@@ -1966,7 +1966,7 @@ pub fn build_kto_dataset(base_model_dir: &Path) -> io::Result<KtoDatasetStats> {
     }
 
     let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
-    let ctx = model.positional_table.len();
+    let ctx = model.ctx_window();
     let layers = model.layers as usize;
 
     let mut corpus: Vec<u32> = Vec::new();

@@ -147,11 +147,14 @@ impl Model {
         // SAFETY: see contract.
         unsafe {
             cuda_attention_backward_batched(
-                ws.post_ff_residuals[layer_idx].ptr as *const c_void,
+                ws.ln1_outputs[layer_idx].ptr as *const c_void,
                 ws.d_wq_all[layer_idx].ptr as *const c_void,
                 ws.d_wk_all[layer_idx].ptr as *const c_void,
                 ws.d_wv_all[layer_idx].ptr as *const c_void,
                 ws.head_p_all[layer_idx].ptr as *const c_void,
+                ws.q_all[layer_idx].ptr as *const c_void,
+                ws.k_all[layer_idx].ptr as *const c_void,
+                ws.v_all[layer_idx].ptr as *const c_void,
                 ws.d_wo_x.ptr as *const c_void,
                 ws.b_sd_head.ptr as *mut c_void,
                 ws.g_wq_all[layer_idx].ptr,

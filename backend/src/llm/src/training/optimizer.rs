@@ -272,3 +272,41 @@ pub fn gpu_adam_update(ws: &Workspace, lr: f32, step: i32, accum_steps: usize, l
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::training::transformer::Model;
+
+    // Every trained tensor must receive a gradient. A tensor whose accumulated
+    // gradient is exactly zero after a real forward+backward is not being trained
+    // at all — it only ever shrinks under decoupled weight decay, which looks like
+    // "training happened" in the weight file but means the model is running on
+    // frozen random projections.
+    #[test]
+    fn every_attention_tensor_receives_a_gradient() {
+        let (vocab, dim, ctx, heads, ff_mult, layers) = (32, 16, 8, 2, 2, 3);
+        let t = Model::init(dim, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&t, ctx as usize);
+        ws.upload_weights(&t);
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+        pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+
+        let names = [
+            "wq", "wk", "wv", "wo", "w1", "w2", "b1", "b2", "ln_gamma", "ln_beta",
+        ];
+        let mut dead = Vec::new();
+        for l in 0..layers as usize {
+            for (i, (g, _m, _v, _s, n)) in layer_param_bufs(&ws, l).iter().enumerate() {
+                let norm = unsafe { cuda_l2norm(*g, *n as i32) };
+                println!("L{l} {:<9} grad_l2 = {norm:.6e}", names[i]);
+                if !(norm > 0.0) {
+                    dead.push(format!("L{l}.{}", names[i]));
+                }
+            }
+        }
+        assert!(dead.is_empty(), "tensors receiving no gradient: {dead:?}");
+    }
+
+}

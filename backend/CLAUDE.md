@@ -202,9 +202,15 @@ split is idempotent and adding conversations never re-partitions the existing on
   `datasets/chat/`, one file per conversation, **by `build_dataset` itself at the
   start of every run**. `Chat` is offered in the curriculum picker as a *virtual*
   dataset (`training::CHAT_DATASET`); no folder under `uploads/` backs it, and
-  `list_datasets` counts it straight from `raw/sft/`. Place it as the **last
-  stage** so the chat data is annealed in rather than mixed evenly. This is what
-  stops the marker embeddings reaching SFT at random init.
+  `list_datasets` counts it straight from `raw/sft/`. Put `Chat` in the **last
+  stage and at least one early one** — annealing it in at the end is what shapes
+  the register, but a marker the model meets *only* in the last stage is a marker
+  it has ~0.15% of the corpus to learn. **Do not confine it to the tail.**
+  Prose datasets (TinyStories/Wikipedia/FineWeb) carry no markup at all, so
+  `Chat` + `Synthetic` are the *only* source of all 37 non-`<|endoftext|>`
+  markers; a curriculum that first uses them in stage 4 leaves 37 embedding rows
+  untrained and 37 output columns actively suppressed across the whole run.
+  That is the loss-spike-to-20 failure — see the stage-boundary warm start below.
 - **SFT (35%)** — what `build_sft_dataset` trains on. It filters `raw/sft/` itself.
 - **Eval (15%)** — held back from both. `llm::eval::chat` scores
   `eval/chat/*.jsonl` when a set is installed there; nothing writes it yet.
@@ -240,6 +246,28 @@ with no record falls back to the chat scaffold, matching the old behaviour. Once
 the chat data is seeded into pretraining this should reset **zero** rows; a
 non-zero count in the log means the corpora drifted or a marker was added.
 
+**Stage-boundary warm start (pretrain).** The same hazard exists *inside* a
+single pretrain run, and `run_training_loop` handles it: walking the stages in
+order it tracks which token ids have been trained on, and before each stage after
+the first it reseeds the ids that stage is the first to use — the embedding row
+via `warm_start_embeddings`, the output column via `warm_start_output_columns`.
+
+An id a stage introduces is not merely unknown, it is **refuted**: it was a
+target on every step before this one, always with label 0, so the softmax spent
+the whole run pushing its logit down while its embedding row sat at random init.
+The first chunk that contains it takes a ~20-nat loss and a gradient to match,
+and because the rogue embedding feeds attention, one such token corrupts every
+later position in the window — the whole chunk, not just that token. Reseeding
+both ends from the table mean turns it back into an ordinary unknown token
+(~ln(vocab) nats). The reset goes through the CPU (`sync_weights_from_gpu` →
+edit → `upload_weights`) because both the f32 master and the f16 view need
+rewriting; it runs a handful of times per run, so the round trip is free.
+
+This is a safety net, **not** a licence to put the marker-bearing datasets only
+at the end — see the chat-split note above. The Adam moments for a reseeded id
+are deliberately left alone: a stale second moment damps its first few steps,
+which is the direction you want.
+
 **SFT dataset layout** (all under `data/`):
 - Input: `raw/sft/*.jsonl` — one conversation per line,
   `{"system"?: string, "turns": [{"role": "user"|"assistant", "text": string}, …]}`,
@@ -256,6 +284,113 @@ non-zero count in the log means the corpora drifted or a marker was added.
   shuffles: there is no curriculum order to preserve, and `cfg.shuffle` is a
   pretrain knob. A dataset built before the sidecar existed falls back to the
   whole corpus in built order.
+
+## The attention backward, and why it was dead
+
+`cuda_attention_backward_batched` was wrong from the first training commit
+(`fa50006`) until it was fixed. Every model trained before that fix has a **K
+projection frozen at its random initialization** in every layer, and Q/V
+gradients computed from the wrong layer's activations. Weights from before the
+fix are not salvageable — the attention was never trained. Re-pretrain.
+
+Three defects, all in that one function:
+
+1. **The forward's Q/K/V live in a single shared `attn` scratch**, which each
+   later layer's forward overwrites. Backward runs after the whole forward, so
+   it read layer `layers-1`'s Q/K/V no matter which layer it was differentiating.
+   Only the last layer was ever right. (`P_all` and `X` are per-layer caches,
+   which is why those were fine and the bug was not obvious.) The forward now
+   writes Q/K/V into **per-layer `Workspace` caches** (`q_all`/`k_all`/`v_all`)
+   and the backward reads those. Nothing about Q/K/V may move back into `attn`.
+2. **`dQ` and `dK` were f32×f16 `GemmEx` calls.** cuBLAS requires both operands
+   share a data type and rejects the combination outright, so those two GEMMs
+   never ran: `dK` stayed at zero (hence the frozen K) and `dQ` kept holding
+   `dout` from its use as a temp buffer, which is why `wq` got a large *wrong*
+   gradient rather than none. The f16 caches fix the types as a side effect.
+3. **Nothing checked a single cuBLAS status in the file.** A failed cuBLAS call
+   writes nothing and returns a host-side code; training continues and the loss
+   curve still goes down. `CUBLAS_CHECK` now wraps every GEMM and aborts. The
+   check is free — the status is a host return value and forces no sync.
+
+**The guard is `tests/attention_learns.rs`.** It trains on a random block
+repeated twice: the second half is fully determined by the first, but *only*
+through attention, and a fresh block each step makes it unmemorizable. Broken
+attention plateaus at `ln(vocab)`; working attention reaches `ln(vocab)/2`
+(measured: 4.17 vs 2.07 at vocab 64). An ordinary "loss decreases" gate does not
+catch this — loss decreases on prose whether or not K is ever trained, which is
+how this survived for the life of the project.
+
+**Caching Q/K/V, not recomputing them.** The first fix recomputed Q/K/V in the
+backward with three extra batched GEMMs, which cost ~1.4% throughput. The forward
+already computes them, so they are cached per layer instead: V lands in `v_all`
+straight from its GEMM (already f16, so free), and one elementwise kernel
+(`qk_cache_f16_kernel`) emits the f16 `q_all`/`k_all` the backward needs while Q/K
+stay f32 for the score GEMM — so no forward numerics change. Cost is
+`3 × layers × ctx × d × 2` bytes (~4.7 MB at d256/L6/ctx512), and it bought the
+1.4% back: 14.57 ms/step mean over 7 runs, against 14.80 recomputing and 14.60 for
+the pre-fix (broken) code.
+
+The caches are **allocated at `max_s` but addressed with runtime-`seq` strides**,
+exactly like `head_p_all`. Forward and backward see the same `s` within a step, so
+the packing agrees; a short final chunk leaves the allocation's tail untouched.
+
+**The GPU scratch is global and single-threaded.** `attn`/`ff` are file-static
+and the cuBLAS handle is shared, so two `Workspace`s stepping concurrently
+corrupt each other. The training loop is single-threaded so this is fine in
+production, but **GPU tests must run with `--test-threads=1`** or they fail
+spuriously inside cuBLAS.
+
+## Positional encoding: RoPE
+
+Position is applied by **rotating Q and K inside attention**, not by adding a
+table to the token embeddings. `rope_qk_kernel` rotates each adjacent pair
+`(2i, 2i+1)` of a head's dimensions by `pos * 10000^(-2i/hd)` in the forward;
+`rope_dqk_kernel` applies the inverse to `dQ`/`dK` in the backward. Because a
+score is a rotated Q against a rotated K, what survives the dot product depends
+on the *difference* of the two positions — relative position, with no
+parameters. `Model::init` rejects an odd `head_dim`, which the adjacent pairing
+requires.
+
+This replaced a learned absolute table that was **never trained**: it had no
+gradient buffer, no Adam master and was never synced back, so every model before
+v4 ran on frozen Glorot noise for position. Removing it costs nothing learned and
+takes `ctx * d` floats out of every model file.
+
+- **The forward is applied in two places** and they must agree: the batched
+  training path, and `cuda_attention_head`, which the *inference* path
+  (`forward_seq` → `self_attention`) calls per head. They share the one kernel;
+  its f16 cache outputs are nullable so inference reuses it without caching.
+- **Angles are reduced into `[-pi, pi]` before the trig call.** This file is
+  compiled `--use_fast_math`, which substitutes intrinsics whose argument
+  reduction degrades past about one turn, and the angle reaches ~1e3 radians at
+  long context and low pair index — exactly the long-range positions RoPE exists
+  to encode.
+- **The cached Q/K are the post-rotation ones**, because the backward needs `K'`
+  and `Q'` (`dQ' = dS @ K'`, `dK' = dS^T @ Q'`), not the raw projections.
+- `Model::max_seq_len` is the context window now. It used to be read off
+  `positional_table.len()` at ~14 call sites; read it through `ctx_window()`.
+
+`MODEL_VERSION` is **4**. A v3 file still parses — `read_model` reads the
+positional table body and discards it, since the weights after it are at a fixed
+offset — but logs a warning: such a model was trained under absolute positions
+this code no longer applies *and* with a K projection that never left random
+init, so its output is meaningless. Loading is allowed only so model browsing and
+metadata keep working on old runs.
+
+**`tests/attention_learns.rs` is the guard.** With the absolute table gone, the
+copy task is a pure RoPE test — nothing else can supply position, so a broken or
+no-op rotation cannot beat `ln(vocab)`. It reaches the `ln(vocab)/2` floor, and
+escapes the plateau ~500-1000 steps earlier than the absolute table did.
+
+## nvcc failures must fail the build
+
+`build.rs` checks the exit status of **both** `nvcc` and `ar`. It did not, and
+`.status()` reports only whether a process *ran*: a CUDA compile error left the
+previous `shaders.o` in place, `ar` re-archived it, the crate linked, and every
+test afterwards ran against a stale kernel. That is indistinguishable from an
+edit having no effect, and it silently invalidates any measurement taken after
+it. If you are editing `shaders.cu` and a change appears to do nothing, check
+that the object's mtime is newer than the source before believing it.
 
 ## Mixed-precision (f32 master weights)
 

@@ -29,7 +29,12 @@ struct StepDims {
 /// without loading any weights — used to report a model's architecture.
 pub struct Model {
     pub embedding_table: Vec<Vec<f32>>,
-    pub positional_table: Vec<Vec<f32>>,
+    /// Longest sequence the model can attend over.
+    ///
+    /// Its own field because nothing else carries it: callers used to read
+    /// `positional_table.len()`; RoPE removed that table, so the value has to
+    /// live somewhere. Read it through `ctx_window()`.
+    pub max_seq_len: i64,
     pub wq: Vec<Vec<Vec<Vec<f32>>>>,  // [layers][heads][d][hd]
     pub wk: Vec<Vec<Vec<Vec<f32>>>>,
     pub wv: Vec<Vec<Vec<Vec<f32>>>>,
@@ -51,6 +56,13 @@ impl Model {
     /// be divisible by `heads`; the feed-forward width is `dimensions * ff_multiplier`.
     pub fn init(dimensions: i64, vocab: i64, ctx_window: i64, heads: i64, ff_multiplier: i64, layers: i64) -> Model {
         let head_dim: i64 = dimensions / heads;
+        // RoPE rotates adjacent pairs (2i, 2i+1) of each head's dimensions, so an
+        // odd head_dim would leave the last one unrotated — a silently
+        // half-positioned model rather than a failure. Cheap to catch here.
+        assert!(
+            head_dim % 2 == 0,
+            "head_dim must be even for RoPE: dimensions {dimensions} / heads {heads} = {head_dim}",
+        );
         let d_ff = dimensions * ff_multiplier;
         let h = heads as usize;
         let d = dimensions as usize;
@@ -91,16 +103,22 @@ impl Model {
 
         Model {
             embedding_table: embed(dimensions, vocab),
-            positional_table: embed(dimensions, ctx_window),
+            max_seq_len: ctx_window,
             wq, wk, wv, wo, w1, w2, b1, b2, ln_gamma, ln_beta,
             heads, head_dim, layers,
             w_output: embed(vocab, dimensions),
         }
     }
 
+    /// The model's context window, as a `usize` for slicing.
+    pub fn ctx_window(&self) -> usize {
+        self.max_seq_len as usize
+    }
+
     /// Run the forward pass over a token sequence and return the final hidden
-    /// state for every position. Only the last `ctx_window` tokens are used (the
-    /// model has no positions beyond its table), so a growing prompt is fine.
+    /// state for every position. Only the last `ctx_window` tokens are used, so a
+    /// growing prompt is fine — RoPE is relative, so the window sliding forward
+    /// simply re-bases the positions.
     pub async fn forward_seq(
         &self,
         tokens: &[u32],
@@ -113,24 +131,11 @@ impl Model {
             tokens
         };
 
-        let input: Vec<Vec<f32>> = seq
+        // No positional add: RoPE applies position inside attention, on Q and K.
+        let mut x: Vec<Vec<f32>> = seq
             .iter()
             .map(|&token_id| self.embedding_table[token_id as usize].clone())
             .collect();
-
-        let positioned: Vec<Vec<f32>> = input
-            .iter()
-            .enumerate()
-            .map(|(pos, token_embed)| {
-                token_embed
-                    .iter()
-                    .zip(self.positional_table[pos].iter())
-                    .map(|(t, p)| t + p)
-                    .collect()
-            })
-            .collect();
-
-        let mut x = positioned;
 
         for layer_idx in 0..layers {
             let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
@@ -729,7 +734,6 @@ unsafe extern "C" {
     fn cuda_embedding_forward(
         token_ids: *const i32,
         embedding_table: *const c_void,
-        positional_table: *const c_void,
         output: *mut c_void,
         s: i32,
         d: i32,
@@ -752,6 +756,9 @@ unsafe extern "C" {
         wv_all: *const c_void,
         out_all: *mut c_void,
         P_all: *mut c_void,
+        Q_all: *mut c_void,
+        K_all: *mut c_void,
+        V_all: *mut c_void,
         seq: i32, d: i32, hd: i32, h: i32,
     );
 
@@ -761,6 +768,9 @@ unsafe extern "C" {
         wk_all: *const c_void,
         wv_all: *const c_void,
         P_all: *const c_void,
+        Q_all: *const c_void,
+        K_all: *const c_void,
+        V_all: *const c_void,
         dout_full: *const c_void,
         dX: *mut c_void,
         dwq_all: *mut f32,
@@ -803,12 +813,9 @@ mod tests {
             .iter()
             .flat_map(|&id| t.embedding_table[id as usize].clone())
             .collect();
-        let mut expected = vec![0.0f32; s * du];
-        for pos in 0..s {
-            for j in 0..du {
-                expected[pos * du + j] = flat_emb[pos * du + j] + t.positional_table[pos][j];
-            }
-        }
+        // Just the embedding row now — the kernel is a plain gather since RoPE
+        // took over positional encoding.
+        let expected = flat_emb.clone();
 
         // GPU embedding forward via extern "C" kernel
         let token_ids: Vec<i32> = chunk.iter().map(|&id| id as i32).collect();
@@ -821,7 +828,6 @@ mod tests {
             super::cuda_embedding_forward(
                 ws.d_token_ids.ptr as *const i32,
                 ws.d_embedding.ptr as *const std::ffi::c_void,
-                ws.d_positional.ptr as *const std::ffi::c_void,
                 ws.b_sd[0].ptr as *mut std::ffi::c_void,
                 s as i32,
                 d as i32,
@@ -852,7 +858,9 @@ mod tests {
     #[test]
     fn test_embedding_backward_gpu() {
         let vocab = 5;
-        let d = 3;
+        // 4, not 3: `d` must divide by `heads` (3/2 truncated to head_dim 1,
+        // covering only 2 of 3 dimensions) and head_dim must be even for RoPE.
+        let d = 4;
         let ctx = 8;
         let heads = 2;
         let ff_mult = 2;
@@ -974,7 +982,7 @@ mod tests {
 
         let mut t_synced = Model {
             embedding_table: t.embedding_table.clone(),
-            positional_table: t.positional_table.clone(),
+            max_seq_len: t.max_seq_len,
             wq: t.wq.clone(), wk: t.wk.clone(), wv: t.wv.clone(),
             wo: t.wo.clone(), w1: t.w1.clone(), w2: t.w2.clone(),
             b1: t.b1.clone(), b2: t.b2.clone(),
@@ -1087,7 +1095,7 @@ mod tests {
 
         let clone_of = |m: &Model| Model {
             embedding_table: m.embedding_table.clone(),
-            positional_table: m.positional_table.clone(),
+            max_seq_len: m.max_seq_len,
             wq: m.wq.clone(), wk: m.wk.clone(), wv: m.wv.clone(),
             wo: m.wo.clone(), w1: m.w1.clone(), w2: m.w2.clone(),
             b1: m.b1.clone(), b2: m.b2.clone(),
@@ -1136,8 +1144,7 @@ mod tests {
         let t = Model::init(32, 100, 64, 4, 2, 2);
         assert_eq!(t.embedding_table.len(), 100);
         assert_eq!(t.embedding_table[0].len(), 32);
-        assert_eq!(t.positional_table.len(), 64);
-        assert_eq!(t.positional_table[0].len(), 32);
+        assert_eq!(t.max_seq_len, 64, "ctx window must survive init");
         assert_eq!(t.layers, 2);
         assert_eq!(t.heads, 4);
         assert_eq!(t.head_dim, 8);
@@ -1182,7 +1189,6 @@ mod tests {
         let t2 = Model::from_bytes(&bytes).unwrap();
 
         assert_eq!(t1.embedding_table, t2.embedding_table);
-        assert_eq!(t1.positional_table, t2.positional_table);
         assert_eq!(t1.wq, t2.wq);
         assert_eq!(t1.wk, t2.wk);
         assert_eq!(t1.wv, t2.wv);
@@ -1218,7 +1224,6 @@ mod tests {
             assert_eq!(t1.ln_beta[l], t2.ln_beta[l], "ln_beta layer {} mismatch", l);
         }
         assert_eq!(t1.embedding_table, t2.embedding_table);
-        assert_eq!(t1.positional_table, t2.positional_table);
         assert_eq!(t1.w_output, t2.w_output);
     }
 
@@ -1249,7 +1254,6 @@ mod tests {
         let t2 = Model::from_layer_rows(&header, &rows).unwrap();
 
         assert_eq!(t1.embedding_table, t2.embedding_table);
-        assert_eq!(t1.positional_table, t2.positional_table);
         assert_eq!(t1.wq, t2.wq);
         assert_eq!(t1.wk, t2.wk);
         assert_eq!(t1.wv, t2.wv);
@@ -1286,7 +1290,6 @@ mod tests {
             assert_eq!(t1.w2[l], t2.w2[l], "w2 layer {} mismatch", l);
         }
         assert_eq!(t1.embedding_table, t2.embedding_table);
-        assert_eq!(t1.positional_table, t2.positional_table);
         assert_eq!(t1.w_output, t2.w_output);
     }
 
@@ -1296,7 +1299,6 @@ mod tests {
         let rows = t.to_layer_rows();
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"embedding"));
-        assert!(names.contains(&"positional"));
         assert!(names.contains(&"unembed"));
         assert!(names.contains(&"h.0.attn.wq"));
         assert!(names.contains(&"h.0.attn.wk"));
@@ -1318,7 +1320,9 @@ mod tests {
         assert!(names.contains(&"h.1.ffn.b2"));
         assert!(names.contains(&"h.1.ln.gamma"));
         assert!(names.contains(&"h.1.ln.beta"));
-        assert_eq!(names.len(), 23);
+        // 22, not 23: the "positional" row went away with the absolute
+        // positional table when RoPE replaced it.
+        assert_eq!(names.len(), 22);
     }
 
     #[test]

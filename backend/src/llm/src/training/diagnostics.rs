@@ -382,7 +382,10 @@ mod tests {
         let grad = gpu_grad_norms(&ws, layers as usize);
         gpu_adam_update(&ws, 0.01, 1, 1, layers as usize);
 
-        let freq = frequent_tokens(&chunk);
+        // `frequent_tokens` reads the on-disk corpus width (u16); the step API
+        // speaks u32, so this test holds the chunk in the latter and narrows here.
+        let corpus: Vec<u16> = chunk.iter().map(|&t| t as u16).collect();
+        let freq = frequent_tokens(&corpus);
         let diag = compute(&ws, grad, layers as usize, chunk.len(), 0.01, 1, &freq);
 
         assert_eq!(diag.grad_layers.len(), layers as usize);

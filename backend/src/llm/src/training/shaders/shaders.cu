@@ -3,6 +3,28 @@
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+// A cuBLAS call that fails does nothing and says nothing: the destination buffer
+// keeps whatever it held, the host return code is the only signal, and training
+// carries on producing a plausible-looking loss curve. That is exactly how the
+// attention backward shipped for the life of this project with dK stuck at zero
+// — an f32×f16 GemmEx, which cuBLAS rejects as an unsupported type combination.
+//
+// The status is a host-side return value, so checking it costs nothing and
+// forces no synchronization; the launch stays asynchronous. Aborting is
+// deliberate — a wrong gradient is far more expensive than a crash, and it is
+// only discoverable hours later in a ruined model.
+#define CUBLAS_CHECK(call)                                                     \
+  do {                                                                         \
+    cublasStatus_t status_ = (call);                                           \
+    if (status_ != CUBLAS_STATUS_SUCCESS) {                                    \
+      fprintf(stderr, "cuBLAS call failed with status %d at %s:%d\n",          \
+              (int)status_, __FILE__, __LINE__);                               \
+      abort();                                                                 \
+    }                                                                          \
+  } while (0)
 
 // ─── cuBLAS handle (lazily initialized) ─────────────────────────────────────
 static cublasHandle_t g_cublas = NULL;
@@ -24,8 +46,9 @@ static struct {
     __half *v_f16;
     float *scores_f32;
     __half *scores_f16;
-    // Backward: Q/K/V in f16, dQ/dK/dV, dP f32, dS f16, dX_temp
-    __half *Q, *K, *V, *dQ, *dK, *dV;
+    // Backward: dQ/dK/dV, dP f32, dS f16, dX_temp. Q/K/V are NOT here — they
+    // are per-layer `Workspace` caches; see cuda_attention_backward_batched.
+    __half *dQ, *dK, *dV;
     float *dP;
     __half *dS, *dX_temp;
     int seq, hd, d, h;
@@ -35,7 +58,6 @@ static void ensure_attn_cleanup(void) {
     auto f = [](auto &p) { if (p) { cudaFree(p); p = NULL; } };
     f(attn.q_f32); f(attn.k_f32); f(attn.v_f16);
     f(attn.scores_f32); f(attn.scores_f16);
-    f(attn.Q); f(attn.K); f(attn.V);
     f(attn.dQ); f(attn.dK); f(attn.dV);
     f(attn.dP); f(attn.dS); f(attn.dX_temp);
     attn.seq = attn.hd = attn.d = attn.h = 0;
@@ -108,17 +130,18 @@ static cublasHandle_t get_cublas() {
 // L2 norm of a gradient buffer (host-mode result, so this is synchronous).
 extern "C" float cuda_l2norm(const float *v, int n) {
     float result = 0.0f;
-    cublasSnrm2(get_cublas(), n, v, 1, &result);
+    CUBLAS_CHECK(cublasSnrm2(get_cublas(), n, v, 1, &result));
     return result;
 }
 
 // Scale a gradient buffer in place by `s`.
 extern "C" void cuda_scale(float *v, float s, int n) {
-    cublasSscal(get_cublas(), n, &s, v, 1);
+    CUBLAS_CHECK(cublasSscal(get_cublas(), n, &s, v, 1));
 }
 
 #define TENSOR_OP CUBLAS_GEMM_DEFAULT_TENSOR_OP
 #define COMPUTE_F32 CUBLAS_COMPUTE_32F
+
 
 static void ensure_attn(int seq, int hd, int d, int h) {
     if (seq <= attn.seq && hd <= attn.hd && d <= attn.d && h <= attn.h && attn.q_f32) return;
@@ -130,9 +153,6 @@ static void ensure_attn(int seq, int hd, int d, int h) {
     a(attn.v_f16,      h * seq * hd * sizeof(__half));
     a(attn.scores_f32, h * seq * seq * sizeof(float));
     a(attn.scores_f16, h * seq * seq * sizeof(__half));
-    a(attn.Q,          h * seq * hd * sizeof(__half));
-    a(attn.K,          h * seq * hd * sizeof(__half));
-    a(attn.V,          h * seq * hd * sizeof(__half));
     a(attn.dQ,         h * seq * hd * sizeof(__half));
     a(attn.dK,         h * seq * hd * sizeof(__half));
     a(attn.dV,         h * seq * hd * sizeof(__half));
@@ -608,42 +628,6 @@ extern "C" void cuda_layer_norm_backward(const __half *x, const __half *dy,
       x, dy, gamma, dx, dgamma, dbeta, rows, cols, eps);
 }
 
-// ─── softmax backward ──────────────────────────────────────────────────────
-
-// One BLOCK per row — see softmax_bw_f32_dP_kernel above for the rationale.
-// Shared memory: blockDim.x floats.
-__global__ void softmax_bw_kernel(const __half *P, const __half *dP, __half *dS,
-                                   int rows, int cols) {
-  int row = blockIdx.x;
-  if (row >= rows)
-    return;
-  extern __shared__ float sdata[];
-  int tid = threadIdx.x;
-  const __half *P_row = P + (size_t)row * cols;
-  const __half *dP_row = dP + (size_t)row * cols;
-  __half *dS_row = dS + (size_t)row * cols;
-
-  float partial = 0.0f;
-  for (int i = tid; i < cols; i += blockDim.x)
-    partial += __half2float(P_row[i]) * __half2float(dP_row[i]);
-  sdata[tid] = partial;
-  __syncthreads();
-  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-    if (tid < s) sdata[tid] += sdata[tid + s];
-    __syncthreads();
-  }
-  float dot = sdata[0];
-
-  for (int i = tid; i < cols; i += blockDim.x)
-    dS_row[i] = __float2half(__half2float(P_row[i]) * (__half2float(dP_row[i]) - dot));
-}
-
-extern "C" void cuda_softmax_backward(const __half *P, const __half *dP,
-                                       __half *dS, int rows, int cols) {
-  int threads = 256;
-  softmax_bw_kernel<<<rows, threads, threads * sizeof(float)>>>(P, dP, dS, rows, cols);
-}
-
 // ─── causal mask backward ──────────────────────────────────────────────────
 
 // blockIdx.z selects the head, so the per-head host loop collapses to one
@@ -656,12 +640,6 @@ __global__ void causal_mask_bw_kernel(__half *dS, int seq_len) {
   if (col > row)
     dS[(size_t)blockIdx.z * seq_len * seq_len + (size_t)row * seq_len + col] =
         __float2half(0.0f);
-}
-
-extern "C" void cuda_causal_mask_backward(__half *dS, int seq_len) {
-  dim3 t(16, 16);
-  causal_mask_bw_kernel<<<dim3((seq_len + 15) / 16, (seq_len + 15) / 16), t>>>(
-      dS, seq_len);
 }
 
 // ─── cuda helpers ──────────────────────────────────────────────────────────
@@ -700,145 +678,6 @@ __global__ void add_inplace_f16_kernel(__half *dst, const __half *src, int n) {
 
 extern "C" void cuda_add_inplace_f16(__half *dst, const __half *src, int n) {
   add_inplace_f16_kernel<<<(n + 255) / 256, 256>>>(dst, src, n);
-}
-
-// Copy hd columns per row from a strided row-major source (s x src_cols) into
-// a contiguous row-major destination (s x hd). Used to extract per-head dout
-// slices from the full d_post_attn @ wo result.
-__global__ void extract_cols_kernel(const __half *src, __half *dst,
-                                     int rows, int src_cols, int dst_cols,
-                                     int col_offset) {
-  int row = blockIdx.x * blockDim.x + threadIdx.x;
-  if (row >= rows) return;
-  for (int c = 0; c < dst_cols; c++)
-    dst[row * dst_cols + c] = src[row * src_cols + col_offset + c];
-}
-
-extern "C" void cuda_extract_cols(const __half *src, __half *dst,
-                                   int rows, int src_cols, int dst_cols,
-                                   int col_offset) {
-  extract_cols_kernel<<<(rows + 255) / 256, 256>>>(src, dst, rows, src_cols, dst_cols, col_offset);
-}
-
-// ─── forward declarations for kernels defined below ─────────────────────────
-// (needed because backward is defined before some element-wise kernels)
-__global__ void softmax_bw_f32_dP_kernel(const __half *P, const float *dP,
-                                          __half *dS, int rows, int cols);
-__global__ void scale_kernel_f16(__half *x, float scale, int n);
-__global__ void clamp_f16_kernel(__half *buf, int n);
-__global__ void causal_mask_bw_kernel(__half *dS, int seq_len);
-
-// ─── attention head backward (per-head, uses pre-allocated scratch) ─────────
-
-extern "C" void
-cuda_attention_head_backward(const __half *X,
-                              const __half *wq,
-                              const __half *wk,
-                              const __half *wv,
-                              const __half *P,
-                              const __half *dout,
-                              __half *dX,
-                              float *dwq,
-                              float *dwk,
-                              float *dwv,
-                              int seq_len, int d_model, int head_dim) {
-  cublasHandle_t handle = get_cublas();
-  float alpha = 1.0f, beta = 0.0f;
-  ensure_attn(seq_len, head_dim, d_model, 1);
-
-  // Recompute Q, K, V = X @ Wq, X @ Wk, X @ Wv (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wq, CUDA_R_16F, head_dim, X, CUDA_R_16F, d_model, &beta,
-      attn.Q, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wk, CUDA_R_16F, head_dim, X, CUDA_R_16F, d_model, &beta,
-      attn.K, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wv, CUDA_R_16F, head_dim, X, CUDA_R_16F, d_model, &beta,
-      attn.V, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  // dP = dout @ V^T (f16×f16^T→f32)
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-      seq_len, seq_len, head_dim, &alpha,
-      attn.V, CUDA_R_16F, head_dim, dout, CUDA_R_16F, head_dim, &beta,
-      attn.dP, CUDA_R_32F, seq_len, COMPUTE_F32, TENSOR_OP);
-
-  // dS = softmax_bw_f32_dP(P, dP)
-  softmax_bw_f32_dP_kernel<<<seq_len, 256, 256 * sizeof(float)>>>(P, attn.dP, attn.dS, seq_len, seq_len);
-
-  // dS /= sqrt(head_dim)
-  float rcp_scale = sqrtf((float)head_dim);
-  {
-    int n = seq_len * seq_len;
-    scale_kernel_f16<<<(n + 255) / 256, 256>>>(attn.dS, rcp_scale, n);
-  }
-
-  // causal mask backward
-  {
-    dim3 t16(16, 16);
-    causal_mask_bw_kernel<<<dim3((seq_len + 15) / 16, (seq_len + 15) / 16), t16>>>(attn.dS, seq_len);
-  }
-
-  // dV = P^T @ dout (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-      head_dim, seq_len, seq_len, &alpha,
-      dout, CUDA_R_16F, head_dim, P, CUDA_R_16F, seq_len, &beta,
-      attn.dV, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  // dQ = dS @ K (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, seq_len, &alpha,
-      attn.K, CUDA_R_16F, head_dim, attn.dS, CUDA_R_16F, seq_len, &beta,
-      attn.dQ, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  // dK = dS^T @ Q (f16×f16→f16, same pattern as dV)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-      head_dim, seq_len, seq_len, &alpha,
-      attn.Q, CUDA_R_16F, head_dim, attn.dS, CUDA_R_16F, seq_len, &beta,
-      attn.dK, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  // dX = dQ @ wq^T + dK @ wk^T + dV @ wv^T  [seq_len x d_model] f16
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-      d_model, seq_len, head_dim, &alpha,
-      wq, CUDA_R_16F, head_dim, attn.dQ, CUDA_R_16F, head_dim, &beta,
-      dX, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
-
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-      d_model, seq_len, head_dim, &alpha,
-      wk, CUDA_R_16F, head_dim, attn.dK, CUDA_R_16F, head_dim, &beta,
-      attn.dX_temp, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
-  cuda_add_inplace_f16(dX, attn.dX_temp, seq_len * d_model);
-
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-      d_model, seq_len, head_dim, &alpha,
-      wv, CUDA_R_16F, head_dim, attn.dV, CUDA_R_16F, head_dim, &beta,
-      attn.dX_temp, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
-  cuda_add_inplace_f16(dX, attn.dX_temp, seq_len * d_model);
-
-  clamp_f16_kernel<<<(seq_len * d_model + 255) / 256, 256>>>(dX, seq_len * d_model);
-
-  // dwq = X^T @ dQ  [d_model x head_dim] f16×f16→f32
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-      head_dim, d_model, seq_len, &alpha,
-      attn.dQ, CUDA_R_16F, head_dim, X, CUDA_R_16F, d_model, &beta,
-      dwq, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  // dwk = X^T @ dK
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-      head_dim, d_model, seq_len, &alpha,
-      attn.dK, CUDA_R_16F, head_dim, X, CUDA_R_16F, d_model, &beta,
-      dwk, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
-
-  // dwv = X^T @ dV
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-      head_dim, d_model, seq_len, &alpha,
-      attn.dV, CUDA_R_16F, head_dim, X, CUDA_R_16F, d_model, &beta,
-      dwv, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
 }
 
 // ─── softmax backward with f32 dP (element-wise, keep) ──────────────────────
@@ -1025,59 +864,118 @@ __global__ void f32_scale_and_copy_to_f16_kernel(const float *src, __half *dst,
   dst[i] = __float2half(src[i] / divisor);
 }
 
-// ─── attention head forward (uses pre-allocated scratch + fused softmax) ────
+// ─── RoPE (rotary position embeddings) ──────────────────────────────────────
+//
+// Position enters the model by rotating Q and K, not by adding a table to the
+// token embeddings. Each adjacent pair (2i, 2i+1) of a head's dimensions is
+// rotated by `pos * theta^(-2i/hd)`. Because the score is a dot product of a
+// rotated Q against a rotated K, what survives is a function of the *difference*
+// of their positions — relative position, for free and with no parameters.
+//
+// Adjacent pairing rather than the half-split (i, i+hd/2): no reshape, and it
+// works for any even head_dim. `Model::init` rejects an odd one.
+#define ROPE_THETA 10000.0f
+#define ROPE_TWO_PI 6.2831853071795864769f
 
-extern "C" void
-cuda_attention_head_forward(const __half *embeddings,
-                             const __half *wq,
-                             const __half *wk,
-                             const __half *wv,
-                             __half *out,
-                             __half *P_out,
-                             int seq_len, int d_model, int head_dim) {
-  cublasHandle_t handle = get_cublas();
-  float alpha = 1.0f, beta = 0.0f;
-  ensure_attn(seq_len, head_dim, d_model, 1);
+// The (cos, sin) for one (position, pair) slot.
+//
+// The angle is reduced into [-pi, pi] *before* the trig call. This file is
+// compiled with `--use_fast_math`, which substitutes single-precision
+// intrinsics, and those have poor argument reduction outside roughly one turn —
+// while this angle reaches ~1e3 radians at long context and low pair index,
+// which is precisely the long-range position RoPE exists to encode. Reducing
+// first makes the result independent of that substitution.
+__device__ __forceinline__ void rope_cos_sin(int pos, int pair, int hd,
+                                              float *cos_t, float *sin_t) {
+  float inv_freq = powf(ROPE_THETA, -2.0f * (float)pair / (float)hd);
+  float angle = fmodf((float)pos * inv_freq, ROPE_TWO_PI);
+  if (angle > ROPE_TWO_PI * 0.5f) angle -= ROPE_TWO_PI;
+  sincosf(angle, sin_t, cos_t);
+}
 
-  // Q = X @ Wq (f16×f16→f32)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wq, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.q_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
+// Rotate one pair in place. `sign` is +1 in the forward and -1 in the backward:
+// R is orthogonal, so R^T = R(-theta) is the same rotation with sin negated, and
+// sharing this helper is what keeps the two from drifting apart.
+__device__ __forceinline__ void rope_rotate(float *x0, float *x1,
+                                             float cos_t, float sin_t, float sign) {
+  float s = sign * sin_t;
+  float a = *x0 * cos_t - *x1 * s;
+  float b = *x0 * s + *x1 * cos_t;
+  *x0 = a;
+  *x1 = b;
+}
 
-  // K = X @ Wk (f16×f16→f32)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wk, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.k_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
+// Forward: rotate the f32 Q/K in place (the score GEMM reads them), then emit
+// the f16 copies the backward reads.
+//
+// One kernel over both tensors: they share an index space, and a thread doing
+// two pairs costs less than a second grid. The f16 outputs are nullable so the
+// inference path — which has no backward and so nothing to cache for — reuses
+// exactly this rotation rather than a second copy of it.
+//
+// Grid is one thread per (head, position, pair), so each thread owns the two
+// elements it rotates. Layout is [h, seq, hd].
+__global__ void rope_qk_kernel(float *__restrict__ q_f32, float *__restrict__ k_f32,
+                                __half *__restrict__ q16, __half *__restrict__ k16,
+                                int seq, int hd, int h) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int pairs = hd / 2;
+  if (i >= h * seq * pairs) return;
 
-  // V = X @ Wv (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wv, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.v_f16, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
+  int pair = i % pairs;
+  int pos = (i / pairs) % seq;
+  int head = i / (pairs * seq);
 
-  // Scores = Q @ K^T (f32×f32^T→f32) [seq_len x seq_len]
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-      seq_len, seq_len, head_dim, &alpha,
-      attn.k_f32, CUDA_R_32F, head_dim, attn.q_f32, CUDA_R_32F, head_dim, &beta,
-      attn.scores_f32, CUDA_R_32F, seq_len, COMPUTE_F32, TENSOR_OP);
+  float cos_t, sin_t;
+  rope_cos_sin(pos, pair, hd, &cos_t, &sin_t);
 
-  // Fused scale (÷√hd) + causal_mask + softmax (f32→f16, single kernel)
-  float inv_scale = 1.0f / sqrtf((float)head_dim);
-  int threads = 256;
-  fused_scale_causal_softmax_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
-      attn.scores_f32, attn.scores_f16, inv_scale, seq_len);
+  size_t e0 = (size_t)head * seq * hd + (size_t)pos * hd + 2 * pair;
+  size_t e1 = e0 + 1;
 
-  // Copy softmax output to P_out for backward
-  cudaMemcpy(P_out, attn.scores_f16, seq_len * seq_len * sizeof(__half),
-             cudaMemcpyDeviceToDevice);
+  rope_rotate(&q_f32[e0], &q_f32[e1], cos_t, sin_t, 1.0f);
+  rope_rotate(&k_f32[e0], &k_f32[e1], cos_t, sin_t, 1.0f);
 
-  // Out = scores @ V (f16×f16→f16) [seq_len x head_dim]
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, seq_len, &alpha,
-      attn.v_f16, CUDA_R_16F, head_dim, attn.scores_f16, CUDA_R_16F, seq_len, &beta,
-      out, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
+  if (q16) {
+    q16[e0] = __float2half(q_f32[e0]);
+    q16[e1] = __float2half(q_f32[e1]);
+  }
+  if (k16) {
+    k16[e0] = __float2half(k_f32[e0]);
+    k16[e1] = __float2half(k_f32[e1]);
+  }
+}
+
+// Backward: undo the rotation on dQ/dK.
+//
+// The scores backward produces dQ' and dK' — gradients with respect to the
+// *rotated* Q and K. Everything downstream (dX, dWq, dWk) wants them with
+// respect to the unrotated ones, and Q' = R Q gives dQ = R^T dQ'. Same helper,
+// sign flipped. dV is untouched: V is never rotated.
+__global__ void rope_dqk_kernel(__half *__restrict__ dq, __half *__restrict__ dk,
+                                 int seq, int hd, int h) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int pairs = hd / 2;
+  if (i >= h * seq * pairs) return;
+
+  int pair = i % pairs;
+  int pos = (i / pairs) % seq;
+  int head = i / (pairs * seq);
+
+  float cos_t, sin_t;
+  rope_cos_sin(pos, pair, hd, &cos_t, &sin_t);
+
+  size_t e0 = (size_t)head * seq * hd + (size_t)pos * hd + 2 * pair;
+  size_t e1 = e0 + 1;
+
+  float q0 = __half2float(dq[e0]), q1 = __half2float(dq[e1]);
+  rope_rotate(&q0, &q1, cos_t, sin_t, -1.0f);
+  dq[e0] = __float2half(q0);
+  dq[e1] = __float2half(q1);
+
+  float k0 = __half2float(dk[e0]), k1 = __half2float(dk[e1]);
+  rope_rotate(&k0, &k1, cos_t, sin_t, -1.0f);
+  dk[e0] = __float2half(k0);
+  dk[e1] = __float2half(k1);
 }
 
 // ─── attention head (inference, no P save, uses scratch + fused softmax) ────
@@ -1093,35 +991,47 @@ cuda_attention_head(const __half *embeddings,
   float alpha = 1.0f, beta = 0.0f;
   ensure_attn(seq_len, head_dim, d_model, 1);
 
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       head_dim, seq_len, d_model, &alpha,
       wq, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.q_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
+      attn.q_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP));
 
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       head_dim, seq_len, d_model, &alpha,
       wk, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.k_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP);
+      attn.k_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP));
 
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       head_dim, seq_len, d_model, &alpha,
       wv, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.v_f16, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
+      attn.v_f16, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP));
 
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  // RoPE, exactly as the training forward applies it. Inference runs this
+  // separate per-head path (h = 1), so leaving it out here would serve the model
+  // a different positional scheme than it was trained under — the two forwards
+  // must agree, and sharing the kernel is what makes them.
+  //
+  // No f16 caches: there is no backward to feed.
+  {
+    int n = seq_len * (head_dim / 2);
+    rope_qk_kernel<<<(n + 255) / 256, 256>>>(attn.q_f32, attn.k_f32,
+                                              nullptr, nullptr, seq_len, head_dim, 1);
+  }
+
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       seq_len, seq_len, head_dim, &alpha,
       attn.k_f32, CUDA_R_32F, head_dim, attn.q_f32, CUDA_R_32F, head_dim, &beta,
-      attn.scores_f32, CUDA_R_32F, seq_len, COMPUTE_F32, TENSOR_OP);
+      attn.scores_f32, CUDA_R_32F, seq_len, COMPUTE_F32, TENSOR_OP));
 
   float inv_scale = 1.0f / sqrtf((float)head_dim);
   int threads = 256;
   fused_scale_causal_softmax_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
       attn.scores_f32, attn.scores_f16, inv_scale, seq_len);
 
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       head_dim, seq_len, seq_len, &alpha,
       attn.v_f16, CUDA_R_16F, head_dim, attn.scores_f16, CUDA_R_16F, seq_len, &beta,
-      out, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP);
+      out, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── Batched multi-head attention forward ───────────────────────────────────
@@ -1142,6 +1052,9 @@ extern "C" void cuda_attention_forward_batched(
     const __half *X,
     const __half *wq_all, const __half *wk_all, const __half *wv_all,
     __half *out_all, __half *P_all,
+    // Per-layer Q/K/V caches the backward reads. See `Workspace::q_all` for why
+    // these are owned per layer and not by the shared `attn` scratch.
+    __half *Q_all, __half *K_all, __half *V_all,
     int seq, int d, int hd, int h) {
 
   cublasHandle_t handle = get_cublas();
@@ -1149,40 +1062,53 @@ extern "C" void cuda_attention_forward_batched(
   ensure_attn(seq, hd, d, h);
 
   // 1. Q = X @ Wq (batched f16×f16→f32)  [h, seq, hd]
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, d, &alpha,
       wq_all, CUDA_R_16F, hd, d*hd,
       X, CUDA_R_16F, d, 0,
       &beta,
       attn.q_f32, CUDA_R_32F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
   // 2. K = X @ Wk (batched f16×f16→f32)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, d, &alpha,
       wk_all, CUDA_R_16F, hd, d*hd,
       X, CUDA_R_16F, d, 0,
       &beta,
       attn.k_f32, CUDA_R_32F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
-  // 3. V = X @ Wv (batched f16×f16→f16)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  // 3. V = X @ Wv (batched f16×f16→f16), straight into the per-layer cache —
+  //    V is already f16, so caching it costs nothing at all.
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, d, &alpha,
       wv_all, CUDA_R_16F, hd, d*hd,
       X, CUDA_R_16F, d, 0,
       &beta,
-      attn.v_f16, CUDA_R_16F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      V_all, CUDA_R_16F, hd, seq*hd,
+      h, COMPUTE_F32, TENSOR_OP));
+
+  // 3b. Apply RoPE to Q/K, then cache them as f16 for the backward.
+  //
+  //     Must land before the score GEMM: the whole point is that the scores are
+  //     computed from rotated Q/K. And the *cached* values are the rotated ones
+  //     on purpose — the backward's dQ' = dS @ K' and dK' = dS^T @ Q' need K'
+  //     and Q', not the raw projections.
+  {
+    int n = h * seq * (hd / 2);
+    rope_qk_kernel<<<(n + 255) / 256, 256>>>(attn.q_f32, attn.k_f32,
+                                              Q_all, K_all, seq, hd, h);
+  }
 
   // 4. Scores = Q @ K^T (batched f32×f32→f32)  [h, seq, seq]
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       seq, seq, hd, &alpha,
       attn.k_f32, CUDA_R_32F, hd, seq*hd,
       attn.q_f32, CUDA_R_32F, hd, seq*hd,
       &beta,
       attn.scores_f32, CUDA_R_32F, seq, seq*seq,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
   // 5. Per-head: fused scale + causal_mask + softmax (element-wise)
   {
@@ -1198,13 +1124,13 @@ extern "C" void cuda_attention_forward_batched(
   }
 
   // 6. Out = softmax(S) @ V (batched f16×f16→f16)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, seq, &alpha,
-      attn.v_f16, CUDA_R_16F, hd, seq*hd,
+      V_all, CUDA_R_16F, hd, seq*hd,
       P_all, CUDA_R_16F, seq, seq*seq,
       &beta,
       out_all, CUDA_R_16F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── Batched multi-head attention backward ──────────────────────────────────
@@ -1217,6 +1143,15 @@ extern "C" void cuda_attention_backward_batched(
     const __half *wk_all,               // [h, d, hd]
     const __half *wv_all,               // [h, d, hd]
     const __half *P_all,                // [h, seq, seq] — saved softmax outputs
+    // The forward's Q/K/V for THIS layer. Per-layer `Workspace` buffers, never
+    // the shared `attn` scratch: that scratch is overwritten by every later
+    // layer's forward, so reading Q/K/V from it differentiated layer L using
+    // layer `layers-1`'s activations. Only the last layer was ever right, and
+    // combined with two f32×f16 GEMMs cuBLAS rejects outright it left dK
+    // identically zero for the life of the project. See `Workspace::q_all`.
+    const __half *Q_all,                // [h, seq, hd]
+    const __half *K_all,                // [h, seq, hd]
+    const __half *V_all,                // [h, seq, hd]
     const __half *dout_full,            // [seq, d] — dWoX (full post-wo gradient)
     __half *dX,                         // [seq, d] — output gradient (accumulated)
     float *dwq_all,                     // [h, d, hd] f32
@@ -1232,13 +1167,13 @@ extern "C" void cuda_attention_backward_batched(
   cuda_extract_strided_cols(dout_full, attn.dQ, seq, d, hd, h, hd);
 
   // 1. dP = dout @ V^T (batched f16×f16^T→f32)  [h, seq, seq]
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       seq, seq, hd, &alpha,
-      attn.v_f16, CUDA_R_16F, hd, seq*hd,   // V (reused from forward, same scratch)
+      V_all, CUDA_R_16F, hd, seq*hd,
       attn.dQ, CUDA_R_16F, hd, seq*hd,       // dQ used as dout temp buffer
       &beta,
       attn.dP, CUDA_R_32F, seq, seq*seq,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
   // 2. Per-head: softmax backward + scale + causal_mask (element-wise on f32)
   {
@@ -1258,98 +1193,107 @@ extern "C" void cuda_attention_backward_batched(
   }
 
   // 3. dV = P^T @ dout (batched f16×f16→f16)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       hd, seq, seq, &alpha,
       attn.dQ, CUDA_R_16F, hd, seq*hd,       // dout temp
       P_all, CUDA_R_16F, seq, seq*seq,
       &beta,
       attn.dV, CUDA_R_16F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
-  // 4. dQ = dS @ K (batched f32×f16→f16) — reuse q_f32 scratch
-  //    k_f32 is f32 from forward; dS is f16
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  // 4. dQ = dS @ K (batched f16×f16→f16)
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, seq, &alpha,
-      (const float*)attn.k_f32, CUDA_R_32F, hd, seq*hd,
+      K_all, CUDA_R_16F, hd, seq*hd,
       attn.dS, CUDA_R_16F, seq, seq*seq,
       &beta,
       attn.dQ, CUDA_R_16F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
-  // 5. dK = dS^T @ Q (batched f32×f16→f16)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  // 5. dK = dS^T @ Q (batched f16×f16→f16)
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       hd, seq, seq, &alpha,
-      (const float*)attn.q_f32, CUDA_R_32F, hd, seq*hd,
+      Q_all, CUDA_R_16F, hd, seq*hd,
       attn.dS, CUDA_R_16F, seq, seq*seq,
       &beta,
       attn.dK, CUDA_R_16F, hd, seq*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
+
+  // 5b. Undo RoPE on dQ/dK.
+  //
+  //     Steps 4 and 5 produced gradients w.r.t. the *rotated* Q/K. Both of the
+  //     consumers below want them w.r.t. the unrotated projections — step 6 for
+  //     dX, steps 7/8 for dWq/dWk — so one placement here covers all of them.
+  {
+    int n = h * seq * (hd / 2);
+    rope_dqk_kernel<<<(n + 255) / 256, 256>>>(attn.dQ, attn.dK, seq, hd, h);
+  }
 
   // 6. dX = sum_i( dQ_i @ wq_i^T + dK_i @ wk_i^T + dV_i @ wv_i^T )
   //    First head writes (β=0), rest accumulate (β=1)
   // dX from dQ @ wq^T
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       d, seq, hd, &alpha,
       wq_all, CUDA_R_16F, hd,
       attn.dQ, CUDA_R_16F, hd,
       &beta,
-      dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP);
+      dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP));
 
   for (int hi = 1; hi < h; hi++) {
-    cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+    CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
         d, seq, hd, &alpha,
         wq_all + hi * d * hd, CUDA_R_16F, hd,
         attn.dQ + hi * seq * hd, CUDA_R_16F, hd,
-        &alpha, dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP);
+        &alpha, dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP));
   }
 
   // dX += dK @ wk^T
   for (int hi = 0; hi < h; hi++) {
-    cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+    CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
         d, seq, hd, &alpha,
         wk_all + hi * d * hd, CUDA_R_16F, hd,
         attn.dK + hi * seq * hd, CUDA_R_16F, hd,
-        &alpha, dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP);
+        &alpha, dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP));
   }
 
   // dX += dV @ wv^T
   for (int hi = 0; hi < h; hi++) {
-    cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+    CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
         d, seq, hd, &alpha,
         wv_all + hi * d * hd, CUDA_R_16F, hd,
         attn.dV + hi * seq * hd, CUDA_R_16F, hd,
-        &alpha, dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP);
+        &alpha, dX, CUDA_R_16F, d, COMPUTE_F32, TENSOR_OP));
   }
 
   clamp_f16_kernel<<<(seq * d + 255) / 256, 256>>>(dX, seq * d);
 
   float one = 1.0f;
   // 7. Weight gradients: dwq = X^T @ dQ (batched f16×f16→f32, accumulate β=1)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       hd, d, seq, &alpha,
       attn.dQ, CUDA_R_16F, hd, seq*hd,
       X, CUDA_R_16F, d, 0,
       &one,
       dwq_all, CUDA_R_32F, hd, d*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
   // 8. dwk = X^T @ dK (batched, accumulate β=1)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       hd, d, seq, &alpha,
       attn.dK, CUDA_R_16F, hd, seq*hd,
       X, CUDA_R_16F, d, 0,
       &one,
       dwk_all, CUDA_R_32F, hd, d*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 
   // 9. dwv = X^T @ dV (batched, accumulate β=1)
-  cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       hd, d, seq, &alpha,
       attn.dV, CUDA_R_16F, hd, seq*hd,
       X, CUDA_R_16F, d, 0,
       &one,
       dwv_all, CUDA_R_32F, hd, d*hd,
-      h, COMPUTE_F32, TENSOR_OP);
+      h, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── dW = A^T @ dB (f16×f16→f32, for backward weight gradients) ──────────
@@ -1359,10 +1303,10 @@ extern "C" void cuda_d_weight(const __half *A, const __half *dB, float *dW,
                                int rows, int cols_a, int cols_b) {
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       cols_b, cols_a, rows, &alpha,
       dB, CUDA_R_16F, cols_b, A, CUDA_R_16F, cols_a, &beta,
-      dW, CUDA_R_32F, cols_b, COMPUTE_F32, TENSOR_OP);
+      dW, CUDA_R_32F, cols_b, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── cuBLAS wrappers for matmul and matmul_bt ──────────────────────────────
@@ -1371,20 +1315,20 @@ extern "C" void cuda_matmul(const __half *a, const __half *b, __half *result,
                              int rows_a, int cols_a, int cols_b) {
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       cols_b, rows_a, cols_a, &alpha,
       b, CUDA_R_16F, cols_b, a, CUDA_R_16F, cols_a, &beta,
-      result, CUDA_R_16F, cols_b, COMPUTE_F32, TENSOR_OP);
+      result, CUDA_R_16F, cols_b, COMPUTE_F32, TENSOR_OP));
 }
 
 extern "C" void cuda_matmul_bt(const __half *a, const __half *b, __half *result,
                                 int rows_a, int cols_a, int rows_b) {
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       rows_b, rows_a, cols_a, &alpha,
       b, CUDA_R_16F, cols_a, a, CUDA_R_16F, cols_a, &beta,
-      result, CUDA_R_16F, rows_b, COMPUTE_F32, TENSOR_OP);
+      result, CUDA_R_16F, rows_b, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── Feed-forward forward (inference, fused bias+gelu) ─────────────────────
@@ -1403,20 +1347,20 @@ extern "C" void cuda_feed_forward(const __half *input,
   __half *d_hidden = ff.hidden;
 
   // hidden = input @ w1 (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       d_ff, seq_len, d_model, &alpha,
       w1, CUDA_R_16F, d_ff, input, CUDA_R_16F, d_model, &beta,
-      d_hidden, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP);
+      d_hidden, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP));
 
   // Fused bias_add + GELU (single kernel)
   fused_bias_gelu_kernel<<<(seq_len * d_ff + 255) / 256, 256>>>(
       d_hidden, b1, d_ff, seq_len * d_ff);
 
   // out = hidden @ w2 (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       d_model, seq_len, d_ff, &alpha,
       w2, CUDA_R_16F, d_model, d_hidden, CUDA_R_16F, d_ff, &beta,
-      out, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
+      out, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP));
 
   // Add b2 bias (no GELU after second projection)
   {
@@ -1444,10 +1388,10 @@ cuda_feed_forward_forward(const __half *input,
   __half *d_hidden = ff.hidden;
 
   // hidden = input @ w1 (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       d_ff, seq_len, d_model, &alpha,
       w1, CUDA_R_16F, d_ff, input, CUDA_R_16F, d_model, &beta,
-      d_hidden, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP);
+      d_hidden, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP));
 
   // Add bias first: pre_gelu = input @ w1 + b1
   {
@@ -1465,10 +1409,10 @@ cuda_feed_forward_forward(const __half *input,
       d_hidden, seq_len * d_ff);
 
   // out = hidden @ w2 (f16×f16→f16)
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       d_model, seq_len, d_ff, &alpha,
       w2, CUDA_R_16F, d_model, d_hidden, CUDA_R_16F, d_ff, &beta,
-      out, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
+      out, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP));
 
   {
     dim3 t16(16, 16);
@@ -1498,10 +1442,10 @@ extern "C" void cuda_feed_forward_backward(
   __half *d_hidden_gelu = ff.hidden;
 
   // d_hidden_gelu = dout @ w2^T (f16×f16^T→f16) [seq_len x d_ff]
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       d_ff, seq_len, d_model, &alpha,
       w2, CUDA_R_16F, d_model, dout, CUDA_R_16F, d_model, &beta,
-      d_hidden_gelu, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP);
+      d_hidden_gelu, CUDA_R_16F, d_ff, COMPUTE_F32, TENSOR_OP));
 
   // Compute activated = gelu(pre_gelu) dynamically to use for dw2 gradient.
   // Distinct from d_hidden_gelu above: both are live across the dw2 GEMM.
@@ -1510,10 +1454,10 @@ extern "C" void cuda_feed_forward_backward(
   gelu_kernel<<<(seq_len * d_ff + 255) / 256, 256>>>(activated, seq_len * d_ff);
 
   // dw2 = activated^T @ dout (f16×f16→f32) [d_ff x d_model]
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       d_model, d_ff, seq_len, &alpha,
       dout, CUDA_R_16F, d_model, activated, CUDA_R_16F, d_ff, &beta,
-      dw2, CUDA_R_32F, d_model, COMPUTE_F32, TENSOR_OP);
+      dw2, CUDA_R_32F, d_model, COMPUTE_F32, TENSOR_OP));
 
   cuda_bias_grad(dout, db2, seq_len, d_model);
 
@@ -1523,18 +1467,18 @@ extern "C" void cuda_feed_forward_backward(
                                                           seq_len * d_ff);
 
   // dw1 = input^T @ d_hidden_gelu (f16×f16→f32) [d_model x d_ff]
-  cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       d_ff, d_model, seq_len, &alpha,
       d_hidden_gelu, CUDA_R_16F, d_ff, input, CUDA_R_16F, d_model, &beta,
-      dw1, CUDA_R_32F, d_ff, COMPUTE_F32, TENSOR_OP);
+      dw1, CUDA_R_32F, d_ff, COMPUTE_F32, TENSOR_OP));
 
   cuda_bias_grad(d_hidden_gelu, db1, seq_len, d_ff);
 
   // dinput = d_hidden_gelu @ w1^T (f16×f16^T→f16) [seq_len x d_model]
-  cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       d_model, seq_len, d_ff, &alpha,
       w1, CUDA_R_16F, d_ff, d_hidden_gelu, CUDA_R_16F, d_ff, &beta,
-      dinput, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP);
+      dinput, CUDA_R_16F, d_model, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── Head concatenation kernel ──────────────────────────────────────────────
@@ -1823,10 +1767,12 @@ extern "C" void cuda_adam(const float *g, float *w_master, __half *w_view,
 }
 
 // ─── Embedding forward: lookup + positional add ─────────────────────
+// A plain gather: position no longer enters here. It used to add a row of the
+// learned absolute positional table, which RoPE replaced — see the RoPE section
+// at the top of this file.
 __global__ void embedding_forward_kernel(
   const int *token_ids,
   const __half *embedding_table,
-  const __half *positional_table,
   __half *output,
   int s, int d, int vocab
 ) {
@@ -1835,17 +1781,16 @@ __global__ void embedding_forward_kernel(
   int pos = i / d;
   int j = i % d;
   int token = token_ids[pos];
-  output[i] = __hadd(embedding_table[token * d + j], positional_table[pos * d + j]);
+  output[i] = embedding_table[token * d + j];
 }
 
 extern "C" void cuda_embedding_forward(
   const int *token_ids,
   const __half *embedding_table,
-  const __half *positional_table,
   __half *output,
   int s, int d, int vocab
 ) {
-  embedding_forward_kernel<<<(s * d + 255) / 256, 256>>>(token_ids, embedding_table, positional_table, output, s, d, vocab);
+  embedding_forward_kernel<<<(s * d + 255) / 256, 256>>>(token_ids, embedding_table, output, s, d, vocab);
 }
 
 // ─── Embedding backward: scatter-add d_dx into g_emb ────────────────

@@ -153,7 +153,7 @@ pub fn run(
     let calibration = calibrate(&judge, request.recalibrate)?;
     on_calibration(&calibration);
 
-    let ctx_window = model.positional_table.len();
+    let ctx_window = model.ctx_window();
     let reserve = (ctx_window / 4).max(8);
     let candidates_per_prompt = request.candidates.clamp(2, 32);
 

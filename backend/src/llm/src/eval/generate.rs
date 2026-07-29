@@ -93,7 +93,7 @@ pub async fn continue_tokens(
     mut seq: Vec<u32>,
     config: SamplingConfig,
 ) -> Continuation {
-    let ctx = model.positional_table.len();
+    let ctx = model.ctx_window();
     let layers = model.layers as usize;
 
     // Seeded per prompt-length so each prompt gets its own stream while the run as

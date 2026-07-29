@@ -201,7 +201,7 @@ pub fn continue_train(
     } else {
         Model::load(&model_dir.to_string_lossy())?
     };
-    let ctx_window = transformer.positional_table.len() as i64;
+    let ctx_window = transformer.max_seq_len;
     let layers = transformer.layers;
     let mut ws = Workspace::new(&transformer, ctx_window as usize);
 
@@ -285,6 +285,70 @@ pub fn warm_start_embeddings(model: &mut Model, ids: &[u32]) -> usize {
     reset
 }
 
+/// Warm-start the **output** (unembedding) columns of `ids` to the mean column,
+/// returning how many were reset. The counterpart of `warm_start_embeddings` for
+/// the other end of the network.
+///
+/// `w_output` is `[d][vocab]` — a token owns a *column*, not a row — so this walks
+/// every dimension writing one element per id.
+///
+/// This is the half that matters at a curriculum stage boundary. An id absent from
+/// the stages before it was never an *input*, so its embedding row is untouched
+/// random init; but it was a target on every step, always with label 0, so softmax
+/// spends the whole run pushing its logit down. By the time the stage that finally
+/// uses it starts, the id costs ~20 nats the first time it is the answer, and the
+/// gradient that produces is the loss spike. Seeding both ends from the table mean
+/// makes a newly-introduced token merely *unknown* (~ln(vocab) nats) instead of
+/// actively *refuted*.
+pub fn warm_start_output_columns(model: &mut Model, ids: &[u32]) -> usize {
+    let d = model.w_output.len();
+    let vocab = model.w_output.first().map_or(0, |r| r.len());
+    if vocab == 0 || d == 0 || ids.is_empty() {
+        return 0;
+    }
+
+    // Mean over the vocabulary, per dimension — the column an "average token" owns.
+    let mean: Vec<f32> = model
+        .w_output
+        .iter()
+        .map(|row| row.iter().sum::<f32>() / vocab as f32)
+        .collect();
+
+    let mut reset = 0usize;
+    for &id in ids {
+        let col = id as usize;
+        if col < vocab {
+            for (row, &m) in model.w_output.iter_mut().zip(&mean) {
+                row[col] = m;
+            }
+            reset += 1;
+        }
+    }
+    reset
+}
+
+/// The ids `docs` contains that `seen` has not recorded yet, marking all of them
+/// seen on the way through. `seen` is indexed by token id and persists across the
+/// call sequence, so calling this once per stage in curriculum order yields, each
+/// time, exactly the ids that stage *introduces*.
+fn ids_introduced_by(corpus: &[u16], docs: &[DocSpan], seen: &mut [bool]) -> Vec<u32> {
+    let mut introduced = Vec::new();
+    for doc in docs {
+        let end = (doc.start + doc.len).min(corpus.len());
+        for &id in &corpus[doc.start.min(end)..end] {
+            match seen.get_mut(id as usize) {
+                Some(flag) if !*flag => {
+                    *flag = true;
+                    introduced.push(id as u32);
+                }
+                _ => {}
+            }
+        }
+    }
+    introduced.sort_unstable();
+    introduced
+}
+
 /// Fine-tune (supervised fine-tuning) a **pretrained base model** on a masked
 /// chat dataset. Loads the base weights from `base_model_dir`, then runs the
 /// training loop over `sft_corpus_path` (flat little-endian `u32` ids, exactly
@@ -328,7 +392,7 @@ pub fn sft_train(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<bool, io::Error> {
     let mut transformer = Model::load(&base_model_dir.to_string_lossy())?;
-    let ctx_window = transformer.positional_table.len() as i64;
+    let ctx_window = transformer.max_seq_len;
     let layers = transformer.layers;
 
     let corpus = tokenize::bpe::load_corpus(&sft_corpus_path.to_string_lossy())?;
@@ -430,7 +494,7 @@ pub fn kto_train(
 ) -> Result<bool, io::Error> {
     let transformer_owned = Model::load(&base_model_dir.to_string_lossy())?;
     let mut transformer = transformer_owned;
-    let ctx_window = transformer.positional_table.len() as i64;
+    let ctx_window = transformer.max_seq_len;
     let layers = transformer.layers;
 
     let corpus = tokenize::bpe::load_corpus(&corpus_path.to_string_lossy())?;
@@ -1136,9 +1200,45 @@ fn run_training_loop(
     let mut chunks_done_global: u64 = 0;
     let mut global_epoch: i64 = 0;
 
+    // Which token ids the run has trained on so far, so each stage can be asked
+    // what it introduces. See `warm_start_output_columns` for why a stage that
+    // introduces ids is a hazard rather than a non-event.
+    let mut seen_ids = vec![false; transformer.embedding_table.len()];
+
     for (stage_idx, docs) in stage_docs.iter().enumerate() {
         let stage = &plan.stages[stage_idx];
         let stage_total_chunks = stage_chunks[stage_idx];
+
+        // Warm-start the ids this stage is the first to use.
+        //
+        // A curriculum only ever moves onto *new* text, so a late stage routinely
+        // carries ids the earlier ones never did — the chat scaffold and document
+        // markup are the extreme case, absent from ordinary prose and so absent
+        // from every stage before the one that anneals chat in. Those ids arrive
+        // with an untrained input row and an output column the softmax has spent
+        // the whole run suppressing, and the first chunk containing one takes a
+        // ~20-nat loss and a gradient to match. Reseeding both ends from the table
+        // mean at the boundary is the same fix SFT already applies when a marker
+        // reaches it untrained; a curriculum stage boundary is the same event.
+        //
+        // Stage 0 is skipped: nothing is trained yet, so every id is "new" and the
+        // random init *is* the warm start. The round trip through the CPU costs one
+        // weight download and upload per stage (there are a handful), and it has to
+        // go through the model because the f32 master and the f16 view both need
+        // rewriting — which is exactly what `upload_weights` does.
+        let introduced = ids_introduced_by(corpus, docs, &mut seen_ids);
+        if stage_idx > 0 && !introduced.is_empty() {
+            sync_weights_from_gpu(ws, transformer);
+            let rows = warm_start_embeddings(transformer, &introduced);
+            let cols = warm_start_output_columns(transformer, &introduced);
+            ws.upload_weights(transformer);
+            println!(
+                "Stage {} introduces {} token id(s) unseen by the stages before it \
+                 — warm-started {rows} embedding row(s) and {cols} output column(s)",
+                stage_idx + 1,
+                introduced.len(),
+            );
+        }
         // Early-stopping is scoped to a stage: loss legitimately jumps when a new
         // corpus begins, so patience must not carry across a stage boundary.
         let mut best_loss = f32::INFINITY;
@@ -1363,6 +1463,96 @@ mod tests {
         }
     }
 
+    // The property the stage-boundary warm start is built on: walked in curriculum
+    // order, each stage reports exactly the ids no earlier stage used — and reports
+    // them once, to the stage that gets there first.
+    #[test]
+    fn each_stage_reports_only_the_ids_it_introduces() {
+        // stage 0 = [7,7,8], stage 1 = [8,9], stage 2 = [9,300]
+        let corpus: Vec<u16> = vec![7, 7, 8, 8, 9, 9, 300];
+        let stages = [
+            vec![DocSpan { start: 0, len: 3 }],
+            vec![DocSpan { start: 3, len: 2 }],
+            vec![DocSpan { start: 5, len: 2 }],
+        ];
+        let mut seen = vec![false; 512];
+
+        assert_eq!(ids_introduced_by(&corpus, &stages[0], &mut seen), vec![7, 8]);
+        assert_eq!(ids_introduced_by(&corpus, &stages[1], &mut seen), vec![9]);
+        assert_eq!(ids_introduced_by(&corpus, &stages[2], &mut seen), vec![300]);
+        // Nothing is left to introduce on a second pass.
+        assert!(ids_introduced_by(&corpus, &stages[2], &mut seen).is_empty());
+    }
+
+    // The chat-scaffold shape of the same thing: prose stages never touch the
+    // marker block, so the stage that anneals chat in is the one that introduces
+    // every marker at once.
+    #[test]
+    fn a_late_chat_stage_introduces_the_whole_marker_block() {
+        let corpus: Vec<u16> = vec![100, 101, 102, /* chat: */ 260, 100, 261, 262];
+        let mut seen = vec![false; 512];
+        assert!(ids_introduced_by(&corpus, &[DocSpan { start: 0, len: 3 }], &mut seen).len() == 3);
+        assert_eq!(
+            ids_introduced_by(&corpus, &[DocSpan { start: 3, len: 4 }], &mut seen),
+            vec![260, 261, 262],
+            "the markers, and only the markers, are new to the chat stage",
+        );
+    }
+
+    // A span running past the corpus (a stale segments.json) is truncated rather
+    // than panicking — the same tolerance `load_corpus_span` has.
+    #[test]
+    fn an_overlong_span_is_truncated_not_panicked() {
+        let corpus: Vec<u16> = vec![5, 6];
+        let mut seen = vec![false; 16];
+        assert_eq!(
+            ids_introduced_by(&corpus, &[DocSpan { start: 1, len: 99 }], &mut seen),
+            vec![6]
+        );
+    }
+
+    // Both ends of a warm-started token land on the table mean, and no other
+    // token's weights move.
+    #[test]
+    fn warm_start_reseeds_both_ends_and_leaves_the_rest_alone() {
+        let vocab = 4usize;
+        // Even: RoPE pairs adjacent dimensions, so `Model::init` rejects an odd
+        // head_dim (here head_dim == d, since heads == 1).
+        let d = 4usize;
+        let mut model = Model::init(d as i64, vocab as i64, 8, 1, 2, 1);
+        // A suppressed output column and a random embedding row for id 2.
+        for row in &mut model.w_output {
+            row[2] = -40.0;
+        }
+        let untouched_embedding = model.embedding_table[1].clone();
+        let untouched_column: Vec<f32> = model.w_output.iter().map(|r| r[1]).collect();
+
+        let embed_mean: Vec<f32> = (0..d)
+            .map(|j| model.embedding_table.iter().map(|r| r[j]).sum::<f32>() / vocab as f32)
+            .collect();
+        let out_mean: Vec<f32> =
+            model.w_output.iter().map(|r| r.iter().sum::<f32>() / vocab as f32).collect();
+
+        assert_eq!(warm_start_embeddings(&mut model, &[2]), 1);
+        assert_eq!(warm_start_output_columns(&mut model, &[2]), 1);
+
+        for j in 0..d {
+            assert!((model.embedding_table[2][j] - embed_mean[j]).abs() < 1e-5);
+            assert!((model.w_output[j][2] - out_mean[j]).abs() < 1e-5);
+        }
+        assert_eq!(model.embedding_table[1], untouched_embedding);
+        let after: Vec<f32> = model.w_output.iter().map(|r| r[1]).collect();
+        assert_eq!(after, untouched_column);
+    }
+
+    // An id past the vocabulary is skipped, not a panic — same tolerance
+    // `warm_start_embeddings` documents for a drifted `special_ids_seen` record.
+    #[test]
+    fn warm_start_output_columns_skips_out_of_range_ids() {
+        let mut model = Model::init(4, 4, 8, 1, 2, 1);
+        assert_eq!(warm_start_output_columns(&mut model, &[99]), 0);
+    }
+
     // A seeded shuffle is a deterministic permutation: same seed => same order,
     // and every index survives exactly once.
     #[test]
@@ -1389,7 +1579,7 @@ mod tests {
     #[test]
     fn assemble_epoch_reproduces_and_separates() {
         // corpus: docA=[10,11] eot=1 docB=[20,21,22] eot=1 docC=[30]
-        let corpus: Vec<u32> = vec![10, 11, 1, 20, 21, 22, 1, 30];
+        let corpus: Vec<u16> = vec![10, 11, 1, 20, 21, 22, 1, 30];
         let docs = [
             DocSpan { start: 0, len: 2 },
             DocSpan { start: 3, len: 3 },

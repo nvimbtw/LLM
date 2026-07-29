@@ -24,12 +24,10 @@ pub struct Workspace {
     pub d_ln_beta: Vec<DeviceBufferF16>,
     pub d_w_output: DeviceBufferF16,      // shared
     pub d_embedding: DeviceBufferF16,      // [vocab, d]
-    pub d_positional: DeviceBufferF16,     // [max_s, d]
 
     // f32 master weights (source of truth) — one per *trained* weight. The
     // matching `d_*` f16 buffer above is a derived view refreshed from the master
     // every optimizer step; the master is what Adam accumulates into (0052 epic).
-    // `d_positional` is never stepped, so it has no master.
     pub m_wq_all: Vec<Buffer>,      // [layers][h * d * hd]
     pub m_wk_all: Vec<Buffer>,
     pub m_wv_all: Vec<Buffer>,
@@ -114,12 +112,33 @@ pub struct Workspace {
     pub post_attn_residuals: Vec<DeviceBufferF16>,
     pub ff_inputs: Vec<DeviceBufferF16>,
     pub pre_gelus: Vec<DeviceBufferF16>,
-    pub post_ff_residuals: Vec<DeviceBufferF16>,
+    // The LN1 output — i.e. the attention sublayer's input X, which the backward
+    // needs for dWq/dWk/dWv. Named for what it holds: it is written before the
+    // attention sublayer, not after the feed-forward one.
+    pub ln1_outputs: Vec<DeviceBufferF16>,
     pub concat_outputs: Vec<DeviceBufferF16>,
 
     // Contiguous per-head buffers for batched attention
     pub head_out_all: Vec<DeviceBufferF16>,   // [layers][h * max_s * hd]
     pub head_p_all: Vec<DeviceBufferF16>,     // [layers][h * max_s * max_s]
+
+    // The forward's Q/K/V, kept per layer for the backward to read.
+    //
+    // These MUST stay per-layer. The attention backward used to read Q/K/V out of
+    // the single file-static `attn` scratch in shaders.cu, which every later
+    // layer's forward overwrites — so it differentiated layer L using the last
+    // layer's activations, and only the final layer was ever right. That, plus a
+    // pair of f32×f16 GEMMs cuBLAS rejects outright, left dK identically zero for
+    // the life of the project. Anything that moves these back into shared scratch
+    // reintroduces it.
+    //
+    // Allocated at `max_s` but addressed with runtime-`seq` strides (`seq * hd`),
+    // exactly like `head_p_all`. Forward and backward see the same `s` within a
+    // step, so the packing agrees; a short final chunk just leaves the tail of the
+    // allocation untouched. The only invariant is `s <= max_s`.
+    pub q_all: Vec<DeviceBufferF16>,          // [layers][h * max_s * hd]
+    pub k_all: Vec<DeviceBufferF16>,          // [layers][h * max_s * hd]
+    pub v_all: Vec<DeviceBufferF16>,          // [layers][h * max_s * hd]
 
     pub d_head_ptrs: Buffer,
 
@@ -162,7 +181,6 @@ impl Workspace {
         let d_ln_beta = (0..layers).map(|_| DeviceBufferF16::alloc(d)).collect();
         let d_w_output = DeviceBufferF16::alloc(d * vocab);
         let d_embedding = DeviceBufferF16::alloc(vocab * d);
-        let d_positional = DeviceBufferF16::alloc(max_s * d);
 
         // f32 master weights (same element counts as the f16 views above). Start
         // zeroed; 0056 seeds them from the f32 CPU weights on `upload_weights`.
@@ -250,7 +268,7 @@ impl Workspace {
         let b_ff = Buffer::alloc(ff);
         let mut ws = Workspace {
             d_wq_all, d_wk_all, d_wv_all, d_wo, d_w1, d_w2, d_b1, d_b2, d_ln_gamma, d_ln_beta, d_w_output,
-            d_embedding, d_positional,
+            d_embedding,
             m_wq_all, m_wk_all, m_wv_all, m_wo, m_w1, m_w2, m_b1, m_b2, m_ln_gamma, m_ln_beta,
             m_w_output, m_embedding,
             g_wq_all, g_wk_all, g_wv_all,
@@ -266,10 +284,13 @@ impl Workspace {
             post_attn_residuals: Vec::new(),
             ff_inputs: Vec::new(),
             pre_gelus: Vec::new(),
-            post_ff_residuals: Vec::new(),
+            ln1_outputs: Vec::new(),
             concat_outputs: Vec::new(),
             head_out_all: Vec::new(),
             head_p_all: Vec::new(),
+            q_all: Vec::new(),
+            k_all: Vec::new(),
+            v_all: Vec::new(),
             d_head_ptrs,
             b_sd, b_d, b_dd, b_dff, b_ff, b_sd_head, d_wo_x,
             max_s, d, h, hd, ff, vocab,
@@ -337,9 +358,6 @@ impl Workspace {
         let flat_embedding: Vec<f32> = t.embedding_table.iter().flatten().copied().collect();
         self.d_embedding.upload_f32_slice(&flat_embedding);
         self.m_embedding.upload(&flat_embedding);
-        // `d_positional` is never stepped by Adam, so it has no master.
-        let flat_positional: Vec<f32> = t.positional_table.iter().flatten().copied().collect();
-        self.d_positional.upload_f32_slice(&flat_positional);
     }
 
     // Upload the pointer/size table the batched gradient clip reads. Must list
@@ -426,10 +444,13 @@ impl Workspace {
             self.post_attn_residuals.push(DeviceBufferF16::alloc(self.max_s * self.d));
             self.ff_inputs.push(DeviceBufferF16::alloc(self.max_s * self.d));
             self.pre_gelus.push(DeviceBufferF16::alloc(self.max_s * self.ff));
-            self.post_ff_residuals.push(DeviceBufferF16::alloc(self.max_s * self.d));
+            self.ln1_outputs.push(DeviceBufferF16::alloc(self.max_s * self.d));
             self.concat_outputs.push(DeviceBufferF16::alloc(self.max_s * self.d));
             self.head_out_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
             self.head_p_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.max_s));
+            self.q_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
+            self.k_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
+            self.v_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
         }
     }
 }

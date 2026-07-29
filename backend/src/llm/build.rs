@@ -13,7 +13,13 @@ fn main() {
         .unwrap_or_else(|_| "/opt/cuda".to_string());
     let nvcc = format!("{}/bin/nvcc", cuda_home);
 
-    Command::new(&nvcc)
+    // `.status()` only reports whether the process *ran*, not whether it
+    // succeeded. Both of these used to be unchecked, and a CUDA compile error
+    // therefore left the previous `shaders.o` in place while `ar` happily
+    // re-archived it — so the crate linked and every test ran against a stale
+    // kernel object. That is indistinguishable from the edit having no effect,
+    // and it silently invalidates any measurement taken afterwards. Fail loudly.
+    let nvcc_status = Command::new(&nvcc)
         .args([
             "-c",
             &format!("{}/shaders.cu", shader_dir),
@@ -27,15 +33,21 @@ fn main() {
         ])
         .status()
         .unwrap_or_else(|e| panic!("failed to run nvcc at {}: {}", nvcc, e));
+    assert!(
+        nvcc_status.success(),
+        "nvcc failed to compile shaders.cu ({nvcc_status}) — the error is above. \
+         Refusing to link the previous shaders.o.",
+    );
 
-    Command::new("ar")
+    let ar_status = Command::new("ar")
         .args([
             "rcs",
             &format!("{}/libshaders.a", shader_dir),
             &format!("{}/shaders.o", shader_dir),
         ])
         .status()
-        .expect("ar failed");
+        .expect("ar failed to run");
+    assert!(ar_status.success(), "ar failed to archive shaders.o ({ar_status})");
 
     println!("cargo:rustc-link-search=native={}", shader_dir);
     println!("cargo:rustc-link-search=native={}/lib64", cuda_home);

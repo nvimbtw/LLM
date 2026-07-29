@@ -1,22 +1,60 @@
 use llm::training::transformer::Model;
 use llm::{infer::generate_response, train::train};
 use llm::train::{DataPlan, sft_train};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// A self-contained pretraining fixture — a merge table and a corpus written into
+/// `dir` — returning `(corpus_path, merges_path)`.
+///
+/// These tests used to point at `../../data/datasets/corpus.bin`, the developer's
+/// real 98M-token corpus. One epoch over it is minutes to hours (which hung the
+/// whole suite), and it made them unrunnable on a clean checkout or in CI. Nothing
+/// they assert needs a real corpus: that a run completes and yields a loadable,
+/// generating model, and that masked SFT lowers the assistant-region loss, are
+/// properties of a few thousand tokens.
+fn pretrain_fixture(dir: &Path) -> (PathBuf, PathBuf) {
+    std::fs::create_dir_all(dir).unwrap();
+
+    // The merge table only has to be well-formed and fix the vocabulary: `train`
+    // reads it for `vocab_size(merges.len())` and copies it next to the weights so
+    // inference can load both from one place. 64 merges puts the vocabulary at
+    // `MERGE_BASE + 64`, comfortably above every id the corpus below uses.
+    let merges: Vec<((u32, u32), u32)> = (0..64u32)
+        .map(|i| {
+            let a = u32::from(b'a') + i % 26;
+            let b = u32::from(b'a') + (i / 26) % 26;
+            ((a, b), tokenize::bpe::MERGE_BASE + i)
+        })
+        .collect();
+    let merges_path = dir.join("merges.bin");
+    tokenize::bpe::save_merges(&merges, &merges_path.to_string_lossy()).unwrap();
+
+    // Printable ASCII, not random ids: the test asserts the model generates
+    // non-empty *text*, and `decode` strips invalid UTF-8 through
+    // `from_utf8_lossy` + a replacement-char strip. A model trained on arbitrary
+    // byte ids can greedily emit ten bytes that decode to nothing at all, which
+    // would make that assertion flaky for reasons having nothing to do with
+    // training.
+    let phrase = b"the quick brown fox jumps over the lazy dog ";
+    let ids: Vec<u32> = phrase.iter().cycle().take(4096).map(|&b| u32::from(b)).collect();
+    let corpus_path = dir.join("corpus.bin");
+    tokenize::bpe::save_corpus(&ids, &corpus_path.to_string_lossy()).unwrap();
+
+    (corpus_path, merges_path)
+}
 
 #[test]
 fn test_training_runs() {
-    // The crate is layout-agnostic: the caller supplies every path. The backend
-    // builds these via its storage module; here we point at backend/data/ by
-    // hand (this file lives at backend/src/llm/tests/) and write the run into a
-    // throwaway directory next to it.
-    let model_dir = std::path::Path::new("target/test_model/test");
-    let corpus_path = std::path::Path::new("../../data/datasets/corpus.bin");
-    let merges_path = std::path::Path::new("../../data/artifacts/tokenizer/merges.bin");
+    // The crate is layout-agnostic: the caller supplies every path. Everything this
+    // run touches lives under `target/`, so the test needs no data on disk.
+    let model_dir = Path::new("target/test_model/test");
+    let (corpus_path, merges_path) = pretrain_fixture(Path::new("target/test_model/data"));
 
     // Use small dimensions, 1 epoch, small context. The epoch count rides in the
     // DataPlan now rather than as its own argument.
     let result = train(
-        32, 16, 4, 1, 0.01, 2, model_dir, corpus_path, merges_path, None,
+        32, 16, 4, 1, 0.01, 2, model_dir, &corpus_path, &merges_path, None,
         DataPlan::whole_corpus(1), Box::new(|_| {}), None,
     );
     assert!(result.is_ok(), "Training failed: {:?}", result.err());
@@ -29,7 +67,7 @@ fn test_training_runs() {
     assert!(!text.is_empty(), "Generated text should not be empty");
 
     // Cleanup test artifacts
-    let _ = std::fs::remove_dir_all(model_dir);
+    let _ = std::fs::remove_dir_all(Path::new("target/test_model"));
 }
 
 // ISSUE-0035: sft_train loads a pretrained base and fine-tunes it on a masked
@@ -38,14 +76,13 @@ fn test_training_runs() {
 // loss decreases — i.e. the base actually learns from the masked-in positions.
 #[test]
 fn test_sft_train_masked_loss_decreases() {
-    let merges_path = std::path::Path::new("../../data/artifacts/tokenizer/merges.bin");
-    let corpus_path = std::path::Path::new("../../data/datasets/corpus.bin");
+    let _ = std::fs::remove_dir_all(Path::new("target/test_sft"));
+    let (corpus_path, merges_path) = pretrain_fixture(Path::new("target/test_sft/data"));
 
     // 1. Produce a tiny pretrained base model (small dims, ctx 16, 1 epoch).
-    let base_dir = std::path::Path::new("target/test_sft/base");
-    let _ = std::fs::remove_dir_all(base_dir);
+    let base_dir = Path::new("target/test_sft/base");
     let base = train(
-        32, 16, 4, 1, 0.01, 2, base_dir, corpus_path, merges_path, None,
+        32, 16, 4, 1, 0.01, 2, base_dir, &corpus_path, &merges_path, None,
         DataPlan::whole_corpus(1), Box::new(|_| {}), None,
     );
     assert!(base.is_ok(), "base pretraining failed: {:?}", base.err());
@@ -56,11 +93,13 @@ fn test_sft_train_masked_loss_decreases() {
     let dataset_dir = std::path::Path::new("target/test_sft/dataset");
     std::fs::create_dir_all(dataset_dir).unwrap();
     let ids: Vec<u32> = (0..16).map(|i| 256 + (i % 4)).collect();
-    let corpus_bytes: Vec<u8> = ids.iter().flat_map(|t| t.to_le_bytes()).collect();
     let mask: Vec<u8> = (0..16u8).map(|i| if i < 4 { 0 } else { 1 }).collect();
     let sft_corpus = dataset_dir.join("sft_corpus.bin");
     let sft_mask = dataset_dir.join("sft_mask.bin");
-    std::fs::write(&sft_corpus, &corpus_bytes).unwrap();
+    // Through `save_corpus`, not raw `to_le_bytes`: `corpus.bin` carries an
+    // 8-byte header and u16 ids, and a hand-rolled u32 fixture is rejected by
+    // `load_corpus` outright ("not a corpus file — rebuild it").
+    tokenize::bpe::save_corpus(&ids, &sft_corpus.to_string_lossy()).unwrap();
     std::fs::write(&sft_mask, &mask).unwrap();
 
     // 3. Fine-tune, capturing the per-epoch average (masked) loss.
@@ -155,11 +194,9 @@ fn test_sft_epic_masking_isolates_gradient() {
     // A 16-token single-chunk fixture the tiny model can memorize.
     let ids: Vec<u32> = (0..16u32).map(|i| 32 + (i % 5)).collect();
     let corpus_path = root.join("sft_corpus.bin");
-    std::fs::write(
-        &corpus_path,
-        ids.iter().flat_map(|t| t.to_le_bytes()).collect::<Vec<u8>>(),
-    )
-    .unwrap();
+    // See the note in `test_sft_train_masked_loss_decreases`: the corpus format
+    // is headered u16, so the fixture has to go through `save_corpus`.
+    tokenize::bpe::save_corpus(&ids, &corpus_path.to_string_lossy()).unwrap();
 
     // "real" mask: first 4 positions (scaffold) = 0, rest (assistant) = 1.
     let real_mask_path = root.join("real_mask.bin");
@@ -172,14 +209,25 @@ fn test_sft_epic_masking_isolates_gradient() {
     let zero_mask_path = root.join("zero_mask.bin");
     std::fs::write(&zero_mask_path, vec![0u8; 16]).unwrap();
 
-    // (a) All-masked-out fine-tune: every position is excluded, so every reported
-    //     loss is exactly 0.0 — there is no signal to learn from.
+    // (a) All-masked-out fine-tune: every position is excluded, so nothing trains.
+    //
+    // The assertion here used to be "every reported loss is exactly 0.0", which
+    // was the contract before a1f0652. `train_epoch` now *skips* a chunk whose
+    // mask has no target rather than running a full forward and backward to
+    // arrive at 0.0 — a loss of 0.0 is finite, so folding it into the epoch mean
+    // dragged the average toward zero and stepped Adam on nothing but leftover
+    // momentum. The observable consequence is that an all-masked-out run trains
+    // no chunks at all, so its epoch means are NaN (0/0) and the progress sink,
+    // which keeps only finite losses, sees nothing.
+    //
+    // The property the epic actually cares about is unchanged and still asserted:
+    // masked-out tokens contribute no learning signal. "No trainable chunk" is a
+    // stronger statement of it than "loss 0.0", not a weaker one.
     let (zero_losses, zero_bytes) =
         run_sft_fixture(&base_dir, &corpus_path, &zero_mask_path, &root.join("out_zero"), 4);
-    assert!(!zero_losses.is_empty(), "zero-mask run reported no epochs");
     assert!(
-        zero_losses.iter().all(|&l| l == 0.0),
-        "all-masked-out SFT must report 0.0 loss everywhere, got {:?}",
+        zero_losses.is_empty(),
+        "all-masked-out SFT must train nothing, but reported finite losses {:?}",
         zero_losses
     );
 
@@ -242,7 +290,7 @@ fn test_master_accumulates_sub_ulp_updates() {
 
     let mut t_synced = Model {
         embedding_table: t.embedding_table.clone(),
-        positional_table: t.positional_table.clone(),
+        max_seq_len: t.max_seq_len,
         wq: t.wq.clone(), wk: t.wk.clone(), wv: t.wv.clone(),
         wo: t.wo.clone(), w1: t.w1.clone(), w2: t.w2.clone(),
         b1: t.b1.clone(), b2: t.b2.clone(),

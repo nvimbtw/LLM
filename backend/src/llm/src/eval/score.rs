@@ -45,7 +45,7 @@ impl TokenScores {
 // `ctx/2` tokens of history (except in the very first window, where less history is
 // all that exists).
 pub async fn token_logprobs(model: &Model, tokens: &[u32], layers: usize) -> TokenScores {
-    let ctx = model.positional_table.len();
+    let ctx = model.ctx_window();
     if tokens.len() < 2 || ctx < 2 {
         return TokenScores { logprobs: Vec::new() };
     }

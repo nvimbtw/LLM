@@ -310,7 +310,7 @@ pub fn run(
     let model = llm::training::transformer::Model::load(&model_dir.to_string_lossy())
         .map_err(|e| format!("could not load model: {e}"))?;
 
-    let ctx_window = model.positional_table.len();
+    let ctx_window = model.ctx_window();
     let reserve = (ctx_window / 4).max(8);
 
     // Seeded from the clock rather than the prompt index. Autolabel seeds

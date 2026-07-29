@@ -573,7 +573,7 @@ fn describe(model: &Model) -> ModelInfo {
         + ff * d + d                     // w2, b2
         + 2 * d;                         // ln gamma, beta
     let parameters = vocab * d              // token embeddings
-        + model.positional_table.len() * d  // positional table
+        // No positional term: RoPE is parameter-free.
         + layers * per_layer
         + d * vocab; // output projection
 
@@ -581,7 +581,7 @@ fn describe(model: &Model) -> ModelInfo {
         dimensions: d,
         layers,
         heads,
-        context: model.positional_table.len(),
+        context: model.ctx_window(),
         vocab,
         parameters,
     }

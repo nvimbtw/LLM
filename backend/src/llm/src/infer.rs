@@ -132,7 +132,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     let c = cache.as_ref().unwrap();
 
     // The model's positional table defines its real context window.
-    let ctx_window = c.model.positional_table.len();
+    let ctx_window = c.model.ctx_window();
     // Leave headroom so the model can generate a reply before the sliding window
     // starts evicting the freshest prompt tokens.
     let reserve = (ctx_window / 4).max(8);
@@ -182,7 +182,7 @@ fn stream_generation<F: FnMut(&str)>(
         // A fixed value larger than the positional table would overrun it in
         // forward_seq (the sliding window keeps more tokens than there are
         // positions for), so the model's own table length is the ceiling.
-        let ctx_window = model.positional_table.len();
+        let ctx_window = model.ctx_window();
         let mut output_ids: Vec<u32> = Vec::new();
         let mut response = String::new();
 

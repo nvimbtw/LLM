@@ -93,7 +93,10 @@ fn validate_header_fields(
 /// during training the weights are mirrored to GPU buffers in `Workspace`.
 
 const MODEL_MAGIC: &[u8; 4] = b"GORK";
-const MODEL_VERSION: u32 = 3;
+/// v4 dropped the learned absolute positional table (RoPE replaced it). v3 files
+/// still parse — `read_model` reads the table body and discards it — but they load
+/// with a warning; see the note there for why they cannot generate sensibly.
+const MODEL_VERSION: u32 = 4;
 
 fn write_2d<W: std::io::Write>(w: &mut W, m: &[Vec<f32>]) -> Result<(), std::io::Error> {
     w.write_all(&(m.len() as u64).to_le_bytes())?;
@@ -119,13 +122,12 @@ fn write_model<W: std::io::Write>(t: &Model, w: &mut W) -> Result<(), std::io::E
     w.write_all(&MODEL_VERSION.to_le_bytes())?;
     let d = t.wo[0].len() as i64;
     let vocab = t.w_output[0].len() as i64;
-    let ctx = t.positional_table.len() as i64;
+    let ctx = t.max_seq_len;
     let ff = t.w1[0][0].len() as i64;
     for field in [d, vocab, ctx, t.heads, ff, t.layers] {
         w.write_all(&field.to_le_bytes())?;
     }
     write_2d(w, &t.embedding_table)?;
-    write_2d(w, &t.positional_table)?;
     for layer in 0..t.layers as usize {
         for head in 0..t.heads as usize {
             write_2d(w, &t.wq[layer][head])?;
@@ -191,6 +193,7 @@ struct ModelFileHeader {
     heads: i64,
     head_dim: i64,
     layers: i64,
+    max_seq_len: i64,
 }
 
 // Parse and validate the fixed-size header: magic, version, and the six i64
@@ -214,6 +217,7 @@ fn read_header<R: std::io::Read>(r: &mut R) -> Result<ModelFileHeader, std::io::
         heads,
         head_dim: dimensions / heads,
         layers,
+        max_seq_len: ctx,
     })
 }
 
@@ -309,13 +313,31 @@ fn read_block_weights<R: std::io::Read>(
 fn read_model<R: std::io::Read>(r: &mut R) -> Result<Model, std::io::Error> {
     let header = read_header(r)?;
     let embedding_table = read_2d(r)?;
-    let positional_table = read_2d(r)?;
+    // v3 and earlier stored a learned absolute positional table here. RoPE
+    // replaced it, so the body is read and thrown away — the weights after it sit
+    // at a fixed offset, and skipping the read would misalign every one of them.
+    //
+    // The load is allowed (the model browser and metadata paths must keep working
+    // on old runs) but it cannot produce sensible output: such a model was trained
+    // under absolute positions this code no longer applies, and — since the
+    // attention backward was broken for the entire period these files were
+    // written — with a K projection still at its random initialization. The
+    // warning is what stops that being a silent wrong answer.
+    if header.version < MODEL_VERSION {
+        let _ = read_2d(r)?;
+        eprintln!(
+            "warning: v{} model (current is v{MODEL_VERSION}) — trained with absolute \
+             positional embeddings and an untrained K projection. Its output will be \
+             meaningless; re-pretrain.",
+            header.version,
+        );
+    }
     let (wq, wk, wv) = read_qkv_weights(r, header.version, header.layers as usize, header.heads as usize)?;
     let blocks = read_block_weights(r, header.version, header.layers as usize)?;
     let w_output = read_2d(r)?;
     Ok(Model {
         embedding_table,
-        positional_table,
+        max_seq_len: header.max_seq_len,
         wq, wk, wv,
         wo: blocks.wo,
         heads: header.heads,
@@ -386,7 +408,6 @@ impl Model {
             rows.push(LayerRow { name: name.to_string(), shape, data });
         };
         push_2d(&mut rows, "embedding", &self.embedding_table);
-        push_2d(&mut rows, "positional", &self.positional_table);
         let h = self.heads as usize;
         let d = self.wo[0].len();
         let hd = self.head_dim as usize;
@@ -434,7 +455,6 @@ impl Model {
         use std::collections::HashMap;
         let d = header.dimensions as usize;
         let _vocab = header.vocab_size as usize;
-        let _ctx = header.max_seq_len as usize;
         let h = header.heads as usize;
         let hd = d / h;
         let _ff = d * header.ff_multiplier as usize;
@@ -530,7 +550,6 @@ impl Model {
         };
 
         let embedding_table = get_2d(&map, "embedding")?;
-        let positional_table = get_2d(&map, "positional")?;
 
         let mut wq = Vec::new();
         let mut wk = Vec::new();
@@ -591,7 +610,8 @@ impl Model {
         let w_output = get_2d(&map, "unembed")?;
 
         Ok(Model {
-            embedding_table, positional_table,
+            embedding_table,
+            max_seq_len: header.max_seq_len,
             wq, wk, wv, wo,
             heads: header.heads,
             head_dim: hd as i64,

@@ -30,8 +30,9 @@ impl LossTargets {
 }
 
 impl Model {
-    // Embedding lookup + positional add for the input tokens, producing the
-    // initial hidden state in b_sd[0]; returns the pointer to it.
+    // Embedding lookup for the input tokens, producing the initial hidden state
+    // in b_sd[0]; returns the pointer to it. Position is applied later, inside
+    // attention, by RoPE.
     pub(super) fn embed_forward(&self, ws: &mut Workspace, dims: StepDims, chunk: &[u32]) -> *mut c_void {
         let StepDims { s, d, vocab, .. } = dims;
         let token_ids: Vec<i32> = chunk.iter().map(|&id| id as i32).collect();
@@ -45,7 +46,6 @@ impl Model {
             cuda_embedding_forward(
                 ws.d_token_ids.ptr as *const i32,
                 ws.d_embedding.ptr as *const c_void,
-                ws.d_positional.ptr as *const c_void,
                 ws.b_sd[0].ptr as *mut c_void,
                 s as i32,
                 d as i32,
@@ -91,7 +91,7 @@ impl Model {
                 LAYER_NORM_EPS,
             );
             cuda_memcpy_d2d(
-                ws.post_ff_residuals[layer_idx].ptr as *mut c_void,
+                ws.ln1_outputs[layer_idx].ptr as *mut c_void,
                 ws.b_sd[0].ptr as *const c_void,
                 (s * d * 2) as usize,
             );
@@ -107,6 +107,9 @@ impl Model {
                 ws.d_wv_all[layer_idx].ptr as *const c_void,
                 ws.head_out_all[layer_idx].ptr as *mut c_void,
                 ws.head_p_all[layer_idx].ptr as *mut c_void,
+                ws.q_all[layer_idx].ptr as *mut c_void,
+                ws.k_all[layer_idx].ptr as *mut c_void,
+                ws.v_all[layer_idx].ptr as *mut c_void,
                 s as i32, d as i32, hd as i32, h as i32,
             );
         }
