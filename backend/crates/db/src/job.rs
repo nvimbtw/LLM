@@ -42,6 +42,17 @@ pub enum JobLane {
     Network,
 }
 
+impl JobLane {
+    /// Every lane, for callers that need one runner per lane.
+    ///
+    /// Exists so the set of lanes is stated once, here, next to the enum. It
+    /// used to be spelled out at the call site — the entrypoint spawned
+    /// `Device` and `Network` by name — which meant adding a lane silently left
+    /// its queue with no runner: rows would enqueue, nothing would drain them,
+    /// and the only symptom is a job that waits forever.
+    pub const ALL: [JobLane; 2] = [JobLane::Device, JobLane::Network];
+}
+
 impl JobKind {
     // A kind belongs to exactly one lane, and always the same one, so this is a
     // property of the kind rather than something a caller chooses (and could get

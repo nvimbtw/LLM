@@ -1,6 +1,5 @@
 use actix_cors::Cors;
 use actix_web::{App, HttpServer, web};
-use std::sync::Arc;
 
 
 #[actix_web::main]
@@ -14,39 +13,11 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("failed to connect to database / run migrations");
 
-    // Nothing is in flight at startup by definition: a worker lives on a thread
-    // with no durable state, so any row still marked running belongs to a process
-    // that died. Left alone they would hold the head of the queue forever and show
-    // a throbber that never resolves. Queued rows are untouched — the runner picks
-    // them up below, which is the whole point of a queue that survives a restart.
-    match db::job::fail_orphaned(&pool).await {
-        Ok(0) => {}
-        Ok(n) => println!("closed {} interrupted job(s)", n),
-        Err(e) => eprintln!("failed to close interrupted jobs: {}", e),
-    }
-    // The same reconciliation for benchmark history rows, which are opened by the
-    // runner and so can be orphaned by the same crash.
-    match db::benchmark::fail_orphaned(&pool).await {
-        Ok(0) => {}
-        Ok(n) => println!("closed {} interrupted benchmark run(s)", n),
-        Err(e) => eprintln!("failed to close interrupted benchmark runs: {}", e),
-    }
-
-    // The single serialization point for the GPU. Created once and shared across
-    // every worker (cloning web::Data clones the Arc, not the queue), so a job
-    // enqueued on one worker is visible to a socket that lands on another.
-    // One runner per lane. The device lane is the GPU line, unchanged; the network
-    // lane exists so work that only waits on somebody else's API never occupies it
-    // (see db::job::JobLane).
-    let queue = Arc::new(jobs::queue::Queue::new(pool.clone()));
-    actix_web::rt::spawn(queue.clone().run(db::job::JobLane::Device));
-    actix_web::rt::spawn(queue.clone().run(db::job::JobLane::Network));
-
-    // The layer above the queue: it enqueues the jobs a post-training round is made
-    // of and advances when they finish, and it never touches the device itself — a
-    // driver that held the GPU would deadlock against its own children.
-    let cycles = Arc::new(jobs::cycle::Cycles::new(pool.clone(), queue.clone()));
-    cycles.spawn();
+    // Reconciles orphaned rows and starts the runners and the cycle driver. The
+    // two handles come back for the HTTP layer to share: cloning `web::Data`
+    // clones the Arc, not the driver, so a job enqueued on one worker is visible
+    // to a socket that lands on another.
+    let jobs = jobs::start(pool.clone()).await;
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -62,8 +33,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
-            .app_data(web::Data::new(queue.clone()))
-            .app_data(web::Data::new(cycles.clone()))
+            .app_data(web::Data::new(jobs.queue.clone()))
+            .app_data(web::Data::new(jobs.cycles.clone()))
             .configure(api::configure)
     })
     .bind(("127.0.0.1", 8080))?

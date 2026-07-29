@@ -246,6 +246,19 @@ impl Queue {
 
     // ── the loop ────────────────────────────────────────────────────────────
 
+    /// Start one runner per lane.
+    ///
+    /// The counterpart of `Cycles::spawn`, and deliberately the same shape: a
+    /// driver in this crate knows how it wants to be run, and the caller should
+    /// not have to. The entrypoint used to spawn `run(Device)` and
+    /// `run(Network)` itself, which put the lane set — and the choice of
+    /// runtime — in `main.rs`.
+    pub fn spawn(self: &Arc<Self>) {
+        for lane in db::job::JobLane::ALL {
+            tokio::spawn(self.clone().run(lane));
+        }
+    }
+
     // One runner. Spawned once per lane, and identical either way — the lane only
     // decides which rows it is allowed to claim.
     //
