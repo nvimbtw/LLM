@@ -16,7 +16,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use storage;
 
 // Which kind of run this is: pretrain a fresh model, or supervised-fine-tune
 // (SFT) an existing one on chat data. Serialized lowercase (`"pretrain"` /
@@ -2107,7 +2106,7 @@ pub fn run_kto_training(
 // ISSUE-0037. One justified module-level allow rather than scattering it (R7).
 #[allow(dead_code)]
 mod synthetic {
-    use super::{rng_seed, storage, xorshift_next};
+    use super::{rng_seed, xorshift_next};
     use serde::Serialize;
     use std::fs;
     use std::io;

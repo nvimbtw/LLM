@@ -17,7 +17,7 @@ use crate::extractors::AdminUser;
 // "n / <files>" sample cap.
 #[get("/datasets")]
 async fn list_datasets(_admin: AdminUser) -> impl Responder {
-    match crate::training::list_datasets() {
+    match training::list_datasets() {
         Ok(list) => HttpResponse::Ok().json(list),
         Err(e) => {
             eprintln!("list datasets error: {}", e);

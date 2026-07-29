@@ -38,7 +38,7 @@ use db::cycle::{CycleStage, CycleStatus};
 use db::job::{JobKind, JobStatus};
 use crate::gather;
 use crate::queue::Queue;
-use crate::training::{TrainConfig, TrainMode};
+use training::{TrainConfig, TrainMode};
 
 // Backstop behind the change feed. Everything that finishes a job also notifies, so
 // this only matters when a notification is missed.

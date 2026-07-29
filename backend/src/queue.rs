@@ -404,7 +404,7 @@ impl Queue {
         progress_tx: mpsc::UnboundedSender<ProgressTick>,
         progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
     ) -> Done {
-        let config: crate::training::TrainConfig = match serde_json::from_value(job.config.clone()) {
+        let config: training::TrainConfig = match serde_json::from_value(job.config.clone()) {
             Ok(config) => config,
             // Only reachable if the row was written by an older build or edited by
             // hand — the enqueue route validates and serializes it.

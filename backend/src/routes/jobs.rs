@@ -22,7 +22,7 @@ use db::job::{Job, JobKind, JobLane, JobStatus};
 use crate::extractors::AdminUser;
 use crate::queue::Queue;
 use storage;
-use crate::training::{TrainConfig, TrainMode};
+use training::{TrainConfig, TrainMode};
 use crate::ws;
 
 // One page of history, when the client doesn't say. Sized for a screenful rather
@@ -271,7 +271,7 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
     if config.mode != TrainMode::Pretrain {
         if let Some(base_id) = config.base_model_id {
             let base_dir = storage::models_dir().join(base_id.to_string());
-            if let Err(e) = crate::training::apply_base_architecture(&mut config, &base_dir) {
+            if let Err(e) = training::apply_base_architecture(&mut config, &base_dir) {
                 eprintln!(
                     "queue {}: could not inherit base architecture ({}); the row keeps the requested values",
                     config.model_name, e

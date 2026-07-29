@@ -21,7 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use db::model::NewModel;
 use crate::queue::{ProgressTick, emit, frame, lock};
-use crate::training::{self, TokenizeEvent, TrainConfig, TrainMode};
+use training::{self, TokenizeEvent, TrainConfig, TrainMode};
 
 const MAX_LOG_LINES: usize = 500;
 const MAX_LOSS_POINTS: usize = 4000;

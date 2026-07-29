@@ -14,7 +14,6 @@ mod queue;
 mod routes;
 mod synth;
 mod train_worker;
-mod training;
 mod ws;
 
 #[actix_web::main]
