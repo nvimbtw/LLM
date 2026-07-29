@@ -3,6 +3,13 @@ name = "backend"
 version = "0.1.0"
 edition = "2024"
 
+# `backend` is both the binary package and the workspace root. Every crate the
+# binary is decomposed into lives under `crates/` and is listed here — see the
+# "Directory structure" section of CLAUDE.md for the dependency order they must
+# respect. Never add a crate outside `crates/`.
+[workspace]
+members = ["crates/llm", "crates/tokenize"]
+
 [dependencies]
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
 actix-web = "4"
@@ -21,6 +28,6 @@ actix-ws = "0.3"
 actix-multipart = "0.7"
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "sync", "macros", "rt"] }
-llm = { path = "src/llm" }
-tokenize = { path = "src/tokenize" }
+llm = { path = "crates/llm" }
+tokenize = { path = "crates/tokenize" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "system-proxy"] }
