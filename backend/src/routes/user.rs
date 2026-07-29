@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::routes::validate;
-use crate::{crypto, db, extractors::AuthUser};
+use crate::{db, extractors::AuthUser, jwt};
 
 // Response shape sent to clients. The db `User` struct carries the password
 // hash, so we never serialize it directly — this strips that field.
@@ -27,7 +27,7 @@ impl From<db::user::User> for UserResponse {
 
 // Self-or-admin policy: a caller may act on their own record, and admins may
 // act on anyone. Used by the /{id} handlers; /me is implicitly always self.
-fn authorized(claims: &crypto::jwt::Claims, target: Uuid) -> bool {
+fn authorized(claims: &jwt::Claims, target: Uuid) -> bool {
     claims.sub == target || matches!(claims.access_level, db::user::AccessLevel::Admin)
 }
 

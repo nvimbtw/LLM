@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::routes::validate;
-use crate::{crypto, db};
+use crate::{db, jwt};
 
 #[derive(Deserialize)]
 struct LoginPayload {
@@ -47,7 +47,7 @@ async fn login(
         return HttpResponse::Unauthorized().body("invalid username or password");
     }
 
-    let token = match crypto::jwt::generate_token(
+    let token = match jwt::generate_token(
         user.id_user,
         user.access_level.clone(),
         jwt_secret.get_ref(),

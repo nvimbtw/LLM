@@ -10,10 +10,8 @@ use actix_web::{
     web,
 };
 
-use crate::crypto::{
-    jwt::{self, Claims},
-    token_cipher,
-};
+use crate::jwt::{self, Claims};
+use crypto::token_cipher;
 use crate::db::user::AccessLevel;
 
 // Shared verification used by every auth extractor: pull the

@@ -417,10 +417,8 @@ dependencies = [
  "actix-multipart",
  "actix-web",
  "actix-ws",
- "aes-gcm",
- "argon2",
- "base64",
  "chrono",
+ "crypto",
  "dotenvy",
  "futures-util",
  "jsonwebtoken",
@@ -428,7 +426,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "sqlx",
  "storage",
  "tokenize",
@@ -814,6 +811,16 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+
+[[package]]
+name = "crypto"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "base64",
+ "sha2",
+]
 
 [[package]]
 name = "crypto-bigint"

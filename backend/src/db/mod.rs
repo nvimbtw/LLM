@@ -9,7 +9,7 @@ pub mod signal;
 pub mod usage;
 pub mod user;
 
-use crate::crypto::password;
+use crypto::password;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {

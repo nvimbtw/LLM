@@ -3,11 +3,14 @@ use actix_web::{App, HttpServer, web};
 use std::sync::Arc;
 
 mod autolabel;
-mod crypto;
 mod cycle;
 mod db;
 mod extractors;
 mod gather;
+// Temporarily a module here rather than in `crypto`: its `Claims` carry a
+// `db::user::AccessLevel`, and `db` depends on `crypto`. TODO-0103 folds it
+// into the web crate, the only place that issues or verifies a token.
+mod jwt;
 mod queue;
 mod routes;
 mod synth;
