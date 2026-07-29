@@ -96,7 +96,13 @@ const MODEL_MAGIC: &[u8; 4] = b"GORK";
 /// v4 dropped the learned absolute positional table (RoPE replaced it). v3 files
 /// still parse — `read_model` reads the table body and discards it — but they load
 /// with a warning; see the note there for why they cannot generate sensibly.
-const MODEL_VERSION: u32 = 4;
+const MODEL_VERSION: u32 = 5;
+// First version with RoPE instead of a learned absolute positional table. Below
+// it the file still carries that table's body, which has to be read and dropped
+// or every weight after it is misaligned.
+const ROPE_VERSION: u32 = 4;
+// First version carrying the final layer-norm's gamma/beta (before `w_output`).
+const FINAL_LN_VERSION: u32 = 5;
 
 fn write_2d<W: std::io::Write>(w: &mut W, m: &[Vec<f32>]) -> Result<(), std::io::Error> {
     w.write_all(&(m.len() as u64).to_le_bytes())?;
@@ -142,6 +148,11 @@ fn write_model<W: std::io::Write>(t: &Model, w: &mut W) -> Result<(), std::io::E
     for v in &t.b2 { write_1d(w, v)?; }
     for v in &t.ln_gamma { write_1d(w, v)?; }
     for v in &t.ln_beta { write_1d(w, v)?; }
+    // Empty when the model was loaded from a pre-v5 file: the file is stamped v5
+    // (this is the v5 layout) but records that it carries no final norm, so a
+    // fine-tune of an old base keeps saving as the model it actually is.
+    write_1d(w, &t.ln_final_gamma)?;
+    write_1d(w, &t.ln_final_beta)?;
     write_2d(w, &t.w_output)?;
     Ok(())
 }
@@ -310,6 +321,50 @@ fn read_block_weights<R: std::io::Read>(
     Ok(b)
 }
 
+#[cfg(test)]
+mod final_ln_roundtrip_tests {
+    use super::*;
+    use crate::training::transformer::Model;
+
+    fn roundtrip(t: &Model) -> Model {
+        let mut buf = Vec::new();
+        write_model(t, &mut buf).expect("write");
+        read_model(&mut buf.as_slice()).expect("read")
+    }
+
+    #[test]
+    fn a_fresh_model_keeps_its_final_layer_norm() {
+        let t = Model::init(16, 32, 8, 2, 2, 2);
+        let back = roundtrip(&t);
+        assert!(back.has_final_ln());
+        assert_eq!(back.ln_final_gamma, t.ln_final_gamma);
+        assert_eq!(back.ln_final_beta, t.ln_final_beta);
+    }
+
+    // The case that matters for the models already on disk: a v4 base loads with
+    // no final norm, and saving it (as a fine-tune does) must not invent one.
+    // Writing the length is what makes "absent" survive the v5 layout.
+    #[test]
+    fn a_model_without_a_final_layer_norm_stays_without_one() {
+        let mut t = Model::init(16, 32, 8, 2, 2, 2);
+        t.ln_final_gamma = Vec::new();
+        t.ln_final_beta = Vec::new();
+
+        let back = roundtrip(&t);
+        assert!(!back.has_final_ln());
+        assert!(back.ln_final_beta.is_empty());
+    }
+
+    #[test]
+    fn a_wrongly_sized_final_layer_norm_is_rejected() {
+        let mut t = Model::init(16, 32, 8, 2, 2, 2);
+        t.ln_final_gamma = vec![1.0; 15];
+        let mut buf = Vec::new();
+        write_model(&t, &mut buf).expect("write");
+        assert!(read_model(&mut buf.as_slice()).is_err());
+    }
+}
+
 fn read_model<R: std::io::Read>(r: &mut R) -> Result<Model, std::io::Error> {
     let header = read_header(r)?;
     let embedding_table = read_2d(r)?;
@@ -323,7 +378,7 @@ fn read_model<R: std::io::Read>(r: &mut R) -> Result<Model, std::io::Error> {
     // attention backward was broken for the entire period these files were
     // written — with a K projection still at its random initialization. The
     // warning is what stops that being a silent wrong answer.
-    if header.version < MODEL_VERSION {
+    if header.version < ROPE_VERSION {
         let _ = read_2d(r)?;
         eprintln!(
             "warning: v{} model (current is v{MODEL_VERSION}) — trained with absolute \
@@ -334,6 +389,25 @@ fn read_model<R: std::io::Read>(r: &mut R) -> Result<Model, std::io::Error> {
     }
     let (wq, wk, wv) = read_qkv_weights(r, header.version, header.layers as usize, header.heads as usize)?;
     let blocks = read_block_weights(r, header.version, header.layers as usize)?;
+    // Absent before v5, and legitimately empty in a v5 file written from a model
+    // that was itself loaded from v4 — the length in the file is what says which,
+    // so an empty pair round-trips as "no final norm" rather than being inferred.
+    let (ln_final_gamma, ln_final_beta) = if header.version >= FINAL_LN_VERSION {
+        (read_1d(r)?, read_1d(r)?)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let d = blocks.ln_gamma.first().map_or(0, Vec::len);
+    if !ln_final_gamma.is_empty() && (ln_final_gamma.len() != d || ln_final_beta.len() != d) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "final layer-norm is {}/{} wide, expected {d}",
+                ln_final_gamma.len(),
+                ln_final_beta.len(),
+            ),
+        ));
+    }
     let w_output = read_2d(r)?;
     Ok(Model {
         embedding_table,
@@ -349,6 +423,8 @@ fn read_model<R: std::io::Read>(r: &mut R) -> Result<Model, std::io::Error> {
         b2: blocks.b2,
         ln_gamma: blocks.ln_gamma,
         ln_beta: blocks.ln_beta,
+        ln_final_gamma,
+        ln_final_beta,
         w_output,
     })
 }
@@ -617,6 +693,11 @@ impl Model {
             head_dim: hd as i64,
             layers: header.layers,
             w1, w2, b1, b2, ln_gamma, ln_beta,
+            // An imported checkpoint carries no final norm in this layout, and
+            // guessing one would change what it predicts. Left empty, which is
+            // the same "no final norm" the pre-v5 native path reports.
+            ln_final_gamma: Vec::new(),
+            ln_final_beta: Vec::new(),
             w_output,
         })
     }

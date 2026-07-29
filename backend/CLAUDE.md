@@ -334,6 +334,30 @@ The caches are **allocated at `max_s` but addressed with runtime-`seq` strides**
 exactly like `head_p_all`. Forward and backward see the same `s` within a step, so
 the packing agrees; a short final chunk leaves the allocation's tail untouched.
 
+## Backward scratch must be sized by `max_s`, not by `d`
+
+`ln2_dgrad` (the LN2 backward's `dx`) is an f16 buffer at `max_s * d`, matching
+`b_sd[1]`, which is what LN1's backward has always written into. It used to
+share `b_dd` with the `wo` gradient — an f32 `d * d` buffer — which fit only
+while `s <= 2 * d`. At d 256 that is ctx 512 *exactly*, so every run up to
+Shakedown 1 sat on the ceiling and nothing showed; Balanced 1 at ctx 1024 wrote
+512 KB into a 256 KB allocation on every layer of every step and its weights are
+not usable.
+
+The overrun does not fault and the loss keeps descending — it lands in the
+file-static `attn`/`ff` scratch, which is live inside the same layer's backward,
+so it silently corrupts that layer's attention gradients. Measured cost at
+d256/ctx1024: 0.32 nats of divergence by step 8 against ~1e-5 run-to-run noise,
+and the loss stops descending monotonically. That reads as a bad hyperparameter,
+which is exactly why it survived.
+
+`Workspace::assert_scratch_fits` now checks every such buffer in **bytes** at
+construction, and it is a hard panic rather than a `debug_assert` — a silent
+out-of-bounds device write is not something to leave to a release build.
+`tests/scratch_bounds.rs` is the regression guard, at `ctx = 4 * d`. **A buffer
+a kernel fills with an `[s, d]` block must be allocated at `max_s`**; sharing
+one between two element types is what caused this.
+
 **The GPU scratch is global and single-threaded.** `attn`/`ff` are file-static
 and the cuBLAS handle is shared, so two `Workspace`s stepping concurrently
 corrupt each other. The training loop is single-threaded so this is fine in
@@ -370,17 +394,61 @@ takes `ctx * d` floats out of every model file.
 - `Model::max_seq_len` is the context window now. It used to be read off
   `positional_table.len()` at ~14 call sites; read it through `ctx_window()`.
 
-`MODEL_VERSION` is **4**. A v3 file still parses — `read_model` reads the
-positional table body and discards it, since the weights after it are at a fixed
-offset — but logs a warning: such a model was trained under absolute positions
-this code no longer applies *and* with a K projection that never left random
-init, so its output is meaningless. Loading is allowed only so model browsing and
-metadata keep working on old runs.
+`MODEL_VERSION` is **5** (`ROPE_VERSION` 4 and `FINAL_LN_VERSION` 5 name the two
+boundaries that change the layout). A v3 file still parses — `read_model` reads
+the positional table body and discards it, since the weights after it are at a
+fixed offset — but logs a warning: such a model was trained under absolute
+positions this code no longer applies *and* with a K projection that never left
+random init, so its output is meaningless. Loading is allowed only so model
+browsing and metadata keep working on old runs.
 
 **`tests/attention_learns.rs` is the guard.** With the absolute table gone, the
 copy task is a pure RoPE test — nothing else can supply position, so a broken or
 no-op rotation cannot beat `ln(vocab)`. It reaches the `ln(vocab)/2` floor, and
 escapes the plateau ~500-1000 steps earlier than the absolute table did.
+
+## The final layer norm
+
+`project_logits` reads a **normalized** hidden state, not the raw residual
+stream. The blocks are Pre-LN (`x += attn(ln(x))`, `x += ff(ln(x))`), so each one
+normalizes its own *input* and adds into the residual — nothing normalizes the
+residual itself, and its scale grows with depth. Without a final norm the logits
+grow with it, the softmax sharpens, and every wrong prediction costs
+disproportionately more nats.
+
+It was measurable on the two pretrains that predate it: over their epoch
+checkpoints, the mean `ln_gamma` of the last block against layer 0 stayed flat at
+1.09 for the 6-layer run and ran away to **1.53** (2.05 absolute) for the 8-layer
+one, starting at the stage the corpus switched to web text. That is the last
+block fighting a residual it cannot rescale, and it is what turned the ~20-nat
+newly-introduced-marker spike into the ~200 seen on that run.
+
+- **No new kernels.** `cuda_layer_norm` / `cuda_layer_norm_backward` are
+  dimension-generic; the final norm reuses them with its own `[d]` gamma/beta,
+  trained like any other 1-D parameter (undecayed, as AdamW convention has it).
+- **Its activations are dedicated buffers** (`final_ln_input`, `final_ln_output`,
+  `final_ln_dgrad`), not borrowed from `b_sd`. The pre-norm residual has to
+  survive the loss stage so the backward can differentiate against it, and the
+  block loop reuses that scratch. Do not fold them back in.
+- **`Model::has_final_ln` is the switch**, and `ln_final_gamma` being empty is
+  its whole representation. A pre-v5 model trained with no final norm, and a
+  LayerNorm at gamma=1/beta=0 is *not* the identity — synthesizing one would
+  silently change what every existing model outputs. So an old base keeps the
+  unnormalized projection it learned against, through loading, training, and
+  saving: `write_model` writes the length, so "absent" round-trips through the v5
+  layout rather than being re-inferred.
+- Cost is ~3 extra launches on a step that already runs dozens: measured
+  +0.9 ms/step on the d256/L6/ctx512 shape (13.2 → 14.0 mean of 3), though the
+  run-to-run spread is ±0.7 ms, so read it as a few percent rather than a firm
+  number.
+
+**The guards are in `optimizer.rs`**: `the_final_layer_norm_receives_a_gradient`
+and `a_model_without_a_final_layer_norm_trains_without_one`. The first exists
+because this is the *third* parameter added between the residual stream and the
+logits, and the previous two (the absolute positional table, the K projection)
+both shipped wired into the forward pass while receiving no gradient — in both
+cases the loss curve still went down, which is exactly why a "loss decreases"
+test does not catch it.
 
 ## nvcc failures must fail the build
 
@@ -404,7 +472,9 @@ read (`d_*`), and the f32 Adam moments (`v_*` = 1st, `s_*` = 2nd). The invariant
   from it in the same pass (fused — no extra kernel launch). `upload_weights` seeds
   the master from the full-precision f32 CPU weights (not the f16 round-trip), and
   `sync_weights_from_gpu` reads the master back on save (so save is lossless).
-- Only the 12 weights `gpu_adam_update` steps get a master (2 shared + 10×layers).
+- Only the weights `gpu_adam_update` steps get a master: 10×layers plus the
+  shared output projection and token embedding, plus the final layer norm's
+  gamma/beta when the model carries one (see "The final layer norm").
   `d_positional` is never updated, so it has **no** master and stays f16-only.
 
 Why: before this, the master lived in f16, so an Adam step below the f16 ULP near

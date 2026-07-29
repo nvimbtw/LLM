@@ -172,6 +172,10 @@ fn grad_buffers(ws: &Workspace, layers: usize) -> Vec<(*mut f32, usize)> {
         bufs.push((ws.g_dln_gamma[l].ptr, d));
         bufs.push((ws.g_dln_beta[l].ptr, d));
     }
+    if ws.has_final_ln {
+        bufs.push((ws.g_dln_final_gamma.ptr, d));
+        bufs.push((ws.g_dln_final_beta.ptr, d));
+    }
     bufs
 }
 
@@ -269,6 +273,13 @@ pub fn gpu_adam_update(ws: &Workspace, lr: f32, step: i32, accum_steps: usize, l
             adam!(ws.g_dln_gamma[l].ptr, ws.m_ln_gamma[l].ptr, ws.d_ln_gamma[l].ptr, ws.v_dln_gamma[l].ptr, ws.s_dln_gamma[l].ptr, 0.0, d);
             adam!(ws.g_dln_beta[l].ptr, ws.m_ln_beta[l].ptr, ws.d_ln_beta[l].ptr, ws.v_dln_beta[l].ptr, ws.s_dln_beta[l].ptr, 0.0, d);
         }
+        // The final norm's scale/shift — 1-D, so undecayed like the per-block
+        // ones. Stepped only when the model has one; a pre-v5 model's buffers
+        // hold nothing meaningful and must not be written back over its weights.
+        if ws.has_final_ln {
+            adam!(ws.g_dln_final_gamma.ptr, ws.m_ln_final_gamma.ptr, ws.d_ln_final_gamma.ptr, ws.v_dln_final_gamma.ptr, ws.s_dln_final_gamma.ptr, 0.0, d);
+            adam!(ws.g_dln_final_beta.ptr, ws.m_ln_final_beta.ptr, ws.d_ln_final_beta.ptr, ws.v_dln_final_beta.ptr, ws.s_dln_final_beta.ptr, 0.0, d);
+        }
     }
 }
 
@@ -309,4 +320,57 @@ mod tests {
         assert!(dead.is_empty(), "tensors receiving no gradient: {dead:?}");
     }
 
+    // The final layer-norm is the third parameter this project has added between
+    // the residual stream and the logits; the previous two (the absolute
+    // positional table, the K projection) both shipped wired into the forward
+    // pass but receiving no gradient, and in both cases the loss curve still went
+    // down, so nothing caught it. A non-zero gradient on both ends is the cheapest
+    // thing that would have.
+    #[test]
+    fn the_final_layer_norm_receives_a_gradient() {
+        let (vocab, dim, ctx, heads, ff_mult, layers) = (32, 16, 8, 2, 2, 3);
+        let t = Model::init(dim, vocab, ctx, heads, ff_mult, layers);
+        assert!(t.has_final_ln(), "a freshly initialized model must carry one");
+        let mut ws = Workspace::new(&t, ctx as usize);
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+        pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+
+        for (name, ptr) in [
+            ("ln_final_gamma", ws.g_dln_final_gamma.ptr),
+            ("ln_final_beta", ws.g_dln_final_beta.ptr),
+        ] {
+            let norm = unsafe { cuda_l2norm(ptr, dim as i32) };
+            assert!(norm > 0.0, "{name} received no gradient (l2 = {norm:e})");
+        }
+    }
+
+    // A model loaded from a pre-v5 file has no final norm, and the step must
+    // leave that alone rather than training a norm the weights never saw. The
+    // empty vectors are the whole representation of "off", so this pins that the
+    // GPU path agrees with them.
+    #[test]
+    fn a_model_without_a_final_layer_norm_trains_without_one() {
+        let (vocab, dim, ctx, heads, ff_mult, layers) = (32, 16, 8, 2, 2, 2);
+        let mut t = Model::init(dim, vocab, ctx, heads, ff_mult, layers);
+        t.ln_final_gamma = Vec::new();
+        t.ln_final_beta = Vec::new();
+        assert!(!t.has_final_ln());
+
+        let mut ws = Workspace::new(&t, ctx as usize);
+        assert!(!ws.has_final_ln);
+        assert_eq!(ws.n_clip, 1 + 10 * layers as usize);
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+        let loss = pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+        assert!(loss.is_finite(), "loss must stay finite without a final norm");
+
+        for (name, ptr) in [
+            ("ln_final_gamma", ws.g_dln_final_gamma.ptr),
+            ("ln_final_beta", ws.g_dln_final_beta.ptr),
+        ] {
+            let norm = unsafe { cuda_l2norm(ptr, dim as i32) };
+            assert_eq!(norm, 0.0, "{name} was written for a model that has none");
+        }
+    }
 }

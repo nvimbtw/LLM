@@ -242,6 +242,43 @@ impl Model {
         ws.b_sd[2].ptr as *mut c_void
     }
 
+    // Final LayerNorm over the last block's residual stream. Returns what the
+    // logit projection should read: the normed hidden state, or `d_x` untouched
+    // for a pre-v5 model that has none (see `Model::ln_final_gamma`).
+    //
+    // The pre-norm residual is cached because the LN backward differentiates
+    // against its *input*, and `d_x` points into the block scratch that the
+    // backward pass reuses before it gets there.
+    pub(super) fn final_ln_forward(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        d_x: *mut c_void,
+    ) -> *mut c_void {
+        if !self.has_final_ln() {
+            return d_x;
+        }
+        let StepDims { s, d, .. } = dims;
+        // SAFETY: see contract.
+        unsafe {
+            cuda_memcpy_d2d(
+                ws.final_ln_input.ptr as *mut c_void,
+                d_x as *const c_void,
+                (s * d * 2) as usize,
+            );
+            cuda_layer_norm(
+                d_x,
+                ws.final_ln_output.ptr as *mut c_void,
+                ws.d_ln_final_gamma.ptr as *const c_void,
+                ws.d_ln_final_beta.ptr as *const c_void,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+        }
+        ws.final_ln_output.ptr as *mut c_void
+    }
+
     // Project the final hidden state to logits in d_logits.
     pub(super) fn project_logits(&self, ws: &mut Workspace, dims: StepDims, d_x: *mut c_void) {
         let StepDims { s, d, vocab, .. } = dims;

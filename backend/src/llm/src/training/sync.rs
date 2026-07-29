@@ -79,5 +79,15 @@ pub fn sync_weights_from_gpu(ws: &Workspace, t: &mut Model) {
             t.ln_beta[layer][j] = flat[j];
         }
     }
+    // A pre-v5 model has no final norm and no master to read back; leaving its
+    // empty vectors alone is what keeps it saving as the model it was loaded as.
+    if t.has_final_ln() {
+        let flat = ws.m_ln_final_gamma.to_vec();
+        let flat_beta = ws.m_ln_final_beta.to_vec();
+        for j in 0..d {
+            t.ln_final_gamma[j] = flat[j];
+            t.ln_final_beta[j] = flat_beta[j];
+        }
+    }
 }
 

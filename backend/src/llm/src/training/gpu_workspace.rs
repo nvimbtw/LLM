@@ -22,6 +22,11 @@ pub struct Workspace {
     pub d_b2: Vec<DeviceBufferF16>,
     pub d_ln_gamma: Vec<DeviceBufferF16>,
     pub d_ln_beta: Vec<DeviceBufferF16>,
+    // Final LayerNorm (shared, [d]) — see `Model::ln_final_gamma`. Allocated
+    // unconditionally so the struct shape doesn't depend on the model version;
+    // `has_final_ln` is what decides whether anything reads or steps them.
+    pub d_ln_final_gamma: DeviceBufferF16,
+    pub d_ln_final_beta: DeviceBufferF16,
     pub d_w_output: DeviceBufferF16,      // shared
     pub d_embedding: DeviceBufferF16,      // [vocab, d]
 
@@ -38,6 +43,8 @@ pub struct Workspace {
     pub m_b2: Vec<Buffer>,
     pub m_ln_gamma: Vec<Buffer>,
     pub m_ln_beta: Vec<Buffer>,
+    pub m_ln_final_gamma: Buffer,   // shared
+    pub m_ln_final_beta: Buffer,
     pub m_w_output: Buffer,         // shared
     pub m_embedding: Buffer,         // [vocab, d]
 
@@ -55,6 +62,8 @@ pub struct Workspace {
     pub g_db2: Vec<Buffer>,
     pub g_dln_gamma: Vec<Buffer>,
     pub g_dln_beta: Vec<Buffer>,
+    pub g_dln_final_gamma: Buffer,  // shared
+    pub g_dln_final_beta: Buffer,
 
     // Adam first-moment buffers (f32) — one per gradient buffer.
     pub v_wq_all: Vec<Buffer>,
@@ -69,6 +78,8 @@ pub struct Workspace {
     pub v_db2: Vec<Buffer>,
     pub v_dln_gamma: Vec<Buffer>,
     pub v_dln_beta: Vec<Buffer>,
+    pub v_dln_final_gamma: Buffer,
+    pub v_dln_final_beta: Buffer,
 
     // Adam second-moment buffers (f32) — EMA of gradient², one per gradient.
     pub s_wq_all: Vec<Buffer>,
@@ -83,6 +94,8 @@ pub struct Workspace {
     pub s_db2: Vec<Buffer>,
     pub s_dln_gamma: Vec<Buffer>,
     pub s_dln_beta: Vec<Buffer>,
+    pub s_dln_final_gamma: Buffer,
+    pub s_dln_final_beta: Buffer,
 
     // Logits + loss
     pub d_logits: DeviceBufferF16,
@@ -106,6 +119,9 @@ pub struct Workspace {
     pub d_clip_sizes: Buffer,       // [n_clip] i32 element counts
     pub d_clip_norms: Buffer,       // [n_clip] f32 sum-of-squares accumulators
     pub n_clip: usize,
+    // Mirrors `Model::has_final_ln` for the model this workspace was built for,
+    // so the optimizer and clip can size themselves without holding the model.
+    pub has_final_ln: bool,
 
     // Per-layer forward caches (f16)
     pub layer_inputs: Vec<DeviceBufferF16>,
@@ -117,6 +133,15 @@ pub struct Workspace {
     // attention sublayer, not after the feed-forward one.
     pub ln1_outputs: Vec<DeviceBufferF16>,
     pub concat_outputs: Vec<DeviceBufferF16>,
+
+    // Final-LayerNorm activations. `final_ln_input` is the pre-norm residual the
+    // backward differentiates against; `final_ln_output` is what the projection
+    // read; `final_ln_dgrad` is the gradient handed back to the block loop. All
+    // three are dedicated rather than borrowed from `b_sd`, because they have to
+    // survive the loss stage and the block loop reuses that scratch.
+    pub final_ln_input: DeviceBufferF16,
+    pub final_ln_output: DeviceBufferF16,
+    pub final_ln_dgrad: DeviceBufferF16,
 
     // Contiguous per-head buffers for batched attention
     pub head_out_all: Vec<DeviceBufferF16>,   // [layers][h * max_s * hd]
@@ -147,7 +172,16 @@ pub struct Workspace {
     pub b_sd_head: DeviceBufferF16,
     pub d_wo_x: DeviceBufferF16,
     pub b_d: Vec<Buffer>,
-    pub b_dd: Buffer,
+    // f32 scratch for the `wo` gradient of one layer, `[d * d]`. Sized by `d`
+    // alone, so nothing whose extent depends on `max_s` may share it — this used
+    // to be a general-purpose `b_dd` that the LN2 backward also used as its f16
+    // `dx` (`s * d` halves), which fit only while `s <= 2 * d` and overran into
+    // `b_dff[0]` above that. See `ln2_dgrad`, and ISSUE-0093.
+    pub b_dwo: Buffer,
+    // f16 `dx` output of the LN2 backward, `[max_s * d]`. The LN1 backward has
+    // always written into `b_sd[1]`, which is sized this way; this is its
+    // counterpart, and the two are now symmetric.
+    pub ln2_dgrad: DeviceBufferF16,
     pub b_dff: Vec<Buffer>,
     pub b_ff: Buffer,
     pub max_s: usize,
@@ -179,6 +213,8 @@ impl Workspace {
         let d_b2 = (0..layers).map(|_| DeviceBufferF16::alloc(d)).collect();
         let d_ln_gamma = (0..layers).map(|_| DeviceBufferF16::alloc(d)).collect();
         let d_ln_beta = (0..layers).map(|_| DeviceBufferF16::alloc(d)).collect();
+        let d_ln_final_gamma = DeviceBufferF16::alloc(d);
+        let d_ln_final_beta = DeviceBufferF16::alloc(d);
         let d_w_output = DeviceBufferF16::alloc(d * vocab);
         let d_embedding = DeviceBufferF16::alloc(vocab * d);
 
@@ -194,6 +230,8 @@ impl Workspace {
         let m_b2 = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let m_ln_gamma = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let m_ln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let m_ln_final_gamma = Buffer::alloc_zeroed(d);
+        let m_ln_final_beta = Buffer::alloc_zeroed(d);
         let m_w_output = Buffer::alloc_zeroed(d * vocab);
         let m_embedding = Buffer::alloc_zeroed(vocab * d);
 
@@ -211,6 +249,8 @@ impl Workspace {
         let g_db2 = (0..layers).map(|_| Buffer::alloc(d)).collect();
         let g_dln_gamma = (0..layers).map(|_| Buffer::alloc(d)).collect();
         let g_dln_beta = (0..layers).map(|_| Buffer::alloc(d)).collect();
+        let g_dln_final_gamma = Buffer::alloc(d);
+        let g_dln_final_beta = Buffer::alloc(d);
 
         // Momentum velocity buffers (same size as gradient buffers, zero-initialized)
         let v_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
@@ -225,6 +265,8 @@ impl Workspace {
         let v_db2 = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let v_dln_gamma = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let v_dln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let v_dln_final_gamma = Buffer::alloc_zeroed(d);
+        let v_dln_final_beta = Buffer::alloc_zeroed(d);
 
         // Adam second-moment buffers (same shapes, zero-initialized).
         let s_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
@@ -239,6 +281,8 @@ impl Workspace {
         let s_db2 = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let s_dln_gamma = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let s_dln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
+        let s_dln_final_gamma = Buffer::alloc_zeroed(d);
+        let s_dln_final_beta = Buffer::alloc_zeroed(d);
 
         let d_logits = DeviceBufferF16::alloc(max_s * vocab);
         let d_dlogits = DeviceBufferF16::alloc(max_s * vocab);
@@ -249,8 +293,12 @@ impl Workspace {
         let d_clip_state = Buffer::alloc_zeroed(3);
 
         // The buffers `Model::clip_gradients` walks, in the same order: the
-        // shared output projection, then each layer's ten trained tensors.
-        let n_clip = 1 + 10 * layers;
+        // shared output projection, then each layer's ten trained tensors, then
+        // the final norm's gamma/beta when the model carries one. Excluded for a
+        // pre-v5 model rather than clipped as a permanently-zero buffer, so the
+        // table never describes a tensor nothing writes.
+        let has_final_ln = t.has_final_ln();
+        let n_clip = 1 + 10 * layers + if has_final_ln { 2 } else { 0 };
         let d_clip_sizes = Buffer::alloc(n_clip);
         let d_clip_norms = Buffer::alloc_zeroed(n_clip);
         let mut d_clip_ptrs: *mut c_void = std::ptr::null_mut();
@@ -263,38 +311,50 @@ impl Workspace {
         let b_sd_head = DeviceBufferF16::alloc(max_s * d);
         let d_wo_x = DeviceBufferF16::alloc(max_s * d);
         let b_d = (0..2).map(|_| Buffer::alloc(d)).collect();
-        let b_dd = Buffer::alloc(d * d);
+        let b_dwo = Buffer::alloc(d * d);
+        let ln2_dgrad = DeviceBufferF16::alloc(max_s * d);
         let b_dff = vec![Buffer::alloc(d * ff), Buffer::alloc(ff * d)];
         let b_ff = Buffer::alloc(ff);
+        let final_ln_input = DeviceBufferF16::alloc(max_s * d);
+        let final_ln_output = DeviceBufferF16::alloc(max_s * d);
+        let final_ln_dgrad = DeviceBufferF16::alloc(max_s * d);
         let mut ws = Workspace {
             d_wq_all, d_wk_all, d_wv_all, d_wo, d_w1, d_w2, d_b1, d_b2, d_ln_gamma, d_ln_beta, d_w_output,
+            d_ln_final_gamma, d_ln_final_beta,
             d_embedding,
             m_wq_all, m_wk_all, m_wv_all, m_wo, m_w1, m_w2, m_b1, m_b2, m_ln_gamma, m_ln_beta,
+            m_ln_final_gamma, m_ln_final_beta,
             m_w_output, m_embedding,
             g_wq_all, g_wk_all, g_wv_all,
             g_dw_output, g_d_embedding, d_token_ids, g_dwo, g_dw1, g_dw2, g_db1, g_db2, g_dln_gamma, g_dln_beta,
+            g_dln_final_gamma, g_dln_final_beta,
             v_wq_all, v_wk_all, v_wv_all, v_dw_output, v_d_embedding,
             v_dwo, v_dw1, v_dw2, v_db1, v_db2, v_dln_gamma, v_dln_beta,
+            v_dln_final_gamma, v_dln_final_beta,
             s_wq_all, s_wk_all, s_wv_all, s_dw_output, s_d_embedding,
             s_dwo, s_dw1, s_dw2, s_db1, s_db2, s_dln_gamma, s_dln_beta,
+            s_dln_final_gamma, s_dln_final_beta,
             d_logits, d_dlogits, d_targets, d_mask, d_dw_output, d_dhidden,
             d_clip_state,
             d_clip_ptrs, d_clip_sizes, d_clip_norms, n_clip,
+            has_final_ln,
             layer_inputs: Vec::new(),
             post_attn_residuals: Vec::new(),
             ff_inputs: Vec::new(),
             pre_gelus: Vec::new(),
             ln1_outputs: Vec::new(),
             concat_outputs: Vec::new(),
+            final_ln_input, final_ln_output, final_ln_dgrad,
             head_out_all: Vec::new(),
             head_p_all: Vec::new(),
             q_all: Vec::new(),
             k_all: Vec::new(),
             v_all: Vec::new(),
             d_head_ptrs,
-            b_sd, b_d, b_dd, b_dff, b_ff, b_sd_head, d_wo_x,
+            b_sd, b_d, b_dwo, ln2_dgrad, b_dff, b_ff, b_sd_head, d_wo_x,
             max_s, d, h, hd, ff, vocab,
         };
+        ws.assert_scratch_fits();
         ws.fill_clip_table(layers);
         ws.upload_weights(t);
         // SAFETY: cublas_init() takes no arguments and initializes the process-wide
@@ -352,12 +412,62 @@ impl Workspace {
             self.d_ln_beta[layer_idx].upload_f32_slice(&t.ln_beta[layer_idx]);
             self.m_ln_beta[layer_idx].upload(&t.ln_beta[layer_idx]);
         }
+        // Skipped entirely for a pre-v5 model: the buffers stay at their zeroed
+        // allocation and nothing reads them, because `has_final_ln` gates every
+        // use. Uploading a synthesized gamma=1 would not make such a model
+        // correct — it never trained against a final norm.
+        if t.has_final_ln() {
+            self.d_ln_final_gamma.upload_f32_slice(&t.ln_final_gamma);
+            self.m_ln_final_gamma.upload(&t.ln_final_gamma);
+            self.d_ln_final_beta.upload_f32_slice(&t.ln_final_beta);
+            self.m_ln_final_beta.upload(&t.ln_final_beta);
+        }
         let flat_w_output: Vec<f32> = t.w_output.iter().flatten().copied().collect();
         self.d_w_output.upload_f32_slice(&flat_w_output);
         self.m_w_output.upload(&flat_w_output);
         let flat_embedding: Vec<f32> = t.embedding_table.iter().flatten().copied().collect();
         self.d_embedding.upload_f32_slice(&flat_embedding);
         self.m_embedding.upload(&flat_embedding);
+    }
+
+    // Every scratch buffer a kernel writes a full `[s, d]` (or `[s, ff]`) block
+    // into must hold that block at `max_s`, not at whatever shape happened to be
+    // tested. Checked once at construction, in bytes, because these buffers carry
+    // different element types and the mismatch that motivated this was exactly a
+    // buffer sized in f32 being written as f16.
+    //
+    // This is a hard panic rather than a `debug_assert`: the failure it catches
+    // is an out-of-bounds device write, which does not fault, does not stop the
+    // loss going down, and silently corrupts whatever the driver placed next.
+    // ISSUE-0093 shipped in that state and cost a whole 8-layer pretrain.
+    fn assert_scratch_fits(&self) {
+        let f16 = size_of::<half::f16>();
+        let f32 = size_of::<f32>();
+        let sd_f16 = self.max_s * self.d * f16;
+        for (name, have) in [
+            ("ln2_dgrad", self.ln2_dgrad.len * f16),
+            ("b_sd_head", self.b_sd_head.len * f16),
+            ("d_wo_x", self.d_wo_x.len * f16),
+            ("d_dhidden", self.d_dhidden.len * f16),
+            ("final_ln_input", self.final_ln_input.len * f16),
+            ("final_ln_output", self.final_ln_output.len * f16),
+            ("final_ln_dgrad", self.final_ln_dgrad.len * f16),
+        ]
+        .into_iter()
+        .chain(self.b_sd.iter().map(|b| ("b_sd", b.len * f16)))
+        {
+            assert!(
+                have >= sd_f16,
+                "scratch `{name}` holds {have} bytes but a kernel writes an \
+                 [s, d] f16 block of {sd_f16} at max_s={} d={}",
+                self.max_s,
+                self.d,
+            );
+        }
+        assert!(
+            self.b_dwo.len * f32 >= self.d * self.d * f32,
+            "scratch `b_dwo` must hold a [d, d] f32 block",
+        );
     }
 
     // Upload the pointer/size table the batched gradient clip reads. Must list
@@ -386,6 +496,12 @@ impl Workspace {
                 ptrs.push(p);
                 sizes.push(n as f32);
             }
+        }
+        if self.has_final_ln {
+            ptrs.push(self.g_dln_final_gamma.ptr);
+            sizes.push(d as f32);
+            ptrs.push(self.g_dln_final_beta.ptr);
+            sizes.push(d as f32);
         }
         debug_assert_eq!(ptrs.len(), self.n_clip);
 
@@ -435,6 +551,8 @@ impl Workspace {
                 cudaMemset(self.g_dln_gamma[layer_idx].ptr as *mut std::ffi::c_void, 0, (self.d * 4) as usize);
                 cudaMemset(self.g_dln_beta[layer_idx].ptr as *mut std::ffi::c_void, 0, (self.d * 4) as usize);
             }
+            cudaMemset(self.g_dln_final_gamma.ptr as *mut std::ffi::c_void, 0, (self.d * 4) as usize);
+            cudaMemset(self.g_dln_final_beta.ptr as *mut std::ffi::c_void, 0, (self.d * 4) as usize);
         }
     }
 

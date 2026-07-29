@@ -48,6 +48,19 @@ pub struct Model {
     pub b2: Vec<Vec<f32>>,            // [layers][d]
     pub ln_gamma: Vec<Vec<f32>>,      // [layers][d]
     pub ln_beta: Vec<Vec<f32>>,       // [layers][d]
+    /// Final LayerNorm over the residual stream, applied before `w_output`.
+    ///
+    /// The blocks are Pre-LN, so each one normalizes its *own* input and adds
+    /// into the residual — nothing normalizes the residual stream itself, and
+    /// its scale grows with depth. Without this the logits grow with it.
+    ///
+    /// **Empty for a pre-v5 model**, which trained with no final norm at all. A
+    /// LayerNorm at gamma=1/beta=0 is not the identity, so synthesizing one for
+    /// those weights would change what an existing model outputs; they keep the
+    /// unnormalized projection they were trained against. Test with
+    /// `has_final_ln`, never by inspecting the values.
+    pub ln_final_gamma: Vec<f32>,     // [d]
+    pub ln_final_beta: Vec<f32>,      // [d]
     pub w_output: Vec<Vec<f32>>,
 }
 
@@ -105,9 +118,17 @@ impl Model {
             embedding_table: embed(dimensions, vocab),
             max_seq_len: ctx_window,
             wq, wk, wv, wo, w1, w2, b1, b2, ln_gamma, ln_beta,
+            ln_final_gamma: vec![1.0f32; d],
+            ln_final_beta: vec![0.0f32; d],
             heads, head_dim, layers,
             w_output: embed(vocab, dimensions),
         }
+    }
+
+    /// Whether this model carries the final LayerNorm — false only for weights
+    /// saved before `MODEL_VERSION` 5. See the `ln_final_gamma` field.
+    pub fn has_final_ln(&self) -> bool {
+        !self.ln_final_gamma.is_empty()
     }
 
     /// The model's context window, as a `usize` for slicing.
@@ -153,6 +174,14 @@ impl Model {
                     x[i][j] += ff[i][j];
                 }
             }
+        }
+
+        // Every caller feeds this straight to `unembed`, so the final norm
+        // belongs here rather than at each of the three call sites.
+        if self.has_final_ln() {
+            x = self
+                .layer_norm(&x, &self.ln_final_gamma, &self.ln_final_beta)
+                .await;
         }
 
         x
@@ -396,7 +425,8 @@ impl Model {
             let x = self.attn_sublayer_forward(ws, dims, layer_idx, d_x);
             d_x = self.ffn_sublayer_forward(ws, dims, layer_idx, x);
         }
-        self.project_logits(ws, dims, d_x);
+        let d_h = self.final_ln_forward(ws, dims, d_x);
+        self.project_logits(ws, dims, d_h);
 
         let targets = self.upload_loss_targets(ws, dims, chunk, Some(mask));
         let loss = self.loss_value(ws, dims, &targets)?;
@@ -415,7 +445,8 @@ impl Model {
         }
         self.loss_gradient(ws, dims, &targets, step.grad_scale as f32);
 
-        let mut d_dx = self.backward_unembed(ws, dims, d_x);
+        let d_dh = self.backward_unembed(ws, dims, d_h);
+        let mut d_dx = self.final_ln_backward(ws, dims, d_dh);
         for layer_idx in (0..layers).rev() {
             let g = self.ffn_sublayer_backward(ws, dims, layer_idx, d_dx);
             d_dx = self.attn_sublayer_backward(ws, dims, layer_idx, g);
@@ -466,7 +497,8 @@ impl Model {
         }
 
         let t = phase_start();
-        self.project_logits(ws, dims, d_x);
+        let d_h = self.final_ln_forward(ws, dims, d_x);
+        self.project_logits(ws, dims, d_h);
         phase_end("4. logits", t);
 
         let t = phase_start();
@@ -474,7 +506,8 @@ impl Model {
         phase_end("5. loss", t);
 
         let t = phase_start();
-        let mut d_dx = self.backward_unembed(ws, dims, d_x);
+        let d_dh = self.backward_unembed(ws, dims, d_h);
+        let mut d_dx = self.final_ln_backward(ws, dims, d_dh);
         phase_end("6. unembed bwd", t);
 
         for layer_idx in (0..layers).rev() {
@@ -987,6 +1020,8 @@ mod tests {
             wo: t.wo.clone(), w1: t.w1.clone(), w2: t.w2.clone(),
             b1: t.b1.clone(), b2: t.b2.clone(),
             ln_gamma: t.ln_gamma.clone(), ln_beta: t.ln_beta.clone(),
+            ln_final_gamma: t.ln_final_gamma.clone(),
+            ln_final_beta: t.ln_final_beta.clone(),
             w_output: t.w_output.clone(),
             heads: t.heads, head_dim: t.head_dim, layers: t.layers,
         };
@@ -1100,6 +1135,8 @@ mod tests {
             wo: m.wo.clone(), w1: m.w1.clone(), w2: m.w2.clone(),
             b1: m.b1.clone(), b2: m.b2.clone(),
             ln_gamma: m.ln_gamma.clone(), ln_beta: m.ln_beta.clone(),
+            ln_final_gamma: m.ln_final_gamma.clone(),
+            ln_final_beta: m.ln_final_beta.clone(),
             w_output: m.w_output.clone(),
             heads: m.heads, head_dim: m.head_dim, layers: m.layers,
         };

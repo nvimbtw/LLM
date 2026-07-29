@@ -295,6 +295,8 @@ fn test_master_accumulates_sub_ulp_updates() {
         wo: t.wo.clone(), w1: t.w1.clone(), w2: t.w2.clone(),
         b1: t.b1.clone(), b2: t.b2.clone(),
         ln_gamma: t.ln_gamma.clone(), ln_beta: t.ln_beta.clone(),
+        ln_final_gamma: t.ln_final_gamma.clone(),
+        ln_final_beta: t.ln_final_beta.clone(),
         w_output: t.w_output.clone(),
         heads: t.heads, head_dim: t.head_dim, layers: t.layers,
     };

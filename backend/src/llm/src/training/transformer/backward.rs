@@ -38,6 +38,41 @@ impl Model {
         ws.d_dhidden.ptr as *mut c_void
     }
 
+    // Final LayerNorm backward: turns the gradient w.r.t. the normed hidden
+    // state (what `backward_unembed` produced) into the gradient w.r.t. the last
+    // block's residual stream, accumulating the norm's own gamma/beta gradients.
+    // Passes the gradient straight through for a pre-v5 model that has no final
+    // norm, so the block loop below sees the same thing it always did.
+    pub(super) fn final_ln_backward(
+        &self,
+        ws: &mut Workspace,
+        dims: StepDims,
+        d_dh: *mut c_void,
+    ) -> *mut c_void {
+        if !self.has_final_ln() {
+            return d_dh;
+        }
+        let StepDims { s, d, .. } = dims;
+        // SAFETY: see contract.
+        unsafe {
+            cuda_layer_norm_backward(
+                ws.final_ln_input.ptr as *const c_void,
+                d_dh as *const c_void,
+                ws.d_ln_final_gamma.ptr as *const c_void,
+                ws.final_ln_dgrad.ptr as *mut c_void,
+                ws.b_d[0].ptr,
+                ws.b_d[1].ptr,
+                s as i32,
+                d as i32,
+                LAYER_NORM_EPS,
+            );
+            cuda_add_inplace_f32(ws.g_dln_final_gamma.ptr, ws.b_d[0].ptr, d as i32);
+            cuda_add_inplace_f32(ws.g_dln_final_beta.ptr, ws.b_d[1].ptr, d as i32);
+            cuda_clamp_f16(ws.final_ln_dgrad.ptr as *mut c_void, (s * d) as i32);
+        }
+        ws.final_ln_dgrad.ptr as *mut c_void
+    }
+
     // Feed-forward sublayer backward: FF backward → LN2 backward → residual.
     // Takes the incoming gradient and returns the gradient out of the FF sublayer
     // (which the attention sublayer backward then consumes).
@@ -82,7 +117,7 @@ impl Model {
                 ws.post_attn_residuals[layer_idx].ptr as *const c_void,
                 ws.b_sd[0].ptr as *const c_void,
                 ws.d_ln_gamma[layer_idx].ptr as *const c_void,
-                ws.b_dd.ptr as *mut c_void,
+                ws.ln2_dgrad.ptr as *mut c_void,
                 ws.b_d[0].ptr,
                 ws.b_d[1].ptr,
                 s as i32,
@@ -91,7 +126,7 @@ impl Model {
             );
             cuda_add_inplace_f32(ws.g_dln_gamma[layer_idx].ptr, ws.b_d[0].ptr, d as i32);
             cuda_add_inplace_f32(ws.g_dln_beta[layer_idx].ptr, ws.b_d[1].ptr, d as i32);
-            cuda_clamp_f16(ws.b_dd.ptr as *mut c_void, (s * d) as i32);
+            cuda_clamp_f16(ws.ln2_dgrad.ptr as *mut c_void, (s * d) as i32);
         }
 
         // Residual: d_dx + LN2 backprop → b_sd[2].
@@ -100,7 +135,7 @@ impl Model {
             cuda_memcpy_d2d(ws.b_sd[2].ptr as *mut c_void, d_dx, (s * d * 2) as usize);
             cuda_add_inplace_f16(
                 ws.b_sd[2].ptr as *mut c_void,
-                ws.b_dd.ptr as *const c_void,
+                ws.ln2_dgrad.ptr as *const c_void,
                 (s * d) as i32,
             );
             cuda_clamp_f16(ws.b_sd[2].ptr as *mut c_void, (s * d) as i32);
@@ -126,12 +161,12 @@ impl Model {
             cuda_d_weight(
                 ws.concat_outputs[layer_idx].ptr as *const c_void,
                 d_dx as *const c_void,
-                ws.b_dd.ptr,
+                ws.b_dwo.ptr,
                 s as i32,
                 d as i32,
                 d as i32,
             );
-            cuda_add_inplace_f32(ws.g_dwo[layer_idx].ptr, ws.b_dd.ptr, (d * d) as i32);
+            cuda_add_inplace_f32(ws.g_dwo[layer_idx].ptr, ws.b_dwo.ptr, (d * d) as i32);
             cuda_matmul(
                 d_dx as *const c_void,
                 ws.d_wo[layer_idx].ptr as *const c_void,
