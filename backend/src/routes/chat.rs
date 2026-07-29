@@ -283,7 +283,7 @@ async fn handle_message(
     let Some(model) = resolve_model(session, pool, frame.model_id, is_admin).await? else {
         return Ok(());
     };
-    let model_dir = crate::storage::models_dir().join(model.id_model.to_string());
+    let model_dir = storage::models_dir().join(model.id_model.to_string());
 
     // Non-fatal: if the tokenizer can't be read the message is still saved, just
     // with a 0 token count rather than blocking the turn.

@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::db;
 use crate::db::benchmark::BenchmarkStatus;
 use crate::extractors::AdminUser;
-use crate::storage;
+use storage;
 
 // How many runs the history list returns. The page charts a trend over past runs;
 // a couple of hundred is far more than that needs and keeps the response small.

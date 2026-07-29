@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::extractors::AdminUser;
 use crate::routes::validate;
-use crate::storage;
+use storage;
 
 // Formats the ingestion step can process. Mirrors the frontend's accept list;
 // validated again here since the extractor is the only real trust boundary.

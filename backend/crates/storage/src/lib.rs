@@ -1,7 +1,3 @@
-// Several path helpers are defined ahead of the pipeline stages that will use
-// them (crawler, tokenizer, training). Allow the unused ones until those land.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 // Single source of truth for every on-disk data path. Pipeline stages, the
@@ -32,7 +28,14 @@ fn root() -> PathBuf {
 /// each had their own, which guarded nothing against each other — a `synth` test
 /// could repoint `DATA_DIR` mid-way through a `training` build and fail it
 /// intermittently.
-#[cfg(test)]
+///
+/// **Not `#[cfg(test)]`, and it cannot be.** That attribute means "when *this*
+/// crate is compiled as a test", so the moment `storage` became a crate of its
+/// own the lock would exist only for `storage`'s own tests and vanish for the
+/// consumers that are the entire reason it exists. Two of them — `training` and
+/// `synth` — are separate crates too, and a lock each is the exact bug the
+/// paragraph above describes. The cost of compiling it always is one
+/// `Mutex<()>` in the binary.
 pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // Parent of the pretrain dataset subfolders. Each immediate subdirectory

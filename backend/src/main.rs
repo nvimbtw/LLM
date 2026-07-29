@@ -10,7 +10,6 @@ mod extractors;
 mod gather;
 mod queue;
 mod routes;
-mod storage;
 mod synth;
 mod train_worker;
 mod training;

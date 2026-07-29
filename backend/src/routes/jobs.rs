@@ -21,7 +21,7 @@ use crate::db;
 use crate::db::job::{Job, JobKind, JobLane, JobStatus};
 use crate::extractors::AdminUser;
 use crate::queue::Queue;
-use crate::storage;
+use storage;
 use crate::training::{TrainConfig, TrainMode};
 use crate::ws;
 

@@ -17,7 +17,7 @@ use crate::cycle::{CycleConfig, Cycles};
 use crate::db;
 use crate::db::cycle::{CycleStage, CycleStatus};
 use crate::extractors::AdminUser;
-use crate::storage;
+use storage;
 
 const HISTORY_LIMIT: i64 = 50;
 

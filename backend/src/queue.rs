@@ -39,7 +39,7 @@ use crate::autolabel;
 use crate::db;
 use crate::db::job::{JobKind, JobLane, JobStatus};
 use crate::gather;
-use crate::storage;
+use storage;
 use crate::synth;
 use crate::train_worker::{self, TrainCtx, TrainPhase, TrainState};
 

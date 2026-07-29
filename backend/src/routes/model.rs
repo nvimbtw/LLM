@@ -10,7 +10,7 @@ use crate::db;
 use crate::db::user::AccessLevel;
 use crate::routes::validate;
 use crate::extractors::{AdminUser, AuthUser};
-use crate::storage;
+use storage;
 
 // Response shape sent to clients. Kept separate from the db `Model` struct per
 // the layering rules, even though they currently carry the same fields.

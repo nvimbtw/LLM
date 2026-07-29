@@ -16,7 +16,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::storage;
+use storage;
 
 // Which kind of run this is: pretrain a fresh model, or supervised-fine-tune
 // (SFT) an existing one on chat data. Serialized lowercase (`"pretrain"` /
@@ -2756,7 +2756,7 @@ mod sft_tests {
     // to be shared with every other module's tests — this one and `synth`'s used
     // to be separate locks over the same variable, which is no lock at all.
     // (`.lock()` recovers from a poisoned guard so one failing test doesn't cascade.)
-    use crate::storage::ENV_LOCK;
+    use storage::ENV_LOCK;
 
     // Build a dataset from a fixture SFT dir + a fixture merges.bin (empty merges
     // → byte-level tokenization, deterministic), and check the corpus/mask are

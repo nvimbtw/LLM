@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::storage;
+use storage;
 
 // The file auto-labels are written to. A distinct name from the human export's
 // `feedback.jsonl` in the same directory, so the two accumulate side by side and

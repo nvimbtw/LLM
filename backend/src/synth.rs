@@ -31,7 +31,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::storage;
+use storage;
 
 // ── the request ─────────────────────────────────────────────────────────────
 
@@ -2070,7 +2070,7 @@ mod e2e {
     /// so neither excluded the other and a `synth` test could move `DATA_DIR` out
     /// from under a `training` build mid-run.
     fn exclusive_data_dir() -> std::sync::MutexGuard<'static, ()> {
-        crate::storage::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        storage::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // A one-shot OpenAI-compatible endpoint returning canned delimiter output.

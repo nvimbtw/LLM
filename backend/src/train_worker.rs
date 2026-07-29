@@ -200,7 +200,7 @@ fn run_kto(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     let created_at = Utc::now().to_rfc3339();
 
     let base_model_dir = match config.base_model_id {
-        Some(id) => crate::storage::models_dir().join(id.to_string()),
+        Some(id) => storage::models_dir().join(id.to_string()),
         None => return fail(&ctx, "KTO run is missing a base_model_id".to_string()),
     };
 
@@ -357,7 +357,7 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     // weights are the starting point. The enqueue route guarantees this is present
     // and resolves, but we resolve defensively (the id is untrusted here).
     let base_model_dir = match config.base_model_id {
-        Some(id) => crate::storage::models_dir().join(id.to_string()),
+        Some(id) => storage::models_dir().join(id.to_string()),
         None => return fail(&ctx, "SFT run is missing a base_model_id".to_string()),
     };
 
@@ -647,7 +647,7 @@ fn finish(
     let payload = match &error {
         Some(msg) => frame("error", serde_json::json!({ "message": msg })),
         None => {
-            let model_dir = crate::storage::models_dir().join(config.storage_id.to_string());
+            let model_dir = storage::models_dir().join(config.storage_id.to_string());
             frame(
                 "done",
                 serde_json::json!({
