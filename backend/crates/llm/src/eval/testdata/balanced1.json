@@ -1,0 +1,160 @@
+{
+    "chat": null,
+    "model": {
+        "heads": 4,
+        "vocab": 8192,
+        "layers": 8,
+        "context": 1024,
+        "dimensions": 512,
+        "parameters": 33583104
+    },
+    "score": 82.99743160859438,
+    "corpus": {
+        "files": 5,
+        "advantage": 0.326352730488202,
+        "perplexity": 10.45234160686903,
+        "bytes_scored": 131068,
+        "bits_per_byte": 1.5304452485702764,
+        "tokens_scored": 59246,
+        "bits_per_token": 3.3857542760626704,
+        "floor_progress": 1.0,
+        "baseline_bits_per_byte": 2.2718792427963264
+    },
+    "grammar": {
+        "pairs": 545,
+        "accuracy": 0.8036697247706422,
+        "paradigms": [
+            {
+                "name": "subject_verb_agreement",
+                "pairs": 60,
+                "accuracy": 0.8666666666666667,
+                "description": "The verb must match the number of its subject."
+            },
+            {
+                "name": "determiner_noun_agreement",
+                "pairs": 60,
+                "accuracy": 0.85,
+                "description": "A demonstrative must match the number of its noun."
+            },
+            {
+                "name": "anaphor_gender_agreement",
+                "pairs": 60,
+                "accuracy": 0.5,
+                "description": "A reflexive pronoun must match its antecedent's gender."
+            },
+            {
+                "name": "anaphor_number_agreement",
+                "pairs": 60,
+                "accuracy": 0.8833333333333333,
+                "description": "A reflexive pronoun must match its antecedent's number."
+            },
+            {
+                "name": "irregular_past_tense",
+                "pairs": 60,
+                "accuracy": 1.0,
+                "description": "Irregular verbs resist the regular -ed rule."
+            },
+            {
+                "name": "argument_structure",
+                "pairs": 56,
+                "accuracy": 1.0,
+                "description": "Only a transitive verb can take a direct object."
+            },
+            {
+                "name": "filler_gap",
+                "pairs": 60,
+                "accuracy": 0.5166666666666667,
+                "description": "A wh-question leaves a gap that must not also be filled."
+            },
+            {
+                "name": "npi_licensing",
+                "pairs": 24,
+                "accuracy": 0.2916666666666667,
+                "description": "`ever` needs a negative licensor above it."
+            },
+            {
+                "name": "pronoun_case",
+                "pairs": 45,
+                "accuracy": 0.9555555555555556,
+                "description": "Subjects take nominative case, objects accusative."
+            },
+            {
+                "name": "adjective_order",
+                "pairs": 60,
+                "accuracy": 0.9166666666666666,
+                "description": "An attributive adjective comes before its noun."
+            }
+        ]
+    },
+    "generation": {
+        "samples": [
+            {
+                "prompt": "The old man walked down to the river and",
+                "completion": " then then died. Even if the congressional stage is finished, it is a very small step. It is likely that the very large-scale rapid-trained field of predators, in others: the meaning of the col"
+            },
+            {
+                "prompt": "She opened the letter and read it slowly. It said",
+                "completion": " the letter are not on the sheep. It can't mean that you are ready to get a learn about the letter in the refrigerant. You may also see the same thing as the heritage, but this is not the same state"
+            },
+            {
+                "prompt": "In the morning the town was quiet, because",
+                "completion": " they only had had a large race to get overseers. This was not recognized as in the night of the town.\nThe oldest race was southeast of a race in the night of Rotterdam, and therefore"
+            },
+            {
+                "prompt": "There was once a small house at the edge of the",
+                "completion": " institution from the University of Florida. He later was the first year in the \"Start-hardline\".\nThe \"Start-hardliness conference, the relationship with the IMU, and the relationshi"
+            },
+            {
+                "prompt": "He could not remember where he had left the",
+                "completion": " \"papes\" as they had, and his father was on he had done a letter in the return of when he was \"siro\", and they had gone and reached it.\nBefore he died, all three would refuse to rememb"
+            },
+            {
+                "prompt": "The children ran across the field toward",
+                "completion": " their brainting or their families. This remains as their parents as they realized their role in their medical health agents and they represent its first step: \"I recommend no"
+            },
+            {
+                "prompt": "It had been raining for three days when",
+                "completion": " they inhibited their homes. One outlook reform in the rainforest but in the rainforest rains in interruptions, he was a repose. After the rest of their p"
+            },
+            {
+                "prompt": "The door opened and a woman came in. She was",
+                "completion": " recommended to the members of the tragic restrictions. She used to traffic in the race on the top of the room\u2019s base, then used to control the newly-growing consi"
+            },
+            {
+                "prompt": "Nobody in the village had ever seen anything like",
+                "completion": " the rear using old age. This is what was represented by the previous year.\nThis resource is in the last few years, but something something would only have been in. Something that had been in the field"
+            },
+            {
+                "prompt": "After dinner they sat by the fire and talked about",
+                "completion": " their line as they concluded.\nCRUDCOS: BUBCTORY\nCRUDCOS ARCES: BUBCTORY\nPrevious Data Data \nCRUDCOS: The emergency interval\nH"
+            },
+            {
+                "prompt": "The book was old, and its pages were",
+                "completion": " used only for three steps.\n1. It was received only one-way in the metric of NCT. The first records on one-way \u2014 a fire-like role in the Age and in the record for"
+            },
+            {
+                "prompt": "When the train finally arrived, the platform was",
+                "completion": " used. If trains were referred to the grain to the internet, then the unit makes them a train in the reader and win they are in their relation, it's likely \"back us"
+            }
+        ],
+        "distinct_1": 0.4844559585492228,
+        "distinct_2": 0.8961038961038961,
+        "distinct_3": 0.9895833333333334,
+        "repeat_rate": 0.005221932114882507,
+        "lexicon_size": 16185,
+        "words_scored": 386,
+        "real_word_rate": 0.9430051813471503,
+        "marker_validity": null,
+        "mean_sentence_words": 12.0625
+    },
+    "preference": {
+        "pairs": 0,
+        "margin": null,
+        "approved": 4,
+        "rejected": 0,
+        "paired_accuracy": null,
+        "approved_logprob": -4.289924589135937,
+        "rejected_logprob": null
+    },
+    "duration_secs": 347.994693609
+}

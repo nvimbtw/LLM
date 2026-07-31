@@ -11,7 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { KIND_LABEL, formatClock, type Job } from "@/lib/jobs"
+import { KIND_LABEL, formatClock, jobHref, type Job } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
 /**
@@ -126,7 +126,7 @@ export function QueueBand({
 
               <div className="min-w-0 flex-1">
                 <Link
-                  href={`/jobs/${job.id_job}`}
+                  href={jobHref(job)}
                   className="block truncate text-sm font-medium hover:underline"
                 >
                   {job.label}

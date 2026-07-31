@@ -9,6 +9,7 @@ import {
   formatDate,
   formatNumber,
   formatPercent,
+  isMarkupReport,
   type BenchmarkRun,
   type BenchmarkReport,
 } from "@/lib/benchmark"
@@ -64,7 +65,12 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
 
   return (
     <Section subtitle={`Scored ${formatDate(latest.created_at)}`}>
-      <Headlines report={latest.report} />
+      {/* The model page shows the language bench only — it is the one the
+          post-train cycle judges on, and a second set of four figures beside it
+          would compete for the same glance. The markup score is a click away on
+          /benchmark. `getModelRuns` defaults to the language suite, so a markup
+          report cannot arrive here; the guard is for the type, not for a case. */}
+      {!isMarkupReport(latest.report) && <Headlines report={latest.report} />}
       {runs.length > 1 && <RunList runs={runs} />}
     </Section>
   )

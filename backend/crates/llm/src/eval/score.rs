@@ -30,6 +30,18 @@ impl TokenScores {
     pub fn count(&self) -> usize {
         self.logprobs.len()
     }
+
+    // True when every position produced a finite score, so `logprobs[i]` still lines
+    // up with a mask built over the token sequence.
+    //
+    // `drop_unscored` removes a dropped position rather than holding its place, which
+    // shifts every index after it — a caller that masks by index must refuse the
+    // example instead of scoring the wrong tokens. `chat` and `preference` both do,
+    // and both used to hand-write this comparison; it is the most consequential
+    // invariant in the file and deserves one definition.
+    pub fn aligned_with(&self, tokens_len: usize) -> bool {
+        self.logprobs.len() + 1 == tokens_len
+    }
 }
 
 // Score a whole token sequence under the model, sliding a window when the text is
@@ -45,38 +57,199 @@ impl TokenScores {
 // `ctx/2` tokens of history (except in the very first window, where less history is
 // all that exists).
 pub async fn token_logprobs(model: &Model, tokens: &[u32], layers: usize) -> TokenScores {
-    let ctx = model.ctx_window();
-    if tokens.len() < 2 || ctx < 2 {
+    if tokens.len() < 2 || model.ctx_window() < 2 {
         return TokenScores { logprobs: Vec::new() };
     }
-
     // Every position but the last predicts its successor.
     let mut logprobs = vec![f32::NAN; tokens.len() - 1];
 
+    for_each_position(model, tokens, layers, |pos, logits| {
+        logprobs[pos] = log_softmax_at(logits, tokens[pos + 1] as usize);
+    })
+    .await;
+
+    drop_unscored(&mut logprobs);
+    TokenScores { logprobs }
+}
+
+// What the model predicted at one position, beyond how it scored the token that
+// actually came next.
+//
+// The markup benchmark needs this and the language one does not: asking "would the
+// model have put `<|/par|>` here" is a question about the *argmax*, not about the
+// reference token's probability. A model can assign a marker a respectable
+// log-probability while confidently predicting something else, and only the first
+// of those is a model that would emit well-formed markup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Prediction {
+    // Indexes `tokens`; the target is `tokens[position + 1]`, the convention
+    // `TokenScores` uses. Carried explicitly rather than implied by the vector index
+    // because this vector is sparse — only selected positions appear.
+    pub position: u32,
+    // The same number `token_logprobs` produces here, off the same row, so the two
+    // can never disagree.
+    pub logprob: f32,
+    // Highest-scoring id over the whole vocabulary. Ties resolve to the lowest id, so
+    // the value is deterministic across runs.
+    pub argmax: u32,
+    // 1 = the target was the model's top choice. A tie counts *against* the model,
+    // matching the strict `>` in `minimal_pairs` and `preference::paired_accuracy`: a
+    // flat, opinionless model must not read as rank 1 everywhere.
+    pub rank: u32,
+    // Highest-scoring id inside the caller's `restrict` range. `None` when that range
+    // is empty or starts past the model's output width — a corrupt `merges.bin` next
+    // to the weights, the same condition `log_softmax_at` guards.
+    pub restricted_argmax: Option<u32>,
+}
+
+// Dense scores plus sparse per-position detail, from one pass over the model.
+pub struct TokenPredictions {
+    // Exactly what `token_logprobs` would have returned for the same input, dropped
+    // positions included, so `aligned_with` applies unchanged.
+    pub scores: TokenScores,
+    // Ascending by `position`. A selected position whose row did not score is absent.
+    pub predictions: Vec<Prediction>,
+}
+
+// `token_logprobs`, additionally reporting the argmax and rank at selected positions.
+//
+// Rides the same forward passes — the extra cost is a few passes over each selected
+// logit row on the host, invisible next to the matmuls that produced it.
+//
+// `restrict` is a parameter rather than a constant because this file is the scoring
+// primitive every benchmark is built on and knows nothing about markers; `markup`
+// passes the protected-marker block.
+pub async fn token_predictions(
+    model: &Model,
+    tokens: &[u32],
+    layers: usize,
+    // Parallel to `tokens`. Position `i` gets a `Prediction` iff `select[i] == 1`.
+    // Shorter than `tokens` is legal and means "not selected" for the tail.
+    select: &[u8],
+    restrict: std::ops::Range<u32>,
+) -> TokenPredictions {
+    if tokens.len() < 2 || model.ctx_window() < 2 {
+        return TokenPredictions {
+            scores: TokenScores { logprobs: Vec::new() },
+            predictions: Vec::new(),
+        };
+    }
+    let mut logprobs = vec![f32::NAN; tokens.len() - 1];
+    let mut predictions = Vec::new();
+
+    for_each_position(model, tokens, layers, |pos, logits| {
+        let target = tokens[pos + 1] as usize;
+        let logprob = log_softmax_at(logits, target);
+        logprobs[pos] = logprob;
+        if select.get(pos) != Some(&1) {
+            return;
+        }
+        let (argmax, rank, restricted_argmax) = examine(logits, target, &restrict);
+        predictions.push(Prediction {
+            position: pos as u32,
+            logprob,
+            argmax,
+            rank,
+            restricted_argmax,
+        });
+    })
+    .await;
+
+    // The two must agree about what counted, or a caller could read a prediction for
+    // a position whose score was dropped.
+    predictions.retain(|p| p.logprob.is_finite());
+    drop_unscored(&mut logprobs);
+
+    TokenPredictions { scores: TokenScores { logprobs }, predictions }
+}
+
+// `window_plan` covers every position exactly once, so nothing should be left
+// unscored. Kept as a filter rather than an unwrap because a stray NaN would
+// otherwise poison the whole corpus total, turning one bad position into a missing
+// metric; the assertion catches it in development instead.
+fn drop_unscored(values: &mut Vec<f32>) {
+    debug_assert!(
+        values.iter().all(|v| v.is_finite()),
+        "window plan left {} of {} positions unscored",
+        values.iter().filter(|v| !v.is_finite()).count(),
+        values.len(),
+    );
+    values.retain(|v| v.is_finite());
+}
+
+// Argmax, the target's rank, and the argmax restricted to `restrict`, from one logit
+// row. Split out from the async path so a hand-built row can exercise it without a GPU.
+//
+// Rank counts every id scoring at least as high as the target, so a tie costs the
+// model a rank — see `Prediction::rank`.
+fn examine(logits: &[f32], target: usize, restrict: &std::ops::Range<u32>) -> (u32, u32, Option<u32>) {
+    let mut argmax = 0u32;
+    let mut best = f32::NEG_INFINITY;
+    for (i, &l) in logits.iter().enumerate() {
+        if l > best {
+            best = l;
+            argmax = i as u32;
+        }
+    }
+
+    // A target outside the row is already scored as maximally surprising by
+    // `log_softmax_at`; rank it last rather than indexing out of bounds.
+    let rank = match logits.get(target) {
+        Some(&at) => 1 + logits
+            .iter()
+            .enumerate()
+            .filter(|&(i, &l)| i != target && l >= at)
+            .count() as u32,
+        None => logits.len() as u32 + 1,
+    };
+
+    let start = (restrict.start as usize).min(logits.len());
+    let end = (restrict.end as usize).min(logits.len());
+    let mut restricted_argmax = None;
+    let mut restricted_best = f32::NEG_INFINITY;
+    for (offset, &l) in logits[start..end].iter().enumerate() {
+        if l > restricted_best {
+            restricted_best = l;
+            restricted_argmax = Some((start + offset) as u32);
+        }
+    }
+
+    (argmax, rank, restricted_argmax)
+}
+
+// The only place in the module that runs the model.
+//
+// Walks `window_plan` and hands `visit` the full logit row for each position it is
+// responsible for, exactly once, in strictly ascending order of position. Both public
+// entry points are built on this so there is a single forward path and a single
+// interpretation of the window arithmetic — the part of this file where a silent
+// off-by-one produces a plausible wrong number rather than a crash.
+//
+// The row is borrowed out of the current window's logit buffer and is invalid once
+// the callback returns: a visitor that wants to keep something must reduce it.
+//
+// Ascending order is a guarantee, not an accident — `window_plan`'s scored ranges are
+// disjoint and emitted in increasing `start` — and `token_predictions` returns a
+// sorted sparse vector on the strength of it.
+async fn for_each_position(
+    model: &Model,
+    tokens: &[u32],
+    layers: usize,
+    mut visit: impl FnMut(usize, &[f32]),
+) {
+    let ctx = model.ctx_window();
+    if tokens.len() < 2 || ctx < 2 {
+        return;
+    }
     for window in window_plan(tokens.len(), ctx) {
         let slice = &tokens[window.start..window.end];
         let hidden = model.forward_seq(slice, layers, ctx).await;
         let logits = model.unembed(&hidden).await;
 
         for j in window.first_scored..slice.len() - 1 {
-            let target = slice[j + 1] as usize;
-            logprobs[window.start + j] = log_softmax_at(&logits[j], target);
+            visit(window.start + j, &logits[j]);
         }
     }
-
-    // `window_plan` covers every position exactly once, so nothing should be left
-    // unscored. Kept as a filter rather than an unwrap because a stray NaN would
-    // otherwise poison the whole corpus total, turning one bad position into a
-    // missing metric; the assertion catches it in development instead.
-    debug_assert!(
-        logprobs.iter().all(|l| l.is_finite()),
-        "window plan left {} of {} positions unscored",
-        logprobs.iter().filter(|l| !l.is_finite()).count(),
-        logprobs.len(),
-    );
-    logprobs.retain(|l| l.is_finite());
-
-    TokenScores { logprobs }
 }
 
 // One forward pass: the token span to run, and the first position within it whose
@@ -265,5 +438,142 @@ mod tests {
         let s = TokenScores { logprobs: vec![-1.0, -2.0, -0.5] };
         assert!((s.total() - -3.5).abs() < 1e-9);
         assert_eq!(s.count(), 3);
+    }
+
+    // Positions must arrive in order, not merely be covered: `token_predictions`
+    // promises a sorted sparse vector and builds it by pushing as it goes.
+    #[test]
+    fn positions_are_visited_in_ascending_order() {
+        for ctx in [2usize, 3, 4, 8, 16, 64] {
+            for len in 2..=(ctx * 4 + 5) {
+                let hits = covered(len, ctx);
+                assert!(
+                    hits.windows(2).all(|w| w[0] < w[1]),
+                    "ctx={ctx} len={len}: positions are not ascending",
+                );
+            }
+        }
+    }
+
+    // ── the alignment guard ──
+
+    #[test]
+    fn aligned_with_is_false_after_a_drop() {
+        // 3 tokens ⇒ 2 scoreable positions.
+        assert!(TokenScores { logprobs: vec![-1.0, -2.0] }.aligned_with(3));
+        assert!(!TokenScores { logprobs: vec![-1.0] }.aligned_with(3));
+    }
+
+    // Pins the exact expression `chat` and `preference` used to hand-write.
+    #[test]
+    fn aligned_with_matches_the_hand_written_guard() {
+        for len in 1..8usize {
+            for scored in 0..8usize {
+                let s = TokenScores { logprobs: vec![-1.0; scored] };
+                assert_eq!(s.aligned_with(len), s.logprobs.len() == len.saturating_sub(1));
+            }
+        }
+    }
+
+    #[test]
+    fn drop_unscored_leaves_a_fully_scored_vector_alone() {
+        let mut values = vec![-1.0, -2.0, -0.5];
+        drop_unscored(&mut values);
+        assert_eq!(values, vec![-1.0, -2.0, -0.5]);
+    }
+
+    // An unscored position is a bug, so it trips the assertion in development…
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "window plan left 1 of 3 positions unscored")]
+    fn drop_unscored_is_loud_about_a_gap_in_development() {
+        drop_unscored(&mut vec![-1.0, f32::NAN, -2.0]);
+    }
+
+    // …and in release it drops the position rather than letting one NaN poison a
+    // whole corpus total. Both halves of that bargain are deliberate.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn drop_unscored_removes_only_the_non_finite() {
+        let mut values = vec![-1.0, f32::NAN, -2.0];
+        drop_unscored(&mut values);
+        assert_eq!(values, vec![-1.0, -2.0]);
+    }
+
+    // ── examine ──
+    //
+    // The row reducer behind `token_predictions`, exercised on hand-built rows so the
+    // whole markup benchmark's arithmetic is testable without a GPU.
+
+    fn full(len: usize) -> std::ops::Range<u32> {
+        0..len as u32
+    }
+
+    #[test]
+    fn examine_finds_the_argmax_and_ranks_it_first() {
+        let (argmax, rank, _) = examine(&[0.1, 2.0, 0.4], 1, &full(3));
+        assert_eq!(argmax, 1);
+        assert_eq!(rank, 1);
+    }
+
+    #[test]
+    fn examine_breaks_argmax_ties_to_the_lowest_id() {
+        // Deterministic across runs is the point; either id is "correct" otherwise.
+        let (argmax, _, _) = examine(&[1.0, 5.0, 5.0], 0, &full(3));
+        assert_eq!(argmax, 1);
+    }
+
+    #[test]
+    fn examine_counts_a_tie_against_the_model() {
+        // The target ties the top logit. A model with no opinion must not read as
+        // rank 1 — the same rule minimal_pairs applies with its strict `>`.
+        let (_, rank, _) = examine(&[5.0, 5.0, 0.0], 1, &full(3));
+        assert_eq!(rank, 2);
+    }
+
+    #[test]
+    fn examine_rank_over_a_uniform_row_is_the_vocab_size() {
+        // The degenerate case the tie rule exists for: an untrained model ranks
+        // everything last, rather than everything first.
+        let (_, rank, _) = examine(&[0.0; 16], 7, &full(16));
+        assert_eq!(rank, 16);
+    }
+
+    #[test]
+    fn examine_rank_grows_as_the_target_gets_less_likely() {
+        let logits = [5.0, 4.0, 3.0, 2.0, 1.0];
+        let rank = |t| examine(&logits, t, &full(5)).1;
+        assert_eq!(rank(0), 1);
+        assert_eq!(rank(2), 3);
+        assert_eq!(rank(4), 5);
+    }
+
+    #[test]
+    fn examine_restricted_argmax_ignores_a_larger_logit_outside_the_range() {
+        // Id 0 wins outright, but the restricted answer must come from [2, 4).
+        let (argmax, _, restricted) = examine(&[9.0, 8.0, 1.0, 3.0], 0, &(2..4));
+        assert_eq!(argmax, 0);
+        assert_eq!(restricted, Some(3));
+    }
+
+    #[test]
+    fn examine_restricted_argmax_is_none_for_an_empty_or_out_of_range_restrict() {
+        assert_eq!(examine(&[1.0, 2.0], 0, &(1..1)).2, None);
+        // A vocabulary that does not reach the block at all — a mismatched tokenizer.
+        assert_eq!(examine(&[1.0, 2.0], 0, &(256..320)).2, None);
+    }
+
+    #[test]
+    fn examine_restricted_argmax_is_clipped_to_the_row() {
+        // Range overhangs the row; the in-range part still answers.
+        assert_eq!(examine(&[1.0, 5.0, 2.0], 0, &(1..99)).2, Some(1));
+    }
+
+    #[test]
+    fn examine_out_of_range_target_does_not_panic() {
+        // Mirrors the `log_softmax_at` guard: a mismatched merges.bin must not abort
+        // a benchmark mid-run.
+        let (_, rank, _) = examine(&[1.0, 2.0], 9, &full(2));
+        assert_eq!(rank, 3);
     }
 }

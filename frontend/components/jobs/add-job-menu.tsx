@@ -4,6 +4,7 @@ import Link from "next/link"
 import {
   Dumbbell,
   Gauge,
+  GraduationCap,
   MessageSquare,
   Plus,
   Sparkles,
@@ -33,6 +34,7 @@ const OPTIONS = [
   { label: "Benchmark a model", href: "/jobs/new/benchmark", icon: Gauge },
   { label: "Auto-label replies", href: "/jobs/new/autolabel", icon: ThumbsUp },
   { label: "Generate SFT data", href: "/jobs/new/synth", icon: Sparkles },
+  { label: "Teach locally", href: "/jobs/new/teach", icon: GraduationCap },
   { label: "Chat", href: "/chat", icon: MessageSquare },
 ]
 

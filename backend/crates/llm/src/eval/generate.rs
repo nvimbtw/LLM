@@ -57,6 +57,14 @@ pub struct Continuation {
     /// The newly generated text, terminal marker included (the caller decides
     /// whether that belongs in what it stores).
     pub text: String,
+    /// The same tokens before decoding, prompt excluded.
+    ///
+    /// The markup benchmark works on these rather than on `text`: every marker is a
+    /// single reserved id (`pretokenize::SPECIAL_BLOCK`), so checking that a reply's
+    /// markup nests correctly is a walk over ids with no scanning, no ambiguity about
+    /// prose that merely looks like `<|par|>`, and no dependence on the decoder
+    /// round-tripping the private-use characters.
+    pub ids: Vec<u32>,
     /// Whether generation stopped because the model emitted an end-of-turn marker,
     /// as opposed to running out of `max_tokens`.
     ///
@@ -126,6 +134,7 @@ pub async fn continue_tokens(
 
     Continuation {
         text: tokenize::bpe::decode(&generated, merges),
+        ids: generated,
         stopped_on_marker,
     }
 }

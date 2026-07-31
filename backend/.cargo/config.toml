@@ -1,0 +1,25 @@
+# Build environment for the workspace, pinned here rather than left to whatever
+# each shell happens to export.
+#
+# This exists because of `llama-cpp-sys-2`, which compiles llama.cpp (including
+# its CUDA kernels) from source in a build script. Cargo keys a build script's
+# cached output on the environment it saw, so invoking cargo with a different set
+# of `CMAKE_*` variables than last time discards ~25 minutes of compilation and
+# starts over — and the symptom is just "cargo build is inexplicably slow again".
+# Pinning them means every invocation, by a person or a tool, hits the same cache.
+[env]
+# nvcc is not on PATH on this box; `crates/llm/build.rs` defaults to this path and
+# llama.cpp's cmake needs to find the same toolkit.
+CUDA_HOME = "/opt/cuda"
+
+# Build CUDA kernels for sm_86 only — the RTX 3060 this runs on, and the same
+# `-arch=sm_86` that `crates/llm/build.rs` passes nvcc. llama.cpp otherwise
+# compiles every architecture it knows about, which multiplies the build time and
+# produces nothing this machine can use.
+CMAKE_CUDA_ARCHITECTURES = "86"
+
+# This box has ~7 GB of RAM total. nvcc holds a lot of it per translation unit, so
+# an unbounded parallel build (cmake defaults to every core) gets processes OOM
+# killed, which surfaces as an opaque cmake failure rather than as memory
+# exhaustion. Two is slow and survives.
+CMAKE_BUILD_PARALLEL_LEVEL = "2"

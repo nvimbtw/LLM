@@ -156,7 +156,7 @@ async fn mean_reply_logprob(
     // `token_logprobs` drops any non-finite position, which would shift every
     // index after it and silently misalign the mask. Refuse the example instead of
     // scoring the wrong tokens.
-    if scores.logprobs.len() != ids.len() - 1 {
+    if !scores.aligned_with(ids.len()) {
         return None;
     }
 

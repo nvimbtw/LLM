@@ -1,0 +1,160 @@
+{
+    "chat": null,
+    "model": {
+        "heads": 4,
+        "vocab": 8192,
+        "layers": 8,
+        "context": 1024,
+        "dimensions": 512,
+        "parameters": 33583104
+    },
+    "score": 82.89645451289728,
+    "corpus": {
+        "files": 5,
+        "advantage": 0.33219508339100967,
+        "perplexity": 10.241751703798336,
+        "bytes_scored": 131068,
+        "bits_per_byte": 1.5171721282812969,
+        "tokens_scored": 59246,
+        "bits_per_token": 3.356390583492101,
+        "floor_progress": 1.0,
+        "baseline_bits_per_byte": 2.2718792427963264
+    },
+    "grammar": {
+        "pairs": 545,
+        "accuracy": 0.8,
+        "paradigms": [
+            {
+                "name": "subject_verb_agreement",
+                "pairs": 60,
+                "accuracy": 0.9,
+                "description": "The verb must match the number of its subject."
+            },
+            {
+                "name": "determiner_noun_agreement",
+                "pairs": 60,
+                "accuracy": 0.8833333333333333,
+                "description": "A demonstrative must match the number of its noun."
+            },
+            {
+                "name": "anaphor_gender_agreement",
+                "pairs": 60,
+                "accuracy": 0.48333333333333334,
+                "description": "A reflexive pronoun must match its antecedent's gender."
+            },
+            {
+                "name": "anaphor_number_agreement",
+                "pairs": 60,
+                "accuracy": 0.8,
+                "description": "A reflexive pronoun must match its antecedent's number."
+            },
+            {
+                "name": "irregular_past_tense",
+                "pairs": 60,
+                "accuracy": 1.0,
+                "description": "Irregular verbs resist the regular -ed rule."
+            },
+            {
+                "name": "argument_structure",
+                "pairs": 56,
+                "accuracy": 0.9821428571428571,
+                "description": "Only a transitive verb can take a direct object."
+            },
+            {
+                "name": "filler_gap",
+                "pairs": 60,
+                "accuracy": 0.5666666666666667,
+                "description": "A wh-question leaves a gap that must not also be filled."
+            },
+            {
+                "name": "npi_licensing",
+                "pairs": 24,
+                "accuracy": 0.2916666666666667,
+                "description": "`ever` needs a negative licensor above it."
+            },
+            {
+                "name": "pronoun_case",
+                "pairs": 45,
+                "accuracy": 0.9111111111111111,
+                "description": "Subjects take nominative case, objects accusative."
+            },
+            {
+                "name": "adjective_order",
+                "pairs": 60,
+                "accuracy": 0.9166666666666666,
+                "description": "An attributive adjective comes before its noun."
+            }
+        ]
+    },
+    "generation": {
+        "samples": [
+            {
+                "prompt": "The old man walked down to the river and",
+                "completion": " then the \u201cwhere\u201d there is. They are asleep.\n\nGordon, they are a few to us?\n\nThere are many different types of methods which were all over. They are:\n\nIn its history, people are pretty chem"
+            },
+            {
+                "prompt": "She opened the letter and read it slowly. It said",
+                "completion": " that he resemeded, and reminded, resumed and read a lot only.\n\"I'll need to be minimal,\" said Dr. Lee. \"The previous day and nights can be helpful.\" Therefore, they recogn"
+            },
+            {
+                "prompt": "In the morning the town was quiet, because",
+                "completion": " they undermined the conditions of the land. \"They were not surprised to control their land. She had to return to them.\"\n\n<|endoftext|>"
+            },
+            {
+                "prompt": "There was once a small house at the edge of the",
+                "completion": " university confirms a greater and so involved in the record.\nWestern University and the United States have conducted the previous study of the uterus, in a record from"
+            },
+            {
+                "prompt": "He could not remember where he had left the",
+                "completion": "m.\nThe prestige was a great place to show up in the country in the same day. The presidential election was the greatest help keep them from inside their own family, they had interested in"
+            },
+            {
+                "prompt": "The children ran across the field toward",
+                "completion": " their communities. They did not really want to look at the inner relationship. The teachers recommend them to keep the children who lived in their own unified children's inner worke"
+            },
+            {
+                "prompt": "It had been raining for three days when",
+                "completion": " they left their home. They were reached at all.\n\nPackards\n\nAttropolitan, they had a long history that had been lucky because they had a lot of attention. The keyboards in the past four"
+            },
+            {
+                "prompt": "The door opened and a woman came in. She was",
+                "completion": " only married \u2014 while she was not one.\n\n<|endoftext|>"
+            },
+            {
+                "prompt": "Nobody in the village had ever seen anything like",
+                "completion": " the refuser. However, these women were introduced to the landing of the city, and they containing their own confusions.\nToday\u2019s \"From the Lord\", the Treestones, are the only"
+            },
+            {
+                "prompt": "After dinner they sat by the fire and talked about",
+                "completion": " their back. Also, that they are interested in their learning style.\n\nTheir radius relates to their radius. But we have no questions in their mentality:\n\nIntel"
+            },
+            {
+                "prompt": "The book was old, and its pages were",
+                "completion": " used by John, and an interpreter.\n\nDifferent of the information about the uses of the information on these pages to evaluate respectively and religious information.\n\nReferences"
+            },
+            {
+                "prompt": "When the train finally arrived, the platform was",
+                "completion": " used for creatures by the time involved with each other in a heartbeat.\nThe first step of the author's infant's retarded system of the creation. Then trains at the least, the cra"
+            }
+        ],
+        "distinct_1": 0.5468277945619335,
+        "distinct_2": 0.9151515151515152,
+        "distinct_3": 0.9908814589665653,
+        "repeat_rate": 0.0,
+        "lexicon_size": 16185,
+        "words_scored": 331,
+        "real_word_rate": 0.9516616314199395,
+        "marker_validity": 1.0,
+        "mean_sentence_words": 8.487179487179487
+    },
+    "preference": {
+        "pairs": 0,
+        "margin": null,
+        "approved": 4,
+        "rejected": 0,
+        "paired_accuracy": null,
+        "approved_logprob": -4.386228468481992,
+        "rejected_logprob": null
+    },
+    "duration_secs": 336.954013901
+}

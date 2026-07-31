@@ -15,7 +15,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useModels } from "@/hooks/use-models"
-import { getSuite, type SuiteInfo } from "@/lib/benchmark"
+import {
+  BENCHMARK_SUITES,
+  getSuite,
+  type BenchmarkSuite,
+  type SuiteInfo,
+} from "@/lib/benchmark"
 import { queueBenchmark } from "@/lib/jobs"
 
 /**
@@ -31,6 +36,9 @@ export function BenchmarkComposer() {
   const { models, isLoading } = useModels()
   const [suite, setSuite] = React.useState<SuiteInfo | null>(null)
   const [chosenId, setChosenId] = React.useState("")
+  // Which of the two benchmarks to run. They are separate runs on separate scales,
+  // so this is a choice rather than a mode — queue both if you want both.
+  const [which, setWhich] = React.useState<BenchmarkSuite>("language")
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   // Only the *explicit* choice is stored; the default is derived from the list.
@@ -57,7 +65,7 @@ export function BenchmarkComposer() {
   const submit = async () => {
     setIsSubmitting(true)
     try {
-      const job = await queueBenchmark(modelId)
+      const job = await queueBenchmark(modelId, which)
       toast.success("Benchmark queued.", job.label)
       router.push(`/jobs/${job.id_job}`)
     } catch (e) {
@@ -100,6 +108,30 @@ export function BenchmarkComposer() {
             </SelectContent>
           </Select>
 
+          <Select
+            value={which}
+            onValueChange={(value) =>
+              setWhich((value as BenchmarkSuite | null) ?? "language")
+            }
+            disabled={isSubmitting}
+          >
+            <SelectTrigger className="w-full min-w-0 sm:w-44">
+              <SelectValue>
+                {(value: string | null) =>
+                  BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
+                  "Language"
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {BENCHMARK_SUITES.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Button
             onClick={submit}
             disabled={isSubmitting || !modelId}
@@ -114,11 +146,24 @@ export function BenchmarkComposer() {
       {/* Said before the run rather than after it: an absent corpus makes the
           perplexity half of the report empty, and finding that out by spending a
           run is the wrong order. */}
-      {suite && suite.corpus_files === 0 && (
+      {which === "language" && suite && suite.corpus_files === 0 && (
         <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
           No reference corpus is installed in{" "}
           <code className="text-xs">{suite.corpus_dir}</code>, so this run will
           score grammar and generation but not held-out perplexity.
+        </p>
+      )}
+
+      {/* The markup suite's pair stage needs nothing on disk, so an absent chat set
+          is a partial score rather than a broken run — and it is written from your
+          SFT conversations at the start of every benchmark, so it is usually a
+          statement about the first run rather than about the install. */}
+      {which === "markup" && suite && suite.chat_files === 0 && (
+        <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+          No held-out chat set in{" "}
+          <code className="text-xs">{suite.chat_dir}</code> yet. It is exported
+          from your SFT conversations when this run starts, so this run scores the{" "}
+          {suite.markup_pairs} marker pairs and the next one scores everything.
         </p>
       )}
     </div>

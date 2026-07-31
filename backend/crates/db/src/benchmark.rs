@@ -15,11 +15,45 @@ pub enum BenchmarkStatus {
     Failed,
 }
 
+// Which benchmark produced this run.
+//
+// `Language` measures whether the model can model English — held-out bits per byte,
+// minimal-pair grammar, the surface properties of its own prose. `Markup` measures
+// whether it uses its special tokens correctly. They are separate rows because a
+// supervised fine-tune is expected to move them in opposite directions, and a single
+// blended number cannot report that: the whole reason for the split was a fine-tune
+// that improved on three of four language components, lost two grammar pairs, and
+// read as a regression.
+#[derive(
+    Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize, sqlx::Type,
+)]
+#[sqlx(type_name = "benchmark_suite", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum BenchmarkSuite {
+    // Callers that predate the split — and any stored config without the field —
+    // mean the language suite, which is what every existing row is.
+    #[default]
+    Language,
+    Markup,
+}
+
+impl BenchmarkSuite {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BenchmarkSuite::Language => "language",
+            BenchmarkSuite::Markup => "markup",
+        }
+    }
+}
+
+
 pub struct BenchmarkRun {
     pub id_run: Uuid,
     pub id_model: Uuid,
     pub model_name: String,
     pub status: BenchmarkStatus,
+    pub suite: BenchmarkSuite,
+    pub suite_version: i32,
     pub score: Option<f64>,
     pub report: Option<Value>,
     pub error: Option<String>,
@@ -39,19 +73,25 @@ pub async fn create(
     id_model: Uuid,
     model_name: &str,
     train_tokens: Option<i64>,
+    suite: BenchmarkSuite,
+    suite_version: i32,
 ) -> Result<BenchmarkRun, sqlx::Error> {
     sqlx::query_as!(
         BenchmarkRun,
-        r#"INSERT INTO benchmark_runs (id_run, id_model, model_name, status, train_tokens)
-           VALUES ($1, $2, $3, 'running', $4)
+        r#"INSERT INTO benchmark_runs
+               (id_run, id_model, model_name, status, train_tokens, suite, suite_version)
+           VALUES ($1, $2, $3, 'running', $4, $5, $6)
            RETURNING id_run, id_model, model_name,
-                     status as "status: BenchmarkStatus", score,
+                     status as "status: BenchmarkStatus",
+                     suite as "suite: BenchmarkSuite", suite_version, score,
                      report as "report: Value", error, train_tokens,
                      created_at, completed_at"#,
         id_run,
         id_model,
         model_name,
         train_tokens,
+        suite as BenchmarkSuite,
+        suite_version,
     )
     .fetch_one(pool)
     .await
@@ -99,6 +139,8 @@ pub struct BenchmarkSummary {
     pub id_model: Uuid,
     pub model_name: String,
     pub status: BenchmarkStatus,
+    pub suite: BenchmarkSuite,
+    pub suite_version: i32,
     pub score: Option<f64>,
     pub error: Option<String>,
     pub train_tokens: Option<i64>,
@@ -106,15 +148,22 @@ pub struct BenchmarkSummary {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<BenchmarkSummary>, sqlx::Error> {
+pub async fn list(
+    pool: &PgPool,
+    suite: BenchmarkSuite,
+    limit: i64,
+) -> Result<Vec<BenchmarkSummary>, sqlx::Error> {
     sqlx::query_as!(
         BenchmarkSummary,
         r#"SELECT id_run, id_model, model_name,
-                  status as "status: BenchmarkStatus", score, error,
+                  status as "status: BenchmarkStatus",
+                  suite as "suite: BenchmarkSuite", suite_version, score, error,
                   train_tokens, created_at, completed_at
            FROM benchmark_runs
+           WHERE suite = $1
            ORDER BY created_at DESC
-           LIMIT $1"#,
+           LIMIT $2"#,
+        suite as BenchmarkSuite,
         limit,
     )
     .fetch_all(pool)
@@ -126,18 +175,21 @@ pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<BenchmarkSummary>, sq
 pub async fn list_for_model(
     pool: &PgPool,
     id_model: Uuid,
+    suite: BenchmarkSuite,
     limit: i64,
 ) -> Result<Vec<BenchmarkSummary>, sqlx::Error> {
     sqlx::query_as!(
         BenchmarkSummary,
         r#"SELECT id_run, id_model, model_name,
-                  status as "status: BenchmarkStatus", score, error,
+                  status as "status: BenchmarkStatus",
+                  suite as "suite: BenchmarkSuite", suite_version, score, error,
                   train_tokens, created_at, completed_at
            FROM benchmark_runs
-           WHERE id_model = $1
+           WHERE id_model = $1 AND suite = $2
            ORDER BY created_at DESC
-           LIMIT $2"#,
+           LIMIT $3"#,
         id_model,
+        suite as BenchmarkSuite,
         limit,
     )
     .fetch_all(pool)
@@ -149,17 +201,21 @@ pub async fn list_for_model(
 pub async fn latest_report_for_model(
     pool: &PgPool,
     id_model: Uuid,
+    suite: BenchmarkSuite,
 ) -> Result<Option<BenchmarkRun>, sqlx::Error> {
     sqlx::query_as!(
         BenchmarkRun,
         r#"SELECT id_run, id_model, model_name,
-                  status as "status: BenchmarkStatus", score,
+                  status as "status: BenchmarkStatus",
+                  suite as "suite: BenchmarkSuite", suite_version, score,
                   report as "report: Value", error, train_tokens,
                   created_at, completed_at
            FROM benchmark_runs
-           WHERE id_model = $1 AND status = 'done' AND report IS NOT NULL
+           WHERE id_model = $1 AND suite = $2
+             AND status = 'done' AND report IS NOT NULL
            ORDER BY created_at DESC LIMIT 1"#,
         id_model,
+        suite as BenchmarkSuite,
     )
     .fetch_optional(pool)
     .await
@@ -169,7 +225,8 @@ pub async fn find_by_id(pool: &PgPool, id_run: Uuid) -> Result<Option<BenchmarkR
     sqlx::query_as!(
         BenchmarkRun,
         r#"SELECT id_run, id_model, model_name,
-                  status as "status: BenchmarkStatus", score,
+                  status as "status: BenchmarkStatus",
+                  suite as "suite: BenchmarkSuite", suite_version, score,
                   report as "report: Value", error, train_tokens,
                   created_at, completed_at
            FROM benchmark_runs WHERE id_run = $1"#,
@@ -184,15 +241,21 @@ pub async fn find_by_id(pool: &PgPool, id_run: Uuid) -> Result<Option<BenchmarkR
 // Used by the cycle to give round 1 something to beat: without it the first round
 // compares against nothing and accepts whatever it produced, however much worse
 // than the model the cycle started from.
+// The suite argument is not optional and must not be defaulted at the call site: the
+// cycle judges rounds on one suite's scale, and letting a markup run answer "the
+// latest score for this model" would compare two numbers that share only a range.
 pub async fn latest_score_for_model(
     pool: &PgPool,
     id_model: Uuid,
+    suite: BenchmarkSuite,
 ) -> Result<Option<f64>, sqlx::Error> {
     let row = sqlx::query!(
         r#"SELECT score FROM benchmark_runs
-           WHERE id_model = $1 AND status = 'done' AND score IS NOT NULL
+           WHERE id_model = $1 AND suite = $2
+             AND status = 'done' AND score IS NOT NULL
            ORDER BY created_at DESC LIMIT 1"#,
         id_model,
+        suite as BenchmarkSuite,
     )
     .fetch_optional(pool)
     .await?;

@@ -91,6 +91,19 @@ pub fn models_dir() -> PathBuf {
     root().join("artifacts").join("models")
 }
 
+// GGUF weights for the *teacher* — the off-the-shelf instruction model that
+// generates training data, not anything this project trained.
+//
+// A sibling of `models_dir` rather than a subdirectory of it, because everything
+// under `artifacts/models/<run>/` is a run this project produced and the API
+// enumerates it as such: a foreign GGUF in there would show up in the model
+// browser as an untrained run with no metadata. Under `artifacts/` and not
+// `raw/downloads/` for the opposite reason — it is a weights file the pipeline
+// loads, not bytes waiting to be processed into a corpus.
+pub fn teacher_dir() -> PathBuf {
+    root().join("artifacts").join("teacher")
+}
+
 // Benchmark fixtures. `eval/corpus/*.txt` is the reference prose a run scores
 // against — held-out text the model was **not** trained on — `eval/blimp/`
 // optionally holds real BLiMP JSONL alongside the built-in minimal-pair suite,

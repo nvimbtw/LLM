@@ -6,6 +6,7 @@ import { toast } from "@/components/ui/toast"
 import {
   type BenchmarkRun,
   type BenchmarkRunDetail,
+  type BenchmarkSuite,
   type SuiteInfo,
   deleteRun as apiDeleteRun,
   getRun,
@@ -20,6 +21,11 @@ import {
 const POLL_MS = 2000
 
 export function useBenchmark() {
+  // Which of the two benchmarks the page is showing. Everything below is scoped to
+  // it: the history, the selection, and — importantly — `active`. Without the
+  // scoping, queueing both suites for one model would show the markup run's spinner
+  // over the language page and then select the wrong report when it finished.
+  const [selected, setSelected] = React.useState<BenchmarkSuite>("language")
   const [runs, setRuns] = React.useState<BenchmarkRun[]>([])
   const [suite, setSuite] = React.useState<SuiteInfo | null>(null)
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
@@ -33,25 +39,37 @@ export function useBenchmark() {
   const active = runs.find((run) => run.status === "running") ?? null
 
   const refresh = React.useCallback(async () => {
-    const list = await listRuns()
+    const list = await listRuns(selected)
     setRuns(list)
     return list
-  }, [])
+  }, [selected])
 
-  // Initial load: history plus whether the reference corpus is installed.
+  // Switching suite clears the selection and the fetched report here, in the
+  // handler, rather than from the effect below: a language run id means nothing in
+  // the markup history, and clearing it in an effect would cascade a render.
+  const selectSuite = React.useCallback(
+    (next: BenchmarkSuite) => {
+      if (next === selected) return
+      setSelected(next)
+      setRuns([])
+      setSelectedId(null)
+      setFetched(null)
+      setIsLoading(true)
+    },
+    [selected]
+  )
+
+  // History for the chosen suite, plus what the suite has installed on disk.
   React.useEffect(() => {
     let alive = true
-    Promise.all([listRuns(), getSuite()])
+    Promise.all([listRuns(selected), getSuite()])
       .then(([list, info]) => {
         if (!alive) return
         setRuns(list)
         setSuite(info)
         // Land on the newest finished run so the page has something to show
         // instead of an empty frame.
-        setSelectedId(
-          (current) =>
-            current ?? list.find((r) => r.status === "done")?.id_run ?? null
-        )
+        setSelectedId(list.find((r) => r.status === "done")?.id_run ?? null)
       })
       .catch((err) => {
         if (alive)
@@ -65,14 +83,14 @@ export function useBenchmark() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [selected])
 
   // Poll only while something is running.
   React.useEffect(() => {
     if (!active) return
     let alive = true
     const timer = setInterval(() => {
-      listRuns()
+      listRuns(selected)
         .then((list) => {
           if (!alive) return
           setRuns(list)
@@ -92,7 +110,7 @@ export function useBenchmark() {
       alive = false
       clearInterval(timer)
     }
-  }, [active])
+  }, [active, selected])
 
   // Fetch the full report whenever the selection changes. Summaries in the list
   // deliberately omit it (a report embeds generated text), so it's loaded on demand.
@@ -136,6 +154,8 @@ export function useBenchmark() {
   return {
     runs,
     suite,
+    selectedSuite: selected,
+    selectSuite,
     active,
     detail: fetched?.id_run === selectedId ? fetched : null,
     selectedId,

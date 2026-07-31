@@ -199,7 +199,7 @@ fn mean_sentence_words(samples: &[String]) -> f64 {
 // before any of this sees the text. Scanning for PUA characters instead — as this
 // module did — matched nothing on real generation output, which silently pinned
 // `marker_validity` at 1.0 for every model ever benchmarked.
-fn markers_in(text: &str) -> Vec<(usize, &'static str)> {
+pub(super) fn markers_in(text: &str) -> Vec<(usize, &'static str)> {
     let bytes = text.as_bytes();
     let mut found = Vec::new();
     let mut i = 0;

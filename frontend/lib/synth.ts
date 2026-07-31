@@ -45,3 +45,25 @@ export async function getCorpus(modelId?: string): Promise<CorpusStats> {
   }
   return res.json()
 }
+
+/** One local GGUF available to a `teach` job. */
+export interface TeacherFile {
+  file: string
+  bytes: number
+}
+
+/**
+ * The local teacher models on disk.
+ *
+ * An empty list is a normal answer, not a failure — it is the state before anyone
+ * has downloaded a GGUF, and the composer says so rather than showing an error.
+ */
+export async function getTeachers(): Promise<TeacherFile[]> {
+  const res = await apiFetch("/synth/teachers")
+  if (!res.ok) {
+    throw new Error(
+      (await res.text()) || "Failed to list local teacher models."
+    )
+  }
+  return res.json()
+}

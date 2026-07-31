@@ -127,6 +127,16 @@ subscriptions: the whole board, or one job's frames).
 - Composers live at `/jobs/new/*` and are *only* forms: submitting queues a job and
   hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>` seeds a
   composer from a previous run's stored config.
+- **A chat turn has no job page.** It is queued from a conversation, never from the
+  jobs menu, and the conversation is where its reply belongs — so every row links
+  through `jobHref()` (`/chat/{id}` for a chat job, `/jobs/{id}` for everything
+  else) and `/jobs/{id}` for one redirects there.
+- **Queued is a state with a body, not an empty version of the finished one.**
+  Every non-chat kind renders `JobQueuedPanel` while it waits: the config recap,
+  its place in its lane's line, and what the run will do once it starts. Per-kind
+  panels therefore only have to handle running and terminal.
+- `ConfigRecap` is shared and switches on `job.kind`. A new kind adds its rows
+  there rather than growing a recap of its own.
 - `/benchmark` is history and analysis only — it no longer starts runs.
 - The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are how
   a running job says what it is. Give **one** instance a changing `mode` so it morphs
@@ -134,11 +144,13 @@ subscriptions: the whole board, or one job's frames).
 
 ### Throbber or dot
 
-`components/ui/throbber.tsx` is a **figure**, not an icon. It is one fixed size
-everywhere — `THROBBER_PX` (120px), which also fixes the body's radius and its facet
-size — and callers cannot resize it: `className` is for margin, placement and colour
-only. That is deliberate. It used to be sized per call site, and the result was a
-different ball in every row, none of which looked like the same object.
+`components/ui/throbber.tsx` is a **figure**, not an icon: five irregular rings,
+nested, drawn as contours of one shared field so they deform in sympathy rather than
+independently. It is one fixed size everywhere — `THROBBER_PX` (64px), which also
+fixes the ring radii and their spacing — and callers cannot resize it: `className` is
+for margin, placement and colour only. That is deliberate. It used to be sized per
+call site, and the result was a different figure in every row, none of which looked
+like the same object.
 
 So use it only where a figure belongs — somewhere the waiting *is* the subject, with
 room for it:

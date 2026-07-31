@@ -217,6 +217,10 @@ async fn create_job(
             Ok(prepared) => prepared,
             Err(response) => return response,
         },
+        JobKind::Teach => match prepare_teach(pool.get_ref(), config).await {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        },
         JobKind::Chat => {
             return HttpResponse::BadRequest().body("chat jobs are queued from the chat socket");
         }
@@ -364,6 +368,10 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
 #[derive(Deserialize)]
 struct BenchmarkConfig {
     id_model: Uuid,
+    // Which of the two suites to run. Defaulted rather than required so a client that
+    // predates the split still queues the language bench, which is what it meant.
+    #[serde(default)]
+    suite: db::benchmark::BenchmarkSuite,
 }
 
 // Checks the model exists and has a tokenizer now, so an impossible benchmark is
@@ -392,8 +400,10 @@ async fn prepare_benchmark(pool: &PgPool, config: Value) -> Result<(String, Valu
     }
 
     Ok((
-        model.name,
-        serde_json::json!({ "id_model": parsed.id_model }),
+        // The suite is in the label because both show up in one job history and one
+        // board, and "Balanced 1" twice tells you nothing about which is which.
+        format!("{} · {}", model.name, parsed.suite.as_str()),
+        serde_json::json!({ "id_model": parsed.id_model, "suite": parsed.suite }),
     ))
 }
 
@@ -569,6 +579,115 @@ async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), 
         Ok(value) => Ok((label, value)),
         Err(e) => {
             eprintln!("serialize synth config error: {}", e);
+            Err(HttpResponse::InternalServerError().body("failed to queue job"))
+        }
+    }
+}
+
+// Validates a local-teacher request.
+//
+// The `prepare_synth` twin, and it checks a different set of things because the
+// failure modes are different: there is no provider or API key, but there *is* a
+// weights file that has to exist on disk and a set of tier thresholds that have to
+// be ordered.
+async fn prepare_teach(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
+    let parsed: synth::teach::TeachRequest = match serde_json::from_value(config) {
+        Ok(config) => config,
+        Err(e) => {
+            return Err(HttpResponse::BadRequest().body(format!("invalid teaching config: {e}")));
+        }
+    };
+
+    // A file name, never a path — the same rule as the SFT file names below, for
+    // the same reason. `teacher::Teacher::load` enforces it again at load time; a
+    // 400 here is so a person finds out on submit.
+    let model_file = parsed.teacher.model_file.trim();
+    if model_file.is_empty() {
+        return Err(HttpResponse::BadRequest().body("name the teacher model to generate with"));
+    }
+    if model_file.contains('/') || model_file.contains('\\') || model_file.contains("..") {
+        return Err(HttpResponse::BadRequest()
+            .body("the teacher model must be a plain file name inside the teacher directory"));
+    }
+    let model_path = storage::teacher_dir().join(model_file);
+    if !model_path.is_file() {
+        return Err(HttpResponse::BadRequest().body(format!(
+            "no teacher model named {model_file} — put a .gguf in {}",
+            storage::teacher_dir().display()
+        )));
+    }
+
+    if parsed.count < 1 {
+        return Err(HttpResponse::BadRequest().body("count must be at least 1"));
+    }
+    if parsed.teacher.n_ctx < 1024 {
+        // The prompt alone carries several exemplars; below this there is no room
+        // for three answers and the run would fail on its first call.
+        return Err(HttpResponse::BadRequest()
+            .body("n_ctx must be at least 1024 to hold the prompt and three answers"));
+    }
+    if !(parsed.sample.temperature.is_finite() && parsed.sample.temperature > 0.0) {
+        // Temperature 0 is argmax, and this is a diversity task: every call would
+        // return the same triple, all but the first deduplicated away.
+        return Err(HttpResponse::BadRequest().body("temperature must be a positive number"));
+    }
+    // Thresholds define three ranges, so they have to be strictly increasing. Equal
+    // bounds would make the middle tier unreachable and silently produce a two-tier
+    // corpus, which is exactly the failure this feature exists to avoid.
+    if parsed.low_max_tokens >= parsed.med_max_tokens {
+        return Err(HttpResponse::BadRequest().body(
+            "the low thinking budget must be smaller than the medium one, or the \
+             middle tier can never be filled",
+        ));
+    }
+
+    if parsed.exemplar_file.contains('/')
+        || parsed.exemplar_file.contains('\\')
+        || !parsed.exemplar_file.ends_with(".jsonl")
+    {
+        return Err(HttpResponse::BadRequest()
+            .body("file names must be plain .jsonl names inside the SFT directory"));
+    }
+    if !storage::sft_dir().join(&parsed.exemplar_file).exists() {
+        return Err(HttpResponse::BadRequest().body(
+            "no gold conversations to imitate — generation copies the style of real \
+             ones, and with none to show it produces generic chat data",
+        ));
+    }
+    // The tier files are what a run writes; reading exemplars from one would feed a
+    // run its own output and collapse the style onto itself.
+    for tier in synth::teach::Tier::ALL {
+        if parsed.exemplar_file == tier.file_name() {
+            return Err(HttpResponse::BadRequest().body(
+                "that file is where this job writes its output — imitating it would \
+                 feed the run its own generations",
+            ));
+        }
+    }
+
+    let mut label = format!("{} × {}", model_file, parsed.count);
+    if let Some(id_model) = parsed.id_model {
+        match db::model::find_by_id(pool, id_model).await {
+            Ok(Some(model)) => label = format!("{} → {}", model_file, model.name),
+            Ok(None) => return Err(HttpResponse::NotFound().body("model not found")),
+            Err(e) => {
+                eprintln!("teach model lookup db error: {}", e);
+                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
+            }
+        }
+        let model_dir = storage::models_dir().join(id_model.to_string());
+        if !model_dir.join("merges.bin").exists() {
+            return Err(HttpResponse::BadRequest().body(
+                "that model has no tokenizer on disk, so there is no way to measure a \
+                 thinking budget in its tokens",
+            ));
+        }
+    }
+
+    match serde_json::to_value(&parsed) {
+        Ok(value) => Ok((label, value)),
+        Err(e) => {
+            eprintln!("serialize teach config error: {}", e);
             Err(HttpResponse::InternalServerError().body("failed to queue job"))
         }
     }

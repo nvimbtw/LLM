@@ -17,6 +17,7 @@ members = [
     "crates/llm",
     "crates/storage",
     "crates/synth",
+    "crates/teacher",
     "crates/tokenize",
     "crates/training",
 ]

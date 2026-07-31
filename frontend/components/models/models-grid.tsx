@@ -46,7 +46,9 @@ export function ModelsGrid() {
     return models
       .filter((m) => family === null || familyOf(m) === family)
       .filter((m) =>
-        visibility === "all" ? true : m.published === (visibility === "published")
+        visibility === "all"
+          ? true
+          : m.published === (visibility === "published")
       )
       .filter(
         (m) =>

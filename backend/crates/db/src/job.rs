@@ -25,6 +25,10 @@ pub enum JobKind {
     // append the survivors to the SFT corpus. The only kind that touches no local
     // compute at all — see `lane`.
     Synth,
+    // The same job as `Synth` but against a *local* GGUF run through llama.cpp,
+    // producing thinking-budget triples. Holds the device, so unlike `Synth` it
+    // queues on the GPU line — see `lane`.
+    Teach,
 }
 
 // Which runner executes a kind of work.
@@ -60,11 +64,16 @@ impl JobKind {
     pub fn lane(self) -> JobLane {
         match self {
             JobKind::Synth => JobLane::Network,
+            // `Teach` is the local-model twin of `Synth` and lands on the other
+            // lane for that exact reason: it loads a quantized model onto the GPU
+            // and decodes there, so it contends for the device with every training
+            // run and chat turn.
             JobKind::Train
             | JobKind::Benchmark
             | JobKind::Chat
             | JobKind::Autolabel
-            | JobKind::Gather => JobLane::Device,
+            | JobKind::Gather
+            | JobKind::Teach => JobLane::Device,
         }
     }
 }

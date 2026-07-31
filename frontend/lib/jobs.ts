@@ -1,4 +1,5 @@
 import { apiFetch } from "./api"
+import type { BenchmarkSuite } from "./benchmark"
 import type { TrainConfig } from "./training"
 
 // Wire types for the GPU queue (backend routes/jobs.rs).
@@ -15,6 +16,10 @@ export type JobKind =
   | "autolabel"
   | "gather"
   | "synth"
+  // Generation from a local model on the GPU. The `synth` twin, and on the other
+  // lane for that reason: it loads a quantized teacher onto the device, so it
+  // stands in the same line as training and chat rather than beside them.
+  | "teach"
 
 /**
  * Which runner a job stands in front of. `device` is the GPU line — one job at a
@@ -100,11 +105,39 @@ export function benchmarkModelId(job: Job): string | null {
   return config?.id_model ?? null
 }
 
+/**
+ * Which benchmark a benchmark job runs.
+ *
+ * Absent on rows queued before the suites were split, which all meant the language
+ * one — so the fallback is not a guess, it is what those jobs did.
+ */
+export function benchmarkSuiteOf(job: Job): BenchmarkSuite {
+  const config = job.config as { suite?: BenchmarkSuite }
+  return config?.suite === "markup" ? "markup" : "language"
+}
+
 /** The chat a chat job replies in, so the row can link back to the conversation. */
 export function chatId(job: Job): string | null {
   if (job.kind !== "chat") return null
   const config = job.config as { id_chat?: string }
   return config?.id_chat ?? null
+}
+
+/**
+ * Where a job's row should link to.
+ *
+ * Everything gets its own page — except a chat turn, which is never queued from
+ * the jobs menu in the first place: it is a reply inside a conversation you are
+ * already reading, and the conversation is where the reply belongs. Sending you to
+ * /jobs/{id} for one is a detour to a page whose only useful control is a link
+ * back, so the row goes straight to the chat instead.
+ *
+ * A chat job with no conversation on its config (older rows) still falls back to
+ * the job page rather than to a broken link.
+ */
+export function jobHref(job: Job): string {
+  const chat = chatId(job)
+  return chat ? `/chat/${chat}` : `/jobs/${job.id_job}`
 }
 
 // ── requests ────────────────────────────────────────────────────────────────
@@ -154,8 +187,11 @@ export function queueTraining(config: TrainConfig): Promise<Job> {
   return enqueue("train", config)
 }
 
-export function queueBenchmark(modelId: string): Promise<Job> {
-  return enqueue("benchmark", { id_model: modelId })
+export function queueBenchmark(
+  modelId: string,
+  suite: BenchmarkSuite = "language"
+): Promise<Job> {
+  return enqueue("benchmark", { id_model: modelId, suite })
 }
 
 /** Config for an auto-labelling run. Mirrors the backend `AutolabelRequest`. */
@@ -291,6 +327,124 @@ export interface SynthReport {
   corpus_total: number
 }
 
+// ── teaching: generation from a local model ─────────────────────────────────
+
+/** The three thinking budgets. Mirrors the backend `synth::teach::Tier`. */
+export type Tier = "low" | "med" | "high"
+
+export const TIER_LABEL: Record<Tier, string> = {
+  low: "Short",
+  med: "Medium",
+  high: "Long",
+}
+
+/** Which GGUF to run, and how much of the device to give it. */
+export interface TeacherConfig {
+  /** A bare file name inside the teacher directory, never a path. */
+  model_file: string
+  /**
+   * Context window to allocate. The binding VRAM cost after the weights: the KV
+   * cache scales linearly with it, so this is a real allocation rather than a free
+   * upper bound.
+   */
+  n_ctx?: number
+  /** Layers to offload. Larger than any small model has, meaning "all of them". */
+  n_gpu_layers?: number
+  n_threads?: number
+}
+
+/** How to sample. Mirrors the backend `teacher::SampleOpts`. */
+export interface SampleOpts {
+  temperature: number
+  top_p: number
+  min_p: number
+  top_k: number
+  max_tokens: number
+  seed: number
+  /**
+   * DRY repetition penalty. Not a flat repetition penalty on purpose: that pushes
+   * down every token already seen, which on our markup means fighting the closing
+   * tags. DRY penalizes repeated *sequences*, so it suppresses a second answer that
+   * merely rewords the first and leaves `<|/codeblock|>` alone.
+   */
+  dry_multiplier?: number
+  dry_base?: number
+  dry_allowed_length?: number
+}
+
+/** Config for a local-teacher run. Mirrors the backend `TeachRequest`. */
+export interface TeachConfig {
+  teacher: TeacherConfig
+  sample?: SampleOpts
+  /** Triples to accept before stopping. A triple is one question, three answers. */
+  count: number
+  /**
+   * Upper bound on thinking tokens for the short tier, and for the medium one.
+   * Anything above the second is long. Measured in *our* model's tokenizer, so
+   * these do nothing without `id_model`.
+   */
+  low_max_tokens?: number
+  med_max_tokens?: number
+  /** Our model, whose tokenizer measures the budget and whose window bounds it. */
+  id_model?: string
+  exemplar_file?: string
+  max_calls?: number
+  seed?: number
+}
+
+export function queueTeach(config: TeachConfig): Promise<Job> {
+  return enqueue("teach", config)
+}
+
+/** One model call in a teaching run, as it completes. */
+export interface TeachCall {
+  call: number
+  triples_kept: number
+  answers_kept: number
+  duplicates: number
+  rejected: [string, number][]
+  elapsed_ms: number
+  tokens_generated: number
+  total: number
+  target: number
+}
+
+/** One tier's answer within an accepted triple. */
+export interface AnsweredTier {
+  requested: Tier
+  /**
+   * Where it was actually filed. Assigned by measuring the thinking block, not by
+   * what the prompt asked for — a teacher told to write 40 words routinely writes
+   * 70, and the label has to describe the content to be trainable.
+   */
+  filed_as: Tier
+  think_tokens: number
+  reply_preview: string
+}
+
+/** One question answered at all three budgets. */
+export interface TeachAccepted {
+  group: string
+  opener: string
+  answers: AnsweredTier[]
+}
+
+/** What a teaching run did, emitted once at the end. */
+export interface TeachReport {
+  triples: number
+  calls: number
+  duplicates: number
+  rejected: [string, number][]
+  /** Answers filed per tier, `[tier, count]`. The headline number of a run. */
+  per_tier: [string, number][]
+  /** How often the measured tier disagreed with the requested one. */
+  relabelled: number
+  /** False when no model was named, so tiers are requested rather than measured. */
+  measured: boolean
+  /** False when the build could not offload — a correct run at ~1% the speed. */
+  gpu: boolean
+}
+
 /**
  * Moves a queued job to sit directly after `afterId`, or to the front when that is
  * null. Expressed as a neighbour rather than an index so a drop lands where it was
@@ -344,6 +498,7 @@ export const KIND_LABEL: Record<JobKind, string> = {
   autolabel: "Build catalogue",
   gather: "Gather signals",
   synth: "Generate SFT data",
+  teach: "Teach locally",
 }
 
 /**
@@ -364,6 +519,7 @@ export const KIND_CHIP: Record<JobKind, string> = {
   autolabel: "text-kind-autolabel bg-kind-autolabel/14",
   gather: "text-kind-gather bg-kind-gather/14",
   synth: "text-kind-synth bg-kind-synth/14",
+  teach: "text-kind-teach bg-kind-teach/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
@@ -402,6 +558,9 @@ export function throbberMode(
     // Synthesis is generation too, just somebody else's model doing it. The
     // throbber says what is happening, not which device it happens on.
     case "synth":
+      return "generating"
+    // Teaching is the same generation on our own device.
+    case "teach":
       return "generating"
   }
 }

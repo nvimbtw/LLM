@@ -12,6 +12,9 @@ import {
   type SynthAccepted,
   type SynthCall,
   type SynthReport,
+  type TeachAccepted,
+  type TeachCall,
+  type TeachReport,
   type Verdict,
 } from "@/lib/jobs"
 import { attachJob, type Attachment } from "@/lib/jobs-socket"
@@ -34,6 +37,10 @@ const MAX_VERDICT_FEED = 30
 // Generated conversations kept in full. Matches the backend's own snapshot window,
 // so a reattach and a live run show the same depth of feed.
 const MAX_SYNTH_FEED = 24
+// Triples kept in full. Fewer than the synth feed because each carries three
+// answers, and it matches the backend's own `TEACH_FEED` so a reattach and a live
+// run show the same depth.
+const MAX_TEACH_FEED = 8
 
 function downsample<T>(arr: T[], max: number): T[] {
   let out = arr
@@ -119,6 +126,15 @@ export function useJob(idJob: string) {
   const [synthAdded, setSynthAdded] = React.useState(0)
   const [synth, setSynth] = React.useState<SynthReport | null>(null)
 
+  // A local-teacher run. Same shape of accumulation as a generation run, kept in
+  // its own state rather than folded into it: the unit is a triple, not a
+  // conversation, and the per-tier tally has no counterpart on the synth side.
+  const [teachCalls, setTeachCalls] = React.useState<TeachCall[]>([])
+  const [teachAccepted, setTeachAccepted] = React.useState<TeachAccepted[]>([])
+  const [teachTriples, setTeachTriples] = React.useState(0)
+  const [teachPerTier, setTeachPerTier] = React.useState<[string, number][]>([])
+  const [teach, setTeach] = React.useState<TeachReport | null>(null)
+
   // The live stage line for a benchmark, and the text so far for a chat turn.
   const [stage, setStage] = React.useState<string | null>(null)
   const [fraction, setFraction] = React.useState<number | null>(null)
@@ -177,6 +193,16 @@ export function useJob(idJob: string) {
           setSynthCalls(snap.calls as SynthCall[])
           setSynthAccepted((snap.accepted as SynthAccepted[]) ?? [])
           setSynthAdded(typeof snap.added === "number" ? snap.added : 0)
+          if (typeof snap.stage === "string") setStage(snap.stage)
+          if (typeof snap.fraction === "number") setFraction(snap.fraction)
+        } else if (Array.isArray(snap.reports)) {
+          // A teaching snapshot. Told apart by `reports` rather than `calls` — the
+          // two accumulations are the same idea over different units, and a shared
+          // field name would make a teach snapshot parse as a synth one.
+          setTeachCalls(snap.reports as TeachCall[])
+          setTeachAccepted((snap.accepted as TeachAccepted[]) ?? [])
+          setTeachTriples(typeof snap.triples === "number" ? snap.triples : 0)
+          setTeachPerTier((snap.per_tier as [string, number][]) ?? [])
           if (typeof snap.stage === "string") setStage(snap.stage)
           if (typeof snap.fraction === "number") setFraction(snap.fraction)
         } else {
@@ -272,6 +298,30 @@ export function useJob(idJob: string) {
       case "synth":
         setSynth(frame as unknown as SynthReport)
         break
+      case "teach_call": {
+        const call = frame as unknown as TeachCall
+        setTeachCalls((prev) => [...prev, call])
+        setTeachTriples(call.total)
+        break
+      }
+      case "teach_triple": {
+        const triple = frame as unknown as TeachAccepted
+        setTeachAccepted((prev) => [triple, ...prev].slice(0, MAX_TEACH_FEED))
+        // Tallied here rather than read off the final report, so a page watching a
+        // run sees whether the budgets are separating while there is still time to
+        // stop a run that is putting every answer in one bucket.
+        setTeachPerTier((prev) => {
+          const next = new Map(prev)
+          for (const answer of triple.answers) {
+            next.set(answer.filed_as, (next.get(answer.filed_as) ?? 0) + 1)
+          }
+          return [...next.entries()]
+        })
+        break
+      }
+      case "teach":
+        setTeach(frame as unknown as TeachReport)
+        break
       case "calibration":
         setCalibration(frame as unknown as Calibration)
         break
@@ -356,6 +406,12 @@ export function useJob(idJob: string) {
     synthAccepted,
     synthAdded,
     synth,
+    // teach
+    teachCalls,
+    teachAccepted,
+    teachTriples,
+    teachPerTier,
+    teach,
     // autolabel
     catalogue,
     calibration,

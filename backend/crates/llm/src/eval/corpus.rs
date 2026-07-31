@@ -58,11 +58,20 @@ pub struct CorpusReport {
     // number that still moves below the floor.
     //
     // `advantage` cannot serve that purpose. On a corpus formulaic enough for an
-    // order-5 counting table to beat every model at this scale — TinyStories is —
-    // it is negative for every checkpoint, clamps to a flat 0.0, and contributes a
-    // constant. That is the correct verdict ("has not beaten a lookup table") and a
-    // useless coordinate: two models three bits apart score the same. This keeps
-    // the floor as the anchor and measures the distance still to run.
+    // order-5 counting table to beat every model at this scale — the TinyStories
+    // corpus this used to run against was — it is negative for every checkpoint,
+    // clamps to a flat 0.0, and contributes a constant. That is the correct verdict
+    // ("has not beaten a lookup table") and a useless coordinate: two models three
+    // bits apart score the same.
+    //
+    // **Neither of them is the composite's corpus term any more**, and the reason is
+    // the mirror image. Against the FineWeb slice the eval corpus now holds, every
+    // model has *beaten* the floor: `floor_progress` computes to 1.07-1.13 and clamps
+    // at the top, pinning a quarter of the score to a constant and hiding a 0.34
+    // bits-per-byte improvement. Anchoring a score to the floor failed in both
+    // directions, so the composite reads `bits_per_byte` through a fixed logistic
+    // instead (see `eval::composite_score`) and these two stay in the report as the
+    // diagnostics they always were.
     pub floor_progress: f64,
     pub files: usize,
 }
@@ -74,6 +83,20 @@ pub struct CorpusReport {
 // the corpus is a handful of long books — a whole-file split would evaluate on a
 // different author than it trained on and report a domain shift as a modelling
 // failure.
+//
+// **Every file contributes its share, rather than the first few filling the budget.**
+// This used to walk the sorted list appending whole slices until both caps were met,
+// which on the real `eval/corpus` (eight ~1 MB FineWeb files) drew the entire 128 KiB
+// held-out slice from the tails of the first *two* — the other six were read for the
+// baseline and never scored. That is not a sample of the corpus, it is a sample of two
+// documents, and whatever those two happened to be about set the headline number.
+// Each file now supplies `max_heldout_bytes / files` from its tail and
+// `max_train_bytes / files` from its head, which is the same equal-per-source rule
+// `training::plan_bpe_sample` applies for the same reason.
+//
+// A file shorter than its share contributes all it has and the budget goes unfilled;
+// rebalancing would make the split depend on the *sizes* of the other files, and a
+// benchmark's held-out slice should not move because an unrelated file grew.
 pub fn load(dir: &Path, max_train_bytes: usize, max_heldout_bytes: usize) -> CorpusSplit {
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .into_iter()
@@ -86,33 +109,37 @@ pub fn load(dir: &Path, max_train_bytes: usize, max_heldout_bytes: usize) -> Cor
     // directory iteration order is not.
     paths.sort();
 
+    let texts: Vec<String> = paths
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if texts.is_empty() {
+        return CorpusSplit { train: String::new(), heldout: String::new(), files: 0 };
+    }
+
+    let train_share = max_train_bytes / texts.len();
+    let heldout_share = max_heldout_bytes / texts.len();
+
     let mut train = String::new();
     let mut heldout = String::new();
     let mut files = 0;
 
-    for path in paths {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if text.is_empty() {
-            continue;
-        }
-        files += 1;
+    for text in &texts {
+        let cut = char_boundary(text, (text.len() as f64 * (1.0 - HELDOUT_FRACTION)) as usize);
+        let head = &text[..cut];
+        let tail = &text[cut..];
 
-        let cut = char_boundary(&text, (text.len() as f64 * (1.0 - HELDOUT_FRACTION)) as usize);
-        if train.len() < max_train_bytes {
-            train.push_str(&text[..cut]);
-        }
-        if heldout.len() < max_heldout_bytes {
-            heldout.push_str(&text[cut..]);
-        }
-        if train.len() >= max_train_bytes && heldout.len() >= max_heldout_bytes {
-            break;
+        train.push_str(&head[..char_boundary(head, train_share.min(head.len()))]);
+        let taken = &tail[..char_boundary(tail, heldout_share.min(tail.len()))];
+        heldout.push_str(taken);
+        // `files` is what the report shows, and it must mean "files the score was
+        // measured on". It used to count files merely *opened*, which read 5 while 2
+        // supplied every scored byte.
+        if !taken.is_empty() {
+            files += 1;
         }
     }
-
-    train.truncate(char_boundary(&train, max_train_bytes.min(train.len())));
-    heldout.truncate(char_boundary(&heldout, max_heldout_bytes.min(heldout.len())));
 
     CorpusSplit { train, heldout, files }
 }
@@ -230,6 +257,98 @@ mod tests {
         assert!(!split.heldout.is_empty());
         // Nothing is lost or duplicated across the cut.
         assert_eq!(split.train.len() + split.heldout.len(), text.len());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // A directory of `n` files of `bytes` each, cleaned up by the caller.
+    fn corpus_of(tag: &str, n: usize, bytes: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("eval-corpus-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..n {
+            // A distinct leading character per file, so a slice can be attributed.
+            let ch = (b'a' + i as u8) as char;
+            let text: String = std::iter::repeat(ch).take(bytes).collect();
+            std::fs::write(dir.join(format!("f{i:02}.txt")), text).unwrap();
+        }
+        dir
+    }
+
+    // The regression this split was rewritten for. Under the old greedy fill the
+    // first two files supplied every held-out byte and the rest supplied none.
+    #[test]
+    fn every_file_contributes_held_out_bytes() {
+        let dir = corpus_of("strat", 8, 10_000);
+        let split = load(&dir, 40_000, 4_000);
+
+        assert_eq!(split.files, 8, "not every file was scored");
+        for i in 0..8u8 {
+            let ch = (b'a' + i) as char;
+            assert!(
+                split.heldout.contains(ch),
+                "file {i} contributed nothing to the held-out slice",
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_split_respects_both_caps() {
+        let dir = corpus_of("caps", 8, 10_000);
+        let split = load(&dir, 40_000, 4_000);
+        assert!(split.heldout.len() <= 4_000, "held out {}", split.heldout.len());
+        assert!(split.train.len() <= 40_000, "trained on {}", split.train.len());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // The train slice must stay disjoint from the scored one, or the n-gram floor is
+    // fit on the text it is then measured against.
+    #[test]
+    fn the_train_and_held_out_slices_do_not_overlap() {
+        let dir = std::env::temp_dir().join(format!("eval-corpus-dis-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        // Head is all 'x', tail is all 'y', cut lands at 90%.
+        let text = format!("{}{}", "x".repeat(900), "y".repeat(100));
+        std::fs::write(dir.join("a.txt"), &text).unwrap();
+
+        let split = load(&dir, 1 << 20, 1 << 20);
+        assert!(!split.train.contains('y'), "train slice reached into the held-out tail");
+        assert!(!split.heldout.contains('x'), "held-out slice reached into the train head");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_short_file_contributes_what_it_has() {
+        let dir = std::env::temp_dir().join(format!("eval-corpus-short-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("big.txt"), "b".repeat(10_000)).unwrap();
+        std::fs::write(dir.join("small.txt"), "s".repeat(100)).unwrap();
+
+        // Budget per file far exceeds what `small.txt` can supply.
+        let split = load(&dir, 1 << 20, 1 << 20);
+        assert_eq!(split.files, 2);
+        assert!(split.heldout.contains('s'));
+        assert!(split.heldout.contains('b'));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn files_counts_only_what_was_scored() {
+        let dir = std::env::temp_dir().join(format!("eval-corpus-count-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a".repeat(1000)).unwrap();
+        // Too short for the 10% tail to survive the char-boundary cut at this budget.
+        std::fs::write(dir.join("b.txt"), "b").unwrap();
+
+        let split = load(&dir, 1 << 20, 1 << 20);
+        assert!(split.files <= 2);
+        assert_eq!(split.files, if split.heldout.contains('b') { 2 } else { 1 });
 
         std::fs::remove_dir_all(&dir).ok();
     }

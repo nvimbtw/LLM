@@ -9,6 +9,7 @@ import {
   KIND_LABEL,
   elapsedSeconds,
   formatElapsed,
+  jobHref,
   throbberMode,
   type Job,
 } from "@/lib/jobs"
@@ -46,7 +47,10 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
   if (!job) {
     return (
       <div className="flex items-center gap-3 border-b border-border px-5 py-6">
-        <span aria-hidden className="size-2 shrink-0 rounded-full bg-muted-foreground/40" />
+        <span
+          aria-hidden
+          className="size-2 shrink-0 rounded-full bg-muted-foreground/40"
+        />
         <p className="text-sm text-muted-foreground">
           {paused ? "The queue is paused." : "The GPU is idle."}
         </p>
@@ -71,7 +75,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <Link
-              href={`/jobs/${job.id_job}`}
+              href={jobHref(job)}
               className="truncate font-display text-base font-semibold tracking-tight hover:underline"
             >
               {job.label}

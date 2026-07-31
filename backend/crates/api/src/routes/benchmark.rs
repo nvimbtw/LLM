@@ -11,19 +11,27 @@
 
 use actix_web::{HttpResponse, Responder, delete, get, web};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use db;
-use db::benchmark::BenchmarkStatus;
+use db::benchmark::{BenchmarkStatus, BenchmarkSuite};
 use crate::extractors::AdminUser;
 use storage;
 
 // How many runs the history list returns. The page charts a trend over past runs;
 // a couple of hundred is far more than that needs and keeps the response small.
 const HISTORY_LIMIT: i64 = 200;
+
+// Which suite a listing is about. Absent means `language`, so a client that predates
+// the split keeps working and keeps meaning what it meant.
+#[derive(Deserialize, Default)]
+struct SuiteQuery {
+    #[serde(default)]
+    suite: BenchmarkSuite,
+}
 
 // A row in the history list. Live progress is deliberately absent: it belongs to
 // the job that is producing the run, and `/jobs` is where in-flight work is shown.
@@ -33,6 +41,10 @@ struct RunSummary {
     id_model: Uuid,
     model_name: String,
     status: BenchmarkStatus,
+    suite: BenchmarkSuite,
+    // Which revision of the suite produced this score. The frontend refuses to plot
+    // two versions on one trend line; they are not the same measurement.
+    suite_version: i32,
     score: Option<f64>,
     error: Option<String>,
     // Tokens the model was trained on. Drives the scaling chart (score against
@@ -49,6 +61,8 @@ impl From<db::benchmark::BenchmarkSummary> for RunSummary {
             id_model: run.id_model,
             model_name: run.model_name,
             status: run.status,
+            suite: run.suite,
+            suite_version: run.suite_version,
             score: run.score,
             error: run.error,
             train_tokens: run.train_tokens,
@@ -65,6 +79,8 @@ struct RunDetail {
     id_model: Uuid,
     model_name: String,
     status: BenchmarkStatus,
+    suite: BenchmarkSuite,
+    suite_version: i32,
     score: Option<f64>,
     report: Option<Value>,
     error: Option<String>,
@@ -75,8 +91,12 @@ struct RunDetail {
 
 // Every run, newest first — this is the "previous scores" history the page charts.
 #[get("/runs")]
-async fn list_runs(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Responder {
-    match db::benchmark::list(pool.get_ref(), HISTORY_LIMIT).await {
+async fn list_runs(
+    _admin: AdminUser,
+    query: web::Query<SuiteQuery>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    match db::benchmark::list(pool.get_ref(), query.suite, HISTORY_LIMIT).await {
         Ok(runs) => {
             let body: Vec<RunSummary> = runs.into_iter().map(RunSummary::from).collect();
             HttpResponse::Ok().json(body)
@@ -108,10 +128,17 @@ const MODEL_RUNS_LIMIT: i64 = 50;
 async fn list_model_runs(
     _admin: AdminUser,
     path: web::Path<Uuid>,
+    query: web::Query<SuiteQuery>,
     pool: web::Data<PgPool>,
 ) -> impl Responder {
     let id_model = path.into_inner();
-    let runs = match db::benchmark::list_for_model(pool.get_ref(), id_model, MODEL_RUNS_LIMIT).await
+    let runs = match db::benchmark::list_for_model(
+        pool.get_ref(),
+        id_model,
+        query.suite,
+        MODEL_RUNS_LIMIT,
+    )
+    .await
     {
         Ok(runs) => runs,
         Err(e) => {
@@ -119,12 +146,15 @@ async fn list_model_runs(
             return HttpResponse::InternalServerError().body("failed to list benchmark runs");
         }
     };
-    let latest = match db::benchmark::latest_report_for_model(pool.get_ref(), id_model).await {
+    let latest =
+        match db::benchmark::latest_report_for_model(pool.get_ref(), id_model, query.suite).await {
         Ok(run) => run.map(|run| RunDetail {
             id_run: run.id_run,
             id_model: run.id_model,
             model_name: run.model_name,
             status: run.status,
+            suite: run.suite,
+            suite_version: run.suite_version,
             score: run.score,
             report: run.report,
             error: run.error,
@@ -156,6 +186,8 @@ async fn get_run(
             id_model: run.id_model,
             model_name: run.model_name,
             status: run.status,
+            suite: run.suite,
+            suite_version: run.suite_version,
             score: run.score,
             report: run.report,
             error: run.error,
@@ -212,7 +244,14 @@ struct SuiteInfo {
     blimp_dir: String,
     blimp_files: usize,
     chat_dir: String,
+    // Held-out conversations, which the markup suite's position and structure stages
+    // need. Written by `jobs::queue` from the 15% eval share at the start of every
+    // benchmark, so this reads 0 only before the first run on a fresh install.
     chat_files: usize,
+    // Pairs in the built-in marker suite. Not a file count — the suite is templated
+    // in code — but the composer shows it next to the corpus and chat counts so the
+    // markup bench's inputs are as legible as the language bench's.
+    markup_pairs: usize,
 }
 
 fn count_files(dir: &std::path::Path, extension: &str) -> usize {
@@ -234,6 +273,10 @@ async fn get_suite(_admin: AdminUser) -> impl Responder {
         corpus_files: count_files(&corpus_dir, "txt"),
         blimp_files: count_files(&blimp_dir, "jsonl"),
         chat_files: count_files(&chat_dir, "jsonl"),
+        markup_pairs: llm::eval::marker_pairs::suite()
+            .iter()
+            .map(|p| p.pairs.len())
+            .sum(),
         corpus_dir: corpus_dir.to_string_lossy().to_string(),
         blimp_dir: blimp_dir.to_string_lossy().to_string(),
         chat_dir: chat_dir.to_string_lossy().to_string(),

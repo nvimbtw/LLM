@@ -7,6 +7,24 @@ import { apiFetch } from "./api"
 
 export type BenchmarkStatus = "running" | "done" | "failed"
 
+/**
+ * Which of the two benchmarks a run belongs to.
+ *
+ * `language` measures whether the model can model English; `markup` measures whether
+ * it uses its own special tokens correctly. They are separate runs with separate
+ * scores because a supervised fine-tune is expected to move them in opposite
+ * directions, and one blended number could not say so — a fine-tune that improved on
+ * three of four language components used to read as a regression.
+ *
+ * The two scores share a 0–100 range and nothing else. Never compare across them.
+ */
+export type BenchmarkSuite = "language" | "markup"
+
+export const BENCHMARK_SUITES: { id: BenchmarkSuite; label: string; blurb: string }[] = [
+  { id: "language", label: "Language", blurb: "Held-out text, grammar, and generated prose." },
+  { id: "markup", label: "Markup", blurb: "Special-token use: pairs, placement, and structure." },
+]
+
 export interface ModelInfo {
   dimensions: number
   layers: number
@@ -75,15 +93,115 @@ export interface ChatMetrics {
   tokens_scored: number
 }
 
+/**
+ * The score with its parts shown.
+ *
+ * `score_stderr` is one standard error of the score as an estimate of the model's
+ * ability, from the finite pair and word samples. It is the number to compare a
+ * run-to-run delta against: a change smaller than this is the benchmark's sampling
+ * noise, not the model.
+ */
+export interface ScoreBreakdown {
+  version: number
+  language: number | null
+  grammar: number | null
+  words: number | null
+  variety_gate: number | null
+  score: number | null
+  score_stderr: number | null
+}
+
 export interface BenchmarkReport {
   score: number | null
+  breakdown: ScoreBreakdown
   model: ModelInfo
   corpus: CorpusMetrics | null
   grammar: GrammarMetrics
   generation: GenerationMetrics
-  // Null until a held-out conversation set is installed under `eval/chat/`.
+  // Agreement with the replies you rated good and bad. Reported, never scored.
+  preference: PreferenceMetrics | null
+  duration_secs: number
+}
+
+// Thumbs collected in the chat UI, scored. Absent until some have been given.
+export interface PreferenceMetrics {
+  approved_logprob: number | null
+  rejected_logprob: number | null
+  margin: number | null
+  approved: number
+  rejected: number
+  paired_accuracy: number | null
+  pairs: number
+}
+
+// ── the markup report ───────────────────────────────────────────────────────
+
+export interface MarkupParadigmResult {
+  name: string
+  description: string
+  accuracy: number | null
+  pairs: number
+}
+
+export interface MarkupPairMetrics {
+  accuracy: number | null
+  pairs: number
+  paradigms: MarkupParadigmResult[]
+}
+
+export interface MarkupPositionMetrics {
+  marker_top1: number | null
+  marker_restricted_top1: number | null
+  marker_mean_rank: number | null
+  marker_logprob: number | null
+  marker_positions: number
+  false_marker_rate: number | null
+  prose_positions: number
+  conversations: number
+}
+
+export interface MarkupStructureMetrics {
+  close_rate: number | null
+  balance_rate: number | null
+  marker_density: number | null
+  reference_marker_density: number | null
+  scaffold_leak_rate: number | null
+  replies: number
+  tokens_generated: number
+  samples: GenerationSample[]
+}
+
+export interface MarkupMetrics {
+  pairs: MarkupPairMetrics
+  // Both null until the held-out chat set exists. The pair stage still scores.
+  positions: MarkupPositionMetrics | null
+  structure: MarkupStructureMetrics | null
+}
+
+export interface MarkupBreakdown {
+  version: number
+  pairs: number | null
+  positions: number | null
+  structure: number | null
+  restraint: number | null
+  score: number | null
+  score_stderr: number | null
+}
+
+export interface MarkupReport {
+  score: number | null
+  breakdown: MarkupBreakdown
+  model: ModelInfo
+  markup: MarkupMetrics
   chat: ChatMetrics | null
   duration_secs: number
+}
+
+/** A run's report is one or the other, told apart by the run's `suite`. */
+export type AnyReport = BenchmarkReport | MarkupReport
+
+export function isMarkupReport(report: AnyReport): report is MarkupReport {
+  return "markup" in report
 }
 
 export interface BenchmarkRun {
@@ -91,6 +209,14 @@ export interface BenchmarkRun {
   id_model: string
   model_name: string
   status: BenchmarkStatus
+  suite: BenchmarkSuite
+  /**
+   * Which revision of the suite produced this score. Bumped whenever a scoring
+   * constant, the pair set, the prompt set or the corpus split changes — all of which
+   * move the number without the model having changed. Runs of different versions are
+   * not comparable and must not share a trend line.
+   */
+  suite_version: number
   score: number | null
   error: string | null
   // Tokens in the corpus the model was trained on, snapshotted when the run
@@ -103,7 +229,7 @@ export interface BenchmarkRun {
 }
 
 export interface BenchmarkRunDetail extends BenchmarkRun {
-  report: BenchmarkReport | null
+  report: AnyReport | null
 }
 
 // Whether the reference corpus is installed. Surfaced on the page so the absence
@@ -114,11 +240,16 @@ export interface SuiteInfo {
   blimp_dir: string
   blimp_files: number
   chat_dir: string
+  // Held-out conversations, which the markup suite's position and structure stages
+  // need. Written from the 15% eval share at the start of every benchmark, so this
+  // reads 0 only before the first run on a fresh install.
   chat_files: number
+  // Pairs in the built-in marker suite. Templated in code, not a file count.
+  markup_pairs: number
 }
 
-export async function listRuns(): Promise<BenchmarkRun[]> {
-  const res = await apiFetch("/benchmark/runs")
+export async function listRuns(suite: BenchmarkSuite): Promise<BenchmarkRun[]> {
+  const res = await apiFetch(`/benchmark/runs?suite=${suite}`)
   if (!res.ok) throw new Error("Failed to load benchmark history.")
   return res.json()
 }
@@ -135,8 +266,11 @@ export interface ModelBenchmarks {
   runs: BenchmarkRun[]
 }
 
-export async function getModelRuns(idModel: string): Promise<ModelBenchmarks> {
-  const res = await apiFetch(`/benchmark/models/${idModel}/runs`)
+export async function getModelRuns(
+  idModel: string,
+  suite: BenchmarkSuite = "language"
+): Promise<ModelBenchmarks> {
+  const res = await apiFetch(`/benchmark/models/${idModel}/runs?suite=${suite}`)
   if (!res.ok) throw new Error("Failed to load this model's benchmarks.")
   return res.json()
 }
@@ -156,6 +290,93 @@ export async function getSuite(): Promise<SuiteInfo> {
 export async function deleteRun(id: string): Promise<void> {
   const res = await apiFetch(`/benchmark/runs/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete benchmark run.")
+}
+
+// ── the suite, as a running order ───────────────────────────────────────────
+
+/**
+ * The five sections a run scores, in the order it scores them, with the share of
+ * the composite each one carries. Mirrors the weights in `crates/llm/src/eval/mod.rs`
+ * — if those move, these have to move with them.
+ *
+ * This exists so a benchmark that has not finished still has something true to
+ * show. A percentage alone says how far along it is; the running order says what
+ * it is doing and what is still to come, which is the difference between a
+ * progress bar and knowing whether the number you are waiting for is close.
+ */
+export interface BenchmarkSection {
+  name: string
+  /** Share of the composite score, 0–1. Doubles as this section's slice of progress. */
+  weight: number
+  /** What it measures, in a line. */
+  blurb: string
+}
+
+const LANGUAGE_SECTIONS: BenchmarkSection[] = [
+  {
+    name: "Held-out text",
+    weight: 0.36,
+    blurb: "Perplexity on text the model never trained on.",
+  },
+  {
+    name: "Grammar",
+    weight: 0.4,
+    blurb: "Minimal pairs: does it prefer the well-formed sentence?",
+  },
+  {
+    name: "Generation",
+    weight: 0.13,
+    blurb: "Twelve prompts continued, scored on surface quality.",
+  },
+  {
+    name: "Preference",
+    weight: 0.11,
+    blurb: "Agreement with the replies you rated good and bad.",
+  },
+]
+
+const MARKUP_SECTIONS: BenchmarkSection[] = [
+  {
+    name: "Marker pairs",
+    weight: 0.55,
+    blurb: "Forced choice: does it prefer well-formed markup?",
+  },
+  {
+    name: "Marker positions",
+    weight: 0.2,
+    blurb: "At each marker in a held-out reply, would it emit that one?",
+  },
+  {
+    name: "Structure",
+    weight: 0.2,
+    blurb: "Generated replies: do they close and nest correctly?",
+  },
+  {
+    name: "Reply bits",
+    weight: 0.05,
+    blurb: "Bits per assistant token, reported but not scored.",
+  },
+]
+
+export function benchmarkSections(suite: BenchmarkSuite): BenchmarkSection[] {
+  return suite === "markup" ? MARKUP_SECTIONS : LANGUAGE_SECTIONS
+}
+
+/**
+ * Which section a fraction of overall progress falls in.
+ *
+ * The runner reports one number for the whole suite, so the section boundaries are
+ * reconstructed here from the same weights it advances by.
+ */
+export function sectionIndex(fraction: number, suite: BenchmarkSuite = "language"): number {
+  const sections = benchmarkSections(suite)
+  let base = 0
+  for (let i = 0; i < sections.length; i++) {
+    const weight = sections[i].weight
+    if (fraction < base + weight) return i
+    base += weight
+  }
+  return sections.length - 1
 }
 
 // ── formatting ──────────────────────────────────────────────────────────────

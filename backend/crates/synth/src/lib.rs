@@ -31,6 +31,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// The local-teacher path: same job (synthetic SFT), different model source and a
+// different output shape (thinking-budget triples rather than single replies). A
+// module rather than a crate because it reuses this file's validator, exemplar
+// sampling, tag vocabulary and token budget wholesale — the only thing it
+// replaces is where the text comes from and what gets written.
+pub mod teach;
+
 
 // ── the request ─────────────────────────────────────────────────────────────
 
@@ -222,7 +229,14 @@ impl Conversation {
 // Markers that are scaffold rather than reply markup. `user`/`assistant`/`system`
 // are supplied by the chat template itself, `endoftext` separates examples, and
 // `thinking` is handled separately (it is allowed, but only as a leading block).
-// `title` renders as a document title, which a chat reply has no business emitting.
+// `title` used to be excluded here on the grounds that it renders as a document
+// title and a chat reply has no business emitting one. It is now trainable: the
+// harness the model answers in is the web UI, `lib/message-parser.ts` renders
+// `<|title|>`, and a marker the corpus never contains is an embedding row that
+// never trains — which is the untrained-marker hazard `training::untrained_marker_ids`
+// exists to paper over. If it turns out to read badly in a reply, the fix is a
+// prompt that reserves it for the top of a long structured answer, not a token the
+// model has never seen.
 //
 // `reply` is excluded for a different reason: its content is a message id, not
 // prose. A generated conversation has no real ids to point at, so training on it
@@ -235,7 +249,6 @@ const NOT_REPLY_MARKUP: &[&str] = &[
     "system",
     "endoftext",
     "thinking",
-    "title",
     "reply",
 ];
 
@@ -526,6 +539,18 @@ impl Budget {
         // is a discard, so the target has to sit under it.
         let usable = (self.ctx_window as f64 * 0.9) as usize;
         usable * words / tokens
+    }
+
+    /// How many tokens a bare string costs in the student's tokenizer.
+    ///
+    /// Separate from `tokens` because a thinking block is not a conversation: it
+    /// carries no scaffold and is never rendered on its own. `teach` measures
+    /// thinking budgets with this, and it has to be the student's merges rather
+    /// than the teacher's — a budget is what the *student* spends at inference,
+    /// and this tokenizer is trained on a small corpus with short merges, so its
+    /// tokens-per-word ratio is nothing like a large tokenizer's.
+    pub fn text_tokens(&self, text: &str) -> usize {
+        tokenize::bpe::encode(text, &self.merges).len()
     }
 
     // How many tokens this conversation occupies once rendered for training —

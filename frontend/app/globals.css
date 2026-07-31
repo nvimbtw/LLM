@@ -24,6 +24,7 @@
     --color-kind-autolabel: var(--kind-autolabel);
     --color-kind-gather: var(--kind-gather);
     --color-kind-synth: var(--kind-synth);
+    --color-kind-teach: var(--kind-teach);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
     --color-chart-2: var(--chart-2);
@@ -152,14 +153,25 @@
     --kind-autolabel: #94425e;
     --kind-gather: #785b12;
     --kind-synth: #316a72;
-    /* The charge that runs the throbber's seams while it is thinking — the one
-       place in the app a second hue is spent on a status mark, so it has to be a
-       hue nothing else uses and it has to stay that hue in both modes. Its own
-       token rather than a chart or kind slot: those mean something (a series, a
-       job kind), and borrowing one would tie the mark's colour to a decision made
-       about something else. Not exposed as a Tailwind utility — it is read as a
-       raw var by an SVG stroke, and nothing else should want it. */
-    --throbber-spark: #6a5099;
+    /* Generation from a local teacher. A rust, deliberately not a variant of
+       `--kind-synth`'s teal: the two are the same job to a reader of the code and
+       different jobs to a reader of the board — one spends money, the other blocks
+       the GPU — so they should not be told apart by shade. Measures 5.24:1 against
+       its own 14% tint. */
+    --kind-teach: #9b3f20;
+    /* The colour the throbber's rings turn while it is thinking or running a tool —
+       the one place in the app a second hue is spent on a status mark. Its whole
+       job is to not be mistakable for `--primary` at a hairline width, which is why
+       it is a burnt orange and not the violet it used to be: violet is a *blue*, it
+       differed from the blue-grey primary mostly in saturation, and at a 1.35px
+       stroke that difference did not survive. Orange is the far side of the wheel
+       from it, and blue-versus-orange is also the one opposition that holds up
+       under deuteranopia — where violet-versus-blue is the textbook collision.
+       Its own token rather than a chart or kind slot: those mean something (a
+       series, a job kind), and borrowing one would tie the mark's colour to a
+       decision made about something else. Not exposed as a Tailwind utility — it is
+       read as a raw var by an SVG stroke, and nothing else should want it. */
+    --throbber-spark: #c4622d;
     /* 6px, down from 10. Editorial wants the corner acknowledged, not rounded —
        and the whole app inherits from this one number, so it is the cheapest
        single change to how rigid the page reads. */
@@ -221,9 +233,12 @@
     --kind-autolabel: #d08c86;
     --kind-gather: #c4b28a;
     --kind-synth: #7fb0a8;
+    --kind-teach: #e09a6a;
     /* Lightened rather than flipped, like the kind chips above: it has to read out
-       of a near-black card at a hairline width. */
-    --throbber-spark: #a795d8;
+       of a near-black card at a hairline width. Dragon's surimi orange — warmer and
+       brighter than the light-mode step, because the mark is a thin line on
+       near-black rather than on paper. */
+    --throbber-spark: #ffa066;
     --sidebar: #12120f;
     --sidebar-foreground: #c5c9c5;
     --sidebar-primary: #8ba4b0;

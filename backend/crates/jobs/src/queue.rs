@@ -78,6 +78,12 @@ pub enum Snapshot {
     // ten minutes in should see the run so far rather than an empty chart — so its
     // snapshot carries the whole accumulation, like training's does.
     Synth(Arc<Mutex<SynthState>>),
+    // The local-teacher run. Its own shape rather than reusing `Synth`'s because
+    // the unit is a *triple*, not a conversation, and the number that says whether
+    // the run is working is the per-tier split — a run can accept a thousand
+    // triples and put every answer in one bucket, which `Synth`'s counters have no
+    // field to show.
+    Teach(Arc<Mutex<TeachState>>),
 }
 
 // Everything a synthetic-data run has produced so far.
@@ -96,6 +102,29 @@ pub struct SynthState {
 
 // How many accepted conversations the snapshot keeps. A screenful and a bit.
 const SYNTH_FEED: usize = 24;
+
+// Everything a local-teacher run has produced so far.
+pub struct TeachState {
+    pub stage: String,
+    pub fraction: f64,
+    pub reports: Vec<synth::teach::TeachReport>,
+    // The most recent triples, in full — all three answers together, which is the
+    // only way to see whether the tiers actually differ by reasoning depth rather
+    // than by answer quality.
+    pub accepted: Vec<synth::teach::AcceptedTriple>,
+    pub triples: usize,
+    pub target: usize,
+    pub duplicates: usize,
+    // Answers filed per tier, in `Tier::ALL` order. The headline number: three
+    // roughly equal counts mean the budgets separated, one bucket holding
+    // everything means the teacher ignored the instruction.
+    pub per_tier: Vec<(String, usize)>,
+    pub relabelled: usize,
+}
+
+// Triples carry three replies each, so the feed is heavier per entry than
+// `SYNTH_FEED`'s and holds fewer of them.
+const TEACH_FEED: usize = 8;
 
 pub struct SimpleState {
     pub stage: String,
@@ -142,6 +171,23 @@ impl Live {
                     "target": st.target,
                     "duplicates": st.duplicates,
                     "with_thinking": st.with_thinking,
+                })
+                .to_string()
+            }
+            Snapshot::Teach(state) => {
+                let st = lock(state);
+                serde_json::json!({
+                    "type": "snapshot",
+                    "status": "running",
+                    "stage": st.stage,
+                    "fraction": st.fraction,
+                    "reports": st.reports,
+                    "accepted": st.accepted,
+                    "triples": st.triples,
+                    "target": st.target,
+                    "duplicates": st.duplicates,
+                    "per_tier": st.per_tier,
+                    "relabelled": st.relabelled,
                 })
                 .to_string()
             }
@@ -333,6 +379,26 @@ impl Queue {
             }
         }
 
+        // The held-out 15% of `raw/sft/`, written where `llm::eval::chat` and the
+        // markup suite read it. Derived per run for the same reason the preference
+        // export above is, and for the same reason a training run rebuilds its own
+        // chat documents: there is no prepare step to forget, and the split is a
+        // content hash, so this is idempotent.
+        //
+        // Not fatal — the markup suite still scores its pair stage without a chat
+        // set, and reports the rest as unavailable rather than as failures.
+        if job.kind == JobKind::Benchmark {
+            // Blocking file IO, so off the runtime thread.
+            match tokio::task::spawn_blocking(training::export_chat_eval_set).await {
+                Ok(Ok(0)) => eprintln!("[queue] no held-out conversations to export"),
+                Ok(Ok(n)) => eprintln!("[queue] exported {n} held-out conversations"),
+                Ok(Err(e)) => {
+                    eprintln!("[queue] could not export the held-out chat set: {}", e)
+                }
+                Err(e) => eprintln!("[queue] chat eval export panicked: {}", e),
+            }
+        }
+
         let done = match job.kind {
             JobKind::Train => {
                 self.run_train(&job, cancel.clone(), tx, progress_tx, progress_rx)
@@ -356,6 +422,10 @@ impl Queue {
             }
             JobKind::Synth => {
                 self.run_synth(&job, cancel.clone(), tx, progress_tx, progress_rx)
+                    .await
+            }
+            JobKind::Teach => {
+                self.run_teach(&job, cancel.clone(), tx, progress_tx, progress_rx)
                     .await
             }
         };
@@ -487,6 +557,15 @@ impl Queue {
             },
             None => return Done::failed("stored benchmark config names no model".to_string()),
         };
+        // Absent means the language suite: that is what every job queued before the
+        // split meant, and what the composer still sends by default.
+        let suite = match job.config.get("suite") {
+            Some(value) => match serde_json::from_value::<db::benchmark::BenchmarkSuite>(value.clone()) {
+                Ok(suite) => suite,
+                Err(_) => return Done::failed("stored benchmark config names an unknown suite".to_string()),
+            },
+            None => db::benchmark::BenchmarkSuite::Language,
+        };
 
         // Resolved now rather than at enqueue: a model can be deleted while its
         // benchmark waits in line, and that should fail the job with a legible
@@ -508,8 +587,22 @@ impl Queue {
         // line doesn't sit in the benchmark history showing "running" for hours.
         let id_run = Uuid::new_v4();
         let train_tokens = db::model::train_tokens(&model);
-        if let Err(e) =
-            db::benchmark::create(&self.pool, id_run, id_model, &model.name, train_tokens).await
+        let suite_version = match suite {
+            db::benchmark::BenchmarkSuite::Language => llm::eval::SCORE_VERSION as i32,
+            db::benchmark::BenchmarkSuite::Markup => {
+                llm::eval::markup::MARKUP_SCORE_VERSION as i32
+            }
+        };
+        if let Err(e) = db::benchmark::create(
+            &self.pool,
+            id_run,
+            id_model,
+            &model.name,
+            train_tokens,
+            suite,
+            suite_version,
+        )
+        .await
         {
             eprintln!("[queue] could not open benchmark run: {}", e);
             return Done::failed("could not record the benchmark run".to_string());
@@ -548,7 +641,20 @@ impl Queue {
                         serde_json::json!({ "stage": stage, "fraction": fraction }),
                     ));
                 });
-                llm::eval::run(&config, on_progress, Some(worker_cancel))
+                // Two suites, one worker: both return a `Serialize` report and the
+                // terminal handling below only reads `score` out of the serialized
+                // form, so the difference is erased here rather than duplicated
+                // through the whole run/complete/fail path.
+                match suite {
+                    db::benchmark::BenchmarkSuite::Language => {
+                        llm::eval::run_language(&config, on_progress, Some(worker_cancel))
+                            .map(|report| report.map(|r| serde_json::to_value(&r)))
+                    }
+                    db::benchmark::BenchmarkSuite::Markup => {
+                        llm::eval::run_markup(&config, on_progress, Some(worker_cancel))
+                            .map(|report| report.map(|r| serde_json::to_value(&r)))
+                    }
+                }
             })
             .await;
 
@@ -559,7 +665,7 @@ impl Queue {
                 // `to_value` renders that as null — so reading the score back out
                 // of the serialized form yields exactly the verdict the report
                 // shows, rather than a number that would plot as a real zero.
-                let value = match serde_json::to_value(&report) {
+                let value = match report {
                     Ok(value) => value,
                     Err(e) => {
                         let msg = format!("could not serialize the report: {}", e);
@@ -1177,6 +1283,150 @@ impl Queue {
         }
     }
 
+    // Generates thinking-budget triples with a local GGUF on the GPU.
+    //
+    // The same job as `run_synth` in intent and the opposite in plumbing.
+    // `synth::run` is `async` because it waits on sockets, so it is polled inline
+    // with `tokio::select!`. `teach::run` is a blocking llama.cpp decode loop —
+    // FFI into CUDA, exactly like training — so it goes through `spawn_worker`
+    // onto its own OS thread. Polling it inline would block the runner's whole
+    // reactor for the length of the run, which on this queue means every socket
+    // and every progress write stalls behind it.
+    async fn run_teach(
+        self: &Arc<Self>,
+        job: &db::job::Job,
+        cancel: Arc<AtomicBool>,
+        tx: broadcast::Sender<String>,
+        progress_tx: mpsc::UnboundedSender<ProgressTick>,
+        progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
+    ) -> Done {
+        let request: synth::teach::TeachRequest = match serde_json::from_value(job.config.clone()) {
+            Ok(request) => request,
+            Err(e) => return Done::failed(format!("stored teaching config is unreadable: {e}")),
+        };
+
+        // Checked now rather than inside the worker so a missing GGUF fails the job
+        // immediately with a useful message, instead of after the queue has spent a
+        // slot spinning up a thread. `Teacher::load` checks again — it has to, the
+        // file can vanish while the job waits in line — but this is the message a
+        // person sees.
+        let model_path = storage::teacher_dir().join(&request.teacher.model_file);
+        if !model_path.is_file() {
+            return Done::failed(format!(
+                "no teacher model at {} — download a GGUF into {} first",
+                model_path.display(),
+                storage::teacher_dir().display(),
+            ));
+        }
+
+        let state = Arc::new(Mutex::new(TeachState {
+            stage: "Loading the teacher".to_string(),
+            fraction: 0.0,
+            reports: Vec::new(),
+            accepted: Vec::new(),
+            triples: 0,
+            target: request.count,
+            duplicates: 0,
+            per_tier: Vec::new(),
+            relabelled: 0,
+        }));
+        self.go_live(job.id_job, JobKind::Teach, Live {
+            id_job: job.id_job,
+            cancel: cancel.clone(),
+            tx: tx.clone(),
+            snapshot: Snapshot::Teach(state.clone()),
+        });
+
+        // One clone per closure: each is `move`d into its own callback and they all
+        // outlive the block that builds them.
+        let progress_state = state.clone();
+        let report_state = state.clone();
+        let triple_state = state.clone();
+        let frame_progress = tx.clone();
+        let frame_report = tx.clone();
+        let frame_triple = tx.clone();
+        let worker_cancel = cancel.clone();
+
+        let outcome = self
+            .spawn_worker(job.id_job, progress_rx, move || {
+                let on_progress: synth::teach::ProgressCallback =
+                    Box::new(move |stage, fraction| {
+                        {
+                            let mut st = lock(&progress_state);
+                            st.stage = stage.to_string();
+                            st.fraction = fraction;
+                        }
+                        let _ = progress_tx.send(ProgressTick {
+                            fraction,
+                            stage: stage.to_string(),
+                        });
+                        emit(&frame_progress, frame(
+                            "progress",
+                            serde_json::json!({ "stage": stage, "fraction": fraction }),
+                        ));
+                    });
+
+                // One frame per model call. What makes a run diagnosable: a teacher
+                // whose output is all rejected for one reason, a teacher repeating
+                // itself, and a teacher that is simply slow are three different
+                // failures a progress bar renders identically.
+                let on_report: synth::teach::ReportCallback = Box::new(move |report| {
+                    {
+                        let mut st = lock(&report_state);
+                        st.reports.push(report.clone());
+                        st.triples = report.total;
+                        st.duplicates = report.duplicates;
+                    }
+                    // `teach_call`, not `call`: the synth path already owns that
+                    // name and its payload is a different shape. A job is only ever
+                    // one kind so the two never reach the same socket, but the
+                    // frontend narrows a frame by its `type` alone — sharing the
+                    // name would have it read a `TeachReport` as a `SynthCall`.
+                    emit(&frame_report, frame("teach_call", serde_json::json!(report)));
+                });
+
+                // One frame per accepted triple, carrying all three answers. The
+                // per-tier tally is accumulated here rather than read off the final
+                // stats so a page attaching mid-run sees whether the budgets are
+                // separating, which is the one thing worth watching.
+                let on_triple: synth::teach::TripleCallback = Box::new(move |triple| {
+                    {
+                        let mut st = lock(&triple_state);
+                        for answer in &triple.answers {
+                            let tier = answer.filed_as.as_str().to_string();
+                            match st.per_tier.iter_mut().find(|(t, _)| *t == tier) {
+                                Some(slot) => slot.1 += 1,
+                                None => st.per_tier.push((tier, 1)),
+                            }
+                            if answer.filed_as != answer.requested {
+                                st.relabelled += 1;
+                            }
+                        }
+                        st.accepted.insert(0, triple.clone());
+                        st.accepted.truncate(TEACH_FEED);
+                    }
+                    emit(&frame_triple, frame("teach_triple", serde_json::json!(triple)));
+                });
+
+                synth::teach::run(&request, on_progress, on_report, on_triple, worker_cancel)
+            })
+            .await;
+
+        let fraction = lock(&state).fraction;
+        match outcome {
+            Ok(Ok(Some(stats))) => {
+                emit(&tx, frame("teach", serde_json::json!(stats)));
+                Done::done()
+            }
+            // A cancelled run keeps what it wrote — each answer is appended as it is
+            // accepted — so this is a partial success reported as a cancellation,
+            // not a loss.
+            Ok(Ok(None)) => Done::cancelled(fraction),
+            Ok(Err(e)) => Done::failed(e),
+            Err(panic) => Done::failed(panic),
+        }
+    }
+
     // ── worker plumbing ─────────────────────────────────────────────────────
 
     // Runs `work` on its own OS thread and awaits the result, writing coarse
@@ -1322,6 +1572,7 @@ fn kind_name(kind: JobKind) -> &'static str {
         JobKind::Autolabel => "autolabel",
         JobKind::Gather => "gather",
         JobKind::Synth => "synth",
+        JobKind::Teach => "teach",
     }
 }
 

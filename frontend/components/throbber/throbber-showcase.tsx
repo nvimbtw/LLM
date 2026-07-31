@@ -7,27 +7,30 @@ import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 
 const MODES: { mode: ThrobberMode; description: string }[] = [
-  { mode: "idle", description: "Barely turning. Present, not working." },
-  { mode: "loading", description: "A steady, unhurried turn. Smooth surface." },
+  { mode: "idle", description: "The shape is held. Present, not working." },
+  {
+    mode: "loading",
+    description: "The whole figure turns and reshapes, evenly.",
+  },
   {
     mode: "thinking",
-    description: "A charge runs the seams. Neurons firing.",
+    description: "A two-ring band of colour scans outward.",
   },
   {
     mode: "generating",
-    description: "Fast, with a tight ripple running across the body.",
+    description: "Quick, with a swell running out through the rings.",
   },
   {
     mode: "tool",
-    description: "Single faces stab out and withdraw. Spiky.",
+    description: "Every ring flashes to the second colour at once.",
   },
   {
     mode: "training",
-    description: "The whole ball breathes, every face at once.",
+    description: "The whole figure breathes, every ring together.",
   },
   {
     mode: "benchmarking",
-    description: "One face at a time lifts, holds, settles.",
+    description: "One ring at a time takes the colour and hands it on.",
   },
 ]
 
@@ -40,7 +43,7 @@ export function ThrobberShowcase() {
     <div className="flex flex-col gap-6">
       <Panel
         title="Morph"
-        description="Switch state — the ball changes pace, it never re-starts"
+        description="Switch state — the figure changes pace, it never re-starts"
       >
         <div className="flex justify-center py-2">
           <Throbber mode={mode} />

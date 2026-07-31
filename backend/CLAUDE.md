@@ -125,6 +125,49 @@ the paths that remembered to ask (chat never did), and forgotten across a restar
 `train_worker.rs` holds the training-specific half (the two-phase run and its
 telemetry) — it was `jobs.rs` before scheduling moved out of it.
 
+## Two benchmarks, not one
+
+`llm::eval` exposes `run_language` and `run_markup`. They are separate jobs, separate
+`benchmark_runs` rows (discriminated by the `suite` column) and separate 0–100 scores
+that **share a range and nothing else** — never compare across them. The split exists
+because a supervised fine-tune is expected to move them in opposite directions, and
+one blended number could not say so.
+
+- **Language** — held-out bits per byte (0.45, through a fixed logistic), minimal-pair
+  grammar (0.40), real-word rate (0.15), and distinct-3 as a *multiplicative gate*
+  rather than a weighted term.
+- **Markup** — marker minimal pairs (0.40), forced-position marker prediction (0.30),
+  generated structure (0.20), and restraint against spraying markers into prose
+  (0.10). Only the first needs no data on disk.
+
+**Anchoring the corpus term to the n-gram floor failed twice, in both directions.**
+`advantage` clamped to 0.0 on the old TinyStories corpus (nothing beat the floor);
+`floor_progress` then clamped to 1.0 on FineWeb (everything beats it), pinning a
+quarter of the score to a constant and hiding a 1.87 → 1.53 bits-per-byte gain. With
+`distinct_3` also stuck at ~0.99 for any non-degenerate model, 40% of the old score
+could not move, grammar carried 94% of what did, and a fine-tune that improved on
+three components out of four scored *below* its base because it lost 2 grammar pairs
+in 545. The corpus term now reads `bits_per_byte` through fixed absolute anchors
+(`BPB_MID`/`BPB_SCALE`) that never clamp; the floor stays in the report as a verdict.
+
+- **`SCORE_VERSION` / `suite_version` are load-bearing.** Any change to a scoring
+  constant, the pair suite, the prompt set or the corpus split moves the number
+  without the model having changed. Bump it, and do not plot or compare across
+  versions — `jobs::cycle` reads `latest_score_for_model`, which is why that function
+  takes a suite and why the cycle passes `Language` explicitly.
+- **`Report::breakdown.score_stderr`** is the score's own sampling error (binomial,
+  from the pair and word counts). It is the number a cycle acceptance threshold
+  should be derived from; `min_gain` is still a guessed constant and is the next
+  thing to fix.
+- **`eval::score` is still the only forward path.** `token_logprobs` and
+  `token_predictions` are both built on one private `for_each_position` driver, so the
+  window arithmetic has one interpretation. Anything indexing a mask against either
+  must check `TokenScores::aligned_with` first — dropped non-finite positions shift
+  every index after them.
+- **`corpus::load` is stratified.** Each file supplies an equal share of the held-out
+  slice. It used to fill greedily from the sorted list, which drew all 128 KiB from
+  the tails of the first two of eight files.
+
 ## Corpus ingestion (streaming)
 
 `build_dataset` streams. Peak memory is **constant in corpus size**, measured at
@@ -234,8 +277,12 @@ split is idempotent and adding conversations never re-partitions the existing on
   untrained and 37 output columns actively suppressed across the whole run.
   That is the loss-spike-to-20 failure — see the stage-boundary warm start below.
 - **SFT (35%)** — what `build_sft_dataset` trains on. It filters `raw/sft/` itself.
-- **Eval (15%)** — held back from both. `llm::eval::chat` scores
-  `eval/chat/*.jsonl` when a set is installed there; nothing writes it yet.
+- **Eval (15%)** — held back from both, and written to `eval/chat/heldout.jsonl` by
+  `training::export_chat_eval_set`. `jobs::queue` calls it before every benchmark,
+  beside `export_preference_data`, so the set derives itself per run like the chat
+  documents do. It feeds `llm::eval::chat` and the markup suite's position,
+  structure and reply-bits stages. (It went unwritten for a long time, which is why
+  every report before the split carried `"chat": null`.)
 
 **A run derives its own inputs.** The chat documents are rendered per run for the
 same reason the tokenizer and the corpus are built per run: a training run is

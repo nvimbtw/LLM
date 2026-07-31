@@ -18,6 +18,48 @@ use synth;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(get_corpus);
+    cfg.service(list_teachers);
+}
+
+/// One GGUF sitting in the teacher directory, available to generate with.
+#[derive(serde::Serialize)]
+struct TeacherFile {
+    file: String,
+    bytes: u64,
+}
+
+/// The local models available to a `teach` job.
+///
+/// Exists so the composer can offer a list rather than a text box. A teacher is
+/// named by bare file name (never a path — see `teacher::Teacher::load`), and those
+/// names are long, exact, and case-sensitive: `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`
+/// typed by hand is a 400 more often than not.
+///
+/// The directory not existing is not an error. It is the normal state before anyone
+/// has downloaded a model, and an empty list is the honest answer — the composer
+/// renders that as "put a .gguf here", which is more useful than a 500.
+#[get("/teachers")]
+async fn list_teachers(_admin: AdminUser) -> impl Responder {
+    let dir = storage::teacher_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return HttpResponse::Ok().json(Vec::<TeacherFile>::new());
+    };
+
+    let mut files: Vec<TeacherFile> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("gguf") {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?.to_string();
+            let bytes = entry.metadata().ok()?.len();
+            Some(TeacherFile { file: name, bytes })
+        })
+        .collect();
+    files.sort_by(|a, b| a.file.cmp(&b.file));
+
+    HttpResponse::Ok().json(files)
 }
 
 #[derive(Deserialize)]

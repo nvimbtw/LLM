@@ -18,6 +18,7 @@ import {
   formatClock,
   formatDayGroup,
   formatElapsed,
+  jobHref,
   type Job,
 } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
@@ -98,7 +99,7 @@ function HistoryRow({
 
         <div className="min-w-0 flex-1">
           <Link
-            href={`/jobs/${job.id_job}`}
+            href={jobHref(job)}
             className="block truncate text-sm hover:underline"
           >
             {job.label}

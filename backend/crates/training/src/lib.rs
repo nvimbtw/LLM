@@ -1436,6 +1436,59 @@ fn render_chat_documents() -> io::Result<usize> {
 
 // Empties a derived directory, creating it if absent. Only the files are removed,
 // so a directory someone is watching keeps its identity.
+/// Writes the held-out share of `raw/sft/` to `eval/chat/heldout.jsonl`.
+///
+/// `chat_destination` has split conversations three ways since it was written, and
+/// the `Eval` 15% had **no consumer at all** — it was computed, excluded from both
+/// pretraining and SFT, and then dropped on the floor. `llm::eval::chat` has been
+/// reading `eval/chat/` for just as long and finding nothing, so `"chat": null`
+/// appeared in every benchmark report ever produced, and the one instrument built to
+/// show a fine-tune working never ran. This is the missing half.
+///
+/// Called by `jobs::queue` before a benchmark, next to `export_preference_data`, for
+/// the reason the module header gives about `render_chat_documents`: a run derives its
+/// own inputs, rather than depending on someone having remembered to run an export.
+/// The split is a hash of conversation *content*, so this is deterministic and
+/// idempotent — running it twice writes the same bytes, and adding conversations never
+/// re-partitions the existing ones.
+///
+/// One file rather than one per conversation: `eval::chat::load` reads whole JSONL
+/// files and this set is consumed as a unit, so there is no span bookkeeping to do.
+pub fn export_chat_eval_set() -> io::Result<usize> {
+    // `read_sft_conversations` reports "no conversations" as `NotFound`, which is the
+    // right answer for a *training* run — it cannot build an SFT dataset out of
+    // nothing. Here it is the ordinary state of a fresh install, and the markup suite
+    // still scores its pair stage without a chat set, so it must not surface as an
+    // error the queue logs before every single benchmark.
+    let conversations = match read_sft_conversations() {
+        Ok(conversations) => conversations,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    let held_out: Vec<&SftConversation> = conversations
+        .iter()
+        .filter(|c| chat_destination(c) == ChatDestination::Eval)
+        .collect();
+
+    let dir = storage::eval_dir().join("chat");
+    reset_dir(&dir)?;
+    if held_out.is_empty() {
+        // No conversations at all is the normal state of a fresh install, and an
+        // empty directory is exactly how `eval::chat::load` expects to be told so.
+        return Ok(0);
+    }
+
+    let mut out = String::new();
+    for conversation in &held_out {
+        // Serialized back into the shape it came in as — `SftConversation` skips a
+        // `None` system field for precisely this round trip.
+        out.push_str(&serde_json::to_string(conversation).map_err(io::Error::other)?);
+        out.push('\n');
+    }
+    fs::write(dir.join("heldout.jsonl"), out)?;
+    Ok(held_out.len())
+}
+
 fn reset_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     for entry in fs::read_dir(dir)?.flatten() {
@@ -2921,6 +2974,173 @@ mod sft_tests {
                 line
             );
         }
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+#[cfg(test)]
+mod chat_eval_export_tests {
+    use super::*;
+
+    // Writes `conversations` into a temp DATA_DIR's raw/sft and returns the root.
+    // Caller must hold ENV_LOCK.
+    fn sft_root(tag: &str, lines: &[&str]) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("chat_eval_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let sft = tmp.join("raw").join("sft");
+        fs::create_dir_all(&sft).unwrap();
+        fs::write(sft.join("a.jsonl"), lines.join("\n")).unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; DATA_DIR drives storage::root().
+        unsafe { std::env::set_var("DATA_DIR", &tmp) };
+        tmp
+    }
+
+    fn conversation(n: usize) -> String {
+        format!(
+            r#"{{"turns":[{{"role":"user","text":"q{n}"}},{{"role":"assistant","text":"a{n}"}}]}}"#
+        )
+    }
+
+    // The whole point: the held-out share reaches disk where `eval::chat` reads it.
+    // It never did before — `ChatDestination::Eval` was computed and dropped, so
+    // every benchmark report carried `"chat": null` and the one instrument built to
+    // show a fine-tune working never ran.
+    #[test]
+    fn the_held_out_share_is_written_where_the_benchmark_reads_it() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Enough conversations that the 15% share is very unlikely to be empty.
+        let lines: Vec<String> = (0..200).map(conversation).collect();
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let tmp = sft_root("written", &refs);
+
+        let written = export_chat_eval_set().unwrap();
+        assert!(written > 0, "no conversations were held out of 200");
+
+        let path = tmp.join("eval").join("chat").join("heldout.jsonl");
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), written);
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn it_writes_only_the_eval_share() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lines: Vec<String> = (0..200).map(conversation).collect();
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let tmp = sft_root("share", &refs);
+
+        export_chat_eval_set().unwrap();
+        let text =
+            fs::read_to_string(tmp.join("eval").join("chat").join("heldout.jsonl")).unwrap();
+
+        // Every exported conversation must be one `chat_destination` put in Eval —
+        // a leak the other way would put training data in the held-out set, which is
+        // the failure a held-out set exists to prevent.
+        for line in text.lines() {
+            let parsed: SftConversation = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                chat_destination(&parsed),
+                ChatDestination::Eval,
+                "exported a conversation that belongs in training: {line}",
+            );
+        }
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // The split is a content hash, so a re-export must not move anything. If it did,
+    // two benchmark runs of the same model would score different text.
+    #[test]
+    fn the_export_is_idempotent() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lines: Vec<String> = (0..120).map(conversation).collect();
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let tmp = sft_root("idempotent", &refs);
+        let path = tmp.join("eval").join("chat").join("heldout.jsonl");
+
+        assert_eq!(export_chat_eval_set().unwrap(), export_chat_eval_set().unwrap());
+        let first = fs::read_to_string(&path).unwrap();
+        export_chat_eval_set().unwrap();
+        assert_eq!(first, fs::read_to_string(&path).unwrap());
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // Round-trips through the reader that actually consumes it. A shape mismatch
+    // here would be invisible until a benchmark silently scored zero conversations.
+    #[test]
+    fn what_is_written_is_what_the_benchmark_can_read() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lines: Vec<String> = (0..200).map(conversation).collect();
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let tmp = sft_root("roundtrip", &refs);
+
+        let written = export_chat_eval_set().unwrap();
+        let loaded = llm::eval::chat::load(&tmp.join("eval").join("chat"));
+        assert_eq!(loaded.len(), written);
+        assert_eq!(loaded[0].turns.len(), 2);
+        assert_eq!(loaded[0].turns[0].role, "user");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A system prompt must survive: it is part of what the fine-tune conditioned on,
+    // and dropping it would make the held-out score measure a different task.
+    #[test]
+    fn a_system_prompt_survives_the_round_trip() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Hunt for a conversation the hash puts in Eval, so the assertion is about
+        // the round trip rather than about which bucket this one landed in.
+        let mut lines = Vec::new();
+        for n in 0..400 {
+            lines.push(format!(
+                r#"{{"system":"be terse","turns":[{{"role":"user","text":"q{n}"}},{{"role":"assistant","text":"a{n}"}}]}}"#
+            ));
+        }
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let tmp = sft_root("system", &refs);
+
+        export_chat_eval_set().unwrap();
+        let loaded = llm::eval::chat::load(&tmp.join("eval").join("chat"));
+        assert!(!loaded.is_empty());
+        assert_eq!(loaded[0].system.as_deref(), Some("be terse"));
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_missing_sft_directory_exports_nothing_rather_than_failing() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!("chat_eval_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: single-threaded under ENV_LOCK.
+        unsafe { std::env::set_var("DATA_DIR", &tmp) };
+
+        // A fresh install has no conversations at all; that is not an error, and the
+        // markup suite still scores its pair stage.
+        assert_eq!(export_chat_eval_set().unwrap(), 0);
+        assert!(llm::eval::chat::load(&tmp.join("eval").join("chat")).is_empty());
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A stale export from a previous set must not linger: the directory is rebuilt,
+    // not appended to.
+    #[test]
+    fn a_previous_export_is_replaced_rather_than_added_to() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lines: Vec<String> = (0..200).map(conversation).collect();
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let tmp = sft_root("stale", &refs);
+        let dir = tmp.join("eval").join("chat");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("old.jsonl"), conversation(9999)).unwrap();
+
+        export_chat_eval_set().unwrap();
+        assert!(!dir.join("old.jsonl").exists(), "a stale export survived");
 
         fs::remove_dir_all(&tmp).ok();
     }

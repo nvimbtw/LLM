@@ -1,6 +1,9 @@
 import {
+  type AnyReport,
+  type MarkupReport,
   type BenchmarkReport,
   NO_VALUE,
+  isMarkupReport,
   formatCompact,
   formatNumber,
   formatPercent,
@@ -9,6 +12,20 @@ import {
 // The four numbers worth reading first: the composite, then the one headline
 // metric from each stage. Everything else lives in the panels below.
 export function ScoreCard({
+  report,
+  modelName,
+}: {
+  report: AnyReport
+  modelName: string
+}) {
+  return isMarkupReport(report) ? (
+    <MarkupScoreCard report={report} modelName={modelName} />
+  ) : (
+    <LanguageScoreCard report={report} modelName={modelName} />
+  )
+}
+
+function LanguageScoreCard({
   report,
   modelName,
 }: {
@@ -33,6 +50,7 @@ export function ScoreCard({
               / 100
             </span>
           </div>
+          <Uncertainty stderr={report.breakdown?.score_stderr ?? null} />
           <p className="mt-3 text-xs text-muted-foreground">
             {modelName} · {model.layers}L · {model.dimensions}d ·{" "}
             {formatCompact(model.parameters)} params
@@ -94,5 +112,84 @@ function Headline({
       </dd>
       <p className="mt-1 text-xs text-muted-foreground tabular-nums">{hint}</p>
     </div>
+  )
+}
+
+function MarkupScoreCard({
+  report,
+  modelName,
+}: {
+  report: MarkupReport
+  modelName: string
+}) {
+  const { pairs, positions, structure } = report.markup
+  const { model } = report
+
+  return (
+    <section className="rounded-lg border border-border bg-background">
+      <div className="grid gap-px bg-border/60 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)]">
+        <div className="bg-background px-6 py-7">
+          <div className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+            Markup score
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="font-display text-6xl font-semibold tracking-tight tabular-nums">
+              {formatNumber(report.score, 1)}
+            </span>
+            <span className="text-lg text-muted-foreground tabular-nums">
+              / 100
+            </span>
+          </div>
+          <Uncertainty stderr={report.breakdown?.score_stderr ?? null} />
+          <p className="mt-3 text-xs text-muted-foreground">
+            {modelName} · {model.layers}L · {model.dimensions}d ·{" "}
+            {formatCompact(model.parameters)} params
+          </p>
+        </div>
+
+        <dl className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-3">
+          <Headline
+            label="Marker pairs"
+            value={formatPercent(pairs.accuracy)}
+            hint={`${pairs.pairs} pairs · 50% is chance`}
+          />
+          <Headline
+            label="Right marker"
+            value={formatPercent(positions?.marker_top1 ?? null)}
+            hint={
+              positions
+                ? `${positions.marker_positions} marker positions`
+                : "No held-out chat set"
+            }
+          />
+          <Headline
+            label="Closes turn"
+            value={formatPercent(structure?.close_rate ?? null)}
+            hint={
+              structure
+                ? `${structure.replies} replies generated`
+                : "No held-out chat set"
+            }
+          />
+        </dl>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * The score's own sampling error, shown beside it.
+ *
+ * The benchmark is deterministic, so this is not run-to-run variance — it is how far
+ * the score would move if the suite drew a different sample of the same size. It is
+ * here because the number it qualifies is used to accept or reject post-train rounds,
+ * and a delta smaller than this is the pair set talking, not the model.
+ */
+function Uncertainty({ stderr }: { stderr: number | null }) {
+  if (stderr === null || !Number.isFinite(stderr)) return null
+  return (
+    <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+      ± {formatNumber(stderr, 2)} at one standard error
+    </p>
   )
 }

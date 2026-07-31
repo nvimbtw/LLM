@@ -1,0 +1,25 @@
+-- Synthetic SFT generation from a *local* teacher model, on the GPU line.
+--
+-- **Why this is a new kind rather than a flag on `synth`.** `JobKind::lane` maps
+-- kind to lane and nothing else — a kind belongs to exactly one lane, always the
+-- same one, so a caller cannot get it wrong. `synth` calls somebody else's HTTP
+-- endpoint and correctly sits on `network`, where it contends for nothing. This
+-- runs a quantized model through llama.cpp on the device: ~2.4 GB of VRAM plus a
+-- KV cache, on a card with 8 GB that a training run also wants. Same job in the
+-- abstract, opposite resource in practice. Making the lane depend on a field
+-- inside `config` would mean the runner could only discover which line a row
+-- belongs to by parsing its JSON, which is exactly the mistake `lane()` exists to
+-- prevent.
+--
+-- So it takes the device line, strictly one at a time, alongside training,
+-- benchmarks and chat turns. A generation run blocking a chat turn is not a
+-- regression here — it is the point. Two CUDA contexts on this card means both
+-- jobs OOM instead of one finishing.
+--
+-- ALTER TYPE ... ADD VALUE cannot run inside a transaction block on older
+-- PostgreSQL, and sqlx wraps each migration in one. IF NOT EXISTS makes this
+-- re-runnable; on PG 12+ the in-transaction restriction is lifted for a type that
+-- was not created in the same transaction, which is the case here. The new value
+-- is deliberately not *used* below — that stays forbidden until this transaction
+-- commits, so there is nothing else in this file.
+ALTER TYPE job_type ADD VALUE IF NOT EXISTS 'teach';

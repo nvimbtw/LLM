@@ -310,7 +310,9 @@ impl Cycles {
                         cycle,
                         JobKind::Benchmark,
                         &format!("{} r{}", cycle.label, cycle.round),
-                        serde_json::json!({ "id_model": model }),
+                        // Explicit, matching what `decide` reads back. The cycle
+                        // judges on the language suite only; see the note there.
+                        serde_json::json!({ "id_model": model, "suite": "language" }),
                         "benchmarking",
                     )
                     .await?;
@@ -415,7 +417,16 @@ impl Cycles {
             Some(best) => (Some(best), "the best round's"),
             None => {
                 let seed = match cycle.id_model_start {
-                    Some(id) => db::benchmark::latest_score_for_model(&self.pool, id)
+                    // Explicitly the language suite. The cycle's bar, `best_score` and
+                    // `min_gain` are all one number on one scale, and a markup run's
+                    // score shares nothing with it but a range. Making the cycle judge
+                    // on both is the follow-up work; until then it must not be handed
+                    // whichever suite happened to run most recently.
+                    Some(id) => db::benchmark::latest_score_for_model(
+                        &self.pool,
+                        id,
+                        db::benchmark::BenchmarkSuite::Language,
+                    )
                         .await
                         .map_err(|e| format!("could not read the seed model's score: {e}"))?,
                     None => None,

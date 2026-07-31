@@ -5,24 +5,30 @@
 // the suite under a profiler, or diffing two models from a shell script.
 //
 // Usage:
-//   cargo run -p llm --bin eval -- <model_dir> [eval_dir]
+//   cargo run -p llm --bin eval -- [--markup] <model_dir> [eval_dir]
 //
 // `model_dir` holds `weights` + `merges.bin` (i.e. data/artifacts/models/<uuid>).
 // `eval_dir` defaults to `data/eval` and holds `corpus/*.txt` (held-out reference
-// prose) and optionally `blimp/*.jsonl`.
+// prose) and optionally `blimp/*.jsonl` and `chat/*.jsonl`.
+//
+// `--markup` runs the markup suite instead of the language one. They are separate
+// benchmarks with separate scores, on purpose: a supervised fine-tune is expected to
+// move them in opposite directions, and one blended number cannot say so.
 
 use std::path::PathBuf;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("usage: eval <model_dir> [eval_dir]");
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let markup = args.iter().any(|a| a == "--markup");
+    args.retain(|a| a != "--markup");
+    if args.is_empty() {
+        eprintln!("usage: eval [--markup] <model_dir> [eval_dir]");
         std::process::exit(2);
     }
 
-    let model_dir = PathBuf::from(&args[1]);
+    let model_dir = PathBuf::from(&args[0]);
     let eval_dir = args
-        .get(2)
+        .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("data/eval"));
 
@@ -30,16 +36,111 @@ fn main() {
     // Nothing can flip a cancel flag in a one-shot CLI run — Ctrl-C kills the
     // process outright — so there is none to pass, and `Ok(None)` is unreachable
     // here rather than a case worth inventing an exit code for.
-    let report = match llm::eval::run(&config, Box::new(print_progress), None) {
-        Ok(Some(report)) => report,
+    if markup {
+        match llm::eval::run_markup(&config, Box::new(print_progress), None) {
+            Ok(Some(report)) => print_markup_report(&report),
+            Ok(None) => unreachable!("a CLI run has no cancel flag to trip"),
+            Err(e) => {
+                eprintln!("benchmark failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    match llm::eval::run_language(&config, Box::new(print_progress), None) {
+        Ok(Some(report)) => print_report(&report),
         Ok(None) => unreachable!("a CLI run has no cancel flag to trip"),
         Err(e) => {
             eprintln!("benchmark failed: {e}");
             std::process::exit(1);
         }
-    };
+    }
+}
 
-    print_report(&report);
+fn print_markup_report(report: &llm::eval::MarkupReport) {
+    let m = &report.markup;
+    println!("\n── model ──");
+    println!(
+        "  {}d · {}L · {}h · ctx {} · vocab {} · {} params",
+        report.model.dimensions,
+        report.model.layers,
+        report.model.heads,
+        report.model.context,
+        report.model.vocab,
+        report.model.parameters,
+    );
+
+    println!("\n── marker pairs ──");
+    println!("  overall        {}  ({} pairs, chance 50%)", pct(m.pairs.accuracy), m.pairs.pairs);
+    for paradigm in &m.pairs.paradigms {
+        println!("    {:<32} {}  ({})", paradigm.name, pct(paradigm.accuracy), paradigm.pairs);
+    }
+
+    match &m.positions {
+        Some(p) => {
+            println!("\n── marker positions ──");
+            println!("  top-1 at markers      {}  ({} positions)", pct(p.marker_top1), p.marker_positions);
+            println!("  restricted top-1      {}", pct(p.marker_restricted_top1));
+            println!("  mean rank             {:.2}", p.marker_mean_rank);
+            println!("  false-marker rate     {}  ({} prose positions)", pct(p.false_marker_rate), p.prose_positions);
+            println!("  conversations         {}", p.conversations);
+        }
+        None => println!("\n── marker positions ──\n  no held-out chat set installed"),
+    }
+
+    match &m.structure {
+        Some(s) => {
+            println!("\n── generated structure ──");
+            println!("  closed the turn       {}  ({} replies)", pct(s.close_rate), s.replies);
+            println!("  balanced markup       {}", pct(s.balance_rate));
+            println!(
+                "  marker density        {:.2} per 100 tokens (reference {:.2})",
+                s.marker_density, s.reference_marker_density,
+            );
+            for sample in s.samples.iter().take(3) {
+                println!("\n    > {}", truncate(&sample.prompt, 100));
+                println!("      {}", truncate(&sample.completion, 200));
+            }
+        }
+        None => println!("\n── generated structure ──\n  no held-out chat set installed"),
+    }
+
+    match &report.chat {
+        // Reported, never scored — a base model has never seen the chat scaffold.
+        Some(c) => println!(
+            "\n── reply bits (not scored) ──\n  {:.4} bits/token over {} tokens in {} conversations",
+            c.bits_per_token, c.tokens_scored, c.conversations,
+        ),
+        None => println!("\n── reply bits (not scored) ──\n  no held-out chat set installed"),
+    }
+
+    let b = &report.breakdown;
+    println!("\n── score ──");
+    println!("  pairs      {:.3}", b.pairs);
+    println!("  positions  {:.3}", b.positions);
+    println!("  structure  {:.3}", b.structure);
+    println!("  restraint  {:.3}", b.restraint);
+    println!(
+        "\n  {:.1} ± {:.1} / 100   (markup v{}, {:.1}s)",
+        b.score, b.score_stderr, b.version, report.duration_secs,
+    );
+}
+
+fn pct(value: f64) -> String {
+    if value.is_finite() {
+        format!("{:.1}%", value * 100.0)
+    } else {
+        "—".to_string()
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    let cleaned = text.replace('\n', " ");
+    match cleaned.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &cleaned[..at]),
+        None => cleaned,
+    }
 }
 
 // Progress goes to stderr so stdout stays a clean report — `eval … > report.txt`
