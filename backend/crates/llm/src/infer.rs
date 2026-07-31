@@ -3,12 +3,20 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::chat_template::{build_prompt, Turn};
+use crate::training::infer_session::InferSession;
 use crate::training::transformer::Model;
 use tokenize::pretokenize::lookup_special;
 
+// A loaded model, ready to generate: the tokenizer merges plus the device-resident
+// session that holds the weights.
+//
+// The host-side `Model` is deliberately **not** kept. `InferSession::new` uploads
+// every weight to the device, and nothing on this path reads them from the host
+// again — holding the `Vec<Vec<f32>>` copy would be tens of megabytes of resident
+// host memory serving no reader.
 struct CachedModel {
     name: String,
-    model: Model,
+    session: InferSession,
     merges: Vec<((u32, u32), u32)>,
 }
 
@@ -96,15 +104,23 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
     on_token: F,
 ) -> Result<GenerationOutput, String> {
     ensure_loaded(model_dir)?;
-    let cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
-    let c = cache.as_ref().unwrap();
+    let mut cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
+    let c = cache.as_mut().unwrap();
 
     let seq = tokenize::bpe::encode(prompt, &c.merges);
     let input_tokens = seq.len();
     // The bare-prompt path has no job behind it to cancel; only the chat path,
     // which runs as a queued job, passes a flag.
     Ok(stream_generation(
-        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, None, on_token,
+        &mut c.session,
+        &c.merges,
+        seq,
+        input_tokens,
+        max_tokens,
+        temperature,
+        top_k,
+        None,
+        on_token,
     ))
 }
 
@@ -128,18 +144,26 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     on_token: F,
 ) -> Result<GenerationOutput, String> {
     ensure_loaded(model_dir)?;
-    let cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
-    let c = cache.as_ref().unwrap();
+    let mut cache = MODEL_CACHE.lock().map_err(|e| e.to_string())?;
+    let c = cache.as_mut().unwrap();
 
-    // The model's positional table defines its real context window.
-    let ctx_window = c.model.ctx_window();
+    // The session was built at the model's context window, which is the real one.
+    let ctx_window = c.session.ctx_window();
     // Leave headroom so the model can generate a reply before the sliding window
     // starts evicting the freshest prompt tokens.
     let reserve = (ctx_window / 4).max(8);
     let seq = build_prompt(system, history, &c.merges, ctx_window, reserve);
     let input_tokens = seq.len();
     Ok(stream_generation(
-        &c.model, &c.merges, seq, input_tokens, max_tokens, temperature, top_k, cancel, on_token,
+        &mut c.session,
+        &c.merges,
+        seq,
+        input_tokens,
+        max_tokens,
+        temperature,
+        top_k,
+        cancel,
+        on_token,
     ))
 }
 
@@ -154,13 +178,33 @@ fn ensure_loaded(model_dir: &Path) -> Result<(), String> {
         let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())
             .map_err(|e| e.to_string())?;
         let model = Model::load(&model_dir_str).map_err(|e| e.to_string())?;
+        // Drop the previous session before building the new one so the two models'
+        // weights are never both resident on an 8 GB card.
+        *cache = None;
+        let session = InferSession::new(&model, model.ctx_window());
         *cache = Some(CachedModel {
             name: model_dir_str.clone(),
-            model,
+            session,
             merges,
         });
     }
     Ok(())
+}
+
+/// Drop the cached model and free its device memory.
+///
+/// There is one GPU and one queue, so a resident inference session and a training
+/// run want the same card. The session's footprint is modest (the weights in f16
+/// plus scratch at the context window), but it is not nothing, and the shared
+/// `attn`/`ff` scratch it sizes at `ctx` is the same file-static arena a training
+/// `Workspace` uses. The queue calls this before starting a job that needs the
+/// device for something else, so that ownership is explicit rather than incidental.
+///
+/// The next generation call reloads from disk, which is the intended cost.
+pub fn release() {
+    if let Ok(mut cache) = MODEL_CACHE.lock() {
+        *cache = None;
+    }
 }
 
 // The core autoregressive loop, shared by the single-prompt and chat entry
@@ -168,7 +212,7 @@ fn ensure_loaded(model_dir: &Path) -> Result<(), String> {
 // text through `on_token`, stopping at the first end-of-turn marker.
 #[allow(clippy::too_many_arguments)]
 fn stream_generation<F: FnMut(&str)>(
-    model: &Model,
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     mut seq: Vec<u32>,
     input_tokens: usize,
@@ -178,56 +222,55 @@ fn stream_generation<F: FnMut(&str)>(
     cancel: Option<&AtomicBool>,
     mut on_token: F,
 ) -> GenerationOutput {
-    pollster::block_on(async {
-        // A fixed value larger than the positional table would overrun it in
-        // forward_seq (the sliding window keeps more tokens than there are
-        // positions for), so the model's own table length is the ceiling.
-        let ctx_window = model.ctx_window();
-        let mut output_ids: Vec<u32> = Vec::new();
-        let mut response = String::new();
+    let mut output_ids: Vec<u32> = Vec::new();
+    let mut response = String::new();
+    // Indexed once, not once per token: the free `bpe::decode` rebuilds its merge
+    // table on every call, which measured 292 us — 15% of a generated token — for a
+    // table that never changes.
+    let decoder = tokenize::bpe::Decoder::new(merges);
 
-        for _ in 0..max_tokens {
-            // Checked before the forward pass rather than after, so a cancel lands
-            // at the cost of at most one token rather than one more full pass.
-            if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
-                break;
-            }
-            let hidden = model.forward_seq(&seq, model.layers as usize, ctx_window).await;
-            if hidden.is_empty() {
-                break;
-            }
-            let last_hidden = vec![hidden.last().unwrap().clone()];
-            let logits = model.unembed(&last_hidden).await;
-
-            let next_token = sample_token(&logits[0], temperature, top_k);
-            output_ids.push(next_token);
-            seq.push(next_token);
-
-            let new_response = tokenize::bpe::decode(&output_ids, merges);
-            if new_response.len() > response.len() {
-                let token_text = &new_response[response.len()..];
-                on_token(token_text);
-                response = new_response;
-            }
-
-            if find_stop(&response).is_some() {
-                break;
-            }
+    for _ in 0..max_tokens {
+        // Checked before the forward pass rather than after, so a cancel lands
+        // at the cost of at most one token rather than one more full pass.
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            break;
+        }
+        // The session truncates to its context window internally, so a sequence
+        // that has outgrown the window is handled there rather than here.
+        let logits = session.logits_last(&seq);
+        if logits.is_empty() {
+            break;
         }
 
-        // The reply is everything up to the first end-of-turn marker; the marker
-        // itself is dropped from the returned/persisted text.
-        let text = match find_stop(&response) {
-            Some(pos) => response[..pos].to_string(),
-            None => response,
-        };
+        let next_token =
+            crate::sample::sample(&logits, temperature, top_k as usize, &mut rand::thread_rng());
+        output_ids.push(next_token);
+        seq.push(next_token);
 
-        GenerationOutput {
-            text,
-            input_tokens,
-            output_tokens: output_ids.len(),
+        let new_response = decoder.decode(&output_ids);
+        if new_response.len() > response.len() {
+            let token_text = &new_response[response.len()..];
+            on_token(token_text);
+            response = new_response;
         }
-    })
+
+        if find_stop(&response).is_some() {
+            break;
+        }
+    }
+
+    // The reply is everything up to the first end-of-turn marker; the marker
+    // itself is dropped from the returned/persisted text.
+    let text = match find_stop(&response) {
+        Some(pos) => response[..pos].to_string(),
+        None => response,
+    };
+
+    GenerationOutput {
+        text,
+        input_tokens,
+        output_tokens: output_ids.len(),
+    }
 }
 
 // Generation halts at the first end-of-turn marker: `<|/assistant|>` (the model
@@ -242,32 +285,6 @@ fn find_stop(text: &str) -> Option<usize> {
         (None, Some(b)) => Some(b),
         (None, None) => None,
     }
-}
-
-fn sample_token(logits: &[f32], temperature: f32, top_k: u32) -> u32 {
-    let mut candidates: Vec<(u32, f32)> = logits
-        .iter()
-        .enumerate()
-        .map(|(i, &p)| (i as u32, p))
-        .collect();
-
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    candidates.truncate(top_k as usize);
-
-    let total: f32 = candidates
-        .iter()
-        .map(|(_, p)| (p / temperature).exp())
-        .sum();
-    let mut r = rand::random::<f32>() * total;
-    let mut next_token = candidates[0].0;
-    for &(tok, prob) in &candidates {
-        r -= (prob / temperature).exp();
-        if r <= 0.0 {
-            next_token = tok;
-            break;
-        }
-    }
-    next_token
 }
 
 #[cfg(test)]
@@ -312,68 +329,6 @@ mod tests {
             assert_eq!(s, "<|custom|>");
         } else {
             panic!("expected Unknown variant");
-        }
-    }
-
-    // ── sample_token ──
-
-    #[test]
-    fn test_sample_token_returns_valid_index() {
-        let logits = vec![1.0, 2.0, 3.0];
-        for _ in 0..20 {
-            let token = sample_token(&logits, 1.0, 3);
-            assert!(token < 3, "token {} out of bounds", token);
-        }
-    }
-
-    #[test]
-    fn test_sample_token_top_k_limits() {
-        let logits = vec![10.0, 9.0, 1.0, 0.5, 0.3];
-        for _ in 0..100 {
-            let token = sample_token(&logits, 1.0, 2);
-            assert!(
-                token < 2,
-                "top_k=2 should only return tokens 0 or 1, got {}",
-                token
-            );
-        }
-    }
-
-    #[test]
-    fn test_sample_token_top_k_larger_than_vocab() {
-        let logits = vec![0.1, 0.2, 0.3];
-        for _ in 0..20 {
-            let token = sample_token(&logits, 1.0, 100);
-            assert!(token < 3, "token {} out of bounds", token);
-        }
-    }
-
-    #[test]
-    fn test_sample_token_negative_logits() {
-        let logits = vec![-1.0, -2.0, -3.0, -4.0];
-        for _ in 0..20 {
-            let token = sample_token(&logits, 1.0, 4);
-            assert!(token < 4, "token {} out of bounds", token);
-        }
-    }
-
-    #[test]
-    fn test_sample_token_temperature_zero_picks_highest() {
-        let logits = vec![0.1, 0.8, 0.3, 0.05];
-        for _ in 0..50 {
-            assert_eq!(
-                sample_token(&logits, 0.0, 4),
-                1,
-                "temperature=0 should always pick the highest logit (index 1)"
-            );
-        }
-    }
-
-    #[test]
-    fn test_sample_token_single_element() {
-        let logits = vec![42.0];
-        for _ in 0..10 {
-            assert_eq!(sample_token(&logits, 1.0, 1), 0);
         }
     }
 

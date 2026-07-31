@@ -37,7 +37,7 @@ use serde::Serialize;
 use tokenize::pretokenize::{NUM_SPECIAL, SPECIAL_TOKENS, special_char_from_id, special_id};
 
 use crate::chat_template::{self, Role, Turn};
-use crate::training::transformer::Model;
+use crate::training::infer_session::InferSession;
 
 use super::chat::Conversation;
 use super::score;
@@ -202,16 +202,15 @@ fn scaffold_ids() -> HashSet<u32> {
 // position 0 is never scored, and several of these paradigms put their contrast
 // there (`no_stray_closer` and `thinking_precedes_the_answer` both open on the
 // differing marker).
-pub async fn score_pair(
-    model: &Model,
+pub fn score_pair(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     pair: &super::marker_pairs::Pair,
-    layers: usize,
 ) -> bool {
     let good = super::lead_in(&pair.good, merges);
     let bad = super::lead_in(&pair.bad, merges);
-    let good_lp = score::sequence_logprob(model, &good, layers).await;
-    let bad_lp = score::sequence_logprob(model, &bad, layers).await;
+    let good_lp = score::sequence_logprob(session, &good);
+    let bad_lp = score::sequence_logprob(session, &bad);
     // Strict, so an exact tie counts as wrong — an untrained model is uniform, and
     // scoring ties as successes would push it above 50%.
     good_lp > bad_lp
@@ -255,11 +254,10 @@ pub struct PositionTally {
 // `None` when the conversation contributes nothing scoreable — an unknown role, an
 // empty encode, or a scoring pass that dropped a position. Dropped rather than
 // counted, so an unscoreable example cannot pull a rate toward zero.
-pub async fn tally_positions(
-    model: &Model,
+pub fn tally_positions(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversation: &Conversation,
-    layers: usize,
 ) -> Option<PositionTally> {
     let (ids, mask) = render(conversation, merges)?;
     if ids.len() < 2 {
@@ -268,7 +266,7 @@ pub async fn tally_positions(
 
     // Only the reply positions — the ones a fine-tune took gradient on. Scoring the
     // scaffold would reward a model for predicting markers the harness supplies.
-    let predictions = score::token_predictions(model, &ids, layers, &mask, marker_ids()).await;
+    let predictions = score::token_predictions(session, &ids, &mask, marker_ids());
     // `token_predictions` drops any non-finite position, which would shift every
     // index after it and silently misalign the mask. Refuse the conversation instead
     // of scoring the wrong tokens — the same guard `chat` and `preference` apply.

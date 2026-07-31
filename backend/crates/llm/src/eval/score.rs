@@ -11,7 +11,7 @@
 // and a logit row for *every* position in one pass, which is precisely a
 // teacher-forced score. The only work left is a log-softmax on the host.
 
-use crate::training::transformer::Model;
+use crate::training::infer_session::InferSession;
 
 // Log-probabilities the model assigned to the tokens it was actually shown.
 // `logprobs[i]` is `log p(tokens[i + 1] | tokens[..=i])`, so the vector is one
@@ -56,17 +56,16 @@ impl TokenScores {
 // context. Every token after the first is scored exactly once, with at least
 // `ctx/2` tokens of history (except in the very first window, where less history is
 // all that exists).
-pub async fn token_logprobs(model: &Model, tokens: &[u32], layers: usize) -> TokenScores {
-    if tokens.len() < 2 || model.ctx_window() < 2 {
+pub fn token_logprobs(session: &mut InferSession, tokens: &[u32]) -> TokenScores {
+    if tokens.len() < 2 || session.ctx_window() < 2 {
         return TokenScores { logprobs: Vec::new() };
     }
     // Every position but the last predicts its successor.
     let mut logprobs = vec![f32::NAN; tokens.len() - 1];
 
-    for_each_position(model, tokens, layers, |pos, logits| {
+    for_each_position(session, tokens, |pos, logits| {
         logprobs[pos] = log_softmax_at(logits, tokens[pos + 1] as usize);
-    })
-    .await;
+    });
 
     drop_unscored(&mut logprobs);
     TokenScores { logprobs }
@@ -119,16 +118,15 @@ pub struct TokenPredictions {
 // `restrict` is a parameter rather than a constant because this file is the scoring
 // primitive every benchmark is built on and knows nothing about markers; `markup`
 // passes the protected-marker block.
-pub async fn token_predictions(
-    model: &Model,
+pub fn token_predictions(
+    session: &mut InferSession,
     tokens: &[u32],
-    layers: usize,
     // Parallel to `tokens`. Position `i` gets a `Prediction` iff `select[i] == 1`.
     // Shorter than `tokens` is legal and means "not selected" for the tail.
     select: &[u8],
     restrict: std::ops::Range<u32>,
 ) -> TokenPredictions {
-    if tokens.len() < 2 || model.ctx_window() < 2 {
+    if tokens.len() < 2 || session.ctx_window() < 2 {
         return TokenPredictions {
             scores: TokenScores { logprobs: Vec::new() },
             predictions: Vec::new(),
@@ -137,7 +135,7 @@ pub async fn token_predictions(
     let mut logprobs = vec![f32::NAN; tokens.len() - 1];
     let mut predictions = Vec::new();
 
-    for_each_position(model, tokens, layers, |pos, logits| {
+    for_each_position(session, tokens, |pos, logits| {
         let target = tokens[pos + 1] as usize;
         let logprob = log_softmax_at(logits, target);
         logprobs[pos] = logprob;
@@ -152,8 +150,7 @@ pub async fn token_predictions(
             rank,
             restricted_argmax,
         });
-    })
-    .await;
+    });
 
     // The two must agree about what counted, or a caller could read a prediction for
     // a position whose score was dropped.
@@ -231,23 +228,23 @@ fn examine(logits: &[f32], target: usize, restrict: &std::ops::Range<u32>) -> (u
 // Ascending order is a guarantee, not an accident — `window_plan`'s scored ranges are
 // disjoint and emitted in increasing `start` — and `token_predictions` returns a
 // sorted sparse vector on the strength of it.
-async fn for_each_position(
-    model: &Model,
+fn for_each_position(
+    session: &mut InferSession,
     tokens: &[u32],
-    layers: usize,
     mut visit: impl FnMut(usize, &[f32]),
 ) {
-    let ctx = model.ctx_window();
+    let ctx = session.ctx_window();
+    let vocab = session.vocab();
     if tokens.len() < 2 || ctx < 2 {
         return;
     }
     for window in window_plan(tokens.len(), ctx) {
         let slice = &tokens[window.start..window.end];
-        let hidden = model.forward_seq(slice, layers, ctx).await;
-        let logits = model.unembed(&hidden).await;
+        // Flat `[s * vocab]`, so a row is a subslice rather than its own `Vec`.
+        let logits = session.logits_all(slice);
 
         for j in window.first_scored..slice.len() - 1 {
-            visit(window.start + j, &logits[j]);
+            visit(window.start + j, &logits[j * vocab..(j + 1) * vocab]);
         }
     }
 }
@@ -302,8 +299,8 @@ fn window_plan(len: usize, ctx: usize) -> Vec<Window> {
 // compare. Conditioning on the first token (rather than scoring it from an empty
 // prefix) is fine because both sentences in a pair start the same way in practice,
 // and a constant offset cancels in a comparison.
-pub async fn sequence_logprob(model: &Model, tokens: &[u32], layers: usize) -> f64 {
-    token_logprobs(model, tokens, layers).await.total()
+pub fn sequence_logprob(session: &mut InferSession, tokens: &[u32]) -> f64 {
+    token_logprobs(session, tokens).total()
 }
 
 // log softmax evaluated at one index, without materializing the whole normalized

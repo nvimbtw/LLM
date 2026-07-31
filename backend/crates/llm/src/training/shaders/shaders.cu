@@ -162,6 +162,24 @@ static void ensure_attn(int seq, int hd, int d, int h) {
     attn.seq = seq; attn.hd = hd; attn.d = d; attn.h = h;
 }
 
+// Pre-size the shared attention scratch for the longest sequence a caller will
+// ever hand it, so it is allocated once instead of growing a token at a time.
+//
+// `ensure_attn` only grows, and it grows to the exact size requested. A
+// generating sequence gets one token longer every step, so `seq <= attn.seq`
+// failed on every single step and the whole arena — including the six
+// backward-only buffers inference never reads — was freed and re-malloc'd per
+// token. Measured at ~9 ms/token of allocator churn at a short prompt.
+//
+// Inference calls this once when it builds its session, with the context window.
+// `d_ff` is passed rather than assumed to be 4*d: the feed-forward width is
+// configurable, and `cuda_feed_forward` reads it off the weight shape for exactly
+// that reason.
+extern "C" void cuda_infer_reserve(int seq, int hd, int d, int h, int d_ff) {
+    ensure_attn(seq, hd, d, h);
+    ensure_ff(seq, d_ff);
+}
+
 // ─── Fused scale + causal_mask + softmax (f32→f16, single kernel) ──────────
 // Reads f32 scores, writes f16 softmax output. Masks positions col > row to 0.
 // One BLOCK per row of the attention matrix, threads striding the columns.
@@ -978,60 +996,189 @@ __global__ void rope_dqk_kernel(__half *__restrict__ dq, __half *__restrict__ dk
   dk[e1] = __float2half(k1);
 }
 
-// ─── attention head (inference, no P save, uses scratch + fused softmax) ────
+// ─── KV-cache helpers (inference) ───────────────────────────────────────────
 
-extern "C" void
-cuda_attention_head(const __half *embeddings,
-                     const __half *wq,
-                     const __half *wk,
-                     const __half *wv,
-                     __half *out,
-                     int seq_len, int d_model, int head_dim) {
+// Copy the post-RoPE f32 K out of the shared scratch into a cache whose row-block
+// stride is `kv_stride` positions rather than `seq`.
+//
+// A plain memcpy will not do: the scratch is packed [h, seq, hd] with the *current*
+// sequence length as its stride, while the cache is [h, kv_stride, hd] so that it
+// can be appended to as the sequence grows. Same bytes, different pitch.
+__global__ void cache_k_kernel(const float *__restrict__ src, float *__restrict__ dst,
+                                int seq, int hd, int h, int kv_stride) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= h * seq * hd) return;
+  int j = i % hd;
+  int pos = (i / hd) % seq;
+  int head = i / (hd * seq);
+  dst[(size_t)head * kv_stride * hd + (size_t)pos * hd + j] = src[i];
+}
+
+// RoPE for a single new position, over Q and the one K row just written into the
+// cache.
+//
+// Separate from `rope_qk_kernel` because the two tensors no longer share an index
+// space: Q is [h, 1, hd] packed tight, while the K row lives inside a
+// [h, kv_stride, hd] cache. Only the indexing differs — the rotation itself goes
+// through the same `rope_cos_sin`/`rope_rotate` device helpers the training forward
+// uses, which is the part that has to agree.
+__global__ void rope_decode_kernel(float *__restrict__ q_f32, float *__restrict__ k_row,
+                                    int hd, int h, int pos, int kv_stride) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int pairs = hd / 2;
+  if (i >= h * pairs) return;
+
+  int pair = i % pairs;
+  int head = i / pairs;
+
+  float cos_t, sin_t;
+  rope_cos_sin(pos, pair, hd, &cos_t, &sin_t);
+
+  size_t q0 = (size_t)head * hd + 2 * pair;
+  rope_rotate(&q_f32[q0], &q_f32[q0 + 1], cos_t, sin_t, 1.0f);
+
+  size_t k0 = (size_t)head * kv_stride * hd + 2 * pair;
+  rope_rotate(&k_row[k0], &k_row[k0 + 1], cos_t, sin_t, 1.0f);
+}
+
+// Softmax over one query row of `s` cached keys, per head.
+//
+// No causal mask: a single query at absolute position `pos` attends to every
+// cached position 0..pos, which is all `s = pos + 1` of them. The mask in
+// `fused_scale_causal_softmax_kernel` exists to stop position i seeing i+1..seq
+// within a block of queries, and a one-query block has nothing to hide.
+//
+// The arithmetic is otherwise identical to that kernel's, deliberately: shared
+// memory max reduction over the row, `inv_scale` kept *inside* the exponent, then
+// a normalizing pass. exp((x - max) * c) == exp(x*c - max*c) for c > 0, so this is
+// the same softmax a prefill computes for the same row — which is what
+// `decode_equals_prefill` checks.
+__global__ void decode_softmax_kernel(const float *__restrict__ scores_f32,
+                                       __half *__restrict__ scores_f16,
+                                       float inv_scale, int s) {
+  extern __shared__ float sdata[];
+  int tid = threadIdx.x;
+  size_t plane = (size_t)blockIdx.x * s;
+  const float *row_in = scores_f32 + plane;
+  __half *row_out = scores_f16 + plane;
+
+  float m = -1e38f;
+  for (int j = tid; j < s; j += blockDim.x)
+    if (row_in[j] > m) m = row_in[j];
+  sdata[tid] = m;
+  __syncthreads();
+  for (int k = blockDim.x / 2; k > 0; k >>= 1) {
+    if (tid < k && sdata[tid + k] > sdata[tid]) sdata[tid] = sdata[tid + k];
+    __syncthreads();
+  }
+  float max_val = sdata[0];
+  __syncthreads();
+
+  float sum = 0.0f;
+  for (int j = tid; j < s; j += blockDim.x) {
+    float e = expf((row_in[j] - max_val) * inv_scale);
+    row_out[j] = __float2half(e);
+    sum += e;
+  }
+  sdata[tid] = sum;
+  __syncthreads();
+  for (int k = blockDim.x / 2; k > 0; k >>= 1) {
+    if (tid < k) sdata[tid] += sdata[tid + k];
+    __syncthreads();
+  }
+  float inv_sum = 1.0f / sdata[0];
+
+  for (int j = tid; j < s; j += blockDim.x)
+    row_out[j] = __float2half(__half2float(row_out[j]) * inv_sum);
+}
+
+// ─── Single-token attention against a KV cache (inference decode) ───────────
+//
+// One new token at absolute position `pos`, attending to the `pos` positions
+// already in the cache plus itself. Where the prefill re-derives K and V for every
+// position on every call — O(s) projections and an O(s²) score matrix per token —
+// this projects one row, appends it, and scores it against what is already there.
+//
+// K is cached in f32 and V in f16 because that is exactly what the prefill's GEMMs
+// produce (`attn.k_f32`, and V straight out of its f16 GEMM). Caching K as f16
+// would make a decode step's score GEMM lower precision than a prefill's, and the
+// two must agree.
+extern "C" void cuda_attention_decode(
+    const __half *x_row,      // [1, d] the new token's layer input
+    const __half *wq_all,     // [h, d, hd]
+    const __half *wk_all,
+    const __half *wv_all,
+    float *k_cache,           // [h, kv_stride, hd] f32, positions < pos filled
+    __half *v_cache,          // [h, kv_stride, hd] f16
+    __half *out,              // [h, 1, hd] — contiguous, which is also [1, d]
+    int d, int hd, int h, int pos, int kv_stride) {
+
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
-  ensure_attn(seq_len, head_dim, d_model, 1);
+  int s = pos + 1;
+  size_t cache_plane = (size_t)kv_stride * hd;
 
-  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wq, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.q_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP));
+  // 1. Q = x @ Wq  → [h, 1, hd] f32 in the shared scratch.
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+      hd, 1, d, &alpha,
+      wq_all, CUDA_R_16F, hd, (long long)d * hd,
+      x_row, CUDA_R_16F, d, 0,
+      &beta,
+      attn.q_f32, CUDA_R_32F, hd, hd,
+      h, COMPUTE_F32, TENSOR_OP));
 
-  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wk, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.k_f32, CUDA_R_32F, head_dim, COMPUTE_F32, TENSOR_OP));
+  // 2. K = x @ Wk  → straight into the cache at row `pos`.
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+      hd, 1, d, &alpha,
+      wk_all, CUDA_R_16F, hd, (long long)d * hd,
+      x_row, CUDA_R_16F, d, 0,
+      &beta,
+      k_cache + (size_t)pos * hd, CUDA_R_32F, hd, (long long)cache_plane,
+      h, COMPUTE_F32, TENSOR_OP));
 
-  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, d_model, &alpha,
-      wv, CUDA_R_16F, head_dim, embeddings, CUDA_R_16F, d_model, &beta,
-      attn.v_f16, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP));
+  // 3. V = x @ Wv  → likewise, and V is never rotated.
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+      hd, 1, d, &alpha,
+      wv_all, CUDA_R_16F, hd, (long long)d * hd,
+      x_row, CUDA_R_16F, d, 0,
+      &beta,
+      v_cache + (size_t)pos * hd, CUDA_R_16F, hd, (long long)cache_plane,
+      h, COMPUTE_F32, TENSOR_OP));
 
-  // RoPE, exactly as the training forward applies it. Inference runs this
-  // separate per-head path (h = 1), so leaving it out here would serve the model
-  // a different positional scheme than it was trained under — the two forwards
-  // must agree, and sharing the kernel is what makes them.
-  //
-  // No f16 caches: there is no backward to feed.
+  // 4. Rotate Q and the new K by the *absolute* position. The cached rows keep the
+  //    rotation they were written with, which is why a shifted context window
+  //    cannot reuse this cache — see `InferSession::logits_last`.
   {
-    int n = seq_len * (head_dim / 2);
-    rope_qk_kernel<<<(n + 255) / 256, 256>>>(attn.q_f32, attn.k_f32,
-                                              nullptr, nullptr, seq_len, head_dim, 1);
+    int n = h * (hd / 2);
+    rope_decode_kernel<<<(n + 255) / 256, 256>>>(
+        attn.q_f32, k_cache + (size_t)pos * hd, hd, h, pos, kv_stride);
   }
 
-  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
-      seq_len, seq_len, head_dim, &alpha,
-      attn.k_f32, CUDA_R_32F, head_dim, attn.q_f32, CUDA_R_32F, head_dim, &beta,
-      attn.scores_f32, CUDA_R_32F, seq_len, COMPUTE_F32, TENSOR_OP));
+  // 5. scores = Q · K_cache^T  → [h, 1, s] f32.
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+      s, 1, hd, &alpha,
+      k_cache, CUDA_R_32F, hd, (long long)cache_plane,
+      attn.q_f32, CUDA_R_32F, hd, hd,
+      &beta,
+      attn.scores_f32, CUDA_R_32F, s, s,
+      h, COMPUTE_F32, TENSOR_OP));
 
-  float inv_scale = 1.0f / sqrtf((float)head_dim);
-  int threads = 256;
-  fused_scale_causal_softmax_kernel<<<seq_len, threads, threads * sizeof(float)>>>(
-      attn.scores_f32, attn.scores_f16, inv_scale, seq_len);
+  // 6. Softmax over the s cached keys, one block per head.
+  {
+    float inv_scale = 1.0f / sqrtf((float)hd);
+    int t = 256;
+    decode_softmax_kernel<<<h, t, t * sizeof(float)>>>(
+        attn.scores_f32, attn.scores_f16, inv_scale, s);
+  }
 
-  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-      head_dim, seq_len, seq_len, &alpha,
-      attn.v_f16, CUDA_R_16F, head_dim, attn.scores_f16, CUDA_R_16F, seq_len, &beta,
-      out, CUDA_R_16F, head_dim, COMPUTE_F32, TENSOR_OP));
+  // 7. out = P · V_cache  → [h, 1, hd].
+  CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+      hd, 1, s, &alpha,
+      v_cache, CUDA_R_16F, hd, (long long)cache_plane,
+      attn.scores_f16, CUDA_R_16F, s, s,
+      &beta,
+      out, CUDA_R_16F, hd, hd,
+      h, COMPUTE_F32, TENSOR_OP));
 }
 
 // ─── Batched multi-head attention forward ───────────────────────────────────
@@ -1055,11 +1202,23 @@ extern "C" void cuda_attention_forward_batched(
     // Per-layer Q/K/V caches the backward reads. See `Workspace::q_all` for why
     // these are owned per layer and not by the shared `attn` scratch.
     __half *Q_all, __half *K_all, __half *V_all,
+    // Inference only, both ignored when `kv_stride` is 0 (which is what training
+    // passes, leaving every stride below exactly as it was).
+    //
+    // `kv_stride` re-pitches V_all from `seq` positions to `kv_stride` of them so
+    // that V lands directly in a KV cache it can be appended to later, and
+    // `k_cache_f32`, when non-null, receives the post-RoPE f32 K at the same pitch.
+    // A prefill therefore fills the cache as a side effect of running — which is
+    // the whole reason the decode path needs no separate "warm the cache" pass.
+    float *k_cache_f32, int kv_stride,
     int seq, int d, int hd, int h) {
 
   cublasHandle_t handle = get_cublas();
   float alpha = 1.0f, beta = 0.0f;
   ensure_attn(seq, hd, d, h);
+
+  // V's row-block pitch, and the cache's. `seq` reproduces the pre-cache behaviour.
+  int v_stride = (kv_stride > 0) ? kv_stride : seq;
 
   // 1. Q = X @ Wq (batched f16×f16→f32)  [h, seq, hd]
   CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
@@ -1086,7 +1245,7 @@ extern "C" void cuda_attention_forward_batched(
       wv_all, CUDA_R_16F, hd, d*hd,
       X, CUDA_R_16F, d, 0,
       &beta,
-      V_all, CUDA_R_16F, hd, seq*hd,
+      V_all, CUDA_R_16F, hd, v_stride*hd,
       h, COMPUTE_F32, TENSOR_OP));
 
   // 3b. Apply RoPE to Q/K, then cache them as f16 for the backward.
@@ -1099,6 +1258,15 @@ extern "C" void cuda_attention_forward_batched(
     int n = h * seq * (hd / 2);
     rope_qk_kernel<<<(n + 255) / 256, 256>>>(attn.q_f32, attn.k_f32,
                                               Q_all, K_all, seq, hd, h);
+  }
+
+  // The cached K is the *rotated* one, for the same reason the backward's f16 copy
+  // is: a score is a rotated Q against a rotated K, so a decode step scoring
+  // against raw projections would be applying no position at all to the history.
+  if (k_cache_f32) {
+    int n = h * seq * hd;
+    cache_k_kernel<<<(n + 255) / 256, 256>>>(attn.k_f32, k_cache_f32,
+                                             seq, hd, h, kv_stride);
   }
 
   // 4. Scores = Q @ K^T (batched f32×f32→f32)  [h, seq, seq]
@@ -1126,7 +1294,7 @@ extern "C" void cuda_attention_forward_batched(
   // 6. Out = softmax(S) @ V (batched f16×f16→f16)
   CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, seq, seq, &alpha,
-      V_all, CUDA_R_16F, hd, seq*hd,
+      V_all, CUDA_R_16F, hd, v_stride*hd,
       P_all, CUDA_R_16F, seq, seq*seq,
       &beta,
       out_all, CUDA_R_16F, hd, seq*hd,

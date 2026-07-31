@@ -514,38 +514,63 @@ pub fn encode(text: &str, merges: &[((u32, u32), u32)]) -> Vec<u32> {
     Encoder::new(merges).encode(text)
 }
 
-pub fn decode(ids: &[u32], merges: &[((u32, u32), u32)]) -> String {
-    let mut token_to_pair: HashMap<u32, (u32, u32)> = HashMap::new();
-    for &((a, b), token) in merges {
-        token_to_pair.insert(token, (a, b));
+/// A merge table indexed once for repeated decoding.
+///
+/// The counterpart of [`Encoder`], and it exists for a sharper reason. The free
+/// `decode` rebuilds `token_to_pair` from the whole merge slice on every call —
+/// ~7,900 hash inserts at vocab 8,192 — and the streaming chat loop called it once
+/// per generated token to re-decode the reply so far. Measured at **292 us per
+/// call, essentially all of it the rebuild** (decoding one token costs the same as
+/// decoding a thousand), against a ~1.9 ms token: 15% of every token spent
+/// reconstructing a table that never changes.
+///
+/// Decoding is otherwise identical: `decode` is `Decoder::new(merges).decode(ids)`.
+pub struct Decoder {
+    token_to_pair: HashMap<u32, (u32, u32)>,
+}
+
+impl Decoder {
+    pub fn new(merges: &[((u32, u32), u32)]) -> Decoder {
+        let mut token_to_pair = HashMap::with_capacity(merges.len());
+        for &((a, b), token) in merges {
+            token_to_pair.insert(token, (a, b));
+        }
+        Decoder { token_to_pair }
     }
 
-    let mut bytes = Vec::new();
-    for &id in ids {
-        let mut stack = vec![id];
-        while let Some(t) = stack.pop() {
-            if t < 256 {
-                bytes.push(t as u8);
-            } else if let Some(ch) = special_char_from_id(t) {
-                // Atomic special-token id → its PUA char's utf-8 bytes; the
-                // `replace_special_chars` post-pass turns that back into the
-                // marker string (e.g. `<|assistant|>`).
-                let mut buf = [0u8; 4];
-                bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-            } else if let Some(&(a, b)) = token_to_pair.get(&t) {
-                stack.push(b);
-                stack.push(a);
+    pub fn decode(&self, ids: &[u32]) -> String {
+        let token_to_pair = &self.token_to_pair;
+        let mut bytes = Vec::new();
+        for &id in ids {
+            let mut stack = vec![id];
+            while let Some(t) = stack.pop() {
+                if t < 256 {
+                    bytes.push(t as u8);
+                } else if let Some(ch) = special_char_from_id(t) {
+                    // Atomic special-token id → its PUA char's utf-8 bytes; the
+                    // `replace_special_chars` post-pass turns that back into the
+                    // marker string (e.g. `<|assistant|>`).
+                    let mut buf = [0u8; 4];
+                    bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                } else if let Some(&(a, b)) = token_to_pair.get(&t) {
+                    stack.push(b);
+                    stack.push(a);
+                }
             }
         }
-    }
-    let decoded = String::from_utf8_lossy(&bytes)
-        .replace('Ġ', " ")
-        .replace('Ċ', "\n")
-        .replace('ĉ', "\t")
-        .replace('\u{FFFD}', "")
-        .to_string();
+        let decoded = String::from_utf8_lossy(&bytes)
+            .replace('Ġ', " ")
+            .replace('Ċ', "\n")
+            .replace('ĉ', "\t")
+            .replace('\u{FFFD}', "")
+            .to_string();
 
-    replace_special_chars(&decoded)
+        replace_special_chars(&decoded)
+    }
+}
+
+pub fn decode(ids: &[u32], merges: &[((u32, u32), u32)]) -> String {
+    Decoder::new(merges).decode(ids)
 }
 
 fn replace_special_chars(text: &str) -> String {

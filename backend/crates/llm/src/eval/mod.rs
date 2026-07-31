@@ -53,6 +53,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::training::infer_session::InferSession;
 use crate::training::transformer::Model;
 
 // Default caps on how much reference text a run reads. The held-out cap is the one
@@ -246,62 +247,63 @@ pub fn run_language(
     let started = Instant::now();
 
     let (model, merges) = load(config)?;
+    // One session for the whole run: the weights go to the device once, not once
+    // per stage. `model` is kept only for `describe`.
+    let mut session = InferSession::new(&model, model.ctx_window());
 
-    pollster::block_on(async {
-        let split = corpus::load(
-            &config.corpus_dir,
-            config.max_baseline_bytes,
-            config.max_heldout_bytes,
-        );
+    let split = corpus::load(
+        &config.corpus_dir,
+        config.max_baseline_bytes,
+        config.max_heldout_bytes,
+    );
 
-        progress("Scoring held-out text", 0.0);
-        let corpus_report = corpus::evaluate(&model, &merges, &split).await;
-        progress("Scoring held-out text", STAGE_CORPUS);
-        if cancelled(&cancel) {
-            return Ok(None);
-        }
+    progress("Scoring held-out text", 0.0);
+    let corpus_report = corpus::evaluate(&mut session, &merges, &split);
+    progress("Scoring held-out text", STAGE_CORPUS);
+    if cancelled(&cancel) {
+        return Ok(None);
+    }
 
-        let Some(grammar) = run_grammar(&model, &merges, config, &progress, &cancel).await else {
-            return Ok(None);
-        };
+    let Some(grammar) = run_grammar(&mut session, &merges, config, &progress, &cancel) else {
+        return Ok(None);
+    };
 
-        let Some(generation) =
-            run_generation(&model, &merges, config, &split, &progress, &cancel).await
-        else {
-            return Ok(None);
-        };
+    let Some(generation) =
+        run_generation(&mut session, &merges, config, &split, &progress, &cancel)
+    else {
+        return Ok(None);
+    };
 
-        let Some(preference) = run_preference(&model, &merges, config, &progress, &cancel).await
-        else {
-            return Ok(None);
-        };
+    let Some(preference) = run_preference(&mut session, &merges, config, &progress, &cancel)
+    else {
+        return Ok(None);
+    };
 
-        progress("Done", 1.0);
+    progress("Done", 1.0);
 
-        let corpus_metrics = corpus_report.map(|c| CorpusMetrics {
-            bits_per_byte: c.bits_per_byte,
-            bits_per_token: c.bits_per_token,
-            perplexity: c.perplexity,
-            tokens_scored: c.tokens_scored,
-            bytes_scored: c.bytes_scored,
-            baseline_bits_per_byte: c.baseline_bits_per_byte,
-            advantage: c.advantage,
-            floor_progress: c.floor_progress,
-            files: c.files,
-        });
+    let corpus_metrics = corpus_report.map(|c| CorpusMetrics {
+        bits_per_byte: c.bits_per_byte,
+        bits_per_token: c.bits_per_token,
+        perplexity: c.perplexity,
+        tokens_scored: c.tokens_scored,
+        bytes_scored: c.bytes_scored,
+        baseline_bits_per_byte: c.baseline_bits_per_byte,
+        advantage: c.advantage,
+        floor_progress: c.floor_progress,
+        files: c.files,
+    });
 
-        let breakdown = composite_score(&corpus_metrics, &grammar, &generation);
-        Ok(Some(Report {
-            score: breakdown.score,
-            breakdown,
-            model: describe(&model),
-            corpus: corpus_metrics,
-            grammar,
-            generation,
-            preference,
-            duration_secs: started.elapsed().as_secs_f64(),
-        }))
-    })
+    let breakdown = composite_score(&corpus_metrics, &grammar, &generation);
+    Ok(Some(Report {
+        score: breakdown.score,
+        breakdown,
+        model: describe(&model),
+        corpus: corpus_metrics,
+        grammar,
+        generation,
+        preference,
+        duration_secs: started.elapsed().as_secs_f64(),
+    }))
 }
 
 // The weights and the model under test, shared by both suites.
@@ -354,63 +356,59 @@ pub fn run_markup(
 ) -> Result<Option<MarkupReport>, String> {
     let started = Instant::now();
     let (model, merges) = load(config)?;
-    let layers = model.layers as usize;
+    let mut session = InferSession::new(&model, model.ctx_window());
 
-    pollster::block_on(async {
-        let Some(pairs) = run_marker_pairs(&model, &merges, &progress, &cancel).await else {
-            return Ok(None);
-        };
+    let Some(pairs) = run_marker_pairs(&mut session, &merges, &progress, &cancel) else {
+        return Ok(None);
+    };
 
-        let conversations = markup::load(&config.chat_dir);
-        if conversations.is_empty() {
-            progress("No held-out chat set", 1.0);
-        }
+    let conversations = markup::load(&config.chat_dir);
+    if conversations.is_empty() {
+        progress("No held-out chat set", 1.0);
+    }
 
-        let Some(positions) =
-            run_positions(&model, &merges, &conversations, layers, &progress, &cancel).await
-        else {
-            return Ok(None);
-        };
-        let Some(structure) = run_structure(
-            &model,
-            &merges,
-            &conversations,
-            config.sampling,
-            &progress,
-            &cancel,
-        )
-        .await
-        else {
-            return Ok(None);
-        };
-        let Some(chat_metrics) =
-            run_chat_bits(&model, &merges, &conversations, layers, &progress, &cancel).await
-        else {
-            return Ok(None);
-        };
-        progress("Done", 1.0);
+    let Some(positions) =
+        run_positions(&mut session, &merges, &conversations, &progress, &cancel)
+    else {
+        return Ok(None);
+    };
+    let Some(structure) = run_structure(
+        &mut session,
+        &merges,
+        &conversations,
+        config.sampling,
+        &progress,
+        &cancel,
+    )
+    else {
+        return Ok(None);
+    };
+    let Some(chat_metrics) =
+        run_chat_bits(&mut session, &merges, &conversations, &progress, &cancel)
+    else {
+        return Ok(None);
+    };
+    progress("Done", 1.0);
 
-        let metrics = markup::MarkupMetrics { pairs, positions, structure };
-        let breakdown = markup::composite_score(&metrics);
-        Ok(Some(MarkupReport {
-            score: breakdown.score,
-            breakdown,
-            model: describe(&model),
-            markup: metrics,
-            chat: chat_metrics,
-            duration_secs: started.elapsed().as_secs_f64(),
-        }))
-    })
+    let metrics = markup::MarkupMetrics { pairs, positions, structure };
+    let breakdown = markup::composite_score(&metrics);
+    Ok(Some(MarkupReport {
+        score: breakdown.score,
+        breakdown,
+        model: describe(&model),
+        markup: metrics,
+        chat: chat_metrics,
+        duration_secs: started.elapsed().as_secs_f64(),
+    }))
 }
 
-async fn run_marker_pairs(
-    model: &Model,
+fn run_marker_pairs(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<markup::PairMetrics> {
     let paradigms = marker_pairs::suite();
-    let layers = model.layers as usize;
     let total: usize = paradigms.iter().map(|p| p.pairs.len()).sum();
     let mut done = 0usize;
     let mut results = Vec::new();
@@ -418,7 +416,7 @@ async fn run_marker_pairs(
     for paradigm in &paradigms {
         let mut correct = 0usize;
         for pair in &paradigm.pairs {
-            if markup::score_pair(model, merges, pair, layers).await {
+            if markup::score_pair(session, merges, pair) {
                 correct += 1;
             }
             done += 1;
@@ -445,11 +443,10 @@ async fn run_marker_pairs(
     Some(markup::summarize_pairs(&results))
 }
 
-async fn run_positions(
-    model: &Model,
+fn run_positions(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
-    layers: usize,
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<Option<markup::PositionMetrics>> {
@@ -466,15 +463,15 @@ async fn run_positions(
             &format!("Marker positions ({}/{})", i + 1, conversations.len()),
             STAGE_PAIRS + STAGE_POSITIONS * (i as f64 / conversations.len() as f64),
         );
-        if let Some(tally) = markup::tally_positions(model, merges, conversation, layers).await {
+        if let Some(tally) = markup::tally_positions(session, merges, conversation) {
             tallies.push(tally);
         }
     }
     Some(markup::summarize_positions(&tallies))
 }
 
-async fn run_structure(
-    model: &Model,
+fn run_structure(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
     sampling: generate::SamplingConfig,
@@ -485,7 +482,7 @@ async fn run_structure(
         return Some(None);
     }
     let base = STAGE_PAIRS + STAGE_POSITIONS;
-    let ctx = model.ctx_window();
+    let ctx = session.ctx_window();
     let chosen: Vec<&chat::Conversation> =
         conversations.iter().take(STRUCTURE_REPLIES).collect();
 
@@ -505,7 +502,7 @@ async fn run_structure(
             continue;
         };
         // Scored over the generated ids, not the decoded text — see `Continuation::ids`.
-        let continuation = generate::continue_tokens(model, merges, prompt, sampling).await;
+        let continuation = generate::continue_tokens(session, merges, prompt, sampling);
         replies.push(markup::tally_reply(&continuation.ids, continuation.stopped_on_marker));
         if samples.len() < STRUCTURE_SAMPLES {
             samples.push(markup::Sample { prompt: user_text, completion: continuation.text });
@@ -516,11 +513,10 @@ async fn run_structure(
     Some(markup::summarize_structure(&replies, reference, samples))
 }
 
-async fn run_chat_bits(
-    model: &Model,
+fn run_chat_bits(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
-    layers: usize,
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<Option<chat::ChatMetrics>> {
@@ -537,7 +533,7 @@ async fn run_chat_bits(
             &format!("Reply bits ({}/{})", i + 1, conversations.len()),
             base + STAGE_CHAT_BITS * (i as f64 / conversations.len() as f64),
         );
-        if let Some(scores) = chat::reply_logprob(model, merges, conversation, layers).await {
+        if let Some(scores) = chat::reply_logprob(session, merges, conversation) {
             scored.push(scores);
         }
     }
@@ -550,8 +546,8 @@ async fn run_chat_bits(
 // `None` => cancelled partway. Checked on the same 25-pair cadence as the progress
 // report rather than every pair, so the atomic load doesn't sit in the inner loop
 // beside two forward passes it would be noise against.
-async fn run_grammar(
-    model: &Model,
+fn run_grammar(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     config: &EvalConfig,
     progress: &ProgressCallback,
@@ -560,7 +556,6 @@ async fn run_grammar(
     let mut paradigms = minimal_pairs::suite();
     paradigms.extend(minimal_pairs::load_external(&config.blimp_dir));
 
-    let layers = model.layers as usize;
     let total_pairs: usize = paradigms.iter().map(|p| p.pairs.len()).sum();
     let mut done = 0usize;
 
@@ -572,8 +567,8 @@ async fn run_grammar(
         for pair in &paradigm.pairs {
             let good = lead_in(&pair.good, merges);
             let bad = lead_in(&pair.bad, merges);
-            let good_lp = score::sequence_logprob(model, &good, layers).await;
-            let bad_lp = score::sequence_logprob(model, &bad, layers).await;
+            let good_lp = score::sequence_logprob(session, &good);
+            let bad_lp = score::sequence_logprob(session, &bad);
             // A strict `>` makes an exact tie count as wrong. Ties happen when the
             // model is untrained enough to be uniform, and scoring them as
             // successes would push a random model above 50%.
@@ -634,8 +629,8 @@ fn lead_in(sentence: &str, merges: &[((u32, u32), u32)]) -> Vec<u32> {
 // Generate from the fixed prompt set and measure the surface properties of what
 // came back.
 // `None` => cancelled partway, checked once per prompt.
-async fn run_generation(
-    model: &Model,
+fn run_generation(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     config: &EvalConfig,
     split: &corpus::CorpusSplit,
@@ -657,7 +652,7 @@ async fn run_generation(
             &format!("Generating samples ({}/{})", i + 1, DEFAULT_PROMPTS.len()),
             STAGE_CORPUS + STAGE_GRAMMAR + STAGE_GENERATION * fraction,
         );
-        let completion = generate::continue_prompt(model, merges, prompt, config.sampling).await;
+        let completion = generate::continue_prompt(session, merges, prompt, config.sampling);
         samples.push(Sample {
             prompt: (*prompt).to_string(),
             completion,
@@ -687,8 +682,8 @@ async fn run_generation(
 // is "cancelled partway", matching the other stages; the inner `None` is "there is
 // no feedback to score", which is the normal state of a fresh install and must not
 // look like a failure or a zero.
-async fn run_preference(
-    model: &Model,
+fn run_preference(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     config: &EvalConfig,
     progress: &ProgressCallback,
@@ -701,7 +696,6 @@ async fn run_preference(
         return Some(None);
     }
 
-    let layers = model.layers as usize;
     let mut scored = Vec::with_capacity(examples.len());
 
     for (i, example) in examples.iter().enumerate() {
@@ -716,7 +710,7 @@ async fn run_preference(
         );
         // An unscoreable example (empty reply, misaligned scoring) is dropped
         // rather than counted, so it can't drag a mean toward zero.
-        if let Some(logprob) = preference::score_example(model, merges, example, layers).await {
+        if let Some(logprob) = preference::score_example(session, merges, example) {
             scored.push((example.good, example.prompt.clone(), logprob));
         }
     }

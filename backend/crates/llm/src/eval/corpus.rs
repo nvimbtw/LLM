@@ -17,7 +17,7 @@ use std::path::Path;
 
 use crate::eval::ngram::ByteNgram;
 use crate::eval::score;
-use crate::training::transformer::Model;
+use crate::training::infer_session::InferSession;
 
 // Order of the n-gram floor. See `ngram::MAX_ORDER` for why 5 is the ceiling.
 const BASELINE_ORDER: usize = 5;
@@ -155,8 +155,8 @@ fn char_boundary(text: &str, index: usize) -> usize {
 }
 
 // Scores the held-out slice under the model and under the n-gram floor.
-pub async fn evaluate(
-    model: &Model,
+pub fn evaluate(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     split: &CorpusSplit,
 ) -> Option<CorpusReport> {
@@ -169,7 +169,7 @@ pub async fn evaluate(
         return None;
     }
 
-    let scores = score::token_logprobs(model, &tokens, model.layers as usize).await;
+    let scores = score::token_logprobs(session, &tokens);
     if scores.count() == 0 {
         return None;
     }

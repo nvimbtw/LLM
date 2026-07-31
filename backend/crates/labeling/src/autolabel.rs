@@ -140,6 +140,10 @@ pub fn run(
         .map_err(|e| format!("could not load tokenizer: {e}"))?;
     let model = llm::training::transformer::Model::load(&model_dir.to_string_lossy())
         .map_err(|e| format!("could not load model: {e}"))?;
+    // One session for the whole pass: the weights go to the device once rather than
+    // once per generated token.
+    let mut session =
+        llm::training::infer_session::InferSession::new(&model, model.ctx_window());
 
     on_progress("Fitting the judge", 0.0);
     // The judge is fit on the same reference prose the benchmark scores against.
@@ -190,8 +194,8 @@ pub fn run(
                 // otherwise a labelling pass could never be debugged.
                 seed: (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k as u64,
             };
-            let continuation = llm::eval::generate::continue_tokens_blocking(
-                &model,
+            let continuation = llm::eval::generate::continue_tokens(
+                &mut session,
                 &merges,
                 seq.clone(),
                 config,

@@ -33,7 +33,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::chat_template::{self, Role, Turn};
-use crate::training::transformer::Model;
+use crate::training::infer_session::InferSession;
 
 use super::score;
 
@@ -130,11 +130,10 @@ pub fn load(dir: &Path) -> Vec<Example> {
 // `None` when the reply contributes no scoreable position (an empty encode, or a
 // scoring run that dropped positions) — the caller skips it rather than folding a
 // NaN into the mean.
-async fn mean_reply_logprob(
-    model: &Model,
+fn mean_reply_logprob(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     example: &Example,
-    layers: usize,
 ) -> Option<f64> {
     // The same rendering SFT trains on, so the positions scored here are exactly
     // the positions a fine-tune would have taken gradient on. `mask[i] == 1` iff the
@@ -152,7 +151,7 @@ async fn mean_reply_logprob(
         return None;
     }
 
-    let scores = score::token_logprobs(model, &ids, layers).await;
+    let scores = score::token_logprobs(session, &ids);
     // `token_logprobs` drops any non-finite position, which would shift every
     // index after it and silently misalign the mask. Refuse the example instead of
     // scoring the wrong tokens.
@@ -259,13 +258,12 @@ fn mean(total: f64, n: usize) -> f64 {
 
 // Scores one example. Split out so the caller can drive progress and cancellation
 // between examples without this module knowing about either.
-pub async fn score_example(
-    model: &Model,
+pub fn score_example(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     example: &Example,
-    layers: usize,
 ) -> Option<f64> {
-    mean_reply_logprob(model, merges, example, layers).await
+    mean_reply_logprob(session, merges, example)
 }
 
 #[cfg(test)]

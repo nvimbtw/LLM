@@ -1,5 +1,4 @@
 use std::ffi::c_void;
-use crate::training::device_buffer::DeviceBufferF16;
 use crate::training::embed::embed;
 mod serialization;
 mod forward;
@@ -8,8 +7,10 @@ pub use serialization::{LayerRow, ModelHeader, read_model_header};
 use crate::training::gpu_workspace::Workspace;
 
 // Layer-norm numerical-stability epsilon, shared by every layer-norm forward and
-// backward call.
-const LAYER_NORM_EPS: f32 = 1e-5;
+// backward call — including the inference forward in `training::infer_session`,
+// which must normalize identically to the training one or the two forwards
+// disagree.
+pub(crate) const LAYER_NORM_EPS: f32 = 1e-5;
 // Per-step gradient L2-norm clip applied inside train_step before accumulation.
 const TRAIN_STEP_CLIP_NORM: f32 = 1.0;
 
@@ -134,239 +135,6 @@ impl Model {
     /// The model's context window, as a `usize` for slicing.
     pub fn ctx_window(&self) -> usize {
         self.max_seq_len as usize
-    }
-
-    /// Run the forward pass over a token sequence and return the final hidden
-    /// state for every position. Only the last `ctx_window` tokens are used, so a
-    /// growing prompt is fine — RoPE is relative, so the window sliding forward
-    /// simply re-bases the positions.
-    pub async fn forward_seq(
-        &self,
-        tokens: &[u32],
-        layers: usize,
-        ctx_window: usize,
-    ) -> Vec<Vec<f32>> {
-        let seq = if tokens.len() > ctx_window {
-            &tokens[tokens.len() - ctx_window..]
-        } else {
-            tokens
-        };
-
-        // No positional add: RoPE applies position inside attention, on Q and K.
-        let mut x: Vec<Vec<f32>> = seq
-            .iter()
-            .map(|&token_id| self.embedding_table[token_id as usize].clone())
-            .collect();
-
-        for layer_idx in 0..layers {
-            let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
-            let attn = self.self_attention(&x_norm, &self.wq[layer_idx], &self.wk[layer_idx], &self.wv[layer_idx], &self.wo[layer_idx]).await;
-            for i in 0..x.len() {
-                for j in 0..x[i].len() {
-                    x[i][j] += attn[i][j];
-                }
-            }
-
-            let x_norm = self.layer_norm(&x, &self.ln_gamma[layer_idx], &self.ln_beta[layer_idx]).await;
-            let ff = self.feed_forward(&x_norm, &self.w1[layer_idx], &self.w2[layer_idx], &self.b1[layer_idx], &self.b2[layer_idx]).await;
-            for i in 0..x.len() {
-                for j in 0..x[i].len() {
-                    x[i][j] += ff[i][j];
-                }
-            }
-        }
-
-        // Every caller feeds this straight to `unembed`, so the final norm
-        // belongs here rather than at each of the three call sites.
-        if self.has_final_ln() {
-            x = self
-                .layer_norm(&x, &self.ln_final_gamma, &self.ln_final_beta)
-                .await;
-        }
-
-        x
-    }
-
-    async fn layer_norm(&self, input: &[Vec<f32>], gamma: &[f32], beta: &[f32]) -> Vec<Vec<f32>> {
-        let rows = input.len();
-        let cols = input[0].len();
-        let flat: Vec<f32> = input.iter().flatten().cloned().collect();
-        let d_in = DeviceBufferF16::from_f32_slice(&flat);
-        let d_gamma = DeviceBufferF16::from_f32_slice(gamma);
-        let d_beta = DeviceBufferF16::from_f32_slice(beta);
-        let d_out = DeviceBufferF16::alloc(rows * cols);
-
-        unsafe {
-            cuda_layer_norm(
-                d_in.ptr as *const c_void,
-                d_out.ptr as *mut c_void,
-                d_gamma.ptr as *const c_void,
-                d_beta.ptr as *const c_void,
-                rows as i32,
-                cols as i32,
-                LAYER_NORM_EPS,
-            );
-        }
-
-        d_out
-            .to_f32_vec()
-            .chunks(cols)
-            .map(|row: &[f32]| row.to_vec())
-            .collect()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn self_attention(
-        &self, input: &[Vec<f32>],
-        wq: &[Vec<Vec<f32>>], wk: &[Vec<Vec<f32>>], wv: &[Vec<Vec<f32>>],
-        wo: &[Vec<f32>],
-    ) -> Vec<Vec<f32>> {
-        let seq_len = input.len();
-        let d_model = input[0].len();
-        let flat_embeddings: Vec<f32> = input.iter().flatten().cloned().collect();
-        let d_embeddings = DeviceBufferF16::from_f32_slice(&flat_embeddings);
-
-        let mut head_outputs: Vec<Vec<f32>> = Vec::new();
-
-        for i in 0..self.heads {
-            let h = i as usize;
-
-            let d_wq = DeviceBufferF16::from_f32_slice(
-                &wq[h].iter().flatten().cloned().collect::<Vec<f32>>(),
-            );
-            let d_wk = DeviceBufferF16::from_f32_slice(
-                &wk[h].iter().flatten().cloned().collect::<Vec<f32>>(),
-            );
-            let d_wv = DeviceBufferF16::from_f32_slice(
-                &wv[h].iter().flatten().cloned().collect::<Vec<f32>>(),
-            );
-            let d_out = DeviceBufferF16::alloc(seq_len * self.head_dim as usize);
-
-            unsafe {
-                cuda_attention_head(
-                    d_embeddings.ptr as *const c_void,
-                    d_wq.ptr as *const c_void,
-                    d_wk.ptr as *const c_void,
-                    d_wv.ptr as *const c_void,
-                    d_out.ptr as *mut c_void,
-                    seq_len as i32,
-                    d_model as i32,
-                    self.head_dim as i32,
-                );
-            }
-
-            head_outputs.push(d_out.to_f32_vec());
-        }
-
-        let head_dim = self.head_dim as usize;
-        let heads = self.heads as usize;
-
-        let mut concatenated: Vec<f32> = vec![0.0f32; seq_len * heads * head_dim];
-        for token in 0..seq_len {
-            for h in 0..heads {
-                let src_start = token * head_dim;
-                let dst_start = token * (heads * head_dim) + h * head_dim;
-                concatenated[dst_start..dst_start + head_dim]
-                    .copy_from_slice(&head_outputs[h][src_start..src_start + head_dim]);
-            }
-        }
-
-        let flat_wo: Vec<f32> = wo.iter().flatten().cloned().collect();
-        let d_concat = DeviceBufferF16::from_f32_slice(&concatenated);
-        let d_wo = DeviceBufferF16::from_f32_slice(&flat_wo);
-        let d_result = DeviceBufferF16::alloc(seq_len * d_model);
-
-        unsafe {
-            cuda_matmul(
-                d_concat.ptr as *const c_void,
-                d_wo.ptr as *const c_void,
-                d_result.ptr as *mut c_void,
-                seq_len as i32,
-                (heads * head_dim) as i32,
-                d_model as i32,
-            );
-        }
-
-        d_result
-            .to_f32_vec()
-            .chunks(d_model)
-            .map(|row: &[f32]| row.to_vec())
-            .collect()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn feed_forward(
-        &self, input: &[Vec<f32>],
-        w1: &[Vec<f32>], w2: &[Vec<f32>], b1: &[f32], b2: &[f32],
-    ) -> Vec<Vec<f32>> {
-        let seq_len = input.len();
-        let d_model = input[0].len();
-        // FF width comes from the weight shape (w1 is [d_model][d_ff]), not a
-        // fixed multiple: ff_multiplier is configurable, so assuming ×4 would
-        // read w1 with the wrong stride for any other setting.
-        let d_ff = w1[0].len();
-
-        let flat_input: Vec<f32> = input.iter().flatten().cloned().collect();
-        let flat_w1: Vec<f32> = w1.iter().flatten().cloned().collect();
-        let flat_w2: Vec<f32> = w2.iter().flatten().cloned().collect();
-
-        let d_input = DeviceBufferF16::from_f32_slice(&flat_input);
-        let d_w1 = DeviceBufferF16::from_f32_slice(&flat_w1);
-        let d_w2 = DeviceBufferF16::from_f32_slice(&flat_w2);
-        let d_b1 = DeviceBufferF16::from_f32_slice(b1);
-        let d_b2 = DeviceBufferF16::from_f32_slice(b2);
-        let d_out = DeviceBufferF16::alloc(seq_len * d_model);
-
-        unsafe {
-            cuda_feed_forward(
-                d_input.ptr as *const c_void,
-                d_w1.ptr as *const c_void,
-                d_w2.ptr as *const c_void,
-                d_b1.ptr as *const c_void,
-                d_b2.ptr as *const c_void,
-                d_out.ptr as *mut c_void,
-                seq_len as i32,
-                d_model as i32,
-                d_ff as i32,
-            );
-        }
-
-        d_out
-            .to_f32_vec()
-            .chunks(d_model)
-            .map(|row: &[f32]| row.to_vec())
-            .collect()
-    }
-
-    /// Project hidden states to vocab-sized logits via the output embedding.
-    pub async fn unembed(&self, hidden: &[Vec<f32>]) -> Vec<Vec<f32>> {
-        let seq_len = hidden.len();
-        let d_model = hidden[0].len();
-        let vocab = self.w_output[0].len();
-
-        let flat_hidden: Vec<f32> = hidden.iter().flatten().cloned().collect();
-        let flat_w_output: Vec<f32> = self.w_output.iter().flatten().cloned().collect();
-
-        let d_hidden = DeviceBufferF16::from_f32_slice(&flat_hidden);
-        let d_w_output = DeviceBufferF16::from_f32_slice(&flat_w_output);
-        let d_logits = DeviceBufferF16::alloc(seq_len * vocab);
-
-        unsafe {
-            cuda_matmul(
-                d_hidden.ptr as *const c_void,
-                d_w_output.ptr as *const c_void,
-                d_logits.ptr as *mut c_void,
-                seq_len as i32,
-                d_model as i32,
-                vocab as i32,
-            );
-        }
-
-        d_logits
-            .to_f32_vec()
-            .chunks(vocab)
-            .map(|row: &[f32]| row.to_vec())
-            .collect()
     }
 
     /// Run one forward+backward pass over a single `chunk`, accumulating gradients
@@ -576,6 +344,77 @@ fn phase_end(name: &'static str, start: Option<Instant>) {
     entry.1 += 1;
 }
 
+// ── Optional per-phase inference profiling ──────────────────────────────────
+//
+// The same idea as the step profiler above, on its own gate (`LLM_PROFILE_INFER`)
+// and its own accumulator so the two can be read independently.
+//
+// The granularity is deliberately finer than the step profiler's. A forward
+// stage here is not one thing: it flattens weights on the host, converts them
+// f32→f16 element by element, allocates device memory, uploads, launches, then
+// copies the result back and converts it again. Timing the stage as a whole
+// would say "attention is slow" and stop there. Splitting it into `up` (host
+// marshalling + H2D), `gpu` (the launch) and `dn` (D2H + conversion) is what
+// distinguishes a kernel that is genuinely expensive from a kernel that is
+// starved — and the latter is what a low GPU-utilization reading means.
+//
+// The synchronizes distort what they measure, so this is off by default too.
+
+fn infer_profiling_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("LLM_PROFILE_INFER").is_ok_and(|v| v != "0"))
+}
+
+static INFER_TOTALS: Mutex<BTreeMap<&'static str, (f64, u64)>> = Mutex::new(BTreeMap::new());
+
+pub(crate) fn infer_start() -> Option<Instant> {
+    if !infer_profiling_enabled() {
+        return None;
+    }
+    // SAFETY: no arguments, no pointers. See `phase_start`.
+    unsafe { cudaDeviceSynchronize() };
+    Some(Instant::now())
+}
+
+pub(crate) fn infer_end(name: &'static str, start: Option<Instant>) {
+    let Some(start) = start else { return };
+    // SAFETY: as above.
+    unsafe { cudaDeviceSynchronize() };
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mut totals = INFER_TOTALS.lock().unwrap();
+    let entry = totals.entry(name).or_insert((0.0, 0));
+    entry.0 += ms;
+    entry.1 += 1;
+}
+
+/// Print the accumulated per-stage inference profile (and reset it), sorted by
+/// total time. `tokens` is the number of generated tokens the totals cover.
+///
+/// Does nothing unless `LLM_PROFILE_INFER` is set.
+pub fn dump_infer_profile(tokens: usize) {
+    if !infer_profiling_enabled() {
+        eprintln!("(inference profiling off — set LLM_PROFILE_INFER=1)");
+        return;
+    }
+    let mut totals = INFER_TOTALS.lock().unwrap();
+    let grand: f64 = totals.values().map(|(ms, _)| *ms).sum();
+    let mut rows: Vec<_> = totals.iter().map(|(n, (ms, c))| (*n, *ms, *c)).collect();
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    eprintln!("\n  stage                 ms/token     % of token   calls/token");
+    for (name, ms, calls) in rows {
+        eprintln!(
+            "  {:<20} {:>9.2} {:>11.1}% {:>12.1}",
+            name,
+            ms / tokens as f64,
+            ms / grand * 100.0,
+            calls as f64 / tokens as f64,
+        );
+    }
+    eprintln!("  {:<20} {:>9.2}\n", "TOTAL", grand / tokens as f64);
+    totals.clear();
+}
+
 /// Print the accumulated per-stage profile (and reset it), sorted by total time.
 ///
 /// Does nothing unless `LLM_PROFILE_STEP` is set. `steps` is the number of
@@ -640,17 +479,6 @@ unsafe extern "C" {
         vocab: i32,
         active: i32,
     ) -> f32;
-
-    fn cuda_attention_head(
-        embeddings: *const c_void,
-        wq: *const c_void,
-        wk: *const c_void,
-        wv: *const c_void,
-        out: *mut c_void,
-        seq_len: i32,
-        d_model: i32,
-        head_dim: i32,
-    );
 
     fn cuda_matmul(
         a: *const c_void,
@@ -722,18 +550,6 @@ unsafe extern "C" {
 
     fn cuda_clamp_f16(buf: *mut c_void, n: i32);
 
-    fn cuda_feed_forward(
-        input: *const c_void,
-        w1: *const c_void,
-        w2: *const c_void,
-        b1: *const c_void,
-        b2: *const c_void,
-        out: *mut c_void,
-        seq_len: i32,
-        d_model: i32,
-        d_ff: i32,
-    );
-
     fn cuda_feed_forward_forward(
         input: *const c_void,
         w1: *const c_void,
@@ -792,6 +608,10 @@ unsafe extern "C" {
         Q_all: *mut c_void,
         K_all: *mut c_void,
         V_all: *mut c_void,
+        // Inference KV cache; training passes null/0, which leaves every stride in
+        // the kernel at its `seq`-based value. See `infer_session`.
+        k_cache_f32: *mut f32,
+        kv_stride: i32,
         seq: i32, d: i32, hd: i32, h: i32,
     );
 

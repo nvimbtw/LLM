@@ -399,6 +399,23 @@ impl Queue {
             }
         }
 
+        // Free the chat path's resident inference session before anything else
+        // takes the card.
+        //
+        // `llm::infer` caches a loaded model as device-resident weights plus scratch
+        // sized at the context window, and it holds them until a different model is
+        // requested — which, for a machine that only ever serves one model, is
+        // never. That is the right behaviour between chat turns and the wrong
+        // behaviour when the next job wants the device for something else: the
+        // memory is held, and the `attn`/`ff` scratch it sized is the same
+        // file-static arena a training `Workspace` resizes.
+        //
+        // A chat job is exempt, since releasing right before generating would throw
+        // away the cache that makes consecutive turns cheap.
+        if job.kind != JobKind::Chat {
+            llm::infer::release();
+        }
+
         let done = match job.kind {
             JobKind::Train => {
                 self.run_train(&job, cancel.clone(), tx, progress_tx, progress_rx)

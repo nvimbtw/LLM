@@ -4,7 +4,7 @@
 // the global model cache — both fine for serving a chat, both wrong for a
 // benchmark, where the same model and the same prompts must produce the same
 // numbers on every run or the scores can't be compared across models. So this is a
-// seeded sampler over a directly-supplied `Model`.
+// seeded sampler over a directly-supplied `InferSession`.
 //
 // Pure greedy decoding would be the simplest way to be deterministic, but it makes
 // small models loop almost immediately, which would peg the repetition metric at
@@ -12,10 +12,10 @@
 // Seeded temperature sampling is deterministic *and* representative of what the
 // model actually produces in use.
 
+use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 
-use crate::training::transformer::Model;
+use crate::training::infer_session::InferSession;
 
 // Decoding settings for the generation stage. Defaults mirror a typical chat
 // request so the surface metrics describe text the model would really emit.
@@ -42,14 +42,14 @@ impl Default for SamplingConfig {
 // tokens are excluded from the returned string so the surface metrics score the
 // model's output rather than the fixed prompt set, which would otherwise dominate
 // the word-rate on short generations.
-pub async fn continue_prompt(
-    model: &Model,
+pub fn continue_prompt(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     prompt: &str,
     config: SamplingConfig,
 ) -> String {
     let seq = tokenize::bpe::encode(prompt, merges);
-    continue_tokens(model, merges, seq, config).await.text
+    continue_tokens(session, merges, seq, config).text
 }
 
 /// What one generation produced.
@@ -75,35 +75,24 @@ pub struct Continuation {
     pub stopped_on_marker: bool,
 }
 
-/// `continue_tokens` for a caller already on its own thread.
-///
-/// The async here is an implementation detail of the GPU path, not something the
-/// backend should have to know about — same reason `kto::reference_logprob` is
-/// blocking. Callers that drive this are worker threads, never the actix runtime.
-pub fn continue_tokens_blocking(
-    model: &Model,
-    merges: &[((u32, u32), u32)],
-    seq: Vec<u32>,
-    config: SamplingConfig,
-) -> Continuation {
-    pollster::block_on(continue_tokens(model, merges, seq, config))
-}
-
 /// `continue_prompt` over already-tokenized input.
 ///
 /// Split out because the chat path needs it: a chat prompt is assembled by
 /// `chat_template::build_prompt`, which returns ids rather than a string, and
 /// re-encoding its rendered text would shift the token boundaries at the marker
 /// seams (see `build_training_example`'s note on why markers are encoded apart).
-pub async fn continue_tokens(
-    model: &Model,
+///
+/// Blocking, and callers must already be on their own OS thread: this drives CUDA
+/// synchronously and must never run on the actix runtime. It used to be `async`
+/// with a `continue_tokens_blocking` wrapper, but the async awaited nothing — the
+/// GPU path was only ever synchronous — so the wrapper described a distinction
+/// that did not exist.
+pub fn continue_tokens(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     mut seq: Vec<u32>,
     config: SamplingConfig,
 ) -> Continuation {
-    let ctx = model.ctx_window();
-    let layers = model.layers as usize;
-
     // Seeded per prompt-length so each prompt gets its own stream while the run as
     // a whole stays reproducible.
     let mut rng = StdRng::seed_from_u64(config.seed);
@@ -111,16 +100,15 @@ pub async fn continue_tokens(
     let mut stopped_on_marker = false;
 
     for _ in 0..config.max_tokens {
-        let hidden = model.forward_seq(&seq, layers, ctx).await;
-        if hidden.is_empty() {
+        // Only the final position predicts the next token, and `logits_last` keeps
+        // the per-step cost at one vocab-sized matmul over one row. The session
+        // truncates to its context window internally.
+        let logits = session.logits_last(&seq);
+        if logits.is_empty() {
             break;
         }
-        // Only the final position predicts the next token; unembedding just that
-        // row keeps the per-step cost at one vocab-sized matmul.
-        let last = vec![hidden[hidden.len() - 1].clone()];
-        let logits = model.unembed(&last).await;
 
-        let next = sample(&logits[0], config.temperature, config.top_k, &mut rng);
+        let next = crate::sample::sample(&logits, config.temperature, config.top_k, &mut rng);
         generated.push(next);
         seq.push(next);
 
@@ -152,84 +140,24 @@ fn is_terminal(token: u32) -> bool {
     })
 }
 
-// Top-k temperature sampling over the logit row, drawing from a supplied RNG.
-// Softmax is taken over the truncated candidate set after the usual
-// max-subtraction, so the distribution is normalized and can't overflow.
-fn sample(logits: &[f32], temperature: f32, top_k: usize, rng: &mut StdRng) -> u32 {
-    let mut candidates: Vec<(u32, f32)> = logits
-        .iter()
-        .enumerate()
-        .map(|(i, &l)| (i as u32, l))
-        .collect();
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    candidates.truncate(top_k.max(1).min(candidates.len()));
-
-    // Temperature 0 (or below) is argmax — the sorted head. Guarding here also
-    // keeps the division below from producing inf.
-    if temperature <= 0.0 {
-        return candidates[0].0;
-    }
-
-    let max = candidates[0].1;
-    let weights: Vec<f32> = candidates
-        .iter()
-        .map(|&(_, l)| ((l - max) / temperature).exp())
-        .collect();
-    let total: f32 = weights.iter().sum();
-    if !total.is_finite() || total <= 0.0 {
-        return candidates[0].0;
-    }
-
-    let mut r = rng.gen::<f32>() * total;
-    for (i, &(token, _)) in candidates.iter().enumerate() {
-        r -= weights[i];
-        if r <= 0.0 {
-            return token;
-        }
-    }
-    // Floating-point accumulation can leave `r` marginally positive after the
-    // whole loop; the last candidate is the correct answer in that case.
-    candidates[candidates.len() - 1].0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn zero_temperature_is_argmax() {
-        let mut rng = StdRng::seed_from_u64(1);
-        let logits = [0.1, 0.9, 0.4];
-        for _ in 0..10 {
-            assert_eq!(sample(&logits, 0.0, 3, &mut rng), 1);
-        }
-    }
-
-    #[test]
-    fn top_k_restricts_the_candidate_set() {
-        let mut rng = StdRng::seed_from_u64(7);
-        let logits = [5.0, 4.0, -1.0, -2.0, -3.0];
-        for _ in 0..200 {
-            assert!(sample(&logits, 1.0, 2, &mut rng) < 2);
-        }
-    }
-
+    // The sampler itself is tested in `crate::sample`. What matters *here* is the
+    // property this module exists for: seeding it makes a benchmark reproducible, so
+    // the same model and prompts produce the same score on every run.
     #[test]
     fn the_same_seed_produces_the_same_draws() {
         let logits = [1.0, 0.9, 0.8, 0.7];
         let draw = |seed| {
             let mut rng = StdRng::seed_from_u64(seed);
-            (0..20).map(|_| sample(&logits, 1.0, 4, &mut rng)).collect::<Vec<_>>()
+            (0..20)
+                .map(|_| crate::sample::sample(&logits, 1.0, 4, &mut rng))
+                .collect::<Vec<_>>()
         };
         assert_eq!(draw(99), draw(99));
-    }
-
-    #[test]
-    fn huge_logits_do_not_overflow_into_a_degenerate_draw() {
-        let mut rng = StdRng::seed_from_u64(3);
-        let logits = [400.0, 399.0, 1.0];
-        let token = sample(&logits, 1.0, 3, &mut rng);
-        assert!(token < 3);
+        assert_ne!(draw(99), draw(100));
     }
 
     #[test]

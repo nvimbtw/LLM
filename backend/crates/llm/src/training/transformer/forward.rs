@@ -110,6 +110,10 @@ impl Model {
                 ws.q_all[layer_idx].ptr as *mut c_void,
                 ws.k_all[layer_idx].ptr as *mut c_void,
                 ws.v_all[layer_idx].ptr as *mut c_void,
+                // No KV cache in training, and `kv_stride` 0 keeps every stride in
+                // the kernel at the `seq`-based values the backward expects.
+                std::ptr::null_mut(),
+                0,
                 s as i32, d as i32, hd as i32, h as i32,
             );
         }

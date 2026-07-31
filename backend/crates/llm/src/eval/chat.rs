@@ -29,7 +29,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::chat_template::{self, Role, Turn};
-use crate::training::transformer::Model;
+use crate::training::infer_session::InferSession;
 
 use super::score;
 
@@ -113,11 +113,10 @@ pub fn load(dir: &Path) -> Vec<Conversation> {
 /// encode, a conversation with no assistant turn, or a scoring pass that dropped
 /// positions. Dropped rather than counted, so an unscoreable example can't pull the
 /// mean toward zero.
-pub async fn reply_logprob(
-    model: &Model,
+pub fn reply_logprob(
+    session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversation: &Conversation,
-    layers: usize,
 ) -> Option<(f64, usize)> {
     let turns: Vec<Turn> = conversation
         .turns
@@ -148,7 +147,7 @@ pub async fn reply_logprob(
         return None;
     }
 
-    let scores = score::token_logprobs(model, &ids, layers).await;
+    let scores = score::token_logprobs(session, &ids);
     // `token_logprobs` drops any non-finite position, which would shift every index
     // after it and silently misalign the mask. Refuse the conversation instead of
     // scoring the wrong tokens — the same guard `preference` applies.

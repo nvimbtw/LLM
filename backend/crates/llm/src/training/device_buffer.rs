@@ -152,6 +152,34 @@ impl DeviceBufferF16 {
         }
     }
 
+    /// Copy back only the first `n` elements.
+    ///
+    /// Exists because the inference path allocates its logit buffer at
+    /// `[max_s, vocab]` but usually wants one row of it: generation reads the last
+    /// position only, and copying the whole allocation back per token would be
+    /// megabytes of D2H and f16→f32 conversion for a few kilobytes of logits —
+    /// which is the cost that made the old path slow in the first place.
+    pub fn to_f32_vec_n(&self, n: usize) -> Vec<f32> {
+        assert!(
+            n <= self.len,
+            "read of {n} elements from a buffer holding {}",
+            self.len
+        );
+        let mut f16 = vec![half::f16::ZERO; n];
+        // SAFETY: `f16` is a freshly allocated `Vec<half::f16>` of `n` elements,
+        // valid for writes of `n * size_of::<half::f16>()` bytes; `self.ptr` is a
+        // device allocation of `self.len >= n` elements of the same type, so the
+        // source span is in bounds.
+        unsafe {
+            cuda_memcpy_d2h(
+                f16.as_mut_ptr() as *mut c_void,
+                self.ptr as *const c_void,
+                n * size_of::<half::f16>(),
+            );
+        }
+        f16.iter().map(|&v| v.to_f32()).collect()
+    }
+
     pub fn to_f32_vec(&self) -> Vec<f32> {
         let mut f16 = vec![half::f16::ZERO; self.len];
         // SAFETY: `f16` is a freshly allocated `Vec<half::f16>` of `self.len`

@@ -73,18 +73,17 @@ impl KtoIndex {
 /// no sliding — the same view of the example that training will have. `None` when
 /// the example has no scoreable reply position.
 ///
-/// Blocking: the GPU path underneath is async only as an implementation detail, and
-/// callers here are already on a dedicated OS thread.
+/// Blocking, and callers here are already on a dedicated OS thread — the GPU path
+/// underneath drives CUDA synchronously.
 pub fn reference_logprob(
-    model: &crate::training::transformer::Model,
+    session: &mut crate::training::infer_session::InferSession,
     ids: &[u32],
     mask: &[u8],
-    layers: usize,
 ) -> Option<f64> {
     if ids.len() < 2 {
         return None;
     }
-    let scores = pollster::block_on(crate::eval::score::token_logprobs(model, ids, layers));
+    let scores = crate::eval::score::token_logprobs(session, ids);
     // `token_logprobs` drops non-finite positions, which would shift every index
     // after the drop and silently misalign the mask. Refuse rather than sum the
     // wrong tokens.

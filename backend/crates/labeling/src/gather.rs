@@ -309,6 +309,10 @@ pub fn run(
         .map_err(|e| format!("could not load tokenizer: {e}"))?;
     let model = llm::training::transformer::Model::load(&model_dir.to_string_lossy())
         .map_err(|e| format!("could not load model: {e}"))?;
+    // One session for the whole pass: the weights go to the device once rather than
+    // once per generated token.
+    let mut session =
+        llm::training::infer_session::InferSession::new(&model, model.ctx_window());
 
     let ctx_window = model.ctx_window();
     let reserve = (ctx_window / 4).max(8);
@@ -348,7 +352,7 @@ pub fn run(
             seed: run_seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
         };
         let continuation =
-            llm::eval::generate::continue_tokens_blocking(&model, &merges, seq, config);
+            llm::eval::generate::continue_tokens(&mut session, &merges, seq, config);
         // The terminal marker is scaffolding, not part of the reply — showing it in
         // the rating panel would have people rating the template.
         let text = llm::autolabel::strip_terminal(&continuation.text);

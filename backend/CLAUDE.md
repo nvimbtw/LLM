@@ -449,10 +449,15 @@ gradient buffer, no Adam master and was never synced back, so every model before
 v4 ran on frozen Glorot noise for position. Removing it costs nothing learned and
 takes `ctx * d` floats out of every model file.
 
-- **The forward is applied in two places** and they must agree: the batched
-  training path, and `cuda_attention_head`, which the *inference* path
-  (`forward_seq` → `self_attention`) calls per head. They share the one kernel;
-  its f16 cache outputs are nullable so inference reuses it without caching.
+- **The rotation is applied in three places** and they must agree: the batched
+  forward (training *and* inference prefill, which now share
+  `cuda_attention_forward_batched`), and `rope_decode_kernel` for a single new
+  token against the KV cache. The first two are literally the same launch of
+  `rope_qk_kernel` — its f16 cache outputs are nullable, so inference reuses it
+  without caching. The decode kernel is separate only because Q and the cached K
+  row no longer share an index space, and it calls the same `rope_cos_sin` /
+  `rope_rotate` device helpers so the arithmetic still has one definition. See
+  "Inference: one device-resident session".
 - **Angles are reduced into `[-pi, pi]` before the trig call.** This file is
   compiled `--use_fast_math`, which substitutes intrinsics whose argument
   reduction degrades past about one turn, and the angle reaches ~1e3 radians at
@@ -552,6 +557,166 @@ and diverged in coarse quanta at large LR, capping the usable LR at ~1e-5. The f
 master lets a sub-ULP `Δw` accumulate, lifting the cap (pretrain default is now
 1e-4; see `use-training.ts`). Cost: **14 B/param** (f16 `w` 2 B + f32 `m`/`v` 8 B +
 f32 master 4 B), ~+40 MB on a 10M-param model; compute throughput is unchanged.
+
+## Inference: one device-resident session
+
+`training::infer_session::InferSession` is the forward-only counterpart of
+`Workspace`, and it is now the **only** inference path. `Model::forward_seq` and
+its per-stage helpers (`layer_norm`, `self_attention`, `feed_forward`, `unembed`)
+are gone; so is `cuda_attention_head`, the per-head kernel only they called.
+
+The old path held nothing on the device between calls. Every layer norm, every
+attention head, every feed-forward and the whole `[d, vocab]` output projection
+were flattened on the host, converted f32→f16 element by element, `cudaMalloc`'d,
+uploaded, launched, and copied straight back into `Vec<Vec<f32>>` — **once per
+generated token**, ~1000 launches and ~250 malloc/free pairs each time. Measured
+at d256/L6/h4/ctx512 with `LLM_PROFILE_INFER=1`: 66% of a token was host
+marshalling and upload, 17% device→host copies, 4% host residual loops, and
+**14% was kernels**. That is what low GPU utilization during generation meant.
+
+Every one of the four pathologies commit `6048702` fixed for training was still
+present here: per-head host loops, `cudaMalloc` per call, blocking D2H, and
+non-persistent weights. Weights are now uploaded once, activations never leave
+the device, and the only D2H per call is the logits.
+
+**Measured, at d256/L6/h4/ctx512 on a 3060** (`tests/bench_generate.rs`, A/B run
+with both paths present before the old one was deleted):
+
+| prompt | old tok/s | new tok/s | speedup |
+|--------|-----------|-----------|---------|
+| 32     | 26.0 | 443.9 | 17.1x |
+| 128    | 22.5 | 382.8 | 17.0x |
+| 512    | 15.4 | 439.0 | 28.5x |
+
+- **`ensure_attn` was reallocating every token.** It grows to the exact size
+  requested, and a generating sequence gets one longer each step, so the guard
+  missed every time and all 11 buffers — including the six backward-only ones
+  inference never reads — were freed and re-malloc'd. `cuda_infer_reserve` sizes
+  it once at `ctx` in `InferSession::new`. Worth ~9 ms/token at a short prompt.
+- **The old path silently disagreed with the training forward.** It accumulated
+  the residual stream in host f32 where training uses `cuda_add_inplace_f16`, and
+  it skipped both the post-embedding and post-residual `cuda_clamp_f16` calls.
+  A model was served through a different function than it trained under.
+  `tests/infer_agrees_with_training_forward.rs` now pins them together and is the
+  guard on any future change to either.
+
+### The KV cache
+
+`cuda_attention_decode` handles one new token against the cache: four
+strided-batched GEMMs plus `rope_decode_kernel` and `decode_softmax_kernel`.
+
+- **K is cached in f32, V in f16**, because that is what the prefill's GEMMs
+  natively produce (`attn.k_f32`, and V straight out of its f16 GEMM). Caching K
+  as f16 would make a decode step's score GEMM lower precision than a prefill's,
+  and the two have to agree.
+- **A prefill fills the cache as a side effect.**
+  `cuda_attention_forward_batched` gained a nullable `k_cache_f32` and a
+  `kv_stride`; training passes null/0, which leaves every stride at its old
+  `seq`-based value. There is no separate "warm the cache" pass.
+- **Decode needs no head concat.** `[h, 1, hd]` contiguous *is* the `[1, d]` row
+  the wo GEMM wants. The prefill needs `cuda_concat_heads` only because its
+  `[h, s, hd]` has to be interleaved by token.
+- **`cached_tokens` holds the *windowed* sequence**, and that is what makes a
+  moving context window safe without tracking an offset: K and V at position `i`
+  are a function of the windowed tokens `0..=i` and of `i` (through RoPE) and
+  nothing else, so two windowed sequences sharing a prefix share valid cached
+  rows however the window moved. A slid window fails the prefix comparison and
+  re-prefills, which is correct and is `a_sliding_context_window_stays_correct`.
+
+**A trap when writing tests against this.** Two `logits_*` calls on the *same*
+session no longer run the same code: the second finds the sequence cached and
+takes the decode branch. Comparing them therefore compares prefill against
+decode, which is a real property but not usually the one being tested, and it is
+not bit-exact (see below). Use a fresh `InferSession` per side when the property
+under test is anything else — truncation, a row offset, weight packing. Two tests
+had to be fixed this way after the cache landed.
+
+**What the cache is worth depends entirely on context length,** and at this
+model's size it is not the headline. `prefill_ms` in the bench is a free A/B —
+before the cache every token cost a full prefill of the sequence so far:
+
+| prompt | prefill (= old per-token) | decode ms/token | speedup |
+|--------|---------------------------|-----------------|---------|
+| 128  | 2.0 ms  | 1.8 ms | 1.1x |
+| 512  | 2.3-3.2 | 1.7-1.9 | 1.2-1.9x |
+| 2048 | 9.8-10.1 | 1.9-2.1 | ~5x |
+| 4000 | 34.3-36.6 | 1.8-2.0 | **~19x** |
+
+Decode is flat in context length; prefill is not, and must not be — it contains
+the O(s²) attention.
+
+**A decode step at these shapes is launch-bound, not arithmetic-bound**: ~100
+kernel launches against ~0.1 ms of FLOPs. `layers` is the only shape dimension
+that reliably moves the number, because launches scale with it; rows like
+`d 256→128` measuring *slower* are the noise floor, not physics. Do not read the
+per-stage profile as FLOP attribution — with `LLM_PROFILE_INFER=1` each stage is
+bracketed by a `cudaDeviceSynchronize`, and at ~2 ms/token those syncs cost more
+than the stage does. **Fusing the residual+clamp pairs, or CUDA graphs for the
+decode step, is where the next multiple is** — not more algorithmic work.
+
+### Two host costs that were larger than they looked
+
+- **`bpe::decode` rebuilt its merge table on every call** — ~7,900 hash inserts
+  at vocab 8,192, measured at 292 µs, i.e. 15% of a token, for a table that never
+  changes. The streaming loop called it once per generated token to re-decode the
+  reply so far. `bpe::Decoder` indexes once, exactly as `bpe::Encoder` already
+  did for the other direction; the free `decode` is now a wrapper.
+- **The sampler sorted the whole vocabulary** to keep 40 candidates: 106 µs, ~5%
+  of a token. `sample::sample` partitions with `select_nth_unstable_by` instead
+  (5.9x faster) and its comparator breaks ties on ascending token id so the order
+  is *total* — without that, an unstable partition could reorder tied logits and a
+  seeded benchmark would stop reproducing its own past runs.
+
+There were also **two samplers that had drifted apart on correctness, not
+determinism**. `infer::sample_token` exponentiated raw logits with no
+max-subtraction, so a confident model overflowed `exp` to `inf` and the whole
+distribution went `NaN`; and `temperature = 0.0` divided by zero, returning the
+argmax only by accident (`r -= inf` gives `NaN`, `NaN <= 0.0` is false, so the
+loop fell through to its initial value). Its unit test passed on that accident.
+There is now one sampler, taking the RNG as a parameter — which is the only thing
+serving and benchmarking actually needed to differ about.
+
+### Scores may have moved, and `SCORE_VERSION` was deliberately not bumped
+
+`eval::score` and `kto::reference_logprob` run on the same forward, so this work
+can shift a benchmark number with no model having changed. That was a considered
+decision, not an oversight.
+
+Measured on real trained weights (Shakedown 1, d256/L6) against the *training*
+forward, which is the function a model's own objective implies:
+
+- worst position: **0.098% of the logit range**, total variation between
+  next-token distributions **0.003**
+- **1 argmax flip in 64 positions**, and at that position the top-2 gap was
+  `0.007812` against a noise floor of `0.007812` — one f16 ULP, an exact tie
+  where either answer is equally defensible
+
+So metrics built on strict argmax or `>` comparisons (minimal pairs, top-1 at
+markers) can move slightly, but only where the model was already indifferent.
+For scale, the markup suite reports `± 1.3` points of sampling error on its own.
+No pre-change score was available to diff against — `data/artifacts/models` holds
+weights but the scores live in Postgres — so **the shift was bounded by
+construction rather than measured end to end.** If a suspicious score movement
+shows up on a model with history, this is the first thing to suspect.
+
+Post-change reference, for future comparison: Shakedown 1 scores **40.9 / 100**
+on the language suite (bits/byte 1.796) and **32.1 ± 1.3 / 100** on markup,
+reproducible across runs.
+
+### Lifecycle
+
+`infer::MODEL_CACHE` holds the session, keyed on the model directory, and drops
+the previous one before building the next so two models' weights are never both
+resident. `infer::release()` frees it, and `jobs::queue` calls that before every
+non-chat job: one GPU, one queue, and the `attn`/`ff` scratch the session sizes at
+`ctx` is the same file-static arena a training `Workspace` resizes. Chat jobs are
+exempt, since releasing right before generating would throw away the cache that
+makes consecutive turns cheap.
+
+`InferSession` is `Send` but deliberately **not** `Sync`. A CUDA device pointer
+belongs to the process's primary context, so moving a session between threads is
+sound; two threads *using* one concurrently is not, and neither is two sessions
+running at once, for the file-static-scratch reason above.
 
 ## Error handling
 

@@ -2019,7 +2019,9 @@ pub fn build_kto_dataset(base_model_dir: &Path) -> io::Result<KtoDatasetStats> {
 
     let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
     let ctx = model.ctx_window();
-    let layers = model.layers as usize;
+    // One session for every reference log-probability in this pass, rather than
+    // re-uploading the weights per scored example.
+    let mut session = llm::training::infer_session::InferSession::new(&model, ctx);
 
     let mut corpus: Vec<u32> = Vec::new();
     let mut mask: Vec<u8> = Vec::new();
@@ -2058,7 +2060,7 @@ pub fn build_kto_dataset(base_model_dir: &Path) -> io::Result<KtoDatasetStats> {
         // The reference log-probability over exactly the masked (reply) positions —
         // the same positions `train_step_kto` will sum over, so the two are
         // comparable.
-        let Some(ref_logprob) = llm::kto::reference_logprob(&model, &ids, &m, layers) else {
+        let Some(ref_logprob) = llm::kto::reference_logprob(&mut session, &ids, &m) else {
             skipped_no_reply += 1;
             continue;
         };

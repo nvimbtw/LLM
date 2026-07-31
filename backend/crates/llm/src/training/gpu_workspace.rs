@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 
 use crate::training::device_buffer::{Buffer, DeviceBufferF16};
+use crate::training::infer_session::flatten_qkv_heads;
 use crate::training::transformer::Model;
 
 unsafe extern "C" {
@@ -375,15 +376,12 @@ impl Workspace {
         let _vocab = self.vocab;
 
         for layer_idx in 0..t.layers as usize {
-            // Upload contiguous per-head QKV weights
-            let mut wq_flat = Vec::with_capacity(h * d * hd);
-            let mut wk_flat = Vec::with_capacity(h * d * hd);
-            let mut wv_flat = Vec::with_capacity(h * d * hd);
-            for hi in 0..h {
-                wq_flat.extend(t.wq[layer_idx][hi].iter().flatten());
-                wk_flat.extend(t.wk[layer_idx][hi].iter().flatten());
-                wv_flat.extend(t.wv[layer_idx][hi].iter().flatten());
-            }
+            // Contiguous per-head QKV weights, packed by the function the
+            // inference session also uses — both forwards stride over this layout,
+            // so it is defined once (see `infer_session::flatten_qkv_heads`).
+            let wq_flat = flatten_qkv_heads(&t.wq[layer_idx], h, d, hd);
+            let wk_flat = flatten_qkv_heads(&t.wk[layer_idx], h, d, hd);
+            let wv_flat = flatten_qkv_heads(&t.wv[layer_idx], h, d, hd);
             // Seed both the f16 view (first forward pass reads it before any Adam
             // step) and the f32 master (source of truth) from the full-precision
             // CPU weights — the master gets the exact f32, not the f16 round-trip.
