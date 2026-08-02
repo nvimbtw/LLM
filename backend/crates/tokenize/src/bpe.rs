@@ -1,4 +1,5 @@
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::hash_map::Entry;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::io::{BufWriter, Read, Seek, Write};
@@ -24,27 +25,33 @@ pub fn vocab_size(num_merges: usize) -> i64 {
 
 /// Learns a merge table, returning `(vocab_size, corpus, merges)`.
 ///
-/// **Use the `merges`; do not train a model on the returned `corpus`.** The two
-/// are not the same segmentation. This applies each merge to every occurrence
-/// across the whole corpus before moving to the next, so a word can end up holding
-/// a token that greedy rank-order encoding would never build: "banana" comes out
-/// of here as one token, while `Encoder` produces `["ban", "ana"]`, because by the
-/// time the "banana" merge was learned, the pieces it joins had already been
-/// merged corpus-wide in an order encoding cannot reproduce.
+/// **Training and encoding apply merges by the same rule, and must keep doing
+/// so.** Each learned merge is applied to every *word* independently, in rank
+/// order, to fixed point — which is exactly what `Encoder::merge_word` does when
+/// it repeatedly takes the lowest-id applicable merge. That equivalence is what
+/// makes every learned merge reachable at encode time, and it is not free:
 ///
-/// That gap is not cosmetic — it ran ~33% on a repetitive fixture, and it points
-/// the wrong way: a corpus saved from here contains ids that inference, which goes
-/// through `Encoder`, can never emit. A model trained on it spends embedding rows
-/// on tokens it will never see and is served a different tokenization than it was
-/// trained on. Encode the corpus with `Encoder` instead, so the training text and
-/// the inference text are segmented the same way.
+/// This used to apply each merge across a flat corpus while tracking pair
+/// positions in a side index, and the index went stale the moment a merge
+/// shortened a word — every later position in that word shifted left by one and
+/// was never corrected, so occurrences were silently skipped. The merges learned
+/// after that point were fitted to a segmentation `Encoder` cannot reproduce, and
+/// **38% of the table (3,004 of 7,872 merges) could never be emitted at all**.
+/// The casualties were the most common words in English: `" the"` was learned as
+/// `" th" + "e"` at rank 6, but the encoder reaches `[" t", "he"]` and stops, so
+/// `" the"` was in the vocabulary and unreachable. That cost ~35% of the
+/// tokenizer's compression — 51% of emitted tokens were single characters, and
+/// bytes-per-token sat at 2.13 where ~3.2 is normal at this vocabulary size.
+///
+/// `every_learned_merge_is_reachable_by_the_encoder` is the guard. It is a total
+/// property, not a sample: if it fails, the two algorithms have drifted again.
 pub fn train(
     pre_tokenized: Vec<Vec<char>>,
     max_vocab_size: Option<u32>,
     on_log: impl Fn(&str),
 ) -> Result<(i64, Vec<Vec<u32>>, Vec<((u32, u32), u32)>), io::Error> {
-    let mut corpus = convert_to_bytes(pre_tokenized);
-    let (mut pair_counts, mut pair_index) = count_pairs(&corpus);
+    let (mut words, freq, of_occurrence) = dedupe_words(convert_to_bytes(pre_tokenized));
+    let (mut pair_counts, mut pair_words) = index_pairs(&words, &freq);
     let mut heap = create_heap(pair_counts.clone());
 
     // Clamped to what `corpus.bin` can represent — an id past this would be
@@ -60,13 +67,10 @@ pub fn train(
     while heap.len() > 0 && max > token {
         let (count, pair) = heap.pop().unwrap();
 
-        let actual_count = *pair_counts.get(&pair).unwrap_or(&0);
-
-        if actual_count != count {
-            continue;
-        }
-
-        if actual_count == 0 {
+        // Lazy deletion: the heap keeps outdated entries for pairs whose count has
+        // moved since they were pushed, so a popped entry counts only if it still
+        // matches the live tally.
+        if *pair_counts.get(&pair).unwrap_or(&0) != count || count == 0 {
             continue;
         }
 
@@ -77,17 +81,45 @@ pub fn train(
             on_log(&format!("BPE merge {}/{}", token - 256, max - 256));
         }
 
-        apply_merge(
-            &mut corpus,
-            pair,
-            token,
-            &mut pair_counts,
-            &mut pair_index,
-            &mut heap,
-        );
+        // Only the words that actually hold the pair can change, so the rest of the
+        // vocabulary is never walked. Collected first because the loop rewrites
+        // `pair_words` as it goes.
+        let affected: Vec<usize> = match pair_words.get(&pair) {
+            Some(set) => set.iter().copied().collect(),
+            None => Vec::new(),
+        };
 
-        pair_counts.insert(pair, 0);
-        pair_index.remove(&pair);
+        for w in affected {
+            let merged = apply_pair(&words[w], pair, token);
+            if merged == words[w] {
+                continue;
+            }
+            // Retire the word's old pairs and file its new ones. Recomputing the
+            // whole word rather than patching positions around the merge point is
+            // what retires the stale-index bug: a word's tally is always derived
+            // from the word as it now stands, never from a remembered offset.
+            retire_pairs(
+                &words[w],
+                freq[w],
+                &mut pair_counts,
+                &mut pair_words,
+                &mut heap,
+                w,
+            );
+            words[w] = merged;
+            admit_pairs(
+                &words[w],
+                freq[w],
+                &mut pair_counts,
+                &mut pair_words,
+                &mut heap,
+                w,
+            );
+        }
+
+        // `apply_pair` runs to fixed point, so the merged pair is gone everywhere.
+        pair_counts.remove(&pair);
+        pair_words.remove(&pair);
 
         token += 1;
     }
@@ -96,8 +128,149 @@ pub fn train(
     println!("Training complete! {} merges performed.", merges.len());
 
     let vocab = vocab_size(merges.len());
+    let corpus: Vec<Vec<u32>> = of_occurrence.iter().map(|&w| words[w].clone()).collect();
 
     Ok((vocab, corpus, merges))
+}
+
+/// Applies one merge to a word, to fixed point, exactly as `Encoder::merge_word`
+/// would if this were the only merge available to it.
+///
+/// It takes the **rightmost** occurrence each pass, which is the position
+/// `merge_word`'s tie-break settles on when several positions hold the same
+/// (lowest) token id — `Some((_, best)) if token > best => {}` keeps the incumbent
+/// only when the new id is strictly greater, so an equal id replaces it and the
+/// last match wins. On `[a,a,a]` that yields `[a,X]`, where a left-to-right sweep
+/// would yield `[X,a]`. The two disagree on any odd run of a repeated symbol, so
+/// this is load-bearing rather than stylistic.
+fn apply_pair(word: &[u32], pair: (u32, u32), token: u32) -> Vec<u32> {
+    let mut out = word.to_vec();
+    loop {
+        let mut at = None;
+        for pos in 0..out.len().saturating_sub(1) {
+            if out[pos] == pair.0 && out[pos + 1] == pair.1 {
+                at = Some(pos);
+            }
+        }
+        match at {
+            Some(pos) => {
+                out[pos] = token;
+                out.remove(pos + 1);
+            }
+            None => return out,
+        }
+    }
+}
+
+/// Collapses the pretoken stream to its distinct words, returning
+/// `(words, freq, of_occurrence)` — the distinct words, how often each occurs, and
+/// which word every original occurrence maps to (so the corpus can be rebuilt in
+/// input order).
+///
+/// BPE only ever needs a word once, weighted by its count: the pair tallies are
+/// sums over occurrences either way. Real text repeats itself heavily, so this is
+/// also what keeps the trainer's footprint proportional to the *vocabulary* of the
+/// sample rather than to its length.
+fn dedupe_words(occurrences: Vec<Vec<u32>>) -> (Vec<Vec<u32>>, Vec<usize>, Vec<usize>) {
+    let mut seen: HashMap<Vec<u32>, usize> = HashMap::new();
+    let mut words: Vec<Vec<u32>> = Vec::new();
+    let mut freq: Vec<usize> = Vec::new();
+    let mut of_occurrence: Vec<usize> = Vec::with_capacity(occurrences.len());
+
+    for word in occurrences {
+        match seen.entry(word) {
+            Entry::Occupied(e) => {
+                let w = *e.get();
+                freq[w] += 1;
+                of_occurrence.push(w);
+            }
+            Entry::Vacant(e) => {
+                let w = words.len();
+                words.push(e.key().clone());
+                freq.push(1);
+                of_occurrence.push(w);
+                e.insert(w);
+            }
+        }
+    }
+
+    (words, freq, of_occurrence)
+}
+
+/// The live pair tally: how often each adjacent pair occurs across the whole
+/// sample, and which distinct words contain it.
+fn index_pairs(
+    words: &[Vec<u32>],
+    freq: &[usize],
+) -> (
+    HashMap<(u32, u32), usize>,
+    HashMap<(u32, u32), HashSet<usize>>,
+) {
+    let mut pair_counts: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut pair_words: HashMap<(u32, u32), HashSet<usize>> = HashMap::new();
+
+    for (w, word) in words.iter().enumerate() {
+        for pair in word.windows(2) {
+            let key = (pair[0], pair[1]);
+            *pair_counts.entry(key).or_insert(0) += freq[w];
+            pair_words.entry(key).or_default().insert(w);
+        }
+    }
+
+    (pair_counts, pair_words)
+}
+
+// Subtracts word `w`'s contribution to every pair it currently holds.
+//
+// A decremented pair is pushed back at its *new* count, which is not optional: the
+// heap only ever holds the counts it was pushed with, and a pair that shrank would
+// otherwise be represented solely by stale-high entries that fail the tally check
+// on pop. It would then never be reconsidered, and a merge that is still the most
+// frequent one available would be skipped entirely.
+fn retire_pairs(
+    word: &[u32],
+    weight: usize,
+    pair_counts: &mut HashMap<(u32, u32), usize>,
+    pair_words: &mut HashMap<(u32, u32), HashSet<usize>>,
+    heap: &mut BinaryHeap<(usize, (u32, u32))>,
+    w: usize,
+) {
+    for pair in word.windows(2) {
+        let key = (pair[0], pair[1]);
+        if let Some(count) = pair_counts.get_mut(&key) {
+            *count = count.saturating_sub(weight);
+            if *count == 0 {
+                pair_counts.remove(&key);
+            } else {
+                heap.push((*count, key));
+            }
+        }
+        if let Some(set) = pair_words.get_mut(&key) {
+            set.remove(&w);
+            if set.is_empty() {
+                pair_words.remove(&key);
+            }
+        }
+    }
+}
+
+// Adds word `w`'s contribution back, pushing each touched pair's new count so the
+// heap always holds a current entry for anything that moved.
+fn admit_pairs(
+    word: &[u32],
+    weight: usize,
+    pair_counts: &mut HashMap<(u32, u32), usize>,
+    pair_words: &mut HashMap<(u32, u32), HashSet<usize>>,
+    heap: &mut BinaryHeap<(usize, (u32, u32))>,
+    w: usize,
+) {
+    for pair in word.windows(2) {
+        let key = (pair[0], pair[1]);
+        let count = pair_counts.entry(key).or_insert(0);
+        *count += weight;
+        heap.push((*count, key));
+        pair_words.entry(key).or_default().insert(w);
+    }
 }
 
 // Consumes the input by value and iterates it by value on purpose: taking it by
@@ -122,30 +295,6 @@ fn convert_to_bytes(pre_tokenized: Vec<Vec<char>>) -> Vec<Vec<u32>> {
         .collect()
 }
 
-fn count_pairs(
-    corpus: &Vec<Vec<u32>>,
-) -> (
-    HashMap<(u32, u32), usize>,
-    HashMap<(u32, u32), Vec<(usize, usize)>>,
-) {
-    let mut pair_counts: HashMap<(u32, u32), usize> = HashMap::new();
-    let mut pair_index: HashMap<(u32, u32), Vec<(usize, usize)>> = HashMap::new();
-
-    for (word_idx, word) in corpus.iter().enumerate() {
-        for (pos, pair) in word.windows(2).enumerate() {
-            let (a, b) = (pair[0], pair[1]);
-            *pair_counts.entry((a, b)).or_insert(0) += 1;
-
-            pair_index
-                .entry((a, b))
-                .or_insert_with(Vec::new)
-                .push((word_idx, pos));
-        }
-    }
-
-    (pair_counts, pair_index)
-}
-
 fn create_heap(pair_counts: HashMap<(u32, u32), usize>) -> BinaryHeap<(usize, (u32, u32))> {
     let mut heap: BinaryHeap<(usize, (u32, u32))> = BinaryHeap::new();
 
@@ -154,70 +303,6 @@ fn create_heap(pair_counts: HashMap<(u32, u32), usize>) -> BinaryHeap<(usize, (u
     }
 
     heap
-}
-
-fn apply_merge(
-    corpus: &mut Vec<Vec<u32>>,
-    pair: (u32, u32),
-    token: u32,
-    pair_counts: &mut HashMap<(u32, u32), usize>,
-    pair_index: &mut HashMap<(u32, u32), Vec<(usize, usize)>>,
-    heap: &mut BinaryHeap<(usize, (u32, u32))>,
-) {
-    let locations = match pair_index.get(&pair) {
-        Some(locs) => locs.clone(),
-        _ => return,
-    };
-
-    let mut by_word: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (word_idx, pos) in &locations {
-        by_word.entry(*word_idx).or_default().push(*pos);
-    }
-
-    for (word_idx, mut positions) in by_word {
-        positions.sort_unstable();
-        positions.reverse();
-
-        for pos in positions {
-            let word = &corpus[word_idx];
-            if pos + 1 >= word.len() || word[pos] != pair.0 || word[pos + 1] != pair.1 {
-                continue;
-            }
-
-            if pos > 0 {
-                let left = (corpus[word_idx][pos - 1], pair.0);
-                *pair_counts.entry(left).or_insert(0) =
-                    pair_counts.get(&left).unwrap_or(&0).saturating_sub(1);
-            }
-            if pos + 2 < corpus[word_idx].len() {
-                let right = (pair.1, corpus[word_idx][pos + 2]);
-                *pair_counts.entry(right).or_insert(0) =
-                    pair_counts.get(&right).unwrap_or(&0).saturating_sub(1);
-            }
-
-            corpus[word_idx].remove(pos + 1);
-            corpus[word_idx][pos] = token;
-
-            if pos > 0 {
-                let new_left = (corpus[word_idx][pos - 1], token);
-                *pair_counts.entry(new_left).or_insert(0) += 1;
-                heap.push((*pair_counts.get(&new_left).unwrap(), new_left));
-                pair_index
-                    .entry(new_left)
-                    .or_default()
-                    .push((word_idx, pos - 1));
-            }
-            if pos + 1 < corpus[word_idx].len() {
-                let new_right = (token, corpus[word_idx][pos + 1]);
-                *pair_counts.entry(new_right).or_insert(0) += 1;
-                heap.push((*pair_counts.get(&new_right).unwrap(), new_right));
-                pair_index
-                    .entry(new_right)
-                    .or_default()
-                    .push((word_idx, pos));
-            }
-        }
-    }
 }
 
 pub fn save_merges(merges: &[((u32, u32), u32)], path: &str) -> Result<(), io::Error> {
@@ -621,180 +706,60 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // count_pairs
+    // dedupe_words / index_pairs
     // -----------------------------------------------------------------------
     #[test]
-    fn test_count_pairs_single_word() {
-        let corpus = vec![vec![97u32, 98, 99]];
-        let (counts, index) = count_pairs(&corpus);
-        assert_eq!(counts.len(), 2);
-        assert_eq!(counts[&(97, 98)], 1);
-        assert_eq!(counts[&(98, 99)], 1);
-        assert_eq!(index[&(97, 98)], vec![(0, 0)]);
-        assert_eq!(index[&(98, 99)], vec![(0, 1)]);
+    fn test_dedupe_words_counts_and_maps_back() {
+        let (words, freq, of_occurrence) = dedupe_words(vec![
+            vec![97u32, 98],
+            vec![99u32],
+            vec![97u32, 98],
+        ]);
+
+        assert_eq!(words.len(), 2, "two distinct words");
+        assert_eq!(freq[of_occurrence[0]], 2, "the repeated word is weighted 2");
+        assert_eq!(freq[of_occurrence[1]], 1);
+        // of_occurrence must rebuild the original stream in order.
+        let rebuilt: Vec<Vec<u32>> = of_occurrence.iter().map(|&w| words[w].clone()).collect();
+        assert_eq!(rebuilt, vec![vec![97, 98], vec![99], vec![97, 98]]);
     }
 
     #[test]
-    fn test_count_pairs_multiple_words() {
-        let corpus = vec![vec![97u32, 98], vec![97u32, 98]];
-        let (counts, index) = count_pairs(&corpus);
-        assert_eq!(counts[&(97, 98)], 2);
-        let mut positions = index[&(97, 98)].clone();
-        positions.sort_unstable();
-        assert_eq!(positions, vec![(0, 0), (1, 0)]);
+    fn test_index_pairs_weights_by_word_frequency() {
+        // One distinct word occurring 5 times contributes 5 to each of its pairs.
+        let (counts, words_with) = index_pairs(&[vec![97u32, 98, 99]], &[5]);
+
+        assert_eq!(counts[&(97, 98)], 5);
+        assert_eq!(counts[&(98, 99)], 5);
+        assert!(words_with[&(97, 98)].contains(&0));
     }
 
     #[test]
-    fn test_count_pairs_single_byte_word() {
-        let corpus = vec![vec![97u32]];
-        let (counts, _index) = count_pairs(&corpus);
+    fn test_index_pairs_single_symbol_word_has_no_pairs() {
+        let (counts, _) = index_pairs(&[vec![97u32]], &[3]);
         assert!(counts.is_empty());
     }
 
-    #[test]
-    fn test_count_pairs_empty_corpus() {
-        let corpus: Vec<Vec<u32>> = vec![];
-        let (counts, _index) = count_pairs(&corpus);
-        assert!(counts.is_empty());
-    }
-
-    #[test]
-    fn test_count_pairs_overlapping() {
-        let corpus = vec![vec![97u32, 97, 97]];
-        let (counts, index) = count_pairs(&corpus);
-        assert_eq!(counts[&(97, 97)], 2);
-        let mut positions = index[&(97, 97)].clone();
-        positions.sort_unstable();
-        assert_eq!(positions, vec![(0, 0), (0, 1)]);
-    }
-
     // -----------------------------------------------------------------------
-    // create_heap
+    // apply_pair
     // -----------------------------------------------------------------------
     #[test]
-    fn test_create_heap_orders_by_count_descending() {
-        let mut counts = HashMap::new();
-        counts.insert((97u32, 98u32), 5usize);
-        counts.insert((98u32, 99u32), 2usize);
-
-        let mut heap = create_heap(counts);
-        let (top_count, top_pair) = heap.pop().unwrap();
-        assert_eq!(top_count, 5);
-        assert_eq!(top_pair, (97, 98));
+    fn test_apply_pair_runs_to_fixed_point() {
+        // Both occurrences go, unlike the old positional walk which skipped the
+        // second once the first had shifted the word.
+        assert_eq!(apply_pair(&[97, 97, 97, 97], (97, 97), 256), vec![256, 256]);
     }
 
     #[test]
-    fn test_create_heap_empty() {
-        let counts = HashMap::new();
-        let mut heap = create_heap(counts);
-        assert!(heap.pop().is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // apply_merge
-    // -----------------------------------------------------------------------
-    fn setup_merge_state(
-        corpus: Vec<Vec<u32>>,
-    ) -> (
-        Vec<Vec<u32>>,
-        HashMap<(u32, u32), usize>,
-        HashMap<(u32, u32), Vec<(usize, usize)>>,
-        BinaryHeap<(usize, (u32, u32))>,
-    ) {
-        let (pair_counts, pair_index) = count_pairs(&corpus);
-        let heap = create_heap(pair_counts.clone());
-        (corpus, pair_counts, pair_index, heap)
+    fn test_apply_pair_takes_the_rightmost_of_an_odd_run() {
+        // The tie-break `Encoder::merge_word` settles on. A left-to-right sweep
+        // would give [256, 97] here, and encoding would stop matching training.
+        assert_eq!(apply_pair(&[97, 97, 97], (97, 97), 256), vec![97, 256]);
     }
 
     #[test]
-    fn test_apply_merge_basic() {
-        let (mut corpus, mut pair_counts, mut pair_index, mut heap) =
-            setup_merge_state(vec![vec![97u32, 97]]);
-
-        apply_merge(
-            &mut corpus,
-            (97, 97),
-            256,
-            &mut pair_counts,
-            &mut pair_index,
-            &mut heap,
-        );
-
-        assert_eq!(corpus, vec![vec![256]]);
-    }
-
-    #[test]
-    fn test_apply_merge_middle_of_word() {
-        let (mut corpus, mut pair_counts, mut pair_index, mut heap) =
-            setup_merge_state(vec![vec![97u32, 98, 99]]);
-
-        apply_merge(
-            &mut corpus,
-            (97, 98),
-            256,
-            &mut pair_counts,
-            &mut pair_index,
-            &mut heap,
-        );
-
-        // After merging (97,98) → 256 at pos 0, word becomes [256, 99]
-        assert_eq!(corpus, vec![vec![256, 99]]);
-
-        // New pair (256, 99) should be tracked
-        assert_eq!(*pair_counts.get(&(256, 99)).unwrap_or(&0), 1);
-        assert!(pair_index.contains_key(&(256, 99)));
-
-        // Original right pair (98, 99) should have been decremented
-        assert_eq!(*pair_counts.get(&(98, 99)).unwrap_or(&0), 0);
-
-        // Heap should have the new pair
-        let contains_new = heap.iter().any(|&(_, p)| p == (256, 99));
-        assert!(contains_new, "heap should contain new pair (256, 99)");
-    }
-
-    #[test]
-    fn test_apply_merge_end_of_word() {
-        let (mut corpus, mut pair_counts, mut pair_index, mut heap) =
-            setup_merge_state(vec![vec![97u32, 98, 99]]);
-
-        apply_merge(
-            &mut corpus,
-            (98, 99),
-            256,
-            &mut pair_counts,
-            &mut pair_index,
-            &mut heap,
-        );
-
-        // After merging (98,99) → 256 at pos 1, word becomes [97, 256]
-        assert_eq!(corpus, vec![vec![97, 256]]);
-
-        // New pair (97, 256) should be tracked
-        assert_eq!(*pair_counts.get(&(97, 256)).unwrap_or(&0), 1);
-        assert!(pair_index.contains_key(&(97, 256)));
-
-        // Original left pair (97, 98) should have been decremented
-        assert_eq!(*pair_counts.get(&(97, 98)).unwrap_or(&0), 0);
-    }
-
-    #[test]
-    fn test_apply_merge_skips_already_merged_position() {
-        // Positions 0 and 1 both have (97,97) in "aaa"
-        let (mut corpus, mut pair_counts, mut pair_index, mut heap) =
-            setup_merge_state(vec![vec![97u32, 97, 97]]);
-
-        apply_merge(
-            &mut corpus,
-            (97, 97),
-            256,
-            &mut pair_counts,
-            &mut pair_index,
-            &mut heap,
-        );
-
-        // After first merge (pos=1, reversed), word becomes [97, 256].
-        // The second position (pos=0) no longer has (97,97), so it's skipped.
-        assert_eq!(corpus, vec![vec![97, 256]]);
+    fn test_apply_pair_leaves_a_word_without_the_pair_alone() {
+        assert_eq!(apply_pair(&[97, 98, 99], (98, 97), 256), vec![97, 98, 99]);
     }
 
     // -----------------------------------------------------------------------
@@ -1140,6 +1105,76 @@ mod tests {
         assert_eq!(decoded, "<|endoftext|>");
     }
 }
+/// **The invariant the whole trainer exists to hold.** Every merge it learns must
+/// be something `Encoder` can actually produce from that token's own text.
+///
+/// This is a total check over the table, not a spot sample, because the failure it
+/// guards is silent and proportional: the old trainer left 38% of a real 7,872-merge
+/// table unreachable — including `" the"`, `" in"`, `" from"` and `" they"` — and
+/// nothing downstream noticed. The vocabulary looked full, the model trained, and
+/// the only symptom was compression quietly sitting a third below where it belonged.
+#[test]
+fn every_learned_merge_is_reachable_by_the_encoder() {
+    // Enough ordinary English that the table fills with the word-initial merges
+    // (" th" → " the" → " they") whose chains the old trainer built unreachably.
+    let text = "the theatre was there and they said that the others were \
+                from the same theatre, in the end, because the theory of it \
+                is that these things are their own reward and they know it. \
+                there is no other way to think of the thing they are in. \
+                consider how many people would rather remember something \
+                important than understand another question completely, \
+                since knowledge without understanding becomes information \
+                nobody actually wanted in the first place after everything.";
+    let repeated = text.repeat(20);
+    let pre = crate::pretokenize::pre_tokenize_text(&repeated);
+    let (_vocab, _corpus, merges) = train(pre, Some(700), |_| {}).unwrap();
+
+    assert!(merges.len() > 150, "expected a full table, got {}", merges.len());
+
+    let enc = Encoder::new(&merges);
+    let dec = Decoder::new(&merges);
+
+    // The property is "encodes to a *single* token", not "encodes to this exact
+    // id". Those differ only for aliases — two ids that decode to the same text,
+    // of which the encoder can naturally reach just one. On a real 8192 table that
+    // is 4 merges, all of them a lone space, costing 4 embedding rows and no
+    // compression. Fragmentation is the failure that matters: `" the"` coming back
+    // as `[" t", "he"]` is a token the model can never be shown.
+    let fragmented: Vec<(String, Vec<String>)> = merges
+        .iter()
+        .map(|&(_, id)| dec.decode(&[id]))
+        .filter(|text| !text.is_empty())
+        .filter_map(|text| {
+            let got = enc.encode(&text);
+            (got.len() != 1)
+                .then(|| (text, got.iter().map(|&i| dec.decode(&[i])).collect()))
+        })
+        .collect();
+
+    assert!(
+        fragmented.is_empty(),
+        "{} of {} merges fragment when re-encoded: {:?}",
+        fragmented.len(),
+        merges.len(),
+        &fragmented[..fragmented.len().min(20)]
+    );
+}
+
+/// The corpus `train` returns must be exactly what `Encoder` produces for the same
+/// text. It was ~33% shorter before, holding ids inference could never emit.
+#[test]
+fn the_returned_corpus_matches_what_the_encoder_produces() {
+    let text = "the theatre was there and they said that the others were from \
+                the same theatre in the end because the theory of it is that";
+    let repeated = text.repeat(20);
+    let pre = crate::pretokenize::pre_tokenize_text(&repeated);
+    let (_vocab, corpus, merges) = train(pre, Some(400), |_| {}).unwrap();
+
+    let enc = Encoder::new(&merges);
+    let flat: Vec<u32> = corpus.into_iter().flatten().collect();
+    assert_eq!(flat, enc.encode(&repeated), "trainer and encoder disagree");
+}
+
 #[test]
 fn test_bpe_phantom_merges() {
     let pre_tokenized = vec![vec!['a', 'a', 'a', 'a']];

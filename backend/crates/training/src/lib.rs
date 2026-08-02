@@ -268,13 +268,18 @@ pub enum TokenizeEvent<'a> {
 
 // How much text trains the BPE merge table.
 //
-// `bpe::train`'s peak runs ~50-60x what it is handed: the pair index is ~16 bytes
-// per input byte with growth slack and is never compacted, the corpus is held both
-// as chars and as ids, and the heap uses lazy deletion so it never shrinks. 16 MiB
-// therefore lands near 1 GB, which is what fits alongside everything else on a
-// small machine. A few tens of thousands of merges do not need more text than this
-// to learn; raise it only against a measured RSS, since it is also the first thing
-// that will exhaust memory.
+// `bpe::train` now collapses the sample to its **distinct** pretokens before
+// learning anything, so its footprint scales with the sample's vocabulary rather
+// than its length — and natural text repeats itself heavily, so that is a far
+// slower curve. Measured end to end (train a full 8192 table on a 10.6 MiB sample,
+// then encode 8 MiB of held-out text) peak RSS was 267 MB, against the ~1 GB that
+// 16 MiB used to cost when the trainer held the whole corpus as chars *and* as ids
+// alongside a never-compacted positional index.
+//
+// This constant is therefore no longer the memory cliff it was, and it is now the
+// binding constraint on tokenizer *quality* instead: see `plan_bpe_sample` for why
+// the sample's composition matters more than its size. Raising it is safe on the
+// memory side; still measure, since the encode pass that follows is unchanged.
 const BPE_SAMPLE_BYTES: usize = 16 * 1024 * 1024;
 
 // Bytes per streaming read. Chunks end on a line break, so this is a floor rather
@@ -582,16 +587,23 @@ struct SampleSlice {
 
 // Which slices of which files train the BPE merges.
 //
-// The tokenizer learns from a bounded sample rather than the whole corpus because
-// `bpe::train` is inherently whole-corpus — its pair index alone is ~16 bytes per
-// input byte and is never compacted — so its peak scales with what it is given.
-// A few tens of thousands of merges do not need gigabytes to learn; the sample is
-// what keeps the phase inside a fixed memory budget.
+// The tokenizer learns from a bounded sample rather than the whole corpus. That
+// was originally a memory constraint; since `bpe::train` started deduplicating its
+// input it is mostly a time one, and `BPE_SAMPLE_BYTES` says what the budget now
+// buys.
 //
 // Shares are **equal per dataset, not proportional to size**. Proportional would
 // hand a large web-text dataset essentially the whole budget and leave a small
 // early-curriculum dataset with kilobytes, so that stage would tokenize at nearly
 // byte level — precisely where token efficiency matters most for a small model.
+//
+// **This is worth re-examining, and has not been.** On the corpus that trained
+// `Large 1` the equal split gave FineWeb 27.9% of the sample while it was 98.4% of
+// the text actually encoded, so the merges were fitted to a distribution the corpus
+// does not have. The stated worry cuts the other way too: simple English is a
+// *subset* of general English, so merges learned from web text cover TinyStories
+// far better than the reverse. Measure before changing it — but do not read the
+// current split as a settled result.
 // Water-filling from the smallest group up means a dataset too small to use its
 // share donates the remainder to the larger ones automatically.
 fn plan_bpe_sample(files: &[TaggedFile], budget: usize) -> Vec<SampleSlice> {

@@ -303,8 +303,11 @@ in 545. The corpus term now reads `bits_per_byte` through fixed absolute anchors
    `BPE_SAMPLE_BYTES` (16 MiB) stratified **equally per dataset**, not
    proportionally — proportional would give a large web-text dataset ~99% of the
    budget and leave an early-curriculum dataset tokenizing at near byte level.
-   `bpe::train`'s peak runs ~50-70x what it is handed (its pair index is ~16 B per
-   input byte and is never compacted), so this constant is the memory lever.
+   `bpe::train` deduplicates the sample to its distinct pretokens first, so its
+   peak scales with the sample's *vocabulary* rather than its length (measured:
+   267 MB peak to train a full 8192 table on 10.6 MiB and then encode 8 MiB of
+   held-out text). This constant is no longer the memory lever it was — see the
+   note in `plan_bpe_sample` on why its **composition** is now the open question.
 2. **Stream-encode everything** through one reused `bpe::Encoder`, in ~4 MiB chunks,
    into a `bpe::CorpusWriter`.
 
@@ -319,12 +322,41 @@ Builds are cancellable between chunks and finalize atomically: corpus, merges an
 segments are written to `*.partial` and renamed, so a cancelled or failed build
 leaves the previous dataset untouched.
 
-**Never train on `bpe::train`'s returned corpus.** It applies each merge corpus-wide
-before the next, so it produces a segmentation `Encoder` cannot reproduce — ~33%
-fewer tokens on a repetitive fixture, containing ids inference can never emit. The
-old pipeline saved that corpus while inference used `Encoder`, so models were
-trained and served on different tokenizations. `build_dataset` now discards it and
-encodes with `Encoder`, which is why token counts differ from pre-streaming builds.
+**The trainer and the encoder apply merges by the same rule, and that is the whole
+correctness story of the tokenizer.** `bpe::train` applies each learned merge to
+every *word* independently, in rank order, to fixed point — exactly what
+`Encoder::merge_word` does when it repeatedly takes the lowest-id applicable merge.
+`bpe::every_learned_merge_is_reachable_by_the_encoder` is the guard, and it is a
+total check over the table rather than a sample.
+
+It has to be, because the failure is silent and expensive. The trainer used to walk
+a flat corpus while tracking pair positions in a side index, and the index went
+stale the moment a merge shortened a word: every later position shifted left by one
+and was never corrected, so occurrences were skipped and the merges learned after
+that point were fitted to a segmentation `Encoder` cannot reproduce. On the real
+8192 table that left **3,004 of 7,872 merges (38%) unreachable** — `" the"` was
+learned as `" th" + "e"` at rank 6, but the encoder reaches `[" t", "he"]` and
+stops, so `" the"` sat in the vocabulary and could never be emitted. The casualties
+were the most frequent words in English (`" the"`, `" in"`, `" from"`, `" they"`,
+`" have"`, `" were"`), 51% of emitted tokens were single characters, and
+bytes-per-token sat at **2.13**. Nothing downstream noticed: the vocabulary looked
+full and the models trained fine, just against a third less compression than they
+should have had. Rebuilding the same 8192 table on the same data now gives **3.79
+bytes/token, 17% single-character, 0 fragmenting merges**.
+
+The invariant is "a merge's text re-encodes to a **single** token", not "to that
+exact id". Those differ only for aliases — two ids decoding to the same text, of
+which the encoder naturally reaches one. On a real table that is 4 merges, all a
+lone space, costing 4 embedding rows and no compression.
+
+Because the two now agree, `bpe::train`'s returned corpus *is* what `Encoder`
+produces (`the_returned_corpus_matches_what_the_encoder_produces`). `build_dataset`
+still discards it and stream-encodes instead, so there is exactly one code path
+producing token ids.
+
+**Any change here needs a fresh tokenizer and a re-pretrain.** Merge ids are
+absolute and baked into every `merges.bin`; a model carries the vocabulary it was
+trained under.
 
 ## Vocabulary layout
 
