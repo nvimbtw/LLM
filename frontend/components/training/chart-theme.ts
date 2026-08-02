@@ -148,6 +148,20 @@ export const verdictColors = {
   rejected: "var(--chart-rejected)",
 } as const
 
+// ── Teacher figures ─────────────────────────────────────────────────────────
+// The three thinking budgets are an *ordered* scale — short, medium, long — not
+// three independent categories, so they take a single-hue sequential ramp
+// (light→dark in light mode, dark→light on a dark surface) rather than a
+// categorical cycle. More thinking, more ink, in both modes.
+//
+// The hue is the teach kind's terracotta, so a teaching run's figures read as
+// belonging to its chip. Values and their validation live in app/globals.css.
+export const tierColors: Record<"low" | "med" | "high", string> = {
+  low: "var(--tier-low)",
+  med: "var(--tier-med)",
+  high: "var(--tier-high)",
+}
+
 // Rank ramp for the PCA biplot's token arrows: the same blue family swept by
 // frequency rank, most-frequent (rank 0) darkest → least-frequent lightest, so the
 // eye can tell the salient tokens from the tail.

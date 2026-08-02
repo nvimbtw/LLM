@@ -218,7 +218,7 @@ fn run_kto(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     // epoch in phase 2.
     eprintln!("[training] {}: building KTO dataset…", config.model_name);
     ctx.tick(0.0, "Scoring rated replies under the base model");
-    let dataset = match training::build_kto_dataset(&base_model_dir) {
+    let dataset = match training::build_kto_dataset(&base_model_dir, config.catalogue_scope()) {
         Ok(stats) => {
             if stats.desirable == 0 || stats.undesirable == 0 {
                 // One-sided feedback has no contrast to learn from: the model can
@@ -383,7 +383,7 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     eprintln!("[training] {}: building {} dataset…", config.model_name, what);
     ctx.tick(0.0, &format!("Building {} dataset", what));
     let built = if is_raft {
-        training::build_raft_dataset(&base_model_dir).map(|s| {
+        training::build_raft_dataset(&base_model_dir, config.catalogue_scope()).map(|s| {
             (
                 serde_json::json!({
                     "conversations": s.examples,
@@ -391,6 +391,7 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
                     "trainable_tokens": s.trainable_tokens,
                     "duplicates": s.duplicates,
                     "skipped_too_long": s.skipped_too_long,
+                    "replay_tokens": s.replay_tokens,
                     "progress": 1.0,
                     "done": true,
                 }),

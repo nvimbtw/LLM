@@ -98,7 +98,8 @@ The chat WebSocket lives in `lib/chat-socket.ts` and follows this wire protocol:
 ```
 client → { token }                            (auth frame)
 server → { type: "ready" }
-client → { chat_id, content, model_id }       (chat_id null = new chat)
+client → { chat_id, content, model_id, system?, budget? }
+                                              (chat_id null = new chat)
 server → { type: "queued", job_id, chat_id, ahead }
 server → { type: "token", value }             (repeated)
 server → { type: "done", chat_id, id_message }
@@ -110,6 +111,15 @@ A reply is a job on the GPU queue, so `queued` always arrives before the first
 token — with `ahead: 0` when the turn starts immediately, so there is one code path
 rather than two. Because the job outlives the socket, closing the tab no longer
 loses the reply: the runner persists it either way.
+
+`budget` is the composer's thinking-budget dropdown (`components/chat/budget-selector.tsx`)
+— `"low" | "med" | "high"`, matching the labels the SFT corpus is tagged with, since
+the string sent becomes the marker the model was trained under. **"Auto" is the
+absence of a budget, not a fourth value**: it is omitted from the frame entirely, so
+the backend renders no marker and the model is prompted exactly as it always was.
+Unlike `systemPrompt` it is *not* a setting — how hard you want the model to think is
+a property of the question, so it lives as composer state and rides through
+`PendingMessage` when a new chat navigates.
 
 ### The jobs queue
 

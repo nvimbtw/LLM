@@ -53,6 +53,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::chat_template;
 use crate::training::infer_session::InferSession;
 use crate::training::transformer::Model;
 
@@ -104,6 +105,24 @@ pub struct EvalConfig {
     pub max_heldout_bytes: usize,
     pub max_baseline_bytes: usize,
     pub sampling: generate::SamplingConfig,
+    /// Render every held-out conversation under this thinking budget instead of the
+    /// one it was written with. `None` keeps each record's own budget, which is what
+    /// every run before this did and what the scores on disk were produced under.
+    ///
+    /// Exactly the chat socket's convention (`queue::ChatRequest::budget` →
+    /// `build_prompt`): the caller supplies a marker, absence renders none, and the
+    /// suite has no opinion about which. That is deliberate — the marker is a cue the
+    /// prompt carries, so "benchmark this model at high" is the same act as "ask this
+    /// model a question at high", and it should go through the same door.
+    ///
+    /// **It reaches only what renders a chat prompt.** The assistant suite is all
+    /// held-out conversations, so all of it responds; the markup suite's position,
+    /// structure and reply-bits stages respond, but its marker-pair stage carries 55%
+    /// of that score and has no conversation to mark, so a markup sweep moves less
+    /// than the whole score. The language suite renders no chat prompt anywhere —
+    /// corpus, grammar, generation and preference are all raw text — so setting this
+    /// changes nothing there, and `run_language` ignores it.
+    pub budget: Option<chat_template::ThinkBudget>,
 }
 
 impl EvalConfig {
@@ -117,6 +136,7 @@ impl EvalConfig {
             max_heldout_bytes: DEFAULT_MAX_HELDOUT_BYTES,
             max_baseline_bytes: DEFAULT_MAX_BASELINE_BYTES,
             sampling: generate::SamplingConfig::default(),
+            budget: None,
         }
     }
 }
@@ -142,8 +162,8 @@ fn cancelled(cancel: &Cancel) -> bool {
 // its own, separate weights, and must sum to 1.0.
 const STAGE_CORPUS: f64 = 0.36;
 const STAGE_GRAMMAR: f64 = 0.40;
-const STAGE_GENERATION: f64 = 0.13;
-const STAGE_PREFERENCE: f64 = 0.11;
+const STAGE_GENERATION: f64 = 0.12;
+const STAGE_PREFERENCE: f64 = 0.12;
 
 // ── the report ──────────────────────────────────────────────────────────────
 
@@ -228,7 +248,21 @@ pub struct Report {
     // chat UI has been used. Never folded into `score`; see `preference`'s header.
     pub preference: Option<preference::PreferenceMetrics>,
     pub duration_secs: f64,
+    // Tokens the model actually forwarded to produce this report — see
+    // `InferSession::tokens_forwarded`. The cost of the run in the unit the model
+    // works in, which unlike wall clock is the same number on any machine. All
+    // three reports carry it under this name, so the charts read one field.
+    pub tokens_used: u64,
 }
+// **The chat metric deliberately no longer lives here.** It sat in this report for
+// one release as a reported-but-unscored field, because the post-train cycle judged
+// on `BenchmarkSuite::Language` and had no other way to see the number it was
+// actually optimizing. That was a workaround, and it made the language suite a
+// slightly different question than its name — "how well does it model English, and
+// also here is a chat number".
+//
+// `run_assistant` is now the answer instead: replies get their own suite, their own
+// score and their own version, and this one goes back to measuring language only.
 
 // ── the run ─────────────────────────────────────────────────────────────────
 
@@ -303,7 +337,25 @@ pub fn run_language(
         generation,
         preference,
         duration_secs: started.elapsed().as_secs_f64(),
+        tokens_used: session.tokens_forwarded(),
     }))
+}
+
+/// Stamps the configured budget onto every conversation, in place.
+///
+/// Applied once at load rather than threaded through the four render sites, because
+/// the marker is a property of the prompt being issued and every stage builds its
+/// prompt from the conversation it was handed. Doing it here means a stage cannot
+/// be added later that quietly forgets to honour the override.
+///
+/// `None` leaves each record's own budget untouched — the unbudgeted path is
+/// byte-identical to what ran before this existed, which is what keeps every score
+/// already on disk comparable.
+fn apply_budget(conversations: &mut [chat::Conversation], budget: Option<chat_template::ThinkBudget>) {
+    let Some(budget) = budget else { return };
+    for conversation in conversations {
+        conversation.budget = Some(budget);
+    }
 }
 
 // The weights and the model under test, shared by both suites.
@@ -331,6 +383,16 @@ pub struct MarkupReport {
     // nothing exported `eval/chat/`.
     pub chat: Option<chat::ChatMetrics>,
     pub duration_secs: f64,
+    // See `Report::tokens_used`.
+    pub tokens_used: u64,
+    // The budget every conversation was rendered under, or None when each kept its
+    // own. Recorded on the report because a score is only comparable to another one
+    // taken at the same budget, and nothing else in the report says which was used.
+    pub budget: Option<chat_template::ThinkBudget>,
+    // Held-out conversations behind this run. The markup score is only partly built
+    // on them — the pair stage is not — but this is what a budget sweep varies, so
+    // it is what says whether a point on the curve rests on enough evidence.
+    pub conversations: usize,
 }
 
 // Stage weights for the markup progress fraction. Pairs dominate for the same reason
@@ -362,7 +424,8 @@ pub fn run_markup(
         return Ok(None);
     };
 
-    let conversations = markup::load(&config.chat_dir);
+    let mut conversations = markup::load(&config.chat_dir);
+    apply_budget(&mut conversations, config.budget);
     if conversations.is_empty() {
         progress("No held-out chat set", 1.0);
     }
@@ -383,13 +446,27 @@ pub fn run_markup(
     else {
         return Ok(None);
     };
-    let Some(chat_metrics) =
-        run_chat_bits(&mut session, &merges, &conversations, &progress, &cancel)
-    else {
+    let Some(chat_metrics) = run_chat_bits(
+        &mut session,
+        &merges,
+        &conversations,
+        STAGE_PAIRS + STAGE_POSITIONS + STAGE_STRUCTURE,
+        STAGE_CHAT_BITS,
+        &progress,
+        &cancel,
+    ) else {
         return Ok(None);
     };
     progress("Done", 1.0);
 
+    // What was *scored*, not what was loaded: a conversation refused for a bad role
+    // or a misaligned mask contributes no evidence, and counting it would make a thin
+    // point look sound. Bound before the report is built, because moving
+    // `chat_metrics` into it would put this read after the move.
+    let scored_conversations = chat_metrics
+        .as_ref()
+        .map(|c| c.conversations)
+        .unwrap_or(conversations.len());
     let metrics = markup::MarkupMetrics { pairs, positions, structure };
     let breakdown = markup::composite_score(&metrics);
     Ok(Some(MarkupReport {
@@ -399,7 +476,175 @@ pub fn run_markup(
         markup: metrics,
         chat: chat_metrics,
         duration_secs: started.elapsed().as_secs_f64(),
+        tokens_used: session.tokens_forwarded(),
+        budget: config.budget,
+        conversations: scored_conversations,
     }))
+}
+
+// ── the assistant suite ─────────────────────────────────────────────────────
+//
+// How good the model is at being an assistant: bits per assistant-reply token over
+// the held-out conversations, mapped to 0–100.
+//
+// **This is the post-train cycle's objective, and it is the only suite that is.**
+// The language suite asks whether the model can model English and the markup suite
+// whether it can drive its own harness; both are things a chat fine-tune can trade
+// away, and neither goes up when a reply gets better. The instrument that does go up
+// has existed since `eval::chat` was written, but it had no suite, so it was carried
+// as an unscored field on whichever report happened to run — which meant the cycle
+// could only judge chat tuning by parsing a language report.
+//
+// **Why a whole suite for one number.** Because the number is on a different scale to
+// everything else and answers a different question, which is the same reason
+// `language` and `markup` are separate. A single blended score across all three would
+// let a large reply gain pay for a language collapse and still read as progress; that
+// is exactly what `jobs::cycle`'s vector test exists to refuse, and it can only refuse
+// it if the three arrive as three numbers.
+//
+// **Bits per token is a cost — lower is better — and the score inverts it**, so that
+// all three suites agree that up is good. Getting that wrong in either direction is
+// the failure mode this mapping is written to make impossible: a note reading
+// "3.6875 → 3.8796, no gain" was once read as an improvement, because nothing in the
+// unit says which way is up.
+
+#[derive(Serialize)]
+pub struct AssistantBreakdown {
+    pub version: u32,
+    // The mapped reply component in [0, 1]. NaN when no held-out set is installed.
+    pub replies: f64,
+    pub score: f64,
+    // Propagated from `bits_per_token_stderr` through the mapping's slope, so
+    // `jobs::cycle` can derive its margin here the same way it does for the other two.
+    pub score_stderr: f64,
+}
+
+#[derive(Serialize)]
+pub struct AssistantReport {
+    pub score: f64,
+    pub breakdown: AssistantBreakdown,
+    pub model: ModelInfo,
+    // The raw measurement behind the score. Absent when no held-out chat set is
+    // installed, which makes `score` NaN rather than zero — an unmeasured model is
+    // not a bad one.
+    pub chat: Option<chat::ChatMetrics>,
+    pub duration_secs: f64,
+    // See `Report::tokens_used`.
+    pub tokens_used: u64,
+    // See `MarkupReport::budget`. The whole assistant score is built on the
+    // conversations this marks, so it is the suite a sweep moves furthest.
+    pub budget: Option<chat_template::ThinkBudget>,
+    // Conversations scored. Small enough to matter: a tier with three held-out
+    // conversations behind it carries an error bar several times the differences a
+    // sweep is looking for, and the chart marks such a point as provisional.
+    pub conversations: usize,
+}
+
+// Bump alongside any change to the anchors below, for the reason `SCORE_VERSION`
+// gives: it moves every score without a model having changed.
+pub const ASSISTANT_SCORE_VERSION: u32 = 1;
+
+// Bits per reply token through a logistic, the same shape and for the same reasons as
+// the language suite's `BPB_MID`/`BPB_SCALE`: strictly monotone, smooth, asymptotic at
+// both ends, so it never clamps and an improvement always pays.
+//
+// MID sits near where the current cohort actually lands (3.69–3.88 measured across a
+// seed and its post-train rounds), which is where the response is steepest. SCALE
+// sets the resolution: peak slope is 100/(4·SCALE) = 41.7 points per bit/token, so the
+// 0.19 bits/token a single round has been observed to move is worth ~8 points, against
+// a per-run `bits_per_token_stderr` of ~0.05 — i.e. ~2.1 points. Comfortably resolvable,
+// which is the property the language composite lacked and why it could not gate this.
+const CHAT_MID: f64 = 3.50;
+const CHAT_SCALE: f64 = 0.60;
+
+/// Runs the assistant suite. Same contract as the other two: blocking, GPU-bound,
+/// needs its own OS thread, and `Ok(None)` means cancelled rather than failed.
+///
+/// Far cheaper than either — one forward pass per held-out conversation, a few dozen,
+/// against the ~1000 the grammar and marker-pair stages each spend. Running all three
+/// per round costs barely more than running the language suite alone did.
+pub fn run_assistant(
+    config: &EvalConfig,
+    progress: ProgressCallback,
+    cancel: Cancel,
+) -> Result<Option<AssistantReport>, String> {
+    let started = Instant::now();
+    let (model, merges) = load(config)?;
+    let mut session = InferSession::new(&model, model.ctx_window());
+
+    let mut conversations = chat::load(&config.chat_dir);
+    apply_budget(&mut conversations, config.budget);
+    if conversations.is_empty() {
+        progress("No held-out chat set", 1.0);
+    }
+
+    // The same loader the markup suite reads through — one definition of "held out",
+    // so the suites cannot drift into disagreeing about which conversations the model
+    // was allowed to see.
+    let Some(chat_metrics) =
+        run_chat_bits(&mut session, &merges, &conversations, 0.0, 1.0, &progress, &cancel)
+    else {
+        return Ok(None);
+    };
+    progress("Done", 1.0);
+
+    // What was *scored*, not what was loaded: a conversation refused for a bad role
+    // or a misaligned mask contributes no evidence, and counting it would make a thin
+    // point look sound. Bound before the report is built, because moving
+    // `chat_metrics` into it would put this read after the move.
+    let scored_conversations = chat_metrics
+        .as_ref()
+        .map(|c| c.conversations)
+        .unwrap_or(conversations.len());
+    let breakdown = assistant_score(&chat_metrics);
+    Ok(Some(AssistantReport {
+        score: breakdown.score,
+        breakdown,
+        model: describe(&model),
+        chat: chat_metrics,
+        duration_secs: started.elapsed().as_secs_f64(),
+        tokens_used: session.tokens_forwarded(),
+        budget: config.budget,
+        conversations: scored_conversations,
+    }))
+}
+
+fn replies_component(bits_per_token: f64) -> f64 {
+    1.0 / (1.0 + ((bits_per_token - CHAT_MID) / CHAT_SCALE).exp())
+}
+
+fn assistant_score(chat: &Option<chat::ChatMetrics>) -> AssistantBreakdown {
+    let measured = chat
+        .as_ref()
+        .map(|c| c.bits_per_token)
+        .filter(|b| b.is_finite());
+
+    let Some(bits) = measured else {
+        return AssistantBreakdown {
+            version: ASSISTANT_SCORE_VERSION,
+            replies: f64::NAN,
+            score: f64::NAN,
+            score_stderr: f64::NAN,
+        };
+    };
+
+    let replies = replies_component(bits);
+    // The logistic's derivative: |d(score)/d(bits)| = 100·σ·(1−σ)/SCALE. A missing
+    // error bar on the measurement stays missing here rather than becoming zero — a
+    // gate reading zero uncertainty would accept any movement at all.
+    let stderr = chat
+        .as_ref()
+        .map(|c| c.bits_per_token_stderr)
+        .filter(|s| s.is_finite())
+        .map(|s| 100.0 * replies * (1.0 - replies) / CHAT_SCALE * s)
+        .unwrap_or(f64::NAN);
+
+    AssistantBreakdown {
+        version: ASSISTANT_SCORE_VERSION,
+        replies,
+        score: 100.0 * replies,
+        score_stderr: stderr,
+    }
 }
 
 fn run_marker_pairs(
@@ -513,17 +758,21 @@ fn run_structure(
     Some(markup::summarize_structure(&replies, reference, samples))
 }
 
+// `base` and `weight` are where this stage sits in the caller's progress bar: both
+// suites run it, and they run it at different points with different shares of the
+// total, so neither can be a constant here.
 fn run_chat_bits(
     session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
+    base: f64,
+    weight: f64,
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<Option<chat::ChatMetrics>> {
     if conversations.is_empty() {
         return Some(None);
     }
-    let base = STAGE_PAIRS + STAGE_POSITIONS + STAGE_STRUCTURE;
     let mut scored = Vec::new();
     for (i, conversation) in conversations.iter().enumerate() {
         if cancelled(cancel) {
@@ -531,7 +780,7 @@ fn run_chat_bits(
         }
         progress(
             &format!("Reply bits ({}/{})", i + 1, conversations.len()),
-            base + STAGE_CHAT_BITS * (i as f64 / conversations.len() as f64),
+            base + weight * (i as f64 / conversations.len() as f64),
         );
         if let Some(scores) = chat::reply_logprob(session, merges, conversation) {
             scored.push(scores);
@@ -1375,6 +1624,68 @@ mod tests {
         )
         .score_stderr;
         assert_eq!(se, 0.0);
+    }
+
+    // ── the assistant suite ──────────────────────────────────────────────────
+
+    fn chat_of(bits: f64, stderr: f64) -> Option<chat::ChatMetrics> {
+        Some(chat::ChatMetrics {
+            bits_per_token: bits,
+            logprob: -bits * std::f64::consts::LN_2,
+            bits_per_token_stderr: stderr,
+            conversations: 54,
+            tokens_scored: 4000,
+        })
+    }
+
+    // **The one property the whole suite exists to provide.** Bits per token is a
+    // cost, every other suite reports higher-is-better, and a note mixing the two
+    // directions was read backwards by a person who then asked why a regression was
+    // being blocked. The inversion belongs here, once, not in the reader's head.
+    #[test]
+    fn fewer_bits_per_reply_token_scores_higher() {
+        let better = assistant_score(&chat_of(3.6875, 0.05)).score;
+        let worse = assistant_score(&chat_of(3.8796, 0.05)).score;
+        assert!(better > worse, "{better} should beat {worse}");
+    }
+
+    // The anchors, pinned. These are the numbers `jobs::cycle`'s tests are written
+    // against, so a change to `CHAT_MID`/`CHAT_SCALE` has to break here first — and
+    // `ASSISTANT_SCORE_VERSION` has to move with it, since every recorded score does.
+    #[test]
+    fn the_mapping_sits_where_the_current_cohort_does() {
+        let at = |bits| (assistant_score(&chat_of(bits, 0.05)).score * 1e4).round() / 1e4;
+        assert_eq!(at(CHAT_MID), 50.0);
+        assert_eq!(at(3.6875), 42.2505);
+        assert_eq!(at(3.8796), 34.6906);
+    }
+
+    // The gate derives its margin from this, so it has to be the measurement's own
+    // error carried through the mapping's slope — not a constant, and never zero.
+    #[test]
+    fn the_error_bar_is_propagated_through_the_mapping() {
+        let breakdown = assistant_score(&chat_of(3.5, 0.05));
+        // Peak slope is 100/(4·SCALE) = 41.67 points per bit, so 0.05 bits is ~2.08.
+        assert!((breakdown.score_stderr - 2.0833).abs() < 1e-3, "{}", breakdown.score_stderr);
+    }
+
+    // An unmeasured model is not a bad one: with no held-out set the score must be NaN
+    // (which serializes to null and reads as "—"), never a real zero that would plot as
+    // a catastrophic regression and halt a cycle.
+    #[test]
+    fn no_held_out_chat_set_scores_nothing_rather_than_zero() {
+        let breakdown = assistant_score(&None);
+        assert!(breakdown.score.is_nan());
+        assert!(breakdown.score_stderr.is_nan());
+    }
+
+    // A report with no error bar — fewer than two conversations — must not hand the
+    // gate a zero, which would make any movement at all look certain.
+    #[test]
+    fn a_missing_error_bar_stays_missing() {
+        let breakdown = assistant_score(&chat_of(3.5, f64::NAN));
+        assert!(breakdown.score.is_finite());
+        assert!(breakdown.score_stderr.is_nan());
     }
 
     // ── odds and ends ────────────────────────────────────────────────────────

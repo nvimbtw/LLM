@@ -44,6 +44,13 @@ use super::score;
 pub struct Conversation {
     pub system: Option<String>,
     pub turns: Vec<ConversationTurn>,
+    // The thinking budget the reply was written under, when the generator recorded
+    // one. Scoring has to render it, because a budgeted conversation is *trained*
+    // with the marker in front of its reply — score it without and the held-out
+    // positions are not the positions a fine-tune took gradient on, which is the
+    // one thing this file exists to line up.
+    #[serde(default)]
+    pub budget: Option<chat_template::ThinkBudget>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +67,21 @@ pub struct ChatMetrics {
     // Mean per-token log-probability (natural log) over the same positions, for
     // continuity with `preference`'s numbers.
     pub logprob: f64,
+    // One standard error of `bits_per_token`, with the **conversation** as the
+    // sampling unit rather than the token. `jobs::cycle` accepts or rejects a round
+    // on whether this number moved, so it needs to know how far it moves on its own.
+    //
+    // Tokens within one reply are nothing like independent — a reply that goes wrong
+    // goes wrong for fifty tokens together — so a binomial over `tokens_scored` would
+    // understate the error several-fold and the gate would read noise as progress.
+    // The unit that *is* independent is the conversation, which is also the unit the
+    // held-out set is sampled in.
+    //
+    // `bits_per_token` is a ratio of two sums (total bits over total tokens), not a
+    // mean, so this is the textbook cluster-robust ratio standard error: the residual
+    // of each conversation against the pooled rate, `bits_i - bpt * tokens_i`.
+    // NaN with fewer than two conversations, where a spread is undefined.
+    pub bits_per_token_stderr: f64,
     pub conversations: usize,
     pub tokens_scored: usize,
 }
@@ -141,6 +163,7 @@ pub fn reply_logprob(
     let (ids, mask) = chat_template::build_training_example(
         conversation.system.as_deref(),
         &turns,
+        conversation.budget,
         merges,
     );
     if ids.len() < 2 {
@@ -183,20 +206,74 @@ pub fn summarize(scored: &[(f64, usize)]) -> Option<ChatMetrics> {
     }
     let total: f64 = scored.iter().map(|&(lp, _)| lp).sum();
     let logprob = total / tokens_scored as f64;
+    // Natural log → bits, and negated so the figure is a cost like the corpus
+    // stage's: lower is a better prediction.
+    let bits_per_token = -logprob / std::f64::consts::LN_2;
 
     Some(ChatMetrics {
-        // Natural log → bits, and negated so the figure is a cost like the corpus
-        // stage's: lower is a better prediction.
-        bits_per_token: -logprob / std::f64::consts::LN_2,
+        bits_per_token,
         logprob,
+        bits_per_token_stderr: bits_per_token_stderr(scored, bits_per_token, tokens_scored),
         conversations: scored.len(),
         tokens_scored,
     })
 }
 
+// Cluster-robust standard error of the bits-per-token ratio, clustering on the
+// conversation. See `ChatMetrics::bits_per_token_stderr` for why the token is the
+// wrong unit here.
+//
+// For a ratio `R = Σbits / Σtokens`, the delta method gives
+// `Var(R) = Σ(bits_i - R·tokens_i)² / (Σtokens)²`, with the usual `n/(n-1)`
+// correction for estimating `R` from the same sample.
+fn bits_per_token_stderr(scored: &[(f64, usize)], bits_per_token: f64, tokens_scored: usize) -> f64 {
+    let n = scored.len();
+    if n < 2 {
+        return f64::NAN;
+    }
+    let sum_squares: f64 = scored
+        .iter()
+        .map(|&(lp, tokens)| {
+            let bits = -lp / std::f64::consts::LN_2;
+            let residual = bits - bits_per_token * tokens as f64;
+            residual * residual
+        })
+        .sum();
+    (sum_squares * n as f64 / (n - 1) as f64).sqrt() / tokens_scored as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `jobs::cycle` accepts a round when this number falls by more than its own error
+    // bar, so an error bar that is silently zero turns every flicker into a decision.
+    #[test]
+    fn conversations_that_agree_have_no_spread_and_ones_that_disagree_do() {
+        // Same rate in every conversation: nothing to be uncertain about.
+        let agreeing = summarize(&[(-10.0, 10), (-20.0, 20), (-30.0, 30)]).unwrap();
+        assert!(
+            agreeing.bits_per_token_stderr.abs() < 1e-12,
+            "identical rates should carry no spread, got {}",
+            agreeing.bits_per_token_stderr,
+        );
+
+        // Same pooled rate, wildly different per conversation.
+        let disagreeing = summarize(&[(-1.0, 10), (-59.0, 50)]).unwrap();
+        assert!(
+            disagreeing.bits_per_token_stderr > 0.0,
+            "disagreeing conversations must carry a spread",
+        );
+    }
+
+    // A spread needs at least two of something. NaN rather than 0.0, because the
+    // cycle's fallbacks distinguish "no error bar" from "an error bar of zero" — and
+    // reading one conversation as certainty is how a gate starts turning on noise.
+    #[test]
+    fn a_single_conversation_has_no_error_bar() {
+        let one = summarize(&[(-10.0, 10)]).unwrap();
+        assert!(one.bits_per_token_stderr.is_nan());
+    }
 
     #[test]
     fn summarizing_nothing_is_no_metrics() {

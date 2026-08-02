@@ -118,10 +118,28 @@ pub struct Job {
     pub progress: f64,
     pub stage: Option<String>,
     pub ref_id: Option<Uuid>,
+    // What the run produced, for a kind whose output has no table of its own — the
+    // teaching run's stats, today. None for every other kind and for anything queued
+    // before the column existed. See the migration that added it.
+    pub result: Option<Value>,
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+}
+
+// Stores what a run produced. Only for kinds with no table of their own: a
+// benchmark's report belongs in `benchmark_runs`, and putting a copy here would be
+// two answers to one question.
+pub async fn set_result(pool: &PgPool, id_job: Uuid, result: &Value) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"UPDATE jobs SET result = $2 WHERE id_job = $1"#,
+        id_job,
+        result,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // Enqueues a job at the back of the line. The rank is `max + 1` over the *live*
@@ -161,7 +179,7 @@ pub async fn create_in_band(
            RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                      status as "status: JobStatus",
                      label, queue_rank, background, config as "config: Value", progress, stage,
-                     ref_id, error, created_at, started_at, finished_at"#,
+                     ref_id, result as "result: Value", error, created_at, started_at, finished_at"#,
         kind as JobKind,
         label,
         config,
@@ -189,7 +207,7 @@ pub async fn list_active(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                   status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
-                  ref_id, error, created_at, started_at, finished_at
+                  ref_id, result as "result: Value", error, created_at, started_at, finished_at
            FROM jobs
            WHERE status IN ('queued', 'running', 'cancelling')
            ORDER BY lane, background, queue_rank"#,
@@ -212,7 +230,7 @@ pub async fn list_history(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                   status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
-                  ref_id, error, created_at, started_at, finished_at
+                  ref_id, result as "result: Value", error, created_at, started_at, finished_at
            FROM jobs
            WHERE status IN ('done', 'cancelled', 'failed')
            ORDER BY created_at DESC
@@ -242,7 +260,7 @@ pub async fn find_by_id(pool: &PgPool, id_job: Uuid) -> Result<Option<Job>, sqlx
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                   status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
-                  ref_id, error, created_at, started_at, finished_at
+                  ref_id, result as "result: Value", error, created_at, started_at, finished_at
            FROM jobs WHERE id_job = $1"#,
         id_job,
     )
@@ -274,7 +292,7 @@ pub async fn claim_next(pool: &PgPool, lane: JobLane) -> Result<Option<Job>, sql
            RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                      status as "status: JobStatus",
                      label, queue_rank, background, config as "config: Value", progress, stage,
-                     ref_id, error, created_at, started_at, finished_at"#,
+                     ref_id, result as "result: Value", error, created_at, started_at, finished_at"#,
         lane as JobLane,
     )
     .fetch_optional(pool)

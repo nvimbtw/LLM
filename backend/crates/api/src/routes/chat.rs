@@ -125,6 +125,14 @@ struct SendMessageFrame {
     // the client omits it when the user hasn't set one.
     #[serde(default)]
     system: Option<String>,
+    // How long the model should think: "low" | "med" | "high". Absent, or the
+    // composer's "Auto", means no budget marker at all.
+    //
+    // Taken as a string rather than the enum so an unknown value is a message this
+    // route can answer with, instead of a serde failure that rejects the whole
+    // frame as unparseable and tells the user nothing.
+    #[serde(default)]
+    budget: Option<String>,
 }
 
 // An inbound `{ "action": "cancel" }` while a turn is in flight. The turn is a
@@ -276,6 +284,17 @@ async fn handle_message(
         }
     }
 
+    // "auto" and an absent field are the same thing — no budget — so only a
+    // present, non-auto value that parses to nothing is an error.
+    let budget = match frame.budget.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => None,
+        Some(s) if s.eq_ignore_ascii_case("auto") => None,
+        Some(s) => match llm::chat_template::ThinkBudget::parse(s) {
+            Some(budget) => Some(budget),
+            None => return session.text(ws::error_frame("unknown thinking budget")).await,
+        },
+    };
+
     let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
         return Ok(());
     };
@@ -304,6 +323,7 @@ async fn handle_message(
         id_model: model.id_model,
         id_user: Some(user_id),
         system,
+        budget,
     };
     let config = match serde_json::to_value(&request) {
         Ok(config) => config,

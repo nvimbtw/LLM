@@ -47,9 +47,19 @@ struct RunSummary {
     suite_version: i32,
     score: Option<f64>,
     error: Option<String>,
-    // Tokens the model was trained on. Drives the scaling chart (score against
-    // training tokens); null for a model whose config never recorded a corpus size.
+    // Tokens the model was trained on. A property of the model, not of this run —
+    // kept because it is still worth knowing, but no longer what anything plots.
     train_tokens: Option<i64>,
+    // Tokens the model forwarded to complete the run. This is the cost the charts
+    // put on x; null for a run that predates the counter.
+    eval_tokens: Option<i64>,
+    // The forced thinking budget, the sweep it belongs to, and how many held-out
+    // conversations it scored. The first two are what let the chart connect a sweep
+    // into one line; the third is what lets it mark a point resting on three
+    // conversations as provisional rather than drawing it like any other.
+    think_budget: Option<String>,
+    id_series: Option<Uuid>,
+    eval_conversations: Option<i64>,
     created_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
 }
@@ -66,6 +76,10 @@ impl From<db::benchmark::BenchmarkSummary> for RunSummary {
             score: run.score,
             error: run.error,
             train_tokens: run.train_tokens,
+            eval_tokens: run.eval_tokens,
+            think_budget: run.think_budget,
+            id_series: run.id_series,
+            eval_conversations: run.eval_conversations,
             created_at: run.created_at,
             completed_at: run.completed_at,
         }
@@ -85,6 +99,10 @@ struct RunDetail {
     report: Option<Value>,
     error: Option<String>,
     train_tokens: Option<i64>,
+    eval_tokens: Option<i64>,
+    think_budget: Option<String>,
+    id_series: Option<Uuid>,
+    eval_conversations: Option<i64>,
     created_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
 }
@@ -159,6 +177,10 @@ async fn list_model_runs(
             report: run.report,
             error: run.error,
             train_tokens: run.train_tokens,
+            eval_tokens: run.eval_tokens,
+            think_budget: run.think_budget,
+            id_series: run.id_series,
+            eval_conversations: run.eval_conversations,
             created_at: run.created_at,
             completed_at: run.completed_at,
         }),
@@ -192,6 +214,10 @@ async fn get_run(
             report: run.report,
             error: run.error,
             train_tokens: run.train_tokens,
+            eval_tokens: run.eval_tokens,
+            think_budget: run.think_budget,
+            id_series: run.id_series,
+            eval_conversations: run.eval_conversations,
             created_at: run.created_at,
             completed_at: run.completed_at,
         }),

@@ -14,10 +14,23 @@
 //! turns, always ending on an *open* `<|assistant|>` for the model to continue.
 //! Generation then stops when it emits `<|/assistant|>` (see `infer`).
 //!
+//! A conversation may also carry a [`ThinkBudget`], which inserts one marker
+//! immediately before every `<|assistant|>`:
+//!
+//! ```text
+//! <|user|>U<|/user|><|think:high|><|assistant|>
+//! ```
+//!
+//! With no budget the rendering is byte-identical to what it was before budgets
+//! existed, which is what keeps every corpus, split hash and benchmark score
+//! already on disk comparable.
+//!
 //! Historical assistant turns keep only their reply: any
 //! `<|thinking|>...<|/thinking|>` block is stripped, since stale reasoning isn't
 //! worth spending the (tiny) context window on. The model still produces a fresh
 //! thinking block for the current turn.
+
+use serde::{Deserialize, Serialize};
 
 use tokenize::bpe::encode;
 
@@ -25,6 +38,71 @@ use tokenize::bpe::encode;
 pub enum Role {
     User,
     Assistant,
+}
+
+/// How much reasoning the assistant should show before answering.
+///
+/// Three levels rather than a token count, because the label has to be something
+/// a prompt can ask a teacher for, a person can pick off a menu, and a model can
+/// condition on — and a model asked for "173 thinking tokens" cannot count its
+/// own tokens. `synth::teach` files generated conversations into these by
+/// *measuring* the thinking block; the boundaries live there, since they are a
+/// property of the run rather than of the template.
+///
+/// This is the canonical definition, in the lowest crate that renders a
+/// conversation, so the label the teacher writes, the one SFT trains on and the
+/// one the chat socket sends are all the same type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkBudget {
+    Low,
+    Med,
+    High,
+}
+
+impl ThinkBudget {
+    pub const ALL: [ThinkBudget; 3] = [ThinkBudget::Low, ThinkBudget::Med, ThinkBudget::High];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThinkBudget::Low => "low",
+            ThinkBudget::Med => "med",
+            ThinkBudget::High => "high",
+        }
+    }
+
+    /// The reserved marker this budget renders as. One token — it has its own id
+    /// in the special block, so the model conditions on a single embedding row
+    /// rather than on a handful of ordinary word tokens that mean something else
+    /// everywhere else in the corpus.
+    pub fn marker(self) -> &'static str {
+        match self {
+            ThinkBudget::Low => "<|think:low|>",
+            ThinkBudget::Med => "<|think:med|>",
+            ThinkBudget::High => "<|think:high|>",
+        }
+    }
+
+    /// Parses the wire/on-disk spelling. `None` for anything else, including
+    /// "auto" — the absence of a budget is a real state (render nothing) and the
+    /// caller expresses it as `Option::None` rather than as a fourth variant.
+    pub fn parse(s: &str) -> Option<ThinkBudget> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(ThinkBudget::Low),
+            "med" | "medium" => Some(ThinkBudget::Med),
+            "high" => Some(ThinkBudget::High),
+            _ => None,
+        }
+    }
+}
+
+// The budget marker, or "" when there is none. Written once here so the three
+// renderers cannot disagree about whether an absent budget emits anything.
+fn budget_marker(budget: Option<ThinkBudget>) -> &'static str {
+    match budget {
+        Some(b) => b.marker(),
+        None => "",
+    }
 }
 
 pub struct Turn {
@@ -51,6 +129,13 @@ fn strip_thinking(text: &str) -> String {
     text.trim().to_string()
 }
 
+// A *history* turn, as `build_prompt` renders it.
+//
+// Deliberately carries no budget marker, even on a conversation that has one. The
+// rule the marker states is "the assistant turn after me shows its reasoning at
+// this budget", and a history turn has had its reasoning stripped — so marking it
+// would claim a thinking block that is not there. Only the trailing open
+// `<|assistant|>`, the one about to be generated, is marked.
 fn format_turn(t: &Turn) -> String {
     match t.role {
         Role::User => format!("<|user|>{}<|/user|>", t.text.trim()),
@@ -72,7 +157,11 @@ fn format_turn(t: &Turn) -> String {
 /// the pretrain builder tokenizes whole files in one pass, so a marker seam may
 /// tokenize a token differently here than it does under SFT. That costs nothing —
 /// this exists to expose the markers to training, not to align with a mask.
-pub fn render_conversation(system: Option<&str>, turns: &[Turn]) -> String {
+pub fn render_conversation(
+    system: Option<&str>,
+    turns: &[Turn],
+    budget: Option<ThinkBudget>,
+) -> String {
     let mut out = String::new();
     if let Some(s) = system.map(str::trim).filter(|s| !s.is_empty()) {
         out.push_str(&format!("<|system|>{}<|/system|>", s));
@@ -81,6 +170,11 @@ pub fn render_conversation(system: Option<&str>, turns: &[Turn]) -> String {
         match t.role {
             Role::User => out.push_str(&format!("<|user|>{}<|/user|>", t.text.trim())),
             Role::Assistant => {
+                // Thinking is kept here, so the marker describes real content —
+                // and this is the path that puts the marker into the *pretrain*
+                // corpus, which is what stops its embedding row arriving at SFT
+                // at random init.
+                out.push_str(budget_marker(budget));
                 out.push_str(ASSISTANT_OPEN);
                 out.push_str(t.text.trim());
                 out.push_str("<|/assistant|>");
@@ -101,9 +195,14 @@ pub fn render_conversation(system: Option<&str>, turns: &[Turn]) -> String {
 ///
 /// `reserve_for_reply` is headroom left for the model to generate before the
 /// sliding window starts evicting the freshest prompt tokens.
+///
+/// `budget`, when given, renders as one marker in front of the trailing open
+/// `<|assistant|>` — the last thing the model conditions on before it starts
+/// generating, which is where a lever over the reply belongs.
 pub fn build_prompt(
     system: Option<&str>,
     history: &[Turn],
+    budget: Option<ThinkBudget>,
     merges: &[((u32, u32), u32)],
     ctx_window: usize,
     reserve_for_reply: usize,
@@ -112,9 +211,15 @@ pub fn build_prompt(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| format!("<|system|>{}<|/system|>", s));
+    let budget_str = budget_marker(budget);
 
-    // Cost of the always-present scaffold, in tokens.
+    // Cost of the always-present scaffold, in tokens. The budget marker is part of
+    // it — it is mandatory once asked for, exactly like the system block, so its
+    // cost has to come out of the budget before history is fitted around it.
     let mut scaffold = encode(ASSISTANT_OPEN, merges).len();
+    if !budget_str.is_empty() {
+        scaffold += encode(budget_str, merges).len();
+    }
     if let Some(ref s) = system_str {
         scaffold += encode(s, merges).len();
     }
@@ -144,6 +249,7 @@ pub fn build_prompt(
     for t in &history[start..] {
         s.push_str(&format_turn(t));
     }
+    s.push_str(budget_str);
     s.push_str(ASSISTANT_OPEN);
     encode(&s, merges)
 }
@@ -177,6 +283,7 @@ pub fn build_prompt(
 pub fn build_training_example(
     system: Option<&str>,
     turns: &[Turn],
+    budget: Option<ThinkBudget>,
     merges: &[((u32, u32), u32)],
 ) -> (Vec<u32>, Vec<u8>) {
     // Each entry is one rendered piece plus whether its tokens are a training
@@ -196,6 +303,16 @@ pub fn build_training_example(
                 // The opening marker is the cue the model conditions on (not a
                 // target); the reply body and the closing marker are the target —
                 // the model must learn both to answer and to stop.
+                //
+                // The budget marker is part of that cue, and untrained for the
+                // same reason: it is an *instruction* the caller supplies, never
+                // something the model chooses. Training it as a target would teach
+                // the model to predict how hard it is about to think, which is a
+                // fact about the request, not about the reply. So only its
+                // embedding row is ever learned — the output column stays unused.
+                if let Some(b) = budget {
+                    segments.push((b.marker().to_string(), false));
+                }
                 segments.push((ASSISTANT_OPEN.to_string(), false));
                 segments.push((t.text.trim().to_string(), true));
                 segments.push(("<|/assistant|>".to_string(), true));
@@ -265,7 +382,7 @@ mod tests {
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
         assert_eq!(
-            render_conversation(Some(" be nice "), &turns),
+            render_conversation(Some(" be nice "), &turns, None),
             "<|system|>be nice<|/system|><|user|>hi<|/user|><|assistant|>yo<|/assistant|>",
         );
     }
@@ -278,24 +395,168 @@ mod tests {
             role: Role::Assistant,
             text: "<|thinking|>hmm<|/thinking|>hello".into(),
         }];
-        let rendered = render_conversation(None, &turns);
+        let rendered = render_conversation(None, &turns, None);
         assert!(rendered.contains("<|thinking|>hmm<|/thinking|>"), "{rendered}");
     }
 
     #[test]
     fn test_render_omits_an_empty_system_block() {
         let turns = vec![Turn { role: Role::User, text: "hi".into() }];
-        assert_eq!(render_conversation(Some("   "), &turns), "<|user|>hi<|/user|>");
-        assert_eq!(render_conversation(None, &turns), "<|user|>hi<|/user|>");
+        assert_eq!(render_conversation(Some("   "), &turns, None), "<|user|>hi<|/user|>");
+        assert_eq!(render_conversation(None, &turns, None), "<|user|>hi<|/user|>");
     }
 
-    // ── build_training_example ──
+    // ── the thinking budget ──
 
     // With no trained merges, `encode` falls back to byte-level tokens, which is
     // deterministic and enough to check the mask's shape.
     fn no_merges() -> Vec<((u32, u32), u32)> {
         Vec::new()
     }
+
+    // The property the whole feature rests on: an unbudgeted conversation renders
+    // exactly as it did before budgets existed. Every corpus, `chat_destination`
+    // hash and benchmark score already on disk depends on it.
+    #[test]
+    fn no_budget_renders_exactly_as_before() {
+        let merges = no_merges();
+        let turns = vec![
+            Turn { role: Role::User, text: "hi".into() },
+            Turn { role: Role::Assistant, text: "yo".into() },
+        ];
+        assert_eq!(
+            render_conversation(Some("be nice"), &turns, None),
+            "<|system|>be nice<|/system|><|user|>hi<|/user|><|assistant|>yo<|/assistant|>",
+        );
+        let (ids, _) = build_training_example(None, &turns, None, &merges);
+        let expected = encode("<|user|>hi<|/user|>", &merges).len()
+            + encode("<|assistant|>", &merges).len()
+            + encode("yo", &merges).len()
+            + encode("<|/assistant|>", &merges).len();
+        assert_eq!(ids.len(), expected);
+    }
+
+    #[test]
+    fn a_budget_marker_sits_immediately_before_the_assistant_open() {
+        let turns = vec![
+            Turn { role: Role::User, text: "hi".into() },
+            Turn { role: Role::Assistant, text: "yo".into() },
+        ];
+        assert_eq!(
+            render_conversation(None, &turns, Some(ThinkBudget::High)),
+            "<|user|>hi<|/user|><|think:high|><|assistant|>yo<|/assistant|>",
+        );
+    }
+
+    // The marker is an instruction the caller supplies, not something the model
+    // chooses, so it must never be a training target — otherwise the model learns
+    // to predict how hard it is about to think.
+    #[test]
+    fn the_budget_marker_is_a_cue_and_never_a_target() {
+        let merges = no_merges();
+        let turns = vec![
+            Turn { role: Role::User, text: "hi".into() },
+            Turn { role: Role::Assistant, text: "yo".into() },
+        ];
+        let (plain, plain_mask) = build_training_example(None, &turns, None, &merges);
+        let (budgeted, budgeted_mask) =
+            build_training_example(None, &turns, Some(ThinkBudget::Low), &merges);
+
+        // Exactly one extra token, and it is the marker's reserved id.
+        let marker = encode(ThinkBudget::Low.marker(), &merges);
+        assert_eq!(marker.len(), 1, "a budget must cost exactly one token");
+        assert_eq!(budgeted.len(), plain.len() + marker.len());
+        assert!(budgeted.contains(&marker[0]));
+
+        // The trained span is unchanged: same count, same reply.
+        let trained = |m: &[u8]| m.iter().filter(|&&b| b == 1).count();
+        assert_eq!(trained(&budgeted_mask), trained(&plain_mask));
+
+        // And the marker's own position is not trained — the position *before* it
+        // must not be asked to predict it.
+        let at = budgeted.iter().position(|id| *id == marker[0]).unwrap();
+        assert_eq!(budgeted_mask[at - 1], 0, "the marker must not be a target");
+    }
+
+    // A budget is per-turn: it marks the reply about to be generated, and never a
+    // history turn, whose reasoning `build_prompt` has already stripped.
+    #[test]
+    fn a_prompt_marks_only_the_turn_it_is_about_to_generate() {
+        let merges = no_merges();
+        let history = vec![
+            Turn { role: Role::User, text: "q1".into() },
+            Turn { role: Role::Assistant, text: "<|thinking|>hmm<|/thinking|>a1".into() },
+            Turn { role: Role::User, text: "q2".into() },
+        ];
+        let ids = build_prompt(None, &history, Some(ThinkBudget::Med), &merges, 4096, 8);
+        let marker = encode(ThinkBudget::Med.marker(), &merges);
+        assert_eq!(ids.iter().filter(|id| **id == marker[0]).count(), 1);
+
+        // …and it is the second-to-last token, right before the open marker.
+        let open = encode(ASSISTANT_OPEN, &merges);
+        assert_eq!(ids[ids.len() - open.len() - 1], marker[0]);
+        assert_eq!(&ids[ids.len() - open.len()..], open.as_slice());
+    }
+
+    // The marker is mandatory scaffold, so its cost must come out of the window
+    // before history is fitted around it — otherwise a full context overflows by
+    // exactly one token, silently, only on budgeted turns.
+    #[test]
+    fn the_budget_is_charged_to_the_scaffold() {
+        let merges = no_merges();
+        let history = vec![
+            Turn { role: Role::User, text: "a fairly wordy question".into() },
+            Turn { role: Role::Assistant, text: "a fairly wordy answer".into() },
+            Turn { role: Role::User, text: "and another one".into() },
+        ];
+        // A window tight enough that the budget's token decides whether the oldest
+        // turn still fits.
+        let plain = build_prompt(None, &history, None, &merges, 64, 8);
+        let budgeted = build_prompt(None, &history, Some(ThinkBudget::High), &merges, 64, 8);
+        assert!(
+            budgeted.len() <= plain.len() + 1,
+            "budget {} vs plain {}: the marker must displace history, not add to it",
+            budgeted.len(),
+            plain.len(),
+        );
+    }
+
+    #[test]
+    fn budget_parses_the_spellings_the_wire_and_the_disk_use() {
+        assert_eq!(ThinkBudget::parse("low"), Some(ThinkBudget::Low));
+        assert_eq!(ThinkBudget::parse(" HIGH "), Some(ThinkBudget::High));
+        // The frontend says "medium"; the on-disk label is "med".
+        assert_eq!(ThinkBudget::parse("medium"), Some(ThinkBudget::Med));
+        assert_eq!(ThinkBudget::parse("med"), Some(ThinkBudget::Med));
+        // "auto" is the absence of a budget, expressed as None by the caller.
+        assert_eq!(ThinkBudget::parse("auto"), None);
+        assert_eq!(ThinkBudget::parse(""), None);
+    }
+
+    // The on-disk spelling `synth::teach` writes must round-trip, or the labels
+    // already in raw/sft/ deserialize to nothing.
+    #[test]
+    fn budget_serializes_as_the_label_on_disk() {
+        for b in ThinkBudget::ALL {
+            let json = serde_json::to_string(&b).unwrap();
+            assert_eq!(json, format!("\"{}\"", b.as_str()));
+            assert_eq!(serde_json::from_str::<ThinkBudget>(&json).unwrap(), b);
+        }
+    }
+
+    // Every budget must be a *single* reserved token, not a shredded byte string —
+    // that is the whole reason it is a marker rather than a phrase.
+    #[test]
+    fn every_budget_marker_is_one_reserved_token() {
+        let merges = no_merges();
+        for b in ThinkBudget::ALL {
+            let ids = encode(b.marker(), &merges);
+            assert_eq!(ids.len(), 1, "{} encoded to {:?}", b.marker(), ids);
+            assert!((256..320).contains(&ids[0]), "{} is not in the special block", b.marker());
+        }
+    }
+
+    // ── build_training_example ──
 
     #[test]
     fn test_training_example_masks_only_assistant_reply() {
@@ -304,7 +565,7 @@ mod tests {
             Turn { role: Role::User, text: "hi".into() },
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
-        let (ids, mask) = build_training_example(None, &turns, &merges);
+        let (ids, mask) = build_training_example(None, &turns, None, &merges);
 
         assert_eq!(ids.len(), mask.len(), "ids and mask must be parallel");
         assert!(!ids.is_empty());
@@ -331,7 +592,7 @@ mod tests {
             Turn { role: Role::User, text: "q2".into() },
             Turn { role: Role::Assistant, text: "a2".into() },
         ];
-        let (ids, mask) = build_training_example(Some("be nice"), &turns, &merges);
+        let (ids, mask) = build_training_example(Some("be nice"), &turns, None, &merges);
 
         assert_eq!(ids.len(), mask.len());
 
@@ -360,7 +621,7 @@ mod tests {
             Turn { role: Role::User, text: "question".into() },
             Turn { role: Role::Assistant, text: "answer".into() },
         ];
-        let (ids, mask) = build_training_example(Some("system prompt"), &turns, &merges);
+        let (ids, mask) = build_training_example(Some("system prompt"), &turns, None, &merges);
 
         // The prefix up to the first trained position (everything predicting the
         // system/user/scaffold tokens) must be entirely masked off.

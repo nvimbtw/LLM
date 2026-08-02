@@ -13,6 +13,7 @@ import { docToMarkdown } from "@/lib/tiptap-markdown"
 import { matchStandaloneCommand, runSlashCommand } from "@/lib/commands"
 import { useSettings } from "@/components/settings/settings-provider"
 import { ModelSelector } from "./model-selector"
+import { BudgetSelector, type ThinkBudget } from "./budget-selector"
 
 // Tab / Shift+Tab indent / outdent list items. Enter and Shift+Enter are
 // handled in editorProps.handleKeyDown so they run before StarterKit's own
@@ -35,7 +36,11 @@ export function ChatComposer({
   onCancel,
   placeholder = "Message Slate…",
 }: {
-  onSend: (content: string, modelId: string) => Promise<void> | void
+  onSend: (
+    content: string,
+    modelId: string,
+    budget: ThinkBudget
+  ) => Promise<void> | void
   disabled?: boolean
   // Stops the turn in flight. A reply is a queued job now, so it can be waiting
   // behind a long run with nothing to watch — being able to take it back out of
@@ -44,6 +49,11 @@ export function ChatComposer({
   placeholder?: string
 }) {
   const [model, setModel] = React.useState("")
+  // Per-message, and deliberately not a stored setting: how hard you want the
+  // model to think is a property of the question you are about to ask, not a
+  // preference. It does persist for the life of the composer, so a run of
+  // similar questions is not a run of re-picking.
+  const [budget, setBudget] = React.useState<ThinkBudget>("auto")
   const [isEmpty, setIsEmpty] = React.useState(true)
   // True when the current content is a standalone, recognised slash command —
   // drives the blue highlight and the "run as command instead of send" path.
@@ -127,8 +137,8 @@ export function ChatComposer({
     if (!markdown.trim()) return
     editor.commands.clearContent()
     setIsEmpty(true)
-    onSendRef.current(markdown, model)
-  }, [editor, disabled, model, settings, setSetting, setCommandOpen])
+    onSendRef.current(markdown, model, budget)
+  }, [editor, disabled, model, budget, settings, setSetting, setCommandOpen])
   submitRef.current = submit
 
   React.useEffect(() => {
@@ -157,6 +167,7 @@ export function ChatComposer({
       </div>
       <div className="flex items-center gap-2 px-2.5 pb-2">
         <ModelSelector value={model} onValueChange={setModel} />
+        <BudgetSelector value={budget} onValueChange={setBudget} />
         <Button
           aria-label={disabled && onCancel ? "Stop" : "Send"}
           size="icon-sm"

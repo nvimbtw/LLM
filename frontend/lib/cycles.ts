@@ -53,11 +53,38 @@ export interface CycleConfig {
   max_prompts: number
   candidates: number
   temperature: number
+  /**
+   * How long a generated candidate reply may run, in tokens.
+   *
+   * The cycle's most consequential number. It was hard-coded at 96 and unreachable
+   * from here, which capped generated replies at ~265 characters while the assistant
+   * benchmark scores held-out replies averaging ~1400 — so every round trained the
+   * model to answer shorter and scored it for doing so.
+   */
+  max_tokens: number
   raft_lr: number
   kto_lr: number
   beta: number
   /** How much the benchmark score must rise for a round to count. Never zero. */
   min_gain: number
+  /**
+   * Run every round to the limit instead of halting on the first that does not
+   * improve. Nothing about the measurement changes — the verdict is still recorded
+   * per round, a failing round is written as `explored` rather than `accepted`, and
+   * the best model is still only replaced on a genuine gain. For answering "where
+   * does this go over 5-10 rounds", which a halt at round 1 cannot show.
+   */
+  explore: boolean
+  /**
+   * Run the round as generate → self-train → benchmark, with no preference stage.
+   *
+   * An experiment knob. Scoring the intermediate model of one round put the two
+   * training stages at −3.82 (self-train) and −5.74 (preference) points of assistant
+   * score — so preference tuning is the larger single loss, and the only stage with
+   * no prose replay anchoring it. Self-train's −3.82 is inside noise, so whether it
+   * is salvageable alone is what one round with this set answers.
+   */
+  skip_preference: boolean
 }
 
 export interface Cycle {
@@ -71,6 +98,15 @@ export interface Cycle {
   id_model_current: string | null
   /** The cycle's actual output — not whatever the last round happened to produce. */
   id_model_best: string | null
+  /**
+   * The best round's **assistant** score, not a blend of the three suites.
+   *
+   * Every round is benchmarked on language, markup and assistant, and the verdict
+   * weighs all three — but a single stored number has to be one of them, and this is
+   * the one the cycle is trying to move. Averaging them would be a composite by the
+   * back door, and letting a gain on one hide a collapse on another is precisely what
+   * the three-way split exists to prevent.
+   */
   best_score: number | null
   id_job_current: string | null
   config: CycleConfig
@@ -92,8 +128,14 @@ export interface CycleRound {
   approved_after: number | null
   rejected_after: number | null
   id_model_out: string | null
+  /** The round's assistant score. See `Cycle.best_score` for why it is that one. */
   score: number | null
   verdict: string | null
+  /**
+   * All three suites' numbers and what the gate made of them, as one sentence. The
+   * only place the language and markup movements are visible, so it is rendered in
+   * full rather than truncated.
+   */
   note: string | null
   started_at: string
   finished_at: string | null

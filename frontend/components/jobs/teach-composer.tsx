@@ -28,8 +28,6 @@ const DEFAULT_TEMPERATURE = 1.0
 // relabelled. The first run used 64/256 against narrower targets and the bands
 // overlapped, which meant the tier was decided by BPE noise rather than by how much
 // reasoning the block actually contained.
-const DEFAULT_LOW_MAX = 140
-const DEFAULT_MED_MAX = 700
 
 /**
  * Composing a local-teacher run: which GGUF to run, how many triples to collect,
@@ -52,8 +50,6 @@ export function TeachComposer() {
   const [count, setCount] = React.useState(DEFAULT_COUNT)
   const [nCtx, setNCtx] = React.useState(DEFAULT_CTX)
   const [temperature, setTemperature] = React.useState(DEFAULT_TEMPERATURE)
-  const [lowMax, setLowMax] = React.useState(DEFAULT_LOW_MAX)
-  const [medMax, setMedMax] = React.useState(DEFAULT_MED_MAX)
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   React.useEffect(() => {
@@ -90,8 +86,10 @@ export function TeachComposer() {
           seed: 0,
         },
         count,
-        low_max_tokens: lowMax,
-        med_max_tokens: medMax,
+        // The tier boundaries are deliberately not sent. They are derived from the
+        // student's context window, which is the only thing that can decide them:
+        // a long thinking block has to leave room for the reply inside the window,
+        // and a hand-set bound that ignores this makes the long tier unfillable.
         id_model: targetId || undefined,
       })
       // The device lane, unlike `synth` — worth saying, because it means this will
@@ -108,11 +106,7 @@ export function TeachComposer() {
   }
 
   const valid =
-    modelFile.trim() !== "" &&
-    count >= 1 &&
-    nCtx >= 1024 &&
-    temperature > 0 &&
-    lowMax < medMax
+    modelFile.trim() !== "" && count >= 1 && nCtx >= 1024 && temperature > 0
 
   return (
     <div className="space-y-6">
@@ -208,17 +202,19 @@ export function TeachComposer() {
         </Select>
         <p className="mt-3 text-xs text-muted-foreground">
           A thinking budget is what <em>this</em> model spends at inference, so
-          the tiers below are counted in its tokens — not the teacher&apos;s,
-          and not in words. Skip it and answers are filed under whichever tier
-          was asked for rather than the one they landed in, which makes the
-          labels a record of the request instead of the content.
+          the tiers are counted in its tokens — not the teacher&apos;s, and not
+          in words. They are derived from its context window, because a long
+          thinking block still has to leave room for the reply beside it: a
+          1024-token student cannot hold 700 tokens of reasoning and an answer,
+          so a bound set by hand can make the long tier unfillable. The run
+          reports the boundaries it resolved before it starts generating. Skip
+          the model and answers are filed under whichever tier was asked for
+          rather than the one they landed in, which makes the labels a record of
+          the request instead of the content.
         </p>
       </Panel>
 
-      <Panel
-        title="Budgets"
-        description="Where the three tiers divide, in target tokens"
-      >
+      <Panel title="Run size" description="How much to generate">
         <dl className="space-y-3">
           <Field
             label="Triples"
@@ -233,40 +229,7 @@ export function TeachComposer() {
               className="h-8 w-24"
             />
           </Field>
-          <Field
-            label="Short ends at"
-            hint="Thinking blocks up to this many tokens are filed as short."
-          >
-            <Input
-              type="number"
-              min={0}
-              value={lowMax}
-              onChange={(e) => setLowMax(Number(e.target.value))}
-              disabled={isSubmitting}
-              className="h-8 w-24"
-            />
-          </Field>
-          <Field
-            label="Medium ends at"
-            hint="Up to here is medium; anything longer is long. Must be above the short bound, or the middle tier can never be filled."
-          >
-            <Input
-              type="number"
-              min={1}
-              value={medMax}
-              onChange={(e) => setMedMax(Number(e.target.value))}
-              disabled={isSubmitting}
-              className="h-8 w-24"
-            />
-          </Field>
         </dl>
-
-        {lowMax >= medMax && (
-          <p className="mt-3 text-xs text-kind-autolabel">
-            The short bound has to be below the medium one — otherwise nothing
-            can ever be filed as medium.
-          </p>
-        )}
 
         <div className="mt-5 flex items-center gap-3">
           <Button

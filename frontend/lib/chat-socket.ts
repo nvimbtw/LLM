@@ -1,4 +1,5 @@
 import { WS_URL, getToken, handleSessionExpired } from "./api"
+import type { ThinkBudget } from "@/components/chat/budget-selector"
 
 // The backend's exact error frame for a bad/expired token (routes/chat.rs).
 const AUTH_FAILED_MESSAGE = "authentication failed"
@@ -8,8 +9,9 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 // Wire protocol:
 //   client → { token }                            (first frame, auth)
 //   server → { type: "ready" }
-//   client → { chat_id, content, model_id, system }  (chat_id null = new chat;
-//                                                      system optional/omitted)
+//   client → { chat_id, content, model_id, system, budget }
+//                                    (chat_id null = new chat; system and budget
+//                                     optional/omitted)
 //   server → { type: "queued", job_id, chat_id, ahead }
 //   server → { type: "token", value }             (decoded token text, repeated)
 //   server → { type: "done", chat_id, id_message }
@@ -34,6 +36,9 @@ export function streamChat(
   content: string,
   modelId: string | null,
   system: string | null,
+  // How long the model should reason. "auto" is sent as nothing at all — the
+  // backend renders no marker, which is the prompt shape it has always used.
+  budget: ThinkBudget,
   handlers: ChatStreamHandlers
 ): () => void {
   const ws = new WebSocket(`${WS_URL}/chat/ws`)
@@ -81,6 +86,9 @@ export function streamChat(
             content,
             model_id: modelId,
             ...(trimmedSystem ? { system: trimmedSystem } : {}),
+            // Same rule for the budget: "auto" is the absence of one, so it is
+            // omitted rather than sent as a value the backend has to interpret.
+            ...(budget !== "auto" ? { budget } : {}),
           })
         )
         break

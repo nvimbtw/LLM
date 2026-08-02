@@ -5,24 +5,29 @@
 // the suite under a profiler, or diffing two models from a shell script.
 //
 // Usage:
-//   cargo run -p llm --bin eval -- [--markup] <model_dir> [eval_dir]
+//   cargo run -p llm --bin eval -- [--markup|--assistant] <model_dir> [eval_dir]
 //
 // `model_dir` holds `weights` + `merges.bin` (i.e. data/artifacts/models/<uuid>).
 // `eval_dir` defaults to `data/eval` and holds `corpus/*.txt` (held-out reference
 // prose) and optionally `blimp/*.jsonl` and `chat/*.jsonl`.
 //
-// `--markup` runs the markup suite instead of the language one. They are separate
-// benchmarks with separate scores, on purpose: a supervised fine-tune is expected to
-// move them in opposite directions, and one blended number cannot say so.
+// Three suites, three separate scores, on purpose — they share a 0–100 range and
+// nothing else, and a supervised fine-tune is expected to move them in different
+// directions. One blended number could not say so.
+//
+//   (default)     language  — can it model English
+//   --markup      markup    — can it drive its own harness
+//   --assistant   assistant — are the replies any good (needs `chat/*.jsonl`)
 
 use std::path::PathBuf;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let markup = args.iter().any(|a| a == "--markup");
-    args.retain(|a| a != "--markup");
-    if args.is_empty() {
-        eprintln!("usage: eval [--markup] <model_dir> [eval_dir]");
+    let assistant = args.iter().any(|a| a == "--assistant");
+    args.retain(|a| a != "--markup" && a != "--assistant");
+    if args.is_empty() || (markup && assistant) {
+        eprintln!("usage: eval [--markup|--assistant] <model_dir> [eval_dir]");
         std::process::exit(2);
     }
 
@@ -48,6 +53,18 @@ fn main() {
         return;
     }
 
+    if assistant {
+        match llm::eval::run_assistant(&config, Box::new(print_progress), None) {
+            Ok(Some(report)) => print_assistant_report(&report),
+            Ok(None) => unreachable!("a CLI run has no cancel flag to trip"),
+            Err(e) => {
+                eprintln!("benchmark failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     match llm::eval::run_language(&config, Box::new(print_progress), None) {
         Ok(Some(report)) => print_report(&report),
         Ok(None) => unreachable!("a CLI run has no cancel flag to trip"),
@@ -56,6 +73,44 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn print_assistant_report(report: &llm::eval::AssistantReport) {
+    println!("\n── model ──");
+    println!(
+        "  {}d · {}L · {}h · ctx {} · vocab {} · {} params",
+        report.model.dimensions,
+        report.model.layers,
+        report.model.heads,
+        report.model.context,
+        report.model.vocab,
+        report.model.parameters,
+    );
+
+    match &report.chat {
+        Some(c) => {
+            println!("\n── replies ──");
+            // Printed with its direction spelled out. The unit runs the opposite way
+            // to the score beneath it, which is exactly the confusion the suite was
+            // built to end.
+            println!(
+                "  {:.4} bits/token  (lower is better) ± {:.4}",
+                c.bits_per_token, c.bits_per_token_stderr,
+            );
+            println!("  {} tokens over {} conversations", c.tokens_scored, c.conversations);
+            println!("  mean logprob          {:.4}", c.logprob);
+        }
+        None => println!("\n── replies ──\n  no held-out chat set installed"),
+    }
+
+    let b = &report.breakdown;
+    println!("\n── score ──");
+    println!("  replies               {:.4}", b.replies);
+    println!(
+        "  ASSISTANT             {:.2} / 100  ± {:.2}   (v{})",
+        b.score, b.score_stderr, b.version,
+    );
+    println!("\n  ran in {:.1}s", report.duration_secs);
 }
 
 fn print_markup_report(report: &llm::eval::MarkupReport) {

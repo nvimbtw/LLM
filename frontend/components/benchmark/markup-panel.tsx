@@ -22,8 +22,8 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
       <section className="rounded-lg border border-border bg-background px-6 py-5">
         <h2 className="text-sm font-medium">Marker pairs</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          Forced choice between two strings with identical prose and the same number
-          of markers. 50% is chance.
+          Forced choice between two strings with identical prose and the same
+          number of markers. 50% is chance.
         </p>
         <dl className="mt-5 divide-y divide-border/60">
           {pairs.paradigms.map((paradigm) => (
@@ -126,7 +126,8 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
         <section className="rounded-lg border border-border bg-background px-6 py-5">
           <h2 className="text-sm font-medium">What it wrote</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            So the numbers above can be checked against the replies they describe.
+            So the numbers above can be checked against the replies they
+            describe.
           </p>
           <ul className="mt-5 space-y-4">
             {structure.samples.map((sample, i) => (
@@ -145,8 +146,8 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
         <p className="text-xs text-muted-foreground tabular-nums">
           {formatNumber(report.chat.bits_per_token, 3)} bits per assistant token
           over {report.chat.tokens_scored} tokens in {report.chat.conversations}{" "}
-          held-out conversations. Reported, not scored — a base model has never seen
-          the chat scaffold.
+          held-out conversations. Reported, not scored — a base model has never
+          seen the chat scaffold.
         </p>
       )}
     </div>
@@ -185,8 +186,8 @@ function Row({
 function Empty() {
   return (
     <p className="mt-5 text-xs text-muted-foreground">
-      No held-out chat set yet. It is exported from your SFT conversations when a
-      benchmark runs, so this fills in after the next one.
+      No held-out chat set yet. It is exported from your SFT conversations when
+      a benchmark runs, so this fills in after the next one.
     </p>
   )
 }

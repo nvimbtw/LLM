@@ -5,60 +5,63 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-    --font-heading: var(--font-sans);
-    --font-sans: var(--font-sans);
-    --font-mono: var(--font-mono);
-    --font-display: var(--font-display);
-    --color-sidebar-ring: var(--sidebar-ring);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar: var(--sidebar);
-    --color-chart-5: var(--chart-5);
-    --color-kind-train: var(--kind-train);
-    --color-kind-benchmark: var(--kind-benchmark);
-    --color-kind-chat: var(--kind-chat);
-    --color-kind-autolabel: var(--kind-autolabel);
-    --color-kind-gather: var(--kind-gather);
-    --color-kind-synth: var(--kind-synth);
-    --color-kind-teach: var(--kind-teach);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
-    --color-ring: var(--ring);
-    --color-input: var(--input);
-    --color-border: var(--border);
-    --color-destructive: var(--destructive);
-    --color-accent-foreground: var(--accent-foreground);
-    --color-accent: var(--accent);
-    --color-muted-foreground: var(--muted-foreground);
-    --color-muted: var(--muted);
-    --color-secondary-foreground: var(--secondary-foreground);
-    --color-secondary: var(--secondary);
-    --color-primary-foreground: var(--primary-foreground);
-    --color-primary: var(--primary);
-    --color-popover-foreground: var(--popover-foreground);
-    --color-popover: var(--popover);
-    --color-card-foreground: var(--card-foreground);
-    --color-card: var(--card);
-    --color-foreground: var(--foreground);
-    --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    /* Flatter than the default multipliers. The old scale grew fast enough that
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-kind-train: var(--kind-train);
+  --color-kind-benchmark: var(--kind-benchmark);
+  --color-kind-chat: var(--kind-chat);
+  --color-kind-autolabel: var(--kind-autolabel);
+  --color-kind-gather: var(--kind-gather);
+  --color-kind-synth: var(--kind-synth);
+  --color-kind-teach: var(--kind-teach);
+  --color-tier-low: var(--tier-low);
+  --color-tier-med: var(--tier-med);
+  --color-tier-high: var(--tier-high);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  /* Flatter than the default multipliers. The old scale grew fast enough that
        an `xl` panel read as a pill next to a `md` input; editorial wants the
        corners barely there and, above all, consistent. */
-    --radius-xl: calc(var(--radius) * 1.2);
-    --radius-2xl: calc(var(--radius) * 1.5);
-    --radius-3xl: calc(var(--radius) * 1.8);
-    --radius-4xl: calc(var(--radius) * 2.1);
+  --radius-xl: calc(var(--radius) * 1.2);
+  --radius-2xl: calc(var(--radius) * 1.5);
+  --radius-3xl: calc(var(--radius) * 1.8);
+  --radius-4xl: calc(var(--radius) * 2.1);
 
-    /* ---- Type scale -------------------------------------------------------
+  /* ---- Type scale -------------------------------------------------------
        Not Tailwind's defaults. Two things make a screen read as editorial: body
        copy set for reading, and a big jump between body and display — a page
        whose largest text is 1.5× its smallest looks like a form no matter what
@@ -69,97 +72,109 @@
        were. Line-height tightens as size grows, tracking goes negative, because
        both are functions of size — a heading tracked like body text falls apart,
        and body tracked like a heading is unreadable. */
-    --text-xs: 0.75rem;
-    --text-xs--line-height: 1.5;
-    --text-xs--letter-spacing: 0.01em;
-    --text-sm: 0.875rem;
-    --text-sm--line-height: 1.55;
-    --text-sm--letter-spacing: 0em;
-    --text-base: 1rem;
-    --text-base--line-height: 1.65;
-    --text-base--letter-spacing: -0.003em;
-    --text-lg: 1.125rem;
-    --text-lg--line-height: 1.55;
-    --text-lg--letter-spacing: -0.008em;
-    --text-xl: 1.375rem;
-    --text-xl--line-height: 1.4;
-    --text-xl--letter-spacing: -0.014em;
-    --text-2xl: 1.75rem;
-    --text-2xl--line-height: 1.25;
-    --text-2xl--letter-spacing: -0.02em;
-    --text-3xl: 2.25rem;
-    --text-3xl--line-height: 1.15;
-    --text-3xl--letter-spacing: -0.025em;
-    --text-4xl: 3rem;
-    --text-4xl--line-height: 1.08;
-    --text-4xl--letter-spacing: -0.03em;
-    --text-5xl: 3.75rem;
-    --text-5xl--line-height: 1.02;
-    --text-5xl--letter-spacing: -0.035em;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-xs--letter-spacing: 0.01em;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.55;
+  --text-sm--letter-spacing: 0em;
+  --text-base: 1rem;
+  --text-base--line-height: 1.65;
+  --text-base--letter-spacing: -0.003em;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.55;
+  --text-lg--letter-spacing: -0.008em;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.4;
+  --text-xl--letter-spacing: -0.014em;
+  --text-2xl: 1.75rem;
+  --text-2xl--line-height: 1.25;
+  --text-2xl--letter-spacing: -0.02em;
+  --text-3xl: 2.25rem;
+  --text-3xl--line-height: 1.15;
+  --text-3xl--letter-spacing: -0.025em;
+  --text-4xl: 3rem;
+  --text-4xl--line-height: 1.08;
+  --text-4xl--letter-spacing: -0.03em;
+  --text-5xl: 3.75rem;
+  --text-5xl--line-height: 1.02;
+  --text-5xl--letter-spacing: -0.035em;
 }
 
 :root {
-    /* Warm paper (light).
+  /* Warm paper (light).
        #f7f4e4 stays the dominant base — it is the character of the theme. What
        changed is everything measured against it: the old secondary (#efeacd) and
        border (#e2dab2) sat so close to the paper that a panel edge was a guess,
        and diluting the border to /60 at the call sites finished the job. The
        steps below are pulled down far enough to be seen at 1px, and the /60
        dilution is gone from the components. */
-    --background: #f7f4e4;
-    --foreground: #545464;
-    /* A shade *above* the paper: a panel is a sheet resting on the desk, which is
+  --background: #f7f4e4;
+  --foreground: #545464;
+  /* A shade *above* the paper: a panel is a sheet resting on the desk, which is
        what gives the light mode any depth at all. It was previously identical to
        the background, so a card was only ever its border. */
-    --card: #fdfbf1;
-    --card-foreground: #545464;
-    --popover: #fdfbf1;
-    --popover-foreground: #545464;
-    --primary: #4d699b;
-    --primary-foreground: #f7f4e4;
-    --secondary: #e9e2c4;
-    --secondary-foreground: #545464;
-    --muted: #ece6cc;
-    /* Was #83816f (3.56:1). These carry the eyebrow labels and hints — small,
+  --card: #fdfbf1;
+  --card-foreground: #545464;
+  --popover: #fdfbf1;
+  --popover-foreground: #545464;
+  --primary: #4d699b;
+  --primary-foreground: #f7f4e4;
+  --secondary: #e9e2c4;
+  --secondary-foreground: #545464;
+  --muted: #ece6cc;
+  /* Was #83816f (3.56:1). These carry the eyebrow labels and hints — small,
        often letterspaced — so they need to clear AA as *body* text, not as large
        text. 4.75:1 on the paper, 5.06:1 on a card. */
-    --muted-foreground: #6f6d57;
-    --accent: #e9e2c4;
-    --accent-foreground: #545464;
-    --destructive: #c84053;
-    --border: #d8cfa2;
-    --input: #c6bb84;
-    --ring: #4d699b;
-    --chart-1: #de9800;
-    --chart-2: #6f894e;
-    --chart-3: #4d699b;
-    --chart-4: #b35b79;
-    --chart-5: #766b90;
-    /* Approved/rejected in the preference figures. A polarity pair, kept out of
+  --muted-foreground: #6f6d57;
+  --accent: #e9e2c4;
+  --accent-foreground: #545464;
+  --destructive: #c84053;
+  --border: #d8cfa2;
+  --input: #c6bb84;
+  --ring: #4d699b;
+  --chart-1: #de9800;
+  --chart-2: #6f894e;
+  --chart-3: #4d699b;
+  --chart-4: #b35b79;
+  --chart-5: #766b90;
+  /* Approved/rejected in the preference figures. A polarity pair, kept out of
        the numbered chart slots because it means one specific thing. Blue/amber
        rather than green/red: that pair collides under deuteranopia (ΔE 5.8, under
        the 8 floor) where this measures 29.4. Validated in both modes — see
        components/training/chart-theme.ts for the commands. */
-    --chart-approved: #3f6bb8;
-    --chart-rejected: #de9800;
-    /* One hue per job kind, for the chip on a history row.
+  --chart-approved: #3f6bb8;
+  --chart-rejected: #de9800;
+  /* The three thinking budgets, in the teacher's figures. An ORDERED scale
+       (short → medium → long), so a single-hue sequential ramp light→dark rather
+       than three categorical hues — more thinking, more ink. The hue is the teach
+       kind's own terracotta, so the run's charts belong to its chip.
+       Light mode clears every check the categorical validator applies:
+         node scripts/validate_palette.js "#ea9971,#c94f26,#883120" --mode light --surface "#f7f4e4"
+       (worst adjacent ΔE 15.4 normal / 13.3 protan, chroma and band pass; the
+       sub-3:1 contrast WARN on the lightest step is relieved by the count and
+       percentage printed beside every slice, which is what the rule requires). */
+  --tier-low: #ea9971;
+  --tier-med: #c94f26;
+  --tier-high: #883120;
+  /* One hue per job kind, for the chip on a history row.
        Deliberately not the numbered chart slots: those are tuned to be told apart
        as *fills* in a figure, and the same values used as small text on a tint of
        themselves land around 2:1. These are the darkened counterparts — each one
        clears 4.5:1 against a 14% tint of itself, which is what the chip is. */
-    --kind-train: #3f5f96;
-    --kind-benchmark: #4e6733;
-    --kind-chat: #655a80;
-    --kind-autolabel: #94425e;
-    --kind-gather: #785b12;
-    --kind-synth: #316a72;
-    /* Generation from a local teacher. A rust, deliberately not a variant of
+  --kind-train: #3f5f96;
+  --kind-benchmark: #4e6733;
+  --kind-chat: #655a80;
+  --kind-autolabel: #94425e;
+  --kind-gather: #785b12;
+  --kind-synth: #316a72;
+  /* Generation from a local teacher. A rust, deliberately not a variant of
        `--kind-synth`'s teal: the two are the same job to a reader of the code and
        different jobs to a reader of the board — one spends money, the other blocks
        the GPU — so they should not be told apart by shade. Measures 5.24:1 against
        its own 14% tint. */
-    --kind-teach: #9b3f20;
-    /* The colour the throbber's rings turn while it is thinking or running a tool —
+  --kind-teach: #9b3f20;
+  /* The colour the throbber's rings turn while it is thinking or running a tool —
        the one place in the app a second hue is spent on a status mark. Its whole
        job is to not be mistakable for `--primary` at a hairline width, which is why
        it is a burnt orange and not the violet it used to be: violet is a *blue*, it
@@ -171,94 +186,106 @@
        series, a job kind), and borrowing one would tie the mark's colour to a
        decision made about something else. Not exposed as a Tailwind utility — it is
        read as a raw var by an SVG stroke, and nothing else should want it. */
-    --throbber-spark: #c4622d;
-    /* 6px, down from 10. Editorial wants the corner acknowledged, not rounded —
+  --throbber-spark: #c4622d;
+  /* 6px, down from 10. Editorial wants the corner acknowledged, not rounded —
        and the whole app inherits from this one number, so it is the cheapest
        single change to how rigid the page reads. */
-    --radius: 0.375rem;
-    --sidebar: #f7f4e4;
-    --sidebar-foreground: #545464;
-    --sidebar-primary: #4d699b;
-    --sidebar-primary-foreground: #f7f4e4;
-    --sidebar-accent: #e9e2c4;
-    --sidebar-accent-foreground: #545464;
-    --sidebar-border: #d8cfa2;
-    --sidebar-ring: #4d699b;
+  --radius: 0.375rem;
+  --sidebar: #f7f4e4;
+  --sidebar-foreground: #545464;
+  --sidebar-primary: #4d699b;
+  --sidebar-primary-foreground: #f7f4e4;
+  --sidebar-accent: #e9e2c4;
+  --sidebar-accent-foreground: #545464;
+  --sidebar-border: #d8cfa2;
+  --sidebar-ring: #4d699b;
 }
 
 .dark {
-    /* Kanagawa Dragon (dark).
+  /* Kanagawa Dragon (dark).
        The flatness was structural, not a matter of taste: card, popover and muted
        were all #282727 and the border was #393836, so every surface in the app was
        one of two values and an edge was barely a step. Dragon has six blacks —
        this uses four of them as an actual ladder (bg → card → popover → secondary)
        with the border above all of them. */
-    --background: #181616;
-    --foreground: #c5c9c5;
-    --card: #232221;
-    --card-foreground: #c5c9c5;
-    --popover: #2a2827;
-    --popover-foreground: #c5c9c5;
-    --primary: #8ba4b0;
-    --primary-foreground: #181616;
-    --secondary: #333130;
-    --secondary-foreground: #c5c9c5;
-    --muted: #2a2827;
-    --muted-foreground: #a6a69c;
-    /* Was #8992a7 — a *light* violet used as a background, which made every hover
+  --background: #181616;
+  --foreground: #c5c9c5;
+  --card: #232221;
+  --card-foreground: #c5c9c5;
+  --popover: #2a2827;
+  --popover-foreground: #c5c9c5;
+  --primary: #8ba4b0;
+  --primary-foreground: #181616;
+  --secondary: #333130;
+  --secondary-foreground: #c5c9c5;
+  --muted: #2a2827;
+  --muted-foreground: #a6a69c;
+  /* Was #8992a7 — a *light* violet used as a background, which made every hover
        flash pale under #c5c9c5 text that could not sit on it. Accent is a surface
        here, like its light-mode counterpart; the violet lives on as chart-5. */
-    --accent: #333130;
-    --accent-foreground: #c5c9c5;
-    --destructive: #c4746e;
-    /* Lifted clear of every surface above, so a hairline actually draws against a
+  --accent: #333130;
+  --accent-foreground: #c5c9c5;
+  --destructive: #c4746e;
+  /* Lifted clear of every surface above, so a hairline actually draws against a
        panel and not just against the page. */
-    --border: #454140;
-    --input: #524d4a;
-    --ring: #8ba4b0;
-    --chart-1: #c4b28a;
-    --chart-2: #87a987;
-    --chart-3: #8ba4b0;
-    --chart-4: #a292a3;
-    --chart-5: #8992a7;
-    /* Own steps, not lightened light-mode ones: the dark band is tighter
+  --border: #454140;
+  --input: #524d4a;
+  --ring: #8ba4b0;
+  --chart-1: #c4b28a;
+  --chart-2: #87a987;
+  --chart-3: #8ba4b0;
+  --chart-4: #a292a3;
+  --chart-5: #8992a7;
+  /* Own steps, not lightened light-mode ones: the dark band is tighter
        (OKLCH L 0.48–0.67) and a rule-based flip lands outside it. */
-    --chart-approved: #6d92da;
-    --chart-rejected: #b98a2c;
-    /* Lightened rather than flipped: the chip is an 18% tint on a dark card, so
+  --chart-approved: #6d92da;
+  --chart-rejected: #b98a2c;
+  /* The ramp's anchor flips on a dark surface: more thinking is the *lighter*
+       step, so the heaviest budget stays the most prominent mark rather than
+       sinking into the background. Own steps, not lightened light-mode ones.
+         node scripts/validate_palette.js "#b1452f,#d97145,#f1a355" --mode dark --surface "#282727"
+       Monotone in lightness (0.52 → 0.65 → 0.78) with every step clear of the
+       chroma floor, which is the check a sequential ramp actually answers to. The
+       band and adjacency FAILs it reports are the documented by-design case — the
+       dark band is 0.19 wide and three steps at ΔE 15 cannot fit inside it — and
+       the ramp is never the only cue: every slice is labelled and counted. */
+  --tier-low: #b1452f;
+  --tier-med: #d97145;
+  --tier-high: #f1a355;
+  /* Lightened rather than flipped: the chip is an 18% tint on a dark card, so
        these have to read *out* of it. Same 4.3:1-and-up floor as the light set. */
-    --kind-train: #8ba4b0;
-    --kind-benchmark: #8fb08f;
-    --kind-chat: #ada0ae;
-    --kind-autolabel: #d08c86;
-    --kind-gather: #c4b28a;
-    --kind-synth: #7fb0a8;
-    --kind-teach: #e09a6a;
-    /* Lightened rather than flipped, like the kind chips above: it has to read out
+  --kind-train: #8ba4b0;
+  --kind-benchmark: #8fb08f;
+  --kind-chat: #ada0ae;
+  --kind-autolabel: #d08c86;
+  --kind-gather: #c4b28a;
+  --kind-synth: #7fb0a8;
+  --kind-teach: #e09a6a;
+  /* Lightened rather than flipped, like the kind chips above: it has to read out
        of a near-black card at a hairline width. Dragon's surimi orange — warmer and
        brighter than the light-mode step, because the mark is a thin line on
        near-black rather than on paper. */
-    --throbber-spark: #ffa066;
-    --sidebar: #12120f;
-    --sidebar-foreground: #c5c9c5;
-    --sidebar-primary: #8ba4b0;
-    --sidebar-primary-foreground: #181616;
-    --sidebar-accent: #2a2827;
-    --sidebar-accent-foreground: #c5c9c5;
-    --sidebar-border: #33302e;
-    --sidebar-ring: #8ba4b0;
+  --throbber-spark: #ffa066;
+  --sidebar: #12120f;
+  --sidebar-foreground: #c5c9c5;
+  --sidebar-primary: #8ba4b0;
+  --sidebar-primary-foreground: #181616;
+  --sidebar-accent: #2a2827;
+  --sidebar-accent-foreground: #c5c9c5;
+  --sidebar-border: #33302e;
+  --sidebar-ring: #8ba4b0;
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
-    }
+  }
   body {
     @apply bg-background text-foreground;
-    }
+  }
   html {
     @apply font-sans;
-    }
+  }
 }
 
 /* Streamed words ease in as they arrive. */

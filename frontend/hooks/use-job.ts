@@ -127,11 +127,20 @@ export function useJob(idJob: string) {
   const [synth, setSynth] = React.useState<SynthReport | null>(null)
 
   // A local-teacher run. Same shape of accumulation as a generation run, kept in
-  // its own state rather than folded into it: the unit is a triple, not a
-  // conversation, and the per-tier tally has no counterpart on the synth side.
+  // its own state rather than folded into it: the unit is a question with up to
+  // three answers, not a conversation, and the per-tier tally has no counterpart on
+  // the synth side.
+  //
+  // Three counters because the run has three units, and holding only the first is
+  // what let a "45 triples" headline sit beside tier bars summing to 75.
   const [teachCalls, setTeachCalls] = React.useState<TeachCall[]>([])
   const [teachAccepted, setTeachAccepted] = React.useState<TeachAccepted[]>([])
-  const [teachTriples, setTeachTriples] = React.useState(0)
+  const [teachQuestions, setTeachQuestions] = React.useState(0)
+  const [teachAnswers, setTeachAnswers] = React.useState(0)
+  const [teachComplete, setTeachComplete] = React.useState(0)
+  // `[one tier, two tiers, all three]`, so the coverage figure draws the same
+  // whether the page attached mid-run or is reading a finished report.
+  const [teachByTiers, setTeachByTiers] = React.useState<number[]>([0, 0, 0])
   const [teachPerTier, setTeachPerTier] = React.useState<[string, number][]>([])
   const [teach, setTeach] = React.useState<TeachReport | null>(null)
 
@@ -201,7 +210,20 @@ export function useJob(idJob: string) {
           // field name would make a teach snapshot parse as a synth one.
           setTeachCalls(snap.reports as TeachCall[])
           setTeachAccepted((snap.accepted as TeachAccepted[]) ?? [])
-          setTeachTriples(typeof snap.triples === "number" ? snap.triples : 0)
+          setTeachQuestions(
+            typeof snap.questions === "number" ? snap.questions : 0
+          )
+          setTeachAnswers(typeof snap.answers === "number" ? snap.answers : 0)
+          setTeachComplete(
+            typeof snap.complete_triples === "number"
+              ? snap.complete_triples
+              : 0
+          )
+          setTeachByTiers(
+            Array.isArray(snap.by_tiers)
+              ? (snap.by_tiers as number[])
+              : [0, 0, 0]
+          )
           setTeachPerTier((snap.per_tier as [string, number][]) ?? [])
           if (typeof snap.stage === "string") setStage(snap.stage)
           if (typeof snap.fraction === "number") setFraction(snap.fraction)
@@ -301,7 +323,10 @@ export function useJob(idJob: string) {
       case "teach_call": {
         const call = frame as unknown as TeachCall
         setTeachCalls((prev) => [...prev, call])
-        setTeachTriples(call.total)
+        setTeachQuestions(call.total_questions)
+        setTeachAnswers(call.total_answers)
+        setTeachComplete(call.total_complete)
+        setTeachByTiers(call.total_by_tiers ?? [0, 0, 0])
         break
       }
       case "teach_triple": {
@@ -409,7 +434,10 @@ export function useJob(idJob: string) {
     // teach
     teachCalls,
     teachAccepted,
-    teachTriples,
+    teachQuestions,
+    teachAnswers,
+    teachComplete,
+    teachByTiers,
     teachPerTier,
     teach,
     // autolabel

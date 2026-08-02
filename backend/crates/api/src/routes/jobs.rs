@@ -52,6 +52,9 @@ struct JobResponse {
     progress: f64,
     stage: Option<String>,
     ref_id: Option<Uuid>,
+    // What the run produced, for a kind that has no table of its own to read back
+    // from. Null for every other kind — see `db::job::set_result`.
+    result: Option<Value>,
     error: Option<String>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
@@ -71,6 +74,7 @@ impl From<Job> for JobResponse {
             progress: job.progress,
             stage: job.stage,
             ref_id: job.ref_id,
+            result: job.result,
             error: job.error,
             created_at: job.created_at,
             started_at: job.started_at,
@@ -193,9 +197,12 @@ async fn create_job(
 ) -> impl Responder {
     let CreatePayload { kind, config } = payload.into_inner();
 
-    let (label, config) = match kind {
+    // A list, because one submit can queue more than one job: the benchmark's split
+    // switch queues the whole budget sweep at once, so the three runs exist together
+    // or not at all. Every other kind yields exactly one.
+    let prepared: Vec<(String, Value)> = match kind {
         JobKind::Train => match prepare_train(pool.get_ref(), config).await {
-            Ok(prepared) => prepared,
+            Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
         JobKind::Benchmark => match prepare_benchmark(pool.get_ref(), config).await {
@@ -206,19 +213,19 @@ async fn create_job(
         // chat socket can create. Accepting one here would queue a reply to
         // nothing.
         JobKind::Autolabel => match prepare_autolabel(pool.get_ref(), config).await {
-            Ok(prepared) => prepared,
+            Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
         JobKind::Gather => match prepare_gather(pool.get_ref(), config).await {
-            Ok(prepared) => prepared,
+            Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
         JobKind::Synth => match prepare_synth(pool.get_ref(), config).await {
-            Ok(prepared) => prepared,
+            Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
         JobKind::Teach => match prepare_teach(pool.get_ref(), config).await {
-            Ok(prepared) => prepared,
+            Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
         JobKind::Chat => {
@@ -226,24 +233,31 @@ async fn create_job(
         }
     };
 
-    match db::job::create(
-        pool.get_ref(),
-        kind,
-        &label,
-        &config,
-        Some(admin.claims.sub),
-    )
-    .await
-    {
-        Ok(job) => {
-            queue.wake();
-            queue.notify_changed();
-            HttpResponse::Created().json(JobResponse::from(job))
+    // Inserted in order, so a sweep queues low → med → high and runs in that order.
+    // The response carries the **first** job: the caller navigates to a job page, and
+    // one of the three has to be it. A client that queued a sweep knows to look at
+    // the board for the rest, and `id_series` on the runs is what ties them together
+    // for anything that needs the set.
+    let mut created = Vec::with_capacity(prepared.len());
+    for (label, config) in &prepared {
+        match db::job::create(pool.get_ref(), kind, label, config, Some(admin.claims.sub)).await {
+            Ok(job) => created.push(job),
+            Err(e) => {
+                eprintln!("create job db error: {}", e);
+                // A partly-queued sweep is still queued: the jobs already created are
+                // real work the user asked for, and cancelling them from here would
+                // race the runner, which may have started one. Report the failure and
+                // leave what exists — the board shows exactly what was queued.
+                return HttpResponse::InternalServerError().body("failed to queue job");
+            }
         }
-        Err(e) => {
-            eprintln!("create job db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to queue job")
-        }
+    }
+
+    queue.wake();
+    queue.notify_changed();
+    match created.into_iter().next() {
+        Some(job) => HttpResponse::Created().json(JobResponse::from(job)),
+        None => HttpResponse::InternalServerError().body("failed to queue job"),
     }
 }
 
@@ -304,7 +318,8 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
             return Err(HttpResponse::BadRequest().body(msg));
         }
 
-        let (auto_up, auto_down) = labeling::autolabel::catalogue_counts();
+        let (auto_up, auto_down) =
+            labeling::autolabel::catalogue_counts(config.catalogue_scope());
         let (approved, rejected) =
             (counts.desirable + auto_up, counts.undesirable + auto_down);
         if let Err(msg) = labeling::gather::check_catalogue(approved, rejected) {
@@ -332,7 +347,7 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
                 return Err(HttpResponse::InternalServerError().body("failed to queue job"));
             }
         };
-        let (auto_up, _) = labeling::autolabel::catalogue_counts();
+        let (auto_up, _) = labeling::autolabel::catalogue_counts(config.catalogue_scope());
         let approved = counts.desirable + auto_up;
         if let Err(msg) = labeling::gather::check_raft(approved) {
             return Err(HttpResponse::BadRequest().body(msg));
@@ -372,11 +387,34 @@ struct BenchmarkConfig {
     // predates the split still queues the language bench, which is what it meant.
     #[serde(default)]
     suite: db::benchmark::BenchmarkSuite,
+    /// Render every held-out conversation under one forced thinking budget. Absent is
+    /// the unbudgeted run — each conversation keeps the marker it was written with —
+    /// which is what every config before this meant and still means.
+    #[serde(default)]
+    budget: Option<llm::chat_template::ThinkBudget>,
+    /// Queue the whole sweep: one run per budget, sharing a series id so the chart
+    /// draws them as one line. Ignored on the language suite, which renders no chat
+    /// prompt and would produce three identical scores.
+    #[serde(default)]
+    split_thinking: bool,
 }
 
 // Checks the model exists and has a tokenizer now, so an impossible benchmark is
 // refused at submit rather than occupying a queue slot to fail.
-async fn prepare_benchmark(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
+//
+// Returns **one job, or three**. With `split_thinking` the run is swept across the
+// three thinking budgets: three rows sharing an `id_series`, which is what lets the
+// chart draw them as one connected line rather than three unrelated dots.
+//
+// Three jobs rather than one job producing three runs, because the queue's unit is
+// already "one job, one run, one row": three jobs get three progress bars, three
+// cancel buttons, and a failure in the middle of the sweep leaves the other two
+// standing. Folding the sweep into one job would need a second notion of progress
+// inside the runner and would make cancelling the high tier mean cancelling all of it.
+async fn prepare_benchmark(
+    pool: &PgPool,
+    config: Value,
+) -> Result<Vec<(String, Value)>, HttpResponse> {
     let parsed: BenchmarkConfig = match serde_json::from_value(config) {
         Ok(config) => config,
         Err(_) => return Err(HttpResponse::BadRequest().body("a benchmark job needs an id_model")),
@@ -399,12 +437,49 @@ async fn prepare_benchmark(pool: &PgPool, config: Value) -> Result<(String, Valu
             .body("model has no tokenizer on disk; it cannot be benchmarked"));
     }
 
-    Ok((
-        // The suite is in the label because both show up in one job history and one
-        // board, and "Balanced 1" twice tells you nothing about which is which.
-        format!("{} · {}", model.name, parsed.suite.as_str()),
-        serde_json::json!({ "id_model": parsed.id_model, "suite": parsed.suite }),
-    ))
+    // The language suite renders no chat prompt in any of its four stages — corpus
+    // perplexity and grammar are raw text, generation continues bare prompts, and
+    // preference passes no budget — so a marker cannot reach it. Sweeping it would
+    // queue three runs that produce the same score three times, which reads as a
+    // broken feature rather than as an inapplicable one. Refused at submit, where it
+    // can be explained, rather than silently collapsed to one run.
+    let splittable = parsed.suite != db::benchmark::BenchmarkSuite::Language;
+    if (parsed.split_thinking || parsed.budget.is_some()) && !splittable {
+        return Err(HttpResponse::BadRequest().body(
+            "the language suite has no thinking budget to set: none of its stages              render a chat prompt, so all three budgets would score identically",
+        ));
+    }
+
+    // The suite is in the label because every suite shows up in one job history and
+    // one board, and "Balanced 1" twice tells you nothing about which is which. A
+    // swept run carries its budget for the same reason, three times over.
+    let label = |budget: Option<llm::chat_template::ThinkBudget>| match budget {
+        Some(b) => format!("{} · {} · {}", model.name, parsed.suite.as_str(), b.as_str()),
+        None => format!("{} · {}", model.name, parsed.suite.as_str()),
+    };
+    let job = |budget: Option<llm::chat_template::ThinkBudget>, series: Option<Uuid>| {
+        (
+            label(budget),
+            serde_json::json!({
+                "id_model": parsed.id_model,
+                "suite": parsed.suite,
+                "budget": budget,
+                "id_series": series,
+            }),
+        )
+    };
+
+    if !parsed.split_thinking {
+        return Ok(vec![job(parsed.budget, None)]);
+    }
+
+    // One id for the sweep, minted here because this is the only place that knows
+    // the three runs are one thing.
+    let series = Uuid::new_v4();
+    Ok(llm::chat_template::ThinkBudget::ALL
+        .iter()
+        .map(|budget| job(Some(*budget), Some(series)))
+        .collect())
 }
 
 // Validates an auto-labelling config: the model that will generate the candidates
@@ -634,7 +709,13 @@ async fn prepare_teach(pool: &PgPool, config: Value) -> Result<(String, Value), 
     // Thresholds define three ranges, so they have to be strictly increasing. Equal
     // bounds would make the middle tier unreachable and silently produce a two-tier
     // corpus, which is exactly the failure this feature exists to avoid.
-    if parsed.low_max_tokens >= parsed.med_max_tokens {
+    //
+    // `0/0` is not a pair of bounds, it is the request to derive them from the
+    // student's context window — the default, and what the composer sends. It has
+    // to be allowed through here or the only correct configuration is the one the
+    // route rejects.
+    let derive_bounds = parsed.low_max_tokens == 0 && parsed.med_max_tokens == 0;
+    if !derive_bounds && parsed.low_max_tokens >= parsed.med_max_tokens {
         return Err(HttpResponse::BadRequest().body(
             "the low thinking budget must be smaller than the medium one, or the \
              middle tier can never be filled",
@@ -657,7 +738,7 @@ async fn prepare_teach(pool: &PgPool, config: Value) -> Result<(String, Value), 
     // The tier files are what a run writes; reading exemplars from one would feed a
     // run its own output and collapse the style onto itself.
     for tier in synth::teach::Tier::ALL {
-        if parsed.exemplar_file == tier.file_name() {
+        if parsed.exemplar_file == synth::teach::tier_file_name(tier) {
             return Err(HttpResponse::BadRequest().body(
                 "that file is where this job writes its output — imitating it would \
                  feed the run its own generations",

@@ -213,7 +213,12 @@ function RoundTable({ rounds }: { rounds: CycleRound[] }) {
             <Th>Round</Th>
             <Th>Cleared the bar</Th>
             <Th>Added</Th>
-            <Th>Score</Th>
+            {/* Every round is benchmarked on all three suites, but a round has one
+                score column — and it holds the *assistant* suite's, the one the cycle
+                is trying to move. A mean of the three would be a composite by the back
+                door, which is exactly what the verdict refuses to decide on. All three
+                numbers are in the note. */}
+            <Th>Assistant</Th>
             <Th>Verdict</Th>
           </tr>
         </thead>
@@ -267,6 +272,11 @@ function verdictLabel(verdict: string | null): string {
       return "Kept"
     case "no_improvement":
       return "No improvement"
+    // Explore mode: the round did not improve and was carried on from anyway. A
+    // label of its own rather than "Kept", because it was not — the best model is
+    // still whichever round last earned it.
+    case "explored":
+      return "Explored"
     case "failed":
       return "Failed"
     case null:
@@ -316,12 +326,21 @@ function Settings({ cycle }: { cycle: Detail }) {
   const rows: [string, string][] = [
     ["Prompts per round", String(c.max_prompts)],
     ["Candidates per prompt", String(c.candidates)],
+    // Shown because it decides what the round trains on: a cap far below the length
+    // of a held-out reply trains the model away from the thing it is scored on, which
+    // is what a cap of 96 did for the cycles recorded before this row existed.
+    ["Longest reply", c.max_tokens ? `${c.max_tokens} tokens` : "—"],
     ["Temperature", c.temperature.toFixed(2)],
     ["Self-train LR", c.raft_lr.toExponential(1)],
     ["Preference LR", c.kto_lr.toExponential(1)],
     ["Beta (KL anchor)", c.beta.toFixed(2)],
     ["Min gain to keep a round", c.min_gain.toFixed(4)],
   ]
+  // Only worth a row when it is on: it changes which stages ran, so a round table
+  // with three stages instead of four needs an explanation sitting next to it.
+  if (c.skip_preference) {
+    rows.push(["Preference stage", "Skipped"])
+  }
   return (
     <Panel title="Settings" description="frozen at creation">
       <dl className="space-y-1.5">

@@ -86,7 +86,9 @@ async fn get_signals(_admin: AdminUser, pool: web::Data<PgPool>) -> impl Respond
     // The catalogue is the seed plus whatever auto-labelling has written. The seed
     // is counted in because it is genuinely part of the training data — and the
     // best part of it, being the only labels a person actually gave.
-    let (auto_up, auto_down) = labeling::autolabel::catalogue_counts();
+    // The whole catalogue: this panel reports the state of the file, not what
+    // any one round would be scoped to.
+    let (auto_up, auto_down) = labeling::autolabel::catalogue_counts(None);
     let approved = counts.desirable + auto_up;
     let rejected = counts.undesirable + auto_down;
     let catalogue_reason = gather::check_catalogue(approved, rejected).err();

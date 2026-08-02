@@ -229,6 +229,9 @@ pub struct Round {
     pub rejected_before: Option<i64>,
     pub approved_after: Option<i64>,
     pub rejected_after: Option<i64>,
+    // The model that generated this round's catalogue, and so the model whose
+    // generations both of its training stages are scoped to.
+    pub id_model_in: Option<Uuid>,
     pub id_model_out: Option<Uuid>,
     pub score: Option<f64>,
     pub verdict: Option<String>,
@@ -244,21 +247,48 @@ pub async fn open_round(
     pool: &PgPool,
     id_cycle: Uuid,
     round: i32,
+    id_model_in: Uuid,
     approved: i64,
     rejected: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        r#"INSERT INTO cycle_rounds (id_cycle, round, approved_before, rejected_before)
-           VALUES ($1, $2, $3, $4)
+        r#"INSERT INTO cycle_rounds (id_cycle, round, id_model_in, approved_before, rejected_before)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (id_cycle, round) DO NOTHING"#,
         id_cycle,
         round,
+        id_model_in,
         approved,
         rejected,
     )
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// The model that generated a round's catalogue.
+//
+// Read back rather than carried on the `Cycle` row because `id_model_current`
+// moves during the round: the self-train stage replaces it with its own output,
+// so by the preference stage it no longer names the model whose generations both
+// stages are meant to train on.
+//
+// `None` covers two cases the caller must treat alike — no such round, and a round
+// opened before the column existed. Both mean "there is no recorded slice", and
+// the honest answer for both is to fall back to the whole catalogue.
+pub async fn round_model_in(
+    pool: &PgPool,
+    id_cycle: Uuid,
+    round: i32,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT id_model_in FROM cycle_rounds WHERE id_cycle = $1 AND round = $2",
+        id_cycle,
+        round,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|r| r.id_model_in))
 }
 
 // The catalogue size coming out of the generation stage. With the "before" pair
@@ -312,7 +342,8 @@ pub async fn list_rounds(pool: &PgPool, id_cycle: Uuid) -> Result<Vec<Round>, sq
     sqlx::query_as!(
         Round,
         r#"SELECT id_round, round, approved_before, rejected_before, approved_after,
-                  rejected_after, id_model_out, score, verdict, note, started_at, finished_at
+                  rejected_after, id_model_in, id_model_out, score, verdict, note,
+                  started_at, finished_at
            FROM cycle_rounds WHERE id_cycle = $1 ORDER BY round"#,
         id_cycle,
     )

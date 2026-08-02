@@ -146,7 +146,9 @@ fn mean_reply_logprob(
         Turn { role: Role::User, text: example.prompt.clone() },
         Turn { role: Role::Assistant, text: example.response.clone() },
     ];
-    let (ids, mask) = chat_template::build_training_example(None, &turns, merges);
+    // No budget: a preference example is a bare prompt/response pair with no
+    // record of how long its reply was meant to reason for.
+    let (ids, mask) = chat_template::build_training_example(None, &turns, None, merges);
     if ids.len() < 2 {
         return None;
     }

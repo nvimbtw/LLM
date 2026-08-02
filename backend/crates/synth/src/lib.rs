@@ -291,27 +291,190 @@ fn vocabulary() -> (HashSet<&'static str>, HashSet<&'static str>) {
 const MAX_ASSISTANT_CHARS: usize = 6000;
 const MAX_USER_CHARS: usize = 30000;
 
-// The closer this vocabulary uses is `<|/par|>`. Models reliably reach for the
-// XML-shaped `</|par|>` instead — it is the form every other markup language uses,
-// and no amount of showing the right one in the prompt fully suppresses it. The
-// rewrite is unambiguous and lossless, so repairing beats discarding an otherwise
-// good conversation over a transposed slash.
+// Every marker name the vocabulary defines, closers included — `par`, `/par`,
+// `item`, `divider`, … Derived from `SPECIAL_TOKENS` for the same reason
+// `vocabulary` is: a hand-written list drifts from the tokenizer.
+//
+// This is the guard on `repair_markup`. A delimiter is only rewritten when what
+// it wraps is a name the vocabulary already knows, so the repair can fix a
+// mistyped `<|item|` and still leave `<|whatever|` to fail validation.
+fn marker_names() -> HashSet<&'static str> {
+    tokenize::pretokenize::SPECIAL_TOKENS
+        .iter()
+        .map(|(token, _)| token.trim_start_matches("<|").trim_end_matches("|>"))
+        .collect()
+}
+
+// A name the teacher reliably writes for a marker that exists under a different
+// spelling. One entry, and it earns its place: `par` is the most-used marker in
+// the vocabulary and `para` is the word an English-speaking model reaches for.
+//
+// Deliberately not a general fuzzy match. An alias here is a claim that the
+// intent is unambiguous; anything less certain should fail validation and be
+// regenerated, which costs a few seconds of an otherwise idle GPU.
+// `p` and `li` are the HTML habit leaking through — this teacher reaches for
+// `<|p|>` and `<|li|>` in long structured answers, where it is writing more markup
+// and drifting toward the shape it saw most in pretraining. Both map onto exactly
+// one marker in this vocabulary, so the intent is not in doubt.
+//
+// `div` is deliberately absent. HTML's `div` is a generic container and this
+// vocabulary's `divider` is a horizontal rule; mapping one to the other would
+// insert a visible rule where a wrapper was meant. An invented tag with no
+// unambiguous target stays a rejection.
+const TAG_ALIASES: &[(&str, &str)] = &[("para", "par"), ("li", "item"), ("p", "par")];
+
+// Drops a closing tag that closes nothing, which is the largest remaining reason a
+// long reply is discarded — 3 of 6 in a measured run, each one a lone `<|/code|>`
+// or `<|/subheading|>` with no opener, at the end of an otherwise well-formed
+// 3,400-character answer.
+//
+// **This is a judgement call, not a typo fix, and it is one-directional on
+// purpose.** An unmatched *closer* is inert: it closes nothing, renders as
+// nothing, and deleting it leaves the surrounding text exactly as it was. An
+// unmatched *opener* is the opposite — it would swallow everything after it — so
+// nothing here ever synthesizes a missing closer, and a reply with a tag left open
+// still fails validation. Repair the noise, keep the check that catches structure.
+fn drop_orphan_closers(text: &str) -> String {
+    // Every name that has a closing form, taken from the tokenizer rather than
+    // from `vocabulary()`. `vocabulary` deliberately omits `thinking` and the
+    // conversation scaffold — they are not *reply* markup — but they are still
+    // real paired tags, and a pass that did not know that would delete every
+    // `<|/thinking|>` in the corpus. The first version did exactly that, and the
+    // existing tests caught it.
+    let names = marker_names();
+    let closes = |tag: &str| names.contains(&format!("/{tag}").as_str());
+    let mut out = String::with_capacity(text.len());
+    let mut stack: Vec<&str> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<|") {
+        let Some(end) = rest[start + 2..].find("|>") else {
+            // Nothing well-formed left to reason about; hand back the remainder
+            // untouched and let validation report it.
+            out.push_str(rest);
+            return out;
+        };
+        let tag = &rest[start + 2..start + 2 + end];
+        out.push_str(&rest[..start]);
+        match tag.strip_prefix('/') {
+            Some(name) if stack.last() == Some(&name) => {
+                stack.pop();
+                out.push_str(&rest[start..start + 4 + end]);
+            }
+            // A closer for a tag the vocabulary knows, that does not match what is
+            // open. Dropped. A closer for an *unknown* name is kept, so an invented
+            // tag still fails validation rather than being quietly swept away.
+            Some(name) if names.contains(&format!("/{name}").as_str()) => {}
+            _ => {
+                if closes(tag) {
+                    if let Some(known) = names.get(tag) {
+                        stack.push(known);
+                    }
+                }
+                out.push_str(&rest[start..start + 4 + end]);
+            }
+        }
+        rest = &rest[start + 4 + end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn canonical_name(name: &str) -> Option<&'static str> {
+    let (slash, bare) = match name.strip_prefix('/') {
+        Some(rest) => ("/", rest),
+        None => ("", name),
+    };
+    let target = TAG_ALIASES
+        .iter()
+        .find(|(from, _)| *from == bare)
+        .map(|(_, to)| *to)
+        .unwrap_or(bare);
+    let full = format!("{slash}{target}");
+    marker_names().into_iter().find(|n| *n == full)
+}
+
+// Repairs the two ways a small teacher mistypes a marker, so an otherwise good
+// reply is not discarded over one character.
+//
+// **1. The XML-shaped closer.** The closer this vocabulary uses is `<|/par|>`;
+// models reliably reach for `</|par|>` instead — it is the form every other markup
+// language uses, and no amount of showing the right one in the prompt fully
+// suppresses it.
+//
+// **2. A dropped delimiter character**, which is the defect that was quietly
+// deciding which thinking tier could exist. Measured over four raw responses from
+// Qwen3-4B: 101 tags, 95 written correctly, and **all six failures were a missing
+// `>` or `|`** — `<|item|Mismatch…`, `<|subheading>Recommended fix`,
+// `<|/codeblock|)`. Not a semantic error, a typo.
+//
+// That 5.9% per-tag rate is near-fatal to a long reply, because `validate_reply`
+// discards the *whole* reply for one bad tag and the number of chances scales with
+// length: ~22% of low-tier replies (4 tags), ~52% of medium (12), **~84% of
+// high-tier replies (30 tags)**. So the high tier was being generated correctly —
+// 395-word thinking blocks, well inside its band — and then filtered out almost
+// every time, which is why `think-high.jsonl` did not exist while `think-low.jsonl`
+// held 107 conversations. The tiers were being selected by tag count, not by
+// reasoning depth.
+//
+// The repair is gated on the name already being in the vocabulary, so it fixes
+// spelling of the delimiter and never invents a marker. A tag whose name is
+// unknown is left exactly as it was, and still fails validation.
 fn repair_markup(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if text[i..].starts_with("</|") {
-            // Only a well-formed `</|word|>` is rewritten; anything else is left
-            // alone so a genuine oddity still fails validation rather than being
-            // quietly reshaped into something that passes.
-            if let Some(end) = text[i + 3..].find("|>") {
-                let name = &text[i + 3..i + 3 + end];
-                if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()) {
-                    out.push_str("<|/");
-                    out.push_str(name);
+        // The three ways a tag can start. `</` covers both HTML-shaped closers:
+        // `</|par|>` and `</par|>`. Measured over four Qwen3-4B responses the
+        // second is the one that actually occurs — 4 of 4 — and the first, which
+        // this function was originally written for, occurred not once. Both are
+        // handled, since the tic is per-model and the cost of covering the other
+        // is a branch.
+        let opener = ["</|", "</", "<|"].iter().find(|p| text[i..].starts_with(**p));
+        if let Some(prefix) = opener {
+            let after = &text[i + prefix.len()..];
+            // The longest run of name characters, then whatever terminated it.
+            // `:` is included because the thinking-budget markers are spelled
+            // `think:low`.
+            // Whitespace inside the tag is skipped rather than ending the name:
+            // `<|/ thinking|>` is a real thing this teacher writes, and the space
+            // carries no meaning inside a delimiter.
+            let name_len = after
+                .find(|c: char| {
+                    !(c.is_ascii_alphanumeric() || c == '/' || c == ':' || c == ' ')
+                })
+                .unwrap_or(after.len());
+            let spaced: String = after[..name_len].split_whitespace().collect();
+            // A `</` prefix already carried the slash, so put it back on the name.
+            let owned;
+            let name = if prefix.starts_with("</") && !spaced.starts_with('/') {
+                owned = format!("/{spaced}");
+                owned.as_str()
+            } else {
+                spaced.as_str()
+            };
+
+            if let Some(canonical) = canonical_name(name) {
+                let rest = &after[name_len..];
+                // The terminators seen in practice, in order of how much of the
+                // delimiter survived: correct, missing the `>`, missing the `|`.
+                // A bare `|` is consumed as the terminator's first half; whatever
+                // followed it stays as content, since guessing that a `)` was meant
+                // to be a `>` is a step beyond what the evidence supports.
+                let skip = if rest.starts_with("|>") {
+                    Some(2)
+                } else if rest.starts_with('|') || rest.starts_with('>') {
+                    Some(1)
+                } else {
+                    // `<|par` with nothing tag-shaped after it is not a mistyped
+                    // tag, it is prose containing the sequence. Left alone.
+                    None
+                };
+                if let Some(skip) = skip {
+                    out.push_str("<|");
+                    out.push_str(canonical);
                     out.push_str("|>");
-                    i += 3 + end + 2;
+                    i += prefix.len() + name_len + skip;
                     continue;
                 }
             }
@@ -320,7 +483,10 @@ fn repair_markup(text: &str) -> String {
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    // Second pass, over the now-canonical tags: a closer that matches nothing.
+    // Ordering matters — a mistyped closer has to become a tag before it can be
+    // recognized as an orphan.
+    drop_orphan_closers(&out)
 }
 
 const THINK_OPEN: &str = "<|thinking|>";
@@ -569,9 +735,12 @@ impl Budget {
                 text: t.text.clone(),
             })
             .collect();
+        // No budget: this measures whether a conversation fits the window, and a
+        // budget marker is one token — below the resolution of that question.
         let (ids, _) = llm::chat_template::build_training_example(
             conv.system.as_deref(),
             &turns,
+            None,
             &self.merges,
         );
         ids.len()
@@ -1894,6 +2063,144 @@ mod tests {
             ("assistant", &repair_markup("<|par|>hi</|par|>")),
         ]);
         assert!(validate(&c, 0).is_ok());
+    }
+
+    // The defect that was deciding which thinking tier could exist. Every string
+    // here is copied verbatim from a Qwen3-4B response captured by `teach::probe`
+    // — six malformed tags in 101, all of them a dropped delimiter character.
+    #[test]
+    fn a_dropped_delimiter_character_is_repaired() {
+        // Missing the `>`, with the tag's content running straight on.
+        assert_eq!(
+            repair_markup("<|item|Mismatch in collate function<|/item|>"),
+            "<|item|>Mismatch in collate function<|/item|>",
+        );
+        // Missing the `|`.
+        assert_eq!(
+            repair_markup("<|subheading>Recommended fix<|/subheading|>"),
+            "<|subheading|>Recommended fix<|/subheading|>",
+        );
+        // A closer whose `>` came out as `)`. The `)` is left as content rather
+        // than assumed to be a typo — the tag is what gets repaired.
+        assert_eq!(
+            repair_markup("<|codeblock|>code<|/codeblock|)"),
+            "<|codeblock|>code<|/codeblock|>)",
+        );
+        // And the closer missing its `>` before a newline.
+        assert_eq!(
+            repair_markup("<|codeblock|>code<|/codeblock|\n"),
+            "<|codeblock|>code<|/codeblock|>\n",
+        );
+        // A space inside the delimiter carries no meaning and is closed up.
+        assert_eq!(
+            repair_markup("<|thinking|>hm<|/ thinking|>"),
+            "<|thinking|>hm<|/thinking|>",
+        );
+    }
+
+    #[test]
+    fn a_repaired_long_reply_now_validates() {
+        // The end-to-end property: before the repair this exact shape was thrown
+        // away for "dangling markup", taking a 395-word thinking block with it.
+        let reply = repair_markup(
+            "<|thinking|>weighing it up properly<|/thinking|>\
+             <|par|>The answer.<|/par|>\
+             <|list|><|item|Inconsistent batch sizes<|/item|>\
+             <|item|>Collate function<|/item|><|/list|>\
+             <|subheading>Recommended fix<|/subheading|>\
+             <|codeblock|>collate_fn=pad<|/codeblock|)",
+        );
+        let (paired, void) = vocabulary();
+        assert!(validate_reply(&reply, 0, &paired, &void).is_ok(), "{reply}");
+    }
+
+    // The repair must not become a way for anything tag-shaped to pass. It fixes
+    // the *delimiter* around a name the vocabulary already knows, and nothing else.
+    #[test]
+    fn an_unknown_tag_is_left_alone_to_fail() {
+        for text in [
+            "<|whatever|Some text",
+            "<|codeblok|>typo in the name<|/codeblok|>",
+            "<|par x=1|>attributes<|/par|>",
+        ] {
+            let repaired = repair_markup(text);
+            let (paired, void) = vocabulary();
+            assert!(
+                validate_reply(&repaired, 0, &paired, &void).is_err(),
+                "{text} repaired to {repaired} and wrongly passed",
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_reply_is_untouched() {
+        // The repair runs over every reply, so it must be the identity on good
+        // input — otherwise it is silently rewriting the corpus.
+        let good = "<|thinking|>hm<|/thinking|><|par|>A <|bold|>fact<|/bold|>.<|/par|>\
+                    <|list|><|item|>one<|/item|><|/list|><|divider|>\
+                    <|link|>example.com/page<|/link|>";
+        assert_eq!(repair_markup(good), good);
+        // Prose containing the sequence but no tag must survive verbatim too.
+        assert_eq!(repair_markup("a < b and c <| d"), "a < b and c <| d");
+    }
+
+    // The HTML-shaped closer, in both spellings. `</par|>` is the one this
+    // teacher actually produces — 4 occurrences across four responses, against
+    // zero of the `</|par|>` form this function was first written for.
+    #[test]
+    fn both_html_shaped_closers_are_repaired() {
+        assert_eq!(
+            repair_markup("<|list|><|item|>a<|/item|></list|>"),
+            "<|list|><|item|>a<|/item|><|/list|>",
+        );
+        assert_eq!(repair_markup("<|par|>hi</|par|>"), "<|par|>hi<|/par|>");
+        // …and the closer with its `>` dropped as well.
+        assert_eq!(repair_markup("<|par|>hi</par|"), "<|par|>hi<|/par|>");
+    }
+
+    // A closer with no opener is inert — it closes nothing and renders as nothing
+    // — so it is dropped rather than costing the whole reply. Measured as the
+    // largest remaining rejection: 3 of 6 long answers in a live run ended with a
+    // lone `<|/code|>` after 3,400 otherwise well-formed characters.
+    #[test]
+    fn a_closer_with_no_opener_is_dropped() {
+        assert_eq!(
+            repair_markup("<|par|>text<|/par|><|/code|>"),
+            "<|par|>text<|/par|>",
+        );
+        // Mismatched rather than merely unopened: the stray closer goes and the
+        // real one still closes its own tag.
+        assert_eq!(
+            repair_markup("<|par|>text<|/code|><|/par|>"),
+            "<|par|>text<|/par|>",
+        );
+        let (paired, void) = vocabulary();
+        let repaired = repair_markup("<|par|>a real answer<|/par|><|/subheading|>");
+        assert!(validate_reply(&repaired, 0, &paired, &void).is_ok(), "{repaired}");
+    }
+
+    // The other direction must NOT be repaired: an unclosed opener would swallow
+    // everything after it, so it stays a rejection.
+    #[test]
+    fn an_unclosed_opener_is_still_a_rejection() {
+        let (paired, void) = vocabulary();
+        let repaired = repair_markup("<|par|>text with no closer");
+        assert!(validate_reply(&repaired, 0, &paired, &void).is_err(), "{repaired}");
+    }
+
+    // `<|/thinking|>` is not *reply* markup and so is absent from `vocabulary()`.
+    // The orphan pass has to know it is still a real paired tag, or it deletes the
+    // closer of every thinking block in the corpus.
+    #[test]
+    fn the_thinking_closer_survives_the_orphan_pass() {
+        let text = "<|thinking|>reasoning<|/thinking|><|par|>answer<|/par|>";
+        assert_eq!(repair_markup(text), text);
+    }
+
+    #[test]
+    fn the_para_alias_is_repaired() {
+        // `par` is the most-used marker and `para` is the word a model reaches for.
+        assert_eq!(repair_markup("<|para|>text<|/para|>"), "<|par|>text<|/par|>");
     }
 
     #[test]

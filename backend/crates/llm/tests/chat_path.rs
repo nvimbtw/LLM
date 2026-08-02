@@ -40,6 +40,7 @@ fn a_chat_turn_streams_and_stops() {
         &dir,
         Some("You are a helpful assistant."),
         &history,
+        None,
         48,
         0.8,
         40,
@@ -82,6 +83,7 @@ fn a_cancelled_turn_returns_what_it_had() {
         &dir,
         None,
         &history,
+        None,
         64,
         0.8,
         40,
@@ -104,7 +106,7 @@ fn a_second_turn_reuses_the_session_without_going_wrong() {
     let mut history = vec![user("Hello there.")];
 
     let first = llm::infer::generate_chat_response_streaming(
-        &dir, None, &history, 24, 0.8, 40, None, |_| {},
+        &dir, None, &history, None, 24, 0.8, 40, None, |_| {},
     )
     .expect("first turn failed");
 
@@ -112,7 +114,7 @@ fn a_second_turn_reuses_the_session_without_going_wrong() {
     history.push(user("And what about tomorrow?"));
 
     let second = llm::infer::generate_chat_response_streaming(
-        &dir, None, &history, 24, 0.8, 40, None, |_| {},
+        &dir, None, &history, None, 24, 0.8, 40, None, |_| {},
     )
     .expect("second turn failed");
 
@@ -137,7 +139,7 @@ fn generation_still_works_after_release() {
     let history = vec![user("Hi.")];
     let gen = || {
         llm::infer::generate_chat_response_streaming(
-            &dir, None, &history, 8, 0.0, 1, None, |_| {},
+            &dir, None, &history, None, 8, 0.0, 1, None, |_| {},
         )
         .expect("generation failed")
     };

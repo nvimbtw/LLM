@@ -125,20 +125,125 @@ the paths that remembered to ask (chat never did), and forgotten across a restar
 `train_worker.rs` holds the training-specific half (the two-phase run and its
 telemetry) — it was `jobs.rs` before scheduling moved out of it.
 
-## Two benchmarks, not one
+**The auto-labeller's reply cap is the post-train cycle's most consequential
+constant.** `autolabel::DEFAULT_MAX_TOKENS` was 96 and was not reachable from
+`CycleConfig` at all. That capped generated replies at ~265 characters — the longest
+reply in a 4,861-line catalogue was exactly 265, so it bound the whole distribution —
+while `eval::chat` scores held-out replies averaging ~1400 characters (median 1149,
+~295 tokens). RAFT therefore trained on replies **16x shorter** than the ones the
+assistant suite scored, and every round taught the model to answer shorter than the
+last: approved replies fell from a mean of 158 characters on the freshly fine-tuned
+seed to 88 after ten rounds. That is the whole "the cycle regresses models" mystery,
+and it was never a data-volume problem — the catalogue had 4,861 lines against SFT's
+346 conversations.
 
-`llm::eval` exposes `run_language` and `run_markup`. They are separate jobs, separate
-`benchmark_runs` rows (discriminated by the `suite` column) and separate 0–100 scores
-that **share a range and nothing else** — never compare across them. The split exists
-because a supervised fine-tune is expected to move them in opposite directions, and
-one blended number could not say so.
+It compounded through the judge, which is worth knowing before touching the weights:
+`stopped_on_marker` is false for a reply cut off at the cap, forfeiting `W_FORMAT`
+(0.30), so 67% of candidates ended mid-sentence and approval ran 97.3% at 50-100
+characters against 44.1% at 200-250. Some of that falloff is a truncation artifact the
+larger cap removes on its own and some is real (small models do degrade over long
+generations) — **measure them apart before re-weighting the judge.**
 
-- **Language** — held-out bits per byte (0.45, through a fixed logistic), minimal-pair
-  grammar (0.40), real-word rate (0.15), and distinct-3 as a *multiplicative gate*
-  rather than a weighted term.
-- **Markup** — marker minimal pairs (0.40), forced-position marker prediction (0.30),
-  generated structure (0.20), and restraint against spraying markers into prose
-  (0.10). Only the first needs no data on disk.
+Now `CycleConfig::max_tokens` (default 512), clamped by `reply_budget` to
+`ctx * 3/4` so the reply cannot crowd out its own prompt, with `reserve` derived from
+it rather than a flat `ctx/4`. Generation is the cycle's expensive stage, so this
+costs real wall clock; that is the trade.
+
+**The two post-train training stages were measured separately, and both lose ground.**
+The cycle scores only its final model, so RAFT and KTO were indistinguishable until
+the intermediate one was benchmarked by hand. On one round from `Balanced 1.01`:
+
+| stage | model | assistant | bits/token |
+|---|---|---|---|
+| before any fine-tune | Balanced 1 | 38.55 | 3.7797 |
+| after SFT | Balanced 1.01 | **42.25** | 3.6875 |
+| after RAFT | r1 self | 38.43 | 3.7829 |
+| after KTO | r1 pref | **32.69** | 3.9334 |
+
+RAFT costs −3.82 (1.4σ, inside noise), KTO −5.74 (2.1σ), combined −9.56 (3.5σ). RAFT
+hands back essentially the whole SFT gain; KTO then goes ~6 points below the pre-SFT
+base. **KTO is the only stage in the pipeline with no prose replay** — `SftDatasetStats`
+and `RaftDatasetStats` both carry `replay_tokens`, `KtoDatasetStats` has no such field
+and no replay code path — and after RAFT it is close to pure suppression, because the
+desirable half already sits at high probability and its gradient saturates (which
+`cycle.rs`'s ordering note describes as a feature). `CycleConfig::skip_preference`
+exists to run the loop without it and get a clean score for the self-train half.
+
+**RAFT is `run_sft` with a different dataset builder.** `TrainMode::Raft => run_sft`
+in `train_worker.rs`; same `sft_corpus.bin`/`sft_mask.bin`, same `run_sft_training`,
+same masked cross-entropy. Only phase 1 differs. "RAFT vs SFT" here is a data-source
+distinction, not an algorithmic one — which is what makes changing RAFT's *input* an
+in-cycle move rather than a stage confusion.
+
+**The judge is sound; its frozen threshold is what stopped selecting.** The calibration
+on record reports AUC **0.835** against 32 human ratings, well clear of `MIN_AUC` —
+it can tell a good reply from a bad one. But the threshold was fitted against a
+*pre-SFT* model's score distribution, and the current model clears it almost always:
+approval runs 42.8% in round 1, 88.7% in round 2, then **92–96% for rounds 3–10**. At
+95% approval rejection sampling rejects nothing and RAFT is training on every sample
+it draws — self-amplification, not selection, and language decayed monotonically over
+those rounds (59.19 → 55.95 → 56.57 → 55.47 → 53.76). The `recalibrate` flag was
+written for exactly this ("once the model clears the old bar, that bar has nothing
+left to say") but the cycle hard-codes `recalibrate: false`, for the real reason that
+a bar moving with the model can never be cleared. **Both failure directions are real;
+neither is currently handled.** Note this explains the multi-round decay only — round 1
+runs at genuine 40–75% selection and still regressed.
+
+**The reply-length hypothesis was tested and falsified.** Raising the cap worked (mean
+generated reply 141 → 373 characters, max 1147) and moved the outcome essentially not
+at all (−8.99 → −9.56 assistant points). Raising it was still correct — training on
+replies truncated mid-sentence is indefensible — but length was not the binding
+constraint. It did settle the judge's length bias: post-fix approval is flat at ~91%
+from 150–600 characters and falls only past 600, where the model genuinely degrades.
+The old 97%→44% falloff was the truncation artifact. **Do not re-weight the judge for
+length.**
+
+**`db::message::distinct_user_prompts` returns the most recent prompts, not the
+alphabetically first.** `DISTINCT ON` forces its own key to lead the inner `ORDER BY`,
+so the old single-statement form limited an alphabetically-ordered result: once the
+history grew past the limit, a newly typed prompt could only enter by sorting before
+the incumbent Nth. The prompt pool was effectively frozen on an arbitrary key, and
+chatting with the models did not widen it. Callers also **over-fetch by
+`PROMPT_OVERFETCH`**, because the limit lands in SQL, before
+`gather::is_standalone_prompt` drops follow-ups and fragments — asking for exactly
+`max_prompts` yields fewer usable ones and the shortfall is made up from the 24
+hard-coded `SEED_PROMPTS` rather than from real history.
+
+## Three benchmarks, not one
+
+`llm::eval` exposes `run_language`, `run_markup` and `run_assistant`. They are
+separate jobs, separate `benchmark_runs` rows (discriminated by the `suite` column)
+and separate 0–100 scores that **share a range and nothing else** — never compare
+across them, and **never average them**. The split exists because a supervised
+fine-tune is expected to move them in *different* directions, and one blended number
+could not say so.
+
+- **Language** — can it model English. Held-out bits per byte (0.45, through a fixed
+  logistic), minimal-pair grammar (0.40), real-word rate (0.15), and distinct-3 as a
+  *multiplicative gate* rather than a weighted term.
+- **Markup** — can it drive its own harness. Marker minimal pairs (0.40),
+  forced-position marker prediction (0.30), generated structure (0.20), and restraint
+  against spraying markers into prose (0.10). Only the first needs no data on disk.
+- **Assistant** — are the replies any good. Held-out bits per assistant-reply token
+  through a logistic (`CHAT_MID` 3.50, `CHAT_SCALE` 0.60), which is the *whole* score.
+  **The mapping inverts the unit**: bits per token is a cost, so fewer bits is a
+  higher score, and all three suites therefore agree that up is good. Needs
+  `eval/chat/` on disk; without it the score is NaN rather than zero, because an
+  unmeasured model is not a bad one.
+
+**The assistant suite is the post-train cycle's objective, and the only one that is.**
+The other two are things a chat fine-tune can trade away. For one release the chat
+metric lived inside `Report` as a reported-but-unscored field, because the cycle
+judged on `BenchmarkSuite::Language` and had no other way to see the number it was
+optimizing — that workaround is gone, and `Report` no longer carries `chat` at all.
+
+**`jobs::cycle` runs all three per round and gates on a vector test**: a round is kept
+only if **no suite regressed and at least one improved**, each against its own margin.
+Not a weighted sum — a sum is exactly what lets a large gain on one suite pay for a
+collapse on another and still report progress, and with three numbers there are more
+places for that to hide, not fewer. "A balanced high score on all three" is a
+constraint, not an average. `CYCLE_SUITES` is the list, `judge` is the policy, and
+both are unit-tested without a database or a GPU.
 
 **Anchoring the corpus term to the n-gram floor failed twice, in both directions.**
 `advantage` clamped to 0.0 on the old TinyStories corpus (nothing beat the floor);
@@ -153,12 +258,33 @@ in 545. The corpus term now reads `bits_per_byte` through fixed absolute anchors
 - **`SCORE_VERSION` / `suite_version` are load-bearing.** Any change to a scoring
   constant, the pair suite, the prompt set or the corpus split moves the number
   without the model having changed. Bump it, and do not plot or compare across
-  versions — `jobs::cycle` reads `latest_score_for_model`, which is why that function
-  takes a suite and why the cycle passes `Language` explicitly.
+  versions — `jobs::cycle` reads `latest_evidence_for_model`, which is why that
+  function takes both a suite *and* a version, and why `CYCLE_SUITES` pairs each suite
+  with the version it is comparable at. Each suite versions independently:
+  `SCORE_VERSION`, `markup::MARKUP_SCORE_VERSION`, `ASSISTANT_SCORE_VERSION`.
 - **`Report::breakdown.score_stderr`** is the score's own sampling error (binomial,
-  from the pair and word counts). It is the number a cycle acceptance threshold
-  should be derived from; `min_gain` is still a guessed constant and is the next
-  thing to fix.
+  from the pair and word counts), and `jobs::cycle::judge` now derives its margins
+  from it rather than from a constant. A round is measured against the standard error
+  of the *difference*, `sqrt(a² + b²)` over the two runs, so the cycle cannot turn on
+  movement its own benchmark cannot resolve. The old flat `min_gain` of 0.5 sat
+  *below* that floor — the composite reports ±0.9 to ±1.0 per run, i.e. ±1.37 on a
+  difference — which is how a 0.41σ drop (58.94 → 58.39) came to halt a cycle.
+  `min_gain` survives only as a *floor* on each suite's margin: it can make the test
+  blunter, never finer than the instrument. The same margin decides both directions,
+  so movement too small to count as a regression is also too small to count as a gain
+  — which is what stops the gate ratcheting on noise.
+- **`chat::ChatMetrics::bits_per_token_stderr` clusters on the conversation, not the
+  token.** Tokens inside one reply are nowhere near independent — a reply that goes
+  wrong goes wrong for fifty tokens together — so a binomial over `tokens_scored`
+  understates the error several-fold and the gate would read noise as progress. The
+  assistant suite propagates it through the logistic's slope
+  (`100·σ·(1−σ)/CHAT_SCALE`, ~41.7 points per bit at the midpoint) into
+  `breakdown.score_stderr`, so all three suites hand `judge` an error bar in the same
+  unit as their score. A missing error bar stays NaN and never becomes zero, which
+  would make an absent measurement look like a perfectly certain one.
+- **`MarkupReport` still carries `chat`, reported and unscored.** Harmless duplication
+  of one cheap forward pass, kept because the markup suite's position and structure
+  stages already load those conversations.
 - **`eval::score` is still the only forward path.** `token_logprobs` and
   `token_predictions` are both built on one private `for_each_position` driver, so the
   window arithmetic has one interpretation. Anything indexing a mask against either
@@ -259,6 +385,78 @@ token — from the first token after an `<|assistant|>` marker through the closi
 scaffold, cross-example boundaries). Masked-out positions contribute no loss and no
 gradient.
 
+## The thinking budget
+
+`chat_template::ThinkBudget` (`low`/`med`/`high`) renders as **one reserved marker
+immediately before the `<|assistant|>` it governs**:
+
+```text
+<|user|>U<|/user|><|think:high|><|assistant|>
+```
+
+`synth::teach` has always written this label — it files matched triples into
+`raw/sft/think-{low,med,high}.jsonl` by *measuring* the thinking block in the
+student's tokenizer — but `SftConversation` declared only `system` and `turns`, so
+serde dropped it and the tiers trained as unexplained variance between otherwise
+identical replies. It is now a field on `SftConversation`, threaded through all
+three renderers, the chat socket and the composer's dropdown.
+
+- **`None` renders nothing, byte-for-byte.** Every corpus, `chat_destination`
+  hash and benchmark score already on disk depends on this, and
+  `no_budget_renders_exactly_as_before` is the guard. `conversation_hash`
+  deliberately does **not** absorb the label — folding it in would re-partition a
+  set that has already been trained and scored against.
+- **The marker is a cue, never a target.** Masked `0` like `<|assistant|>` itself:
+  it is an instruction the caller supplies, not something the model chooses.
+  Training it would teach the model to predict how hard it is about to think. Only
+  the embedding row is ever learned; the output column stays unused.
+- **It is per-turn, and history is unmarked.** `build_prompt` strips historical
+  reasoning, so marking a history turn would claim a thinking block that is not
+  there. The rule holds in both directions: *marker ⟺ the assistant turn after me
+  shows its reasoning at this budget*.
+- **It is charged to the scaffold.** `build_prompt` adds the marker's token to the
+  mandatory cost before fitting history around it, or a full context would
+  overflow by exactly one token, silently, only on budgeted turns.
+- **Adding the markers needed no retrain.** `SPECIAL_BLOCK` is a fixed 64 against
+  44 markers, so ids 300–302 were already allocated padding rows — `MERGE_BASE`
+  does not move and no `merges.bin` is invalidated. The rows are at random init,
+  and the existing `untrained_marker_ids` → `warm_start_embeddings` path resets
+  them (all four models on disk record `special_ids_seen`, so they take the real
+  diff rather than the `LEGACY_SCAFFOLD_MARKERS` fallback).
+- **`synth::teach::Tier` *is* `ThinkBudget`**, re-exported, not a twin — three
+  enums that happened to serialize the same way would be three places to drift.
+
+Generation paths (`labeling::autolabel`, `labeling::gather`) pass `None` on
+purpose: what they produce becomes RAFT/preference data, which is rendered
+unbudgeted, and generating under a marker the data is never labelled with would
+put the two out of step.
+
+**The tier boundaries are derived from the student's context window, and must
+be.** `synth::teach::derived_bounds` takes 90% of the window (the slack
+`Budget::word_capacity` already holds back), gives 45% of that to the thinking
+block because the reply has to fit beside it, and splits the result at 15%/60%.
+At ctx 1024 that is low <= 62, med <= 248, high above.
+
+The previous fixed constants (140/700) made the top tier **arithmetically
+impossible**, and this is the failure to remember. A record is filed `high` only
+when its thinking block exceeds `med_max`, and `teach::run` separately discards
+any conversation exceeding the student's window. 700 tokens of reasoning plus a
+reply plus the user turn does not fit 1024 — measured blocks on the long answers
+ran 982-1056 tokens, over the whole window before the reply existed. Every
+high-tier candidate was generated, validated, and then silently dropped. It read
+as a markup problem for two rounds of investigation because the rejection tally
+is broadcast to the live feed and never persisted.
+
+`tests::a_high_tier_record_can_actually_fit_the_student` is the guard: the
+smallest possible high-tier record must fit the window at every ctx. `0` in
+`low_max_tokens`/`med_max_tokens` means "derive"; an explicit value is honoured.
+
+**Re-tiering needs no GPU.** Every record stores its own `think_tokens`, so
+`scripts/retier_think_files.py --ctx N` re-files existing data under new bounds.
+Run it after any boundary change — a corpus holding records labelled `low` under
+two different rules teaches the marker two meanings, which is worse than either
+rule alone.
+
 **The chat split.** `raw/sft/*.jsonl` is one set serving three jobs, partitioned by
 `training::chat_destination` — a hash of each conversation's *content*, so the
 split is idempotent and adding conversations never re-partitions the existing ones:
@@ -280,9 +478,20 @@ split is idempotent and adding conversations never re-partitions the existing on
 - **Eval (15%)** — held back from both, and written to `eval/chat/heldout.jsonl` by
   `training::export_chat_eval_set`. `jobs::queue` calls it before every benchmark,
   beside `export_preference_data`, so the set derives itself per run like the chat
-  documents do. It feeds `llm::eval::chat` and the markup suite's position,
-  structure and reply-bits stages. (It went unwritten for a long time, which is why
-  every report before the split carried `"chat": null`.)
+  documents do. It feeds `llm::eval::chat` — in **both** suites, see
+  `Report::chat` — and the markup suite's position and structure stages. (It went
+  unwritten for a long time, which is why every report before the split carried
+  `"chat": null`.)
+
+  **The overlap between `eval/chat/heldout.jsonl` and `raw/sft/*.jsonl` is by
+  design, not contamination.** The holdout is *derived from* those same files by
+  `chat_destination`, so every held-out conversation is also a line in `raw/sft/`;
+  what makes it held out is that `build_sft_dataset` and the pretrain chat renderer
+  each filter to their own share. Comparing the two directories on disk shows 100%
+  overlap and means nothing. Do not "fix" it by deleting those lines from
+  `raw/sft/` — that removes the Eval share from the only files it is derived from,
+  and the next `export_chat_eval_set` re-partitions what is left and writes a
+  *different* holdout.
 
 **A run derives its own inputs.** The chat documents are rendered per run for the
 same reason the tokenizer and the corpus are built per run: a training run is

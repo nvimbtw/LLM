@@ -343,7 +343,11 @@ pub fn run(
             role: llm::chat_template::Role::User,
             text: prompt.clone(),
         }];
-        let seq = llm::chat_template::build_prompt(None, &turns, &merges, ctx_window, reserve);
+        // No budget. What this generates becomes RAFT/preference training data,
+        // which `build_training_example` renders unbudgeted — asking for a budget
+        // here would generate under a marker the data is never labelled with.
+        let seq =
+            llm::chat_template::build_prompt(None, &turns, None, &merges, ctx_window, reserve);
 
         let config = llm::eval::generate::SamplingConfig {
             max_tokens: MAX_TOKENS,

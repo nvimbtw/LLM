@@ -57,25 +57,32 @@ export function JobDetail({ idJob }: JobDetailProps) {
   return (
     <>
       <JobHeader job={job} onCancel={run.cancel} onChanged={run.refresh} />
-      {job.status === "queued" ? (
-        <JobQueuedPanel job={job} />
-      ) : (
-        <>
-          {job.kind === "train" && <JobTrainPanel job={job} run={run} />}
-          {job.kind === "benchmark" && (
-            <JobBenchmarkPanel job={job} run={run} />
-          )}
-          {/* Only reachable for an older chat job whose config names no
-              conversation; anything current redirected above. */}
-          {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
-          {job.kind === "gather" && <JobGatherPanel job={job} run={run} />}
-          {job.kind === "autolabel" && (
-            <JobCataloguePanel job={job} run={run} />
-          )}
-          {job.kind === "synth" && <JobSynthPanel job={job} run={run} />}
-          {job.kind === "teach" && <JobTeachPanel job={job} run={run} />}
-        </>
-      )}
+      {/* The panels' vertical rhythm lives here, not inside each kind's component.
+          A kind that renders more than one panel — teach renders four — had them
+          touching, because a fragment of siblings has no spacing of its own and
+          every kind would otherwise have to remember to add some. The header keeps
+          its own `mb-8`, so it sits outside this. */}
+      <div className="space-y-6">
+        {job.status === "queued" ? (
+          <JobQueuedPanel job={job} />
+        ) : (
+          <>
+            {job.kind === "train" && <JobTrainPanel job={job} run={run} />}
+            {job.kind === "benchmark" && (
+              <JobBenchmarkPanel job={job} run={run} />
+            )}
+            {/* Only reachable for an older chat job whose config names no
+                conversation; anything current redirected above. */}
+            {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
+            {job.kind === "gather" && <JobGatherPanel job={job} run={run} />}
+            {job.kind === "autolabel" && (
+              <JobCataloguePanel job={job} run={run} />
+            )}
+            {job.kind === "synth" && <JobSynthPanel job={job} run={run} />}
+            {job.kind === "teach" && <JobTeachPanel job={job} run={run} />}
+          </>
+        )}
+      </div>
     </>
   )
 }

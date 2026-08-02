@@ -176,11 +176,28 @@ pub async fn distinct_user_prompts(
     pool: &PgPool,
     limit: i64,
 ) -> Result<Vec<String>, sqlx::Error> {
+    // **Most recent first, not alphabetical.** `DISTINCT ON` forces its own key to
+    // lead the inner `ORDER BY`, so the old single-statement form ordered the whole
+    // result alphabetically and then applied the limit — it returned the
+    // alphabetically-first N distinct prompts. Once the history grew past N, a newly
+    // typed prompt could only enter the pool by sorting before the incumbent Nth, so
+    // the set the auto-labeller generated against was effectively frozen, and frozen
+    // on an arbitrary key. Talking to the model more did not widen it.
+    //
+    // The subquery de-duplicates first and the outer order picks by recency, so new
+    // prompts always enter and stale ones age out.
+    //
+    // Callers filter the result (see `gather::is_standalone_prompt`) and should ask
+    // for several times what they need, since the limit lands here, before the filter.
     let rows = sqlx::query!(
-        r#"SELECT DISTINCT ON (btrim(content)) btrim(content) as "content!"
-           FROM messages
-           WHERE id_user IS NOT NULL AND btrim(content) <> ''
-           ORDER BY btrim(content), created_at DESC
+        r#"SELECT content as "content!" FROM (
+               SELECT DISTINCT ON (btrim(content))
+                      btrim(content) AS content, created_at
+               FROM messages
+               WHERE id_user IS NOT NULL AND btrim(content) <> ''
+               ORDER BY btrim(content), created_at DESC
+           ) recent
+           ORDER BY created_at DESC
            LIMIT $1"#,
         limit,
     )

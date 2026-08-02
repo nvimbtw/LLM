@@ -1,4 +1,5 @@
 import { apiFetch } from "./api"
+import type { Tier } from "./jobs"
 
 // Wire types for the benchmark API (backend routes/benchmark.rs). The report is
 // the serialized `llm::eval::Report`; every metric there is an f64, and a metric
@@ -8,21 +9,68 @@ import { apiFetch } from "./api"
 export type BenchmarkStatus = "running" | "done" | "failed"
 
 /**
- * Which of the two benchmarks a run belongs to.
+ * Which of the three benchmarks a run belongs to.
  *
- * `language` measures whether the model can model English; `markup` measures whether
- * it uses its own special tokens correctly. They are separate runs with separate
- * scores because a supervised fine-tune is expected to move them in opposite
- * directions, and one blended number could not say so — a fine-tune that improved on
- * three of four language components used to read as a regression.
+ * `language` measures whether the model can model English, `markup` whether it uses
+ * its own special tokens correctly, and `assistant` whether the replies themselves
+ * are any good. Separate runs with separate scores because a supervised fine-tune is
+ * expected to move them in *different* directions, and one blended number could not
+ * say so — a fine-tune that improved on three of four language components used to
+ * read as a regression.
  *
- * The two scores share a 0–100 range and nothing else. Never compare across them.
+ * The three scores share a 0–100 range and nothing else. Never compare across them,
+ * and never average them: the post-train cycle judges a round by requiring that none
+ * regressed and at least one improved, which a mean would quietly defeat.
  */
-export type BenchmarkSuite = "language" | "markup"
+export type BenchmarkSuite = "language" | "markup" | "assistant"
 
-export const BENCHMARK_SUITES: { id: BenchmarkSuite; label: string; blurb: string }[] = [
-  { id: "language", label: "Language", blurb: "Held-out text, grammar, and generated prose." },
-  { id: "markup", label: "Markup", blurb: "Special-token use: pairs, placement, and structure." },
+/**
+ * A thinking budget, as the marker names it. Re-exported from `lib/jobs` rather than
+ * redeclared: the same three the chat composer sends, the teacher files by and the
+ * SFT corpus is tagged with — one vocabulary across the whole system, so a benchmark
+ * at `high` is the same request as a chat turn at `high`, and two identical unions
+ * would be two places for that to stop being true.
+ */
+export type { Tier } from "./jobs"
+
+/** Sweep order: least thinking to most. Not alphabetical, and not the enum order. */
+export const TIER_ORDER: Tier[] = ["low", "med", "high"]
+
+/**
+ * Below this many held-out conversations a score is drawn as provisional.
+ *
+ * Not a statistical threshold so much as an honesty one: the high tier currently has
+ * three conversations behind it, and its error bar is several times the differences a
+ * sweep is looking for. A point that thin must not look like one resting on fifteen.
+ */
+export const MIN_CONVERSATIONS = 10
+
+/** Which suites a thinking-budget sweep can move. See `EvalConfig::budget`. */
+export function suiteTakesBudget(suite: BenchmarkSuite): boolean {
+  return suite !== "language"
+}
+
+export const BENCHMARK_SUITES: {
+  id: BenchmarkSuite
+  label: string
+  blurb: string
+}[] = [
+  {
+    id: "language",
+    label: "Language",
+    blurb: "Held-out text, grammar, and generated prose.",
+  },
+  {
+    id: "markup",
+    label: "Markup",
+    blurb: "Special-token use: pairs, placement, and structure.",
+  },
+  {
+    id: "assistant",
+    label: "Assistant",
+    blurb:
+      "Held-out replies: how many bits the model spends per token of answer.",
+  },
 ]
 
 export interface ModelInfo {
@@ -121,6 +169,10 @@ export interface BenchmarkReport {
   // Agreement with the replies you rated good and bad. Reported, never scored.
   preference: PreferenceMetrics | null
   duration_secs: number
+  // Tokens the model forwarded to produce this report — the run's cost in the unit
+  // the model works in. Lifted onto the run row as `eval_tokens`, which is what the
+  // charts read; here it is the report's own copy.
+  tokens_used: number
 }
 
 // Thumbs collected in the chat UI, scored. Absent until some have been given.
@@ -195,13 +247,60 @@ export interface MarkupReport {
   markup: MarkupMetrics
   chat: ChatMetrics | null
   duration_secs: number
+  tokens_used: number
 }
 
-/** A run's report is one or the other, told apart by the run's `suite`. */
-export type AnyReport = BenchmarkReport | MarkupReport
+// ── the assistant report ────────────────────────────────────────────────────
+
+export interface AssistantBreakdown {
+  version: number
+  replies: number | null
+  score: number | null
+  score_stderr: number | null
+}
+
+/**
+ * Bits per assistant-reply token over the held-out conversations, mapped to 0–100.
+ *
+ * **The score inverts the measurement.** Bits per token is a *cost* — lower is
+ * better — while every suite reports higher-is-better, so `chat.bits_per_token`
+ * falling is `score` rising. Read the score for direction and the bits for
+ * magnitude; showing the raw bits without saying which way is up is how a
+ * 3.6875 → 3.8796 regression once got read as progress.
+ */
+export interface AssistantReport {
+  score: number | null
+  breakdown: AssistantBreakdown
+  model: ModelInfo
+  chat: ChatMetrics | null
+  duration_secs: number
+  tokens_used: number
+}
+
+/** A run's report is one of three, told apart by the run's `suite`. */
+export type AnyReport = BenchmarkReport | MarkupReport | AssistantReport
 
 export function isMarkupReport(report: AnyReport): report is MarkupReport {
   return "markup" in report
+}
+
+// Discriminated on the one field only this report has. `chat` will not do — the
+// markup report carries one too.
+export function isAssistantReport(
+  report: AnyReport
+): report is AssistantReport {
+  return "breakdown" in report && "replies" in report.breakdown
+}
+
+/**
+ * Positive rather than `!isMarkupReport(...)`.
+ *
+ * With two suites, "not markup" was a sound way to reach the language report. With
+ * three it silently includes the assistant one, which has none of the fields the
+ * language panels read — so the narrowing has to name what it wants.
+ */
+export function isLanguageReport(report: AnyReport): report is BenchmarkReport {
+  return "grammar" in report
 }
 
 export interface BenchmarkRun {
@@ -220,10 +319,34 @@ export interface BenchmarkRun {
   score: number | null
   error: string | null
   // Tokens in the corpus the model was trained on, snapshotted when the run
-  // started (so retraining the model doesn't relabel past runs). `null` for a model
-  // whose training config never recorded a corpus size — such a run is left off the
-  // scaling chart rather than plotted at zero.
+  // started (so retraining the model doesn't relabel past runs). A property of the
+  // model rather than of this run, and nothing plots it any more — the charts ask
+  // what the measurement cost, which is `eval_tokens`.
   train_tokens: number | null
+  // Tokens the model forwarded to complete the run: the cost of the benchmark in
+  // the unit the model works in, and the x of every score chart. `null` for a run
+  // older than the counter — those are left off rather than plotted at zero.
+  eval_tokens: number | null
+  /**
+   * The thinking budget every held-out conversation was rendered under. `null` is
+   * not a fourth value: it means each conversation kept the budget it was written
+   * with, which is every run before the sweep existed and every run with the switch
+   * off.
+   */
+  think_budget: Tier | null
+  /**
+   * The sweep this run belongs to. Three runs queued by the split switch share one,
+   * which is what the chart groups on to draw them as a connected line. `null` for a
+   * run queued on its own — a series of one, drawn as a lone dot.
+   */
+  id_series: string | null
+  /**
+   * Held-out conversations scored. What a budget sweep varies over, and small enough
+   * to matter — the current holdout is 15 low, 15 med, 3 high — so the chart marks a
+   * point below `MIN_CONVERSATIONS` as provisional. `null` on a language run, which
+   * scores no conversations at all.
+   */
+  eval_conversations: number | null
   created_at: string
   completed_at: string | null
 }
@@ -368,7 +491,10 @@ export function benchmarkSections(suite: BenchmarkSuite): BenchmarkSection[] {
  * The runner reports one number for the whole suite, so the section boundaries are
  * reconstructed here from the same weights it advances by.
  */
-export function sectionIndex(fraction: number, suite: BenchmarkSuite = "language"): number {
+export function sectionIndex(
+  fraction: number,
+  suite: BenchmarkSuite = "language"
+): number {
   const sections = benchmarkSections(suite)
   let base = 0
   for (let i = 0; i < sections.length; i++) {
@@ -411,6 +537,66 @@ export function formatCompact(n: number): string {
 
 function trim(n: number) {
   return n % 1 ? n.toFixed(1) : `${n}`
+}
+
+/**
+ * The fewest decimals that print every one of these values exactly.
+ *
+ * Not derived from the gap, which is the obvious rule and a wrong one: the round-step
+ * ladder includes 2.5, so a 0.25 step needs two decimals while `-log10(0.25)` asks for
+ * one — and 56.5 · 56.8 · 57.0 · 57.3 is a ladder whose labels imply gaps of 0.3 and
+ * 0.2 alternating. The axis then reads as uneven when it is perfectly even, which is
+ * worse than a decimal too many.
+ */
+export function exactDecimals(values: number[], max = 3): number {
+  for (let digits = 0; digits < max; digits++) {
+    const scale = 10 ** digits
+    if (
+      values.every((v) => Math.abs(v * scale - Math.round(v * scale)) < 1e-9)
+    ) {
+      return digits
+    }
+  }
+  return max
+}
+
+/**
+ * A compact formatter carrying enough decimals to tell *these* ticks apart.
+ *
+ * `formatCompact` rounds to one decimal, which is right for an axis spanning decades
+ * and wrong for one spanning a fraction of a percent: five ticks fifty tokens apart all
+ * print as "308.6K", and an axis whose labels are five copies of one number is worse
+ * than no axis, because it reads as a bug rather than as a tight cluster.
+ *
+ * So the decimals come from the gap between adjacent ticks, and the unit is fixed
+ * across all of them — mixing "980K" with "1.0M" on one axis hides that they are
+ * neighbours. Both only apply within a decade; a wider axis is exactly what
+ * `formatCompact` is already good at, and keeps it.
+ */
+export function compactAxisFormat(ticks: number[]): (value: number) => string {
+  const values = ticks.filter((t) => Number.isFinite(t) && t > 0)
+  if (values.length < 2) return formatCompact
+
+  const max = Math.max(...values)
+  const min = Math.min(...values)
+  if (max / min >= 10) return formatCompact
+
+  const [unit, suffix] =
+    max >= 1e9
+      ? [1e9, "B"]
+      : max >= 1e6
+        ? [1e6, "M"]
+        : max >= 1e3
+          ? [1e3, "K"]
+          : [1, ""]
+
+  // Enough decimals to print every tick exactly in its own unit, capped: past three
+  // the label is longer than the difference it is describing is worth.
+  const digits = exactDecimals(
+    values.map((v) => v / unit),
+    3
+  )
+  return (value: number) => `${(value / unit).toFixed(digits)}${suffix}`
 }
 
 export function formatDuration(seconds: number): string {

@@ -40,7 +40,7 @@ use uuid::Uuid;
 // The file auto-labels are written to. A distinct name from the human export's
 // `feedback.jsonl` in the same directory, so the two accumulate side by side and
 // neither run clobbers the other's work.
-const OUTPUT_FILE: &str = "autolabel.jsonl";
+const OUTPUT_FILE: &str = storage::AUTOLABEL_FILE;
 
 // Default candidates per prompt. Enough spread for the best and worst to differ
 // meaningfully; every extra candidate is another full generation, so this is the
@@ -53,19 +53,56 @@ const DEFAULT_MAX_PROMPTS: i64 = 200;
 // and a spread below the labelling margin.
 const DEFAULT_TEMPERATURE: f32 = 1.0;
 const DEFAULT_TOP_K: usize = 40;
-const DEFAULT_MAX_TOKENS: usize = 96;
+// How long a candidate reply may run.
+//
+// **This was 96, and 96 was the reason the post-train cycle regressed models.** The
+// assistant benchmark scores held-out replies averaging ~1400 characters (median
+// 1149, i.e. ~295 tokens). A 96-token cap is ~265 characters at this vocab, and the
+// longest reply in a 4,861-line catalogue was exactly 265 — the cap was binding on
+// the whole distribution, not trimming a tail. So RAFT trained on replies 16x
+// shorter than the ones it was scored on, and every round taught the model to
+// answer shorter than the round before: approved replies fell from a mean of 158
+// characters on the freshly fine-tuned seed to 88 after ten rounds.
+//
+// It compounded through the judge. `stopped_on_marker` is false for a reply cut off
+// at the cap, which forfeits `W_FORMAT` (0.30, the second-heaviest term), so 67% of
+// candidates ended mid-sentence and long ones were structurally disadvantaged:
+// approval ran 97.3% at 50-100 characters and 44.1% at 200-250. The pipeline was a
+// short-reply filter in two stages, and RAFT faithfully learned it.
+//
+// 512 covers the median held-out reply with room to spare and fits alongside a
+// prompt at ctx 1024. It costs real time — generation is the cycle's expensive
+// stage, ~6 candidates x 80 prompts — but the alternative is spending less time to
+// produce training data that moves the model away from the target.
+const DEFAULT_MAX_TOKENS: usize = 512;
+// Below this a reply cannot be a reply; above `ctx * 3/4` there is no room left for
+// the prompt the reply is answering.
+const MIN_MAX_TOKENS: usize = 32;
 
 #[derive(Deserialize, Serialize)]
 pub struct AutolabelRequest {
     // Which model generates the candidates. Normally the one about to be tuned:
     // preference data is only meaningful for the policy that produced it.
     pub id_model: Uuid,
+    // Which round these generations belong to, stamped onto every line written. Set
+    // by `jobs::cycle`; absent for a hand-started pass from the API, which belongs to
+    // no round and whose output is therefore unattributable backlog to a scoped run.
+    // See `LabelledLine` for why the round rather than the model.
+    #[serde(default)]
+    pub id_cycle: Option<Uuid>,
+    #[serde(default)]
+    pub round: Option<i32>,
     #[serde(default = "default_candidates")]
     pub candidates: usize,
     #[serde(default = "default_max_prompts")]
     pub max_prompts: i64,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    // How long a candidate reply may run. Clamped against the model's context window
+    // at run time, since a request cannot know it. See `DEFAULT_MAX_TOKENS` for why
+    // this is a knob at all rather than the constant it used to be.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
     // Refit the threshold from the current human ratings instead of reusing the
     // frozen one. The move at a plateau: once the model clears the old bar, that
     // bar has nothing left to say, and a new one is fitted from replies rated at
@@ -83,6 +120,22 @@ fn default_max_prompts() -> i64 {
 }
 fn default_temperature() -> f32 {
     DEFAULT_TEMPERATURE
+}
+fn default_max_tokens() -> usize {
+    DEFAULT_MAX_TOKENS
+}
+
+/// How long a reply may actually run, given what was asked for and what the model can
+/// hold.
+///
+/// Clamped against the context window here rather than at the request, because the
+/// ceiling belongs to the model and a stored request does not know which model it will
+/// be run against. The upper bound leaves a quarter of the window for the prompt the
+/// reply is answering — without it, asking for a reply as long as the context produces
+/// a prompt truncated to nothing.
+fn reply_budget(requested: usize, ctx_window: usize) -> usize {
+    let ceiling = (ctx_window * 3 / 4).max(MIN_MAX_TOKENS);
+    requested.clamp(MIN_MAX_TOKENS, ceiling)
 }
 
 #[derive(Serialize)]
@@ -114,11 +167,33 @@ pub type VerdictCallback = Box<dyn Fn(&str, &llm::autolabel::Verdict) + Send>;
 
 // One line of the output, matching what `build_kto_dataset` and the benchmark's
 // preference stage both read.
+//
+// The provenance stamp. The file is append-only and outlives every model and cycle
+// in it, so without this a training run cannot tell a line its own round wrote from
+// one written six rounds ago — and a cycle's RAFT stage keeps re-training on the
+// union of every round it has ever run.
+//
+// **`(id_cycle, round)` is the key that scopes a training run; `id_model` is kept
+// for provenance only.** Keying on the model does not separate runs: every re-run of
+// a cycle starts from the same seed and generates with it, so every run writes the
+// same `id_model`. That is not a hypothetical — four runs of one cycle stamped 1160
+// lines with one id, the catalogue grew 320 → 604 → 900, and the round score fell
+// 58.39 → 56.85 → 54.41 in step. The round is the unit that is actually unique.
+//
+// Both are `Option` on the read side: a hand-started run from the API belongs to no
+// cycle, and lines written before this field existed have no stamp at all. Being in
+// this file they are known to be generated, so a scoped run drops them as backlog it
+// cannot attribute — see `training::read_catalogue`.
 #[derive(Serialize)]
 struct LabelledLine<'a> {
     prompt: &'a str,
     response: &'a str,
     label: &'a str,
+    id_model: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_cycle: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    round: Option<i32>,
 }
 
 // Runs the whole pass. Blocking and GPU-bound, so the caller gives it its own OS
@@ -157,7 +232,12 @@ pub fn run(
     on_calibration(&calibration);
 
     let ctx_window = model.ctx_window();
-    let reserve = (ctx_window / 4).max(8);
+    let max_tokens = reply_budget(request.max_tokens, ctx_window);
+    // The reply budget *is* the reserve. It used to be a flat `ctx/4`, which was
+    // generous against a 96-token cap and would be short against a 512-token one — the
+    // prompt would crowd out the reply and the cap would silently bind again, which is
+    // the whole failure being fixed here.
+    let reserve = max_tokens;
     let candidates_per_prompt = request.candidates.clamp(2, 32);
 
     let mut out = String::new();
@@ -181,12 +261,16 @@ pub fn run(
             role: llm::chat_template::Role::User,
             text: prompt.clone(),
         }];
-        let seq = llm::chat_template::build_prompt(None, &turns, &merges, ctx_window, reserve);
+        // No budget. What this generates becomes RAFT/preference training data,
+        // which `build_training_example` renders unbudgeted — asking for a budget
+        // here would generate under a marker the data is never labelled with.
+        let seq =
+            llm::chat_template::build_prompt(None, &turns, None, &merges, ctx_window, reserve);
 
         let mut scored = Vec::with_capacity(candidates_per_prompt);
         for k in 0..candidates_per_prompt {
             let config = llm::eval::generate::SamplingConfig {
-                max_tokens: DEFAULT_MAX_TOKENS,
+                max_tokens,
                 temperature: request.temperature,
                 top_k: DEFAULT_TOP_K,
                 // Seeded from the prompt index and the candidate index, so a rerun
@@ -219,6 +303,9 @@ pub fn run(
                 prompt,
                 response: &verdict.text,
                 label: if verdict.good { "up" } else { "down" },
+                id_model: request.id_model,
+                id_cycle: request.id_cycle,
+                round: request.round,
             };
             let encoded = serde_json::to_string(&line)
                 .map_err(|e| format!("could not encode a labelled example: {e}"))?;
@@ -253,7 +340,7 @@ pub fn run(
 // The human ratings file. Only this one — never the auto-label output in the same
 // directory, which would be the judge calibrating itself against its own verdicts
 // and would report near-perfect agreement no matter how wrong it was.
-const HUMAN_FILE: &str = "feedback.jsonl";
+const HUMAN_FILE: &str = storage::HUMAN_FEEDBACK_FILE;
 
 // Where the fitted threshold is frozen.
 const CALIBRATION_FILE: &str = "calibration.json";
@@ -425,6 +512,10 @@ fn freeze(calibration: llm::autolabel::Calibration, ratings: usize) {
 struct RatedLine {
     response: String,
     label: String,
+    #[serde(default)]
+    id_cycle: Option<Uuid>,
+    #[serde(default)]
+    round: Option<i32>,
 }
 
 // How many auto-labelled examples are on disk, split by verdict.
@@ -434,9 +525,17 @@ struct RatedLine {
 // a thousand while the training run sees none, which is the class of mismatch this
 // whole gate exists to prevent. Cheap: a few thousand short lines.
 //
+// **`only` must match what the training run will be given.** These counts are what
+// the size gates in `gather` are checked against, so counting the whole catalogue
+// and then training on one round's slice would let a gate promise 400 examples and
+// the build deliver 60. `jobs::cycle` passes its own `(id_cycle, round)` here and
+// the same value into the `TrainConfig`; a caller outside a cycle passes `None` and
+// gets the whole file, matching what it will train on. The unstamped-line rule is
+// `training::read_catalogue`'s, and is deliberately identical.
+//
 // A missing file is `(0, 0)`, not an error: no auto-labelling has run yet is the
 // normal state before the first pass.
-pub fn catalogue_counts() -> (i64, i64) {
+pub fn catalogue_counts(only: Option<(Uuid, i32)>) -> (i64, i64) {
     let path = storage::preference_dir().join(OUTPUT_FILE);
     let Ok(content) = std::fs::read_to_string(&path) else {
         return (0, 0);
@@ -448,6 +547,14 @@ pub fn catalogue_counts() -> (i64, i64) {
         let Ok(parsed) = serde_json::from_str::<RatedLine>(line.trim()) else {
             continue;
         };
+        // This file is the generated half, so an unstamped line here is backlog
+        // from before the stamp existed — dropped under a filter, exactly as
+        // `training::read_catalogue` drops it.
+        if let Some((want_cycle, want_round)) = only {
+            if parsed.id_cycle != Some(want_cycle) || parsed.round != Some(want_round) {
+                continue;
+            }
+        }
         match parsed.label.as_str() {
             "up" => approved += 1,
             "down" => rejected += 1,
@@ -590,7 +697,96 @@ fn cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
 }
 
 #[cfg(test)]
+mod reply_budget_tests {
+    use super::*;
+
+    // **The regression this whole knob exists to prevent.** The default has to survive
+    // the clamp at the context window the models actually run at, or the cap binds
+    // again and the cycle goes back to training on replies a quarter the length of the
+    // ones it is scored against.
+    #[test]
+    fn the_default_survives_the_clamp_at_the_context_windows_in_use() {
+        for ctx in [1024, 2048, 4096] {
+            assert_eq!(
+                reply_budget(DEFAULT_MAX_TOKENS, ctx),
+                DEFAULT_MAX_TOKENS,
+                "ctx {ctx} clipped the default"
+            );
+        }
+    }
+
+    // A reply as long as the whole window leaves nothing for the prompt it answers.
+    #[test]
+    fn a_reply_cannot_crowd_out_its_own_prompt() {
+        assert_eq!(reply_budget(usize::MAX, 1024), 768);
+        assert_eq!(reply_budget(4096, 1024), 768);
+    }
+
+    // The old hard-coded 96 is still expressible — this is a knob, not a new constant
+    // in disguise — but nothing can ask for a budget too short to hold a reply.
+    #[test]
+    fn a_smaller_budget_is_honoured_down_to_the_floor() {
+        assert_eq!(reply_budget(96, 1024), 96);
+        assert_eq!(reply_budget(0, 1024), MIN_MAX_TOKENS);
+    }
+
+    // A window too small for the floor still has to yield a usable budget rather than
+    // an inverted clamp, which would panic.
+    #[test]
+    fn a_tiny_context_window_does_not_invert_the_clamp() {
+        assert_eq!(reply_budget(512, 16), MIN_MAX_TOKENS);
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
+    // The counting side of the same rule `training::read_catalogue` applies to the
+    // building side. These two must agree: the gates in `labeling::gather` are
+    // checked against this count and the run is then handed what that other
+    // function selects, so a disagreement lets a gate pass on four hundred
+    // examples and the build deliver sixty.
+    #[test]
+    fn counting_is_scoped_the_same_way_reading_is() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let cycle = Uuid::new_v4();
+        let mine = (cycle, 3);
+        let seed = Uuid::new_v4();
+        let tmp = std::env::temp_dir().join(format!("counts_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = tmp.join("raw").join("preference");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(super::OUTPUT_FILE),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                serde_json::json!({"prompt":"p","response":"a","label":"up",
+                                   "id_model":seed,"id_cycle":cycle,"round":3}),
+                serde_json::json!({"prompt":"p","response":"b","label":"down",
+                                   "id_model":seed,"id_cycle":cycle,"round":3}),
+                // Same cycle, same *generating model*, an earlier round. Counting by
+                // model put this in the round's own bucket and that is the whole bug:
+                // every re-run generates with the same seed, so the catalogue
+                // accumulated instead of rotating.
+                serde_json::json!({"prompt":"p","response":"c","label":"up",
+                                   "id_model":seed,"id_cycle":cycle,"round":2}),
+                // Unstamped, and in the generated file: backlog. Dropped under a
+                // filter and counted without one, exactly as `read_catalogue`
+                // treats it.
+                serde_json::json!({"prompt":"p","response":"d","label":"up"}),
+            ),
+        )
+        .unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; DATA_DIR drives storage::root().
+        unsafe { std::env::set_var("DATA_DIR", &tmp) };
+
+        assert_eq!(super::catalogue_counts(Some(mine)), (1, 1));
+        assert_eq!(super::catalogue_counts(None), (3, 1));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // Reports what the judge scores against the ratings currently on disk, without
     // queueing a job — calibration is pure CPU (an n-gram fit and some arithmetic),
     // so the number that decides whether auto-labelling is worth doing can be had

@@ -7,6 +7,7 @@ import { streamChat } from "@/lib/chat-socket"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
 import { useSettings } from "@/components/settings/settings-provider"
+import type { ThinkBudget } from "@/components/chat/budget-selector"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -106,7 +107,7 @@ export function useChat(chatId: string) {
   }, [fetchMessages])
 
   const sendMessage = React.useCallback(
-    (content: string, modelId: string) => {
+    (content: string, modelId: string, budget: ThinkBudget) => {
       setError(null)
       setIsSending(true)
       // User message + an empty assistant message we fill as tokens arrive.
@@ -155,6 +156,7 @@ export function useChat(chatId: string) {
           content,
           modelId,
           systemRef.current,
+          budget,
           {
             onQueued: ({ ahead }) => setQueuedAhead(ahead),
             onToken: (value) => {
@@ -207,7 +209,7 @@ export function useChat(chatId: string) {
     // Intentional: starting the first turn here is the whole point of the
     // handoff, and takePendingMessage is one-shot so it can't loop.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (pending) sendMessage(pending.content, pending.modelId)
+    if (pending) sendMessage(pending.content, pending.modelId, pending.budget)
   }, [loadedOnce, chatId, takePendingMessage, sendMessage])
 
   // Rate a reply, or clear the rating by passing the value it already has —

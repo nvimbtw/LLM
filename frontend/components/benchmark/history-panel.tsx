@@ -10,6 +10,7 @@ import {
   formatDate,
   formatNumber,
 } from "@/lib/benchmark"
+import { TIER_LABEL } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
 // Every run as a league table, best score first.
@@ -17,8 +18,8 @@ import { cn } from "@/lib/utils"
 // Ranked by score rather than by date because the question asked of this table is
 // "which model is the best one so far", and a ranking answers it by position — the
 // top row *is* the answer, with no scanning. Recency is still on every row for the
-// times the question is "what did I just run"; the scaling panel above covers the
-// against-corpus-size reading that an ordering by date used to hint at.
+// times the question is "what did I just run"; the panels above cover what a score
+// cost — in tokens and in time — which an ordering by date used only to hint at.
 export interface HistoryPanelProps {
   runs: BenchmarkRun[]
   selectedId: string | null
@@ -153,6 +154,14 @@ function HistoryRow({
           className="block max-w-full truncate text-left font-medium hover:underline"
         >
           {run.model_name}
+          {/* The budget belongs on the name, not in a column of its own: without it
+              a sweep is three rows of one model with three different scores and
+              nothing saying why they differ. */}
+          {run.think_budget && (
+            <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+              {TIER_LABEL[run.think_budget].toLowerCase()}
+            </span>
+          )}
         </button>
         {run.status === "failed" && run.error && (
           <span className="mt-0.5 block truncate text-xs text-destructive/70">
@@ -162,7 +171,9 @@ function HistoryRow({
       </td>
 
       <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums sm:table-cell">
-        {run.train_tokens === null ? NO_VALUE : formatCompact(run.train_tokens)}
+        {/* What the run cost, not what the model was trained on — the same
+            measure the tokens chart plots, so the table and the figure agree. */}
+        {run.eval_tokens === null ? NO_VALUE : formatCompact(run.eval_tokens)}
       </td>
 
       <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums sm:table-cell">

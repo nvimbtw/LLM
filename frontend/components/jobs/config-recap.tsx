@@ -1,7 +1,7 @@
 "use client"
 
 import { Panel } from "@/components/ui/panel"
-import { benchmarkSuiteOf } from "@/lib/jobs"
+import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
 import type {
   AutolabelConfig,
   GatherConfig,
@@ -79,20 +79,36 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
   switch (job.kind) {
     case "train":
       return train((override ?? job.config) as TrainConfig | null)
-    case "benchmark":
+    case "benchmark": {
+      // The assistant suite was missing here and fell through to the language
+      // description, so a queued assistant run described itself as scoring grammar.
+      const suite = benchmarkSuiteOf(job)
+      const suiteRow =
+        suite === "markup"
+          ? "Markup — special-token use"
+          : suite === "assistant"
+            ? "Assistant — held-out reply bits"
+            : "Language — text, grammar, generation"
+      const budget = benchmarkBudgetOf(job)
       return {
         description: "As queued",
         rows: [
           ["Model", job.label],
-          [
-            "Suite",
-            benchmarkSuiteOf(job) === "markup"
-              ? "Markup — special-token use"
-              : "Language — text, grammar, generation",
-          ],
+          ["Suite", suiteRow],
+          // Only when one was forced. An unbudgeted run renders each conversation's
+          // own marker, which is the default and not a setting worth a row.
+          ...(budget
+            ? ([
+                [
+                  "Thinking budget",
+                  `${TIER_LABEL[budget]} — every held-out conversation forced to ${budget}`,
+                ],
+              ] as [string, string][])
+            : []),
         ],
         blocks: [],
       }
+    }
     case "autolabel": {
       const config = job.config as AutolabelConfig | null
       if (!config) return null
@@ -206,10 +222,15 @@ function teach(config: TeachConfig | null): Recap | null {
   ]
   if (config.teacher.n_ctx !== undefined)
     rows.push(["Teacher context", String(config.teacher.n_ctx)])
-  if (config.low_max_tokens !== undefined)
+  // 0 (and absent) means the run derives the boundaries from the student's
+  // context window, so there is no number to show until it has resolved them —
+  // it reports them on its first progress line.
+  if (config.low_max_tokens)
     rows.push(["Short tier", `≤ ${config.low_max_tokens} tokens`])
-  if (config.med_max_tokens !== undefined)
+  if (config.med_max_tokens)
     rows.push(["Medium tier", `≤ ${config.med_max_tokens} tokens`])
+  if (!config.low_max_tokens && !config.med_max_tokens)
+    rows.push(["Thinking tiers", "derived from the student’s context window"])
   if (config.sample?.temperature !== undefined)
     rows.push(["Temperature", String(config.sample.temperature)])
   // Without a model there is no tokenizer to measure a thinking block with, so

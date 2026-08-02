@@ -2,6 +2,8 @@
 
 import * as React from "react"
 
+import type { ThinkBudget } from "./budget-selector"
+
 import { SESSION_CHANGED_EVENT, apiFetch, getToken } from "@/lib/api"
 
 export interface ChatSummary {
@@ -15,6 +17,9 @@ export interface ChatSummary {
 export interface PendingMessage {
   content: string
   modelId: string
+  // Carried across the navigation into the new chat, so the budget picked in the
+  // composer is the one the first turn is actually generated under.
+  budget: ThinkBudget
 }
 
 interface ChatsContextValue {
@@ -22,7 +27,11 @@ interface ChatsContextValue {
   isLoading: boolean
   error: string | null
   refresh: () => Promise<void>
-  createChat: (message: string, modelId: string) => Promise<string>
+  createChat: (
+    message: string,
+    modelId: string,
+    budget: ThinkBudget
+  ) => Promise<string>
   // The first message of a freshly-created chat, handed off to the chat page so
   // it can stream the reply there (one-shot: returns and clears it).
   takePendingMessage: (chatId: string) => PendingMessage | null
@@ -108,7 +117,11 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   // Create the chat row only (no generation) so we can navigate immediately;
   // the chat page streams the reply for the stashed first message on mount.
   const createChat = React.useCallback(
-    async (message: string, modelId: string): Promise<string> => {
+    async (
+      message: string,
+      modelId: string,
+      budget: ThinkBudget
+    ): Promise<string> => {
       const response = await apiFetch(`/chat`, {
         method: "POST",
         body: JSON.stringify({ content: message }),
@@ -118,7 +131,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
         throw new Error(text || "Unable to start a chat.")
       }
       const id = String((await response.json()).id_chat)
-      pendingRef.current.set(id, { content: message, modelId })
+      pendingRef.current.set(id, { content: message, modelId, budget })
       // Surface the new chat in the sidebar; no need to block navigation on it.
       refresh()
       return id

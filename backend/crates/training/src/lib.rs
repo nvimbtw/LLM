@@ -83,6 +83,27 @@ pub struct TrainConfig {
     // still deserializes; see `llm::kto::KtoParams::beta` for what it does.
     #[serde(default = "default_beta")]
     pub beta: f64,
+    // RAFT and KTO only: which *round's* generations to train on, as the cycle it
+    // belongs to plus the round number within it. The catalogue file is append-only
+    // and spans every round every cycle has ever run, so without this a round trains
+    // on the union of all of them — the oldest and worst generations accumulating the
+    // most total gradient, round after round.
+    //
+    // **This was keyed on the generating model and that did not work.** Every re-run
+    // of a cycle starts from the same seed and generates with it, so every run stamped
+    // the same `id_model` and the scope did not separate them: measured across four
+    // runs of one cycle, the catalogue went 320 → 604 → 900 examples and the round
+    // score fell 58.39 → 56.85 → 54.41 in step with it. A round is the unit that is
+    // actually unique, and `(id_cycle, round)` names one without a database round-trip
+    // — the cycle holds both before it enqueues anything.
+    //
+    // `None` means "the whole catalogue", which is what a hand-started run from the
+    // API gets: outside a cycle there is no round to scope to, and the old behaviour
+    // is the only one that has a meaning there.
+    #[serde(default)]
+    pub catalogue_cycle: Option<Uuid>,
+    #[serde(default)]
+    pub catalogue_round: Option<i32>,
     // Which upload datasets (subfolders of uploads/) go into this run's corpus,
     // each with how many of its .txt files to sample at random (0 => all of that
     // dataset). Pretrain only — SFT ignores it. `#[serde(default)]` keeps
@@ -118,6 +139,18 @@ pub struct TrainConfig {
     // which would have pointed the run at the wrong weights directory.
     #[serde(default)]
     pub storage_id: Uuid,
+}
+
+impl TrainConfig {
+    /// The round this run's catalogue is scoped to, or `None` for the whole file.
+    ///
+    /// The two halves are stored as separate fields because that is what survives a
+    /// JSONB round trip through the job row cleanly, but every consumer wants them
+    /// together — and a half-set pair is meaningless, so this refuses one without the
+    /// other rather than inventing a round 0.
+    pub fn catalogue_scope(&self) -> Option<(Uuid, i32)> {
+        self.catalogue_cycle.zip(self.catalogue_round)
+    }
 }
 
 // One curriculum stage: a set of datasets trained for a fixed number of epochs
@@ -1224,6 +1257,16 @@ pub struct SftConversation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     system: Option<String>,
     turns: Vec<SftTurn>,
+    // How long the reply was written to reason for, when the generator recorded it
+    // — `synth::teach` writes `"budget": "low"|"med"|"high"` on every conversation
+    // in `think-*.jsonl`. Rendered as one marker in front of the assistant turn, so
+    // the fine-tune learns reasoning length as a *lever it is told to pull* rather
+    // than as unexplained variance between two otherwise identical replies.
+    //
+    // Absent everywhere else, and absent renders as nothing, so the conversations
+    // that predate this are tokenized exactly as they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    budget: Option<llm::chat_template::ThinkBudget>,
 }
 
 // Summary of what the SFT build produced, for the dashboard + meta.json. The
@@ -1362,6 +1405,11 @@ fn conversation_hash(conv: &SftConversation) -> u64 {
         absorb(turn.role.as_bytes());
         absorb(turn.text.as_bytes());
     }
+    // `budget` is deliberately **not** absorbed. It is a label describing a
+    // conversation, not part of it, and every conversation already on disk was
+    // assigned a destination without it — folding it in would re-partition the
+    // whole set on the next run, moving conversations across the train/eval
+    // boundary and invalidating comparability with every score already recorded.
     hash
 }
 
@@ -1427,7 +1475,8 @@ fn render_chat_documents() -> io::Result<usize> {
             continue;
         }
         let turns = conversation_turns(conv)?;
-        let text = llm::chat_template::render_conversation(conv.system.as_deref(), &turns);
+        let text =
+            llm::chat_template::render_conversation(conv.system.as_deref(), &turns, conv.budget);
         fs::write(dir.join(format!("chat{index:05}.txt")), text)?;
         written += 1;
     }
@@ -1595,8 +1644,12 @@ pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
     for conv in share {
         let turns = conversation_turns(conv)?;
 
-        let (ids, m) =
-            llm::chat_template::build_training_example(conv.system.as_deref(), &turns, &merges);
+        let (ids, m) = llm::chat_template::build_training_example(
+            conv.system.as_deref(),
+            &turns,
+            conv.budget,
+            &merges,
+        );
         if ids.is_empty() {
             continue;
         }
@@ -1795,6 +1848,11 @@ pub struct RaftDatasetStats {
     // and narrows hard, and is invisible from the example count alone.
     pub duplicates: usize,
     pub skipped_too_long: usize,
+    // As `SftDatasetStats::replay_tokens`. Zero here means the tokenizer guard
+    // refused the replay, and the run is the unanchored self-train that replay
+    // exists to prevent — which for RAFT is the more dangerous of the two modes,
+    // since its examples are the model's own output.
+    pub replay_tokens: usize,
     // As `SftDatasetStats::special_ids_seen` — RAFT writes the same `sft_corpus.bin`
     // and trains through the same entry point, so its output model must carry the
     // same record or a later fine-tune reads it as having seen nothing.
@@ -1816,38 +1874,26 @@ pub struct RaftDatasetStats {
 // would weight it triple — accelerating exactly the collapse this loop has to avoid.
 // Near-duplicates (same sentence, one word different) are *not* caught here; that
 // wants an edit-distance or n-gram overlap pass, and is the obvious next guard.
-pub fn build_raft_dataset(base_model_dir: &Path) -> io::Result<RaftDatasetStats> {
+//
+// **It replays prose, for the same reason `build_sft_dataset` does and more
+// urgently.** RAFT is plain masked cross-entropy through `sft_train` — no KL term,
+// nothing holding it near the base model — over a few hundred short replies. KTO
+// at least has `ref_logprob` anchoring it. Left unanchored, this stage is a
+// full-parameter fine-tune on the model's own output, which is the textbook
+// recipe for collapsing onto it: the model's language ability decays into the
+// register of whatever cleared the judge's bar, and the language benchmark reads
+// that as a regression because it is one. See `append_prose_replay`.
+pub fn build_raft_dataset(
+    base_model_dir: &Path,
+    catalogue_round: Option<(Uuid, i32)>,
+) -> io::Result<RaftDatasetStats> {
     let merges_path = base_model_dir.join("merges.bin");
     let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
     let eot = tokenize::bpe::encode("<|endoftext|>", &merges);
 
-    // The same directory `build_kto_dataset` reads, and the same lines — RAFT just
-    // keeps one half of the split instead of both.
-    let dir = storage::preference_dir();
-    let mut files: Vec<PathBuf> = if dir.is_dir() {
-        fs::read_dir(&dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    files.sort();
-
-    let mut lines: Vec<RatedLine> = Vec::new();
-    for path in &files {
-        let content = fs::read_to_string(path)?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(parsed) = serde_json::from_str::<RatedLine>(line) {
-                lines.push(parsed);
-            }
-        }
-    }
+    // The same lines `build_kto_dataset` reads — RAFT just keeps one half of the
+    // split instead of both.
+    let lines = read_catalogue(catalogue_round)?;
 
     let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
     let ctx = model.ctx_window();
@@ -1886,7 +1932,7 @@ pub fn build_raft_dataset(base_model_dir: &Path) -> io::Result<RaftDatasetStats>
                 text: line.response.clone(),
             },
         ];
-        let (ids, m) = llm::chat_template::build_training_example(None, &turns, &merges);
+        let (ids, m) = llm::chat_template::build_training_example(None, &turns, None, &merges);
 
         // Unlike KTO — where a truncated example would be scored against a whole-reply
         // reference log-probability and mean two different things — a long example
@@ -1918,6 +1964,13 @@ pub fn build_raft_dataset(base_model_dir: &Path) -> io::Result<RaftDatasetStats>
         ));
     }
 
+    // Counted before replay: the budget is a multiple of the *reply* tokens, and
+    // replay's own fully-masked-in tokens must not enlarge the budget they are
+    // being measured against.
+    let reply_trainable = mask.iter().filter(|&&b| b != 0).count();
+    let replay_tokens =
+        append_prose_replay(&mut corpus, &mut mask, &mut spans, base_model_dir, &eot, reply_trainable)?;
+
     let datasets = storage::datasets_dir();
     fs::create_dir_all(&datasets)?;
     tokenize::bpe::save_corpus(&corpus, &datasets.join("sft_corpus.bin").to_string_lossy())?;
@@ -1933,6 +1986,7 @@ pub fn build_raft_dataset(base_model_dir: &Path) -> io::Result<RaftDatasetStats>
         trainable_tokens: mask.iter().filter(|&&b| b != 0).count(),
         duplicates,
         skipped_too_long,
+        replay_tokens,
         special_ids_seen: markers_after_training(base_model_dir, &corpus),
     })
 }
@@ -1953,12 +2007,82 @@ pub struct KtoDatasetStats {
     pub special_ids_seen: Vec<u32>,
 }
 
-// One rated reply as exported by `queue::export_preference_data`.
+// One rated reply, as written by `queue::export_preference_data` (the human half)
+// or `labeling::autolabel` (the generated half).
 #[derive(Deserialize)]
 struct RatedLine {
     prompt: String,
     response: String,
     label: String,
+    // Which model generated this reply. Absent on the human-rated export and on
+    // every catalogue line written before the field existed — see
+    // `read_catalogue` for what that absence means.
+    #[serde(default)]
+    id_cycle: Option<Uuid>,
+    #[serde(default)]
+    round: Option<i32>,
+}
+
+// Every rated reply in `raw/preference/`, optionally narrowed to one round's
+// generations. `only` is `(id_cycle, round)`; see `TrainConfig::catalogue_cycle` for
+// why the round rather than the generating model.
+//
+// **The exemption is by file, not by missing stamp.** `feedback.jsonl` is kept
+// whole under every filter: it is what a person clicked, it is the seed and the
+// audit rather than any round's output, and it is a few dozen lines against
+// thousands. Everything else is generated, and a generated line with no round stamp
+// is one written before the stamp existed — which is precisely the accumulated
+// backlog the scoping exists to stop training on, so under a filter it is dropped.
+//
+// Reading the stamp alone cannot make that distinction: human lines have no stamp
+// either, so "keep the unstamped" grandfathers the entire pre-existing catalogue
+// and the filter selects nothing it was meant to select.
+//
+// Both dataset builders read through this so they can never disagree about what
+// the catalogue *is*; they differ only in which half of it they keep.
+fn read_catalogue(only: Option<(Uuid, i32)>) -> io::Result<Vec<RatedLine>> {
+    let dir = storage::preference_dir();
+    let mut files: Vec<PathBuf> = if dir.is_dir() {
+        fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    files.sort();
+
+    let mut lines: Vec<RatedLine> = Vec::new();
+    for path in &files {
+        let human = path.file_name().and_then(|n| n.to_str())
+            == Some(storage::HUMAN_FEEDBACK_FILE);
+        let content = fs::read_to_string(path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // A malformed line is skipped rather than fatal: this file is a machine
+            // export, and one bad row should not block a tune over hundreds of good
+            // ones.
+            let Ok(parsed) = serde_json::from_str::<RatedLine>(line) else {
+                continue;
+            };
+            // An unstamped generated line is backlog: it predates the stamp, so
+            // there is no round it can be attributed to and no way to tell it from
+            // one written six rounds ago.
+            if let Some((want_cycle, want_round)) = only {
+                let mine =
+                    parsed.id_cycle == Some(want_cycle) && parsed.round == Some(want_round);
+                if !human && !mine {
+                    continue;
+                }
+            }
+            lines.push(parsed);
+        }
+    }
+    Ok(lines)
 }
 
 // Builds the KTO dataset from the exported thumbs feedback: token spans, the reply
@@ -1974,41 +2098,23 @@ struct RatedLine {
 // A KTO reward is a property of a whole reply. A truncated example would be trained
 // against a reference log-probability computed over a different span, so its reward
 // would be measuring two different things — worse than not training on it at all.
-pub fn build_kto_dataset(base_model_dir: &Path) -> io::Result<KtoDatasetStats> {
+pub fn build_kto_dataset(
+    base_model_dir: &Path,
+    catalogue_round: Option<(Uuid, i32)>,
+) -> io::Result<KtoDatasetStats> {
     let merges_path = base_model_dir.join("merges.bin");
     let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
 
     // The *training* slice only. The held-out slice lives under `eval/preference/`
     // and is the benchmark's alone — training on it would make the reported margin
     // meaningless.
-    let dir = storage::preference_dir();
-    let mut files: Vec<PathBuf> = if dir.is_dir() {
-        fs::read_dir(&dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    files.sort();
-
-    let mut lines: Vec<RatedLine> = Vec::new();
-    for path in &files {
-        let content = fs::read_to_string(path)?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // A malformed line is skipped rather than fatal: this file is a machine
-            // export, and one bad row should not block a tune over hundreds of good
-            // ones.
-            if let Ok(parsed) = serde_json::from_str::<RatedLine>(line) {
-                lines.push(parsed);
-            }
-        }
-    }
+    //
+    // **`catalogue_round` is the round whose candidates these are, not this run's
+    // base.** KTO runs after RAFT, so its base is the model RAFT just produced, which
+    // has never generated a catalogue line — keying off the base would select nothing.
+    // The cycle passes its own round, which is the same set RAFT trained on and is
+    // what makes the two stages compose.
+    let lines = read_catalogue(catalogue_round)?;
 
     if lines.is_empty() {
         return Err(io::Error::new(
@@ -2046,7 +2152,7 @@ pub fn build_kto_dataset(base_model_dir: &Path) -> io::Result<KtoDatasetStats> {
                 text: line.response.clone(),
             },
         ];
-        let (ids, m) = llm::chat_template::build_training_example(None, &turns, &merges);
+        let (ids, m) = llm::chat_template::build_training_example(None, &turns, None, &merges);
 
         if ids.len() < 2 || ids.len() > ctx {
             skipped_too_long += 1;
@@ -2720,7 +2826,42 @@ mod sft_tests {
                 SftTurn { role: "user".into(), text: user.into() },
                 SftTurn { role: "assistant".into(), text: assistant.into() },
             ],
+            budget: None,
         }
+    }
+
+    // Labelling a conversation with a thinking budget must not move it across the
+    // train/eval boundary. The tiered files landed on disk *before* the label was
+    // read back, so hashing it would re-partition a set that has already been
+    // trained and scored against.
+    #[test]
+    fn a_budget_label_does_not_repartition_the_split() {
+        let plain = conversation("why is the sky blue?", "rayleigh scattering");
+        let before = chat_destination(&plain);
+        for budget in llm::chat_template::ThinkBudget::ALL {
+            let mut labelled = conversation("why is the sky blue?", "rayleigh scattering");
+            labelled.budget = Some(budget);
+            assert_eq!(chat_destination(&labelled), before, "{budget:?} moved the split");
+        }
+    }
+
+    // The label `synth::teach` writes must survive the round trip through
+    // `SftConversation` — it was being silently dropped, which is the whole reason
+    // the tiers taught nothing.
+    #[test]
+    fn the_on_disk_budget_label_is_read_back() {
+        let line = r#"{"turns":[{"role":"user","text":"q"},{"role":"assistant","text":"a"}],"group":"g","budget":"med","think_tokens":269}"#;
+        let conv: SftConversation = serde_json::from_str(line).unwrap();
+        assert_eq!(conv.budget, Some(llm::chat_template::ThinkBudget::Med));
+
+        // …and a conversation without one still round-trips as the JSON it came in
+        // as, rather than gaining a `"budget": null`.
+        let plain: SftConversation =
+            serde_json::from_str(r#"{"turns":[{"role":"user","text":"q"},{"role":"assistant","text":"a"}]}"#)
+                .unwrap();
+        assert_eq!(plain.budget, None);
+        let out = serde_json::to_string(&plain).unwrap();
+        assert!(!out.contains("budget"), "{out}");
     }
 
     // The property the whole split rests on: a conversation's destination follows
@@ -2865,6 +3006,7 @@ mod sft_tests {
                 llm::chat_template::Turn { role: llm::chat_template::Role::User, text: q1.clone() },
                 llm::chat_template::Turn { role: llm::chat_template::Role::Assistant, text: a1.clone() },
             ],
+            None,
             &merges,
         ).1.iter().filter(|&&b| b != 0).count()
         + llm::chat_template::build_training_example(
@@ -2873,6 +3015,7 @@ mod sft_tests {
                 llm::chat_template::Turn { role: llm::chat_template::Role::User, text: q2.clone() },
                 llm::chat_template::Turn { role: llm::chat_template::Role::Assistant, text: a2.clone() },
             ],
+            None,
             &merges,
         ).1.iter().filter(|&&b| b != 0).count();
         assert_eq!(stats.trainable_tokens, expected);
@@ -2967,8 +3110,12 @@ mod sft_tests {
                     text: t.text.clone(),
                 })
                 .collect();
-            let (ids, mask) =
-                llm::chat_template::build_training_example(conv.system.as_deref(), &turns, &merges);
+            let (ids, mask) = llm::chat_template::build_training_example(
+                conv.system.as_deref(),
+                &turns,
+                conv.budget,
+                &merges,
+            );
             assert!(!ids.is_empty(), "example rendered to no tokens: {}", line);
             assert!(
                 mask.iter().any(|&b| b != 0),
@@ -3143,6 +3290,162 @@ mod chat_eval_export_tests {
 
         export_chat_eval_set().unwrap();
         assert!(!dir.join("old.jsonl").exists(), "a stale export survived");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+    use std::fs;
+
+    // Writes a preference directory under a temp DATA_DIR and returns its root.
+    // `generated` lands in the auto-label file, `human` in the feedback file, and
+    // the two are treated differently on purpose. Caller must hold ENV_LOCK.
+    fn catalogue_root(
+        name: &str,
+        generated: &[serde_json::Value],
+        human: &[serde_json::Value],
+    ) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("catalogue_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let dir = tmp.join("raw").join("preference");
+        fs::create_dir_all(&dir).unwrap();
+        let body = |lines: &[serde_json::Value]| -> String {
+            lines.iter().map(|l| format!("{l}\n")).collect()
+        };
+        fs::write(dir.join(storage::AUTOLABEL_FILE), body(generated)).unwrap();
+        fs::write(dir.join(storage::HUMAN_FEEDBACK_FILE), body(human)).unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; DATA_DIR drives storage::root().
+        unsafe { std::env::set_var("DATA_DIR", &tmp) };
+        tmp
+    }
+
+    // A generated line stamped with the round that wrote it. `id_model` rides along
+    // as provenance the way the real writer emits it, and is deliberately *not* what
+    // the filter reads — keying on it is the bug this scoping replaced.
+    fn stamped(round: (Uuid, i32), response: &str) -> serde_json::Value {
+        serde_json::json!({
+            "prompt": "why is the sky blue?",
+            "response": response,
+            "label": "up",
+            "id_model": Uuid::new_v4(),
+            "id_cycle": round.0,
+            "round": round.1,
+        })
+    }
+
+    fn unstamped(response: &str) -> serde_json::Value {
+        serde_json::json!({
+            "prompt": "why is the sky blue?",
+            "response": response,
+            "label": "up",
+        })
+    }
+
+    // The whole point of the provenance stamp. The catalogue file is append-only
+    // and spans every round a cycle has ever run; without this filter round 7's
+    // self-train is a max-likelihood pass over rounds 1-7's output, and the
+    // earliest and worst generations accumulate the most total gradient.
+    #[test]
+    fn a_round_reads_only_its_own_generations() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let cycle = Uuid::new_v4();
+        let mine = (cycle, 3);
+        // The *same cycle*, an earlier round. This is the case keying on the
+        // generating model could never see: a re-run generates with the same seed, so
+        // model id alone puts both of these in the same bucket.
+        let theirs = (cycle, 2);
+        let tmp = catalogue_root(
+            "scoped",
+            &[
+                stamped(mine, "this round"),
+                stamped(theirs, "an earlier round"),
+                stamped(mine, "this round again"),
+            ],
+            &[],
+        );
+
+        let lines = read_catalogue(Some(mine)).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|l| l.response.starts_with("this round")));
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // The exemption that matters, and the one that must not be over-broad: human
+    // ratings are the seed and the audit, a few dozen hand-clicked judgements
+    // against thousands of generated lines, and they belong in every run.
+    #[test]
+    fn human_ratings_survive_every_filter() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mine = (Uuid::new_v4(), 1);
+        let tmp = catalogue_root(
+            "human",
+            &[stamped(mine, "generated"), stamped((Uuid::new_v4(), 1), "someone else's")],
+            &[unstamped("hand rated")],
+        );
+
+        let lines = read_catalogue(Some(mine)).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().any(|l| l.response == "hand rated"));
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // The bug this file had on its first cut: exempting *every* unstamped line
+    // rather than every human one. An unstamped line in the auto-label file is a
+    // generation from before the stamp existed — exactly the accumulated backlog
+    // the scoping exists to stop training on. Grandfathering it in makes the
+    // filter inert on any install with a pre-existing catalogue, which is every
+    // install that has ever run the loop.
+    #[test]
+    fn unstamped_generations_are_backlog_and_are_dropped() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mine = (Uuid::new_v4(), 1);
+        let tmp = catalogue_root(
+            "backlog",
+            &[
+                stamped(mine, "this round"),
+                unstamped("written before the stamp existed"),
+                unstamped("and another"),
+            ],
+            &[],
+        );
+
+        let lines = read_catalogue(Some(mine)).unwrap();
+        assert_eq!(lines.len(), 1, "legacy catalogue must not ride along");
+        assert_eq!(lines[0].response, "this round");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A run started by hand from the API has no round to scope to, and must see
+    // the file exactly as it did before scoping existed.
+    #[test]
+    fn no_filter_reads_the_whole_catalogue() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = catalogue_root(
+            "whole",
+            &[stamped((Uuid::new_v4(), 1), "a"), unstamped("b")],
+            &[unstamped("c")],
+        );
+
+        assert_eq!(read_catalogue(None).unwrap().len(), 3);
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A round that generated nothing gets nothing back — it does not silently fall
+    // through to the whole file. The empty result is what makes the size gates fire
+    // and the round refuse, which is the correct outcome.
+    #[test]
+    fn a_round_with_no_generations_selects_nothing() {
+        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = catalogue_root("empty", &[stamped((Uuid::new_v4(), 1), "someone else's")], &[]);
+
+        assert!(read_catalogue(Some((Uuid::new_v4(), 1))).unwrap().is_empty());
 
         fs::remove_dir_all(&tmp).ok();
     }

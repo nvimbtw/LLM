@@ -5,7 +5,12 @@ import * as React from "react"
 import { Throbber } from "@/components/ui/throbber"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useBenchmark } from "@/hooks/use-benchmark"
-import { BENCHMARK_SUITES, formatDuration, isMarkupReport } from "@/lib/benchmark"
+import {
+  BENCHMARK_SUITES,
+  formatDuration,
+  isLanguageReport,
+  isMarkupReport,
+} from "@/lib/benchmark"
 import { cn } from "@/lib/utils"
 
 import { CorpusPanel } from "./corpus-panel"
@@ -14,7 +19,8 @@ import { DurationPanel } from "./duration-panel"
 import { GenerationPanel } from "./generation-panel"
 import { GrammarPanel } from "./grammar-panel"
 import { HistoryPanel } from "./history-panel"
-import { ScalingPanel } from "./scaling-panel"
+import { ModelFilter } from "./model-filter"
+import { TokensPanel } from "./tokens-panel"
 import { ScoreCard } from "./score-card"
 
 /**
@@ -47,6 +53,43 @@ export function BenchmarkView() {
 
   const reportRef = React.useRef<HTMLDivElement>(null)
   const scrollOwedTo = React.useRef<string | null>(null)
+
+  // Models kept *off* the two figures. Stored as the hidden set rather than the
+  // visible one so a model that appears later — a benchmark finishing while the
+  // page is open, or the whole cast changing when you switch suite — is plotted by
+  // default instead of being filtered out by a selection made before it existed.
+  const [hidden, setHidden] = React.useState<Set<string>>(new Set())
+
+  const toggleModel = React.useCallback((model: string) => {
+    setHidden((current) => {
+      const next = new Set(current)
+      if (!next.delete(model)) next.add(model)
+      return next
+    })
+  }, [])
+  const showAllModels = React.useCallback(() => setHidden(new Set()), [])
+  const showOnlyModel = React.useCallback(
+    (model: string) => {
+      setHidden(
+        new Set(
+          runs.map((run) => run.model_name).filter((name) => name !== model)
+        )
+      )
+    },
+    [runs]
+  )
+
+  // What the two figures plot. The history table below is deliberately never
+  // filtered: hiding a model is about making a crowded plot readable, and a run
+  // missing from the table as well would read as a run that no longer exists.
+  const plotted = React.useMemo(
+    () => runs.filter((run) => !hidden.has(run.model_name)),
+    [runs, hidden]
+  )
+  // Derived from what is actually on this suite, not from `hidden.size`: the set
+  // survives a suite switch, and a name left in it that no run here carries is not a
+  // filter this page is under.
+  const filtered = plotted.length < runs.length
 
   const selectAndReveal = React.useCallback(
     (id: string) => {
@@ -120,12 +163,23 @@ export function BenchmarkView() {
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       {/* Cross-run views: they read the whole history rather than the selected
-          run, and they are what the page opens on. Side by side once there is
-          room, because they are two readings of the same set of runs. */}
-      <div className="grid gap-6 xl:grid-cols-2">
-        <ScalingPanel runs={runs} />
-        <DurationPanel runs={runs} />
-      </div>
+          run, and they are what the page opens on.
+
+          Full width, one above the other. They used to sit side by side, which
+          halved the plot each figure got: a scatter's whole job is separating
+          points that are close together, and at 480px with a name beside every
+          dot there was no room left to separate anything. Two tall figures read
+          better than four small quadrants, and neither is compared to the other
+          mark-for-mark — they share a y axis and nothing else. */}
+      <ModelFilter
+        runs={runs}
+        hidden={hidden}
+        onToggle={toggleModel}
+        onShowAll={showAllModels}
+        onOnly={showOnlyModel}
+      />
+      <TokensPanel runs={plotted} filtered={filtered} />
+      <DurationPanel runs={plotted} filtered={filtered} />
 
       <HistoryPanel
         runs={runs}
@@ -142,7 +196,7 @@ export function BenchmarkView() {
             <ScoreCard report={report} modelName={detail.model_name} />
             {isMarkupReport(report) ? (
               <MarkupPanel report={report} />
-            ) : (
+            ) : isLanguageReport(report) ? (
               <>
                 <div className="grid gap-6 xl:grid-cols-2">
                   <GrammarPanel grammar={report.grammar} />
@@ -150,7 +204,7 @@ export function BenchmarkView() {
                 </div>
                 <GenerationPanel generation={report.generation} />
               </>
-            )}
+            ) : null}
             <p className="text-xs text-muted-foreground tabular-nums">
               Completed in {formatDuration(report.duration_secs)}.
             </p>

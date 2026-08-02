@@ -180,6 +180,13 @@ pub struct InferSession {
     /// simply fails early and the sequence is re-prefilled.
     cached_tokens: Vec<u32>,
 
+    /// Every token this session has actually pushed through the stack: `s` per
+    /// prefill, one per decode step. It is the work done, not the work asked for —
+    /// a prompt served from the KV cache costs nothing here, and a sequence scored
+    /// in two overlapping windows costs both windows. That is the honest reading,
+    /// and it is what the benchmark reports as the cost of a run.
+    tokens_forwarded: u64,
+
     // ── Dimensions ──
     max_s: usize,
     d: usize,
@@ -282,6 +289,7 @@ impl InferSession {
                 .map(|_| DeviceBufferF16::alloc(h * max_s * hd))
                 .collect(),
             cached_tokens: Vec::new(),
+            tokens_forwarded: 0,
 
             max_s,
             d,
@@ -347,6 +355,14 @@ impl InferSession {
         self.vocab
     }
 
+    /// How many tokens have gone through the stack since this session was built.
+    ///
+    /// One session per benchmark run, so this reads as the cost of the whole run
+    /// — see the field's note for what it does and does not count.
+    pub fn tokens_forwarded(&self) -> u64 {
+        self.tokens_forwarded
+    }
+
     /// Forward `tokens` and return the logits for the **last** position only.
     ///
     /// What generation wants. The vocab GEMM runs at `1 × d × vocab` rather than
@@ -409,6 +425,7 @@ impl InferSession {
         }
         self.final_ln(s);
         self.cached_tokens = seq.to_vec();
+        self.tokens_forwarded += s as u64;
         s
     }
 
@@ -475,6 +492,7 @@ impl InferSession {
         }
         self.final_ln(1);
         self.cached_tokens.push(seq[pos]);
+        self.tokens_forwarded += 1;
     }
 
     // Token ids → the residual stream, on the device.

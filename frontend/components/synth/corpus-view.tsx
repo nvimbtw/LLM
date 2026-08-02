@@ -45,7 +45,7 @@ export function CorpusView() {
         title="SFT corpus"
         description="The conversations supervised fine-tuning trains on — hand-written and generated, measured against the window they have to fit."
         action={
-          <ButtonLink href="/jobs/new/synth" className="gap-2">
+          <ButtonLink href="/jobs/new/teach" className="gap-2">
             <Sparkles className="size-3.5" />
             Generate more
           </ButtonLink>

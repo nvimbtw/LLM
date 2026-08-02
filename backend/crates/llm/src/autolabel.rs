@@ -105,6 +105,14 @@ impl Judge {
     /// those against children's-story statistics scored a correct technical answer
     /// below a degenerate loop. The prose still supplies nearly all the volume; the
     /// SFT turns supply the vocabulary and register that prose has no examples of.
+    ///
+    /// **"Children's stories" is history, not the current corpus.** `data/eval/corpus`
+    /// has been FineWeb since the re-anchoring (the TinyStories set is parked beside
+    /// it as `corpus-tinystories/` and is read by nothing). Measured today the blend is
+    /// 8.0 MB of FineWeb against 587 KB of curated assistant turns — **93% web text** —
+    /// so the fluency term still describes a register that is not chat replies, just a
+    /// much less alien one than the paragraph above implies. Read it before concluding
+    /// anything about why the judge prefers what it prefers.
     pub fn build(reference: &str) -> Judge {
         let bytes = reference.as_bytes();
         let ngram = ngram::ByteNgram::fit(bytes, ngram::MAX_ORDER);

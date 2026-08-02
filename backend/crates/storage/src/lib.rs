@@ -63,6 +63,17 @@ pub fn preference_dir() -> PathBuf {
     root().join("raw").join("preference")
 }
 
+// The two halves of `preference_dir()`, which readers must be able to tell apart.
+//
+// Both are JSONL with the same fields and both are training data, but they differ
+// in a way that decides whether a line may be filtered out: `HUMAN_FEEDBACK_FILE`
+// is what a person clicked, and `AUTOLABEL_FILE` is what a model generated and the
+// judge scored. A round-scoped training run keeps all of the first and only its
+// own share of the second — see `training::read_catalogue`. The names live here
+// because three crates name them and the layout is this crate's business.
+pub const HUMAN_FEEDBACK_FILE: &str = "feedback.jsonl";
+pub const AUTOLABEL_FILE: &str = "autolabel.jsonl";
+
 pub fn crawled_dir() -> PathBuf {
     root().join("raw").join("crawled")
 }

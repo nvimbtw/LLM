@@ -1,8 +1,10 @@
 import {
   type AnyReport,
+  type AssistantReport,
   type MarkupReport,
   type BenchmarkReport,
   NO_VALUE,
+  isAssistantReport,
   isMarkupReport,
   formatCompact,
   formatNumber,
@@ -18,10 +20,68 @@ export function ScoreCard({
   report: AnyReport
   modelName: string
 }) {
-  return isMarkupReport(report) ? (
-    <MarkupScoreCard report={report} modelName={modelName} />
-  ) : (
-    <LanguageScoreCard report={report} modelName={modelName} />
+  if (isMarkupReport(report)) {
+    return <MarkupScoreCard report={report} modelName={modelName} />
+  }
+  if (isAssistantReport(report)) {
+    return <AssistantScoreCard report={report} modelName={modelName} />
+  }
+  return <LanguageScoreCard report={report} modelName={modelName} />
+}
+
+function AssistantScoreCard({
+  report,
+  modelName,
+}: {
+  report: AssistantReport
+  modelName: string
+}) {
+  const { chat, model } = report
+
+  return (
+    <section className="rounded-lg border border-border bg-background">
+      <div className="grid gap-px bg-border/60 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)]">
+        <div className="bg-background px-6 py-7">
+          <div className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+            Assistant score
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="font-display text-6xl font-semibold tracking-tight tabular-nums">
+              {formatNumber(report.score, 1)}
+            </span>
+            <span className="text-lg text-muted-foreground tabular-nums">
+              / 100
+            </span>
+          </div>
+          <Uncertainty stderr={report.breakdown?.score_stderr ?? null} />
+          <p className="mt-3 text-xs text-muted-foreground">
+            {modelName} · {model.layers}L · {model.dimensions}d ·{" "}
+            {formatCompact(model.parameters)} params
+          </p>
+        </div>
+
+        {/* The measurement behind the score, shown next to it because the unit runs
+            the *other* way — the hint says so rather than leaving it to be inferred,
+            which is the mistake that made this a suite of its own. */}
+        <dl className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-3">
+          <Headline
+            label="Reply bits"
+            value={formatNumber(chat?.bits_per_token ?? null, 4)}
+            hint="per token · lower is better"
+          />
+          <Headline
+            label="Conversations"
+            value={chat ? String(chat.conversations) : NO_VALUE}
+            hint={chat ? "held out from training" : "No held-out chat set"}
+          />
+          <Headline
+            label="Tokens scored"
+            value={chat ? formatCompact(chat.tokens_scored) : NO_VALUE}
+            hint="assistant turns only"
+          />
+        </dl>
+      </div>
+    </section>
   )
 }
 

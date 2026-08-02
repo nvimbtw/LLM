@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::chat_template::{build_prompt, Turn};
+use crate::chat_template::{build_prompt, ThinkBudget, Turn};
 use crate::training::infer_session::InferSession;
 use crate::training::transformer::Model;
 use tokenize::pretokenize::lookup_special;
@@ -137,6 +137,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     model_dir: &Path,
     system: Option<&str>,
     history: &[Turn],
+    budget: Option<ThinkBudget>,
     max_tokens: usize,
     temperature: f32,
     top_k: u32,
@@ -152,7 +153,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     // Leave headroom so the model can generate a reply before the sliding window
     // starts evicting the freshest prompt tokens.
     let reserve = (ctx_window / 4).max(8);
-    let seq = build_prompt(system, history, &c.merges, ctx_window, reserve);
+    let seq = build_prompt(system, history, budget, &c.merges, ctx_window, reserve);
     let input_tokens = seq.len();
     Ok(stream_generation(
         &mut c.session,

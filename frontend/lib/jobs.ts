@@ -52,6 +52,13 @@ export interface Job {
   stage: string | null
   // What the job produced: a model id, a benchmark run id, or a message id.
   ref_id: string | null
+  /**
+   * What the run produced, for a kind with no table of its own to read back from —
+   * a teaching run's stats, today. It is why a finished teaching run still draws its
+   * figures: the socket frame that carried them only reached whoever was watching
+   * live. Null for every other kind.
+   */
+  result: unknown
   error: string | null
   created_at: string
   started_at: string | null
@@ -113,7 +120,22 @@ export function benchmarkModelId(job: Job): string | null {
  */
 export function benchmarkSuiteOf(job: Job): BenchmarkSuite {
   const config = job.config as { suite?: BenchmarkSuite }
-  return config?.suite === "markup" ? "markup" : "language"
+  if (config?.suite === "markup") return "markup"
+  if (config?.suite === "assistant") return "assistant"
+  return "language"
+}
+
+/**
+ * The forced thinking budget a benchmark job was queued with, if any.
+ *
+ * Null is the unbudgeted run — each held-out conversation keeps the marker it was
+ * written with — which is what every benchmark queued before the sweep existed asked
+ * for, and what the switch being off still means.
+ */
+export function benchmarkBudgetOf(job: Job): Tier | null {
+  if (job.kind !== "benchmark") return null
+  const config = job.config as { budget?: Tier | null }
+  return config?.budget ?? null
 }
 
 /** The chat a chat job replies in, so the row can link back to the conversation. */
@@ -187,11 +209,24 @@ export function queueTraining(config: TrainConfig): Promise<Job> {
   return enqueue("train", config)
 }
 
+/**
+ * Queues a benchmark, or a whole thinking-budget sweep.
+ *
+ * With `splitThinking` the backend queues **three** jobs — one per budget, sharing an
+ * `id_series` — and returns the first. The other two are on the board; the series id
+ * is what ties them together on the chart. Refused by the server for the language
+ * suite, whose stages render no chat prompt for a marker to attach to.
+ */
 export function queueBenchmark(
   modelId: string,
-  suite: BenchmarkSuite = "language"
+  suite: BenchmarkSuite = "language",
+  splitThinking = false
 ): Promise<Job> {
-  return enqueue("benchmark", { id_model: modelId, suite })
+  return enqueue("benchmark", {
+    id_model: modelId,
+    suite,
+    split_thinking: splitThinking,
+  })
 }
 
 /** Config for an auto-labelling run. Mirrors the backend `AutolabelRequest`. */
@@ -399,13 +434,24 @@ export function queueTeach(config: TeachConfig): Promise<Job> {
 /** One model call in a teaching run, as it completes. */
 export interface TeachCall {
   call: number
-  triples_kept: number
+  /** Conversations this call wrote: 0 to 3, one per surviving answer. */
   answers_kept: number
+  /** How many of the three tiers those answers covered. 3 is a real triple. */
+  tiers_covered: number
   duplicates: number
   rejected: [string, number][]
   elapsed_ms: number
   tokens_generated: number
-  total: number
+  /**
+   * Running totals in the three units the run has. `total_questions` is what
+   * `target` bounds; the tier bars add up to `total_answers`. Reporting only the
+   * first of these is what made "45 triples" sit beside bars summing to 75.
+   */
+  total_questions: number
+  total_answers: number
+  total_complete: number
+  /** Questions by tiers covered: `[one tier, two tiers, all three]`. */
+  total_by_tiers: number[]
   target: number
 }
 
@@ -422,7 +468,7 @@ export interface AnsweredTier {
   reply_preview: string
 }
 
-/** One question answered at all three budgets. */
+/** One question and the answers that survived for it — up to three, often fewer. */
 export interface TeachAccepted {
   group: string
   opener: string
@@ -431,7 +477,19 @@ export interface TeachAccepted {
 
 /** What a teaching run did, emitted once at the end. */
 export interface TeachReport {
-  triples: number
+  /** Questions with at least one answer kept. What `count` bounds and stops on. */
+  questions: number
+  /** Questions whose answers covered all three tiers — actual triples. */
+  complete_triples: number
+  /** Conversations written; the sum of `per_tier`, in the bars' own unit. */
+  answers: number
+  /**
+   * Questions by how many distinct budgets they covered: `[one, two, all three]`.
+   * Sums to `questions`; its last entry is `complete_triples`. The *shape* is the
+   * diagnosis — a run that is mostly one-tier questions is failing differently from
+   * one that is mostly two-tier, and the second is a nudge away from working.
+   */
+  questions_by_tiers: number[]
   calls: number
   duplicates: number
   rejected: [string, number][]

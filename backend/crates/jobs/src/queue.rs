@@ -35,6 +35,15 @@ use sqlx::PgPool;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
+// How many distinct prompts to read for every one actually wanted.
+//
+// `distinct_user_prompts` limits in SQL and `gather::choose_prompts` filters
+// afterwards, so the two have to be sized apart or the filter eats into the batch and
+// the shortfall is made up from the 24 hard-coded seeds. Measured on the current
+// history, ~80% of stored user turns pass the filter; 4x leaves room for a history
+// with many more follow-ups than that.
+const PROMPT_OVERFETCH: i64 = 4;
+
 use labeling::autolabel;
 use db;
 use db::job::{JobKind, JobLane, JobStatus};
@@ -79,10 +88,10 @@ pub enum Snapshot {
     // snapshot carries the whole accumulation, like training's does.
     Synth(Arc<Mutex<SynthState>>),
     // The local-teacher run. Its own shape rather than reusing `Synth`'s because
-    // the unit is a *triple*, not a conversation, and the number that says whether
-    // the run is working is the per-tier split — a run can accept a thousand
-    // triples and put every answer in one bucket, which `Synth`'s counters have no
-    // field to show.
+    // the unit is a *question with up to three answers*, not a conversation, and the
+    // number that says whether the run is working is the per-tier split — a run can
+    // accept a thousand questions and put every answer in one bucket, which `Synth`'s
+    // counters have no field to show.
     Teach(Arc<Mutex<TeachState>>),
 }
 
@@ -112,7 +121,16 @@ pub struct TeachState {
     // only way to see whether the tiers actually differ by reasoning depth rather
     // than by answer quality.
     pub accepted: Vec<synth::teach::AcceptedTriple>,
-    pub triples: usize,
+    // Three counts, not one, because the run has three units and reporting only the
+    // first one made the tier bars look like they contradicted it: `questions` is
+    // what `target` bounds, `answers` is what the bars add up to, and
+    // `complete_triples` is how many questions got all three tiers — the unit the
+    // format is actually for.
+    pub questions: usize,
+    pub answers: usize,
+    pub complete_triples: usize,
+    // Questions by tiers covered — the distribution behind `complete_triples`.
+    pub by_tiers: Vec<usize>,
     pub target: usize,
     pub duplicates: usize,
     // Answers filed per tier, in `Tier::ALL` order. The headline number: three
@@ -183,7 +201,10 @@ impl Live {
                     "fraction": st.fraction,
                     "reports": st.reports,
                     "accepted": st.accepted,
-                    "triples": st.triples,
+                    "questions": st.questions,
+                    "answers": st.answers,
+                    "complete_triples": st.complete_triples,
+                    "by_tiers": st.by_tiers,
                     "target": st.target,
                     "duplicates": st.duplicates,
                     "per_tier": st.per_tier,
@@ -604,10 +625,36 @@ impl Queue {
         // line doesn't sit in the benchmark history showing "running" for hours.
         let id_run = Uuid::new_v4();
         let train_tokens = db::model::train_tokens(&model);
+        // The forced thinking budget, and the sweep this run belongs to. Read the
+        // same permissive way as `suite`: absent means the unbudgeted run every
+        // config written before the switch existed asked for, so an old row still
+        // means what it meant. An unparseable value is refused rather than silently
+        // dropped — a sweep missing its middle point is worse than a failed job.
+        let budget = match job.config.get("budget") {
+            Some(value) if !value.is_null() => {
+                match serde_json::from_value::<llm::chat_template::ThinkBudget>(value.clone()) {
+                    Ok(budget) => Some(budget),
+                    Err(_) => {
+                        return Done::failed(
+                            "stored benchmark config names an unknown thinking budget".to_string(),
+                        );
+                    }
+                }
+            }
+            _ => None,
+        };
+        let id_series = job
+            .config
+            .get("id_series")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
         let suite_version = match suite {
             db::benchmark::BenchmarkSuite::Language => llm::eval::SCORE_VERSION as i32,
             db::benchmark::BenchmarkSuite::Markup => {
                 llm::eval::markup::MARKUP_SCORE_VERSION as i32
+            }
+            db::benchmark::BenchmarkSuite::Assistant => {
+                llm::eval::ASSISTANT_SCORE_VERSION as i32
             }
         };
         if let Err(e) = db::benchmark::create(
@@ -618,6 +665,8 @@ impl Queue {
             train_tokens,
             suite,
             suite_version,
+            budget.map(|b| b.as_str()),
+            id_series,
         )
         .await
         {
@@ -642,7 +691,11 @@ impl Queue {
         let worker_cancel = cancel.clone();
         let outcome = self
             .spawn_worker(job.id_job, progress_rx, move || {
-                let config = llm::eval::EvalConfig::new(model_dir, &storage::eval_dir());
+                let mut config = llm::eval::EvalConfig::new(model_dir, &storage::eval_dir());
+                // Renders every held-out conversation under one marker. Reaches the
+                // assistant suite entirely and the markup suite's conversation
+                // stages; the language suite renders no chat prompt and ignores it.
+                config.budget = budget;
                 let on_progress: llm::eval::ProgressCallback = Box::new(move |stage, fraction| {
                     {
                         let mut st = lock(&reporting);
@@ -658,7 +711,7 @@ impl Queue {
                         serde_json::json!({ "stage": stage, "fraction": fraction }),
                     ));
                 });
-                // Two suites, one worker: both return a `Serialize` report and the
+                // Three suites, one worker: each returns a `Serialize` report and the
                 // terminal handling below only reads `score` out of the serialized
                 // form, so the difference is erased here rather than duplicated
                 // through the whole run/complete/fail path.
@@ -669,6 +722,10 @@ impl Queue {
                     }
                     db::benchmark::BenchmarkSuite::Markup => {
                         llm::eval::run_markup(&config, on_progress, Some(worker_cancel))
+                            .map(|report| report.map(|r| serde_json::to_value(&r)))
+                    }
+                    db::benchmark::BenchmarkSuite::Assistant => {
+                        llm::eval::run_assistant(&config, on_progress, Some(worker_cancel))
                             .map(|report| report.map(|r| serde_json::to_value(&r)))
                     }
                 }
@@ -691,7 +748,29 @@ impl Queue {
                     }
                 };
                 let score = value.get("score").and_then(|s| s.as_f64());
-                if let Err(e) = db::benchmark::complete(&self.pool, id_run, score, &value).await {
+                // Read the same generic way as the score, so all three suites are
+                // still one path here — every report carries `tokens_used`.
+                let eval_tokens = value
+                    .get("tokens_used")
+                    .and_then(|t| t.as_u64())
+                    .map(|t| t as i64);
+                // Absent on a language report, which scores no conversations at all —
+                // null rather than zero, so the chart can tell "not applicable" from
+                // "nothing to score".
+                let eval_conversations = value
+                    .get("conversations")
+                    .and_then(|t| t.as_u64())
+                    .map(|t| t as i64);
+                if let Err(e) = db::benchmark::complete(
+                    &self.pool,
+                    id_run,
+                    score,
+                    eval_tokens,
+                    eval_conversations,
+                    &value,
+                )
+                .await
+                {
                     eprintln!("[queue] could not store benchmark report: {}", e);
                     return Done::failed("the benchmark finished but its report could not be stored".to_string());
                 }
@@ -764,8 +843,15 @@ impl Queue {
         // history too thin to fill the batch should top up from the seed list rather
         // than run short. Both were true here — the catalogue this replaced was
         // generated substantially against sentence stubs.
-        let history = match db::message::distinct_user_prompts(&self.pool, request.max_prompts)
-            .await
+        // Over-fetched on purpose: the limit lands in SQL, *before*
+        // `is_standalone_prompt` drops follow-ups and sentence fragments, so asking
+        // for exactly `max_prompts` returns fewer usable ones than that and the batch
+        // tops up from the 24 hard-coded seeds instead of from real history.
+        let history = match db::message::distinct_user_prompts(
+            &self.pool,
+            request.max_prompts.saturating_mul(PROMPT_OVERFETCH),
+        )
+        .await
         {
             Ok(prompts) => prompts,
             Err(e) => {
@@ -902,7 +988,12 @@ impl Queue {
         // here, on the async side that owns the pool; the worker below is a blocking
         // CUDA thread and never touches it.
         let batch = request.batch.clamp(1, 64);
-        let history = match db::message::distinct_user_prompts(&self.pool, batch).await {
+        let history = match db::message::distinct_user_prompts(
+            &self.pool,
+            (batch as i64).saturating_mul(PROMPT_OVERFETCH),
+        )
+        .await
+        {
             Ok(prompts) => prompts,
             Err(e) => {
                 eprintln!("[queue] gather prompt lookup failed: {e}");
@@ -1072,6 +1163,7 @@ impl Queue {
         let frame_tx = tx.clone();
         let worker_cancel = cancel.clone();
         let system = request.system.clone();
+        let budget = request.budget;
         let outcome = self
             .spawn_worker(job.id_job, progress_rx, move || {
                 // A chat turn has no measurable total, so it reports one tick to
@@ -1084,6 +1176,7 @@ impl Queue {
                     &model_dir,
                     system.as_deref(),
                     &history,
+                    budget,
                     MAX_TOKENS,
                     TEMPERATURE,
                     TOP_K,
@@ -1341,7 +1434,10 @@ impl Queue {
             fraction: 0.0,
             reports: Vec::new(),
             accepted: Vec::new(),
-            triples: 0,
+            questions: 0,
+            answers: 0,
+            complete_triples: 0,
+            by_tiers: vec![0, 0, 0],
             target: request.count,
             duplicates: 0,
             per_tier: Vec::new(),
@@ -1391,7 +1487,10 @@ impl Queue {
                     {
                         let mut st = lock(&report_state);
                         st.reports.push(report.clone());
-                        st.triples = report.total;
+                        st.questions = report.total_questions;
+                        st.answers = report.total_answers;
+                        st.complete_triples = report.total_complete;
+                        st.by_tiers = report.total_by_tiers.clone();
                         st.duplicates = report.duplicates;
                     }
                     // `teach_call`, not `call`: the synth path already owns that
@@ -1432,7 +1531,16 @@ impl Queue {
         let fraction = lock(&state).fraction;
         match outcome {
             Ok(Ok(Some(stats))) => {
-                emit(&tx, frame("teach", serde_json::json!(stats)));
+                let value = serde_json::json!(stats);
+                // Persisted as well as emitted. The frame reaches whoever is watching
+                // *now*; without the row, reopening a finished run showed an empty
+                // page, because a teaching run has no domain table of its own to read
+                // back from. A failure to store is not a failure of the run — the
+                // conversations are already on disk — so it is logged and swallowed.
+                if let Err(e) = db::job::set_result(&self.pool, job.id_job, &value).await {
+                    eprintln!("[queue] could not store the teaching report: {}", e);
+                }
+                emit(&tx, frame("teach", value));
                 Done::done()
             }
             // A cancelled run keeps what it wrote — each answer is appended as it is
@@ -1551,6 +1659,12 @@ pub struct ChatRequest {
     // runs rather than failing on a missing id.
     pub id_user: Option<Uuid>,
     pub system: Option<String>,
+    // How long the model should reason before answering, as picked in the
+    // composer. `None` — the "Auto" choice, and every row queued before budgets
+    // existed — renders no marker, which is the unbudgeted prompt the model has
+    // always been given.
+    #[serde(default)]
+    pub budget: Option<llm::chat_template::ThinkBudget>,
 }
 
 // How far a cancelled training run had got, for the terminal row.
@@ -1729,7 +1843,7 @@ async fn export_preference_data(pool: &PgPool) -> Result<(usize, usize), String>
     }
 
     for (dir, body) in [(&train_dir, train), (&heldout_dir, heldout)] {
-        let path = dir.join("feedback.jsonl");
+        let path = dir.join(storage::HUMAN_FEEDBACK_FILE);
         std::fs::write(&path, body).map_err(|e| format!("could not write {path:?}: {e}"))?;
     }
     Ok((train_n, heldout_n))

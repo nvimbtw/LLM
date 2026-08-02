@@ -1,0 +1,18 @@
+-- What a job produced, for the kinds whose output has nowhere else to live.
+--
+-- A benchmark writes `benchmark_runs`, a training run writes `models` — those have
+-- their own tables and their pages read from them. A **teaching run has no such
+-- table**: its `TeachStats` were emitted once as a socket frame at the end of the
+-- run and then dropped, so the job page was fully populated while the run was live
+-- and empty forever afterwards. Every figure on it — the budget split, the triple
+-- completeness, the rejection tally — existed only for whoever happened to be
+-- watching.
+--
+-- Deliberately a generic `result` on `jobs` rather than a `teach_runs` table: the
+-- data is a summary read once by one page, not something to query across runs, and
+-- a table per job kind is a schema per panel. A kind with real cross-run questions
+-- to answer (a benchmark, a model) still earns its own table — this is for the
+-- summaries that only ever describe their own run.
+--
+-- Null for every job queued before this, and for every kind that does not write one.
+ALTER TABLE jobs ADD COLUMN result JSONB;

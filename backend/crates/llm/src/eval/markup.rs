@@ -439,6 +439,7 @@ fn render(conversation: &Conversation, merges: &[((u32, u32), u32)]) -> Option<(
     Some(chat_template::build_training_example(
         conversation.system.as_deref(),
         &turns,
+        conversation.budget,
         merges,
     ))
 }
@@ -457,6 +458,7 @@ pub fn reply_prompt(
     let ids = chat_template::build_prompt(
         conversation.system.as_deref(),
         &history,
+        conversation.budget,
         merges,
         ctx_window,
         reserve,

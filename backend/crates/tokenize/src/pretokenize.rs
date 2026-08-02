@@ -51,6 +51,13 @@ pub const SPECIAL_TOKENS: &[(&str, char)] = &[
     ("<|/warn|>", '\u{E02E}'),
     ("<|reply|>", '\u{E02F}'),
     ("<|/reply|>", '\u{E030}'),
+    // How long the assistant should reason for, as one token sitting immediately
+    // before the `<|assistant|>` it governs — see `llm::chat_template::ThinkBudget`.
+    // Unpaired and input-only: the model conditions on one of these and is never
+    // trained to emit it, so only the embedding row has to be learned.
+    ("<|think:low|>", '\u{E031}'),
+    ("<|think:med|>", '\u{E032}'),
+    ("<|think:high|>", '\u{E033}'),
 ];
 
 pub fn lookup_special(ch: char) -> Option<&'static str> {
