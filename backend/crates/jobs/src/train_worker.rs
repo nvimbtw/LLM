@@ -406,6 +406,8 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
                     "conversations": s.conversations,
                     "total_tokens": s.total_tokens,
                     "trainable_tokens": s.trainable_tokens,
+                    "skipped_too_long": s.skipped_too_long,
+                    "replay_tokens": s.replay_tokens,
                     "progress": 1.0,
                     "done": true,
                 }),

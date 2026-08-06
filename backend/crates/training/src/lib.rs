@@ -1331,9 +1331,13 @@ pub struct SftConversation {
     budget: Option<llm::chat_template::ThinkBudget>,
 }
 
-// Summary of what the SFT build produced, for the dashboard + meta.json. The
-// trainable fraction is a useful sanity check — it should sit well under 50%
-// (most tokens are system/user context the model only conditions on).
+// Summary of what the SFT build produced, for the dashboard + meta.json.
+//
+// The trainable fraction is a useful sanity check, but read it against the data
+// rather than a fixed bar. It sat well under 50% while the set was conversations
+// written here, where most tokens were user context the model only conditions on;
+// on smol-smoltalk it is ~86%, because the replies are long against their prompts
+// and half of what remains is prose replay, which is trainable by design.
 #[derive(Debug, Clone, Serialize)]
 pub struct SftDatasetStats {
     pub conversations: usize,
@@ -1344,6 +1348,19 @@ pub struct SftDatasetStats {
     // means the tokenizer guard refused the replay, and the run is the
     // unanchored fine-tune that replay exists to prevent.
     pub replay_tokens: usize,
+    // Conversations refused for rendering past the base model's context window.
+    //
+    // SFT was the only builder without this guard — `build_kto_dataset` and
+    // `build_raft_dataset` have always had it — and it did not show while the SFT
+    // set was a couple of thousand conversations written against this model. An
+    // over-long conversation is not merely wasteful: it becomes a span in
+    // `sft_segments.json` longer than the window `run_sft_training` hands
+    // `sft_train`, so the run trains on a silently truncated example.
+    //
+    // Expect a small number. A large one means the import that produced `raw/sft/`
+    // is mis-tuned for this model's window, which is a data problem rather than
+    // something to absorb here — see `scripts/prepare_smoltalk.py`.
+    pub skipped_too_long: usize,
     // Every marker the fine-tuned model will have trained on: this corpus's,
     // unioned with the base's own record. The union is what makes the record
     // compose down a pretrain → SFT → KTO chain — without it, a KTO run would read
@@ -1442,6 +1459,7 @@ pub enum ChatDestination {
     Sft,
     Eval,
 }
+
 
 // FNV-1a over the conversation's content.
 //
@@ -1587,6 +1605,7 @@ pub fn export_chat_eval_set() -> io::Result<usize> {
         .filter(|c| chat_destination(c) == ChatDestination::Eval)
         .collect();
 
+
     let dir = storage::eval_dir().join("chat");
     reset_dir(&dir)?;
     if held_out.is_empty() {
@@ -1729,10 +1748,16 @@ pub fn build_sft_dataset(
         ));
     }
 
+    // The window every rendered conversation has to fit. Read off the base model,
+    // because SFT is a fine-tune and the only window that matters is the one the
+    // weights were built for.
+    let ctx = base_ctx_window(base_model_dir);
+
     let mut corpus: Vec<u32> = Vec::new();
     let mut mask: Vec<u8> = Vec::new();
     let mut spans: Vec<SftSpan> = Vec::new();
     let mut conversations = 0usize;
+    let mut skipped_too_long = 0usize;
 
     for conv in share {
         let turns = conversation_turns(conv)?;
@@ -1748,6 +1773,13 @@ pub fn build_sft_dataset(
             reasoning,
         );
         if ids.is_empty() {
+            continue;
+        }
+        if ids.len() > ctx {
+            // Not merely wasteful: this would become a span in `sft_segments.json`
+            // longer than the window `sft_train` is given, so the run would train on
+            // a silently truncated example. The same guard KTO and RAFT already have.
+            skipped_too_long += 1;
             continue;
         }
 
@@ -1788,8 +1820,24 @@ pub fn build_sft_dataset(
         total_tokens: corpus.len(),
         trainable_tokens,
         replay_tokens,
+        skipped_too_long,
         special_ids_seen: markers_after_training(base_model_dir, &corpus),
     })
+}
+
+/// The context window a base model was built for, from its own `meta.json`.
+///
+/// Best-effort, and `usize::MAX` when it cannot be read — an unknown window means
+/// there is no basis for calling anything too long, and refusing every conversation
+/// would be a far worse failure than keeping one that overruns. Every model this
+/// has ever written records it; the fallback is for a hand-assembled directory.
+fn base_ctx_window(base_model_dir: &Path) -> usize {
+    fs::read_to_string(base_model_dir.join("meta.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|meta| meta.get("config")?.get("ctx_window")?.as_u64())
+        .map(|ctx| ctx as usize)
+        .unwrap_or(usize::MAX)
 }
 
 // ── Prose replay ────────────────────────────────────────────────────────────
@@ -1864,34 +1912,61 @@ fn append_prose_replay(
     let mut order: Vec<usize> = (0..segments.documents.len()).collect();
     shuffle_indices(&mut order, budget as u64);
 
+    // Breadth first, then depth. One pass takes at most `MAX_REPLAY_DOC_TOKENS` from
+    // each document, so replay is a wide sample of the corpus before it is a deep one;
+    // a further pass takes the *next* slice of each, at a fresh offset.
+    //
+    // The passes exist because one is not enough any more. A pass over the 11,104
+    // documents on disk yields 7.1M tokens, which was ample against an SFT set of a
+    // couple of thousand conversations and is 14% of the budget against 454,000 —
+    // the fine-tune would have been anchored at a seventh of the intended strength,
+    // silently, with `replay_tokens` the only sign and nothing to compare it to.
+    //
+    // Bounded: `offset` grows by `MAX_REPLAY_DOC_TOKENS` every pass, so every
+    // document is exhausted in finite time and `progressed` ends the loop when they
+    // all are — replay stops short of its budget rather than repeating the corpus,
+    // because the same tokens twice is not more of the old distribution.
     let mut added = 0usize;
-    for index in order {
-        if added >= budget {
+    let mut pass = 0usize;
+    while added < budget {
+        let offset = pass * MAX_REPLAY_DOC_TOKENS;
+        let mut progressed = false;
+        for &index in &order {
+            if added >= budget {
+                break;
+            }
+            let doc = &segments.documents[index];
+            let Some(left) = doc.len.checked_sub(offset) else {
+                continue;
+            };
+            let want = left.min(MAX_REPLAY_DOC_TOKENS).min(budget - added);
+            // A one-token span has nothing to predict and would be a chunk the
+            // training loop skips; not worth a document boundary.
+            if want < 2 {
+                continue;
+            }
+            let span = tokenize::bpe::load_corpus_span(&prose_path, doc.start + offset, want)?;
+            if span.len() < 2 {
+                continue;
+            }
+            progressed = true;
+
+            if !corpus.is_empty() {
+                corpus.extend(eot);
+                mask.extend(std::iter::repeat_n(0u8, eot.len()));
+            }
+            spans.push(SftSpan { start: corpus.len(), len: span.len() });
+            corpus.extend(span.iter().map(|&t| u32::from(t)));
+            // Every position trains: this is ordinary language modelling, the
+            // objective the tokens were pretrained under. The masking convention is a
+            // property of chat examples, not of the file format.
+            mask.extend(std::iter::repeat_n(1u8, span.len()));
+            added += span.len();
+        }
+        if !progressed {
             break;
         }
-        let doc = &segments.documents[index];
-        let want = doc.len.min(MAX_REPLAY_DOC_TOKENS).min(budget - added);
-        // A one-token span has nothing to predict and would be a chunk the training
-        // loop skips; not worth a document boundary.
-        if want < 2 {
-            continue;
-        }
-        let span = tokenize::bpe::load_corpus_span(&prose_path, doc.start, want)?;
-        if span.len() < 2 {
-            continue;
-        }
-
-        if !corpus.is_empty() {
-            corpus.extend(eot);
-            mask.extend(std::iter::repeat_n(0u8, eot.len()));
-        }
-        spans.push(SftSpan { start: corpus.len(), len: span.len() });
-        corpus.extend(span.iter().map(|&t| u32::from(t)));
-        // Every position trains: this is ordinary language modelling, the objective
-        // the tokens were pretrained under. The masking convention is a property of
-        // chat examples, not of the file format.
-        mask.extend(std::iter::repeat_n(1u8, span.len()));
-        added += span.len();
+        pass += 1;
     }
 
     Ok(added)

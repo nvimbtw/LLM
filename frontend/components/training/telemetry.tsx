@@ -246,6 +246,11 @@ export function Telemetry({
           },
           { label: "Total tokens", value: compact(tokenize.total_tokens) },
           { label: "Trainable", value: compact(tokenize.trainable_tokens) },
+          // Prose mixed in from the base model's pretraining corpus. Shown
+          // because 0 is the failure that looks like success: it means the
+          // tokenizer guard refused replay and the run is the unanchored
+          // fine-tune that trades language ability for the fine-tune's register.
+          { label: "Replay", value: compact(tokenize.replay_tokens) },
         ]
       : [
           { label: "Files", value: compact(tokenize.files) },

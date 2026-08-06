@@ -108,6 +108,13 @@ export interface TokenizeStats {
   conversations: number
   total_tokens: number
   trainable_tokens: number
+  // Prose tokens mixed in from the base model's pretraining corpus, all trainable.
+  // 0 means the tokenizer guard refused replay — the fine-tune has nothing holding
+  // it to prose, which is catastrophic forgetting with no warning attached.
+  replay_tokens: number
+  // Conversations refused for rendering past the base model's context window.
+  // Small is expected; large means the SFT set was prepared for a different window.
+  skipped_too_long: number
   // KTO's phase 1 counts rated *examples* rather than conversations, and reports
   // the split it found. Same frame, one more name for "how many".
   examples: number
