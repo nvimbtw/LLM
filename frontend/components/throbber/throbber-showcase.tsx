@@ -7,13 +7,31 @@ import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 
 const MODES: { mode: ThrobberMode; description: string }[] = [
-  { mode: "idle", description: "At rest. The rule a page already has, barely breathing." },
-  { mode: "loading", description: "A full-width sweep, decelerating into each turn." },
-  { mode: "thinking", description: "Hovering near centre, drifting. Undecided, never cyclic." },
-  { mode: "generating", description: "Advancing steadily, inking the rule behind it." },
-  { mode: "tool", description: "Snapping between fixed stops and holding. Mechanical." },
-  { mode: "training", description: "Repeated passes, the rule building weight and releasing." },
-  { mode: "benchmarking", description: "Stepping between graduations, dwelling on each reading." },
+  { mode: "idle", description: "The shape is held. Present, not working." },
+  {
+    mode: "loading",
+    description: "The whole figure turns and reshapes, evenly.",
+  },
+  {
+    mode: "thinking",
+    description: "A two-ring band of colour scans outward.",
+  },
+  {
+    mode: "generating",
+    description: "Quick, with a swell running out through the rings.",
+  },
+  {
+    mode: "tool",
+    description: "Every ring flashes to the second colour at once.",
+  },
+  {
+    mode: "training",
+    description: "The whole figure breathes, every ring together.",
+  },
+  {
+    mode: "benchmarking",
+    description: "One ring at a time takes the colour and hands it on.",
+  },
 ]
 
 export function ThrobberShowcase() {
@@ -23,8 +41,13 @@ export function ThrobberShowcase() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Panel title="Morph" description="Switch state — the carriage travels, it never jumps">
-        <Throbber mode={mode} className="h-10 w-full" />
+      <Panel
+        title="Morph"
+        description="Switch state — the figure changes pace, it never re-starts"
+      >
+        <div className="flex justify-center py-2">
+          <Throbber mode={mode} />
+        </div>
         <div className="mt-5 flex flex-wrap gap-2">
           {MODES.map(({ mode: option }) => (
             <button
@@ -35,7 +58,7 @@ export function ThrobberShowcase() {
                 "rounded-full border px-3 py-1 text-xs capitalize transition-colors",
                 option === mode
                   ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border/60 text-muted-foreground hover:text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground"
               )}
             >
               {option}
@@ -44,14 +67,18 @@ export function ThrobberShowcase() {
         </div>
       </Panel>
 
-      <div className="flex flex-col gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60">
+      <div className="flex flex-col gap-px overflow-hidden rounded-lg border border-border bg-border/60">
         {MODES.map(({ mode: option, description }) => (
           <div key={option} className="bg-background px-5 py-4">
             <div className="flex items-baseline justify-between gap-4">
               <span className="text-sm font-medium capitalize">{option}</span>
-              <span className="text-[11px] text-muted-foreground/70">{description}</span>
+              <span className="text-xs text-muted-foreground">
+                {description}
+              </span>
             </div>
-            <Throbber mode={option} className="mt-3 h-7 w-full" />
+            <div className="mt-3 flex justify-center">
+              <Throbber mode={option} />
+            </div>
           </div>
         ))}
       </div>

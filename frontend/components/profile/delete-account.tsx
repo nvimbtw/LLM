@@ -22,11 +22,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 
-export function DeleteAccount({
-  onDelete,
-}: {
-  onDelete: () => Promise<void>
-}) {
+export function DeleteAccount({ onDelete }: { onDelete: () => Promise<void> }) {
   const [isDeleting, setDeleting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
@@ -36,7 +32,9 @@ export function DeleteAccount({
     try {
       await onDelete()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to delete your account.")
+      setError(
+        err instanceof Error ? err.message : "Unable to delete your account."
+      )
       setDeleting(false)
     }
   }

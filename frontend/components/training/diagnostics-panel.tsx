@@ -40,7 +40,7 @@ import {
 } from "@/components/training/chart-theme"
 import { EmbeddingGlobe } from "@/components/training/embedding-globe"
 import { Figure, FigurePlaceholder } from "@/components/training/stat-run"
-import type { DiagPoint } from "@/lib/training-socket"
+import type { DiagPoint } from "@/lib/training"
 
 // A positive-only reading for a log axis: non-finite or ≤0 values become null so
 // the point is dropped rather than breaking the log scale (recharts can't place 0
@@ -190,7 +190,11 @@ function TraceChart({
 // grid stays legible over a long run.
 function ActivationHeatmap({ diag }: { diag: DiagPoint[] }) {
   const cols = React.useMemo(
-    () => sample(diag.filter((d) => d.act_hist?.length), 64),
+    () =>
+      sample(
+        diag.filter((d) => d.act_hist?.length),
+        64
+      ),
     [diag]
   )
   const bins = cols[0]?.act_hist.length ?? 0
@@ -215,12 +219,14 @@ function ActivationHeatmap({ diag }: { diag: DiagPoint[] }) {
   }, [cols, bins, max])
 
   if (bins === 0) {
-    return <FigurePlaceholder className="h-64">No histogram yet…</FigurePlaceholder>
+    return (
+      <FigurePlaceholder className="h-64">No histogram yet…</FigurePlaceholder>
+    )
   }
 
   return (
     <div className="flex h-64 gap-2">
-      <div className="flex flex-col justify-between py-0.5 text-[10px] text-muted-foreground tabular-nums">
+      <div className="flex flex-col justify-between py-0.5 text-xs text-muted-foreground tabular-nums">
         <span>+4σ</span>
         <span>0</span>
         <span>−4σ</span>
@@ -283,7 +289,13 @@ const easeInOutCubic = (p: number): number =>
 // two arrows tracks their similarity. Hand-rolled square SVG (recharts' scatter can't
 // draw origin-anchored arrows); the arrows tween between frames so the geometry
 // morphs smoothly. PC axes are arbitrary in sign/scale (labelled, not ticked).
-function EmbeddingBiplot({ frames, steps }: { frames: Pt[][]; steps: number[] }) {
+function EmbeddingBiplot({
+  frames,
+  steps,
+}: {
+  frames: Pt[][]
+  steps: number[]
+}) {
   const aligned = React.useMemo(() => alignFrames(frames), [frames])
   // One radius across all frames so the axes don't rescale mid-animation — the
   // arrows visibly grow as the embeddings pull away from the mean over training.
@@ -392,12 +404,38 @@ function EmbeddingBiplot({ frames, steps }: { frames: Pt[][]; steps: number[] })
         preserveAspectRatio="xMidYMid meet"
         className="block aspect-square w-full rounded-md border"
       >
-        <line x1={M} y1={C} x2={S - M} y2={C} stroke="var(--border)" strokeWidth={0.4} />
-        <line x1={C} y1={M} x2={C} y2={S - M} stroke="var(--border)" strokeWidth={0.4} />
-        <text x={S - M} y={C - 1.6} textAnchor="end" fontSize={3.4} fill="var(--muted-foreground)">
+        <line
+          x1={M}
+          y1={C}
+          x2={S - M}
+          y2={C}
+          stroke="var(--border)"
+          strokeWidth={0.4}
+        />
+        <line
+          x1={C}
+          y1={M}
+          x2={C}
+          y2={S - M}
+          stroke="var(--border)"
+          strokeWidth={0.4}
+        />
+        <text
+          x={S - M}
+          y={C - 1.6}
+          textAnchor="end"
+          fontSize={3.4}
+          fill="var(--muted-foreground)"
+        >
           PC1 →
         </text>
-        <text x={C + 1.6} y={M + 3.2} textAnchor="start" fontSize={3.4} fill="var(--muted-foreground)">
+        <text
+          x={C + 1.6}
+          y={M + 3.2}
+          textAnchor="start"
+          fontSize={3.4}
+          fill="var(--muted-foreground)"
+        >
           PC2 ↑
         </text>
 
@@ -624,7 +662,11 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
             caption="Activation RMS of the residual stream entering each block"
             aside={ramp}
           >
-            <TraceChart rows={actRows} traces={layerTraces} domain={[0, "auto"]} />
+            <TraceChart
+              rows={actRows}
+              traces={layerTraces}
+              domain={[0, "auto"]}
+            />
           </Figure>
 
           <Figure caption="Activation distribution over time — deepest residual stream, z-scored (colour = density)">
@@ -666,7 +708,10 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
               config={embConfig}
               className="aspect-auto h-64 w-full"
             >
-              <ComposedChart data={embRows} margin={{ left: 4, right: 4, top: 4 }}>
+              <ComposedChart
+                data={embRows}
+                margin={{ left: 4, right: 4, top: 4 }}
+              >
                 <CartesianGrid {...gridProps} />
                 <XAxis
                   dataKey="step"
@@ -728,28 +773,34 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                 />
                 <p className="mx-auto mt-3 max-w-[440px] text-xs leading-relaxed text-muted-foreground">
                   Each arrow runs from the{" "}
-                  <span className="text-foreground">mean embedding</span> (centre) to
-                  a frequent token, in the plane of the top-2 principal components.{" "}
+                  <span className="text-foreground">mean embedding</span>{" "}
+                  (centre) to a frequent token, in the plane of the top-2
+                  principal components.{" "}
                   <span className="text-foreground">Direction</span> is the
                   token&apos;s embedding orientation,{" "}
-                  <span className="text-foreground">length</span> is how far it sits
-                  from the average, and the{" "}
-                  <span className="text-foreground">angle</span> between two arrows
-                  tracks their similarity. PC1 (→) and PC2 (↑) are the directions of
-                  greatest variance; their sign and scale are arbitrary.
+                  <span className="text-foreground">length</span> is how far it
+                  sits from the average, and the{" "}
+                  <span className="text-foreground">angle</span> between two
+                  arrows tracks their similarity. PC1 (→) and PC2 (↑) are the
+                  directions of greatest variance; their sign and scale are
+                  arbitrary.
                 </p>
               </div>
               <div>
-                <EmbeddingGlobe frames={diag.map((d) => d.emb_pca3)} variant="full" />
+                <EmbeddingGlobe
+                  frames={diag.map((d) => d.emb_pca3)}
+                  variant="full"
+                />
                 <p className="mx-auto mt-3 max-w-[440px] text-xs leading-relaxed text-muted-foreground">
                   The same tokens as an{" "}
                   <span className="text-foreground">icosphere</span>, adding{" "}
-                  <span className="text-foreground">PC3</span> as depth — each token
-                  sits on the sphere in the{" "}
-                  <span className="text-foreground">direction</span> its embedding
-                  points, and the surface is triangulated between them. Tokens that
-                  point alike sit close together; the gentle bulges track how far each
-                  sits from the average. Drag to orbit, or let it turn.
+                  <span className="text-foreground">PC3</span> as depth — each
+                  token sits on the sphere in the{" "}
+                  <span className="text-foreground">direction</span> its
+                  embedding points, and the surface is triangulated between
+                  them. Tokens that point alike sit close together; the gentle
+                  bulges track how far each sits from the average. Drag to
+                  orbit, or let it turn.
                 </p>
               </div>
             </div>

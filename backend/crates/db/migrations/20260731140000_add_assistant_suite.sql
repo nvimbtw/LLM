@@ -1,0 +1,21 @@
+-- A third benchmark: how good the model is at being an assistant.
+--
+-- The language suite measures whether the model can model English, and the markup
+-- suite whether it can drive its own harness. Neither measures the thing the
+-- post-train cycle is actually trying to move — whether the *replies* got better —
+-- and the instrument for that (`llm::eval::chat`, bits per assistant-reply token
+-- over the held-out conversations) had no suite of its own. It was bolted into the
+-- language suite as a reported-but-unscored field, which meant the one number the
+-- cycle cared about could only be read by parsing a report belonging to a different
+-- measurement.
+--
+-- Three suites is also what makes "is this model actually progressing" answerable.
+-- One blended number cannot say that a round bought better replies by losing
+-- English; three scores compared side by side can, which is why `jobs::cycle` now
+-- runs a vector test over all three rather than a threshold on one.
+--
+-- No backfill and no default change: existing rows are 'language' or 'markup' and
+-- stay so. Models benchmarked before this migration simply have no assistant run on
+-- record, which `jobs::cycle` reads as "not comparable on that suite" rather than as
+-- a zero.
+ALTER TYPE benchmark_suite ADD VALUE IF NOT EXISTS 'assistant';

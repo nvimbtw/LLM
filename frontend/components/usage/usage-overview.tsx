@@ -20,9 +20,9 @@ export function UsageOverview() {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
-        <Skeleton className="h-32 rounded-xl" />
-        <Skeleton className="h-80 rounded-xl" />
-        <Skeleton className="h-40 rounded-xl" />
+        <Skeleton className="h-32 rounded-lg" />
+        <Skeleton className="h-80 rounded-lg" />
+        <Skeleton className="h-40 rounded-lg" />
       </div>
     )
   }

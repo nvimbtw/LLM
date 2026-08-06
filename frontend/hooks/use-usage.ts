@@ -54,7 +54,10 @@ export function useUsage() {
         }
       })
       .catch((err) => {
-        if (active) setError(err instanceof Error ? err : new Error("Failed to load usage."))
+        if (active)
+          setError(
+            err instanceof Error ? err : new Error("Failed to load usage.")
+          )
       })
       .finally(() => {
         if (active) setIsLoading(false)

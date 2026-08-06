@@ -98,14 +98,92 @@ The chat WebSocket lives in `lib/chat-socket.ts` and follows this wire protocol:
 ```
 client → { token }                            (auth frame)
 server → { type: "ready" }
-client → { chat_id, content, model_id }       (chat_id null = new chat)
+client → { chat_id, content, model_id, system?, budget?,
+           temperature?, top_k?, top_p? }
+                                              (chat_id null = new chat)
+server → { type: "queued", job_id, chat_id, ahead }
 server → { type: "token", value }             (repeated)
 server → { type: "done", chat_id, id_message }
 server → { type: "error", message }
+client → { action: "cancel" }
 ```
 
-The training socket follows a similar pattern but broadcasts progress frames
-(`type: "progress"`) — see `lib/training-socket.ts`.
+A reply is a job on the GPU queue, so `queued` always arrives before the first
+token — with `ahead: 0` when the turn starts immediately, so there is one code path
+rather than two. Because the job outlives the socket, closing the tab no longer
+loses the reply: the runner persists it either way.
+
+`budget` is the composer's thinking-budget dropdown (`components/chat/budget-selector.tsx`)
+— `"low" | "med" | "high"`, matching the labels the SFT corpus is tagged with, since
+the string sent becomes the marker the model was trained under. **"Auto" is the
+absence of a budget, not a fourth value**: it is omitted from the frame entirely, so
+the backend renders no marker and the model is prompted exactly as it always was.
+Unlike `systemPrompt` it is *not* a setting — how hard you want the model to think is
+a property of the question, so it lives as composer state and rides through
+`PendingMessage` when a new chat navigates.
+
+`temperature` / `top_k` / `top_p` are the decoding knobs, and unlike `budget` they
+**are** settings (`lib/settings.ts`, rendered as sliders in the ⌘K modal) — how
+random you want decoding to be is a standing preference, not a property of one
+question. Each is omitted individually when unset or non-finite, and the backend
+(`routes/chat.rs::resolve_sampling`) then falls back to
+`llm::sample::SamplingParams::default()`. The route **rejects** an out-of-range
+value rather than clamping it, so slider bounds must stay inside the ranges it
+accepts: temperature 0.01–2.0, top-k 1–1000, top-p 0.0–1.0.
+
+### The jobs queue
+
+Everything that uses the GPU — training, benchmarks, chat turns — is a job. See
+`lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one socket, two
+subscriptions: the whole board, or one job's frames).
+
+- **Board events are nudges, not payloads.** The socket sends `{ type: "changed" }`
+  and the client refetches `GET /jobs`, so there is exactly one description of a job
+  rather than a REST shape and a socket shape that drift apart.
+- `hooks/use-jobs.ts` owns the board; `hooks/use-job.ts` owns one job — its durable
+  row plus whatever it is broadcasting. **Panels render from the row first and treat
+  live state as an enrichment**, because a queued or finished job has no frames at
+  all (the socket answers `inactive`).
+- Composers live at `/jobs/new/*` and are *only* forms: submitting queues a job and
+  hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>` seeds a
+  composer from a previous run's stored config.
+- **A chat turn has no job page.** It is queued from a conversation, never from the
+  jobs menu, and the conversation is where its reply belongs — so every row links
+  through `jobHref()` (`/chat/{id}` for a chat job, `/jobs/{id}` for everything
+  else) and `/jobs/{id}` for one redirects there.
+- **Queued is a state with a body, not an empty version of the finished one.**
+  Every non-chat kind renders `JobQueuedPanel` while it waits: the config recap,
+  its place in its lane's line, and what the run will do once it starts. Per-kind
+  panels therefore only have to handle running and terminal.
+- `ConfigRecap` is shared and switches on `job.kind`. A new kind adds its rows
+  there rather than growing a recap of its own.
+- `/benchmark` is history and analysis only — it no longer starts runs.
+- The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are how
+  a running job says what it is. Give **one** instance a changing `mode` so it morphs
+  between them as the queue advances rather than cutting. `NowBand` is that instance.
+
+### Throbber or dot
+
+`components/ui/throbber.tsx` is a **figure**, not an icon: five irregular rings,
+nested, drawn as contours of one shared field so they deform in sympathy rather than
+independently. It is one fixed size everywhere — `THROBBER_PX` (64px), which also
+fixes the ring radii and their spacing — and callers cannot resize it: `className` is
+for margin, placement and colour only. That is deliberate. It used to be sized per
+call site, and the result was a different figure in every row, none of which looked
+like the same object.
+
+So use it only where a figure belongs — somewhere the waiting *is* the subject, with
+room for it:
+
+- the chat thread (loading, and the thinking/generating status row),
+- the training hero corner (`Telemetry`),
+- the queue's now-band,
+- the benchmark empty state.
+
+Everywhere else — beside a line of text, inside a button, in a sidebar row — use
+`components/ui/running-dot.tsx`. Those places need the *fact* of activity, not
+something to look at. Don't reach for a third indicator: a lucide `Loader2` on a
+button is the thing `RunningDot` replaced.
 
 ### Scripts
 

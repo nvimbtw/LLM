@@ -8,8 +8,15 @@ import { AuthCard } from "./auth-card"
 import { AuthField } from "./auth-field"
 
 export function SignupForm() {
-  const { name, setName, password, setPassword, isSubmitting, error, onSubmit } =
-    useSignup()
+  const {
+    name,
+    setName,
+    password,
+    setPassword,
+    isSubmitting,
+    error,
+    onSubmit,
+  } = useSignup()
 
   return (
     <AuthCard

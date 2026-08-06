@@ -69,15 +69,26 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const value = React.useMemo(
-    () => ({ settings, setSetting, resetSettings, commandOpen, setCommandOpen }),
+    () => ({
+      settings,
+      setSetting,
+      resetSettings,
+      commandOpen,
+      setCommandOpen,
+    }),
     [settings, setSetting, resetSettings, commandOpen]
   )
 
-  return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
+  return (
+    <SettingsContext.Provider value={value}>
+      {children}
+    </SettingsContext.Provider>
+  )
 }
 
 export function useSettings(): SettingsContextValue {
   const ctx = React.useContext(SettingsContext)
-  if (!ctx) throw new Error("useSettings must be used within a SettingsProvider")
+  if (!ctx)
+    throw new Error("useSettings must be used within a SettingsProvider")
   return ctx
 }

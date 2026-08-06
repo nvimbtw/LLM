@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { toast } from "@/components/ui/toast"
 import { AuthField } from "@/components/auth/auth-field"
 
 export function ChangePasswordForm({
@@ -21,13 +22,12 @@ export function ChangePasswordForm({
   const [confirm, setConfirm] = React.useState("")
   const [isSubmitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [success, setSuccess] = React.useState(false)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     setError(null)
-    setSuccess(false)
 
+    // A mismatch is about the two fields in front of you, so it stays inline.
     if (password !== confirm) {
       setError("Passwords do not match.")
       return
@@ -38,9 +38,12 @@ export function ChangePasswordForm({
       await onSubmit(password)
       setPassword("")
       setConfirm("")
-      setSuccess(true)
+      toast.success("Password updated.")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to update password.")
+      toast.error(
+        "Couldn't update your password",
+        err instanceof Error ? err.message : "Something went wrong."
+      )
     } finally {
       setSubmitting(false)
     }
@@ -75,9 +78,6 @@ export function ChangePasswordForm({
             onChange={(e) => setConfirm(e.target.value)}
           />
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {success && (
-            <p className="text-sm text-muted-foreground">Password updated.</p>
-          )}
           <Button type="submit" className="self-start" disabled={isSubmitting}>
             {isSubmitting ? "Saving…" : "Update password"}
           </Button>

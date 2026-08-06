@@ -67,7 +67,10 @@ const STAGE_HUES: [number, number][] = [
 // `stage` selects the hue; `tWithinStage` (0 = first epoch of the stage → 1 = last)
 // sweeps lightness within it.
 export function lossStageColor(stage: number, tWithinStage: number): string {
-  const [hue, sat] = STAGE_HUES[((stage % STAGE_HUES.length) + STAGE_HUES.length) % STAGE_HUES.length]
+  const [hue, sat] =
+    STAGE_HUES[
+      ((stage % STAGE_HUES.length) + STAGE_HUES.length) % STAGE_HUES.length
+    ]
   return sequential(hue, sat, tWithinStage)
 }
 
@@ -112,6 +115,52 @@ export const MUTED_SERIES = "var(--muted-foreground)"
 // Embedding-anisotropy figure: one blue hue (`--chart-3`) for the mean line and
 // its p5–p95 band fill.
 export const EMB_COLOR = "var(--chart-3)"
+
+// ── Preference catalogue figures ────────────────────────────────────────────
+// Approved vs rejected is the one *polarity* pair in the app: two opposed classes,
+// not a progression and not arbitrary categories. Two rules govern it.
+//
+//   1. **Not red/green.** The obvious good/bad pair is the classic colourblind
+//      failure — the site's own olive `--chart-2` against rose `--chart-4` measures
+//      ΔE 5.8 under deuteranopia, well under the 8 floor, i.e. one in twelve men
+//      would read the two series as one. Blue/amber is the canonical CVD-safe
+//      opposition and measures ΔE 29.4 (protan) / 30.1 (tritan) instead.
+//   2. **Dark mode is selected, not flipped.** The dark band is tighter
+//      (OKLCH L 0.48–0.67 vs 0.43–0.77), so the light steps sit outside it and
+//      lightening them by rule would fail the chroma floor. These are their own
+//      steps, validated against the dark surface #282727.
+//
+// Both pairs pass all six checks of the dataviz validator (lightness band, chroma
+// floor, CVD separation, normal-vision floor, contrast vs surface). Re-run it
+// before changing either value:
+//
+//   node scripts/validate_palette.js "#3f6bb8,#de9800" --mode light --surface "#f7f4e4"
+//   node scripts/validate_palette.js "#6d92da,#b98a2c" --mode dark  --surface "#282727"
+//
+// Colour is never the only cue regardless: both figures carry a legend, and the
+// feed states the verdict in words.
+//
+// Referenced as CSS vars rather than literals so they track the theme: dark mode
+// here is a `.dark` class, not `color-scheme`, so `light-dark()` would never
+// switch. The values live in app/globals.css beside the other chart tokens.
+export const verdictColors = {
+  approved: "var(--chart-approved)",
+  rejected: "var(--chart-rejected)",
+} as const
+
+// ── Teacher figures ─────────────────────────────────────────────────────────
+// The three thinking budgets are an *ordered* scale — short, medium, long — not
+// three independent categories, so they take a single-hue sequential ramp
+// (light→dark in light mode, dark→light on a dark surface) rather than a
+// categorical cycle. More thinking, more ink, in both modes.
+//
+// The hue is the teach kind's terracotta, so a teaching run's figures read as
+// belonging to its chip. Values and their validation live in app/globals.css.
+export const tierColors: Record<"low" | "med" | "high", string> = {
+  low: "var(--tier-low)",
+  med: "var(--tier-med)",
+  high: "var(--tier-high)",
+}
 
 // Rank ramp for the PCA biplot's token arrows: the same blue family swept by
 // frequency rank, most-frequent (rank 0) darkest → least-frequent lightest, so the

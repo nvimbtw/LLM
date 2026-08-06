@@ -19,10 +19,13 @@ export function StatRun({ stats }: { stats: Stat[] }) {
       {stats.map((s) => (
         <div
           key={s.label}
-          className="flex min-w-[7rem] flex-col gap-0.5 border-l pl-4 pr-6 first:border-l-0 first:pl-0"
+          className="flex min-w-[7rem] flex-col gap-0.5 border-l pr-6 pl-4 first:border-l-0 first:pl-0"
         >
           <dt className="text-xs text-muted-foreground">{s.label}</dt>
-          <dd className="font-heading text-2xl font-semibold tabular-nums">
+          {/* The display face, not the UI one: these are the figures the page
+              exists to show, and Fraunces' numerals are where the editorial
+              character actually lands. Tabular so columns of them still align. */}
+          <dd className="font-display text-2xl font-semibold tabular-nums">
             {s.value}
           </dd>
         </div>

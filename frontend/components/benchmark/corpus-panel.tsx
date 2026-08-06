@@ -19,12 +19,13 @@ export function CorpusPanel({ corpus }: { corpus: CorpusMetrics | null }) {
         <p className="text-sm text-muted-foreground">
           No reference corpus is installed, so perplexity was skipped.
         </p>
-        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/70">
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
           Put held-out <code className="font-mono">.txt</code> files in{" "}
-          <code className="font-mono">data/eval/corpus/</code> — text the model was{" "}
-          <em>not</em> trained on. <code className="font-mono">scripts/prepare_eval_corpus.py</code>{" "}
-          fills it from the TinyStories train split, which is disjoint from the valid
-          split the uploads dir uses.
+          <code className="font-mono">data/eval/corpus/</code> — text the model
+          was <em>not</em> trained on.{" "}
+          <code className="font-mono">scripts/prepare_eval_corpus.py</code>{" "}
+          fills it from the TinyStories train split, which is disjoint from the
+          valid split the uploads dir uses.
         </p>
       </Panel>
     )
@@ -50,22 +51,39 @@ export function CorpusPanel({ corpus }: { corpus: CorpusMetrics | null }) {
           scale={scale}
           className={beatsBaseline ? "bg-primary" : "bg-destructive"}
         />
-        <Bar label="5-gram floor" value={baseline} scale={scale} className="bg-muted-foreground/40" />
+        <Bar
+          label="5-gram floor"
+          value={baseline}
+          scale={scale}
+          className="bg-muted-foreground/40"
+        />
       </div>
 
-      <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60 sm:grid-cols-4">
+      <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-4">
         <Stat label="Bits / byte" value={formatNumber(model)} />
-        <Stat label="Perplexity" value={formatNumber(corpus.perplexity, 1)} hint="per token" />
-        <Stat label="Advantage" value={formatPercent(corpus.advantage)} hint="over the floor" />
-        <Stat label="Tokens" value={formatCompact(corpus.tokens_scored)} hint="scored" />
+        <Stat
+          label="Perplexity"
+          value={formatNumber(corpus.perplexity, 1)}
+          hint="per token"
+        />
+        <Stat
+          label="Advantage"
+          value={formatPercent(corpus.advantage)}
+          hint="over the floor"
+        />
+        <Stat
+          label="Tokens"
+          value={formatCompact(corpus.tokens_scored)}
+          hint="scored"
+        />
       </dl>
 
-      <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground/70">
+      <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
         {beatsBaseline
           ? "Lower is better. The model predicts held-out English more cheaply than an order-5 byte n-gram fit on the same corpus — it has learned something a lookup table has not."
           : "Lower is better. The model does not yet beat an order-5 byte n-gram fit on the same corpus, which means it has not learned structure beyond local byte statistics."}{" "}
-        Normalized per byte rather than per token, so the figure stays comparable
-        across models with different vocabulary sizes.
+        Normalized per byte rather than per token, so the figure stays
+        comparable across models with different vocabulary sizes.
       </p>
     </Panel>
   )
@@ -87,8 +105,9 @@ function Bar({
     <div>
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-sm font-medium">{label}</span>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {formatNumber(value)} <span className="text-muted-foreground/50">bits/byte</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {formatNumber(value)}{" "}
+          <span className="text-muted-foreground">bits/byte</span>
         </span>
       </div>
       <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-secondary">
@@ -101,16 +120,24 @@ function Bar({
   )
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
   return (
     <div className="bg-background px-4 py-3">
-      <dt className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/60">
+      <dt className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
         {label}
       </dt>
       <dd className="mt-1 font-display text-xl font-semibold tracking-tight tabular-nums">
         {value}
       </dd>
-      {hint && <p className="text-[10px] text-muted-foreground/60">{hint}</p>}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }

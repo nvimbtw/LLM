@@ -1,14 +1,15 @@
-import { ModelDetail } from "@/components/models/model-detail";
+import { ModelDetail } from "@/components/models/model-detail"
+import { PageShell } from "@/components/ui/page-shell"
 
 export default async function ModelDetailPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: Promise<{ id: string }>
 }) {
-  const { id } = await params;
+  const { id } = await params
   return (
-    <div className="mx-auto w-full max-w-3xl flex-1 px-4 py-8 sm:px-6">
+    <PageShell>
       <ModelDetail modelId={id} />
-    </div>
-  );
+    </PageShell>
+  )
 }

@@ -1,0 +1,128 @@
+"use client"
+
+import { Search } from "lucide-react"
+
+import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
+
+/**
+ * The registry's one control row: which family, which visibility, and a search.
+ *
+ * These were previously headings — the page nested a visibility section inside
+ * which sat a family section inside which sat the grid, so finding one model meant
+ * reading two levels of scaffolding that existed for a registry of a dozen rows.
+ * As filters the same three facts cost one line and answer a question instead of
+ * imposing a structure.
+ *
+ * Every filter carries its own count, so choosing one is never a step into an empty
+ * result — the answer to "how many balanced models are there" is on the control
+ * before it is clicked.
+ */
+export interface ModelsFilterProps {
+  families: { name: string; count: number }[]
+  family: string | null
+  onFamily: (family: string | null) => void
+  visibility: Visibility
+  onVisibility: (visibility: Visibility) => void
+  counts: Record<Visibility, number>
+  query: string
+  onQuery: (query: string) => void
+  /** Visibility is admin-only: a normal session sees published models and no toggle. */
+  showVisibility: boolean
+}
+
+export type Visibility = "all" | "published" | "private"
+
+const VISIBILITY_LABEL: Record<Visibility, string> = {
+  all: "All",
+  published: "Published",
+  private: "Private",
+}
+
+export function ModelsFilter({
+  families,
+  family,
+  onFamily,
+  visibility,
+  onVisibility,
+  counts,
+  query,
+  onQuery,
+  showVisibility,
+}: ModelsFilterProps) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-border pb-4">
+      <div className="flex flex-wrap items-center gap-1">
+        <Chip active={family === null} onClick={() => onFamily(null)}>
+          All families
+        </Chip>
+        {families.map((f) => (
+          <Chip
+            key={f.name}
+            active={family === f.name}
+            onClick={() => onFamily(f.name)}
+          >
+            {f.name}
+            <Count>{f.count}</Count>
+          </Chip>
+        ))}
+      </div>
+
+      {showVisibility && (
+        <div className="flex items-center gap-1">
+          {(["all", "published", "private"] as const).map((option) => (
+            <Chip
+              key={option}
+              active={visibility === option}
+              onClick={() => onVisibility(option)}
+            >
+              {VISIBILITY_LABEL[option]}
+              <Count>{counts[option]}</Count>
+            </Chip>
+          ))}
+        </div>
+      )}
+
+      <div className="relative ml-auto w-full sm:w-56">
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder="Search models"
+          aria-label="Search models"
+          className="h-8 pl-8 text-sm"
+        />
+      </div>
+    </div>
+  )
+}
+
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium tracking-[0.06em] transition-colors",
+        active
+          ? "bg-foreground text-background"
+          : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+function Count({ children }: { children: React.ReactNode }) {
+  return <span className="tabular-nums opacity-50">{children}</span>
+}

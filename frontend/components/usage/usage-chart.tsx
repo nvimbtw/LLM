@@ -2,7 +2,11 @@
 
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 
-import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart"
+import {
+  ChartContainer,
+  ChartTooltip,
+  type ChartConfig,
+} from "@/components/ui/chart"
 import type { UsageDay } from "@/hooks/use-usage"
 import { Panel } from "@/components/ui/panel"
 
@@ -16,14 +20,31 @@ const chartConfig = {
 type Point = UsageDay & { total: number }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  return new Date(value).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  })
 }
 
-function Row({ label, value, strong }: { label: string; value: number; strong?: boolean }) {
+function Row({
+  label,
+  value,
+  strong,
+}: {
+  label: string
+  value: number
+  strong?: boolean
+}) {
   return (
     <div className="flex items-baseline justify-between gap-6">
       <span className="text-muted-foreground">{label}</span>
-      <span className={strong ? "font-medium tabular-nums" : "tabular-nums text-muted-foreground"}>
+      <span
+        className={
+          strong
+            ? "font-medium tabular-nums"
+            : "text-muted-foreground tabular-nums"
+        }
+      >
         {value.toLocaleString("en-US")}
       </span>
     </div>
@@ -42,8 +63,8 @@ function TokenTooltip({
   if (!active || !payload?.length) return null
   const d = payload[0].payload
   return (
-    <div className="min-w-36 rounded-lg border border-border/60 bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
+    <div className="min-w-36 rounded-lg border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
+      <div className="mb-1.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
         {formatDate(label ?? "")}
       </div>
       <div className="flex flex-col gap-0.5">
@@ -59,16 +80,28 @@ export function UsageChart({ series }: { series: UsageDay[] }) {
   const data: Point[] = series.map((d) => ({ ...d, total: d.input + d.output }))
 
   return (
-    <Panel title="Tokens over time" description="Total, last 30 days" bodyClassName="px-2 py-3">
+    <Panel
+      title="Tokens over time"
+      description="Total, last 30 days"
+      bodyClassName="px-2 py-3"
+    >
       <ChartContainer config={chartConfig} className="aspect-auto h-64 w-full">
         <AreaChart data={data} margin={{ left: 4, right: 4, top: 8 }}>
           <defs>
             <linearGradient id="fillTotal" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.28} />
-              <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
+              <stop
+                offset="95%"
+                stopColor="var(--primary)"
+                stopOpacity={0.02}
+              />
             </linearGradient>
           </defs>
-          <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.6} />
+          <CartesianGrid
+            vertical={false}
+            stroke="var(--border)"
+            strokeOpacity={0.6}
+          />
           <XAxis
             dataKey="date"
             tickLine={false}
@@ -76,9 +109,12 @@ export function UsageChart({ series }: { series: UsageDay[] }) {
             tickMargin={10}
             minTickGap={32}
             tickFormatter={formatDate}
-            className="text-[10px]"
+            className="text-xs"
           />
-          <ChartTooltip cursor={{ stroke: "var(--border)" }} content={<TokenTooltip />} />
+          <ChartTooltip
+            cursor={{ stroke: "var(--border)" }}
+            content={<TokenTooltip />}
+          />
           <Area
             dataKey="total"
             type="monotone"

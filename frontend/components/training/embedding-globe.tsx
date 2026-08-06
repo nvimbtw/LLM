@@ -35,7 +35,8 @@ function convexHull(pts: Vec3[]): Face[] {
   // Tolerance scaled to the cloud's extent so near-coplanar points don't spuriously
   // split a face (or reject one) on floating-point noise.
   let ext = 0
-  for (const p of pts) ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2]))
+  for (const p of pts)
+    ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2]))
   const tol = (ext || 1) * 1e-3
 
   const faces: Face[] = []
@@ -73,7 +74,9 @@ function convexHull(pts: Vec3[]): Face[] {
 
         // Orient outward: flip winding when the normal points toward the centroid.
         const outward =
-          nx * (pts[i][0] - c[0]) + ny * (pts[i][1] - c[1]) + nz * (pts[i][2] - c[2])
+          nx * (pts[i][0] - c[0]) +
+          ny * (pts[i][1] - c[1]) +
+          nz * (pts[i][2] - c[2])
         faces.push(outward < 0 ? [i, k, j] : [i, j, k])
       }
     }
@@ -91,7 +94,17 @@ const normalize3 = (v: Vec3): Vec3 => {
 // right from every angle: each drag is composed as a rotation about the *screen* axes
 // and pre-multiplied onto M, so "drag right" always turns the visible face right, even
 // after the body has been tumbled upside down (where Euler angles reverse).
-type Mat3 = [number, number, number, number, number, number, number, number, number]
+type Mat3 = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+]
 
 const applyMat = (m: Mat3, p: Vec3): Vec3 => [
   m[0] * p[0] + m[1] * p[1] + m[2] * p[2],
@@ -104,7 +117,8 @@ const matMul = (a: Mat3, b: Mat3): Mat3 => {
   const out = [0, 0, 0, 0, 0, 0, 0, 0, 0] as Mat3
   for (let r = 0; r < 3; r++)
     for (let c = 0; c < 3; c++)
-      out[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]
+      out[r * 3 + c] =
+        a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]
   return out
 }
 
@@ -150,7 +164,8 @@ function buildIcosphere(pts: Vec3[], subdivisions: number): Mesh {
   const radii: number[] = mags.map((m) => 0.85 + 0.15 * (m / maxMag))
 
   let faces = convexHull(dirs)
-  if (faces.length === 0) return { dirs, radii, faces, tokenEdges: [], tokenCount }
+  if (faces.length === 0)
+    return { dirs, radii, faces, tokenEdges: [], tokenCount }
 
   // The coarse hull's edges, deduped — every vertex here is still a token, so these
   // are exactly the token-to-token links we'll draw over the smooth surface.
@@ -182,7 +197,13 @@ function buildIcosphere(pts: Vec3[], subdivisions: number): Mesh {
       const hit = mid.get(key)
       if (hit != null) return hit
       const idx = dirs.length
-      dirs.push(normalize3([dirs[a][0] + dirs[b][0], dirs[a][1] + dirs[b][1], dirs[a][2] + dirs[b][2]]))
+      dirs.push(
+        normalize3([
+          dirs[a][0] + dirs[b][0],
+          dirs[a][1] + dirs[b][1],
+          dirs[a][2] + dirs[b][2],
+        ])
+      )
       radii.push((radii[a] + radii[b]) / 2)
       mid.set(key, idx)
       return idx
@@ -228,7 +249,11 @@ export interface EmbeddingGlobeProps {
 // spun so you can read how the frequent tokens' directions spread (tokens that point
 // alike sit close on the sphere). Hand-rolled SVG with a painter's-order face sort;
 // the body auto-rotates and the full variant can be grabbed to orbit.
-export function EmbeddingGlobe({ frames, variant = "full", className }: EmbeddingGlobeProps) {
+export function EmbeddingGlobe({
+  frames,
+  variant = "full",
+  className,
+}: EmbeddingGlobeProps) {
   const mini = variant === "mini"
   // Memoized so the `?? []` fallback doesn't hand downstream memos a fresh array each render.
   const latest = React.useMemo(() => frames[frames.length - 1] ?? [], [frames])
@@ -274,7 +299,14 @@ export function EmbeddingGlobe({ frames, variant = "full", className }: Embeddin
   // Vertex positions in the normalized sphere space (|v| ≤ 1). Depend only on the
   // mesh, so rotation doesn't rebuild them.
   const verts = React.useMemo(
-    () => mesh.dirs.map((d, i): Vec3 => [d[0] * mesh.radii[i], d[1] * mesh.radii[i], d[2] * mesh.radii[i]]),
+    () =>
+      mesh.dirs.map(
+        (d, i): Vec3 => [
+          d[0] * mesh.radii[i],
+          d[1] * mesh.radii[i],
+          d[2] * mesh.radii[i],
+        ]
+      ),
     [mesh]
   )
 
@@ -423,7 +455,7 @@ export function EmbeddingGlobe({ frames, variant = "full", className }: Embeddin
       className={
         mini
           ? "block size-full touch-none select-none"
-          : "block aspect-square w-full touch-none select-none rounded-md border" +
+          : "block aspect-square w-full touch-none rounded-md border select-none" +
             (dragging ? " cursor-grabbing" : " cursor-grab")
       }
     >

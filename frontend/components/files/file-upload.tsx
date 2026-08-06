@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { CheckCircle2, Loader2, Upload } from "lucide-react"
+import { CheckCircle2, Upload } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -22,8 +22,16 @@ export function FileUpload() {
   const router = useRouter()
   const { isAdmin, isLoading } = useAuth()
 
-  const { files, status, progress, error, addFiles, removeFile, clear, upload } =
-    useFileUpload()
+  const {
+    files,
+    status,
+    progress,
+    error,
+    addFiles,
+    removeFile,
+    clear,
+    upload,
+  } = useFileUpload()
   const [rejected, setRejected] = React.useState<string[]>([])
 
   // Admin-only: bounce non-admins once auth has resolved. The sidebar already
@@ -88,7 +96,8 @@ export function FileUpload() {
           >
             {uploading ? (
               <>
-                <Loader2 className="size-4 animate-spin" />
+                {/* No mark: the button is disabled and its label has changed,
+                    which is the whole of what a spinner in here was saying. */}
                 Uploading…
               </>
             ) : (

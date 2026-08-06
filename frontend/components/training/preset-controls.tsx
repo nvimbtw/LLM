@@ -20,7 +20,7 @@ import {
 import { useModels } from "@/hooks/use-models"
 import { useTrainingPresets } from "@/hooks/use-training-presets"
 import { loadModelConfig, toTrainConfig } from "@/lib/training-presets"
-import type { TrainConfig } from "@/lib/training-socket"
+import type { TrainConfig } from "@/lib/training"
 
 // The preset controls that live at the top of the params rail: a picker to load a
 // saved preset or clone an existing model's config, and a save/delete affordance.

@@ -9,7 +9,9 @@ export function UsageByModel({ models }: { models: ModelUsage[] }) {
   return (
     <Panel title="By model" description="Share of tokens">
       {sorted.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">No usage yet.</p>
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          No usage yet.
+        </p>
       ) : (
         // Length carries the magnitude — every bar wears the single accent, so
         // colour isn't asked to encode identity (the name does that). Flowed into
@@ -20,10 +22,12 @@ export function UsageByModel({ models }: { models: ModelUsage[] }) {
             return (
               <li key={model.id}>
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="truncate text-sm font-medium">{model.name}</span>
+                  <span className="truncate text-sm font-medium">
+                    {model.name}
+                  </span>
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {formatCompact(model.tokens)}
-                    <span className="ml-2 text-muted-foreground/50">
+                    <span className="ml-2 text-muted-foreground">
                       {Math.round(share * 100)}%
                     </span>
                   </span>
@@ -34,7 +38,7 @@ export function UsageByModel({ models }: { models: ModelUsage[] }) {
                     style={{ width: `${Math.max(share * 100, 2)}%` }}
                   />
                 </div>
-                <span className="mt-1.5 block text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60 tabular-nums">
+                <span className="mt-1.5 block text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase tabular-nums">
                   {formatNumber(model.requests)} requests
                 </span>
               </li>

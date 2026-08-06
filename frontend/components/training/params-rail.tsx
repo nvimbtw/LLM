@@ -6,18 +6,21 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { SignalGate } from "@/components/training/signal-gate"
 import { PresetControls } from "@/components/training/preset-controls"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
 import { useDatasets } from "@/hooks/use-datasets"
 import { useModels } from "@/hooks/use-models"
+import { useSignals } from "@/hooks/use-signals"
 import { cn } from "@/lib/utils"
+import { isFineTune } from "@/lib/training"
 import type {
   CurriculumStage,
   DatasetInfo,
   DatasetSelection,
   TrainConfig,
   TrainMode,
-} from "@/lib/training-socket"
+} from "@/lib/training"
 
 // Numeric fields split by which mode they apply to. Architecture + dataset knobs
 // only make sense for a fresh pretrain; a fine-tune inherits the base model's
@@ -55,6 +58,37 @@ const RUN_FIELDS: Field[] = [
 // Now that the pretrain default is 1e-4 (ISSUE-0052/0058 lifted the LR cap), SFT
 // sits an order of magnitude below it at 1e-5.
 const SFT_DEFAULT_LR = 0.00001
+
+// KTO sits lower still. Its gradient is the cross-entropy one scaled by a factor
+// that can exceed 1 on a confidently-wrong example, and it is deliberately allowed
+// to push probability *down* — an over-large step there degrades the model far
+// faster than an over-large SFT step, which can only ever pull it toward real text.
+const KTO_DEFAULT_LR = 0.000005
+
+// RAFT is ordinary SFT under the hood — same loss, same masking — so it wants the
+// SFT learning rate, not KTO's much lower one. Named separately because reading
+// `SFT_DEFAULT_LR` under a RAFT branch invites someone to "fix" it to the KTO
+// value. These two are only reached now when the form is seeded from a cycle's
+// job; the cycle's own runs use `raft_lr` / `kto_lr` from its config instead.
+const RAFT_DEFAULT_LR = SFT_DEFAULT_LR
+
+// The KL anchor's default. See llm::kto::KtoParams::beta.
+const KTO_DEFAULT_BETA = 0.1
+
+// Every learning rate the mode toggle sets on the user's behalf, so switching modes
+// can tell "still on a default" from "the user chose this".
+const MODE_DEFAULT_LRS: number[] = [
+  DEFAULT_CONFIG.lr,
+  SFT_DEFAULT_LR,
+  KTO_DEFAULT_LR,
+]
+
+function defaultLrFor(mode: TrainMode): number {
+  if (mode === "sft") return SFT_DEFAULT_LR
+  if (mode === "raft") return RAFT_DEFAULT_LR
+  if (mode === "kto") return KTO_DEFAULT_LR
+  return DEFAULT_CONFIG.lr
+}
 
 function isPowerOfTwo(n: number) {
   return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0
@@ -383,7 +417,9 @@ function CurriculumBuilder({
                     min={1}
                     step={1}
                     value={String(stage.epochs)}
-                    onChange={(e) => update(i, { epochs: Number(e.target.value) })}
+                    onChange={(e) =>
+                      update(i, { epochs: Number(e.target.value) })
+                    }
                     disabled={disabled}
                     className="h-8 w-24 text-right tabular-nums"
                   />
@@ -425,8 +461,14 @@ function validateName(name: string): string[] {
 function validate(cfg: TrainConfig): string[] {
   const errs = validateName(cfg.model_name)
 
-  if (cfg.mode === "sft") {
+  if (isFineTune(cfg.mode)) {
     if (!cfg.base_model_id) errs.push("Select a base model to fine-tune.")
+    if (
+      cfg.mode === "kto" &&
+      !(Number.isFinite(cfg.beta) && (cfg.beta ?? 0) > 0)
+    ) {
+      errs.push("Beta must be a positive number.")
+    }
     if (!Number.isFinite(cfg.epochs) || cfg.epochs <= 0)
       errs.push("Epochs must be positive.")
     if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
@@ -475,7 +517,9 @@ function validate(cfg: TrainConfig): string[] {
       if (ds.length === 0)
         errs.push(`Stage ${i + 1}: select at least one dataset.`)
       if (ds.some((d) => !Number.isInteger(d.count) || d.count < 0))
-        errs.push(`Stage ${i + 1}: each dataset count must be 0 (all) or positive.`)
+        errs.push(
+          `Stage ${i + 1}: each dataset count must be 0 (all) or positive.`
+        )
     })
   } else {
     // Defensive: a config from a stale source (e.g. a preset saved before this
@@ -485,7 +529,9 @@ function validate(cfg: TrainConfig): string[] {
     if (selected.length === 0)
       errs.push("Select at least one dataset to train on.")
     if (selected.some((d) => !Number.isInteger(d.count) || d.count < 0))
-      errs.push("Each dataset count must be 0 (all) or a positive whole number.")
+      errs.push(
+        "Each dataset count must be 0 (all) or a positive whole number."
+      )
   }
   return errs
 }
@@ -535,6 +581,9 @@ export function ParamsRail({
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
   const { datasets: availableDatasets, isLoading: datasetsLoading } =
     useDatasets()
+  // Only meaningful in preference mode, but hooks can't be conditional — and it
+  // is one small count, read once per mount.
+  const { status: signals } = useSignals(modelsRefreshKey)
 
   const setField = (key: keyof TrainConfig, value: string) => {
     onChange({
@@ -545,23 +594,38 @@ export function ParamsRail({
   }
 
   // Switching mode nudges the learning rate to that mode's sane default — but only
-  // if the user hasn't moved it off the *other* mode's default.
+  // while it is still sitting on some mode's default, so a rate the user actually
+  // typed is never overwritten.
   const setMode = (mode: TrainMode) => {
     if (cfg.mode === mode) return
     const next: TrainConfig = { ...cfg, mode }
-    if (mode === "sft" && cfg.lr === DEFAULT_CONFIG.lr) next.lr = SFT_DEFAULT_LR
-    else if (mode === "pretrain" && cfg.lr === SFT_DEFAULT_LR)
-      next.lr = DEFAULT_CONFIG.lr
+    if (MODE_DEFAULT_LRS.includes(cfg.lr)) next.lr = defaultLrFor(mode)
+    if (mode === "kto" && next.beta === undefined) next.beta = KTO_DEFAULT_BETA
     onChange(next)
   }
 
-  const isSft = cfg.mode === "sft"
+  const isKto = cfg.mode === "kto"
+  const isRaft = cfg.mode === "raft"
+  // The two the cycle owns. Reachable here only by seeding from one of its jobs.
+  const isCycleMode = isKto || isRaft
+  const isSft = isFineTune(cfg.mode)
+  // Strictly SFT, not the other two fine-tunes: RAFT and KTO train on the model's
+  // own generations, which have no thinking block to strip, so offering the switch
+  // there would be a control that does nothing.
+  const isPlainSft = cfg.mode === "sft"
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
   // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
   const runFields = curriculumOn
     ? RUN_FIELDS.filter((f) => f.key !== "epochs")
     : RUN_FIELDS
-  const numFields = isSft ? RUN_FIELDS : [...ARCH_FIELDS, ...runFields]
+  const numFields = isKto
+    ? [
+        ...RUN_FIELDS,
+        { key: "beta" as const, label: "Beta (KL anchor)", step: 0.05 },
+      ]
+    : isSft
+      ? RUN_FIELDS
+      : [...ARCH_FIELDS, ...runFields]
 
   // Toggle curriculum mode: turning it on seeds a first stage from the current
   // flat selection (so nothing is lost); turning it off clears the stages and
@@ -610,29 +674,46 @@ export function ParamsRail({
         modelsRefreshKey={modelsRefreshKey}
       />
 
-      {/* Mode toggle */}
-      <div className="inline-flex w-full gap-0.5 rounded-md border p-0.5">
-        <Button
-          type="button"
-          size="sm"
-          variant={isSft ? "ghost" : "default"}
-          className="flex-1"
-          disabled={disabled}
-          onClick={() => setMode("pretrain")}
-        >
-          Pretrain
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={isSft ? "default" : "ghost"}
-          className="flex-1"
-          disabled={disabled}
-          onClick={() => setMode("sft")}
-        >
-          Fine-tune
-        </Button>
-      </div>
+      {/* Mode toggle — two, not four.
+          Self-train (RAFT) and preference (KTO) are stages of a cycle, not runs a
+          person composes: the cycle decides when the catalogue is ready for each,
+          and queues them with its own learning rates (`backend/src/cycle.rs`).
+          Offering them here presented four peers when there are two decisions.
+
+          They are still rendered when `?from=` seeds this form from a cycle's own
+          job — that config is real and re-runnable, so the mode is shown as a fact
+          rather than silently rewritten to something the run was not. */}
+      {isCycleMode ? (
+        <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+          Seeded from a cycle&rsquo;s{" "}
+          <span className="font-medium text-foreground">
+            {isRaft ? "self-train" : "preference"}
+          </span>{" "}
+          stage. Re-running it here is a one-off — cycles queue these
+          themselves.
+        </p>
+      ) : (
+        <div className="inline-flex w-full gap-0.5 rounded-md border p-0.5">
+          {(
+            [
+              ["pretrain", "Pretrain"],
+              ["sft", "Fine-tune"],
+            ] as [TrainMode, string][]
+          ).map(([mode, label]) => (
+            <Button
+              key={mode}
+              type="button"
+              size="sm"
+              variant={cfg.mode === mode ? "default" : "ghost"}
+              className="flex-1"
+              disabled={disabled}
+              onClick={() => setMode(mode)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      )}
 
       {/* Model name — the rail's headline / run identity */}
       <div className="space-y-1">
@@ -640,7 +721,10 @@ export function ParamsRail({
         <Input
           value={cfg.model_name}
           onChange={(e) => setField("model_name", e.target.value)}
-          placeholder="my-model"
+          // Weight classes are the size convention: Feather · Light · Welter ·
+          // Middle · Heavy, smallest to largest. Only a naming convention — nothing
+          // validates it, and the field takes any name.
+          placeholder="Slate Feather"
           disabled={disabled}
           className="h-10 font-heading text-lg font-semibold"
         />
@@ -666,6 +750,18 @@ export function ParamsRail({
                 </option>
               ))}
             </select>
+          </Row>
+        )}
+
+        {isPlainSft && (
+          <Row label="Strip thinking">
+            <Checkbox
+              checked={cfg.strip_thinking ?? false}
+              disabled={disabled}
+              onCheckedChange={(on) =>
+                onChange({ ...cfg, strip_thinking: on === true })
+              }
+            />
           </Row>
         )}
 
@@ -748,10 +844,37 @@ export function ParamsRail({
         </div>
       )}
 
+      {(isKto || isRaft) && (
+        <SignalGate
+          status={signals}
+          modelId={baseModelId}
+          mode={isRaft ? "raft" : "kto"}
+          disabled={disabled}
+        />
+      )}
+
       {isSft ? (
         <p className="text-xs text-muted-foreground">
-          Architecture (dimensions, context, heads, layers) is inherited from the
-          base model — only the run knobs above apply.
+          Architecture (dimensions, context, heads, layers) is inherited from
+          the base model — only the run knobs above apply.
+          {isKto && (
+            <>
+              {" "}
+              Trains on the thumbs up/down collected in chat and in a gather
+              run. Needs both kinds: one-sided feedback has no contrast to learn
+              from and the run will refuse.
+            </>
+          )}
+          {isRaft && (
+            <>
+              {" "}
+              Fine-tunes on the model&rsquo;s own replies that cleared the
+              catalogue&rsquo;s bar — a dense signal, and the fastest way to
+              teach a model at this stage to form English. Run it before a
+              preference tune: afterwards the good replies already sit high, so
+              KTO spends its gradient on suppressing the bad ones instead.
+            </>
+          )}
         </p>
       ) : (
         <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
@@ -778,14 +901,33 @@ export function ParamsRail({
         </ul>
       )}
 
-      <Button type="submit" disabled={disabled || errors.length > 0} className="w-full">
+      <Button
+        type="submit"
+        // A preference run with too little rated data is refused at enqueue, so
+        // the button matches that rather than letting the form post into a 400.
+        // `signals === null` (still loading, or the count failed) leaves it
+        // enabled: the server is the authority, and disabling on a failed read
+        // would strand the run behind a fetch that may never succeed.
+        disabled={
+          disabled ||
+          errors.length > 0 ||
+          (isKto && signals?.ready === false) ||
+          (isRaft && signals?.raft_ready === false)
+        }
+        className="w-full"
+      >
         {disabled
           ? isSft
             ? "Fine-tuning…"
             : "Training…"
-          : isSft
-            ? "Start fine-tune"
-            : "Start training"}
+          : (isKto && signals?.ready === false) ||
+              (isRaft && signals?.raft_ready === false)
+            ? "Not enough signals yet"
+            : isRaft
+              ? "Start self-train"
+              : isSft
+                ? "Start fine-tune"
+                : "Start training"}
       </Button>
     </form>
   )

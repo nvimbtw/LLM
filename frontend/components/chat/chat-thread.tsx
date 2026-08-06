@@ -9,11 +9,21 @@ import { ChatComposer } from "./chat-composer"
 /** How close (px) to the bottom the user must be for auto-scroll to engage. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 120
 import { ChatMessageBubble } from "./chat-message"
+import { MessageRefsProvider, buildMessageRefs } from "./message-refs"
 import { Throbber } from "@/components/ui/throbber"
 import { ThinkingLabel } from "./thinking-label"
 
 export function ChatThread({ chatId }: { chatId: string }) {
-  const { messages, isLoading, isSending, error, sendMessage } = useChat(chatId)
+  const {
+    messages,
+    isLoading,
+    isSending,
+    queuedAhead,
+    error,
+    sendMessage,
+    cancel,
+    rateMessage,
+  } = useChat(chatId)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   // Whether to keep the thread pinned to the bottom. Driven by the user's own
   // wheel/touch gestures (see trackStickIntent) so our programmatic scrolls
@@ -23,9 +33,13 @@ export function ChatThread({ chatId }: { chatId: string }) {
   const lastHeightRef = React.useRef(0)
 
   const lastMessage = messages[messages.length - 1]
-  const showIdle =
-    !isLoading && !isSending && lastMessage?.role === "assistant"
-  const streaming = isSending && lastMessage?.role === "assistant"
+  const showIdle = !isLoading && !isSending && lastMessage?.role === "assistant"
+  // Waiting in line is not the same as generating: no tokens are coming yet, and
+  // the reason is the queue rather than a slow model. It gets its own state so the
+  // thread can say which, instead of showing a "generating" mark for a turn that
+  // hasn't reached the GPU.
+  const waiting = isSending && queuedAhead !== null && queuedAhead > 0
+  const streaming = isSending && !waiting && lastMessage?.role === "assistant"
   // Show "Thinking…" whenever the model is *currently* inside a <|thinking|>
   // block (its content is hidden), or before any answer text has appeared at
   // all (the initial wait). Otherwise it's actively producing the answer, so
@@ -70,64 +84,115 @@ export function ChatThread({ chatId }: { chatId: string }) {
     const grew = el.scrollHeight > lastHeightRef.current
     lastHeightRef.current = el.scrollHeight
     if (!grew) return
-    el.scrollTo({ top: el.scrollHeight, behavior: isSending ? "smooth" : "auto" })
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: isSending ? "smooth" : "auto",
+    })
   }, [messages, isSending])
 
+  // Rebuilt whenever the thread changes, so a `<|reply|>` in the reply currently
+  // streaming can already resolve the message it is answering.
+  const messageRefs = React.useMemo(
+    () => buildMessageRefs(messages),
+    [messages]
+  )
+
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      <div
-        ref={scrollRef}
-        onWheel={trackStickIntent}
-        onTouchMove={trackStickIntent}
-        className="flex-1 overflow-y-auto"
-      >
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-6">
-          {isLoading ? (
-            <div className="px-1 py-8">
-              <Throbber mode="loading" className="h-6 w-full" />
-            </div>
-          ) : (
-            messages.map((message, i) => (
-              <ChatMessageBubble
-                key={i}
-                message={message}
-                streaming={
-                  isSending &&
-                  i === messages.length - 1 &&
-                  message.role === "assistant"
-                }
-              />
-            ))
-          )}
+    <MessageRefsProvider lookup={messageRefs}>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div
+          ref={scrollRef}
+          onWheel={trackStickIntent}
+          onTouchMove={trackStickIntent}
+          className="flex-1 overflow-y-auto"
+        >
+          {/* gap-7 rather than gap-4: replies are now set at 16px with a 1.65 line,
+            and at that size four units between turns reads as one continuous
+            column of text instead of an exchange. The air is what separates who
+            is speaking, since the assistant side has no bubble to do it. */}
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-7 px-4 py-8">
+            {isLoading ? (
+              <div className="flex justify-center px-1 py-8">
+                <Throbber mode="loading" />
+              </div>
+            ) : (
+              messages.map((message, i) => {
+                const id = message.id
+                return (
+                  <ChatMessageBubble
+                    key={i}
+                    message={message}
+                    streaming={
+                      isSending &&
+                      i === messages.length - 1 &&
+                      message.role === "assistant"
+                    }
+                    // Only assistant replies that exist server-side are rateable —
+                    // there is nothing to attach a verdict to otherwise.
+                    onRate={
+                      id && message.role === "assistant"
+                        ? (feedback) => void rateMessage(id, feedback)
+                        : undefined
+                    }
+                  />
+                )
+              })
+            )}
 
-          {/* One fixed-height slot for all throbber states, so the
+            {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}
-          {(showThinking || showGenerating || showIdle) && (
-            // Set as a leader rule: label left, count right, the carriage running
-            // the full space between them. One Throbber instance rather than one
-            // per state — that's what lets thinking → generating → idle morph
-            // instead of swapping, since the element is never unmounted.
-            <div className="flex h-11 items-center gap-3 px-1 text-sm">
-              {showThinking && <ThinkingLabel />}
-              <Throbber
-                mode={showThinking ? "thinking" : showGenerating ? "generating" : "idle"}
-                className="h-6 min-w-0 flex-1"
-              />
-              {statusTokens !== null && (
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {statusTokens.toLocaleString("en-US")} tokens
-                </span>
-              )}
-            </div>
-          )}
+            {(showThinking || showGenerating || showIdle || waiting) && (
+              // Mark, label, then the token count pushed to the right edge. One
+              // Throbber instance rather than one per state — that's what lets
+              // thinking → generating → idle morph instead of swapping, since the
+              // element is never unmounted.
+              //
+              // items-center, not items-baseline: the mark is a ball, so its
+              // optical centre is its middle rather than its bottom edge, and a
+              // baseline row would hang it below the line of the label.
+              <div className="flex items-center gap-3 px-1 text-sm">
+                <Throbber
+                  mode={
+                    waiting
+                      ? "loading"
+                      : showThinking
+                        ? "thinking"
+                        : showGenerating
+                          ? "generating"
+                          : "idle"
+                  }
+                />
+                {waiting && (
+                  <span className="text-muted-foreground">
+                    Queued — {queuedAhead} {queuedAhead === 1 ? "job" : "jobs"}{" "}
+                    ahead on the GPU. You can close this tab; the reply will be
+                    here.
+                  </span>
+                )}
+                {showThinking && <ThinkingLabel />}
+                {/* Pushes the token count to the far edge, which the throbber used to
+                  do by spanning the gap itself. */}
+                <span className="min-w-0 flex-1" />
+                {statusTokens !== null && (
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                    {statusTokens.toLocaleString("en-US")} tokens
+                  </span>
+                )}
+              </div>
+            )}
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+          </div>
+        </div>
+
+        <div className="mx-auto w-full max-w-2xl px-4 pb-4">
+          <ChatComposer
+            onSend={sendMessage}
+            disabled={isSending}
+            onCancel={cancel}
+          />
         </div>
       </div>
-
-      <div className="mx-auto w-full max-w-2xl px-4 pb-4">
-        <ChatComposer onSend={sendMessage} disabled={isSending} />
-      </div>
-    </div>
+    </MessageRefsProvider>
   )
 }

@@ -1,5 +1,10 @@
-import Link from "next/link";
-import { Boxes, ChartColumn, MessagesSquare, MessageSquarePlus } from "lucide-react";
+import Link from "next/link"
+import {
+  Boxes,
+  ChartColumn,
+  MessagesSquare,
+  MessageSquarePlus,
+} from "lucide-react"
 import {
   SidebarGroup,
   SidebarGroupContent,

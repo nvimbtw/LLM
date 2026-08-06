@@ -2,9 +2,8 @@
 
 import * as React from "react"
 
-import { Throbber } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
-import type { JobStatus, TrainMode } from "@/lib/training-socket"
+import type { RunPhase, TrainMode } from "@/lib/training"
 
 // A step in the Pretrain › SFT masthead stepper. `state` drives the editorial
 // rendering: a filled rule/dot for done, a solid dot for active, muted otherwise.
@@ -42,7 +41,7 @@ function PhaseStepper({
   mode,
   pretrainDone,
 }: {
-  status: JobStatus | null
+  status: RunPhase | null
   mode: TrainMode
   pretrainDone: boolean
 }) {
@@ -74,7 +73,7 @@ function PhaseStepper({
   )
 }
 
-const STATUS_LABEL: Record<JobStatus, string> = {
+const STATUS_LABEL: Record<RunPhase, string> = {
   tokenizing: "tokenizing",
   training: "training",
   done: "done",
@@ -82,7 +81,7 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   failed: "failed",
 }
 
-function StatusDot({ status }: { status: JobStatus | null }) {
+function StatusDot({ status }: { status: RunPhase | null }) {
   const running = status === "tokenizing" || status === "training"
   return (
     <span className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -102,7 +101,7 @@ function StatusDot({ status }: { status: JobStatus | null }) {
 
 export interface TrainingShellProps {
   modelName: string
-  status: JobStatus | null
+  status: RunPhase | null
   mode: TrainMode
   pretrainDone: boolean
   primaryAction?: React.ReactNode
@@ -140,17 +139,18 @@ export function TrainingShell({
           <StatusDot status={status} />
         </div>
         <div className="flex items-center gap-6">
-          <PhaseStepper status={status} mode={mode} pretrainDone={pretrainDone} />
+          <PhaseStepper
+            status={status}
+            mode={mode}
+            pretrainDone={pretrainDone}
+          />
           {primaryAction}
         </div>
       </header>
-      {/* The masthead's rule *is* the indicator: at rest it's the hairline border
-          the header always had, and while a run is live the carriage travels it.
-          Replaces the old `border-b`, so nothing is added to the layout. */}
-      <Throbber
-        mode={status === "tokenizing" || status === "training" ? "training" : "idle"}
-        className="h-5 w-full"
-      />
+      {/* The masthead keeps its own hairline. It used to be the throbber itself —
+          a full-width rule doubling as the border — which is exactly what made the
+          indicator too wide to read as one mark. */}
+      <div className="border-b border-border" />
 
       {/* Body: fixed rail + fluid main */}
       <div className="grid grid-cols-1 gap-8 pt-6 lg:grid-cols-[340px_minmax(0,1fr)] lg:gap-12">

@@ -96,6 +96,21 @@ export function mapModel(raw: RawModel): Model {
   }
 }
 
+/**
+ * Removes one model: its row, its weights on disk, and the `id_model` on any
+ * message that referenced it (detached, not deleted).
+ *
+ * Admin-only on the backend. Exported as a bare function rather than living on
+ * `useModel` because the registry deletes models it is not holding the detail of —
+ * see `ModelsGrid`'s batch flow, which needs to delete by id and nothing else.
+ */
+export async function deleteModel(id: string): Promise<void> {
+  const res = await apiFetch(`/model/${id}`, { method: "DELETE" })
+  if (!res.ok) {
+    throw new Error((await res.text()) || "Failed to delete the model.")
+  }
+}
+
 // `refreshKey` re-fetches the model list whenever it changes — pass a value that
 // advances when a new model is registered (e.g. after a training run finishes) so
 // the just-trained model appears without a page reload.
@@ -116,7 +131,10 @@ export function useModels(refreshKey?: unknown) {
         if (active) setModels(data.map(mapModel))
       })
       .catch((err) => {
-        if (active) setError(err instanceof Error ? err : new Error("Unable to load models."))
+        if (active)
+          setError(
+            err instanceof Error ? err : new Error("Unable to load models.")
+          )
       })
       .finally(() => {
         if (active) setIsLoading(false)

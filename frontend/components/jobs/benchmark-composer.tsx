@@ -1,0 +1,244 @@
+"use client"
+
+import * as React from "react"
+import { useRouter } from "next/navigation"
+import { Play } from "lucide-react"
+
+import { Button } from "@/components/ui/button"
+import { Panel } from "@/components/ui/panel"
+import { toast } from "@/components/ui/toast"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import { useModels } from "@/hooks/use-models"
+import {
+  BENCHMARK_SUITES,
+  getSuite,
+  suiteTakesBudget,
+  type BenchmarkSuite,
+  type SuiteInfo,
+} from "@/lib/benchmark"
+import { queueBenchmark } from "@/lib/jobs"
+
+/**
+ * Composing a benchmark: pick a model, queue it.
+ *
+ * Was the run bar on /benchmark. It moved because starting a run is now queueing a
+ * job, and that page is where you *read* scores — a control that puts work on the
+ * GPU sitting above a history table was the reason a benchmark could previously be
+ * fired while training held the device.
+ */
+export function BenchmarkComposer() {
+  const router = useRouter()
+  const { models, isLoading } = useModels()
+  const [suite, setSuite] = React.useState<SuiteInfo | null>(null)
+  const [chosenId, setChosenId] = React.useState("")
+  // Which of the two benchmarks to run. They are separate runs on separate scales,
+  // so this is a choice rather than a mode — queue both if you want both.
+  const [which, setWhich] = React.useState<BenchmarkSuite>("language")
+  // Sweep the three thinking budgets instead of running once. Held as the raw
+  // intent, not as "can it sweep": the toggle is meaningless on the language suite
+  // and `canSplit` below is what decides whether it applies, so switching suite back
+  // and forth doesn't silently forget what you asked for.
+  const [splitThinking, setSplitThinking] = React.useState(false)
+  const [isSubmitting, setIsSubmitting] = React.useState(false)
+
+  // The language suite renders no chat prompt in any stage, so no marker can reach
+  // it and all three runs would score identically. The server refuses it too — this
+  // is the same rule stated where it can be explained rather than only enforced.
+  const canSplit = suiteTakesBudget(which)
+  const sweeping = splitThinking && canSplit
+
+  // Only the *explicit* choice is stored; the default is derived from the list.
+  // Storing the default instead would mean writing state from an effect the moment
+  // models load, for a value that is already computable from what we have.
+  const modelId = chosenId || models[0]?.id || ""
+
+  React.useEffect(() => {
+    let alive = true
+    getSuite()
+      .then((info) => {
+        if (alive) setSuite(info)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Success navigates to the new job, so the confirmation has to outlive the
+  // page it was triggered from — which is what a toast is. A rejection is
+  // likewise an event, not a property of the form, and the message is the
+  // server's own 400 body.
+  const submit = async () => {
+    setIsSubmitting(true)
+    try {
+      const job = await queueBenchmark(modelId, which, sweeping)
+      if (sweeping) {
+        // Three jobs were queued and only the first came back, so the board is the
+        // honest destination — pushing to one of three would hide the other two
+        // behind a page that looks like an ordinary single run.
+        toast.success(
+          "Sweep queued.",
+          `${job.label} — three runs, one per budget.`
+        )
+        router.push("/jobs")
+      } else {
+        toast.success("Benchmark queued.", job.label)
+        router.push(`/jobs/${job.id_job}`)
+      }
+    } catch (e) {
+      toast.error(
+        "Couldn't queue the benchmark",
+        e instanceof Error ? e.message : "Something went wrong."
+      )
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Panel title="Model" description="What to score">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* The primitive can emit null on clear; the form always wants a
+              concrete id, so a clear falls back to the empty string. */}
+          <Select
+            value={modelId}
+            onValueChange={(value) => setChosenId(value ?? "")}
+            disabled={isSubmitting || isLoading}
+          >
+            <SelectTrigger className="w-full min-w-0 sm:w-80">
+              {/* Base UI's Select.Value renders the raw `value` — here a UUID — so
+                  the label has to be looked up explicitly. The render function also
+                  supersedes `placeholder`, so the empty case is handled here too. */}
+              <SelectValue>
+                {(value: string | null) =>
+                  models.find((model) => model.id === value)?.name ??
+                  (isLoading ? "Loading models…" : "Select a model")
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {models.map((model) => (
+                <SelectItem key={model.id} value={model.id}>
+                  {model.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={which}
+            onValueChange={(value) =>
+              setWhich((value as BenchmarkSuite | null) ?? "language")
+            }
+            disabled={isSubmitting}
+          >
+            <SelectTrigger className="w-full min-w-0 sm:w-44">
+              <SelectValue>
+                {(value: string | null) =>
+                  BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
+                  "Language"
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {BENCHMARK_SUITES.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Button
+            onClick={submit}
+            disabled={isSubmitting || !modelId}
+            className="gap-2"
+          >
+            <Play className="size-3.5" />
+            {isSubmitting
+              ? "Queueing…"
+              : sweeping
+                ? "Queue 3 runs"
+                : "Queue benchmark"}
+          </Button>
+        </div>
+      </Panel>
+
+      <Panel title="Thinking budget" description="One run, or one per budget">
+        <label className="flex items-start gap-3">
+          <Switch
+            checked={sweeping}
+            onCheckedChange={setSplitThinking}
+            disabled={isSubmitting || !canSplit}
+            className="mt-0.5"
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">
+              Split thinking modes
+            </span>
+            <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+              {canSplit ? (
+                <>
+                  Queues three runs of this suite — one each at{" "}
+                  <code className="text-xs">low</code>,{" "}
+                  <code className="text-xs">med</code> and{" "}
+                  <code className="text-xs">high</code> — scoring the same
+                  held-out conversations with the budget marker forced, the way
+                  the chat composer forces one. They share a series, so the
+                  charts draw them as a single connected line.
+                  {which === "markup" && (
+                    <>
+                      {" "}
+                      On this suite the marker-pair stage carries 55% of the
+                      score and has no conversation to mark, so the curve moves
+                      less than the whole score does.
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  Not available for the language suite: held-out perplexity,
+                  grammar pairs, generation and preference all score raw text,
+                  so no budget marker can reach them and all three runs would
+                  return the same score. Pick Markup or Assistant to sweep.
+                </>
+              )}
+            </span>
+          </span>
+        </label>
+      </Panel>
+
+      {/* Said before the run rather than after it: an absent corpus makes the
+          perplexity half of the report empty, and finding that out by spending a
+          run is the wrong order. */}
+      {which === "language" && suite && suite.corpus_files === 0 && (
+        <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+          No reference corpus is installed in{" "}
+          <code className="text-xs">{suite.corpus_dir}</code>, so this run will
+          score grammar and generation but not held-out perplexity.
+        </p>
+      )}
+
+      {/* The markup suite's pair stage needs nothing on disk, so an absent chat set
+          is a partial score rather than a broken run — and it is written from your
+          SFT conversations at the start of every benchmark, so it is usually a
+          statement about the first run rather than about the install. */}
+      {which === "markup" && suite && suite.chat_files === 0 && (
+        <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+          No held-out chat set in{" "}
+          <code className="text-xs">{suite.chat_dir}</code> yet. It is exported
+          from your SFT conversations when this run starts, so this run scores
+          the {suite.markup_pairs} marker pairs and the next one scores
+          everything.
+        </p>
+      )}
+    </div>
+  )
+}

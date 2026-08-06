@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowUp } from "lucide-react"
+import { ArrowUp, Square } from "lucide-react"
 import { EditorContent, useEditor } from "@tiptap/react"
 import { Extension } from "@tiptap/core"
 import StarterKit from "@tiptap/starter-kit"
@@ -12,8 +12,8 @@ import { Button } from "@/components/ui/button"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
 import { matchStandaloneCommand, runSlashCommand } from "@/lib/commands"
 import { useSettings } from "@/components/settings/settings-provider"
-import { Throbber } from "@/components/ui/throbber"
 import { ModelSelector } from "./model-selector"
+import { BudgetSelector, type ThinkBudget } from "./budget-selector"
 
 // Tab / Shift+Tab indent / outdent list items. Enter and Shift+Enter are
 // handled in editorProps.handleKeyDown so they run before StarterKit's own
@@ -33,13 +33,27 @@ const ComposerKeys = Extension.create({
 export function ChatComposer({
   onSend,
   disabled = false,
-  placeholder = "Investigate the Lattice...",
+  onCancel,
+  placeholder = "Message Slate…",
 }: {
-  onSend: (content: string, modelId: string) => Promise<void> | void
+  onSend: (
+    content: string,
+    modelId: string,
+    budget: ThinkBudget
+  ) => Promise<void> | void
   disabled?: boolean
+  // Stops the turn in flight. A reply is a queued job now, so it can be waiting
+  // behind a long run with nothing to watch — being able to take it back out of
+  // the line matters more than it did when a turn started instantly.
+  onCancel?: () => void
   placeholder?: string
 }) {
   const [model, setModel] = React.useState("")
+  // Per-message, and deliberately not a stored setting: how hard you want the
+  // model to think is a property of the question you are about to ask, not a
+  // preference. It does persist for the life of the composer, so a run of
+  // similar questions is not a run of re-picking.
+  const [budget, setBudget] = React.useState<ThinkBudget>("auto")
   const [isEmpty, setIsEmpty] = React.useState(true)
   // True when the current content is a standalone, recognised slash command —
   // drives the blue highlight and the "run as command instead of send" path.
@@ -123,8 +137,8 @@ export function ChatComposer({
     if (!markdown.trim()) return
     editor.commands.clearContent()
     setIsEmpty(true)
-    onSendRef.current(markdown, model)
-  }, [editor, disabled, model, settings, setSetting, setCommandOpen])
+    onSendRef.current(markdown, model, budget)
+  }, [editor, disabled, model, budget, settings, setSetting, setCommandOpen])
   submitRef.current = submit
 
   React.useEffect(() => {
@@ -136,7 +150,7 @@ export function ChatComposer({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-input shadow-sm transition-colors",
+        "rounded-[0.875rem] border border-input shadow-sm transition-colors",
         "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
         disabled && "opacity-70"
       )}
@@ -146,32 +160,28 @@ export function ChatComposer({
       <div
         className={cn(
           isCommand &&
-            "[&_.tiptap]:text-primary [&_.tiptap]:caret-primary [&_.tiptap]:font-medium"
+            "[&_.tiptap]:font-medium [&_.tiptap]:text-primary [&_.tiptap]:caret-primary"
         )}
       >
         <EditorContent editor={editor} />
       </div>
       <div className="flex items-center gap-2 px-2.5 pb-2">
         <ModelSelector value={model} onValueChange={setModel} />
+        <BudgetSelector value={budget} onValueChange={setBudget} />
         <Button
-          aria-label="Send"
+          aria-label={disabled && onCancel ? "Stop" : "Send"}
           size="icon-sm"
           className="ml-auto rounded-full"
-          disabled={!canSend}
-          onClick={submit}
+          // While a turn is in flight the button becomes the way to stop it, so
+          // it stays live rather than going inert with a mark spinning on it.
+          disabled={disabled ? !onCancel : !canSend}
+          onClick={disabled ? onCancel : submit}
         >
-          {disabled ? (
-            // The one place the rule can't span a real width. At button size the
-            // carriage still reads as motion, and `accent="currentColor"` keeps it
-            // visible against the primary fill.
-            <Throbber
-              mode="thinking"
-              className="h-4 w-4 text-primary-foreground"
-              accent="currentColor"
-            />
-          ) : (
-            <ArrowUp />
-          )}
+          {/* A stop glyph rather than a mark of activity: while a turn is in
+              flight this button *is* the way to stop it, and its own label says so.
+              What the model is doing is said once, by the throbber in the thread —
+              it does not also need saying at 32px inside a control. */}
+          {disabled ? <Square className="fill-current" /> : <ArrowUp />}
         </Button>
       </div>
     </div>

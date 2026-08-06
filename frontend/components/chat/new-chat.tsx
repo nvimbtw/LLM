@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 
 import { useChats } from "./chats-provider"
 import { ChatComposer } from "./chat-composer"
+import type { ThinkBudget } from "./budget-selector"
 
 export function NewChat() {
   const router = useRouter()
@@ -12,11 +13,15 @@ export function NewChat() {
   const [isSending, setIsSending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  async function handleSend(content: string, modelId: string) {
+  async function handleSend(
+    content: string,
+    modelId: string,
+    budget: ThinkBudget
+  ) {
     setIsSending(true)
     setError(null)
     try {
-      const chatId = await createChat(content, modelId)
+      const chatId = await createChat(content, modelId, budget)
       router.push(`/chat/${chatId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start a chat.")
@@ -31,9 +36,7 @@ export function NewChat() {
       </h1>
       <div className="w-full">
         <ChatComposer onSend={handleSend} disabled={isSending} />
-        {error && (
-          <p className="mt-2 text-sm text-destructive">{error}</p>
-        )}
+        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
       </div>
     </div>
   )

@@ -1,38 +1,156 @@
 "use client"
 
+import * as React from "react"
+
 import { Throbber } from "@/components/ui/throbber"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useBenchmark } from "@/hooks/use-benchmark"
-import { formatDuration } from "@/lib/benchmark"
+import {
+  BENCHMARK_SUITES,
+  formatDuration,
+  isLanguageReport,
+  isMarkupReport,
+} from "@/lib/benchmark"
+import { cn } from "@/lib/utils"
 
 import { CorpusPanel } from "./corpus-panel"
+import { MarkupPanel } from "./markup-panel"
+import { DurationPanel } from "./duration-panel"
 import { GenerationPanel } from "./generation-panel"
 import { GrammarPanel } from "./grammar-panel"
 import { HistoryPanel } from "./history-panel"
-import { RunBar } from "./run-bar"
+import { ModelFilter } from "./model-filter"
+import { TokensPanel } from "./tokens-panel"
 import { ScoreCard } from "./score-card"
 
+/**
+ * The benchmark page, in the order the questions get asked.
+ *
+ * Cross-run first — the curves and the table are how you find the run worth
+ * reading — then that run's report underneath. It used to open on one model's
+ * numbers with the history buried at the bottom, which answered "how did this one
+ * do" before "which one should I look at".
+ *
+ * Picking a row therefore has to take you to the report, since it is now below
+ * the fold: `select` remembers that a scroll is owed, and the effect below spends
+ * it once the fetched detail actually belongs to the row you clicked. Scrolling
+ * on click instead would aim at the previous model's report and land wrong when
+ * the new one swapped in at a different height.
+ */
 export function BenchmarkView() {
   const {
     runs,
-    suite,
     active,
     detail,
     selectedId,
     select,
-    start,
     remove,
     isLoading,
-    isStarting,
     error,
+    selectedSuite,
+    selectSuite,
   } = useBenchmark()
+
+  const reportRef = React.useRef<HTMLDivElement>(null)
+  const scrollOwedTo = React.useRef<string | null>(null)
+
+  // Models kept *off* the two figures. Stored as the hidden set rather than the
+  // visible one so a model that appears later — a benchmark finishing while the
+  // page is open, or the whole cast changing when you switch suite — is plotted by
+  // default instead of being filtered out by a selection made before it existed.
+  const [hidden, setHidden] = React.useState<Set<string>>(new Set())
+
+  const toggleModel = React.useCallback((model: string) => {
+    setHidden((current) => {
+      const next = new Set(current)
+      if (!next.delete(model)) next.add(model)
+      return next
+    })
+  }, [])
+  const showAllModels = React.useCallback(() => setHidden(new Set()), [])
+  const showOnlyModel = React.useCallback(
+    (model: string) => {
+      setHidden(
+        new Set(
+          runs.map((run) => run.model_name).filter((name) => name !== model)
+        )
+      )
+    },
+    [runs]
+  )
+
+  // What the two figures plot. The history table below is deliberately never
+  // filtered: hiding a model is about making a crowded plot readable, and a run
+  // missing from the table as well would read as a run that no longer exists.
+  const plotted = React.useMemo(
+    () => runs.filter((run) => !hidden.has(run.model_name)),
+    [runs, hidden]
+  )
+  // Derived from what is actually on this suite, not from `hidden.size`: the set
+  // survives a suite switch, and a name left in it that no run here carries is not a
+  // filter this page is under.
+  const filtered = plotted.length < runs.length
+
+  const selectAndReveal = React.useCallback(
+    (id: string) => {
+      scrollOwedTo.current = id
+      select(id)
+    },
+    [select]
+  )
+
+  React.useEffect(() => {
+    if (!detail || scrollOwedTo.current !== detail.id_run) return
+    scrollOwedTo.current = null
+    reportRef.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+      block: "start",
+    })
+  }, [detail])
+
+  const switcher = (
+    // Two benchmarks, not two views of one. The blurb is under the tabs rather than
+    // in a tooltip because "which of these am I looking at" is the first question
+    // anyone arriving here has, and the scores are not comparable across them.
+    <div className="flex flex-col gap-2">
+      <div
+        role="tablist"
+        aria-label="Benchmark"
+        className="inline-flex self-start rounded-md border border-border p-0.5"
+      >
+        {BENCHMARK_SUITES.map((suite) => (
+          <button
+            key={suite.id}
+            role="tab"
+            type="button"
+            aria-selected={selectedSuite === suite.id}
+            onClick={() => selectSuite(suite.id)}
+            className={cn(
+              "rounded px-3 py-1.5 text-sm transition-colors",
+              selectedSuite === suite.id
+                ? "bg-muted font-medium text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {suite.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {BENCHMARK_SUITES.find((s) => s.id === selectedSuite)?.blurb}
+      </p>
+    </div>
+  )
 
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
-        <Skeleton className="h-16 rounded-xl" />
-        <Skeleton className="h-40 rounded-xl" />
-        <Skeleton className="h-72 rounded-xl" />
+        {switcher}
+        <Skeleton className="h-72 rounded-lg" />
+        <Skeleton className="h-40 rounded-lg" />
+        <Skeleton className="h-16 rounded-lg" />
       </div>
     )
   }
@@ -41,44 +159,80 @@ export function BenchmarkView() {
 
   return (
     <div className="flex flex-col gap-6">
-      <RunBar suite={suite} active={active} isStarting={isStarting} onStart={start} />
-
+      {switcher}
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {report && detail ? (
-        <>
-          <ScoreCard report={report} modelName={detail.model_name} />
-          <GrammarPanel grammar={report.grammar} />
-          <CorpusPanel corpus={report.corpus} />
-          <GenerationPanel generation={report.generation} />
-          <p className="text-[11px] text-muted-foreground/60 tabular-nums">
-            Completed in {formatDuration(report.duration_secs)}.
-          </p>
-        </>
-      ) : active ? (
-        // The first run of all has no earlier report to sit under, which would
-        // otherwise leave the page empty while the GPU works. The mark fills that
-        // space and reads as "measuring" rather than "stalled".
-        <div className="flex flex-col gap-5 rounded-xl border border-dashed border-border/60 px-6 py-12">
-          <Throbber mode="benchmarking" className="h-6 w-full" />
-          <p className="text-center text-sm text-muted-foreground">
-            {active.progress?.stage ?? "Starting…"}
-          </p>
-          <p className="text-center text-[11px] text-muted-foreground/60">
-            Scoring {active.model_name}. This takes a minute or two on the GPU.
-          </p>
-        </div>
-      ) : (
-        // Failed runs carry their error in the history row, so this only has to
-        // cover "nothing selected yet".
-        <p className="rounded-xl border border-dashed border-border/60 px-5 py-10 text-center text-sm text-muted-foreground">
-          {detail?.status === "failed"
-            ? (detail.error ?? "This run failed.")
-            : "Select a run below, or benchmark a model to get started."}
-        </p>
-      )}
+      {/* Cross-run views: they read the whole history rather than the selected
+          run, and they are what the page opens on.
 
-      <HistoryPanel runs={runs} selectedId={selectedId} onSelect={select} onDelete={remove} />
+          Full width, one above the other. They used to sit side by side, which
+          halved the plot each figure got: a scatter's whole job is separating
+          points that are close together, and at 480px with a name beside every
+          dot there was no room left to separate anything. Two tall figures read
+          better than four small quadrants, and neither is compared to the other
+          mark-for-mark — they share a y axis and nothing else. */}
+      <ModelFilter
+        runs={runs}
+        hidden={hidden}
+        onToggle={toggleModel}
+        onShowAll={showAllModels}
+        onOnly={showOnlyModel}
+      />
+      <TokensPanel runs={plotted} filtered={filtered} />
+      <DurationPanel runs={plotted} filtered={filtered} />
+
+      <HistoryPanel
+        runs={runs}
+        selectedId={selectedId}
+        onSelect={selectAndReveal}
+        onDelete={remove}
+      />
+
+      {/* scroll-mt keeps the heading clear of the sticky app header when a row
+          jumps here, rather than tucking it just underneath. */}
+      <div ref={reportRef} className="flex scroll-mt-6 flex-col gap-6">
+        {report && detail ? (
+          <>
+            <ScoreCard report={report} modelName={detail.model_name} />
+            {isMarkupReport(report) ? (
+              <MarkupPanel report={report} />
+            ) : isLanguageReport(report) ? (
+              <>
+                <div className="grid gap-6 xl:grid-cols-2">
+                  <GrammarPanel grammar={report.grammar} />
+                  <CorpusPanel corpus={report.corpus} />
+                </div>
+                <GenerationPanel generation={report.generation} />
+              </>
+            ) : null}
+            <p className="text-xs text-muted-foreground tabular-nums">
+              Completed in {formatDuration(report.duration_secs)}.
+            </p>
+          </>
+        ) : active ? (
+          // The first run of all has no earlier report to sit under, which would
+          // otherwise leave the page empty while the GPU works. The mark fills that
+          // space and reads as "measuring" rather than "stalled".
+          <div className="flex flex-col items-center gap-5 rounded-lg border border-dashed border-border px-6 py-12">
+            <Throbber mode="benchmarking" />
+            <p className="text-center text-sm text-muted-foreground">
+              Scoring in progress.
+            </p>
+            <p className="text-center text-xs text-muted-foreground">
+              Scoring {active.model_name}. This takes a minute or two on the
+              GPU.
+            </p>
+          </div>
+        ) : (
+          // Failed runs carry their error in the history row, so this only has to
+          // cover "nothing selected yet".
+          <p className="rounded-lg border border-dashed border-border px-5 py-10 text-center text-sm text-muted-foreground">
+            {detail?.status === "failed"
+              ? (detail.error ?? "This run failed.")
+              : "Select a run above, or queue a benchmark from the jobs page."}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

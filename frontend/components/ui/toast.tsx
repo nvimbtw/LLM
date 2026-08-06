@@ -55,7 +55,7 @@ function ToastList() {
         className={cn(
           "relative flex items-start gap-3 overflow-hidden rounded-lg border border-border bg-popover bg-clip-padding py-3 pr-3 pl-4 text-popover-foreground shadow-md",
           "before:absolute before:inset-y-0 before:left-0 before:w-1 before:content-['']",
-          "transition-all duration-200 ease-out data-ending-style:opacity-0 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-starting-style:translate-x-4",
+          "transition-all duration-200 ease-out data-ending-style:translate-x-4 data-ending-style:opacity-0 data-starting-style:translate-x-4 data-starting-style:opacity-0",
           RAIL_BY_TYPE[type]
         )}
       >
@@ -68,7 +68,13 @@ function ToastList() {
           )}
         </div>
         <ToastPrimitive.Close
-          render={<Button variant="ghost" size="icon-sm" className="-mt-1 -mr-1 size-6 shrink-0" />}
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="-mt-1 -mr-1 size-6 shrink-0"
+            />
+          }
           aria-label="Dismiss"
         >
           <XIcon className="size-3.5" />

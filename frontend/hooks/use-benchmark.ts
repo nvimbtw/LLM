@@ -2,23 +2,30 @@
 
 import * as React from "react"
 
+import { toast } from "@/components/ui/toast"
 import {
   type BenchmarkRun,
   type BenchmarkRunDetail,
+  type BenchmarkSuite,
   type SuiteInfo,
   deleteRun as apiDeleteRun,
   getRun,
   getSuite,
   listRuns,
-  startRun,
 } from "@/lib/benchmark"
 
-// Poll interval while a run is in flight. A run takes tens of seconds and its
-// progress is reported at stage boundaries, so a second is responsive without
-// hammering the API; polling stops entirely once nothing is running.
-const POLL_MS = 1000
+// Poll interval while a run is in flight. This page is history: it only needs to
+// notice a run *finishing* so it can select the fresh report. Live progress is on
+// /jobs, which is pushed rather than polled — so a couple of seconds is plenty,
+// and polling stops entirely once nothing is running.
+const POLL_MS = 2000
 
 export function useBenchmark() {
+  // Which of the two benchmarks the page is showing. Everything below is scoped to
+  // it: the history, the selection, and — importantly — `active`. Without the
+  // scoping, queueing both suites for one model would show the markup run's spinner
+  // over the language page and then select the wrong report when it finished.
+  const [selected, setSelected] = React.useState<BenchmarkSuite>("language")
   const [runs, setRuns] = React.useState<BenchmarkRun[]>([])
   const [suite, setSuite] = React.useState<SuiteInfo | null>(null)
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
@@ -27,31 +34,48 @@ export function useBenchmark() {
   // previous run's report — without having to clear state from an effect.
   const [fetched, setFetched] = React.useState<BenchmarkRunDetail | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
-  const [isStarting, setIsStarting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const active = runs.find((run) => run.status === "running") ?? null
 
   const refresh = React.useCallback(async () => {
-    const list = await listRuns()
+    const list = await listRuns(selected)
     setRuns(list)
     return list
-  }, [])
+  }, [selected])
 
-  // Initial load: history plus whether the reference corpus is installed.
+  // Switching suite clears the selection and the fetched report here, in the
+  // handler, rather than from the effect below: a language run id means nothing in
+  // the markup history, and clearing it in an effect would cascade a render.
+  const selectSuite = React.useCallback(
+    (next: BenchmarkSuite) => {
+      if (next === selected) return
+      setSelected(next)
+      setRuns([])
+      setSelectedId(null)
+      setFetched(null)
+      setIsLoading(true)
+    },
+    [selected]
+  )
+
+  // History for the chosen suite, plus what the suite has installed on disk.
   React.useEffect(() => {
     let alive = true
-    Promise.all([listRuns(), getSuite()])
+    Promise.all([listRuns(selected), getSuite()])
       .then(([list, info]) => {
         if (!alive) return
         setRuns(list)
         setSuite(info)
         // Land on the newest finished run so the page has something to show
         // instead of an empty frame.
-        setSelectedId((current) => current ?? list.find((r) => r.status === "done")?.id_run ?? null)
+        setSelectedId(list.find((r) => r.status === "done")?.id_run ?? null)
       })
       .catch((err) => {
-        if (alive) setError(err instanceof Error ? err.message : "Failed to load benchmarks.")
+        if (alive)
+          setError(
+            err instanceof Error ? err.message : "Failed to load benchmarks."
+          )
       })
       .finally(() => {
         if (alive) setIsLoading(false)
@@ -59,20 +83,22 @@ export function useBenchmark() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [selected])
 
   // Poll only while something is running.
   React.useEffect(() => {
     if (!active) return
     let alive = true
     const timer = setInterval(() => {
-      listRuns()
+      listRuns(selected)
         .then((list) => {
           if (!alive) return
           setRuns(list)
           // The moment the run we were watching finishes, select it — the whole
           // point of starting a run is to see its report.
-          const finished = list.find((r) => r.id_run === active.id_run && r.status !== "running")
+          const finished = list.find(
+            (r) => r.id_run === active.id_run && r.status !== "running"
+          )
           if (finished) setSelectedId(finished.id_run)
         })
         .catch(() => {
@@ -84,7 +110,7 @@ export function useBenchmark() {
       alive = false
       clearInterval(timer)
     }
-  }, [active])
+  }, [active, selected])
 
   // Fetch the full report whenever the selection changes. Summaries in the list
   // deliberately omit it (a report embeds generated text), so it's loaded on demand.
@@ -96,41 +122,30 @@ export function useBenchmark() {
         if (alive) setFetched(run)
       })
       .catch((err) => {
-        if (alive) setError(err instanceof Error ? err.message : "Failed to load run.")
+        if (alive)
+          setError(err instanceof Error ? err.message : "Failed to load run.")
       })
     return () => {
       alive = false
     }
   }, [selectedId, runs])
 
-  const start = React.useCallback(
-    async (modelId: string) => {
-      setIsStarting(true)
-      setError(null)
-      try {
-        const run = await startRun(modelId)
-        setSelectedId(run.id_run)
-        await refresh()
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to start benchmark.")
-      } finally {
-        setIsStarting(false)
-      }
-    },
-    [refresh]
-  )
-
   const remove = React.useCallback(
     async (id: string) => {
-      setError(null)
       try {
         await apiDeleteRun(id)
+        toast.success("Run deleted.")
         const list = await refresh()
         setSelectedId((current) =>
-          current === id ? (list.find((r) => r.status === "done")?.id_run ?? null) : current
+          current === id
+            ? (list.find((r) => r.status === "done")?.id_run ?? null)
+            : current
         )
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to delete run.")
+        toast.error(
+          "Couldn't delete the run",
+          err instanceof Error ? err.message : "Something went wrong."
+        )
       }
     },
     [refresh]
@@ -139,14 +154,14 @@ export function useBenchmark() {
   return {
     runs,
     suite,
+    selectedSuite: selected,
+    selectSuite,
     active,
     detail: fetched?.id_run === selectedId ? fetched : null,
     selectedId,
     select: setSelectedId,
-    start,
     remove,
     isLoading,
-    isStarting,
     error,
     dismissError: () => setError(null),
   }

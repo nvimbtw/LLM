@@ -74,7 +74,7 @@ export function ModelSelector({
                 )}
               >
                 <span className="font-medium tracking-tight">{family}</span>
-                <span className="ml-auto text-[11px] tabular-nums text-muted-foreground/50">
+                <span className="ml-auto text-xs text-muted-foreground tabular-nums">
                   {familyModels.length}
                 </span>
               </DropdownMenuSubTrigger>
@@ -94,9 +94,11 @@ export function ModelSelector({
                             isActive ? "opacity-100" : "opacity-0"
                           )}
                         />
-                        <span className={cn(isActive && "font-medium")}>{model.name}</span>
+                        <span className={cn(isActive && "font-medium")}>
+                          {model.name}
+                        </span>
                       </span>
-                      <span className="ml-auto text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/60">
+                      <span className="ml-auto text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
                         {model.tier}
                       </span>
                     </DropdownMenuItem>

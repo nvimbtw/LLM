@@ -10,6 +10,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { Progress } from "@/components/ui/progress"
+import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import {
   axisProps,
   batchRamp,
@@ -19,16 +20,20 @@ import {
   VOCAB_COLOR,
   yAxisProps,
 } from "@/components/training/chart-theme"
-import { EmbeddingGlobe } from "@/components/training/embedding-globe"
-import { Figure, FigurePlaceholder, StatRun, type Stat } from "@/components/training/stat-run"
+import {
+  Figure,
+  FigurePlaceholder,
+  StatRun,
+  type Stat,
+} from "@/components/training/stat-run"
 import { cn } from "@/lib/utils"
 import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
 import type {
   CurriculumStage,
-  JobStatus,
+  RunPhase,
   TokenizeStats,
   TrainStats,
-} from "@/lib/training-socket"
+} from "@/lib/training"
 
 function compact(n: number | undefined): string {
   if (n == null) return "—"
@@ -121,14 +126,17 @@ function CurriculumProgress({
         </span>
         <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
           Stage {activeIdx + 1} / {stages.length}
-          <span className="mx-1.5 text-muted-foreground/40">·</span>
+          <span className="mx-1.5 text-muted-foreground">·</span>
           <span className="text-foreground">{activeName}</span>
         </span>
       </div>
 
       <div className="flex items-stretch gap-1">
         {stages.map((stage, i) => {
-          const frac = Math.min(1, Math.max(0, (epochPos - starts[i]) / weights[i]))
+          const frac = Math.min(
+            1,
+            Math.max(0, (epochPos - starts[i]) / weights[i])
+          )
           const isActive = i === activeIdx && !done
           return (
             <div
@@ -150,8 +158,8 @@ function CurriculumProgress({
               </div>
               <span
                 className={cn(
-                  "truncate text-[10px] tabular-nums",
-                  isActive ? "text-foreground" : "text-muted-foreground/70"
+                  "truncate text-xs tabular-nums",
+                  isActive ? "text-foreground" : "text-muted-foreground"
                 )}
               >
                 {stage.name?.trim() || `Stage ${i + 1}`}
@@ -165,7 +173,7 @@ function CurriculumProgress({
 }
 
 export interface TelemetryProps {
-  status: JobStatus | null
+  status: RunPhase | null
   isSft: boolean
   tokenize: Partial<TokenizeStats>
   train: Partial<TrainStats>
@@ -175,9 +183,25 @@ export interface TelemetryProps {
   // The run's curriculum stages (empty for a plain single-pass run), for the hero's
   // stage indicator + segmented curriculum progress bar.
   curriculum: CurriculumStage[]
-  // Per-report 3-D embedding projections — the hero's small spinning globe. Empty
-  // until the first diagnostics sample lands.
-  emb3Frames: [number, number, number][][]
+}
+
+/**
+ * Which mark the hero corner shows for a run's phase.
+ *
+ * Deliberately not one throbber mode per `RunPhase`: the mark says what the GPU is
+ * doing, and phase 1 (building a dataset) is not training however the run labels
+ * it. A finished run keeps the mark rather than dropping it, at rest — an empty
+ * corner where something was reads as a component that failed to render.
+ */
+function phaseMode(status: RunPhase | null): ThrobberMode {
+  switch (status) {
+    case "tokenizing":
+      return "loading"
+    case "training":
+      return "training"
+    default:
+      return "idle"
+  }
 }
 
 // The main column's live telemetry: a stat run pinned at the top, a thin progress
@@ -193,7 +217,6 @@ export function Telemetry({
   vocabSeries,
   batchSeries,
   curriculum,
-  emb3Frames,
 }: TelemetryProps) {
   const tokenizing = status === "tokenizing"
   // The training figure is the hero from the moment training starts through done.
@@ -215,7 +238,12 @@ export function Telemetry({
       ]
     : isSft
       ? [
-          { label: "Conversations", value: compact(tokenize.conversations) },
+          {
+            label: "Conversations",
+            // KTO names the same count `examples`; both are "how many of the
+            // things this mode trains on did phase 1 find".
+            value: compact(tokenize.conversations ?? tokenize.examples),
+          },
           { label: "Total tokens", value: compact(tokenize.total_tokens) },
           { label: "Trainable", value: compact(tokenize.trainable_tokens) },
         ]
@@ -305,23 +333,22 @@ export function Telemetry({
     [epochs, epochColor]
   )
 
-  // The hero's spinning embedding globe: only once training is underway and the
-  // first projection has landed, and given the horizontal room beside the stat run.
-  const showGlobe = trainPhase && (emb3Frames.at(-1)?.length ?? 0) >= 2
-
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0 flex-1">
           <StatRun stats={stats} />
         </div>
-        {showGlobe && (
-          <EmbeddingGlobe
-            frames={emb3Frames}
-            variant="mini"
-            className="hidden size-24 shrink-0 self-start sm:block"
-          />
-        )}
+        {/* The site's own mark, where a mini copy of the embedding globe used to
+            sit. The globe is a *figure* — it shows the token cloud's principal
+            axes — and up here, at 96px with no axes or caption, it read as
+            decoration while the real one (with its explanation) sits in the
+            diagnostics panel below. The throbber says the one thing this corner
+            should: which phase the run is in, and that it is still moving. */}
+        <Throbber
+          mode={phaseMode(status)}
+          className="hidden self-start sm:block"
+        />
       </div>
 
       <div className="space-y-1.5">
@@ -378,7 +405,9 @@ export function Telemetry({
                     background: `linear-gradient(to right, ${lossEpochColor(1, totalEpochs)}, ${lossEpochColor(totalEpochs, totalEpochs)})`,
                   }}
                 />
-                <span style={{ color: lossEpochColor(totalEpochs, totalEpochs) }}>
+                <span
+                  style={{ color: lossEpochColor(totalEpochs, totalEpochs) }}
+                >
                   late
                 </span>
               </span>
@@ -386,7 +415,10 @@ export function Telemetry({
           }
         >
           {loss.length > 1 ? (
-            <ChartContainer config={lossChartConfig} className="aspect-auto h-64 w-full">
+            <ChartContainer
+              config={lossChartConfig}
+              className="aspect-auto h-64 w-full"
+            >
               <LineChart data={rows} margin={{ left: 4, right: 4, top: 4 }}>
                 <CartesianGrid {...gridProps} />
                 <XAxis
@@ -403,7 +435,9 @@ export function Telemetry({
                 />
                 <ChartTooltip
                   cursor={false}
-                  content={<ChartTooltipContent labelFormatter={(v) => `Chunk ${v}`} />}
+                  content={
+                    <ChartTooltipContent labelFormatter={(v) => `Chunk ${v}`} />
+                  }
                 />
                 {epochs.map((e) => (
                   <Line
@@ -421,7 +455,9 @@ export function Telemetry({
               </LineChart>
             </ChartContainer>
           ) : (
-            <FigurePlaceholder>Waiting for the first loss values…</FigurePlaceholder>
+            <FigurePlaceholder>
+              Waiting for the first loss values…
+            </FigurePlaceholder>
           )}
         </Figure>
       ) : (
@@ -433,11 +469,20 @@ export function Telemetry({
           }
         >
           {!isSft && vocabSeries.length > 1 ? (
-            <ChartContainer config={vocabChartConfig} className="aspect-auto h-64 w-full">
-              <LineChart data={vocabSeries} margin={{ left: 4, right: 4, top: 4 }}>
+            <ChartContainer
+              config={vocabChartConfig}
+              className="aspect-auto h-64 w-full"
+            >
+              <LineChart
+                data={vocabSeries}
+                margin={{ left: 4, right: 4, top: 4 }}
+              >
                 <CartesianGrid {...gridProps} />
                 <XAxis dataKey="merges" {...axisProps} />
-                <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
+                <ChartTooltip
+                  cursor={false}
+                  content={<ChartTooltipContent />}
+                />
                 <Line
                   dataKey="vocab"
                   type="linear"
@@ -467,8 +512,14 @@ export function Telemetry({
           minHeight="12rem"
         >
           {batchSeries.length > 1 ? (
-            <ChartContainer config={batchChartConfig} className="aspect-auto h-48 w-full">
-              <LineChart data={batchSeries} margin={{ left: 4, right: 4, top: 4 }}>
+            <ChartContainer
+              config={batchChartConfig}
+              className="aspect-auto h-48 w-full"
+            >
+              <LineChart
+                data={batchSeries}
+                margin={{ left: 4, right: 4, top: 4 }}
+              >
                 <CartesianGrid {...gridProps} />
                 <XAxis
                   dataKey="step"
@@ -479,7 +530,9 @@ export function Telemetry({
                 <YAxis domain={["auto", "auto"]} {...yAxisProps} />
                 <ChartTooltip
                   cursor={false}
-                  content={<ChartTooltipContent labelFormatter={(v) => `Step ${v}`} />}
+                  content={
+                    <ChartTooltipContent labelFormatter={(v) => `Step ${v}`} />
+                  }
                 />
                 {(["max", "avg", "min"] as const).map((key) => (
                   <Line

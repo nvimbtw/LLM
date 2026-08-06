@@ -67,7 +67,10 @@ export function handleSessionExpired() {
  * authenticated call; the thrown error still rejects the caller's promise so
  * in-flight UI settles.
  */
-export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {}
+): Promise<Response> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: { ...authHeaders(), ...(init.headers ?? {}) },
