@@ -965,20 +965,20 @@ mod judge_tests {
     use db::benchmark::RoundEvidence;
 
     // The standard errors each suite actually reports at this model size. Language is
-    // ~0.95 per run and markup ~1.3 (both measured); the assistant suite's ~0.83 falls
-    // out of propagating a ~0.015 bits/byte error through the mapping's 55.6 points per
-    // bit. A margin is `sqrt(2)` times these: 1.34, 1.84 and 1.18 respectively.
+    // ~0.95 per run and markup ~1.3 (both measured); the assistant suite's ~0.66 falls
+    // out of propagating a ~0.012 bits/byte error through the mapping's 55.6 points per
+    // bit. A margin is `sqrt(2)` times these: 1.34, 1.84 and 0.93 respectively.
     const LANGUAGE_SE: f64 = 0.95;
     const MARKUP_SE: f64 = 1.3;
-    const REPLY_SE: f64 = 0.83;
+    const REPLY_SE: f64 = 0.66;
 
-    // A measured base and its fine-tune: Balanced 1 at 1.6151 bits/byte and Balanced
-    // 1.01 at 1.5489, which the suite maps to these. Read in this direction the round
-    // is unmistakably a *rise*, because the suite inverts the cost rather than leaving
-    // the reader to — and under version 1 the same pair scored 0.80 and 0.81, inside
-    // one error bar, which is what a saturated mapping does to a real 3.6-point gain.
-    const REPLIES_GOOD: f64 = 53.94;
-    const REPLIES_BAD: f64 = 50.27;
+    // A round that moved the assistant suite by 0.05 bits/byte, which the mapping
+    // turns into these. Read in this direction it is unmistakably a *rise*, because
+    // the suite inverts the cost rather than leaving the reader to — and under
+    // version 1 a gain that size landed inside one error bar, which is what a
+    // saturated mapping does to real progress.
+    const REPLIES_GOOD: f64 = 51.39;
+    const REPLIES_BAD: f64 = 48.61;
 
     fn cmp(name: &'static str, bar: f64, round: f64, stderr: f64) -> SuiteComparison {
         SuiteComparison {
@@ -1055,7 +1055,7 @@ mod judge_tests {
         ]);
         assert!(!verdict.accept, "{}", verdict.note);
         assert!(verdict.note.contains("replies"), "{}", verdict.note);
-        assert!(verdict.note.contains("-3.6700"), "{}", verdict.note);
+        assert!(verdict.note.contains("-2.7800"), "{}", verdict.note);
         assert!(verdict.note.contains("worse"), "{}", verdict.note);
     }
 
@@ -1067,7 +1067,7 @@ mod judge_tests {
             replies(REPLIES_BAD, REPLIES_GOOD),
         ]);
         assert!(verdict.accept, "{}", verdict.note);
-        assert!(verdict.note.contains("+3.6700"), "{}", verdict.note);
+        assert!(verdict.note.contains("+2.7800"), "{}", verdict.note);
         assert!(verdict.note.contains("accepted on replies"), "{}", verdict.note);
     }
 

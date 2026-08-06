@@ -1460,6 +1460,20 @@ pub enum ChatDestination {
     Eval,
 }
 
+/// Most conversations `export_chat_eval_set` will write, however large the eval
+/// share grows.
+///
+/// 1,000 rather than the 305 the suite ran on before, because the error bar is what
+/// the cycle's gate is built on. Measured: `bits_per_byte_stderr` fell from ~0.015
+/// to ~0.012 and the score's from ~0.83 points to ~0.66. Less than the 1/sqrt(n)
+/// that count suggests, because the sampling unit is the conversation and the
+/// clustering is what it is — which is also why pushing to ten thousand would buy
+/// little against a linear cost in benchmark time.
+///
+/// **Changing it re-partitions the holdout and invalidates comparability**, exactly
+/// as the share constants do. Bump `ASSISTANT_SCORE_VERSION` with it.
+const MAX_HELDOUT_CONVERSATIONS: usize = 1_000;
+
 
 // FNV-1a over the conversation's content.
 //
@@ -1600,10 +1614,27 @@ pub fn export_chat_eval_set() -> io::Result<usize> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e),
     };
-    let held_out: Vec<&SftConversation> = conversations
+    let mut held_out: Vec<&SftConversation> = conversations
         .iter()
         .filter(|c| chat_destination(c) == ChatDestination::Eval)
         .collect();
+
+    // The eval share is a *fraction*, so it grows without bound with the source set:
+    // at 454k imported conversations it is ~68,000, and the assistant suite is one
+    // forward pass each. That is a 2.5-hour benchmark where it used to be 40
+    // seconds, run three times per cycle round — enough to make the cycle unusable
+    // while measuring nothing the first thousand did not already measure.
+    //
+    // Selected by the same content hash the split uses, lowest first. That is stable
+    // in the way that matters: a conversation's place in the order depends only on
+    // itself, so re-running the exporter over the same set gives the same holdout,
+    // and the set is spread across the whole corpus rather than being its first
+    // files. Adding conversations can still displace one — no cap avoids that — but
+    // nothing already selected moves on its own.
+    if held_out.len() > MAX_HELDOUT_CONVERSATIONS {
+        held_out.sort_by_key(|c| conversation_hash(c));
+        held_out.truncate(MAX_HELDOUT_CONVERSATIONS);
+    }
 
 
     let dir = storage::eval_dir().join("chat");
@@ -3102,6 +3133,44 @@ mod sft_tests {
         assert!((share(sft) - CHAT_SHARE_SFT as f64).abs() < 5.0, "{}", share(sft));
         let expected_eval = 100 - CHAT_SHARE_PRETRAIN - CHAT_SHARE_SFT;
         assert!((share(eval) - expected_eval as f64).abs() < 5.0, "{}", share(eval));
+    }
+
+    // The eval share is a fraction of the source set, so an import of a few hundred
+    // thousand conversations makes the assistant suite a multi-hour job. The cap is
+    // what stops that, and it has to select the *same* conversations every time or
+    // the benchmark measures a different holdout on every run.
+    #[test]
+    fn the_held_out_cap_is_bounded_and_reproducible() {
+        let all: Vec<SftConversation> = (0..MAX_HELDOUT_CONVERSATIONS * 20)
+            .map(|i| conversation(&format!("question {i}"), &format!("reply {i}")))
+            .collect();
+
+        let select = || {
+            let mut held: Vec<&SftConversation> = all
+                .iter()
+                .filter(|c| chat_destination(c) == ChatDestination::Eval)
+                .collect();
+            assert!(
+                held.len() > MAX_HELDOUT_CONVERSATIONS,
+                "the fixture must be large enough for the cap to bite",
+            );
+            held.sort_by_key(|c| conversation_hash(c));
+            held.truncate(MAX_HELDOUT_CONVERSATIONS);
+            held.iter().map(|c| conversation_hash(c)).collect::<Vec<_>>()
+        };
+
+        let first = select();
+        assert_eq!(first.len(), MAX_HELDOUT_CONVERSATIONS);
+        assert_eq!(first, select(), "the same set must produce the same holdout");
+
+        // Every selected conversation is genuinely in the eval share — the cap must
+        // narrow the holdout, never reach into what training is allowed to see.
+        for conversation in all
+            .iter()
+            .filter(|c| first.contains(&conversation_hash(c)))
+        {
+            assert_eq!(chat_destination(conversation), ChatDestination::Eval);
+        }
     }
 
     // The system prompt is part of the conversation, so two otherwise-identical

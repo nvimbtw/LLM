@@ -580,27 +580,32 @@ pub const ASSISTANT_SCORE_VERSION: u32 = 2;
 // constant. A byte is the same byte under any tokenizer; this cannot recur.
 //
 // MID is the mean of the cohort on disk, so the steepest part of the response sits
-// where models actually are. Measured over all six, each under its own tokenizer:
+// where models actually are. Measured over all six against the smol-smoltalk holdout,
+// each under its own tokenizer:
 //
-//   Shakedown 1      1.6579   ->  Shakedown 1.01      1.5572   (+5.5 points)
-//   Balanced 1       1.6151   ->  Balanced 1.01       1.5489   (+3.6)
-//   Balanced 1 NT    1.7221   ->  Balanced 1.01 NT    1.6434   (+4.4)
+//   Shakedown 1      1.6046   ->  Shakedown 1.01      1.6061   (-0.1 points)
+//   Balanced 1       1.6057   ->  Balanced 1.01       1.6110   (-0.3)
+//   Balanced 1 NT    1.5973   ->  Balanced 1.01 NT    1.5934   (+0.2)
 //
-// Every fine-tune beats its own base, which is the property the suite exists to
-// report and which version 1 could not: it scored that whole table between 0.79 and
-// 1.02, all six inside one error bar of each other.
+// **None of the fine-tunes beats its base any more, and that is the honest answer
+// rather than a broken suite.** Against the *previous* holdout each won by 3.6-5.6
+// points — but that holdout was drawn from the same self-generated set they were
+// tuned on, so what it measured was register agreement, not assistant ability.
+// Scored against instruction data none of them has seen, the gain is gone. Every
+// model here predates the corpus swap; the first fine-tune trained on it is the one
+// that has something to prove.
 //
 // SCALE sets the dynamic range, not the resolution — signal and noise scale together
-// under it. Peak slope is 100/(4·SCALE) = 55.6 points per bit/byte, so the ~0.08
-// bits/byte an SFT round moves is worth ~4 points against a `bits_per_byte_stderr` of
-// ~0.015, i.e. ~0.8 points per run and ~1.2 on a difference. Comfortably resolvable,
-// which is the property version 1 lost.
+// under it. Peak slope is 100/(4·SCALE) = 55.6 points per bit/byte, against a
+// `bits_per_byte_stderr` of ~0.012 at the 1,000-conversation holdout, i.e. ~0.66
+// points per run and ~0.9 on a difference. A 0.05 bits/byte move — small for a
+// fine-tune that actually matches its data — is worth ~2.8 points, three margins.
 //
 // Deliberately *not* shared with the language suite's constants despite the shared
 // unit. Chat replies carry markup and prose does not, so the two distributions are
 // not the same distribution, and one suite's calibration drifting into the other's is
 // how they would stop being independently versioned.
-const CHAT_BPB_MID: f64 = 1.62;
+const CHAT_BPB_MID: f64 = 1.60;
 const CHAT_BPB_SCALE: f64 = 0.45;
 
 /// Runs the assistant suite. Same contract as the other two: blocking, GPU-bound,
@@ -1720,8 +1725,8 @@ mod tests {
     // being blocked. The inversion belongs here, once, not in the reader's head.
     #[test]
     fn fewer_bits_per_reply_byte_scores_higher() {
-        let better = assistant_score(&chat_of(1.5489, 0.015)).score;
-        let worse = assistant_score(&chat_of(1.7221, 0.015)).score;
+        let better = assistant_score(&chat_of(1.55, 0.012)).score;
+        let worse = assistant_score(&chat_of(1.70, 0.012)).score;
         assert!(better > worse, "{better} should beat {worse}");
     }
 
@@ -1731,12 +1736,12 @@ mod tests {
     // recorded score does.
     #[test]
     fn the_mapping_sits_where_the_current_cohort_does() {
-        let at = |bits| (assistant_score(&chat_of(bits, 0.015)).score * 1e4).round() / 1e4;
+        let at = |bits| (assistant_score(&chat_of(bits, 0.012)).score * 1e4).round() / 1e4;
         assert_eq!(at(CHAT_BPB_MID), 50.0);
-        // The measured ends of the cohort — Balanced 1 NT and Balanced 1.01 — land
-        // either side of the midpoint and nowhere near an asymptote.
-        assert!((at(1.7221) - 44.35).abs() < 0.1, "worst of the cohort: {}", at(1.7221));
-        assert!((at(1.5489) - 53.94).abs() < 0.1, "best of the cohort: {}", at(1.5489));
+        // The measured ends of the cohort — Balanced 1.01 NT and Balanced 1.01 —
+        // land either side of the midpoint and nowhere near an asymptote.
+        assert!((at(1.6110) - 49.39).abs() < 0.1, "worst of the cohort: {}", at(1.6110));
+        assert!((at(1.5934) - 50.37).abs() < 0.1, "best of the cohort: {}", at(1.5934));
     }
 
     // **The regression this version exists to prevent.** Every model on disk scored
@@ -1746,36 +1751,37 @@ mod tests {
     // keep the cohort inside the part of the curve that can still move.
     #[test]
     fn the_cohort_is_not_pinned_against_an_asymptote() {
-        let cohort = [1.5489, 1.5572, 1.6151, 1.6434, 1.6579, 1.7221];
-        let scores: Vec<f64> = cohort.iter().map(|&b| assistant_score(&chat_of(b, 0.015)).score).collect();
-        let (lo, hi) = (
-            scores.iter().cloned().fold(f64::INFINITY, f64::min),
-            scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-        );
-        assert!(lo > 20.0 && hi < 80.0, "cohort spans {lo:.1}..{hi:.1}, off the steep region");
-        assert!(hi - lo > 5.0, "cohort spans only {:.1} points; too flat to gate on", hi - lo);
-    }
-
-    // A fine-tune must out-score its own base by more than the gate's noise floor.
-    // The three pairs on disk, each measured under its own tokenizer.
-    #[test]
-    fn every_fine_tune_beats_its_base_by_more_than_the_error_bar() {
-        for (base, tuned, name) in [
-            (1.6579, 1.5572, "Shakedown 1"),
-            (1.6151, 1.5489, "Balanced 1"),
-            (1.7221, 1.6434, "Balanced 1 NT"),
-        ] {
-            let base = assistant_score(&chat_of(base, 0.015));
-            let tuned = assistant_score(&chat_of(tuned, 0.015));
-            // The error bar on a *difference* of two runs, as `jobs::cycle` derives it.
-            let margin = (base.score_stderr.powi(2) + tuned.score_stderr.powi(2)).sqrt();
+        let cohort = [1.5934, 1.5973, 1.6046, 1.6057, 1.6061, 1.6110];
+        for bits in cohort {
+            let score = assistant_score(&chat_of(bits, 0.012)).score;
             assert!(
-                tuned.score - base.score > margin,
-                "{name}: {:.2} -> {:.2} is inside the {margin:.2} margin",
-                base.score,
-                tuned.score,
+                (20.0..80.0).contains(&score),
+                "{bits} bits/byte scores {score:.1}, off the steep region",
             );
         }
+    }
+
+    // **The property version 1 actually lost**, and the one worth pinning: a real
+    // improvement has to clear the gate's own noise floor.
+    //
+    // Deliberately *not* stated as "each fine-tune on disk beats its base" — since
+    // the corpus swap none of them does, because they were tuned on the set the old
+    // holdout was drawn from and this one is independent of them. That is a fact
+    // about those six models, not about the mapping, so asserting it here would pin
+    // the scoring function to a cohort that is about to be replaced.
+    #[test]
+    fn a_real_improvement_clears_the_gates_noise_floor() {
+        // 0.05 bits/byte: small for a fine-tune that matches its training data, and
+        // a third of what the pre-swap fine-tunes moved on their own holdout.
+        let base = assistant_score(&chat_of(CHAT_BPB_MID + 0.025, 0.012));
+        let tuned = assistant_score(&chat_of(CHAT_BPB_MID - 0.025, 0.012));
+        // The error bar on a *difference* of two runs, as `jobs::cycle` derives it.
+        let margin = (base.score_stderr.powi(2) + tuned.score_stderr.powi(2)).sqrt();
+        let gain = tuned.score - base.score;
+        assert!(
+            gain > 2.0 * margin,
+            "0.05 bits/byte is worth {gain:.2} points against a {margin:.2} margin",
+        );
     }
 
     // The gate derives its margin from this, so it has to be the measurement's own

@@ -27,7 +27,16 @@ fn report_assistant_measurement() {
         std::path::PathBuf::from(&model_dir),
         std::path::Path::new(&eval_dir),
     );
-    config.budget = Some(llm::chat_template::ThinkBudget::High);
+    // Whatever the held-out set carries, which for a corpus with no reasoning
+    // traces is nothing. Forcing a budget here would render a `<|think:high|>` cue
+    // in front of replies that contain no thinking block, and score the model on a
+    // prompt shape it will never be served.
+    config.budget = match std::env::var("BUDGET").as_deref() {
+        Ok("low") => Some(llm::chat_template::ThinkBudget::Low),
+        Ok("med") => Some(llm::chat_template::ThinkBudget::Med),
+        Ok("high") => Some(llm::chat_template::ThinkBudget::High),
+        _ => None,
+    };
 
     let report = llm::eval::run_assistant(&config, Box::new(|_, _| {}), None)
         .expect("suite failed")

@@ -651,6 +651,52 @@ at the end — see the chat-split note above. The Adam moments for a reseeded id
 are deliberately left alone: a stale second moment damps its first few steps,
 which is the direction you want.
 
+**The SFT set is smol-smoltalk, and the scale changed what several things mean.**
+`scripts/prepare_smoltalk.py` rebuilds `raw/sft/` from HuggingFaceTB/smol-smoltalk:
+484,570 source conversations in, 454,215 out (93.7%), markdown converted to the
+marker vocabulary and every conversation truncated to the longest whole-pair prefix
+that fits the window. It replaced a 1,912-conversation set that was largely
+self-generated. The previous set is in `raw/sft-backup-pre-smoltalk/`.
+
+Three things broke quietly at 240x the volume, all now fixed:
+
+- **`build_sft_dataset` had no length guard**, alone among the builders — KTO and
+  RAFT have always had `skipped_too_long`. An over-long conversation became a span
+  in `sft_segments.json` longer than the window `sft_train` is handed. Now skipped
+  and counted; 454 of 158,361 (0.29%) on the current set.
+- **Prose replay silently under-delivered 7x.** It took one pass over the pretrain
+  documents at `MAX_REPLAY_DOC_TOKENS` each, which caps at ~7.1M tokens over the
+  11,104 documents on disk. That was ample against a budget set by ~350 chat
+  conversations and is 14% of one set by 158,000 — the fine-tune would have been
+  anchored at a seventh of the intended strength with `replay_tokens` the only sign.
+  It now takes further passes at advancing offsets, breadth before depth, and stops
+  short rather than repeating the corpus. Measured: 7.1M → 52.4M, exactly the
+  1.0-per-chat-token budget.
+- **The eval share is a fraction, so it grew without bound.** 15% of 454k is ~68,000
+  held-out conversations, one forward pass each: a 2.5-hour benchmark where it was
+  40 seconds, three times per cycle round. `MAX_HELDOUT_CONVERSATIONS` caps it at
+  1,000, selected by the same content hash the split uses so the choice is stable.
+
+The trainable share is now **86%**, against the "well under 50%" this file used to
+document. That was an observation about the old set, not an invariant: smoltalk
+replies are long relative to their prompts, and half the remaining tokens are replay,
+which is trainable by design. 52.4M chat-reply tokens against 52.4M prose is the
+50/50 the replay ratio has always specified.
+
+**The assistant suite's anchor was re-derived and the old fine-tunes lost their
+gains.** Against the previous holdout each SFT model beat its base by 3.6–5.6 points;
+against this one none does (−0.3 to +0.2, inside a 0.9-point margin). That is the
+honest reading rather than a broken suite: the old holdout was drawn from the same
+self-generated set those models were tuned on, so it was measuring register agreement
+rather than assistant ability. `CHAT_BPB_MID` is now 1.60, the mean of the cohort on
+the new holdout. Every model on disk predates the swap.
+
+**Thinking blocks are gone from SFT.** smol-smoltalk has no reasoning traces, so
+`<|thinking|>` and the three `<|think:*|>` budget markers now train on nothing —
+the composer's dropdown is a lever attached to nothing until data with reasoning
+exists again. `prepare_smoltalk.py --keep-thinking` re-mixes the old `think-*.jsonl`
+alongside if that is worth paying for.
+
 **SFT dataset layout** (all under `data/`):
 - Input: `raw/sft/*.jsonl` — one conversation per line,
   `{"system"?: string, "turns": [{"role": "user"|"assistant", "text": string}, …]}`,
