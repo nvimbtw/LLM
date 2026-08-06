@@ -3,7 +3,7 @@
 import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
-import { streamChat } from "@/lib/chat-socket"
+import { streamChat, type SamplingSettings } from "@/lib/chat-socket"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
 import { useSettings } from "@/components/settings/settings-provider"
@@ -48,6 +48,21 @@ export function useChat(chatId: string) {
   React.useEffect(() => {
     systemRef.current = settings.systemPrompt
   }, [settings.systemPrompt])
+  // The decoding knobs go through a ref for the same reason, and are read at send
+  // time so a mid-conversation change applies to the next turn without the
+  // in-flight one being re-sent.
+  const samplingRef = React.useRef<SamplingSettings>({
+    temperature: settings.temperature,
+    topK: settings.topK,
+    topP: settings.topP,
+  })
+  React.useEffect(() => {
+    samplingRef.current = {
+      temperature: settings.temperature,
+      topK: settings.topK,
+      topP: settings.topP,
+    }
+  }, [settings.temperature, settings.topK, settings.topP])
   const [messages, setMessages] = React.useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSending, setIsSending] = React.useState(false)
@@ -157,6 +172,7 @@ export function useChat(chatId: string) {
           modelId,
           systemRef.current,
           budget,
+          samplingRef.current,
           {
             onQueued: ({ ahead }) => setQueuedAhead(ahead),
             onToken: (value) => {

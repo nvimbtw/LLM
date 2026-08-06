@@ -163,7 +163,11 @@ const DEFAULT_BATCH: i64 = 16;
 // near-greedy decoding produces the same reply to similar prompts, and rating
 // sixteen variations of one answer teaches the tune about one answer.
 const DEFAULT_TEMPERATURE: f32 = 0.9;
-const DEFAULT_TOP_K: usize = 40;
+const DEFAULT_TOP_K: u32 = 40;
+// No nucleus, for the same reason the temperature is raised: top-p cuts exactly
+// the low-probability tail that makes sixteen candidates differ from each other.
+// Serving wants that tail gone; this wants it.
+const DEFAULT_TOP_P: f32 = 1.0;
 // Deliberately short. A rating is a snap judgement, and a 400-token wall of text
 // gets rated on its first sentence anyway — so generating the rest costs GPU time
 // to produce signal about text nobody read.
@@ -351,8 +355,11 @@ pub fn run(
 
         let config = llm::eval::generate::SamplingConfig {
             max_tokens: MAX_TOKENS,
-            temperature: request.temperature,
-            top_k: DEFAULT_TOP_K,
+            params: llm::sample::SamplingParams {
+                temperature: request.temperature,
+                top_k: DEFAULT_TOP_K,
+                top_p: DEFAULT_TOP_P,
+            },
             seed: run_seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
         };
         let continuation =

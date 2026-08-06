@@ -90,9 +90,12 @@ fn bench_host_generation_loop() {
     // ── and what the shipped versions cost now ──
     eprintln!();
     let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+    // top_p disabled, so this measures the same work as the full-sort baseline it
+    // is being compared against rather than a sort plus a nucleus scan.
+    let params = llm::sample::SamplingParams { temperature: 0.8, top_k: 40, top_p: 1.0 };
     let start = Instant::now();
     for _ in 0..reps {
-        std::hint::black_box(llm::sample::sample(&logits, 0.8, 40, &mut rng));
+        std::hint::black_box(llm::sample::sample(&logits, params, &mut rng));
     }
     let new_sampler_us = start.elapsed().as_secs_f64() * 1e6 / reps as f64;
     eprintln!(

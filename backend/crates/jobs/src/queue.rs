@@ -62,13 +62,12 @@ const PROGRESS_WRITE_INTERVAL: Duration = Duration::from_secs(2);
 // from outside this process — cheap insurance against a queue that sleeps forever.
 const IDLE_POLL: Duration = Duration::from_secs(5);
 
-// Sampling knobs for a chat turn. A reply runs until the model emits
-// <|endoftext|>; MAX_TOKENS is only a safety ceiling so a model that never emits
-// it can't generate forever (the sliding context window means it otherwise
-// wouldn't stop on its own).
+// A reply runs until the model emits <|endoftext|>; MAX_TOKENS is only a safety
+// ceiling so a model that never emits it can't generate forever (the sliding
+// context window means it otherwise wouldn't stop on its own). The decoding knobs
+// are no longer constants here — they ride on the `ChatRequest`, defaulting to
+// `llm::sample::SamplingParams::default()` for a row queued without them.
 const MAX_TOKENS: usize = 4096;
-const TEMPERATURE: f32 = 0.8;
-const TOP_K: u32 = 40;
 
 // One coarse progress report from a worker thread.
 pub struct ProgressTick {
@@ -1164,6 +1163,7 @@ impl Queue {
         let worker_cancel = cancel.clone();
         let system = request.system.clone();
         let budget = request.budget;
+        let sampling = request.sampling;
         let outcome = self
             .spawn_worker(job.id_job, progress_rx, move || {
                 // A chat turn has no measurable total, so it reports one tick to
@@ -1178,8 +1178,7 @@ impl Queue {
                     &history,
                     budget,
                     MAX_TOKENS,
-                    TEMPERATURE,
-                    TOP_K,
+                    sampling,
                     Some(&worker_cancel),
                     |token| {
                         lock(&accumulating).text.push_str(token);
@@ -1665,6 +1664,12 @@ pub struct ChatRequest {
     // always been given.
     #[serde(default)]
     pub budget: Option<llm::chat_template::ThinkBudget>,
+    // Temperature / top-k / top-p, as picked in the composer. Defaulted rather
+    // than optional so a row queued before these were sendable — and one from a
+    // client that omits them — decodes at the serving defaults instead of failing
+    // to parse.
+    #[serde(default)]
+    pub sampling: llm::sample::SamplingParams,
 }
 
 // How far a cancelled training run had got, for the terminal row.

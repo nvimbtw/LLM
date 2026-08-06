@@ -13,6 +13,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use llm::chat_template::{Role, Turn};
+use llm::sample::SamplingParams;
+
+// The serving defaults, with the nucleus off: these tests assert about streaming,
+// truncation and the KV cache, none of which should depend on how the candidate
+// set was narrowed.
+const SAMPLING: SamplingParams = SamplingParams { temperature: 0.8, top_k: 40, top_p: 1.0 };
+
+// Greedy, for the two tests that compare one generation against another and need
+// the run-to-run variation gone.
+const GREEDY: SamplingParams = SamplingParams { temperature: 0.0, top_k: 1, top_p: 1.0 };
 
 fn model_dir() -> PathBuf {
     PathBuf::from(
@@ -42,8 +52,7 @@ fn a_chat_turn_streams_and_stops() {
         &history,
         None,
         48,
-        0.8,
-        40,
+        SAMPLING,
         None,
         |tok| streamed.push_str(tok),
     )
@@ -85,8 +94,7 @@ fn a_cancelled_turn_returns_what_it_had() {
         &history,
         None,
         64,
-        0.8,
-        40,
+        SAMPLING,
         Some(&cancel),
         |_| {},
     )
@@ -106,7 +114,7 @@ fn a_second_turn_reuses_the_session_without_going_wrong() {
     let mut history = vec![user("Hello there.")];
 
     let first = llm::infer::generate_chat_response_streaming(
-        &dir, None, &history, None, 24, 0.8, 40, None, |_| {},
+        &dir, None, &history, None, 24, SAMPLING, None, |_| {},
     )
     .expect("first turn failed");
 
@@ -114,7 +122,7 @@ fn a_second_turn_reuses_the_session_without_going_wrong() {
     history.push(user("And what about tomorrow?"));
 
     let second = llm::infer::generate_chat_response_streaming(
-        &dir, None, &history, None, 24, 0.8, 40, None, |_| {},
+        &dir, None, &history, None, 24, SAMPLING, None, |_| {},
     )
     .expect("second turn failed");
 
@@ -139,7 +147,7 @@ fn generation_still_works_after_release() {
     let history = vec![user("Hi.")];
     let gen = || {
         llm::infer::generate_chat_response_streaming(
-            &dir, None, &history, None, 8, 0.0, 1, None, |_| {},
+            &dir, None, &history, None, 8, GREEDY, None, |_| {},
         )
         .expect("generation failed")
     };

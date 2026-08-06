@@ -88,10 +88,9 @@ pub fn generate_response(
     model_dir: &Path,
     prompt: &str,
     max_tokens: usize,
-    temperature: f32,
-    top_k: u32,
+    params: crate::sample::SamplingParams,
 ) -> Result<String, String> {
-    let out = generate_response_streaming(model_dir, prompt, max_tokens, temperature, top_k, |_| {})?;
+    let out = generate_response_streaming(model_dir, prompt, max_tokens, params, |_| {})?;
     Ok(out.text)
 }
 
@@ -99,8 +98,7 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
     model_dir: &Path,
     prompt: &str,
     max_tokens: usize,
-    temperature: f32,
-    top_k: u32,
+    params: crate::sample::SamplingParams,
     on_token: F,
 ) -> Result<GenerationOutput, String> {
     ensure_loaded(model_dir)?;
@@ -117,8 +115,7 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
         seq,
         input_tokens,
         max_tokens,
-        temperature,
-        top_k,
+        params,
         None,
         on_token,
     ))
@@ -139,8 +136,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
     history: &[Turn],
     budget: Option<ThinkBudget>,
     max_tokens: usize,
-    temperature: f32,
-    top_k: u32,
+    params: crate::sample::SamplingParams,
     cancel: Option<&AtomicBool>,
     on_token: F,
 ) -> Result<GenerationOutput, String> {
@@ -161,8 +157,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
         seq,
         input_tokens,
         max_tokens,
-        temperature,
-        top_k,
+        params,
         cancel,
         on_token,
     ))
@@ -218,8 +213,7 @@ fn stream_generation<F: FnMut(&str)>(
     mut seq: Vec<u32>,
     input_tokens: usize,
     max_tokens: usize,
-    temperature: f32,
-    top_k: u32,
+    params: crate::sample::SamplingParams,
     cancel: Option<&AtomicBool>,
     mut on_token: F,
 ) -> GenerationOutput {
@@ -243,8 +237,7 @@ fn stream_generation<F: FnMut(&str)>(
             break;
         }
 
-        let next_token =
-            crate::sample::sample(&logits, temperature, top_k as usize, &mut rand::thread_rng());
+        let next_token = crate::sample::sample(&logits, params, &mut rand::thread_rng());
         output_ids.push(next_token);
         seq.push(next_token);
 

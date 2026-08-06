@@ -133,6 +133,50 @@ struct SendMessageFrame {
     // frame as unparseable and tells the user nothing.
     #[serde(default)]
     budget: Option<String>,
+    // Decoding knobs, each absent when the client is happy with the serving
+    // default. Taken one at a time rather than as a nested `SamplingParams` so a
+    // client can send only the one it cares about, and so an out-of-range value is
+    // clamped here (see `resolve_sampling`) rather than reaching the sampler.
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    top_p: Option<f32>,
+}
+
+// Sampling bounds. The sampler is self-clamping, so these are about telling a
+// caller its number was unusable rather than about safety: a temperature of 0 is
+// the one value that would silently turn a chat into greedy decoding, and a
+// non-finite one would make every logit NaN.
+const MIN_TEMPERATURE: f32 = 0.01;
+const MAX_TEMPERATURE: f32 = 2.0;
+const MAX_TOP_K: u32 = 1000;
+
+// Fold the frame's optional knobs onto the serving defaults, rejecting a value
+// that is out of range rather than quietly clamping it — a request asking for a
+// temperature of 50 is a bug in the caller, and answering it with 2.0 hides that.
+fn resolve_sampling(frame: &SendMessageFrame) -> Result<llm::sample::SamplingParams, &'static str> {
+    let mut params = llm::sample::SamplingParams::default();
+    if let Some(temperature) = frame.temperature {
+        if !temperature.is_finite() || !(MIN_TEMPERATURE..=MAX_TEMPERATURE).contains(&temperature) {
+            return Err("temperature must be between 0.01 and 2.0");
+        }
+        params.temperature = temperature;
+    }
+    if let Some(top_k) = frame.top_k {
+        if top_k == 0 || top_k > MAX_TOP_K {
+            return Err("top_k must be between 1 and 1000");
+        }
+        params.top_k = top_k;
+    }
+    if let Some(top_p) = frame.top_p {
+        if !top_p.is_finite() || !(0.0..=1.0).contains(&top_p) {
+            return Err("top_p must be between 0.0 and 1.0");
+        }
+        params.top_p = top_p;
+    }
+    Ok(params)
 }
 
 // An inbound `{ "action": "cancel" }` while a turn is in flight. The turn is a
@@ -295,6 +339,11 @@ async fn handle_message(
         },
     };
 
+    let sampling = match resolve_sampling(&frame) {
+        Ok(sampling) => sampling,
+        Err(message) => return session.text(ws::error_frame(message)).await,
+    };
+
     let Some(chat_id) = resolve_chat(session, pool, user_id, frame.chat_id, content).await? else {
         return Ok(());
     };
@@ -324,6 +373,7 @@ async fn handle_message(
         id_user: Some(user_id),
         system,
         budget,
+        sampling,
     };
     let config = match serde_json::to_value(&request) {
         Ok(config) => config,
@@ -805,4 +855,98 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(get_messages);
     cfg.service(update_chat);
     cfg.service(delete_chat);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Only the sampling fields matter here; the rest of a turn is what the socket
+    // tests exercise.
+    fn frame(
+        temperature: Option<f32>,
+        top_k: Option<u32>,
+        top_p: Option<f32>,
+    ) -> SendMessageFrame {
+        SendMessageFrame {
+            chat_id: None,
+            content: "hello".to_string(),
+            model_id: None,
+            system: None,
+            budget: None,
+            temperature,
+            top_k,
+            top_p,
+        }
+    }
+
+    #[test]
+    fn an_empty_frame_is_the_serving_defaults() {
+        let params = resolve_sampling(&frame(None, None, None)).expect("defaults rejected");
+        let default = llm::sample::SamplingParams::default();
+        assert_eq!(params.temperature, default.temperature);
+        assert_eq!(params.top_k, default.top_k);
+        assert_eq!(params.top_p, default.top_p);
+    }
+
+    // Each knob is independent: sending one must not reset the other two to
+    // anything but their defaults.
+    #[test]
+    fn one_knob_can_be_sent_without_the_others() {
+        let params = resolve_sampling(&frame(Some(0.3), None, None)).expect("rejected");
+        assert_eq!(params.temperature, 0.3);
+        assert_eq!(params.top_k, llm::sample::DEFAULT_TOP_K);
+        assert_eq!(params.top_p, llm::sample::DEFAULT_TOP_P);
+    }
+
+    #[test]
+    fn every_knob_is_carried_through() {
+        let params = resolve_sampling(&frame(Some(1.2), Some(5), Some(0.5))).expect("rejected");
+        assert_eq!(params.temperature, 1.2);
+        assert_eq!(params.top_k, 5);
+        assert_eq!(params.top_p, 0.5);
+    }
+
+    // The bounds are rejected rather than clamped, so that a caller asking for a
+    // temperature of 50 is told it is wrong instead of quietly served 2.0.
+    #[test]
+    fn out_of_range_values_are_rejected() {
+        let cases = [
+            frame(Some(0.0), None, None),
+            frame(Some(2.5), None, None),
+            frame(Some(f32::NAN), None, None),
+            frame(Some(f32::INFINITY), None, None),
+            frame(None, Some(0), None),
+            frame(None, Some(MAX_TOP_K + 1), None),
+            frame(None, None, Some(1.5)),
+            frame(None, None, Some(-0.1)),
+            frame(None, None, Some(f32::NAN)),
+        ];
+        for case in cases {
+            assert!(
+                resolve_sampling(&case).is_err(),
+                "accepted temperature {:?} top_k {:?} top_p {:?}",
+                case.temperature,
+                case.top_k,
+                case.top_p
+            );
+        }
+    }
+
+    // The exact edges are legal — a slider parked at either end must not produce a
+    // request the route refuses.
+    #[test]
+    fn the_range_endpoints_are_accepted() {
+        let edges = [
+            frame(Some(MIN_TEMPERATURE), None, None),
+            frame(Some(MAX_TEMPERATURE), None, None),
+            frame(None, Some(1), None),
+            frame(None, Some(MAX_TOP_K), None),
+            frame(None, None, Some(0.0)),
+            frame(None, None, Some(1.0)),
+        ];
+        for edge in edges {
+            assert!(resolve_sampling(&edge).is_ok(), "an endpoint was rejected");
+        }
+    }
 }

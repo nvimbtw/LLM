@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { Slider } from "@/components/ui/slider"
 
 /**
  * The Ctrl/⌘+K command modal. Renders one control per entry in `SETTINGS`, so
@@ -134,6 +135,41 @@ function SettingRow({ setting }: { setting: SettingDef }) {
         <Switch
           checked={settings[setting.key] as boolean}
           onCheckedChange={(checked) => setSetting(setting.key, checked)}
+        />
+      </div>
+    )
+  }
+
+  if (setting.kind === "number") {
+    const current = settings[setting.key] as number
+    return (
+      <div className="flex flex-col gap-2 py-3.5">
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-baseline justify-between gap-4">
+            <span className="text-sm font-medium text-foreground">
+              {setting.label}
+            </span>
+            {/* The number belongs beside the label, not under the thumb: a
+                value that moves with the drag is unreadable while dragging. */}
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {current.toFixed(setting.precision)}
+            </span>
+          </div>
+          <span className="text-xs leading-relaxed text-muted-foreground">
+            {setting.description}
+          </span>
+        </div>
+        <Slider
+          value={current}
+          min={setting.min}
+          max={setting.max}
+          step={setting.step}
+          // The primitive supports multi-thumb and hands back an array for it;
+          // this is always single-thumb, so unwrap rather than widen the setting.
+          onValueChange={(next) =>
+            setSetting(setting.key, Array.isArray(next) ? next[0] : next)
+          }
+          className="pt-1"
         />
       </div>
     )

@@ -52,7 +52,11 @@ const DEFAULT_MAX_PROMPTS: i64 = 200;
 // mean anything, and near-greedy decoding would produce six near-identical replies
 // and a spread below the labelling margin.
 const DEFAULT_TEMPERATURE: f32 = 1.0;
-const DEFAULT_TOP_K: usize = 40;
+const DEFAULT_TOP_K: u32 = 40;
+// No nucleus, for the same reason the temperature is raised: top-p cuts exactly
+// the low-probability tail that makes six candidates differ from each other, and
+// a spread below the labelling margin is a round that teaches nothing.
+const DEFAULT_TOP_P: f32 = 1.0;
 // How long a candidate reply may run.
 //
 // **This was 96, and 96 was the reason the post-train cycle regressed models.** The
@@ -271,8 +275,11 @@ pub fn run(
         for k in 0..candidates_per_prompt {
             let config = llm::eval::generate::SamplingConfig {
                 max_tokens,
-                temperature: request.temperature,
-                top_k: DEFAULT_TOP_K,
+                params: llm::sample::SamplingParams {
+                    temperature: request.temperature,
+                    top_k: DEFAULT_TOP_K,
+                    top_p: DEFAULT_TOP_P,
+                },
                 // Seeded from the prompt index and the candidate index, so a rerun
                 // over the same prompts reproduces the same candidates exactly —
                 // otherwise a labelling pass could never be debugged.

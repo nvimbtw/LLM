@@ -98,7 +98,8 @@ The chat WebSocket lives in `lib/chat-socket.ts` and follows this wire protocol:
 ```
 client → { token }                            (auth frame)
 server → { type: "ready" }
-client → { chat_id, content, model_id, system?, budget? }
+client → { chat_id, content, model_id, system?, budget?,
+           temperature?, top_k?, top_p? }
                                               (chat_id null = new chat)
 server → { type: "queued", job_id, chat_id, ahead }
 server → { type: "token", value }             (repeated)
@@ -120,6 +121,15 @@ the backend renders no marker and the model is prompted exactly as it always was
 Unlike `systemPrompt` it is *not* a setting — how hard you want the model to think is
 a property of the question, so it lives as composer state and rides through
 `PendingMessage` when a new chat navigates.
+
+`temperature` / `top_k` / `top_p` are the decoding knobs, and unlike `budget` they
+**are** settings (`lib/settings.ts`, rendered as sliders in the ⌘K modal) — how
+random you want decoding to be is a standing preference, not a property of one
+question. Each is omitted individually when unset or non-finite, and the backend
+(`routes/chat.rs::resolve_sampling`) then falls back to
+`llm::sample::SamplingParams::default()`. The route **rejects** an out-of-range
+value rather than clamping it, so slider bounds must stay inside the ranges it
+accepts: temperature 0.01–2.0, top-k 1–1000, top-p 0.0–1.0.
 
 ### The jobs queue
 

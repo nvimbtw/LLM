@@ -22,8 +22,9 @@ use crate::training::infer_session::InferSession;
 #[derive(Clone, Copy)]
 pub struct SamplingConfig {
     pub max_tokens: usize,
-    pub temperature: f32,
-    pub top_k: usize,
+    /// What to do with each logit row. Held rather than restated so the benchmark
+    /// and the chat path cannot drift on what "top-k 40" means.
+    pub params: crate::sample::SamplingParams,
     pub seed: u64,
 }
 
@@ -31,8 +32,16 @@ impl Default for SamplingConfig {
     fn default() -> Self {
         SamplingConfig {
             max_tokens: 96,
-            temperature: 0.8,
-            top_k: 40,
+            // Deliberately *not* `SamplingParams::default()`, which tracks the chat
+            // defaults and is expected to move with them. A benchmark score is only
+            // comparable against its own history, so these are pinned here and
+            // changing one is a `SCORE_VERSION` bump. `top_p` is 1.0 — disabled —
+            // because every score already on record was measured without a nucleus.
+            params: crate::sample::SamplingParams {
+                temperature: 0.8,
+                top_k: 40,
+                top_p: 1.0,
+            },
             seed: 42,
         }
     }
@@ -108,7 +117,7 @@ pub fn continue_tokens(
             break;
         }
 
-        let next = crate::sample::sample(&logits, config.temperature, config.top_k, &mut rng);
+        let next = crate::sample::sample(&logits, config.params, &mut rng);
         generated.push(next);
         seq.push(next);
 
@@ -150,10 +159,12 @@ mod tests {
     #[test]
     fn the_same_seed_produces_the_same_draws() {
         let logits = [1.0, 0.9, 0.8, 0.7];
+        let params =
+            crate::sample::SamplingParams { temperature: 1.0, top_k: 4, top_p: 1.0 };
         let draw = |seed| {
             let mut rng = StdRng::seed_from_u64(seed);
             (0..20)
-                .map(|_| crate::sample::sample(&logits, 1.0, 4, &mut rng))
+                .map(|_| crate::sample::sample(&logits, params, &mut rng))
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(99), draw(99));

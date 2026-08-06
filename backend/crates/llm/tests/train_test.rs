@@ -60,7 +60,10 @@ fn test_training_runs() {
     assert!(result.is_ok(), "Training failed: {:?}", result.err());
 
     // Test inference with the trained model
-    let response = generate_response(model_dir, "Hello", 10, 0.0, 1);
+    // Greedy: this asserts the path produces *something*, and a sampled draw would
+    // make that a coin flip on a barely-trained model.
+    let greedy = llm::sample::SamplingParams { temperature: 0.0, top_k: 1, top_p: 1.0 };
+    let response = generate_response(model_dir, "Hello", 10, greedy);
     assert!(response.is_ok(), "Inference failed: {:?}", response.err());
     let text = response.unwrap();
     eprintln!("Generated: {:?}", text);

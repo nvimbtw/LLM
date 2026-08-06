@@ -9,9 +9,12 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 // Wire protocol:
 //   client → { token }                            (first frame, auth)
 //   server → { type: "ready" }
-//   client → { chat_id, content, model_id, system, budget }
+//   client → { chat_id, content, model_id, system, budget,
+//              temperature, top_k, top_p }
 //                                    (chat_id null = new chat; system and budget
-//                                     optional/omitted)
+//                                     optional/omitted; the three decoding knobs
+//                                     are omitted individually when unset, and
+//                                     the backend falls back to its own defaults)
 //   server → { type: "queued", job_id, chat_id, ahead }
 //   server → { type: "token", value }             (decoded token text, repeated)
 //   server → { type: "done", chat_id, id_message }
@@ -22,6 +25,17 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 // wait behind other work before its first token. It always arrives — a turn that
 // starts immediately reports `ahead: 0` — so the client has one path rather than
 // two. `id_message` on `done` is null when a cancelled turn produced nothing.
+
+/**
+ * The decoding knobs a turn is sent with, in the settings' own camelCase. Named
+ * as one object rather than three more positional arguments to `streamChat`,
+ * which already takes five.
+ */
+export interface SamplingSettings {
+  temperature: number
+  topK: number
+  topP: number
+}
 
 export interface ChatStreamHandlers {
   onQueued: (info: { jobId: string; ahead: number }) => void
@@ -39,6 +53,7 @@ export function streamChat(
   // How long the model should reason. "auto" is sent as nothing at all — the
   // backend renders no marker, which is the prompt shape it has always used.
   budget: ThinkBudget,
+  sampling: SamplingSettings,
   handlers: ChatStreamHandlers
 ): () => void {
   const ws = new WebSocket(`${WS_URL}/chat/ws`)
@@ -89,6 +104,17 @@ export function streamChat(
             // Same rule for the budget: "auto" is the absence of one, so it is
             // omitted rather than sent as a value the backend has to interpret.
             ...(budget !== "auto" ? { budget } : {}),
+            // Each knob is sent only when it is a real number. A NaN from a
+            // corrupted localStorage entry would serialize to `null` and be
+            // rejected by the route, so an unusable value becomes "use the
+            // server default" rather than a failed turn.
+            ...(Number.isFinite(sampling.temperature)
+              ? { temperature: sampling.temperature }
+              : {}),
+            ...(Number.isFinite(sampling.topK)
+              ? { top_k: Math.round(sampling.topK) }
+              : {}),
+            ...(Number.isFinite(sampling.topP) ? { top_p: sampling.topP } : {}),
           })
         )
         break
