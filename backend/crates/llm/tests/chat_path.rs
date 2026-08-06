@@ -164,3 +164,100 @@ fn generation_still_works_after_release() {
     );
     let _ = Ordering::SeqCst;
 }
+
+// ── the marker grammar, end to end ───────────────────────────────────────────
+
+// Walks a served reply's markers, returning what is wrong with them.
+//
+// Deliberately a second implementation rather than a call into `llm::markup`: it
+// works from the *decoded text* a client receives, so a bug in the automaton cannot
+// hide behind the automaton's own idea of what it emitted.
+fn markup_fault(text: &str) -> Option<String> {
+    let mut stack: Vec<&str> = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("<|") {
+        let Some(end) = rest[open..].find("|>") else { break };
+        let marker = &rest[open..open + end + 2];
+        rest = &rest[open + end + 2..];
+        let inner = &marker[2..marker.len() - 2];
+
+        if inner.starts_with("think:") || inner == "divider" || inner == "endoftext" {
+            continue;
+        }
+        // A role marker inside an assistant turn is the leakage the grammar exists
+        // to stop; it can never be balanced, so it is its own fault.
+        if matches!(inner, "user" | "/user" | "system" | "/system" | "assistant") {
+            return Some(format!("role marker <|{inner}|> inside the reply"));
+        }
+        match inner.strip_prefix('/') {
+            Some(name) => match stack.pop() {
+                Some(top) if top == name => {}
+                Some(top) => return Some(format!("<|/{name}|> closed <|{top}|>")),
+                None => return Some(format!("stray <|/{name}|>")),
+            },
+            None => stack.push(inner),
+        }
+    }
+    (!stack.is_empty()).then(|| format!("left open: {stack:?}"))
+}
+
+// The reason `llm::markup` exists. Before it, the markup suite scored
+// `closer_matches_opener` at 52% against a 50% baseline and served replies showed
+// exactly that: `<|par|>` closed by `<|/item|>`, `<|/user|><|assistant|>` invented
+// mid-turn, blocks left hanging. None of that is now representable.
+//
+// Sampled rather than greedy, and over prompts that draw out lists and nesting,
+// because the failure was never on the most likely token — it was in the tail.
+#[test]
+#[ignore = "needs a trained model: set LLM_TEST_MODEL_DIR"]
+fn a_served_reply_is_always_well_formed_markup() {
+    let dir = model_dir();
+    let prompts = [
+        "Give me a list of three things to check on a leaking sink.",
+        "List the steps to make tea.",
+        "Explain in bullet points why the sky is blue.",
+        "What is your name?",
+    ];
+
+    for prompt in prompts {
+        for _ in 0..3 {
+            let history = vec![user(prompt)];
+            let out = llm::infer::generate_chat_response_streaming(
+                &dir, None, &history, None, 250, SAMPLING, None, |_| {},
+            )
+            .expect("generation failed");
+            if let Some(fault) = markup_fault(&out.text) {
+                panic!("{prompt}: {fault}\n{}", out.text);
+            }
+        }
+    }
+}
+
+// The token cap is the one stop the grammar cannot refuse, so the loop reserves room
+// for the closers and drains what is still open. Short caps are where that has to
+// work: they cut the reply mid-block almost every time.
+#[test]
+#[ignore = "needs a trained model: set LLM_TEST_MODEL_DIR"]
+fn a_reply_cut_off_by_the_token_cap_is_still_well_formed() {
+    let dir = model_dir();
+    for cap in [4, 8, 12, 20, 48] {
+        for _ in 0..5 {
+            let history = vec![user("Give me a long list of things to check on a sink.")];
+            let out = llm::infer::generate_chat_response_streaming(
+                &dir, None, &history, None, cap, SAMPLING, None, |_| {},
+            )
+            .expect("generation failed");
+
+            if let Some(fault) = markup_fault(&out.text) {
+                panic!("cap {cap}: {fault}\n{}", out.text);
+            }
+            // The drain is generated output too, and must not buy its way past the
+            // ceiling the caller set.
+            assert!(
+                out.output_tokens <= cap,
+                "cap {cap} produced {} tokens",
+                out.output_tokens,
+            );
+        }
+    }
+}

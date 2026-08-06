@@ -116,6 +116,10 @@ pub fn generate_response_streaming<F: FnMut(&str)>(
         input_tokens,
         max_tokens,
         params,
+        // Raw continuation of a prompt, not an assistant turn: there is no open
+        // scaffold to keep balanced, and constraining it would put markers in text
+        // the caller asked to be left alone.
+        None,
         None,
         on_token,
     ))
@@ -158,6 +162,7 @@ pub fn generate_chat_response_streaming<F: FnMut(&str)>(
         input_tokens,
         max_tokens,
         params,
+        Some(crate::markup::OpenBlocks::new()),
         cancel,
         on_token,
     ))
@@ -206,6 +211,10 @@ pub fn release() {
 // The core autoregressive loop, shared by the single-prompt and chat entry
 // points. Takes the already-tokenized prompt `seq` and streams decoded token
 // text through `on_token`, stopping at the first end-of-turn marker.
+//
+// `blocks` constrains generation to well-formed markup — see `crate::markup`. It is
+// `Some` for a chat turn and `None` for a bare prompt completion, which is raw
+// continuation rather than an assistant turn and has no scaffold to keep balanced.
 #[allow(clippy::too_many_arguments)]
 fn stream_generation<F: FnMut(&str)>(
     session: &mut InferSession,
@@ -214,6 +223,7 @@ fn stream_generation<F: FnMut(&str)>(
     input_tokens: usize,
     max_tokens: usize,
     params: crate::sample::SamplingParams,
+    mut blocks: Option<crate::markup::OpenBlocks>,
     cancel: Option<&AtomicBool>,
     mut on_token: F,
 ) -> GenerationOutput {
@@ -224,7 +234,18 @@ fn stream_generation<F: FnMut(&str)>(
     // table that never changes.
     let decoder = tokenize::bpe::Decoder::new(merges);
 
-    for _ in 0..max_tokens {
+    // Bounded: every iteration pushes exactly one token onto `output_ids`, and the
+    // reservation below only grows, so this cannot run past `max_tokens`.
+    loop {
+        // The closers a drain would cost, if this iteration ran. `+ 1` because the
+        // token about to be sampled may itself open a block, which is one closer
+        // more than are open right now — without it a reply that opens on its last
+        // token drains one token past the cap. The drain is generated output too,
+        // and `max_tokens` is a hard ceiling on how much of that there may be.
+        let reserved = blocks.as_ref().map_or(0, |b| b.depth() + 1);
+        if output_ids.len() + reserved >= max_tokens {
+            break;
+        }
         // Checked before the forward pass rather than after, so a cancel lands
         // at the cost of at most one token rather than one more full pass.
         if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
@@ -232,12 +253,20 @@ fn stream_generation<F: FnMut(&str)>(
         }
         // The session truncates to its context window internally, so a sequence
         // that has outgrown the window is handled there rather than here.
-        let logits = session.logits_last(&seq);
+        let mut logits = session.logits_last(&seq);
         if logits.is_empty() {
             break;
         }
 
+        // Before sampling, not after: a malformed marker that reaches the output is
+        // already in the reply the user is streaming.
+        if let Some(blocks) = &blocks {
+            blocks.mask(&mut logits);
+        }
         let next_token = crate::sample::sample(&logits, params, &mut rand::thread_rng());
+        if let Some(blocks) = &mut blocks {
+            blocks.observe(next_token);
+        }
         output_ids.push(next_token);
         seq.push(next_token);
 
@@ -250,6 +279,22 @@ fn stream_generation<F: FnMut(&str)>(
 
         if find_stop(&response).is_some() {
             break;
+        }
+    }
+
+    // The token cap and cancellation are the two stops the grammar cannot prevent —
+    // it can refuse the end-of-turn marker until every block is closed, but it cannot
+    // refuse the loop running out. Draining what is still open costs a handful of
+    // tokens and is the difference between a truncated reply and one the frontend's
+    // parser has to guess at.
+    if let Some(blocks) = &blocks {
+        if find_stop(&response).is_none() && !blocks.is_complete() {
+            output_ids.extend(blocks.closers());
+            let drained = decoder.decode(&output_ids);
+            if drained.len() > response.len() {
+                on_token(&drained[response.len()..]);
+                response = drained;
+            }
         }
     }
 
