@@ -146,9 +146,16 @@ fn mean_reply_logprob(
         Turn { role: Role::User, text: example.prompt.clone() },
         Turn { role: Role::Assistant, text: example.response.clone() },
     ];
-    // No budget: a preference example is a bare prompt/response pair with no
-    // record of how long its reply was meant to reason for.
-    let (ids, mask) = chat_template::build_training_example(None, &turns, None, merges);
+    // No budget, and nothing to strip: a preference example is a bare
+    // prompt/response pair generated unbudgeted (see `labeling::autolabel`), so it
+    // carries no thinking block either way and `Keep` is the identity here.
+    let (ids, mask) = chat_template::build_training_example(
+        None,
+        &turns,
+        None,
+        merges,
+        chat_template::Reasoning::Keep,
+    );
     if ids.len() < 2 {
         return None;
     }

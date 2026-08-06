@@ -690,11 +690,17 @@ impl Queue {
         let worker_cancel = cancel.clone();
         let outcome = self
             .spawn_worker(job.id_job, progress_rx, move || {
+                // Read before the dir is moved into the config: how this model was
+                // trained decides how its held-out replies must be rendered, or the
+                // assistant score charges a stripped model for thinking tokens it
+                // was taught never to emit.
+                let reasoning = training::model_reasoning(&model_dir);
                 let mut config = llm::eval::EvalConfig::new(model_dir, &storage::eval_dir());
                 // Renders every held-out conversation under one marker. Reaches the
                 // assistant suite entirely and the markup suite's conversation
                 // stages; the language suite renders no chat prompt and ignores it.
                 config.budget = budget;
+                config.reasoning = reasoning;
                 let on_progress: llm::eval::ProgressCallback = Box::new(move |stage, fraction| {
                     {
                         let mut st = lock(&reporting);

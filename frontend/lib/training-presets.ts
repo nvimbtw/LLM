@@ -148,6 +148,10 @@ export function toTrainConfig(
     curriculum: curriculum(b.curriculum),
     shuffle:
       typeof b.shuffle === "boolean" ? b.shuffle : DEFAULT_CONFIG.shuffle,
+    strip_thinking:
+      typeof b.strip_thinking === "boolean"
+        ? b.strip_thinking
+        : DEFAULT_CONFIG.strip_thinking,
     mode,
     base_model_id:
       typeof b.base_model_id === "string" ? b.base_model_id : undefined,

@@ -25,6 +25,9 @@ export const DEFAULT_CONFIG: TrainConfig = {
   // Shuffle documents each epoch by default: it isolates documents (an
   // <|endoftext|> separator between them) and removes fixed-order bias at no cost.
   shuffle: true,
+  // Off by default: keeping the reasoning is what every model on disk was trained
+  // under, so the switch is an opt-in change rather than a silent new baseline.
+  strip_thinking: false,
   mode: "pretrain",
   // KTO's KL-anchor strength. Carried on the default config (rather than only
   // being set when the Preference mode is picked) so the field is always

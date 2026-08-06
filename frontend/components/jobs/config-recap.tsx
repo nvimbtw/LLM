@@ -171,6 +171,11 @@ function train(config: TrainConfig | null): Recap | null {
     rows.push(["Max vocab", String(config.max_vocab)])
     rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
   }
+  // SFT only: pretrain always strips, and RAFT/KTO have no thinking to strip, so
+  // the row would be noise in both cases.
+  if (config.mode === "sft") {
+    rows.push(["Strip thinking", config.strip_thinking ? "On" : "Off"])
+  }
   if (config.mode === "kto" && config.beta !== undefined) {
     rows.push(["Beta", String(config.beta)])
   }

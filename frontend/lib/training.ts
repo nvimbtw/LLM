@@ -68,6 +68,14 @@ export interface TrainConfig {
   // Reorder documents each epoch (with an <|endoftext|> separator between them)
   // so the model doesn't see a fixed data order. Pretrain only.
   shuffle: boolean
+  // Drop the <|thinking|> blocks (and their budget markers) from the chat data
+  // this run trains on, so the model learns to answer directly.
+  //
+  // A choice for SFT only. Pretrain always strips whatever this says — the
+  // backend forces it true at enqueue so the stored config stays truthful — and
+  // RAFT/KTO ignore it, since they train on the model's own generations, which
+  // carry no thinking block to remove.
+  strip_thinking: boolean
   // Pretrain (default), SFT fine-tune, or KTO preference tune.
   mode: TrainMode
   // For the fine-tuning modes: the id of the base model to start from. Omitted for

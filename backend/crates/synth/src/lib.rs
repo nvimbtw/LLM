@@ -737,11 +737,15 @@ impl Budget {
             .collect();
         // No budget: this measures whether a conversation fits the window, and a
         // budget marker is one token — below the resolution of that question.
+        // `Keep` for the same reason: this is a length check against the widest
+        // rendering, and stripping here would under-measure a conversation that a
+        // later unstripped run has to fit.
         let (ids, _) = llm::chat_template::build_training_example(
             conv.system.as_deref(),
             &turns,
             None,
             &self.merges,
+            llm::chat_template::Reasoning::Keep,
         );
         ids.len()
     }

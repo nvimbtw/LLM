@@ -286,6 +286,15 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
     // `validate_sft` has already established that a non-pretrain run names a base
     // that resolves. Best-effort past that: a base whose meta.json is unreadable
     // still trains correctly, it just carries the request's numbers.
+    // Pretrain always strips (see `training::strip_thinking_for`), so record that
+    // rather than whatever the form sent. The stored config is what
+    // `training::model_reasoning` later reads to decide how to render this model's
+    // held-out replies at benchmark time — a pretrain row claiming `false` would
+    // have its assistant suite scored against thinking blocks its corpus never had.
+    if config.mode == TrainMode::Pretrain {
+        config.strip_thinking = true;
+    }
+
     if config.mode != TrainMode::Pretrain {
         if let Some(base_id) = config.base_model_id {
             let base_dir = storage::models_dir().join(base_id.to_string());

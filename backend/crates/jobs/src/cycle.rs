@@ -673,6 +673,10 @@ impl Cycles {
             datasets: Vec::new(),
             curriculum: Vec::new(),
             shuffle: false,
+            // Inert for the two modes this builds: RAFT and KTO train on the model's
+            // own generations, which carry no thinking block to strip, so their
+            // dataset builders render `Reasoning::Keep` regardless of this field.
+            strip_thinking: false,
             seed: 0,
             storage_id,
         })

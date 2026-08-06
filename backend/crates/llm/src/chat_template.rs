@@ -29,6 +29,13 @@
 //! `<|thinking|>...<|/thinking|>` block is stripped, since stale reasoning isn't
 //! worth spending the (tiny) context window on. The model still produces a fresh
 //! thinking block for the current turn.
+//!
+//! The two *training* renderers take a [`Reasoning`] instead, because there the
+//! question is what the model should learn to emit rather than what it should
+//! condition on. `Strip` drops the block and the budget marker describing it, and
+//! is how a model too small to keep a reasoning block coherent is taught to answer
+//! directly. Pretrain always strips; SFT chooses. See `training::strip_thinking_for`
+//! for the policy and `training::model_reasoning` for how a benchmark recovers it.
 
 use serde::{Deserialize, Serialize};
 
@@ -113,20 +120,45 @@ pub struct Turn {
 // The trailing marker every prompt ends on; the model generates from right here.
 const ASSISTANT_OPEN: &str = "<|assistant|>";
 
-// Drop a historical assistant turn's reasoning, keeping only the reply. If the
-// markers are missing or malformed we just hand back the trimmed text unchanged.
-fn strip_thinking(text: &str) -> String {
+/// Whether a rendered assistant turn keeps its reasoning.
+///
+/// `Strip` drops the `<|thinking|>` block **and the budget marker that describes
+/// it**, because the marker's meaning is "the assistant turn after me shows its
+/// reasoning at this budget" — keeping it over a stripped reply would claim a
+/// block that is not there, which is the same reason `build_prompt` never marks a
+/// history turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Reasoning {
+    /// Render the reply verbatim, thinking block and budget marker included.
+    #[default]
+    Keep,
+    /// Render the answer only.
+    Strip,
+}
+
+/// Drop every `<|thinking|>` block from an assistant turn, keeping only the reply.
+///
+/// All of them, not just the first: a reply can open several blocks (it may think
+/// again after it has started answering), and removing only the leading one leaves
+/// the rest as literal markers in what is supposed to be reasoning-free text. An
+/// unclosed block is left alone rather than guessed at — the same
+/// hand-back-unchanged rule the malformed case has always had.
+pub fn strip_thinking(text: &str) -> String {
     const OPEN: &str = "<|thinking|>";
     const CLOSE: &str = "<|/thinking|>";
-    if let (Some(a), Some(b)) = (text.find(OPEN), text.find(CLOSE)) {
-        if b >= a {
-            let mut out = String::with_capacity(text.len());
-            out.push_str(&text[..a]);
-            out.push_str(&text[b + CLOSE.len()..]);
-            return out.trim().to_string();
-        }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    // Bounded: each iteration drops at least `OPEN`, so `rest` strictly shrinks.
+    while let Some(a) = rest.find(OPEN) {
+        // Searched from the opener, so a stray closer *before* it is not treated as
+        // this block's end (which would delete the text between them).
+        let Some(offset) = rest[a..].find(CLOSE) else { break };
+        out.push_str(&rest[..a]);
+        rest = &rest[a + offset + CLOSE.len()..];
     }
-    text.trim().to_string()
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 // A *history* turn, as `build_prompt` renders it.
@@ -157,10 +189,17 @@ fn format_turn(t: &Turn) -> String {
 /// the pretrain builder tokenizes whole files in one pass, so a marker seam may
 /// tokenize a token differently here than it does under SFT. That costs nothing —
 /// this exists to expose the markers to training, not to align with a mask.
+///
+/// `reasoning` decides whether the thinking blocks survive. Under `Strip` the
+/// `<|thinking|>` and budget markers no longer appear in the pretrain corpus at
+/// all, so their embedding rows reach a later SFT untrained — which is exactly
+/// what `training::untrained_marker_ids` → `warm_start_embeddings` exists to
+/// catch, via the `special_ids_seen` this run records.
 pub fn render_conversation(
     system: Option<&str>,
     turns: &[Turn],
     budget: Option<ThinkBudget>,
+    reasoning: Reasoning,
 ) -> String {
     let mut out = String::new();
     if let Some(s) = system.map(str::trim).filter(|s| !s.is_empty()) {
@@ -170,13 +209,21 @@ pub fn render_conversation(
         match t.role {
             Role::User => out.push_str(&format!("<|user|>{}<|/user|>", t.text.trim())),
             Role::Assistant => {
-                // Thinking is kept here, so the marker describes real content —
-                // and this is the path that puts the marker into the *pretrain*
-                // corpus, which is what stops its embedding row arriving at SFT
-                // at random init.
-                out.push_str(budget_marker(budget));
-                out.push_str(ASSISTANT_OPEN);
-                out.push_str(t.text.trim());
+                // Kept, the marker describes real content — and this is the path
+                // that puts it into the *pretrain* corpus, which is what stops its
+                // embedding row arriving at SFT at random init. Stripped, there is
+                // no block for it to describe, so it goes too.
+                match reasoning {
+                    Reasoning::Keep => {
+                        out.push_str(budget_marker(budget));
+                        out.push_str(ASSISTANT_OPEN);
+                        out.push_str(t.text.trim());
+                    }
+                    Reasoning::Strip => {
+                        out.push_str(ASSISTANT_OPEN);
+                        out.push_str(&strip_thinking(&t.text));
+                    }
+                }
                 out.push_str("<|/assistant|>");
             }
         }
@@ -264,10 +311,17 @@ pub fn build_prompt(
 /// no next token) — is `0`. `ids` and `mask` are the same length.
 ///
 /// Unlike `build_prompt` (which renders for *inference*: it ends on an open
-/// `<|assistant|>` and strips historical reasoning), this keeps the assistant
-/// turns verbatim — including any `<|thinking|>` block — because during SFT the
-/// assistant text is the training target and we *want* the model to learn to
-/// produce reasoning.
+/// `<|assistant|>` and always strips historical reasoning), this keeps the
+/// assistant turns verbatim by default — including any `<|thinking|>` block —
+/// because during SFT the assistant text is the training target and we normally
+/// *want* the model to learn to produce reasoning. `Reasoning::Strip` is the
+/// opt-out, for a model too small to spend its capacity on a reasoning block it
+/// cannot keep coherent.
+///
+/// Anything that *scores* a conversation must render it the same way the model was
+/// trained — `eval::chat` measures bits per assistant-reply token, so scoring a
+/// stripped model against unstripped replies would charge it for a block it was
+/// taught never to emit.
 ///
 /// The conversation is encoded segment-by-segment rather than in a single pass.
 /// This is deliberate: the pre-tokenizer only splits words on spaces, so a
@@ -285,6 +339,7 @@ pub fn build_training_example(
     turns: &[Turn],
     budget: Option<ThinkBudget>,
     merges: &[((u32, u32), u32)],
+    reasoning: Reasoning,
 ) -> (Vec<u32>, Vec<u8>) {
     // Each entry is one rendered piece plus whether its tokens are a training
     // target. Order matters — pieces are concatenated in the order pushed.
@@ -310,11 +365,20 @@ pub fn build_training_example(
                 // the model to predict how hard it is about to think, which is a
                 // fact about the request, not about the reply. So only its
                 // embedding row is ever learned — the output column stays unused.
-                if let Some(b) = budget {
-                    segments.push((b.marker().to_string(), false));
-                }
+                //
+                // Under `Strip` the marker goes with the block it describes, so a
+                // stripped corpus contains neither.
+                let body = match reasoning {
+                    Reasoning::Keep => {
+                        if let Some(b) = budget {
+                            segments.push((b.marker().to_string(), false));
+                        }
+                        t.text.trim().to_string()
+                    }
+                    Reasoning::Strip => strip_thinking(&t.text),
+                };
                 segments.push((ASSISTANT_OPEN.to_string(), false));
-                segments.push((t.text.trim().to_string(), true));
+                segments.push((body, true));
                 segments.push(("<|/assistant|>".to_string(), true));
             }
         }
@@ -348,6 +412,25 @@ pub fn build_training_example(
 mod tests {
     use super::*;
 
+    // The pre-`Reasoning` behaviour, which is what every test below predating the
+    // strip option is asserting about. Tests for stripping call the real functions.
+    fn render_keeping(
+        system: Option<&str>,
+        turns: &[Turn],
+        budget: Option<ThinkBudget>,
+    ) -> String {
+        render_conversation(system, turns, budget, Reasoning::Keep)
+    }
+
+    fn example_keeping(
+        system: Option<&str>,
+        turns: &[Turn],
+        budget: Option<ThinkBudget>,
+        merges: &[((u32, u32), u32)],
+    ) -> (Vec<u32>, Vec<u8>) {
+        build_training_example(system, turns, budget, merges, Reasoning::Keep)
+    }
+
     #[test]
     fn test_strip_thinking_removes_block() {
         let t = "<|thinking|>reasoning here<|/thinking|>the actual reply";
@@ -357,6 +440,81 @@ mod tests {
     #[test]
     fn test_strip_thinking_no_block_is_passthrough() {
         assert_eq!(strip_thinking("  just a reply  "), "just a reply");
+    }
+
+    // A reply can think again after it has started answering. Removing only the
+    // first block would leave the later markers as literal text in a corpus that is
+    // supposed to contain none.
+    #[test]
+    fn test_strip_thinking_removes_every_block() {
+        let t = "<|thinking|>a<|/thinking|>one<|thinking|>b<|/thinking|>two";
+        assert_eq!(strip_thinking(t), "onetwo");
+    }
+
+    #[test]
+    fn test_strip_thinking_leaves_an_unclosed_block_alone() {
+        let t = "<|thinking|>never closed";
+        assert_eq!(strip_thinking(t), t);
+    }
+
+    // A closer with no opener before it is not this block's end — treating it as one
+    // would delete the reply between them.
+    #[test]
+    fn test_strip_thinking_ignores_a_leading_stray_closer() {
+        let t = "<|/thinking|>kept<|thinking|>gone<|/thinking|>also kept";
+        assert_eq!(strip_thinking(t), "<|/thinking|>keptalso kept");
+    }
+
+    // The budget marker means "the turn after me shows its reasoning at this
+    // budget". With the block gone it would be describing something absent, so it
+    // has to go too — in both renderers.
+    #[test]
+    fn test_stripping_drops_the_budget_marker_too() {
+        let turns = [Turn {
+            role: Role::Assistant,
+            text: "<|thinking|>hmm<|/thinking|>hello".into(),
+        }];
+
+        let rendered =
+            render_conversation(None, &turns, Some(ThinkBudget::High), Reasoning::Strip);
+        assert_eq!(rendered, "<|assistant|>hello<|/assistant|>");
+
+        let merges = no_merges();
+        let (ids, _) = build_training_example(
+            None,
+            &turns,
+            Some(ThinkBudget::High),
+            &merges,
+            Reasoning::Strip,
+        );
+        let decoded = tokenize::bpe::decode(&ids, &merges);
+        assert!(!decoded.contains("<|think:high|>"), "budget marker survived: {decoded}");
+        assert!(!decoded.contains("<|thinking|>"), "thinking survived: {decoded}");
+        assert!(decoded.contains("hello"), "the reply was lost: {decoded}");
+    }
+
+    // Stripping must not disturb the mask's meaning: the reply and its closing
+    // marker are still the training target, and the scaffold still is not.
+    #[test]
+    fn test_stripping_keeps_the_reply_masked_in() {
+        let merges = no_merges();
+        let turns = [
+            Turn { role: Role::User, text: "q".into() },
+            Turn { role: Role::Assistant, text: "<|thinking|>hmm<|/thinking|>a".into() },
+        ];
+        let (ids, mask) = build_training_example(None, &turns, None, &merges, Reasoning::Strip);
+        assert_eq!(ids.len(), mask.len());
+        assert!(mask.iter().any(|&b| b != 0), "nothing was left to train on");
+
+        // Same conversation with the reasoning kept must be strictly longer: the
+        // block is real tokens, and dropping them is the whole point.
+        let (kept, _) = build_training_example(None, &turns, None, &merges, Reasoning::Keep);
+        assert!(
+            ids.len() < kept.len(),
+            "stripped ({}) should be shorter than kept ({})",
+            ids.len(),
+            kept.len()
+        );
     }
 
     #[test]
@@ -382,7 +540,7 @@ mod tests {
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
         assert_eq!(
-            render_conversation(Some(" be nice "), &turns, None),
+            render_keeping(Some(" be nice "), &turns, None),
             "<|system|>be nice<|/system|><|user|>hi<|/user|><|assistant|>yo<|/assistant|>",
         );
     }
@@ -395,15 +553,15 @@ mod tests {
             role: Role::Assistant,
             text: "<|thinking|>hmm<|/thinking|>hello".into(),
         }];
-        let rendered = render_conversation(None, &turns, None);
+        let rendered = render_keeping(None, &turns, None);
         assert!(rendered.contains("<|thinking|>hmm<|/thinking|>"), "{rendered}");
     }
 
     #[test]
     fn test_render_omits_an_empty_system_block() {
         let turns = vec![Turn { role: Role::User, text: "hi".into() }];
-        assert_eq!(render_conversation(Some("   "), &turns, None), "<|user|>hi<|/user|>");
-        assert_eq!(render_conversation(None, &turns, None), "<|user|>hi<|/user|>");
+        assert_eq!(render_keeping(Some("   "), &turns, None), "<|user|>hi<|/user|>");
+        assert_eq!(render_keeping(None, &turns, None), "<|user|>hi<|/user|>");
     }
 
     // ── the thinking budget ──
@@ -425,10 +583,10 @@ mod tests {
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
         assert_eq!(
-            render_conversation(Some("be nice"), &turns, None),
+            render_keeping(Some("be nice"), &turns, None),
             "<|system|>be nice<|/system|><|user|>hi<|/user|><|assistant|>yo<|/assistant|>",
         );
-        let (ids, _) = build_training_example(None, &turns, None, &merges);
+        let (ids, _) = example_keeping(None, &turns, None, &merges);
         let expected = encode("<|user|>hi<|/user|>", &merges).len()
             + encode("<|assistant|>", &merges).len()
             + encode("yo", &merges).len()
@@ -443,7 +601,7 @@ mod tests {
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
         assert_eq!(
-            render_conversation(None, &turns, Some(ThinkBudget::High)),
+            render_keeping(None, &turns, Some(ThinkBudget::High)),
             "<|user|>hi<|/user|><|think:high|><|assistant|>yo<|/assistant|>",
         );
     }
@@ -458,9 +616,9 @@ mod tests {
             Turn { role: Role::User, text: "hi".into() },
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
-        let (plain, plain_mask) = build_training_example(None, &turns, None, &merges);
+        let (plain, plain_mask) = example_keeping(None, &turns, None, &merges);
         let (budgeted, budgeted_mask) =
-            build_training_example(None, &turns, Some(ThinkBudget::Low), &merges);
+            example_keeping(None, &turns, Some(ThinkBudget::Low), &merges);
 
         // Exactly one extra token, and it is the marker's reserved id.
         let marker = encode(ThinkBudget::Low.marker(), &merges);
@@ -565,7 +723,7 @@ mod tests {
             Turn { role: Role::User, text: "hi".into() },
             Turn { role: Role::Assistant, text: "yo".into() },
         ];
-        let (ids, mask) = build_training_example(None, &turns, None, &merges);
+        let (ids, mask) = example_keeping(None, &turns, None, &merges);
 
         assert_eq!(ids.len(), mask.len(), "ids and mask must be parallel");
         assert!(!ids.is_empty());
@@ -592,7 +750,7 @@ mod tests {
             Turn { role: Role::User, text: "q2".into() },
             Turn { role: Role::Assistant, text: "a2".into() },
         ];
-        let (ids, mask) = build_training_example(Some("be nice"), &turns, None, &merges);
+        let (ids, mask) = example_keeping(Some("be nice"), &turns, None, &merges);
 
         assert_eq!(ids.len(), mask.len());
 
@@ -621,7 +779,7 @@ mod tests {
             Turn { role: Role::User, text: "question".into() },
             Turn { role: Role::Assistant, text: "answer".into() },
         ];
-        let (ids, mask) = build_training_example(Some("system prompt"), &turns, None, &merges);
+        let (ids, mask) = example_keeping(Some("system prompt"), &turns, None, &merges);
 
         // The prefix up to the first trained position (everything predicting the
         // system/user/scaffold tokens) must be entirely masked off.

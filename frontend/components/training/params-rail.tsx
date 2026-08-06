@@ -609,6 +609,10 @@ export function ParamsRail({
   // The two the cycle owns. Reachable here only by seeding from one of its jobs.
   const isCycleMode = isKto || isRaft
   const isSft = isFineTune(cfg.mode)
+  // Strictly SFT, not the other two fine-tunes: RAFT and KTO train on the model's
+  // own generations, which have no thinking block to strip, so offering the switch
+  // there would be a control that does nothing.
+  const isPlainSft = cfg.mode === "sft"
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
   // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
   const runFields = curriculumOn
@@ -746,6 +750,18 @@ export function ParamsRail({
                 </option>
               ))}
             </select>
+          </Row>
+        )}
+
+        {isPlainSft && (
+          <Row label="Strip thinking">
+            <Checkbox
+              checked={cfg.strip_thinking ?? false}
+              disabled={disabled}
+              onCheckedChange={(on) =>
+                onChange({ ...cfg, strip_thinking: on === true })
+              }
+            />
           </Row>
         )}
 

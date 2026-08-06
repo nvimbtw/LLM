@@ -123,6 +123,20 @@ pub struct EvalConfig {
     /// corpus, grammar, generation and preference are all raw text — so setting this
     /// changes nothing there, and `run_language` ignores it.
     pub budget: Option<chat_template::ThinkBudget>,
+    /// How to render the held-out replies — which must match how the model under
+    /// test was *trained*, not be a choice about the benchmark.
+    ///
+    /// The assistant suite's whole score is bits per assistant-reply token, so
+    /// scoring a model trained under `Strip` against replies that still carry their
+    /// `<|thinking|>` blocks charges it for tokens it was taught never to emit, and
+    /// reports a regression that is purely an artifact of the mismatch. `jobs::queue`
+    /// therefore reads this off the model's own `meta.json` rather than exposing it
+    /// as a knob on the benchmark form.
+    ///
+    /// Like `budget`, it reaches only what renders a conversation: the assistant
+    /// suite entirely, the markup suite's non-pair stages, and nothing in the
+    /// language suite.
+    pub reasoning: chat_template::Reasoning,
 }
 
 impl EvalConfig {
@@ -137,6 +151,8 @@ impl EvalConfig {
             max_baseline_bytes: DEFAULT_MAX_BASELINE_BYTES,
             sampling: generate::SamplingConfig::default(),
             budget: None,
+            // Every score already on disk was measured against unstripped replies.
+            reasoning: chat_template::Reasoning::Keep,
         }
     }
 }
@@ -431,7 +447,7 @@ pub fn run_markup(
     }
 
     let Some(positions) =
-        run_positions(&mut session, &merges, &conversations, &progress, &cancel)
+        run_positions(&mut session, &merges, &conversations, config.reasoning, &progress, &cancel)
     else {
         return Ok(None);
     };
@@ -440,6 +456,7 @@ pub fn run_markup(
         &merges,
         &conversations,
         config.sampling,
+        config.reasoning,
         &progress,
         &cancel,
     )
@@ -452,6 +469,7 @@ pub fn run_markup(
         &conversations,
         STAGE_PAIRS + STAGE_POSITIONS + STAGE_STRUCTURE,
         STAGE_CHAT_BITS,
+        config.reasoning,
         &progress,
         &cancel,
     ) else {
@@ -582,7 +600,16 @@ pub fn run_assistant(
     // so the suites cannot drift into disagreeing about which conversations the model
     // was allowed to see.
     let Some(chat_metrics) =
-        run_chat_bits(&mut session, &merges, &conversations, 0.0, 1.0, &progress, &cancel)
+        run_chat_bits(
+            &mut session,
+            &merges,
+            &conversations,
+            0.0,
+            1.0,
+            config.reasoning,
+            &progress,
+            &cancel,
+        )
     else {
         return Ok(None);
     };
@@ -692,6 +719,7 @@ fn run_positions(
     session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
+    reasoning: chat_template::Reasoning,
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<Option<markup::PositionMetrics>> {
@@ -708,7 +736,7 @@ fn run_positions(
             &format!("Marker positions ({}/{})", i + 1, conversations.len()),
             STAGE_PAIRS + STAGE_POSITIONS * (i as f64 / conversations.len() as f64),
         );
-        if let Some(tally) = markup::tally_positions(session, merges, conversation) {
+        if let Some(tally) = markup::tally_positions(session, merges, conversation, reasoning) {
             tallies.push(tally);
         }
     }
@@ -720,6 +748,7 @@ fn run_structure(
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
     sampling: generate::SamplingConfig,
+    reasoning: chat_template::Reasoning,
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<Option<markup::StructureMetrics>> {
@@ -754,19 +783,26 @@ fn run_structure(
         }
     }
 
-    let reference = markup::reference_density(conversations, merges);
+    let reference = markup::reference_density(conversations, merges, reasoning);
     Some(markup::summarize_structure(&replies, reference, samples))
 }
 
 // `base` and `weight` are where this stage sits in the caller's progress bar: both
 // suites run it, and they run it at different points with different shares of the
 // total, so neither can be a constant here.
+//
+// Eight arguments, and grouping them would be worse than the lint: the session and
+// merges are the model, `base`/`weight` are the caller's progress geometry, and
+// `reasoning` is a property of how the model was trained. A struct bundling three
+// unrelated concerns for one private call site buys nothing.
+#[allow(clippy::too_many_arguments)]
 fn run_chat_bits(
     session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversations: &[chat::Conversation],
     base: f64,
     weight: f64,
+    reasoning: chat_template::Reasoning,
     progress: &ProgressCallback,
     cancel: &Cancel,
 ) -> Option<Option<chat::ChatMetrics>> {
@@ -782,7 +818,7 @@ fn run_chat_bits(
             &format!("Reply bits ({}/{})", i + 1, conversations.len()),
             base + weight * (i as f64 / conversations.len() as f64),
         );
-        if let Some(scores) = chat::reply_logprob(session, merges, conversation) {
+        if let Some(scores) = chat::reply_logprob(session, merges, conversation, reasoning) {
             scored.push(scores);
         }
     }

@@ -139,6 +139,7 @@ pub fn reply_logprob(
     session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversation: &Conversation,
+    reasoning: chat_template::Reasoning,
 ) -> Option<(f64, usize)> {
     let turns: Vec<Turn> = conversation
         .turns
@@ -165,6 +166,7 @@ pub fn reply_logprob(
         &turns,
         conversation.budget,
         merges,
+        reasoning,
     );
     if ids.len() < 2 {
         return None;

@@ -258,8 +258,9 @@ pub fn tally_positions(
     session: &mut InferSession,
     merges: &[((u32, u32), u32)],
     conversation: &Conversation,
+    reasoning: chat_template::Reasoning,
 ) -> Option<PositionTally> {
-    let (ids, mask) = render(conversation, merges)?;
+    let (ids, mask) = render(conversation, merges, reasoning)?;
     if ids.len() < 2 {
         return None;
     }
@@ -395,11 +396,15 @@ pub fn summarize_structure(
 
 // Markers per 100 tokens over the held-out replies — what the model is being compared
 // against. Computed off the same rendering the position stage scores.
-pub fn reference_density(conversations: &[Conversation], merges: &[((u32, u32), u32)]) -> f64 {
+pub fn reference_density(
+    conversations: &[Conversation],
+    merges: &[((u32, u32), u32)],
+    reasoning: chat_template::Reasoning,
+) -> f64 {
     let mut markers = 0usize;
     let mut tokens = 0usize;
     for conversation in conversations {
-        let Some((ids, mask)) = render(conversation, merges) else {
+        let Some((ids, mask)) = render(conversation, merges, reasoning) else {
             continue;
         };
         for (i, &id) in ids.iter().enumerate() {
@@ -419,7 +424,11 @@ pub fn reference_density(conversations: &[Conversation], merges: &[((u32, u32), 
 }
 
 // The held-out conversation, rendered exactly as `sft_train` would see it.
-fn render(conversation: &Conversation, merges: &[((u32, u32), u32)]) -> Option<(Vec<u32>, Vec<u8>)> {
+fn render(
+    conversation: &Conversation,
+    merges: &[((u32, u32), u32)],
+    reasoning: chat_template::Reasoning,
+) -> Option<(Vec<u32>, Vec<u8>)> {
     let turns: Vec<Turn> = conversation
         .turns
         .iter()
@@ -441,6 +450,7 @@ fn render(conversation: &Conversation, merges: &[((u32, u32), u32)]) -> Option<(
         &turns,
         conversation.budget,
         merges,
+        reasoning,
     ))
 }
 

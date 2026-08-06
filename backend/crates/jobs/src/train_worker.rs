@@ -399,7 +399,8 @@ fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
             )
         })
     } else {
-        training::build_sft_dataset(&base_model_dir).map(|s| {
+        let reasoning = training::strip_thinking_for(config.mode, config.strip_thinking);
+        training::build_sft_dataset(&base_model_dir, reasoning).map(|s| {
             (
                 serde_json::json!({
                     "conversations": s.conversations,

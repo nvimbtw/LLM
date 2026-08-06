@@ -56,6 +56,21 @@ fn default_beta() -> f64 {
     0.1
 }
 
+/// Whether a run of `mode` renders its chat data with reasoning, given what the
+/// request asked for.
+///
+/// The one place the "pretrain always strips" rule lives, so the dataset builder
+/// and anything reconstructing a model's rendering cannot disagree about it. A
+/// pretrain corpus carries chat to expose the *scaffold* — the markers a later SFT
+/// would otherwise meet at random init — and a thinking block is not scaffold.
+pub fn strip_thinking_for(mode: TrainMode, requested: bool) -> llm::chat_template::Reasoning {
+    match mode {
+        TrainMode::Pretrain => llm::chat_template::Reasoning::Strip,
+        _ if requested => llm::chat_template::Reasoning::Strip,
+        _ => llm::chat_template::Reasoning::Keep,
+    }
+}
+
 // Hyperparameters + dataset knobs for one run. Deserialized from the POST body,
 // echoed back in progress snapshots, and persisted to the run's meta.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +140,18 @@ pub struct TrainConfig {
     // reproducing the old fixed-order runs.
     #[serde(default)]
     pub shuffle: bool,
+    // Drop the `<|thinking|>` blocks (and their budget markers) from the chat data
+    // this run trains on, teaching the model to answer directly.
+    //
+    // **SFT only as a choice.** Pretrain always strips, whatever this says: the
+    // chat share exists in a pretrain corpus to expose the *scaffold*, and
+    // reasoning a model that small cannot hold together is capacity spent on noise
+    // either way. `strip_thinking_for(mode)` is the one place that rule lives.
+    //
+    // `#[serde(default)]` => a body or meta.json written before this field
+    // deserializes as `false`, exactly reproducing the runs already on disk.
+    #[serde(default)]
+    pub strip_thinking: bool,
     // PRNG seed for the per-epoch shuffle, persisted so a run is reproducible. `0`
     // means "pick a fresh time-based seed at run start" (resolved server-side into
     // this field before the run's meta.json is written).
@@ -1071,6 +1098,29 @@ fn untrained_marker_ids(base_model_dir: &Path, corpus_path: &Path) -> io::Result
     }
 }
 
+/// How a trained model's chat data was rendered, from its own `meta.json`.
+///
+/// A benchmark has to score a model the way it was trained: the assistant suite is
+/// bits per assistant-reply token, so measuring a stripped model against replies
+/// that still carry their `<|thinking|>` blocks charges it for tokens it was taught
+/// never to emit. That is a property of the model, not a choice about the run, so
+/// it is read here rather than asked for on the benchmark form.
+///
+/// Best-effort by design: a missing, unreadable or pre-`strip_thinking` meta.json
+/// yields `Keep`, which is what every model already on disk was trained under.
+pub fn model_reasoning(model_dir: &Path) -> llm::chat_template::Reasoning {
+    let stripped = fs::read_to_string(model_dir.join("meta.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|meta| meta.get("config")?.get("strip_thinking")?.as_bool())
+        .unwrap_or(false);
+    if stripped {
+        llm::chat_template::Reasoning::Strip
+    } else {
+        llm::chat_template::Reasoning::Keep
+    }
+}
+
 // A whole corpus file as ids, widened to the u32 the rest of this module speaks.
 //
 // Only for the SFT/KTO corpora, which are bounded by the conversation set and so
@@ -1487,8 +1537,14 @@ fn render_chat_documents() -> io::Result<usize> {
             continue;
         }
         let turns = conversation_turns(conv)?;
-        let text =
-            llm::chat_template::render_conversation(conv.system.as_deref(), &turns, conv.budget);
+        // Unconditionally stripped — see `strip_thinking_for`. This is the only
+        // path that writes chat into a *pretrain* corpus.
+        let text = llm::chat_template::render_conversation(
+            conv.system.as_deref(),
+            &turns,
+            conv.budget,
+            llm::chat_template::Reasoning::Strip,
+        );
         fs::write(dir.join(format!("chat{index:05}.txt")), text)?;
         written += 1;
     }
@@ -1602,6 +1658,21 @@ fn read_sft_conversations() -> io::Result<Vec<SftConversation>> {
     Ok(conversations)
 }
 
+// Whether the conversation still has something for the model to learn to say once
+// `reasoning` has been applied. Always true under `Keep`, where nothing is removed.
+fn any_reply_survives(
+    turns: &[llm::chat_template::Turn],
+    reasoning: llm::chat_template::Reasoning,
+) -> bool {
+    if reasoning == llm::chat_template::Reasoning::Keep {
+        return true;
+    }
+    turns.iter().any(|t| {
+        t.role == llm::chat_template::Role::Assistant
+            && !llm::chat_template::strip_thinking(&t.text).is_empty()
+    })
+}
+
 // A conversation's turns as chat-template turns, applying the long-user-turn cap.
 fn conversation_turns(conv: &SftConversation) -> io::Result<Vec<llm::chat_template::Turn>> {
     let mut turns = Vec::with_capacity(conv.turns.len());
@@ -1624,7 +1695,17 @@ fn conversation_turns(conv: &SftConversation) -> io::Result<Vec<llm::chat_templa
 // SFT is a fine-tune, so the token ids must match exactly what the base model
 // already learned. Training a fresh BPE here would renumber the vocab (and the
 // special-marker ids) and the fine-tune would be gibberish.
-pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
+//
+// `reasoning` comes from the run's `strip_thinking`, via `strip_thinking_for`. A
+// conversation whose assistant turns are *all* empty once stripped is dropped
+// rather than trained on: it would otherwise teach "answer with nothing and stop",
+// which is a worse lesson than the reasoning it replaced. (Measured against the
+// corpus on disk when this landed: 0 of 1,849 assistant turns, so this is
+// insurance, not a filter that is doing quiet work.)
+pub fn build_sft_dataset(
+    base_model_dir: &Path,
+    reasoning: llm::chat_template::Reasoning,
+) -> io::Result<SftDatasetStats> {
     let merges_path = base_model_dir.join("merges.bin");
     let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
 
@@ -1655,12 +1736,16 @@ pub fn build_sft_dataset(base_model_dir: &Path) -> io::Result<SftDatasetStats> {
 
     for conv in share {
         let turns = conversation_turns(conv)?;
+        if !any_reply_survives(&turns, reasoning) {
+            continue;
+        }
 
         let (ids, m) = llm::chat_template::build_training_example(
             conv.system.as_deref(),
             &turns,
             conv.budget,
             &merges,
+            reasoning,
         );
         if ids.is_empty() {
             continue;
@@ -1944,7 +2029,16 @@ pub fn build_raft_dataset(
                 text: line.response.clone(),
             },
         ];
-        let (ids, m) = llm::chat_template::build_training_example(None, &turns, None, &merges);
+        // `Keep` is the identity here: these are the model's *own* generations,
+        // produced unbudgeted (see `labeling::autolabel`), so there is no thinking
+        // block to strip — and a model trained under `Strip` does not emit one.
+        let (ids, m) = llm::chat_template::build_training_example(
+            None,
+            &turns,
+            None,
+            &merges,
+            llm::chat_template::Reasoning::Keep,
+        );
 
         // Unlike KTO — where a truncated example would be scored against a whole-reply
         // reference log-probability and mean two different things — a long example
@@ -2164,7 +2258,16 @@ pub fn build_kto_dataset(
                 text: line.response.clone(),
             },
         ];
-        let (ids, m) = llm::chat_template::build_training_example(None, &turns, None, &merges);
+        // `Keep` is the identity here: these are the model's *own* generations,
+        // produced unbudgeted (see `labeling::autolabel`), so there is no thinking
+        // block to strip — and a model trained under `Strip` does not emit one.
+        let (ids, m) = llm::chat_template::build_training_example(
+            None,
+            &turns,
+            None,
+            &merges,
+            llm::chat_template::Reasoning::Keep,
+        );
 
         if ids.len() < 2 || ids.len() > ctx {
             skipped_too_long += 1;
@@ -2994,7 +3097,7 @@ mod sft_tests {
         );
         fs::write(sft.join("data.jsonl"), jsonl).unwrap();
 
-        let stats = build_sft_dataset(&base).unwrap();
+        let stats = build_sft_dataset(&base, llm::chat_template::Reasoning::Keep).unwrap();
         assert_eq!(stats.conversations, 2);
         // No pretrain corpus exists under this temp root, so the tokenizer guard
         // refuses replay and the corpus is conversations only — which is what the
@@ -3020,6 +3123,7 @@ mod sft_tests {
             ],
             None,
             &merges,
+            llm::chat_template::Reasoning::Keep,
         ).1.iter().filter(|&&b| b != 0).count()
         + llm::chat_template::build_training_example(
             Some("be nice"),
@@ -3029,6 +3133,7 @@ mod sft_tests {
             ],
             None,
             &merges,
+            llm::chat_template::Reasoning::Keep,
         ).1.iter().filter(|&&b| b != 0).count();
         assert_eq!(stats.trainable_tokens, expected);
         assert!(stats.trainable_tokens < stats.total_tokens);
@@ -3063,6 +3168,48 @@ mod sft_tests {
         let cfg: TrainConfig = serde_json::from_str(body).unwrap();
         assert_eq!(cfg.mode, TrainMode::Pretrain);
         assert!(cfg.base_model_id.is_none());
+        // The same back-compat rule for `strip_thinking`: absent means the runs
+        // already on disk, which kept their reasoning.
+        assert!(!cfg.strip_thinking);
+    }
+
+    // The policy, in one place: a pretrain corpus never carries reasoning whatever
+    // the request said, and SFT does exactly what it was asked.
+    #[test]
+    fn pretrain_always_strips_and_sft_obeys_the_request() {
+        use llm::chat_template::Reasoning;
+        for requested in [false, true] {
+            assert_eq!(
+                strip_thinking_for(TrainMode::Pretrain, requested),
+                Reasoning::Strip,
+                "pretrain kept reasoning when asked {requested}"
+            );
+        }
+        assert_eq!(strip_thinking_for(TrainMode::Sft, false), Reasoning::Keep);
+        assert_eq!(strip_thinking_for(TrainMode::Sft, true), Reasoning::Strip);
+    }
+
+    // A conversation left with nothing to say once stripped would teach "answer
+    // with nothing and stop", so it is dropped rather than trained on.
+    #[test]
+    fn a_reply_that_is_only_reasoning_does_not_survive_stripping() {
+        use llm::chat_template::{Reasoning, Role, Turn};
+        let only_thinking = [
+            Turn { role: Role::User, text: "q".into() },
+            Turn {
+                role: Role::Assistant,
+                text: "<|thinking|>all of it<|/thinking|>".into(),
+            },
+        ];
+        assert!(!any_reply_survives(&only_thinking, Reasoning::Strip));
+        // Nothing is removed under `Keep`, so the same conversation is fine there.
+        assert!(any_reply_survives(&only_thinking, Reasoning::Keep));
+
+        let has_answer = [
+            Turn { role: Role::User, text: "q".into() },
+            Turn { role: Role::Assistant, text: "<|thinking|>hmm<|/thinking|>a".into() },
+        ];
+        assert!(any_reply_survives(&has_answer, Reasoning::Strip));
     }
 
     // An explicit SFT body parses the lowercase tag and carries the base id.
@@ -3127,6 +3274,7 @@ mod sft_tests {
                 &turns,
                 conv.budget,
                 &merges,
+                llm::chat_template::Reasoning::Keep,
             );
             assert!(!ids.is_empty(), "example rendered to no tokens: {}", line);
             assert!(
