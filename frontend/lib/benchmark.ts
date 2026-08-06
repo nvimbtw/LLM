@@ -130,11 +130,19 @@ export interface GenerationMetrics {
   samples: GenerationSample[]
 }
 
-// Bits per assistant-reply token over held-out conversations, scored through the
+// Bits per assistant-reply *byte* over held-out conversations, scored through the
 // SFT loss mask. Kept out of the composite score: a base model has never seen the
 // chat scaffold, so this is read as a paired comparison between a base model and
 // its fine-tune, not as a number to rank every run by.
+//
+// `bits_per_byte` is the scored figure and the one to plot. `bits_per_token` is
+// reported alongside but is only comparable between models sharing a tokenizer —
+// the BPE fix moved the vocabulary from 2.13 to 3.79 bytes per token and every
+// per-token figure on record moved ~74% with it, on unchanged weights.
 export interface ChatMetrics {
+  bits_per_byte: number | null
+  bits_per_byte_stderr: number | null
+  bytes_scored: number
   bits_per_token: number | null
   logprob: number | null
   conversations: number
@@ -260,13 +268,16 @@ export interface AssistantBreakdown {
 }
 
 /**
- * Bits per assistant-reply token over the held-out conversations, mapped to 0–100.
+ * Bits per assistant-reply byte over the held-out conversations, mapped to 0–100.
  *
- * **The score inverts the measurement.** Bits per token is a *cost* — lower is
- * better — while every suite reports higher-is-better, so `chat.bits_per_token`
+ * **The score inverts the measurement.** Bits per byte is a *cost* — lower is
+ * better — while every suite reports higher-is-better, so `chat.bits_per_byte`
  * falling is `score` rising. Read the score for direction and the bits for
  * magnitude; showing the raw bits without saying which way is up is how a
  * 3.6875 → 3.8796 regression once got read as progress.
+ *
+ * Scores recorded at `breakdown.version` 1 were measured per *token* and are not
+ * comparable with these — see `ASSISTANT_SCORE_VERSION` in `eval/mod.rs`.
  */
 export interface AssistantReport {
   score: number | null

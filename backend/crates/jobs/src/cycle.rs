@@ -965,18 +965,20 @@ mod judge_tests {
     use db::benchmark::RoundEvidence;
 
     // The standard errors each suite actually reports at this model size. Language is
-    // ~0.95 per run and markup ~1.3 (both measured); the assistant suite's ~2.1 falls
-    // out of propagating a ~0.05 bits/token error through the mapping's 41.7 points per
-    // bit. A margin is `sqrt(2)` times these: 1.34, 1.84 and 2.97 respectively.
+    // ~0.95 per run and markup ~1.3 (both measured); the assistant suite's ~0.83 falls
+    // out of propagating a ~0.015 bits/byte error through the mapping's 55.6 points per
+    // bit. A margin is `sqrt(2)` times these: 1.34, 1.84 and 1.18 respectively.
     const LANGUAGE_SE: f64 = 0.95;
     const MARKUP_SE: f64 = 1.3;
-    const REPLY_SE: f64 = 2.1;
+    const REPLY_SE: f64 = 0.83;
 
-    // The two scores the assistant suite gives the bits/token pair that started all
-    // this. 3.6875 → 42.2505 and 3.8796 → 34.6906: the *same* round, now unmistakably
-    // a fall, because the suite inverts the cost rather than leaving the reader to.
-    const REPLIES_GOOD: f64 = 42.2505;
-    const REPLIES_BAD: f64 = 34.6906;
+    // A measured base and its fine-tune: Balanced 1 at 1.6151 bits/byte and Balanced
+    // 1.01 at 1.5489, which the suite maps to these. Read in this direction the round
+    // is unmistakably a *rise*, because the suite inverts the cost rather than leaving
+    // the reader to — and under version 1 the same pair scored 0.80 and 0.81, inside
+    // one error bar, which is what a saturated mapping does to a real 3.6-point gain.
+    const REPLIES_GOOD: f64 = 53.94;
+    const REPLIES_BAD: f64 = 50.27;
 
     fn cmp(name: &'static str, bar: f64, round: f64, stderr: f64) -> SuiteComparison {
         SuiteComparison {
@@ -1041,10 +1043,9 @@ mod judge_tests {
         assert!(verdict.note.contains("markup"), "{}", verdict.note);
     }
 
-    // The round that was read as an improvement and was not. Under the old note it was
-    // "3.6875 → 3.8796 ... no gain" and the unit ran backwards; here every suite reads
-    // higher-is-better, so the same round says `worse` in the same direction as the
-    // other two.
+    // Losing the fine-tune's gain and reading it as a fall. Under the old note this
+    // was "3.6875 → 3.8796 ... no gain" and the unit ran backwards; here every suite
+    // reads higher-is-better, so it says `worse` in the same direction as the other two.
     #[test]
     fn the_round_that_looked_like_progress_reads_as_a_fall() {
         let verdict = judged(vec![
@@ -1054,7 +1055,7 @@ mod judge_tests {
         ]);
         assert!(!verdict.accept, "{}", verdict.note);
         assert!(verdict.note.contains("replies"), "{}", verdict.note);
-        assert!(verdict.note.contains("-7.5599"), "{}", verdict.note);
+        assert!(verdict.note.contains("-3.6700"), "{}", verdict.note);
         assert!(verdict.note.contains("worse"), "{}", verdict.note);
     }
 
@@ -1066,7 +1067,7 @@ mod judge_tests {
             replies(REPLIES_BAD, REPLIES_GOOD),
         ]);
         assert!(verdict.accept, "{}", verdict.note);
-        assert!(verdict.note.contains("+7.5599"), "{}", verdict.note);
+        assert!(verdict.note.contains("+3.6700"), "{}", verdict.note);
         assert!(verdict.note.contains("accepted on replies"), "{}", verdict.note);
     }
 
@@ -1078,8 +1079,8 @@ mod judge_tests {
         let verdict = judged(vec![
             language(58.9434, 58.9434),
             markup(32.1, 32.1),
-            // 1.74 better against a 2.97 margin.
-            replies(REPLIES_GOOD, REPLIES_GOOD + 1.74),
+            // 0.7 better against a 1.17 margin.
+            replies(REPLIES_GOOD, REPLIES_GOOD + 0.7),
         ]);
         assert!(!verdict.accept, "{}", verdict.note);
         assert!(verdict.note.contains("nothing improved"), "{}", verdict.note);

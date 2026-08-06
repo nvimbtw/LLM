@@ -153,12 +153,17 @@ costs real wall clock; that is the trade.
 The cycle scores only its final model, so RAFT and KTO were indistinguishable until
 the intermediate one was benchmarked by hand. On one round from `Balanced 1.01`:
 
-| stage | model | assistant | bits/token |
+| stage | model | assistant (v1) | bits/token |
 |---|---|---|---|
 | before any fine-tune | Balanced 1 | 38.55 | 3.7797 |
 | after SFT | Balanced 1.01 | **42.25** | 3.6875 |
 | after RAFT | r1 self | 38.43 | 3.7829 |
 | after KTO | r1 pref | **32.69** | 3.9334 |
+
+Those are `ASSISTANT_SCORE_VERSION` **1** scores, per token and under the pre-`17767d0`
+tokenizer — do not compare them against anything measured since (see "A benchmark must
+not be denominated in tokens"). The *relative* story below is unaffected: all four ran
+on one tokenizer, so the differences between them are real.
 
 RAFT costs −3.82 (1.4σ, inside noise), KTO −5.74 (2.1σ), combined −9.56 (3.5σ). RAFT
 hands back essentially the whole SFT gain; KTO then goes ~6 points below the pre-SFT
@@ -224,12 +229,44 @@ could not say so.
 - **Markup** — can it drive its own harness. Marker minimal pairs (0.40),
   forced-position marker prediction (0.30), generated structure (0.20), and restraint
   against spraying markers into prose (0.10). Only the first needs no data on disk.
-- **Assistant** — are the replies any good. Held-out bits per assistant-reply token
-  through a logistic (`CHAT_MID` 3.50, `CHAT_SCALE` 0.60), which is the *whole* score.
-  **The mapping inverts the unit**: bits per token is a cost, so fewer bits is a
-  higher score, and all three suites therefore agree that up is good. Needs
+- **Assistant** — are the replies any good. Held-out bits per assistant-reply *byte*
+  through a logistic (`CHAT_BPB_MID` 1.62, `CHAT_BPB_SCALE` 0.45), which is the
+  *whole* score. **The mapping inverts the unit**: bits per byte is a cost, so fewer
+  bits is a higher score, and all three suites therefore agree that up is good. Needs
   `eval/chat/` on disk; without it the score is NaN rather than zero, because an
   unmeasured model is not a bad one.
+
+**A benchmark must not be denominated in tokens, and this one was for a release.**
+`ASSISTANT_SCORE_VERSION` 1 scored bits per *token*. The BPE fix (`17767d0`) took the
+vocabulary from 2.13 to 3.79 bytes per token; a bigger token costs proportionally more
+bits to predict, so every model's bits-per-token rose ~74% with no weight having
+changed, and the score — a logistic centred at 3.50 — collapsed against its bottom
+asymptote. Every model on disk read **0.79–1.02 out of 100**, all six inside one error
+bar, at a `score_stderr` of 0.045. The suite is the post-train cycle's only objective,
+so `jobs::cycle` was gating on a constant for that whole period.
+
+The tell was that the language suite was *unaffected*, because it has always measured
+bits per **byte** — tokenizer-invariant by construction. Version 2 makes the assistant
+suite match: the byte count is the length of what the scored tokens decode to, which
+is the reply text as written, identical however it is segmented. Measured cohort, each
+model under its own tokenizer:
+
+| model | bits/byte | score (v2) | score (v1) |
+|---|---|---|---|
+| Shakedown 1 | 1.6579 | 47.90 | 1.02 |
+| Shakedown 1.01 (SFT) | 1.5572 | 53.48 | 1.02 |
+| Balanced 1 | 1.6151 | 50.27 | — |
+| Balanced 1.01 (SFT) | 1.5489 | 53.94 | 0.80 |
+| Balanced 1 NT | 1.7221 | 44.35 | — |
+| Balanced 1.01 NT (SFT) | 1.6434 | 48.70 | 0.84 |
+
+Every fine-tune now beats its own base by 3.6–5.6 points against a ~1.2-point margin
+on the difference — the property the suite exists to report and which v1 could not.
+`bits_per_token` is still in the report, since it is the loss SFT actually minimizes,
+but it is only comparable between models sharing a tokenizer. **Nothing recorded at
+version 1 is comparable with version 2**, and the gap cannot be undone arithmetically:
+a v1 score depends on the bytes-per-token of a tokenizer the report never recorded.
+`tests/calibrate_assistant_anchor.rs` re-derives the anchor if the holdout changes.
 
 **The assistant suite is the post-train cycle's objective, and the only one that is.**
 The other two are things a chat fine-tune can trade away. For one release the chat

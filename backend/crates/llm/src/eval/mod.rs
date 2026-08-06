@@ -560,20 +560,48 @@ pub struct AssistantReport {
 
 // Bump alongside any change to the anchors below, for the reason `SCORE_VERSION`
 // gives: it moves every score without a model having changed.
-pub const ASSISTANT_SCORE_VERSION: u32 = 1;
+//
+// **Version 2 changed the unit**, from bits per reply token to bits per reply byte.
+// Nothing recorded at version 1 is comparable, and the gap is not a rescaling that
+// could be undone arithmetically — a v1 score depends on the bytes-per-token of the
+// tokenizer the model was measured under, which is not recorded in the report.
+pub const ASSISTANT_SCORE_VERSION: u32 = 2;
 
-// Bits per reply token through a logistic, the same shape and for the same reasons as
-// the language suite's `BPB_MID`/`BPB_SCALE`: strictly monotone, smooth, asymptotic at
+// Bits per reply **byte** through a logistic, the same shape and the same unit as the
+// language suite's `BPB_MID`/`BPB_SCALE`: strictly monotone, smooth, asymptotic at
 // both ends, so it never clamps and an improvement always pays.
 //
-// MID sits near where the current cohort actually lands (3.69–3.88 measured across a
-// seed and its post-train rounds), which is where the response is steepest. SCALE
-// sets the resolution: peak slope is 100/(4·SCALE) = 41.7 points per bit/token, so the
-// 0.19 bits/token a single round has been observed to move is worth ~8 points, against
-// a per-run `bits_per_token_stderr` of ~0.05 — i.e. ~2.1 points. Comfortably resolvable,
-// which is the property the language composite lacked and why it could not gate this.
-const CHAT_MID: f64 = 3.50;
-const CHAT_SCALE: f64 = 0.60;
+// Per byte because version 1 measured per *token*, and a token is a property of the
+// tokenizer rather than of the text. The BPE fix in `17767d0` took the vocabulary
+// from 2.13 to 3.79 bytes per token; every model's bits-per-token rose ~74% with it
+// and this score collapsed from 42.25 to 0.84 with no weight having changed, pinned
+// against the bottom of the logistic at a `score_stderr` of 0.045. The suite was the
+// post-train cycle's only objective, so `jobs::cycle` spent that period gating on a
+// constant. A byte is the same byte under any tokenizer; this cannot recur.
+//
+// MID is the mean of the cohort on disk, so the steepest part of the response sits
+// where models actually are. Measured over all six, each under its own tokenizer:
+//
+//   Shakedown 1      1.6579   ->  Shakedown 1.01      1.5572   (+5.5 points)
+//   Balanced 1       1.6151   ->  Balanced 1.01       1.5489   (+3.6)
+//   Balanced 1 NT    1.7221   ->  Balanced 1.01 NT    1.6434   (+4.4)
+//
+// Every fine-tune beats its own base, which is the property the suite exists to
+// report and which version 1 could not: it scored that whole table between 0.79 and
+// 1.02, all six inside one error bar of each other.
+//
+// SCALE sets the dynamic range, not the resolution — signal and noise scale together
+// under it. Peak slope is 100/(4·SCALE) = 55.6 points per bit/byte, so the ~0.08
+// bits/byte an SFT round moves is worth ~4 points against a `bits_per_byte_stderr` of
+// ~0.015, i.e. ~0.8 points per run and ~1.2 on a difference. Comfortably resolvable,
+// which is the property version 1 lost.
+//
+// Deliberately *not* shared with the language suite's constants despite the shared
+// unit. Chat replies carry markup and prose does not, so the two distributions are
+// not the same distribution, and one suite's calibration drifting into the other's is
+// how they would stop being independently versioned.
+const CHAT_BPB_MID: f64 = 1.62;
+const CHAT_BPB_SCALE: f64 = 0.45;
 
 /// Runs the assistant suite. Same contract as the other two: blocking, GPU-bound,
 /// needs its own OS thread, and `Ok(None)` means cancelled rather than failed.
@@ -636,14 +664,14 @@ pub fn run_assistant(
     }))
 }
 
-fn replies_component(bits_per_token: f64) -> f64 {
-    1.0 / (1.0 + ((bits_per_token - CHAT_MID) / CHAT_SCALE).exp())
+fn replies_component(bits_per_byte: f64) -> f64 {
+    1.0 / (1.0 + ((bits_per_byte - CHAT_BPB_MID) / CHAT_BPB_SCALE).exp())
 }
 
 fn assistant_score(chat: &Option<chat::ChatMetrics>) -> AssistantBreakdown {
     let measured = chat
         .as_ref()
-        .map(|c| c.bits_per_token)
+        .map(|c| c.bits_per_byte)
         .filter(|b| b.is_finite());
 
     let Some(bits) = measured else {
@@ -661,9 +689,9 @@ fn assistant_score(chat: &Option<chat::ChatMetrics>) -> AssistantBreakdown {
     // gate reading zero uncertainty would accept any movement at all.
     let stderr = chat
         .as_ref()
-        .map(|c| c.bits_per_token_stderr)
+        .map(|c| c.bits_per_byte_stderr)
         .filter(|s| s.is_finite())
-        .map(|s| 100.0 * replies * (1.0 - replies) / CHAT_SCALE * s)
+        .map(|s| 100.0 * replies * (1.0 - replies) / CHAT_BPB_SCALE * s)
         .unwrap_or(f64::NAN);
 
     AssistantBreakdown {
@@ -809,6 +837,10 @@ fn run_chat_bits(
     if conversations.is_empty() {
         return Some(None);
     }
+    // Indexed once for the whole stage: the scored bytes come from decoding each
+    // reply, and rebuilding the merge table per conversation would cost more than
+    // the forward pass it accompanies.
+    let decoder = tokenize::bpe::Decoder::new(merges);
     let mut scored = Vec::new();
     for (i, conversation) in conversations.iter().enumerate() {
         if cancelled(cancel) {
@@ -818,7 +850,9 @@ fn run_chat_bits(
             &format!("Reply bits ({}/{})", i + 1, conversations.len()),
             base + weight * (i as f64 / conversations.len() as f64),
         );
-        if let Some(scores) = chat::reply_logprob(session, merges, conversation, reasoning) {
+        if let Some(scores) =
+            chat::reply_logprob(session, merges, &decoder, conversation, reasoning)
+        {
             scored.push(scores);
         }
     }
@@ -1664,45 +1698,94 @@ mod tests {
 
     // ── the assistant suite ──────────────────────────────────────────────────
 
+    // `bits` is per byte — what the suite scores. The per-token figures are set to
+    // an arbitrary multiple of it, since nothing under test reads them; a helper
+    // that let them drift into the score is exactly what version 1 did wrong.
     fn chat_of(bits: f64, stderr: f64) -> Option<chat::ChatMetrics> {
         Some(chat::ChatMetrics {
-            bits_per_token: bits,
-            logprob: -bits * std::f64::consts::LN_2,
-            bits_per_token_stderr: stderr,
+            bits_per_byte: bits,
+            bits_per_byte_stderr: stderr,
+            bytes_scored: 15000,
+            bits_per_token: bits * 3.79,
+            logprob: -bits * 3.79 * std::f64::consts::LN_2,
+            bits_per_token_stderr: stderr * 3.79,
             conversations: 54,
             tokens_scored: 4000,
         })
     }
 
-    // **The one property the whole suite exists to provide.** Bits per token is a
+    // **The one property the whole suite exists to provide.** Bits per byte is a
     // cost, every other suite reports higher-is-better, and a note mixing the two
     // directions was read backwards by a person who then asked why a regression was
     // being blocked. The inversion belongs here, once, not in the reader's head.
     #[test]
-    fn fewer_bits_per_reply_token_scores_higher() {
-        let better = assistant_score(&chat_of(3.6875, 0.05)).score;
-        let worse = assistant_score(&chat_of(3.8796, 0.05)).score;
+    fn fewer_bits_per_reply_byte_scores_higher() {
+        let better = assistant_score(&chat_of(1.5489, 0.015)).score;
+        let worse = assistant_score(&chat_of(1.7221, 0.015)).score;
         assert!(better > worse, "{better} should beat {worse}");
     }
 
     // The anchors, pinned. These are the numbers `jobs::cycle`'s tests are written
-    // against, so a change to `CHAT_MID`/`CHAT_SCALE` has to break here first — and
-    // `ASSISTANT_SCORE_VERSION` has to move with it, since every recorded score does.
+    // against, so a change to `CHAT_BPB_MID`/`CHAT_BPB_SCALE` has to break here
+    // first — and `ASSISTANT_SCORE_VERSION` has to move with it, since every
+    // recorded score does.
     #[test]
     fn the_mapping_sits_where_the_current_cohort_does() {
-        let at = |bits| (assistant_score(&chat_of(bits, 0.05)).score * 1e4).round() / 1e4;
-        assert_eq!(at(CHAT_MID), 50.0);
-        assert_eq!(at(3.6875), 42.2505);
-        assert_eq!(at(3.8796), 34.6906);
+        let at = |bits| (assistant_score(&chat_of(bits, 0.015)).score * 1e4).round() / 1e4;
+        assert_eq!(at(CHAT_BPB_MID), 50.0);
+        // The measured ends of the cohort — Balanced 1 NT and Balanced 1.01 — land
+        // either side of the midpoint and nowhere near an asymptote.
+        assert!((at(1.7221) - 44.35).abs() < 0.1, "worst of the cohort: {}", at(1.7221));
+        assert!((at(1.5489) - 53.94).abs() < 0.1, "best of the cohort: {}", at(1.5489));
+    }
+
+    // **The regression this version exists to prevent.** Every model on disk scored
+    // between 0.79 and 1.02 under version 1: the cohort sat ~4.8 scale-units past a
+    // midpoint calibrated for a tokenizer that no longer existed, so the logistic was
+    // flat there and `jobs::cycle` was gating on a constant. Any future anchor has to
+    // keep the cohort inside the part of the curve that can still move.
+    #[test]
+    fn the_cohort_is_not_pinned_against_an_asymptote() {
+        let cohort = [1.5489, 1.5572, 1.6151, 1.6434, 1.6579, 1.7221];
+        let scores: Vec<f64> = cohort.iter().map(|&b| assistant_score(&chat_of(b, 0.015)).score).collect();
+        let (lo, hi) = (
+            scores.iter().cloned().fold(f64::INFINITY, f64::min),
+            scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        );
+        assert!(lo > 20.0 && hi < 80.0, "cohort spans {lo:.1}..{hi:.1}, off the steep region");
+        assert!(hi - lo > 5.0, "cohort spans only {:.1} points; too flat to gate on", hi - lo);
+    }
+
+    // A fine-tune must out-score its own base by more than the gate's noise floor.
+    // The three pairs on disk, each measured under its own tokenizer.
+    #[test]
+    fn every_fine_tune_beats_its_base_by_more_than_the_error_bar() {
+        for (base, tuned, name) in [
+            (1.6579, 1.5572, "Shakedown 1"),
+            (1.6151, 1.5489, "Balanced 1"),
+            (1.7221, 1.6434, "Balanced 1 NT"),
+        ] {
+            let base = assistant_score(&chat_of(base, 0.015));
+            let tuned = assistant_score(&chat_of(tuned, 0.015));
+            // The error bar on a *difference* of two runs, as `jobs::cycle` derives it.
+            let margin = (base.score_stderr.powi(2) + tuned.score_stderr.powi(2)).sqrt();
+            assert!(
+                tuned.score - base.score > margin,
+                "{name}: {:.2} -> {:.2} is inside the {margin:.2} margin",
+                base.score,
+                tuned.score,
+            );
+        }
     }
 
     // The gate derives its margin from this, so it has to be the measurement's own
     // error carried through the mapping's slope — not a constant, and never zero.
     #[test]
     fn the_error_bar_is_propagated_through_the_mapping() {
-        let breakdown = assistant_score(&chat_of(3.5, 0.05));
-        // Peak slope is 100/(4·SCALE) = 41.67 points per bit, so 0.05 bits is ~2.08.
-        assert!((breakdown.score_stderr - 2.0833).abs() < 1e-3, "{}", breakdown.score_stderr);
+        let breakdown = assistant_score(&chat_of(CHAT_BPB_MID, 0.015));
+        // At the midpoint the slope is its peak, 100/(4·SCALE) = 55.56 points per
+        // bit/byte, so the 0.015 the cohort measures is ~0.83 points.
+        assert!((breakdown.score_stderr - 0.8333).abs() < 1e-3, "{}", breakdown.score_stderr);
     }
 
     // An unmeasured model is not a bad one: with no held-out set the score must be NaN

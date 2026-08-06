@@ -66,8 +66,8 @@ function AssistantScoreCard({
         <dl className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-3">
           <Headline
             label="Reply bits"
-            value={formatNumber(chat?.bits_per_token ?? null, 4)}
-            hint="per token · lower is better"
+            value={formatNumber(chat?.bits_per_byte ?? null, 4)}
+            hint="per byte · lower is better"
           />
           <Headline
             label="Conversations"
