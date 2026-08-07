@@ -44,10 +44,21 @@ const MAX_GRAD_NORM: f32 = 1.0;
 // lost area goes to the cosine, which averages about the same. What changes is
 // *when* the lr is high.
 const WARMUP_RATIO: f32 = 0.05;
-// Cap. Keeps every pretrain identical to the pre-ratio behaviour — at thousands
-// of steps 5% would be 500+, and the pretraining schedule is tuned. The ratio
-// therefore only ever *shortens* warmup, on the short runs where it was wrong.
-const WARMUP_STEPS: i32 = 100;
+// Cap. Was 100, chosen to keep every pretrain identical to the pre-ratio
+// behaviour back when the deepest model on disk was 8 layers and 100 steps had
+// never failed one. Raised to 300 for the 12-layer runs: warmup exists to cover
+// the opening steps where a deep stack's residual variance compounds before the
+// LayerNorms settle, so the length that matters scales with depth, not with the
+// step budget. At 174k steps 100 was 0.06% of the run — a ramp so short the
+// schedule was effectively flat-start, and gradient clipping was carrying the
+// opening on its own.
+//
+// Still a cap, and still one that only ever *shortens* warmup: it binds only on
+// runs past ~6,000 steps (where 5% exceeds 300), so every SFT short enough for
+// the ratio to matter keeps the schedule it was tuned against. What it changes
+// is pretrains, deliberately — models before this trained on a 100-step ramp and
+// their opening loss curve is not comparable to a later one's.
+const WARMUP_STEPS: i32 = 300;
 // Floor, so a very short run still gets a real ramp rather than 2 steps. Warmup
 // is not pointless on SFT even from a good base: Adam's moments start at zero and
 // `warm_start_embeddings` may have just reset marker rows to the table mean.
@@ -1444,14 +1455,20 @@ mod tests {
         }
     }
 
-    // Warmup scales with the run, but only downward: the cap keeps pretrains on
-    // the flat-100 schedule they were tuned against, and the floor keeps a tiny
-    // run from ramping in two steps.
+    // Warmup scales with the run, but only downward: the cap holds long pretrains
+    // to a fixed ramp sized by depth rather than by step count, and the floor keeps
+    // a tiny run from ramping in two steps.
     #[test]
     fn warmup_scales_with_run_length_within_cap_and_floor() {
-        // Long pretrain: 5% would be 500, the cap holds it at the old constant.
+        // Long pretrain: 5% of a real pretrain is thousands of steps, so the cap
+        // binds and the ramp is WARMUP_STEPS however long the run gets.
         assert_eq!(warmup_steps(10_000), WARMUP_STEPS);
         assert_eq!(warmup_steps(WARMUP_STEPS * 20), WARMUP_STEPS);
+
+        // The cap binds only past ~6,000 steps; below that the ratio still rules,
+        // which is what keeps short SFT runs on their tuned schedule.
+        assert_eq!(warmup_steps(6_000), WARMUP_STEPS);
+        assert!(warmup_steps(5_000) < WARMUP_STEPS);
 
         // Short SFT: the ratio binds, so warmup is a fraction of the run rather
         // than a third of it.
