@@ -1523,10 +1523,19 @@ __global__ __launch_bounds__(FLASH_THREADS) void flash_fwd_kernel(
       for (int e = 0; e < 8; ++e) {
         const int h2 = (e >> 1) & 1;
         const float s = acc_s[n].x[e];
-        const float p = (s == -INFINITY) ? 0.0f : __expf(s - m_i[h2]);
+        const bool masked = (s == -INFINITY);
+        const float p = masked ? 0.0f : __expf(s - m_i[h2]);
         acc_s[n].x[e] = p;
         ls[h2] += p;
-        ts[h2] += p * s;  // entropy only; s is finite wherever p != 0
+        // Entropy only — nothing downstream of the gradient reads `ts`.
+        //
+        // The mask has to gate the *product*, not just `p`. On a masked element
+        // p is 0 and s is -inf, and `0.0f * -INFINITY` is NaN, not 0: the
+        // multiply happens whatever p is worth. Every causal row but the last
+        // has masked elements, so a single unguarded term poisoned `t_i` for the
+        // whole row, and the per-head entropy the dashboard plots came back NaN
+        // for every head of every layer.
+        ts[h2] += masked ? 0.0f : p * s;
       }
     }
 #pragma unroll

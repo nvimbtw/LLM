@@ -457,4 +457,49 @@ mod tests {
             diag.grad_global, diag.emb_cos_mean
         );
     }
+
+    // The same contract at a shape that actually takes the flash path.
+    //
+    // The test above runs at `dim=16, heads=2` — head_dim 8, which has no flash
+    // instantiation (`flash::active_for` allows 16/32/64/128 only), so it exercises
+    // the legacy `cuda_attention_entropy` pass and *nothing else*. Every model this
+    // project trains is head_dim 64. The entropy the dashboard actually plots was
+    // therefore never covered by a test, which is how it came to be broken.
+    //
+    // head_dim 64 with two layers and two heads is the smallest shape that reaches
+    // the real kernel.
+    #[test]
+    fn test_diagnostics_on_the_flash_path() {
+        let (vocab, dim, ctx, heads, ff_mult, layers) = (20, 128, 64, 2, 2, 2);
+        let t = Model::init(dim, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&t, ctx as usize);
+        assert!(ws.flash, "this shape must take the flash path or the test is vacuous");
+
+        let chunk: Vec<u32> = (0..ctx as u32).map(|i| (i * 7 + 3) % vocab as u32).collect();
+        pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
+        let grad = gpu_grad_norms(&ws, layers as usize);
+        gpu_adam_update(&ws, 0.01, 1, 1, layers as usize);
+
+        let corpus: Vec<u16> = chunk.iter().map(|&t| t as u16).collect();
+        let freq = frequent_tokens(&corpus);
+        let diag = compute(&ws, grad, layers as usize, chunk.len(), 0.01, 1, &freq);
+
+        assert_eq!(diag.attn_entropy.len(), layers as usize);
+        for (l, row) in diag.attn_entropy.iter().enumerate() {
+            assert_eq!(row.len(), heads as usize, "layer {l} lost its heads");
+            for &e in row {
+                assert!(e.is_finite(), "layer {l} entropy not finite: {e}");
+                assert!((0.0..=1.05).contains(&e), "layer {l} entropy out of range: {e}");
+            }
+            // At init, attention is near-uniform over the causal prefix, so the
+            // normalized entropy sits near 1 — and, crucially, is not zero. A dead
+            // accumulator reads as exactly 0.0 for every head and would pass a
+            // range check alone.
+            assert!(
+                row.iter().any(|&e| e > 0.01),
+                "layer {l} entropy is all-zero — the accumulator is not being written: {row:?}"
+            );
+        }
+        eprintln!("✓ flash-path attention entropy: {:?}", diag.attn_entropy);
+    }
 }
