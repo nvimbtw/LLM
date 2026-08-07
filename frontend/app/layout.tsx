@@ -1,15 +1,10 @@
+import type { Metadata } from "next"
 import { Geist, Geist_Mono, Fraunces } from "next/font/google"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { cn } from "@/lib/utils"
 
-import {
-  SidebarProvider,
-  SidebarTrigger,
-  SidebarInset,
-} from "@/components/ui/sidebar"
-import { AppSidebar } from "@/components/app-sidebar"
 import { ChatsProvider } from "@/components/chat/chats-provider"
 import { JobsProvider } from "@/components/jobs/jobs-provider"
 import { ToastProvider } from "@/components/ui/toast"
@@ -37,6 +32,23 @@ const fontDisplay = Fraunces({
   axes: ["SOFT"],
 })
 
+export const metadata: Metadata = {
+  title: { default: "Slate", template: "%s · Slate" },
+}
+
+/**
+ * Fonts, theme and the providers — and nothing else.
+ *
+ * The sidebar chrome used to live here, which meant `/login` and `/signup`
+ * rendered inside it: a logged-out visitor got the app frame, the sidebar
+ * toggle, and a nav for pages they could not open. It moved down into
+ * `(app)/layout.tsx`, and `(auth)/layout.tsx` renders bare. Route groups do not
+ * appear in the URL, so every path is what it was.
+ *
+ * The providers stay above the split on purpose. `ChatsProvider` already keys
+ * its load off the session, so it handles being mounted logged-out, and keeping
+ * it here means logging in does not remount the tree that just fetched.
+ */
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -59,26 +71,7 @@ export default function RootLayout({
             <SettingsProvider>
               <SettingsDialog />
               <ChatsProvider>
-                <JobsProvider>
-                  <SidebarProvider>
-                    <AppSidebar />
-                    {/* h-svh + overflow-hidden bound the column so page content
-                  scrolls inside <main>, keeping the header (and the chat
-                  composer) pinned instead of scrolling the document body. */}
-                    {/* min-w-0: SidebarInset is a flex-row item (SidebarProvider),
-                  so without it wide message content (long unbroken strings,
-                  code blocks) propagates its min-content width and pushes the
-                  page past the viewport instead of wrapping/scrolling. */}
-                    <SidebarInset className="flex h-svh min-w-0 flex-col overflow-hidden">
-                      <header className="flex h-12 shrink-0 items-center px-2">
-                        <SidebarTrigger />
-                      </header>
-                      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-                        {children}
-                      </main>
-                    </SidebarInset>
-                  </SidebarProvider>
-                </JobsProvider>
+                <JobsProvider>{children}</JobsProvider>
               </ChatsProvider>
             </SettingsProvider>
           </ToastProvider>
