@@ -477,7 +477,10 @@ fn the_two_forwards_agree_on_real_weights() {
     let dir = std::env::var("LLM_TEST_MODEL_DIR")
         .expect("set LLM_TEST_MODEL_DIR to a model directory");
     let t = Model::load(&dir).expect("could not load the model");
-    let vocab = t.w_output[0].len();
+    // Through `vocab()`, not off `w_output`: from MODEL_VERSION 6 the output
+    // projection is tied to the embedding table and `w_output` is empty, so
+    // indexing it panicked on every model saved since.
+    let vocab = t.vocab();
     let layers = t.layers as usize;
     // Well inside the context window: a Workspace at full ctx on a real model is
     // 14 B/param of masters and moments plus activation scratch, and the property

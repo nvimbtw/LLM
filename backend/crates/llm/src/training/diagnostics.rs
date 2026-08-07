@@ -155,13 +155,33 @@ fn activation_rms(ws: &Workspace, layers: usize, seq_len: usize) -> Vec<f32> {
         .collect()
 }
 
-// Per-head attention entropy for every layer, from the cached causal softmax
-// (`head_p_all`). The kernel sums the normalized per-row entropies; dividing by
-// the query-row count (seq-1, since row 0 is skipped) gives each head's mean.
+// Per-head attention entropy for every layer. Both paths sum the same quantity —
+// each row's Shannon entropy normalized by ln(r+1), the entropy of a uniform
+// distribution over that row's r+1 visible keys — and divide by the query-row
+// count (seq-1, since row 0 has a single key and no normalizer).
+//
+// They differ in where it comes from. The legacy path reads back the saved
+// softmax plane; the flash path has no such plane, and accumulates the entropy
+// inside the forward instead, from `lse - t/l` where `t` is one extra running sum
+// alongside the softmax denominator. Expect a small step in this series at the
+// switchover: the old kernel dropped terms below 1e-9 and read `p` back through
+// f16, and the new one does neither. It is a telemetry discontinuity, not a
+// regression — do not chase it.
 fn attention_entropy(ws: &Workspace, layers: usize, seq_len: usize) -> Vec<Vec<f32>> {
     let h = ws.h;
-    let out = Buffer::alloc(h);
     let rows = seq_len.max(2) - 1;
+    if ws.flash {
+        return (0..layers)
+            .map(|l| {
+                ws.attn_entropy[l]
+                    .to_vec()
+                    .iter()
+                    .map(|&e| e / rows as f32)
+                    .collect()
+            })
+            .collect();
+    }
+    let out = Buffer::alloc(h);
     (0..layers)
         .map(|l| {
             unsafe {

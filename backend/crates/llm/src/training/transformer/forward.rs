@@ -97,6 +97,13 @@ impl Model {
             );
         }
 
+        // The entropy accumulator is summed into by the forward, so it has to
+        // start each step at zero or it would report the running total over every
+        // step so far. It is `h` floats.
+        if ws.flash {
+            ws.attn_entropy[layer_idx].zero();
+        }
+
         // Batched multi-head self-attention forward.
         // SAFETY: see contract.
         unsafe {
@@ -106,7 +113,16 @@ impl Model {
                 ws.d_wk_all[layer_idx].ptr as *const c_void,
                 ws.d_wv_all[layer_idx].ptr as *const c_void,
                 ws.head_out_all[layer_idx].ptr as *mut c_void,
-                ws.head_p_all[layer_idx].ptr as *mut c_void,
+                // Exactly one of these is allocated — see `Workspace::flash`.
+                // The flash path saves an [h, seq] logsumexp where the legacy one
+                // saves an [h, seq, seq] softmax plane.
+                if ws.flash {
+                    std::ptr::null_mut()
+                } else {
+                    ws.head_p_all[layer_idx].ptr as *mut c_void
+                },
+                if ws.flash { ws.lse_all[layer_idx].ptr } else { std::ptr::null_mut() },
+                if ws.flash { ws.attn_entropy[layer_idx].ptr } else { std::ptr::null_mut() },
                 ws.q_all[layer_idx].ptr as *mut c_void,
                 ws.k_all[layer_idx].ptr as *mut c_void,
                 ws.v_all[layer_idx].ptr as *mut c_void,

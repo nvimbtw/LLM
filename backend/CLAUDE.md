@@ -854,6 +854,128 @@ corrupt each other. The training loop is single-threaded so this is fine in
 production, but **GPU tests must run with `--test-threads=1`** or they fail
 spuriously inside cuBLAS.
 
+## FlashAttention
+
+Attention is fused. The `[h, seq, seq]` score matrix is never written to memory:
+`flash_fwd_kernel` computes scores, softmax and `P @ V` a tile at a time in
+shared memory, keeping a running maximum and denominator in registers, and saves
+only a **per-row logsumexp `[h, seq]` f32** for the backward. `head_p_all` — the
+largest activation in the trainer — is not allocated at all.
+
+The replacement is surgical. The QKV projections, RoPE, the KV-cache write, the
+`dX` GEMMs and the `dW*` GEMMs are untouched cuBLAS; only forward steps 4-6 and
+backward steps 1-5 changed, and the flash backward writes `dQ`/`dK`/`dV` in the
+same `[h, seq, hd]` f16 layout, so `rope_dqk_kernel` and everything after it does
+not know which path produced them.
+
+Measured on the 3060, `tests/bench_step.rs::bench_flash_attention`:
+
+| shape | ms/step | device MB |
+|---|---|---|
+| d512 h8 L8 ctx1024, cuBLAS | 55.7 | 360 |
+| d512 h8 L8 ctx1024, flash | **43.7** (1.28x) | **130** |
+| d512 h8 L8 ctx2048, cuBLAS | 128.0 | 1156 |
+| d512 h8 L8 ctx2048, flash | **76.4** (1.68x) | **262** |
+
+Both numbers improve superlinearly with the context window, and for the same
+reason: the removed tensor is `layers × h × ctx²`. The speedup is bandwidth, not
+arithmetic — the old path wrote an f32 score plane, read it back, wrote an f16
+`P` and read that three more times, then in the backward wrote `dP`, read it,
+wrote `dS` and read it four separate times (scale, mask, the dQ GEMM, the dK
+GEMM). That was ~2.5 GB/step at the ctx-1024 shape for a tensor nothing outside
+attention looks at. The causal mask also becomes structural: whole `Bc` tiles
+above the diagonal are never visited, where the score GEMM computed them in full
+and then discarded half.
+
+**`LLM_ATTN_FLASH=0` puts attention back on the cuBLAS path** without a rebuild.
+Both are compiled in; that is what makes the A/B tests possible and is the escape
+hatch mid-run. `training::flash` is the Rust face of the switch. A `Workspace` or
+`InferSession` reads it **once at construction** and allocates a different set of
+buffers accordingly, so flipping it under a live one leaves it holding buffers
+the kernels will not write — set it first, then build.
+
+- **`head_dim` must be 16, 32, 64 or 128** — the values `d / heads` takes when
+  both are powers of two. Anything else falls back rather than being
+  approximated, and the fallback is by *shape*, independent of the switch:
+  `ensure_attn` sizing its legacy buffers off the switch alone left a d16/h2
+  model running the cuBLAS score GEMM against a null pointer.
+- **The wmma accumulator layout is not specified by the API**, and everything
+  here depends on the Ampere one (`ACC_ROW`/`ACC_COL`). A lane owns exactly two
+  rows, which is why the online-softmax state is six registers instead of a
+  shared array; the four lanes sharing a row differ only in the low bits of the
+  lane id, which is why a row reduction is two `__shfl_xor_sync`s; and the store
+  goes through the map elementwise anyway, which is why writing `P` *transposed*
+  is free and `dV = PᵀdO` / `dK = dSᵀQ` need no transpose kernel. It is probed
+  once at first use and `abort()`s on mismatch, for the same reason
+  `CUBLAS_CHECK` aborts.
+- **The backward is two passes, not FlashAttention-2's one.** FA-2 grids over
+  key blocks and `atomicAdd`s into `dQ`; that is faster and **not reproducible
+  run to run**. Two passes (K-blocks for `dK`/`dV`, Q-blocks for `dQ`) recompute
+  `Q Kᵀ` and `dO Vᵀ` for ~40% more backward FLOPs on a budget that is not the
+  bottleneck, and every output is written once by one block. Determinism is the
+  argument: attention has shipped silently wrong here twice, and the test that
+  catches that class is an exact A/B.
+- **Every `[h, *, hd]` buffer a flash kernel touches is allocated at `max_s`
+  rounded up to 64 rows, and zeroed.** Both halves matter. A warp whose 16-row
+  slab sits past `seq` still executes its `mma_sync` — a *lane* may never skip
+  one — so the load reaches the rounded extent. And the dK/dV pass contracts
+  whole slabs of `Q` and `dO` against `P`/`dS`, which are zero past `seq`
+  *arithmetically*, not structurally: `0 * inf` is NaN, and the ±65504 clamp on
+  the store turns that NaN into a large **finite** number, because `fmaxf`
+  returns its non-NaN operand. The gradient then comes out plausible and wrong.
+  The invariant is "the tail is finite", not "the tail is zero" — a later shorter
+  chunk leaves a longer one's real values there and they multiply out to zero
+  perfectly well. Only never-written memory is dangerous.
+- **`inv_scale` is computed on the host** and passed to both kernels. The file is
+  built `--use_fast_math`, which implies `-prec-sqrt=false -prec-div=false`, so a
+  device-side `1/sqrtf(hd)` is a different number — and the old backward *divided*
+  by `sqrt(hd)` where the forward multiplied by its reciprocal.
+- **Attention entropy moved into the forward.** `cuda_attention_entropy` read
+  back the softmax plane that no longer exists, so the flash forward accumulates
+  `lse - t/l` instead, where `t` is one extra running sum beside the denominator.
+  Expect a small step in that telemetry series at the switchover: the old kernel
+  dropped terms below `1e-9` and read `p` back through f16, and this does
+  neither. It is a discontinuity, not a regression.
+- **`cuda_attention_decode` got its own `[h, seq]` scratch.** It scores one query
+  row against the cache and had been borrowing a `seq`-th of the `[h, seq, seq]`
+  plane — merely wasteful before, and a null dereference once that plane stopped
+  being allocated.
+
+**The guards are `tests/flash_attention_matches_cublas.rs`.** The sharp one is
+`the_flash_backward_reproduces_f64_attention_gradients`: `dQ`/`dK`/`dV` against a
+naive f64 CPU computation, ~4e-4 relative L2, stable across shapes. It compares
+against *ground truth* rather than against the other GPU path, which is the only
+way to pin the semantics two implementations happen to share — the max
+subtraction, the scale inside the exponent, `col <= row` rather than `col < row`.
+`the_attention_gradients_match_the_cublas_path` runs a whole training step and is
+deliberately the looser of the two: at a fresh model ‖g‖ falls roughly as 1/√seq
+while the absolute difference stays flat, so its *ratio* grows 8x across
+sequence lengths with nothing about the agreement changing. Read the absolute
+difference there, not the ratio.
+
+`tests/attention_learns.rs` remains the functional guard and passes on both
+paths — with the absolute positional table gone it is a pure RoPE-plus-attention
+copy task, and it reaches the `ln(vocab)/2` floor either way.
+
+## Batching the `dX` GEMMs was tried and is slower
+
+Backward step 6 (`dX = Σ_i dQ_i wq_iᵀ + dK_i wk_iᵀ + dV_i wv_iᵀ`) is `3 * h`
+separate un-batched `cublasGemmEx` calls accumulating into one `dX` with `β=1` —
+24 launches per layer at `h=8`, 192 per step. It is the most obvious remaining
+un-batched loop in the trainer and it looks like free money. It is not.
+
+A strided-batched GEMM gives every batch element its own output, and these all
+want the same one, so batching means writing an `[h, seq, d]` temp and reducing
+the planes. That reduction moves ~8 MB per term per layer that the loop never
+touches. Measured at d512/h8/L8/ctx1024, three runs each way: **43.0 ms/step for
+the loop against 44.0 for the batched form** — the rewrite is 2.3% *slower*, and
+it also wants an 8 MB scratch buffer. At d256/h4 the difference flips sign
+between runs, i.e. it is noise there.
+
+The lesson generalizes past this one loop: **launch count is not the bottleneck
+in the backward**, because the launches overlap with GPU work. Bandwidth is. Any
+change here needs a measurement, not a launch-count argument.
+
 ## Positional encoding: RoPE
 
 Position is applied by **rotating Q and K inside attention**, not by adding a

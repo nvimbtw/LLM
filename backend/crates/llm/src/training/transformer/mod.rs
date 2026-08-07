@@ -641,7 +641,12 @@ unsafe extern "C" {
         wk_all: *const c_void,
         wv_all: *const c_void,
         out_all: *mut c_void,
+        // Legacy path only — null on the flash path, which never materializes it.
         P_all: *mut c_void,
+        // Flash path only: the per-row logsumexp the backward reads instead of
+        // `P_all`, and an optional per-head entropy accumulator for diagnostics.
+        lse_all: *mut f32,
+        ent_all: *mut f32,
         Q_all: *mut c_void,
         K_all: *mut c_void,
         V_all: *mut c_void,
@@ -658,6 +663,10 @@ unsafe extern "C" {
         wk_all: *const c_void,
         wv_all: *const c_void,
         P_all: *const c_void,
+        // Flash path only: the forward's output (for D = rowsum(dO ∘ O)) and its
+        // per-row logsumexp, in place of `P_all`.
+        O_all: *const c_void,
+        lse_all: *const f32,
         Q_all: *const c_void,
         K_all: *const c_void,
         V_all: *const c_void,

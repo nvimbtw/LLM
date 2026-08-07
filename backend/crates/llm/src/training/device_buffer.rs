@@ -69,6 +69,15 @@ impl Buffer {
         }
     }
 
+    /// Zero the buffer in place.
+    pub fn zero(&self) {
+        // SAFETY: `self.ptr` is a device allocation of `self.len * size_of::<f32>()`
+        // bytes, the exact count passed here.
+        unsafe {
+            cudaMemset(self.ptr as *mut c_void, 0, self.len * size_of::<f32>());
+        }
+    }
+
     pub fn to_vec(&self) -> Vec<f32> {
         let mut out = vec![0.0f32; self.len];
         // SAFETY: `out` is a freshly allocated `Vec<f32>` of `self.len` elements,
@@ -119,6 +128,21 @@ impl DeviceBufferF16 {
             ptr: ptr as *mut half::f16,
             len,
         }
+    }
+
+    /// Allocate and zero. Use this for any buffer a flash attention kernel reads
+    /// past its live row count: those kernels contract whole 16-row wmma slabs,
+    /// and rows past `seq` are held to zero only on the *other* operand, so an
+    /// `inf` or `NaN` in never-written memory multiplies to `NaN` rather than 0.
+    /// See the note on `ensure_attn` in `shaders.cu`.
+    pub fn alloc_zeroed(len: usize) -> Self {
+        let buf = Self::alloc(len);
+        // SAFETY: `buf.ptr` was just allocated by `cuda_malloc` for exactly
+        // `len * size_of::<half::f16>()` bytes, matching the count passed here.
+        unsafe {
+            cudaMemset(buf.ptr as *mut c_void, 0, len * size_of::<half::f16>());
+        }
+        buf
     }
 
     pub fn from_f32_slice(data: &[f32]) -> Self {

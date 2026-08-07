@@ -2,9 +2,12 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
+#include <mma.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+using namespace nvcuda;
 
 // A cuBLAS call that fails does nothing and says nothing: the destination buffer
 // keeps whatever it held, the host return code is the only signal, and training
@@ -37,29 +40,86 @@ extern "C" void cublas_init() {
     }
 }
 
+// ─── Flash attention tiling constants ───────────────────────────────────────
+// Declared up here because `ensure_attn` has to round its [h, seq, hd] buffers
+// up to FLASH_BR rows. See the FlashAttention section for what they mean.
+//
+// 128 threads = 4 warps per block, Br = 64 so each warp owns one 16-row wmma
+// M-slab. Bc is 64 except at hd 128, where it drops to 32 to keep the block
+// under the 48 KB static shared-memory limit (past that needs an opt-in dynamic
+// carveout, and one block per SM).
+//
+// Every shared tile's leading dimension is padded by FLASH_PAD halves. An
+// unpadded 64-half row is exactly 128 B, the full 32-bank width, which conflicts
+// every ldmatrix inside load_matrix_sync. 8 halves is also the minimum pad that
+// keeps `ldm` a multiple of 16 bytes, which wmma requires — 4 would not.
+#define FLASH_PAD 8
+#define FLASH_WARPS 4
+#define FLASH_THREADS (FLASH_WARPS * 32)
+#define FLASH_BR 64
+#define FLASH_BC(HD) ((HD) >= 128 ? 32 : 64)
+
+// The per-block row extent every flash kernel reads in 16-row wmma slabs. A warp
+// whose whole slab sits past `seq` still executes its mma_sync (a lane may not
+// skip one), so every [h, seq, hd] buffer a flash kernel touches is allocated at
+// a multiple of this many rows. `Workspace::ensure_layer_caches` rounds by the
+// same value, read through here so the two cannot drift.
+extern "C" int cuda_flash_row_granularity(void) { return FLASH_BR; }
+
+static int flash_round_rows(int seq) {
+    return ((seq + FLASH_BR - 1) / FLASH_BR) * FLASH_BR;
+}
+
+// Defined with the flash kernels; `ensure_attn` needs it to decide whether the
+// s²-sized legacy buffers are worth allocating at all.
+extern "C" int cuda_attn_flash_active(int hd);
+
 // ─── Pre-allocated attention scratch buffers ───────────────────────────────
 // Lazily allocated, grown to max(seq, hd, d) seen. Shared across all
 // attention functions (forward/backward are sequential, not concurrent).
 static struct {
-    // Forward: Q/K in f32, V in f16, scores f32+f16
+    // Forward: Q/K in f32, scores f32+f16
     float *q_f32, *k_f32;
-    __half *v_f16;
+    // The [h, seq, seq] score plane. Legacy attention only — see `ensure_attn`.
     float *scores_f32;
     __half *scores_f16;
-    // Backward: dQ/dK/dV, dP f32, dS f16, dX_temp. Q/K/V are NOT here — they
+    // A decode step scores one query row against the cache: [h, 1, seq], not
+    // [h, seq, seq]. It used to borrow `scores_f32`/`scores_f16` and touch a
+    // `seq`-th of them, which was merely wasteful then and is wrong now that
+    // those two are not allocated on the flash path.
+    float *dec_f32;
+    __half *dec_f16;
+    // f16 Q/K for the flash forward when the caller keeps no per-layer cache —
+    // i.e. an inference prefill, which passes Q_all/K_all null because it has no
+    // backward to feed. Training reads its own per-layer caches instead.
+    __half *q_f16, *k_f16;
+    // Backward: dQ/dK/dV, dP f32, dS f16. Q/K/V are NOT here — they
     // are per-layer `Workspace` caches; see cuda_attention_backward_batched.
     __half *dQ, *dK, *dV;
     float *dP;
-    __half *dS, *dX_temp;
+    __half *dS;
+    // The per-head dout, [h, seq, hd]. It used to share `dQ`, which the legacy
+    // backward overwrites only after its last read of dout; the flash backward
+    // reads dout and writes dQ in the same kernel, so the two had to separate.
+    __half *dO;
+    // Flash state: the forward's per-row logsumexp and the backward's
+    // rowsum(dO ∘ O), both [h, seq] f32. Between them they replace the entire
+    // [h, seq, seq] softmax plane — 8 KB against 16.8 MB at d512/h8/ctx1024.
+    float *lse, *dsum;
     int seq, hd, d, h;
+    // Whether the s²-sized legacy buffers below are currently allocated.
+    bool legacy;
 } attn = {NULL};
 
 static void ensure_attn_cleanup(void) {
     auto f = [](auto &p) { if (p) { cudaFree(p); p = NULL; } };
-    f(attn.q_f32); f(attn.k_f32); f(attn.v_f16);
+    f(attn.q_f32); f(attn.k_f32);
+    f(attn.dec_f32); f(attn.dec_f16);
+    f(attn.q_f16); f(attn.k_f16);
     f(attn.scores_f32); f(attn.scores_f16);
-    f(attn.dQ); f(attn.dK); f(attn.dV);
-    f(attn.dP); f(attn.dS); f(attn.dX_temp);
+    f(attn.dQ); f(attn.dK); f(attn.dV); f(attn.dO);
+    f(attn.lse); f(attn.dsum);
+    f(attn.dP); f(attn.dS);
     attn.seq = attn.hd = attn.d = attn.h = 0;
 }
 
@@ -144,22 +204,62 @@ extern "C" void cuda_scale(float *v, float s, int n) {
 
 
 static void ensure_attn(int seq, int hd, int d, int h) {
-    if (seq <= attn.seq && hd <= attn.hd && d <= attn.d && h <= attn.h && attn.q_f32) return;
+    // The four s²-sized buffers exist only for the legacy cuBLAS attention. They
+    // are the whole reason this arena is the second-largest allocation in the
+    // trainer (~100 MB at d512/h8/ctx1024), so the flash path must not merely
+    // stop reading them — it must stop allocating them.
+    //
+    // The condition is the *shape gate*, not the switch: a head_dim the flash
+    // kernels are not instantiated for falls back to the cuBLAS path and still
+    // needs these, however the switch is set. Reading the switch alone left a
+    // d16/h2 model running the legacy score GEMM against a null pointer. Both
+    // inputs can also change between calls — the A/B tests flip the switch, and
+    // consecutive models differ in shape — so both belong in the guard below.
+    const bool want_legacy = !cuda_attn_flash_active(hd);
+    if (seq <= attn.seq && hd <= attn.hd && d <= attn.d && h <= attn.h &&
+        attn.q_f32 && want_legacy == attn.legacy)
+        return;
     ensure_attn_cleanup();
 
-    auto a = [](auto &p, size_t sz) { cudaMalloc(&p, sz); };
-    a(attn.q_f32,      h * seq * hd * sizeof(float));
-    a(attn.k_f32,      h * seq * hd * sizeof(float));
-    a(attn.v_f16,      h * seq * hd * sizeof(__half));
-    a(attn.scores_f32, h * seq * seq * sizeof(float));
-    a(attn.scores_f16, h * seq * seq * sizeof(__half));
-    a(attn.dQ,         h * seq * hd * sizeof(__half));
-    a(attn.dK,         h * seq * hd * sizeof(__half));
-    a(attn.dV,         h * seq * hd * sizeof(__half));
-    a(attn.dP,         h * seq * seq * sizeof(float));
-    a(attn.dS,         h * seq * seq * sizeof(__half));
-    a(attn.dX_temp,    h * seq * d  * sizeof(__half));
+    // Every [h, seq, hd] buffer a flash kernel reads or writes is allocated at a
+    // whole number of FLASH_BR-row blocks: a warp whose 16-row slab sits past
+    // `seq` still runs its mma_sync, because a lane may not skip one, and that
+    // load touches the rounded-up extent. The rounding costs ~64 KB.
+    const int rows = flash_round_rows(seq);
+
+    // Every buffer is zeroed, and for the flash path that is load-bearing rather
+    // than tidiness. The dK/dV backward contracts whole 16-row slabs of Q and dO
+    // against P/dS, and rows past `seq` are held to zero on the P side only —
+    // arithmetically, not structurally. `0 * inf` is NaN, and the ±65504 clamp on
+    // the store then turns that NaN into a large *finite* number (fmaxf returns
+    // its non-NaN operand), so the gradient comes out plausible and wrong rather
+    // than obviously broken. It cost an afternoon here.
+    //
+    // The invariant this establishes is "the tail is finite", not "the tail is
+    // zero": a later shorter chunk leaves a longer one's real values in the tail,
+    // which multiply out to zero perfectly well. Only never-written memory is
+    // dangerous, and that is exactly what this removes.
+    auto a = [](auto &p, size_t sz) { cudaMalloc(&p, sz); cudaMemset(p, 0, sz); };
+    a(attn.q_f32,      h * seq  * hd * sizeof(float));
+    a(attn.k_f32,      h * seq  * hd * sizeof(float));
+    a(attn.dec_f32,    h * rows      * sizeof(float));
+    a(attn.dec_f16,    h * rows      * sizeof(__half));
+    a(attn.q_f16,      h * rows * hd * sizeof(__half));
+    a(attn.k_f16,      h * rows * hd * sizeof(__half));
+    a(attn.dQ,         h * rows * hd * sizeof(__half));
+    a(attn.dK,         h * rows * hd * sizeof(__half));
+    a(attn.dV,         h * rows * hd * sizeof(__half));
+    a(attn.dO,         h * rows * hd * sizeof(__half));
+    a(attn.lse,        h * rows      * sizeof(float));
+    a(attn.dsum,       h * rows      * sizeof(float));
+    if (want_legacy) {
+        a(attn.scores_f32, h * seq * seq * sizeof(float));
+        a(attn.scores_f16, h * seq * seq * sizeof(__half));
+        a(attn.dP,         h * seq * seq * sizeof(float));
+        a(attn.dS,         h * seq * seq * sizeof(__half));
+    }
     attn.seq = seq; attn.hd = hd; attn.d = d; attn.h = h;
+    attn.legacy = want_legacy;
 }
 
 // Pre-size the shared attention scratch for the longest sequence a caller will
@@ -1160,7 +1260,7 @@ extern "C" void cuda_attention_decode(
       k_cache, CUDA_R_32F, hd, (long long)cache_plane,
       attn.q_f32, CUDA_R_32F, hd, hd,
       &beta,
-      attn.scores_f32, CUDA_R_32F, s, s,
+      attn.dec_f32, CUDA_R_32F, s, s,
       h, COMPUTE_F32, TENSOR_OP));
 
   // 6. Softmax over the s cached keys, one block per head.
@@ -1168,17 +1268,804 @@ extern "C" void cuda_attention_decode(
     float inv_scale = 1.0f / sqrtf((float)hd);
     int t = 256;
     decode_softmax_kernel<<<h, t, t * sizeof(float)>>>(
-        attn.scores_f32, attn.scores_f16, inv_scale, s);
+        attn.dec_f32, attn.dec_f16, inv_scale, s);
   }
 
   // 7. out = P · V_cache  → [h, 1, hd].
   CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
       hd, 1, s, &alpha,
       v_cache, CUDA_R_16F, hd, (long long)cache_plane,
-      attn.scores_f16, CUDA_R_16F, s, s,
+      attn.dec_f16, CUDA_R_16F, s, s,
       &beta,
       out, CUDA_R_16F, hd, hd,
       h, COMPUTE_F32, TENSOR_OP));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// FlashAttention
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Replaces, surgically, three steps of the forward (scores = Q@K^T, the fused
+// scale+mask+softmax, out = P@V) and five of the backward (dP, softmax backward,
+// scale, mask, dV/dQ/dK). Everything else — the QKV projections, RoPE, the KV
+// cache write, the dX GEMMs, the dW GEMMs — is untouched and still cuBLAS.
+//
+// What it buys is not FLOPs, it is the [h, seq, seq] score matrix never existing
+// in HBM. The old path writes an f32 score plane, reads it back, writes an f16
+// P, reads P three more times; the backward writes dP f32, reads it, writes dS,
+// and reads dS four separate times (scale, mask, the dQ GEMM, the dK GEMM). At
+// d512/h8/L8/ctx1024 that is ~2.5 GB of DRAM traffic per step for a tensor no
+// one outside this block ever looks at, plus ~230 MB of resident allocation.
+// Here the tile lives in shared memory and the only thing saved for the backward
+// is a per-row logsumexp, [h, seq] f32.
+//
+// The causal mask is also structural rather than elementwise: whole Bc tiles
+// above the diagonal are never visited, where the old score GEMM computed them
+// in full and then threw half of them away.
+
+// ─── The wmma accumulator layout ────────────────────────────────────────────
+//
+// mma_sync's accumulator fragment distributes a 16x16 f32 tile over the warp's
+// 32 lanes, 8 elements each. **That mapping is not specified by the API.** It is
+// the one below on Ampere, and everything in this file depends on it: the online
+// softmax keeps its per-row state in registers rather than shared memory (a lane
+// owns exactly 2 rows), a row reduction is two shuffles (the 4 lanes sharing a
+// row differ only in bits 0-1), and writing P transposed costs nothing (the
+// store is elementwise through this map anyway, which is what makes dV = P^T dO
+// and dK = dS^T Q need no extra kernel).
+//
+// So it is verified once at startup and aborts on mismatch, for the same reason
+// CUBLAS_CHECK aborts: a wrong layout does not fault. It produces finite,
+// plausible gradients, the loss still descends, and it is discoverable only
+// hours later in a ruined model. This file has shipped that failure twice.
+#define ACC_ROW(lane, e) (((lane) >> 2) + 8 * (((e) >> 1) & 1))
+#define ACC_COL(lane, e) (((lane) & 3) * 2 + ((e) & 1) + 8 * ((e) >> 2))
+
+// Loads a 16x16 accumulator whose element (r, c) holds r*16+c, then has every
+// lane check that each of its 8 elements sits where the macros claim.
+__global__ void flash_probe_acc_layout_kernel(int *ok) {
+  __shared__ float tile[16 * 16];
+  for (int i = threadIdx.x; i < 256; i += blockDim.x)
+    tile[i] = (float)((i / 16) * 16 + (i % 16));
+  __syncthreads();
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
+  wmma::load_matrix_sync(acc, tile, 16, wmma::mem_row_major);
+
+  int lane = threadIdx.x & 31;
+  int good = 1;
+  if (acc.num_elements != 8) good = 0;
+#pragma unroll
+  for (int e = 0; e < 8; ++e) {
+    int want = ACC_ROW(lane, e) * 16 + ACC_COL(lane, e);
+    if ((int)acc.x[e] != want) good = 0;
+  }
+  if (!good) *ok = 0;
+}
+
+// Returns 1 if the layout matches. Callers inside this file abort; the Rust side
+// exposes it as a test so a driver or arch change is a red test rather than a
+// corrupted run.
+extern "C" int cuda_flash_probe_acc_layout(void) {
+  int *d_ok = NULL;
+  cudaMalloc(&d_ok, sizeof(int));
+  int one = 1;
+  cudaMemcpy(d_ok, &one, sizeof(int), cudaMemcpyHostToDevice);
+  flash_probe_acc_layout_kernel<<<1, 32>>>(d_ok);
+  int host = 0;
+  cudaMemcpy(&host, d_ok, sizeof(int), cudaMemcpyDeviceToHost);
+  cudaFree(d_ok);
+  return host;
+}
+
+static void flash_assert_acc_layout(void) {
+  static bool checked = false;
+  if (checked) return;
+  checked = true;
+  if (!cuda_flash_probe_acc_layout()) {
+    fprintf(stderr,
+            "wmma accumulator layout does not match ACC_ROW/ACC_COL at %s:%d — "
+            "the flash attention kernels would compute silently wrong "
+            "gradients. Refusing to run.\n",
+            __FILE__, __LINE__);
+    abort();
+  }
+}
+
+// ─── Flash forward ──────────────────────────────────────────────────────────
+//
+// O = softmax_causal(Q K^T / sqrt(hd)) V, with the score tile never leaving
+// shared memory.
+//
+// The scale stays semantically where the old kernel had it. That kernel computed
+// exp((x - rowmax(x)) * c); since exp(x*c - rowmax(x*c)) is the same thing for
+// c > 0, this scales immediately after the matmul and runs a textbook online
+// softmax over the scaled scores. `inv_scale` is computed on the host and passed
+// in for both this and the backward — the file is built --use_fast_math, so
+// -prec-sqrt=false makes a device-side 1/sqrtf(hd) a different number.
+//
+// `lse` receives the per-row logsumexp of the *scaled* scores. It is the entire
+// state the backward needs in place of the [h, seq, seq] softmax plane: h*seq
+// floats against h*seq*seq halves.
+//
+// `ent` is the optional per-head attention-entropy accumulator that used to be a
+// separate pass over the saved P. With p_j = e^(s_j - m)/l,
+//   H = -Σ p log p = (m + log l) - (1/l)·Σ e^(s_j - m)·s_j = lse - t/l
+// so one more running accumulator alongside `l`, rescaled by the same alpha,
+// replaces reading back the whole plane. Its atomicAdd makes the *diagnostic*
+// non-deterministic in the last bits; nothing downstream of the gradient touches
+// it.
+template <int HD, int BR, int BC>
+__global__ __launch_bounds__(FLASH_THREADS) void flash_fwd_kernel(
+    const __half *__restrict__ Q, const __half *__restrict__ K,
+    const __half *__restrict__ V, __half *__restrict__ O,
+    float *__restrict__ lse, float *__restrict__ ent, float inv_scale, int S,
+    int v_rows) {
+  constexpr int NK = HD / 16, NC = BC / 16;
+  constexpr int LDK = HD + FLASH_PAD, LDP = BC + FLASH_PAD;
+
+  extern __shared__ __half flash_smem[];
+  __half *Ks = flash_smem;
+  __half *Vs = Ks + BC * LDK;
+  __half *Ps = Vs + BC * LDK;
+
+  const int head = blockIdx.y;
+  // Causal work per block grows with its row index, so issue the longest blocks
+  // first: with one wave and a bit, the tail is otherwise one long block
+  // finishing alone.
+  const int ib = gridDim.x - 1 - blockIdx.x;
+  const int row0 = ib * BR;
+  if (row0 >= S) return;  // uniform over the block, so no lane is stranded
+
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const size_t plane = (size_t)head * S * HD;
+  // V may be pitched wider than `seq`: on an inference prefill it *is* the KV
+  // cache, whose rows are `kv_stride` apart so the decode path can append to it.
+  // Rows within a plane are still HD apart; only the per-head stride differs.
+  const size_t vplane = (size_t)head * v_rows * HD;
+  const int qrow = row0 + warp * 16;
+
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> q_frag[NK];
+#pragma unroll
+  for (int k = 0; k < NK; ++k)
+    wmma::load_matrix_sync(q_frag[k], Q + plane + (size_t)qrow * HD + k * 16, HD);
+
+  // A lane owns exactly two rows of the accumulator — ACC_ROW's high bit — so
+  // the whole online-softmax state is six registers, not a shared array.
+  float m_i[2] = {-INFINITY, -INFINITY};
+  float l_i[2] = {0.0f, 0.0f};
+  float t_i[2] = {0.0f, 0.0f};
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_o[NK];
+#pragma unroll
+  for (int k = 0; k < NK; ++k) wmma::fill_fragment(acc_o[k], 0.0f);
+
+  // Causal block skipping: a tile whose first column is past this block's last
+  // row is entirely masked, so it is never visited rather than computed and
+  // discarded. With BR == BC that is exactly half the tile pairs.
+  const int jmax = min((row0 + BR - 1) / BC, (S - 1) / BC);
+
+  for (int jb = 0; jb <= jmax; ++jb) {
+    const int col0 = jb * BC;
+
+    __syncthreads();
+    // Stage K and V, zero past the sequence tail. The zeros matter: the masks
+    // below kill the scores, but leaving stale halves here would still feed the
+    // backward's dP = dO V^T, which reads V unconditionally.
+    for (int t = threadIdx.x; t < BC * (HD / 8); t += blockDim.x) {
+      const int r = t / (HD / 8), c8 = (t % (HD / 8)) * 8;
+      const int4 zero = {0, 0, 0, 0};
+      const bool live = (col0 + r) < S;
+      *(int4 *)(Ks + r * LDK + c8) =
+          live ? *(const int4 *)(K + plane + (size_t)(col0 + r) * HD + c8) : zero;
+      *(int4 *)(Vs + r * LDK + c8) =
+          live ? *(const int4 *)(V + vplane + (size_t)(col0 + r) * HD + c8) : zero;
+    }
+    __syncthreads();
+
+    // S_tile = Q K^T. A col_major matrix_b fragment reads element (k, n) at
+    // ptr[n*ldm + k], so loading one from the row-major Ks tile *is* K^T — no
+    // transpose kernel, no second staging.
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_s[NC];
+#pragma unroll
+    for (int n = 0; n < NC; ++n) wmma::fill_fragment(acc_s[n], 0.0f);
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int k = 0; k < NK; ++k) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> kf;
+        wmma::load_matrix_sync(kf, Ks + (n * 16) * LDK + k * 16, LDK);
+        wmma::mma_sync(acc_s[n], q_frag[k], kf, acc_s[n]);
+      }
+    }
+
+    // Scale, mask, and this tile's row max — all in registers.
+    //
+    // The mask is -INFINITY, never a finite sentinel: a finite one makes
+    // (s - m) == 0 for an all-masked row, so exp gives 1 and the row picks up a
+    // weight it should not have.
+    float mt[2] = {-INFINITY, -INFINITY};
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int e = 0; e < 8; ++e) {
+        const int r = row0 + warp * 16 + ACC_ROW(lane, e);
+        const int c = col0 + n * 16 + ACC_COL(lane, e);
+        float s = acc_s[n].x[e] * inv_scale;
+        if (r >= S || c >= S || c > r) s = -INFINITY;
+        acc_s[n].x[e] = s;
+        const int h2 = (e >> 1) & 1;
+        mt[h2] = fmaxf(mt[h2], s);
+      }
+    }
+    // The four lanes holding one row differ only in bits 0-1 of the lane id.
+#pragma unroll
+    for (int h2 = 0; h2 < 2; ++h2) {
+      mt[h2] = fmaxf(mt[h2], __shfl_xor_sync(0xffffffffu, mt[h2], 1));
+      mt[h2] = fmaxf(mt[h2], __shfl_xor_sync(0xffffffffu, mt[h2], 2));
+    }
+
+    // The rescale factor, and the only place inf - inf could arise.
+    float alpha[2];
+#pragma unroll
+    for (int h2 = 0; h2 < 2; ++h2) {
+      const float mn = fmaxf(m_i[h2], mt[h2]);
+      alpha[h2] = (m_i[h2] == -INFINITY) ? 0.0f
+                  : (mn == -INFINITY)    ? 1.0f
+                                         : __expf(m_i[h2] - mn);
+      m_i[h2] = mn;
+    }
+
+    float ls[2] = {0.0f, 0.0f}, ts[2] = {0.0f, 0.0f};
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int e = 0; e < 8; ++e) {
+        const int h2 = (e >> 1) & 1;
+        const float s = acc_s[n].x[e];
+        const float p = (s == -INFINITY) ? 0.0f : __expf(s - m_i[h2]);
+        acc_s[n].x[e] = p;
+        ls[h2] += p;
+        ts[h2] += p * s;  // entropy only; s is finite wherever p != 0
+      }
+    }
+#pragma unroll
+    for (int h2 = 0; h2 < 2; ++h2) {
+#pragma unroll
+      for (int b = 1; b <= 2; b <<= 1) {
+        ls[h2] += __shfl_xor_sync(0xffffffffu, ls[h2], b);
+        ts[h2] += __shfl_xor_sync(0xffffffffu, ts[h2], b);
+      }
+      l_i[h2] = l_i[h2] * alpha[h2] + ls[h2];
+      t_i[h2] = t_i[h2] * alpha[h2] + ts[h2];
+    }
+    // Rescale the running output in place — no round trip through memory.
+#pragma unroll
+    for (int k = 0; k < NK; ++k) {
+#pragma unroll
+      for (int e = 0; e < 8; ++e) acc_o[k].x[e] *= alpha[(e >> 1) & 1];
+    }
+
+    // P must become a matrix_a fragment, and the API cannot reinterpret an
+    // accumulator as one, so it goes through shared memory. The store is
+    // elementwise through the layout map regardless, which is what makes the
+    // transposed store in the backward free.
+    __half *Pw = Ps + warp * 16 * LDP;
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int e = 0; e < 8; ++e)
+        Pw[ACC_ROW(lane, e) * LDP + n * 16 + ACC_COL(lane, e)] =
+            __float2half(acc_s[n].x[e]);
+    }
+    __syncwarp();  // Pw is private to this warp
+
+#pragma unroll
+    for (int k = 0; k < NK; ++k) {
+#pragma unroll
+      for (int n = 0; n < NC; ++n) {
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> pf;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> vf;
+        wmma::load_matrix_sync(pf, Pw + n * 16, LDP);
+        wmma::load_matrix_sync(vf, Vs + (n * 16) * LDK + k * 16, LDK);
+        wmma::mma_sync(acc_o[k], pf, vf, acc_o[k]);
+      }
+    }
+    __syncwarp();
+  }
+
+  // Normalize and store. Rows past `seq` are never written, which is what keeps
+  // an all-masked row (l == 0) from reaching memory at all: with causal masking
+  // and BR == BC every real row's diagonal tile holds its own diagonal element,
+  // so l >= 1 for every row that is stored. A windowed or non-causal variant
+  // would break that invariant and would need this reasoned through again.
+#pragma unroll
+  for (int k = 0; k < NK; ++k) {
+#pragma unroll
+    for (int e = 0; e < 8; ++e) {
+      const int h2 = (e >> 1) & 1;
+      const float inv = (l_i[h2] > 0.0f) ? 1.0f / l_i[h2] : 0.0f;
+      const float v = acc_o[k].x[e] * inv;
+      const int r = row0 + warp * 16 + ACC_ROW(lane, e);
+      const int c = k * 16 + ACC_COL(lane, e);
+      if (r < S)
+        O[plane + (size_t)r * HD + c] =
+            __float2half(fminf(fmaxf(v, -65504.0f), 65504.0f));
+    }
+  }
+
+  // An inference prefill has no backward to feed and passes both as null.
+  if ((lane & 3) == 0 && (lse || ent)) {
+#pragma unroll
+    for (int h2 = 0; h2 < 2; ++h2) {
+      const int r = row0 + warp * 16 + (lane >> 2) + 8 * h2;
+      if (r >= S) continue;
+      // logf, not __logf: this feeds an exp in the backward, which amplifies the
+      // intrinsic's relative error. It runs once per row.
+      const float row_lse = m_i[h2] + logf(l_i[h2]);
+      if (lse) lse[(size_t)head * S + r] = row_lse;
+      // Row 0 attends to one key: zero entropy, and ln(1) is not a normalizer.
+      if (ent && r >= 1)
+        atomicAdd(&ent[head], (row_lse - t_i[h2] / l_i[h2]) / logf((float)(r + 1)));
+    }
+  }
+}
+
+// ─── Flash backward ─────────────────────────────────────────────────────────
+//
+// Three kernels, in place of the old dP → softmax-bw → scale → mask → dV/dQ/dK
+// chain. None of them materializes an s²-sized tensor.
+//
+// The backward is parallelized over **two passes** rather than FlashAttention-2's
+// single K/V-block pass. FA-2 makes dK/dV register-resident and pays for it with
+// an atomicAdd into dQ — ~4 M atomics per layer at d512/h8/ctx1024, plus an
+// h·s·hd f32 scratch that has to be memset every layer of every step, and a
+// result that is **not reproducible run to run**. Two passes recompute Q K^T and
+// dO V^T, costing ~40% more backward FLOPs on a budget that is not the
+// bottleneck once the dP/dS traffic is gone, and every output is written exactly
+// once by exactly one block.
+//
+// Determinism is the deciding argument, not a preference. This file has twice
+// shipped a silently wrong gradient that still descended a loss curve (dK frozen
+// at zero for the life of the project; the LN2 backward overrunning its scratch),
+// and the test that catches that class is an exact A/B against the old path. A
+// non-deterministic reduction makes "did this change the gradient?" unanswerable.
+
+// D = rowsum(dO ∘ O), the softmax-backward correction term, [h, seq] f32.
+//
+// Equivalent to what the old kernel computed: softmax_bw_f32_dP_kernel formed
+// dot = Σ_j P_j·dP_j with dP_j = dO·V_j, and Σ_j P_j (dO·V_j) = dO·(Σ_j P_j V_j)
+// = dO·O. One warp per row.
+__global__ void flash_bwd_preprocess_kernel(const __half *__restrict__ dO,
+                                            const __half *__restrict__ O,
+                                            float *__restrict__ D, int S,
+                                            int HD) {
+  const int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+  const int head = blockIdx.y, lane = threadIdx.x & 31;
+  if (row >= S) return;
+  const size_t off = (size_t)head * S * HD + (size_t)row * HD;
+  float s = 0.0f;
+  for (int c = lane; c < HD; c += 32)
+    s += __half2float(dO[off + c]) * __half2float(O[off + c]);
+#pragma unroll
+  for (int b = 16; b; b >>= 1) s += __shfl_xor_sync(0xffffffffu, s, b);
+  if (lane == 0) D[(size_t)head * S + row] = s;
+}
+
+// Pass 2 of 2 — dQ, one block per (query block, head).
+//
+// Structurally the forward with the online maximum removed: `lse` is already
+// known, so P is a single exp with no running rescale.
+template <int HD, int BR, int BC>
+__global__ __launch_bounds__(FLASH_THREADS) void flash_bwd_dq_kernel(
+    const __half *__restrict__ Q, const __half *__restrict__ K,
+    const __half *__restrict__ V, const __half *__restrict__ dO,
+    const float *__restrict__ lse, const float *__restrict__ D,
+    __half *__restrict__ dQ, float inv_scale, int S) {
+  constexpr int NK = HD / 16, NC = BC / 16;
+  constexpr int LDK = HD + FLASH_PAD, LDP = BC + FLASH_PAD;
+
+  extern __shared__ __half flash_smem[];
+  __half *Ks = flash_smem;
+  __half *Vs = Ks + BC * LDK;
+  __half *Ss = Vs + BC * LDK;  // dS, per-warp private 16-row slabs
+
+  const int head = blockIdx.y;
+  const int ib = gridDim.x - 1 - blockIdx.x;
+  const int row0 = ib * BR;
+  if (row0 >= S) return;
+
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const size_t plane = (size_t)head * S * HD;
+  const int qrow = row0 + warp * 16;
+
+  // The two rows this lane owns, and their forward statistics. Rows past `seq`
+  // read whatever the rounded-up allocation holds; their results are never
+  // stored, and `live` below keeps the garbage out of the arithmetic anyway.
+  float L_i[2], D_i[2];
+#pragma unroll
+  for (int h2 = 0; h2 < 2; ++h2) {
+    const int r = row0 + warp * 16 + (lane >> 2) + 8 * h2;
+    L_i[h2] = (r < S) ? lse[(size_t)head * S + r] : 0.0f;
+    D_i[h2] = (r < S) ? D[(size_t)head * S + r] : 0.0f;
+  }
+
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> q_frag[NK];
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> do_frag[NK];
+#pragma unroll
+  for (int k = 0; k < NK; ++k) {
+    wmma::load_matrix_sync(q_frag[k], Q + plane + (size_t)qrow * HD + k * 16, HD);
+    wmma::load_matrix_sync(do_frag[k], dO + plane + (size_t)qrow * HD + k * 16, HD);
+  }
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> dq_acc[NK];
+#pragma unroll
+  for (int k = 0; k < NK; ++k) wmma::fill_fragment(dq_acc[k], 0.0f);
+
+  const int jmax = min((row0 + BR - 1) / BC, (S - 1) / BC);
+
+  for (int jb = 0; jb <= jmax; ++jb) {
+    const int col0 = jb * BC;
+
+    __syncthreads();
+    for (int t = threadIdx.x; t < BC * (HD / 8); t += blockDim.x) {
+      const int r = t / (HD / 8), c8 = (t % (HD / 8)) * 8;
+      const int4 zero = {0, 0, 0, 0};
+      const bool live = (col0 + r) < S;
+      *(int4 *)(Ks + r * LDK + c8) =
+          live ? *(const int4 *)(K + plane + (size_t)(col0 + r) * HD + c8) : zero;
+      *(int4 *)(Vs + r * LDK + c8) =
+          live ? *(const int4 *)(V + plane + (size_t)(col0 + r) * HD + c8) : zero;
+    }
+    __syncthreads();
+
+    // S_tile = Q K^T and dP = dO V^T, both from col_major fragments over the
+    // row-major staged tiles — the same free-transpose trick as the forward.
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_s[NC], acc_dp[NC];
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+      wmma::fill_fragment(acc_s[n], 0.0f);
+      wmma::fill_fragment(acc_dp[n], 0.0f);
+    }
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int k = 0; k < NK; ++k) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> kf, vf;
+        wmma::load_matrix_sync(kf, Ks + (n * 16) * LDK + k * 16, LDK);
+        wmma::load_matrix_sync(vf, Vs + (n * 16) * LDK + k * 16, LDK);
+        wmma::mma_sync(acc_s[n], q_frag[k], kf, acc_s[n]);
+        wmma::mma_sync(acc_dp[n], do_frag[k], vf, acc_dp[n]);
+      }
+    }
+
+    // dS = P ∘ (dP - D), scaled. A masked entry is set to zero *by construction*
+    // rather than by multiplying a zero P: dP for an out-of-range column is
+    // whatever the zero-filled V tile produced, and 0 * NaN is NaN.
+    __half *Sw = Ss + warp * 16 * LDP;
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int e = 0; e < 8; ++e) {
+        const int h2 = (e >> 1) & 1;
+        const int r = row0 + warp * 16 + ACC_ROW(lane, e);
+        const int c = col0 + n * 16 + ACC_COL(lane, e);
+        const bool live = (r < S) && (c < S) && (c <= r);
+        float ds = 0.0f;
+        if (live) {
+          const float p = __expf(acc_s[n].x[e] * inv_scale - L_i[h2]);
+          ds = p * (acc_dp[n].x[e] - D_i[h2]) * inv_scale;
+          ds = fminf(fmaxf(ds, -65504.0f), 65504.0f);
+        }
+        Sw[ACC_ROW(lane, e) * LDP + n * 16 + ACC_COL(lane, e)] = __float2half(ds);
+      }
+    }
+    __syncwarp();
+
+    // dQ += dS @ K — K as an ordinary row_major matrix_b this time.
+#pragma unroll
+    for (int k = 0; k < NK; ++k) {
+#pragma unroll
+      for (int n = 0; n < NC; ++n) {
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> sf;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> kf;
+        wmma::load_matrix_sync(sf, Sw + n * 16, LDP);
+        wmma::load_matrix_sync(kf, Ks + (n * 16) * LDK + k * 16, LDK);
+        wmma::mma_sync(dq_acc[k], sf, kf, dq_acc[k]);
+      }
+    }
+    __syncwarp();
+  }
+
+#pragma unroll
+  for (int k = 0; k < NK; ++k) {
+#pragma unroll
+    for (int e = 0; e < 8; ++e) {
+      const int r = row0 + warp * 16 + ACC_ROW(lane, e);
+      const int c = k * 16 + ACC_COL(lane, e);
+      if (r < S)
+        dQ[plane + (size_t)r * HD + c] = __float2half(
+            fminf(fmaxf(dq_acc[k].x[e], -65504.0f), 65504.0f));
+    }
+  }
+}
+
+// Pass 1 of 2 — dK and dV, one block per (key block, head).
+//
+// Two phases per query block, with a barrier between them, because the two
+// matmuls have different M dimensions: phase A partitions the BR query rows
+// across the four warps, phase B partitions the BC key rows. P and dS are
+// written to shared memory **transposed**, which costs nothing — the store goes
+// through the accumulator layout map elementwise either way — and that is what
+// makes dV = P^T dO and dK = dS^T Q need no separate transpose.
+template <int HD, int BR, int BC>
+__global__ __launch_bounds__(FLASH_THREADS) void flash_bwd_dkv_kernel(
+    const __half *__restrict__ Q, const __half *__restrict__ K,
+    const __half *__restrict__ V, const __half *__restrict__ dO,
+    const float *__restrict__ lse, const float *__restrict__ D,
+    __half *__restrict__ dK, __half *__restrict__ dV, float inv_scale, int S) {
+  constexpr int NK = HD / 16, NC = BC / 16, NR = BR / 16;
+  constexpr int LDK = HD + FLASH_PAD, LDT = BR + FLASH_PAD;
+
+  extern __shared__ __half flash_smem[];
+  __half *Ks = flash_smem;
+  __half *Vs = Ks + BC * LDK;
+  __half *Pt = Vs + BC * LDK;    // [BC][BR] — P transposed
+  __half *dSt = Pt + BC * LDT;   // [BC][BR] — dS transposed
+  float *Ls = (float *)(dSt + BC * LDT);
+  float *Ds = Ls + BR;
+
+  const int head = blockIdx.y;
+  const int jb = blockIdx.x;
+  const int col0 = jb * BC;
+  if (col0 >= S) return;
+
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const size_t plane = (size_t)head * S * HD;
+
+  for (int t = threadIdx.x; t < BC * (HD / 8); t += blockDim.x) {
+    const int r = t / (HD / 8), c8 = (t % (HD / 8)) * 8;
+    const int4 zero = {0, 0, 0, 0};
+    const bool live = (col0 + r) < S;
+    *(int4 *)(Ks + r * LDK + c8) =
+        live ? *(const int4 *)(K + plane + (size_t)(col0 + r) * HD + c8) : zero;
+    *(int4 *)(Vs + r * LDK + c8) =
+        live ? *(const int4 *)(V + plane + (size_t)(col0 + r) * HD + c8) : zero;
+  }
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> dv_acc[NK], dk_acc[NK];
+#pragma unroll
+  for (int k = 0; k < NK; ++k) {
+    wmma::fill_fragment(dv_acc[k], 0.0f);
+    wmma::fill_fragment(dk_acc[k], 0.0f);
+  }
+
+  // Causal: a query block can contribute only if its last row reaches this key
+  // block's first column.
+  for (int ib = col0 / BR; ib * BR < S; ++ib) {
+    const int row0 = ib * BR;
+    const int qrow = row0 + warp * 16;
+
+    __syncthreads();
+    for (int t = threadIdx.x; t < BR; t += blockDim.x) {
+      const int r = row0 + t;
+      Ls[t] = (r < S) ? lse[(size_t)head * S + r] : 0.0f;
+      Ds[t] = (r < S) ? D[(size_t)head * S + r] : 0.0f;
+    }
+    __syncthreads();
+
+    // ── Phase A: P and dS for this (query block, key block) pair ────────────
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_p[NC], acc_dp[NC];
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+      wmma::fill_fragment(acc_p[n], 0.0f);
+      wmma::fill_fragment(acc_dp[n], 0.0f);
+    }
+#pragma unroll
+    for (int k = 0; k < NK; ++k) {
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> qf, dof;
+      wmma::load_matrix_sync(qf, Q + plane + (size_t)qrow * HD + k * 16, HD);
+      wmma::load_matrix_sync(dof, dO + plane + (size_t)qrow * HD + k * 16, HD);
+#pragma unroll
+      for (int n = 0; n < NC; ++n) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> kf, vf;
+        wmma::load_matrix_sync(kf, Ks + (n * 16) * LDK + k * 16, LDK);
+        wmma::load_matrix_sync(vf, Vs + (n * 16) * LDK + k * 16, LDK);
+        wmma::mma_sync(acc_p[n], qf, kf, acc_p[n]);
+        wmma::mma_sync(acc_dp[n], dof, vf, acc_dp[n]);
+      }
+    }
+
+#pragma unroll
+    for (int n = 0; n < NC; ++n) {
+#pragma unroll
+      for (int e = 0; e < 8; ++e) {
+        const int rl = warp * 16 + ACC_ROW(lane, e);   // row within the Q block
+        const int cl = n * 16 + ACC_COL(lane, e);      // col within the K block
+        const int r = row0 + rl, c = col0 + cl;
+        const bool live = (r < S) && (c < S) && (c <= r);
+        float p = 0.0f, ds = 0.0f;
+        if (live) {
+          p = __expf(acc_p[n].x[e] * inv_scale - Ls[rl]);
+          ds = p * (acc_dp[n].x[e] - Ds[rl]) * inv_scale;
+          ds = fminf(fmaxf(ds, -65504.0f), 65504.0f);
+        }
+        Pt[cl * LDT + rl] = __float2half(p);
+        dSt[cl * LDT + rl] = __float2half(ds);
+      }
+    }
+    __syncthreads();
+
+    // ── Phase B: dV += P^T dO and dK += dS^T Q, partitioned by key row ──────
+    //
+    // Phase A partitions BR query rows over the four warps; this partitions BC
+    // key rows. When BC < FLASH_WARPS*16 (hd 128 runs BC=32) the surplus warps
+    // have no key slab and sit this phase out. The guard is warp-uniform, which
+    // is what makes skipping a mma_sync legal — a *lane* may never skip one.
+    if (warp * 16 < BC) {
+#pragma unroll
+    for (int k = 0; k < NK; ++k) {
+#pragma unroll
+      for (int t = 0; t < NR; ++t) {
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> pt, st;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> ob, qb;
+        wmma::load_matrix_sync(pt, Pt + (warp * 16) * LDT + t * 16, LDT);
+        wmma::load_matrix_sync(st, dSt + (warp * 16) * LDT + t * 16, LDT);
+        wmma::load_matrix_sync(ob, dO + plane + (size_t)(row0 + t * 16) * HD + k * 16, HD);
+        wmma::load_matrix_sync(qb, Q + plane + (size_t)(row0 + t * 16) * HD + k * 16, HD);
+        wmma::mma_sync(dv_acc[k], pt, ob, dv_acc[k]);
+        wmma::mma_sync(dk_acc[k], st, qb, dk_acc[k]);
+      }
+    }
+    }
+    __syncthreads();
+  }
+
+  if (warp * 16 >= BC) return;
+#pragma unroll
+  for (int k = 0; k < NK; ++k) {
+#pragma unroll
+    for (int e = 0; e < 8; ++e) {
+      const int r = col0 + warp * 16 + ACC_ROW(lane, e);
+      const int c = k * 16 + ACC_COL(lane, e);
+      if (r < S) {
+        dV[plane + (size_t)r * HD + c] = __float2half(
+            fminf(fmaxf(dv_acc[k].x[e], -65504.0f), 65504.0f));
+        dK[plane + (size_t)r * HD + c] = __float2half(
+            fminf(fmaxf(dk_acc[k].x[e], -65504.0f), 65504.0f));
+      }
+    }
+  }
+}
+
+// ─── Dispatch ───────────────────────────────────────────────────────────────
+//
+// The flash path is selected by a process-global toggle *and* a shape gate. The
+// old cuBLAS path stays compiled in behind both: it is the reference every A/B
+// test compares against, and it is the escape hatch if something surfaces during
+// a long run (LLM_ATTN_FLASH=0).
+static int g_flash = -1;
+
+extern "C" void cuda_attn_set_flash(int on) { g_flash = on ? 1 : 0; }
+
+// On by default. `LLM_ATTN_FLASH=0` puts attention back on the cuBLAS path
+// without a rebuild — the escape hatch if something surfaces mid-run.
+static bool flash_enabled(void) {
+  if (g_flash < 0) {
+    const char *e = getenv("LLM_ATTN_FLASH");
+    g_flash = (e && e[0] == '0') ? 0 : 1;
+  }
+  return g_flash != 0;
+}
+
+// head_dim must be one the kernels are instantiated for. These are the values
+// d/h actually takes (both are powers of two in every config); anything else
+// falls back rather than being approximated.
+static bool flash_shape_ok(int hd) {
+  return hd == 16 || hd == 32 || hd == 64 || hd == 128;
+}
+
+extern "C" int cuda_attn_flash_active(int hd) {
+  return (flash_enabled() && flash_shape_ok(hd)) ? 1 : 0;
+}
+
+template <int HD>
+static void flash_fwd_launch(const __half *Q, const __half *K, const __half *V,
+                             __half *O, float *lse, float *ent, float inv_scale,
+                             int seq, int h, int v_rows) {
+  constexpr int BC = FLASH_BC(HD);
+  constexpr size_t smem =
+      (2 * BC * (HD + FLASH_PAD) + FLASH_BR * (BC + FLASH_PAD)) * sizeof(__half);
+  static_assert(smem <= 48 * 1024,
+                "flash forward tile exceeds the 48 KB static shared-memory "
+                "limit; it would need an opt-in dynamic carveout");
+  dim3 grid((seq + FLASH_BR - 1) / FLASH_BR, h);
+  flash_fwd_kernel<HD, FLASH_BR, BC><<<grid, FLASH_THREADS, smem>>>(
+      Q, K, V, O, lse, ent, inv_scale, seq, v_rows);
+}
+
+static void flash_forward(const __half *Q, const __half *K, const __half *V,
+                          __half *O, float *lse, float *ent, float inv_scale,
+                          int seq, int hd, int h, int v_rows) {
+  flash_assert_acc_layout();
+  switch (hd) {
+    case 16: flash_fwd_launch<16>(Q, K, V, O, lse, ent, inv_scale, seq, h, v_rows); break;
+    case 32: flash_fwd_launch<32>(Q, K, V, O, lse, ent, inv_scale, seq, h, v_rows); break;
+    case 64: flash_fwd_launch<64>(Q, K, V, O, lse, ent, inv_scale, seq, h, v_rows); break;
+    case 128: flash_fwd_launch<128>(Q, K, V, O, lse, ent, inv_scale, seq, h, v_rows); break;
+    default: abort();  // flash_shape_ok gates this
+  }
+}
+
+template <int HD>
+static void flash_bwd_launch(const __half *Q, const __half *K, const __half *V,
+                             const __half *dO, const float *lse, const float *D,
+                             __half *dQ, __half *dK, __half *dV,
+                             float inv_scale, int seq, int h) {
+  constexpr int BC = FLASH_BC(HD);
+  constexpr size_t smem_dq =
+      (2 * BC * (HD + FLASH_PAD) + FLASH_BR * (BC + FLASH_PAD)) * sizeof(__half);
+  constexpr size_t smem_dkv =
+      (2 * BC * (HD + FLASH_PAD) + 2 * BC * (FLASH_BR + FLASH_PAD)) * sizeof(__half) +
+      2 * FLASH_BR * sizeof(float);
+  static_assert(smem_dq <= 48 * 1024, "flash dQ tile exceeds 48 KB");
+  static_assert(smem_dkv <= 48 * 1024, "flash dK/dV tile exceeds 48 KB");
+
+  const dim3 grid_q((seq + FLASH_BR - 1) / FLASH_BR, h);
+  const dim3 grid_kv((seq + BC - 1) / BC, h);
+  flash_bwd_dkv_kernel<HD, FLASH_BR, BC><<<grid_kv, FLASH_THREADS, smem_dkv>>>(
+      Q, K, V, dO, lse, D, dK, dV, inv_scale, seq);
+  flash_bwd_dq_kernel<HD, FLASH_BR, BC><<<grid_q, FLASH_THREADS, smem_dq>>>(
+      Q, K, V, dO, lse, D, dQ, inv_scale, seq);
+}
+
+static void flash_backward(const __half *Q, const __half *K, const __half *V,
+                           const __half *O, const __half *dO, const float *lse,
+                           __half *dQ, __half *dK, __half *dV, float inv_scale,
+                           int seq, int hd, int h) {
+  flash_assert_acc_layout();
+
+  // D = rowsum(dO ∘ O). One warp per row, four rows per block.
+  {
+    const int rows_per_block = FLASH_THREADS / 32;
+    const dim3 grid((seq + rows_per_block - 1) / rows_per_block, h);
+    flash_bwd_preprocess_kernel<<<grid, FLASH_THREADS>>>(dO, O, attn.dsum, seq, hd);
+  }
+
+  switch (hd) {
+    case 16: flash_bwd_launch<16>(Q, K, V, dO, lse, attn.dsum, dQ, dK, dV, inv_scale, seq, h); break;
+    case 32: flash_bwd_launch<32>(Q, K, V, dO, lse, attn.dsum, dQ, dK, dV, inv_scale, seq, h); break;
+    case 64: flash_bwd_launch<64>(Q, K, V, dO, lse, attn.dsum, dQ, dK, dV, inv_scale, seq, h); break;
+    case 128: flash_bwd_launch<128>(Q, K, V, dO, lse, attn.dsum, dQ, dK, dV, inv_scale, seq, h); break;
+    default: abort();
+  }
+}
+
+// The flash forward on its own, over pre-rotated Q/K/V — no projections, no
+// RoPE, no cuBLAS. Exists so a test can compare the causal softmax against an
+// independent f64 computation: every other check on these kernels is an A/B
+// against the old path, and two implementations agreeing does not pin down the
+// semantics they agree on. `Q`, `K`, `V` and `O` are `[h, seq, hd]` f16, and the
+// caller owns the FLASH_BR row rounding.
+extern "C" void cuda_flash_attention_forward(const __half *Q, const __half *K,
+                                             const __half *V, __half *O,
+                                             float *lse, int seq, int hd, int h) {
+  if (!flash_shape_ok(hd)) abort();
+  flash_forward(Q, K, V, O, lse, NULL, 1.0f / sqrtf((float)hd), seq, hd, h, seq);
+}
+
+// The flash backward on its own, for the same reason as above. `dsum` is the
+// only piece of shared scratch it needs, so this sizes it directly rather than
+// going through `ensure_attn` and dragging in the whole arena.
+extern "C" void cuda_flash_attention_backward(
+    const __half *Q, const __half *K, const __half *V, const __half *O,
+    const __half *dO, const float *lse, __half *dQ, __half *dK, __half *dV,
+    int seq, int hd, int h) {
+  if (!flash_shape_ok(hd)) abort();
+  const int rows = flash_round_rows(seq);
+  ensure_attn(rows, hd, hd, h);
+  flash_backward(Q, K, V, O, dO, lse, dQ, dK, dV, 1.0f / sqrtf((float)hd), seq,
+                 hd, h);
 }
 
 // ─── Batched multi-head attention forward ───────────────────────────────────
@@ -1198,7 +2085,15 @@ extern "C" void cuda_attention_decode(
 extern "C" void cuda_attention_forward_batched(
     const __half *X,
     const __half *wq_all, const __half *wk_all, const __half *wv_all,
-    __half *out_all, __half *P_all,
+    __half *out_all,
+    // The [h, seq, seq] softmax plane. Written and read only by the legacy path;
+    // the flash path never materializes it and the caller may pass null.
+    __half *P_all,
+    // Flash state the backward reads instead of `P_all`: the per-row logsumexp
+    // [h, seq] f32, and an optional [h] per-head attention-entropy accumulator
+    // for diagnostics (which the caller must zero first). Both null on an
+    // inference prefill, which has no backward and collects no telemetry.
+    float *lse_all, float *ent_all,
     // Per-layer Q/K/V caches the backward reads. See `Workspace::q_all` for why
     // these are owned per layer and not by the shared `attn` scratch.
     __half *Q_all, __half *K_all, __half *V_all,
@@ -1217,8 +2112,19 @@ extern "C" void cuda_attention_forward_batched(
   float alpha = 1.0f, beta = 0.0f;
   ensure_attn(seq, hd, d, h);
 
+  const bool flash = cuda_attn_flash_active(hd) != 0;
+
   // V's row-block pitch, and the cache's. `seq` reproduces the pre-cache behaviour.
   int v_stride = (kv_stride > 0) ? kv_stride : seq;
+
+  // The flash kernel reads Q and K as f16. Training already keeps per-layer f16
+  // caches for the backward and hands them in; an inference prefill passes null
+  // because it has no backward to feed, so it gets the shared scratch instead.
+  __half *q16 = Q_all, *k16 = K_all;
+  if (flash) {
+    if (!q16) q16 = attn.q_f16;
+    if (!k16) k16 = attn.k_f16;
+  }
 
   // 1. Q = X @ Wq (batched f16×f16→f32)  [h, seq, hd]
   CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
@@ -1257,7 +2163,7 @@ extern "C" void cuda_attention_forward_batched(
   {
     int n = h * seq * (hd / 2);
     rope_qk_kernel<<<(n + 255) / 256, 256>>>(attn.q_f32, attn.k_f32,
-                                              Q_all, K_all, seq, hd, h);
+                                              q16, k16, seq, hd, h);
   }
 
   // The cached K is the *rotated* one, for the same reason the backward's f16 copy
@@ -1267,6 +2173,16 @@ extern "C" void cuda_attention_forward_batched(
     int n = h * seq * hd;
     cache_k_kernel<<<(n + 255) / 256, 256>>>(attn.k_f32, k_cache_f32,
                                              seq, hd, h, kv_stride);
+  }
+
+  const float inv_scale = 1.0f / sqrtf((float)hd);
+
+  // 4-6, fused. One kernel, no [h, seq, seq] tensor, half the score tiles never
+  // visited because the causal mask is structural here rather than elementwise.
+  if (flash) {
+    flash_forward(q16, k16, V_all, out_all, lse_all, ent_all, inv_scale, seq, hd,
+                  h, v_stride);
+    return;
   }
 
   // 4. Scores = Q @ K^T (batched f32×f32→f32)  [h, seq, seq]
@@ -1280,7 +2196,6 @@ extern "C" void cuda_attention_forward_batched(
 
   // 5. Per-head: fused scale + causal_mask + softmax (element-wise)
   {
-    float inv_scale = 1.0f / sqrtf((float)hd);
     int t = 256;
     // Write the softmax straight into P_all. It used to land in the shared
     // scratch and then be copied here for the backward to use — h*seq*seq
@@ -1310,7 +2225,12 @@ extern "C" void cuda_attention_backward_batched(
     const __half *wq_all,               // [h, d, hd]
     const __half *wk_all,               // [h, d, hd]
     const __half *wv_all,               // [h, d, hd]
-    const __half *P_all,                // [h, seq, seq] — saved softmax outputs
+    const __half *P_all,                // [h, seq, seq] — legacy path only
+    // What the flash path saved instead of `P_all`: the forward's output (which
+    // the D = rowsum(dO ∘ O) preprocess needs) and its per-row logsumexp. Both
+    // read only when flash is active; the legacy path ignores them.
+    const __half *O_all,                // [h, seq, hd] — the forward's output
+    const float *lse_all,               // [h, seq] f32
     // The forward's Q/K/V for THIS layer. Per-layer `Workspace` buffers, never
     // the shared `attn` scratch: that scratch is overwritten by every later
     // layer's forward, so reading Q/K/V from it differentiated layer L using
@@ -1332,13 +2252,22 @@ extern "C" void cuda_attention_backward_batched(
   ensure_attn(seq, hd, d, h);
 
   // 0. Extract per-head dout from dout_full [seq, d] → contiguous [h, seq, hd]
-  cuda_extract_strided_cols(dout_full, attn.dQ, seq, d, hd, h, hd);
+  cuda_extract_strided_cols(dout_full, attn.dO, seq, d, hd, h, hd);
+
+  if (cuda_attn_flash_active(hd)) {
+    // 1-5, fused. dQ/dK/dV land in exactly the layout the surviving steps below
+    // already read, so step 5b and everything after it is untouched by which
+    // path produced them.
+    const float inv_scale = 1.0f / sqrtf((float)hd);
+    flash_backward(Q_all, K_all, V_all, O_all, attn.dO, lse_all, attn.dQ,
+                   attn.dK, attn.dV, inv_scale, seq, hd, h);
+  } else {
 
   // 1. dP = dout @ V^T (batched f16×f16^T→f32)  [h, seq, seq]
   CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       seq, seq, hd, &alpha,
       V_all, CUDA_R_16F, hd, seq*hd,
-      attn.dQ, CUDA_R_16F, hd, seq*hd,       // dQ used as dout temp buffer
+      attn.dO, CUDA_R_16F, hd, seq*hd,
       &beta,
       attn.dP, CUDA_R_32F, seq, seq*seq,
       h, COMPUTE_F32, TENSOR_OP));
@@ -1363,7 +2292,7 @@ extern "C" void cuda_attention_backward_batched(
   // 3. dV = P^T @ dout (batched f16×f16→f16)
   CUBLAS_CHECK(cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
       hd, seq, seq, &alpha,
-      attn.dQ, CUDA_R_16F, hd, seq*hd,       // dout temp
+      attn.dO, CUDA_R_16F, hd, seq*hd,
       P_all, CUDA_R_16F, seq, seq*seq,
       &beta,
       attn.dV, CUDA_R_16F, hd, seq*hd,
@@ -1387,6 +2316,8 @@ extern "C" void cuda_attention_backward_batched(
       attn.dK, CUDA_R_16F, hd, seq*hd,
       h, COMPUTE_F32, TENSOR_OP));
 
+  }  // end legacy 1-5
+
   // 5b. Undo RoPE on dQ/dK.
   //
   //     Steps 4 and 5 produced gradients w.r.t. the *rotated* Q/K. Both of the
@@ -1399,7 +2330,20 @@ extern "C" void cuda_attention_backward_batched(
 
   // 6. dX = sum_i( dQ_i @ wq_i^T + dK_i @ wk_i^T + dV_i @ wv_i^T )
   //    First head writes (β=0), rest accumulate (β=1)
-  // dX from dQ @ wq^T
+  //
+  // This looks like the obvious remaining un-batched loop — 3*h separate GEMMs,
+  // 24 launches per layer at h=8 — and it was rewritten to batch them and
+  // measured. **It was slower**, consistently, by ~1 ms/step (2.3%) at
+  // d512/h8/L8/ctx1024, over three runs each way.
+  //
+  // The reason a batch does not fit: a strided-batched GEMM gives every batch
+  // element its own output, and these all want the same one, so batching means
+  // writing `h` planes of an [h, seq, d] temp and then reducing them. That
+  // reduction moves ~8 MB per term per layer that this form never touches, and
+  // it costs more than the 18 saved launches save. The launches also overlap
+  // with GPU work here; they are not the bottleneck they look like.
+  //
+  // Leave it alone unless you have a measurement that says otherwise.
   CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
       d, seq, hd, &alpha,
       wq_all, CUDA_R_16F, hd,

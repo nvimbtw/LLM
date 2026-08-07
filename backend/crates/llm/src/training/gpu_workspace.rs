@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 
 use crate::training::device_buffer::{Buffer, DeviceBufferF16};
+use crate::training::flash;
 use crate::training::infer_session::flatten_qkv_heads;
 use crate::training::transformer::Model;
 
@@ -145,8 +146,27 @@ pub struct Workspace {
     pub final_ln_dgrad: DeviceBufferF16,
 
     // Contiguous per-head buffers for batched attention
-    pub head_out_all: Vec<DeviceBufferF16>,   // [layers][h * max_s * hd]
-    pub head_p_all: Vec<DeviceBufferF16>,     // [layers][h * max_s * max_s]
+    pub head_out_all: Vec<DeviceBufferF16>,   // [layers][h * flash_rows * hd]
+
+    /// The saved causal softmax, `[layers][h * max_s * max_s]`.
+    ///
+    /// **Empty on the flash path**, which never materializes it — this is the
+    /// single largest activation in the trainer (`layers × h × ctx²` halves, 134
+    /// MB at d512/h8/L8/ctx1024, quadratic in the context window), and not
+    /// allocating it is most of what flash attention buys on an 8 GB card. Read
+    /// `Workspace::flash` before touching it.
+    pub head_p_all: Vec<DeviceBufferF16>,
+
+    /// Per-row logsumexp of the scaled scores, `[layers][h * flash_rows]` f32 —
+    /// what the flash forward saves *instead* of `head_p_all`, and the entire
+    /// state its backward needs. Empty on the legacy path.
+    pub lse_all: Vec<Buffer>,
+
+    /// Per-head attention entropy, `[layers][h]` f32, accumulated by the flash
+    /// forward. It replaces the separate `cuda_attention_entropy` pass, which
+    /// read back the whole softmax plane that no longer exists. Empty on the
+    /// legacy path, which still uses that pass.
+    pub attn_entropy: Vec<Buffer>,
 
     // The forward's Q/K/V, kept per layer for the backward to read.
     //
@@ -158,13 +178,14 @@ pub struct Workspace {
     // the life of the project. Anything that moves these back into shared scratch
     // reintroduces it.
     //
-    // Allocated at `max_s` but addressed with runtime-`seq` strides (`seq * hd`),
-    // exactly like `head_p_all`. Forward and backward see the same `s` within a
-    // step, so the packing agrees; a short final chunk just leaves the tail of the
-    // allocation untouched. The only invariant is `s <= max_s`.
-    pub q_all: Vec<DeviceBufferF16>,          // [layers][h * max_s * hd]
-    pub k_all: Vec<DeviceBufferF16>,          // [layers][h * max_s * hd]
-    pub v_all: Vec<DeviceBufferF16>,          // [layers][h * max_s * hd]
+    // Allocated at `flash_rows` (see `Workspace::flash_rows`) but addressed with
+    // runtime-`seq` strides (`seq * hd`). Forward and backward see the same `s`
+    // within a step, so the packing agrees; a short final chunk just leaves the
+    // tail of the allocation holding the previous chunk's values. The only
+    // invariant is `s <= max_s`.
+    pub q_all: Vec<DeviceBufferF16>,          // [layers][h * flash_rows * hd]
+    pub k_all: Vec<DeviceBufferF16>,          // [layers][h * flash_rows * hd]
+    pub v_all: Vec<DeviceBufferF16>,          // [layers][h * flash_rows * hd]
 
     pub d_head_ptrs: Buffer,
 
@@ -197,6 +218,13 @@ pub struct Workspace {
     /// a zero-length allocation is a null device pointer, and a kernel launched
     /// with a zero grid is an invalid launch, not a no-op.
     pub tied: bool,
+
+    /// Whether attention runs the fused flash kernels rather than the cuBLAS
+    /// score-matrix path. Decided once here, from the process toggle and this
+    /// model's `head_dim`, because it changes which buffers exist: flash means no
+    /// `head_p_all`, and `lse_all`/`attn_entropy` instead. Flipping the toggle
+    /// after a `Workspace` is built does not re-shape it — build a new one.
+    pub flash: bool,
 }
 
 impl Workspace {
@@ -225,6 +253,8 @@ impl Workspace {
         // pins down.
         let tied = t.ties_embeddings();
         let unembed_len = if tied { 0 } else { d * vocab };
+
+        let flash = flash::active_for(hd);
 
         // Contiguous per-head QKV weights [h * d * hd]
         let d_wq_all = (0..layers).map(|_| DeviceBufferF16::alloc(h * d * hd)).collect();
@@ -372,12 +402,14 @@ impl Workspace {
             final_ln_input, final_ln_output, final_ln_dgrad,
             head_out_all: Vec::new(),
             head_p_all: Vec::new(),
+            lse_all: Vec::new(),
+            attn_entropy: Vec::new(),
             q_all: Vec::new(),
             k_all: Vec::new(),
             v_all: Vec::new(),
             d_head_ptrs,
             b_sd, b_d, b_dwo, ln2_dgrad, b_dff, b_ff, b_sd_head, d_wo_x,
-            max_s, d, h, hd, ff, vocab, tied,
+            max_s, d, h, hd, ff, vocab, tied, flash,
         };
         ws.assert_scratch_fits();
         ws.fill_clip_table(layers);
@@ -494,6 +526,18 @@ impl Workspace {
             self.b_dwo.len * f32 >= self.d * self.d * f32,
             "scratch `b_dwo` must hold a [d, d] f32 block",
         );
+        // The flash kernels load whole 16-row wmma slabs, four per block, so the
+        // per-head caches must cover `max_s` rounded up to the block height —
+        // reading one row past an allocation is exactly the class of silent
+        // out-of-bounds write this function exists for (see ISSUE-0093).
+        if self.flash {
+            let rows = self.flash_rows();
+            assert!(
+                rows >= self.max_s && rows.is_multiple_of(64),
+                "flash row rounding produced {rows} for max_s={}",
+                self.max_s,
+            );
+        }
     }
 
     // Upload the pointer/size table the batched gradient clip reads. Must list
@@ -582,7 +626,23 @@ impl Workspace {
         }
     }
 
+    /// Rows to allocate the per-head `[h, *, hd]` caches at.
+    ///
+    /// The flash kernels read and write in whole 16-row wmma slabs, four to a
+    /// block, and a warp whose slab sits entirely past `seq` still executes its
+    /// `mma_sync` — a *lane* may never skip one. So the caches have to hold
+    /// `max_s` rounded up to the kernels' block height, which is read out of
+    /// `shaders.cu` rather than restated here. At `max_s = 1024` this is exactly
+    /// `max_s`; the rounding only ever costs a few tens of KB.
+    fn flash_rows(&self) -> usize {
+        if !self.flash {
+            return self.max_s;
+        }
+        flash::rows_for(self.max_s)
+    }
+
     pub fn ensure_layer_caches(&mut self, layers: usize) {
+        let rows = self.flash_rows();
         while self.layer_inputs.len() < layers {
             self.layer_inputs.push(DeviceBufferF16::alloc(self.max_s * self.d));
             self.post_attn_residuals.push(DeviceBufferF16::alloc(self.max_s * self.d));
@@ -590,11 +650,23 @@ impl Workspace {
             self.pre_gelus.push(DeviceBufferF16::alloc(self.max_s * self.ff));
             self.ln1_outputs.push(DeviceBufferF16::alloc(self.max_s * self.d));
             self.concat_outputs.push(DeviceBufferF16::alloc(self.max_s * self.d));
-            self.head_out_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
-            self.head_p_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.max_s));
-            self.q_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
-            self.k_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
-            self.v_all.push(DeviceBufferF16::alloc(self.h * self.max_s * self.hd));
+            // Zeroed, not merely allocated. The flash dK/dV backward contracts a
+            // whole 16-row slab of Q and dO against P/dS, and rows past `seq` are
+            // zero on the P side only — arithmetically. `0 * inf` is NaN, and the
+            // ±65504 clamp on the store turns that NaN into a large *finite*
+            // number, so the gradient comes out plausible and wrong. Only
+            // never-written memory can hold an inf here; one memset removes it.
+            self.head_out_all.push(DeviceBufferF16::alloc_zeroed(self.h * rows * self.hd));
+            self.q_all.push(DeviceBufferF16::alloc_zeroed(self.h * rows * self.hd));
+            self.k_all.push(DeviceBufferF16::alloc_zeroed(self.h * rows * self.hd));
+            self.v_all.push(DeviceBufferF16::alloc_zeroed(self.h * rows * self.hd));
+            if self.flash {
+                self.lse_all.push(Buffer::alloc_zeroed(self.h * rows));
+                self.attn_entropy.push(Buffer::alloc_zeroed(self.h));
+            } else {
+                self.head_p_all
+                    .push(DeviceBufferF16::alloc(self.h * self.max_s * self.max_s));
+            }
         }
     }
 }

@@ -67,6 +67,8 @@ unsafe extern "C" {
         wv_all: *const c_void,
         out_all: *mut c_void,
         p_all: *mut c_void,
+        lse_all: *mut f32,
+        ent_all: *mut f32,
         q_all: *mut c_void,
         k_all: *mut c_void,
         v_all: *mut c_void,
@@ -165,7 +167,11 @@ pub struct InferSession {
     d_sub_out: DeviceBufferF16,     // [max_s, d] sublayer output before the residual
     d_final: DeviceBufferF16,       // [max_s, d] final-norm output
     d_head_out: DeviceBufferF16,    // [h, max_s, hd] per-head attention output
-    d_p: DeviceBufferF16,           // [h, max_s, max_s] softmax scores
+    /// `[h, max_s, max_s]` prefill softmax scores — **empty on the flash path**,
+    /// which never materializes them. This is the largest single allocation a
+    /// session makes at a long context (268 MB at h 8, ctx 4096), and dropping it
+    /// is what a longer inference context window costs less of.
+    d_p: DeviceBufferF16,
     d_head_ptrs: Buffer,            // [h] device pointers for cuda_concat_heads
     d_token_ids: Buffer,            // [max_s] i32
     d_logits: DeviceBufferF16,      // [max_s, vocab]
@@ -266,6 +272,11 @@ impl InferSession {
         // no two sessions or workspaces are constructed concurrently.
         unsafe { cublas_init() };
 
+        // Whether the fused flash attention kernels serve the prefill. Decides
+        // which buffers exist, so it is read once here rather than per call.
+        let flash = crate::training::flash::active_for(hd);
+        let flash_rows = if flash { crate::training::flash::rows_for(max_s) } else { max_s };
+
         let session = InferSession {
             d_wq_all: (0..layers)
                 .map(|_| DeviceBufferF16::alloc(h * d * hd))
@@ -294,8 +305,14 @@ impl InferSession {
             d_attn_concat: DeviceBufferF16::alloc(max_s * d),
             d_sub_out: DeviceBufferF16::alloc(max_s * d),
             d_final: DeviceBufferF16::alloc(max_s * d),
-            d_head_out: DeviceBufferF16::alloc(h * max_s * hd),
-            d_p: DeviceBufferF16::alloc(h * max_s * max_s),
+            // Rounded and zeroed for the same reason `Workspace::ensure_layer_caches`
+            // does it: the flash kernels read whole 16-row wmma slabs.
+            d_head_out: DeviceBufferF16::alloc_zeroed(h * flash_rows * hd),
+            d_p: if flash {
+                DeviceBufferF16::alloc(0)
+            } else {
+                DeviceBufferF16::alloc(h * max_s * max_s)
+            },
             d_head_ptrs: Buffer::alloc(h * 2),
             d_token_ids: Buffer::alloc(max_s),
             d_logits: DeviceBufferF16::alloc(max_s * vocab),
@@ -579,6 +596,10 @@ impl InferSession {
                 self.d_wv_all[l].ptr as *const c_void,
                 self.d_head_out.ptr as *mut c_void,
                 self.d_p.ptr as *mut c_void,
+                // No backward to feed and no telemetry to collect, so the flash
+                // path skips writing both. The KV cache is filled either way.
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 self.d_v_cache[l].ptr as *mut c_void,

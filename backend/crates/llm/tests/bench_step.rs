@@ -26,6 +26,14 @@ const ACCUM: usize = 4;
 struct Bench {
     ms_per_step: f64,
     tokens_per_sec: f64,
+    /// Device memory held while the step is running, in MB.
+    ///
+    /// Sampled between the warm-up and the timed loop, which is the only moment
+    /// it means anything: the lazily-grown attention and feed-forward scratch is
+    /// allocated by then, and the `Workspace` has not been dropped yet. Reading
+    /// it after `bench` returns measures nothing, because everything has been
+    /// freed by then.
+    device_mb: f64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -46,10 +54,13 @@ fn bench(
 
     // Warm-up: the first steps pay cuBLAS handle creation and the lazy attention
     // and feed-forward scratch allocations. Timing those would measure setup.
+    let free_before = free_device_bytes();
     for _ in 0..5 {
         pollster::block_on(t.train_step(&mut ws, &chunk, layers as usize));
     }
     ws.zero_accumulators();
+    let device_mb =
+        free_before.saturating_sub(free_device_bytes()) as f64 / (1024.0 * 1024.0);
 
     let start = Instant::now();
     let mut adam_step = 0i32;
@@ -68,6 +79,7 @@ fn bench(
     Bench {
         ms_per_step: elapsed / steps as f64 * 1000.0,
         tokens_per_sec: (steps as f64 * ctx as f64) / elapsed,
+        device_mb,
     }
 }
 
@@ -137,4 +149,62 @@ fn bench_ctx_sweep() {
         let b = bench(256, 8192, ctx, 4, 4, 6, steps);
         eprintln!("{:<5} {:>10.1} {:>10.0}", ctx, b.ms_per_step, b.tokens_per_sec);
     }
+}
+
+// FlashAttention against the cuBLAS attention it replaces, at the shape the next
+// pretrain actually runs (Test C: d512 h8 L8 ctx1024) and across context lengths.
+//
+// Reports device memory as well as time, and the memory is the headline: the
+// quadratic score matrix is `layers × h × ctx²` halves of per-layer activation
+// plus an `h × ctx²` shared arena, and on an 8 GB card that is what decides
+// whether a context window is affordable at all. Speed follows from the same
+// fact — that tensor is written and re-read several times per step, and the
+// fused kernel never puts it in memory.
+//
+//   cargo test -p llm --release --test bench_step -- --ignored --nocapture \
+//       --test-threads=1 flash
+#[test]
+#[ignore]
+fn bench_flash_attention() {
+    eprintln!(
+        "{:<27} {:>9} {:>9} {:>11}",
+        "shape / path", "ms/step", "tok/s", "device MB"
+    );
+    for (d, heads, layers, ctx) in
+        [(512i64, 8i64, 8i64, 1024i64), (512, 8, 8, 2048), (256, 4, 8, 1024)]
+    {
+        let mut row = Vec::new();
+        for flash_on in [false, true] {
+            llm::training::flash::set_enabled(flash_on);
+            let steps = (32768 / ctx).max(20) as usize;
+            row.push((flash_on, bench(d, 8192, ctx, heads, 4, layers, steps)));
+        }
+        for (flash_on, b) in &row {
+            eprintln!(
+                "d{d} h{heads} L{layers} ctx{ctx:<5} {:<6} {:>9.1} {:>9.0} {:>11.0}",
+                if *flash_on { "flash" } else { "cublas" },
+                b.ms_per_step,
+                b.tokens_per_sec,
+                b.device_mb
+            );
+        }
+        eprintln!(
+            "{:<27} {:>8.2}x {:>9} {:>10.0}-",
+            "  flash vs cublas",
+            row[0].1.ms_per_step / row[1].1.ms_per_step,
+            "",
+            row[0].1.device_mb - row[1].1.device_mb
+        );
+    }
+    llm::training::flash::set_enabled(false);
+}
+
+fn free_device_bytes() -> usize {
+    unsafe extern "C" {
+        fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> i32;
+    }
+    let (mut free, mut total) = (0usize, 0usize);
+    // SAFETY: two valid out-pointers to local `usize`s.
+    unsafe { cudaMemGetInfo(&mut free, &mut total) };
+    free
 }

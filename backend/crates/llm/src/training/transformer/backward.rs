@@ -220,7 +220,13 @@ impl Model {
                 ws.d_wq_all[layer_idx].ptr as *const c_void,
                 ws.d_wk_all[layer_idx].ptr as *const c_void,
                 ws.d_wv_all[layer_idx].ptr as *const c_void,
-                ws.head_p_all[layer_idx].ptr as *const c_void,
+                if ws.flash {
+                    std::ptr::null()
+                } else {
+                    ws.head_p_all[layer_idx].ptr as *const c_void
+                },
+                ws.head_out_all[layer_idx].ptr as *const c_void,
+                if ws.flash { ws.lse_all[layer_idx].ptr } else { std::ptr::null_mut() },
                 ws.q_all[layer_idx].ptr as *const c_void,
                 ws.k_all[layer_idx].ptr as *const c_void,
                 ws.v_all[layer_idx].ptr as *const c_void,
