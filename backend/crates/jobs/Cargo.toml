@@ -15,6 +15,9 @@ synth = { path = "../synth" }
 tokenize = { path = "../tokenize" }
 training = { path = "../training" }
 chrono = { version = "0.4.45", features = ["serde"] }
+# One outbound POST per finished run, to the Discord webhook (see discord.rs).
+# Same feature set `synth` already builds, so this adds nothing to the tree.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.150"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }

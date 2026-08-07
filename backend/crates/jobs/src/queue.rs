@@ -35,7 +35,7 @@ use sqlx::PgPool;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::chain;
+use crate::{chain, discord};
 
 // How many distinct prompts to read for every one actually wanted.
 //
@@ -500,7 +500,9 @@ impl Queue {
         // same view the boot reconcile and the routes hand it.
         let resolution = match db::job::find_by_id(&self.pool, id_job).await {
             Ok(Some(finished)) => {
-                chain::resolve(&self.pool, self, &finished).await
+                let resolution = chain::resolve(&self.pool, self, &finished).await;
+                discord::notify_finished(&self.pool, &finished, resolution);
+                resolution
             }
             Ok(None) => chain::Resolution::default(),
             Err(e) => {

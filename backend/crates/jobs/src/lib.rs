@@ -14,6 +14,7 @@
 
 pub mod chain;
 pub mod cycle;
+pub mod discord;
 pub mod queue;
 pub mod train_worker;
 
@@ -42,6 +43,9 @@ pub struct Running {
 /// that a crashed run leaves rows to clean up, how many lanes there are, or in
 /// what order the two drivers start.
 pub async fn start(pool: PgPool) -> Running {
+    // Said at boot rather than discovered by waiting for a message that was never
+    // configured to arrive.
+    discord::report_configuration();
     reconcile_after_restart(&pool).await;
 
     let queue = Arc::new(Queue::new(pool.clone()));
@@ -76,6 +80,9 @@ async fn reconcile_after_restart(pool: &PgPool) {
         Ok(0) => {}
         Ok(n) => {
             println!("closed {} interrupted job(s)", n);
+            // One message for the restart, not one per row: the fact worth
+            // reporting is that the machine went down.
+            discord::notify_interrupted(n);
         }
         Err(e) => eprintln!("failed to close interrupted jobs: {}", e),
     }
