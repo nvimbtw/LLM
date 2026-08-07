@@ -30,6 +30,10 @@ export type JobKind =
 export type JobLane = "device" | "network"
 
 export type JobStatus =
+  // Queued behind another job and not yet runnable: it consumes the model that job
+  // will produce, and that model does not exist yet. It becomes `queued` on its own
+  // when the job named by `depends_on` finishes — see the backend's `jobs::chain`.
+  | "waiting"
   | "queued"
   | "running"
   // Cancel requested, worker not yet at a step boundary where it can stop. A real
@@ -59,6 +63,12 @@ export interface Job {
    * live. Null for every other kind.
    */
   result: unknown
+  /**
+   * The job this one runs after, for a `waiting` row. Null for every ordinary job.
+   * The board draws a chain from it: a follow-up is not "queued in position 4", it
+   * is "after that one", and a rank would be a lie about when it runs.
+   */
+  depends_on: string | null
   error: string | null
   created_at: string
   started_at: string | null
@@ -191,10 +201,36 @@ export async function getJob(id: string): Promise<Job> {
   return res.json()
 }
 
-async function enqueue(kind: JobKind, config: unknown): Promise<Job> {
+/**
+ * A job to run *after* the one it hangs off, against the model that one produces.
+ *
+ * Recursive, and that recursion is what makes a chain a chain: `then` on a step is
+ * "and after *that* one". The composers build a flat list and nest it on the way
+ * out (see `queueChain`), because a flat list is what "then, then, then" means to
+ * a person, and nesting is what it means to the server.
+ *
+ * Only `train` and `benchmark` can be follow-ups — they are the two kinds that can
+ * take their model from the job before them (`base_model_id` and `id_model`
+ * respectively, filled in server-side at promotion). The config carries **no**
+ * model: naming one is a 400, because it would be two answers to the one question
+ * a follow-up exists to leave open.
+ */
+export interface FollowUp {
+  kind: "train" | "benchmark"
+  config: unknown
+  then?: FollowUp[]
+}
+
+async function enqueue(
+  kind: JobKind,
+  config: unknown,
+  then?: FollowUp[]
+): Promise<Job> {
   const res = await apiFetch("/jobs", {
     method: "POST",
-    body: JSON.stringify({ kind, config }),
+    body: JSON.stringify(
+      then && then.length > 0 ? { kind, config, then } : { kind, config }
+    ),
   })
   if (!res.ok) {
     // A 400 here carries the specific validation failure (a bad hyperparameter, a
@@ -205,8 +241,30 @@ async function enqueue(kind: JobKind, config: unknown): Promise<Job> {
   return res.json()
 }
 
-export function queueTraining(config: TrainConfig): Promise<Job> {
-  return enqueue("train", config)
+export function queueTraining(
+  config: TrainConfig,
+  steps: FollowUp[] = []
+): Promise<Job> {
+  return enqueue("train", config, nest(steps))
+}
+
+/**
+ * Turns the composer's flat list of steps into the nested chain the server wants.
+ *
+ * The distinction matters and is easy to get backwards. Sent flat, all three steps
+ * would hang off the *root* — so a benchmark listed after a fine-tune would score
+ * the model the root produced, not the fine-tune's. Nested, each step follows the
+ * one above it, which is what "then" says on the screen.
+ *
+ * Fan-out (two follow-ups off one job) is expressible in the wire format and
+ * deliberately not in this UI: one list reads as one sequence, and a tree drawn as
+ * a list is a tree somebody will misread.
+ */
+export function nest(steps: FollowUp[]): FollowUp[] {
+  if (steps.length === 0) return []
+  const [head, ...rest] = steps
+  const nested = nest(rest)
+  return [nested.length > 0 ? { ...head, then: nested } : head]
 }
 
 /**
@@ -220,13 +278,18 @@ export function queueTraining(config: TrainConfig): Promise<Job> {
 export function queueBenchmark(
   modelId: string,
   suite: BenchmarkSuite = "language",
-  splitThinking = false
+  splitThinking = false,
+  steps: FollowUp[] = []
 ): Promise<Job> {
-  return enqueue("benchmark", {
-    id_model: modelId,
-    suite,
-    split_thinking: splitThinking,
-  })
+  return enqueue(
+    "benchmark",
+    {
+      id_model: modelId,
+      suite,
+      split_thinking: splitThinking,
+    },
+    nest(steps)
+  )
 }
 
 /** Config for an auto-labelling run. Mirrors the backend `AutolabelRequest`. */
@@ -581,6 +644,7 @@ export const KIND_CHIP: Record<JobKind, string> = {
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
+  waiting: "Waiting",
   queued: "Queued",
   running: "Running",
   cancelling: "Stopping",

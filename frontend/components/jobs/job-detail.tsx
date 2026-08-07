@@ -63,7 +63,9 @@ export function JobDetail({ idJob }: JobDetailProps) {
           every kind would otherwise have to remember to add some. The header keeps
           its own `mb-8`, so it sits outside this. */}
       <div className="space-y-6">
-        {job.status === "queued" ? (
+        {/* Waiting shares this panel with queued: both are "hasn't started", and
+            the only difference — what it is waiting on — is one panel inside it. */}
+        {job.status === "queued" || job.status === "waiting" ? (
           <JobQueuedPanel job={job} />
         ) : (
           <>

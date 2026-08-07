@@ -82,6 +82,10 @@ impl JobKind {
 #[sqlx(type_name = "job_status", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
+    // Authored, but blocked on the job named by `depends_on`: it consumes a model
+    // that job has not produced yet. Not queued — `claim_next` never sees it — and
+    // it becomes `Queued` only when `promote` fills the model in. See `jobs::chain`.
+    Waiting,
     Queued,
     Running,
     Cancelling,
@@ -122,6 +126,10 @@ pub struct Job {
     // teaching run's stats, today. None for every other kind and for anything queued
     // before the column existed. See the migration that added it.
     pub result: Option<Value>,
+    // The job this one follows. Set only on a row queued as somebody's follow-up:
+    // it stays `Waiting` until that job lands, then inherits the model it produced.
+    // None for every ordinary job — the overwhelming majority.
+    pub depends_on: Option<Uuid>,
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -179,7 +187,7 @@ pub async fn create_in_band(
            RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                      status as "status: JobStatus",
                      label, queue_rank, background, config as "config: Value", progress, stage,
-                     ref_id, result as "result: Value", error, created_at, started_at, finished_at"#,
+                     ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at"#,
         kind as JobKind,
         label,
         config,
@@ -196,21 +204,154 @@ pub async fn create_in_band(
     .await
 }
 
-// The live band — running, cancelling and queued — in the order it will execute.
+// Files a job that cannot run yet: it consumes the model `depends_on` will produce.
+//
+// It gets a rank at the back of its band like anything else, so that if it is
+// promoted while nothing else is queued it already sits somewhere sensible — but
+// the rank is not what decides when it runs, and `promote` rewrites it anyway.
+pub async fn create_waiting(
+    pool: &PgPool,
+    kind: JobKind,
+    label: &str,
+    config: &Value,
+    id_user: Option<Uuid>,
+    depends_on: Uuid,
+) -> Result<Job, sqlx::Error> {
+    sqlx::query_as!(
+        Job,
+        r#"INSERT INTO jobs (kind, lane, label, config, id_user, depends_on, status, queue_rank)
+           VALUES ($1, $6, $2, $3, $4, $5, 'waiting', (
+               SELECT COALESCE(MAX(queue_rank), 0) + 1 FROM jobs
+               WHERE status IN ('queued', 'running', 'cancelling')
+                 AND lane = $6 AND background = FALSE
+           ))
+           RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                     status as "status: JobStatus",
+                     label, queue_rank, background, config as "config: Value", progress, stage,
+                     ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at"#,
+        kind as JobKind,
+        label,
+        config,
+        id_user,
+        depends_on,
+        kind.lane() as JobLane,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+// Everything queued as a follow-up to one job. Reads the partial index added with
+// the column, so it costs nothing on a table where almost every row has no
+// dependency at all.
+//
+// Not filtered to `waiting`: the resolver runs at every terminal transition and on
+// boot, so it has to be able to see that a child it is about to act on has already
+// been promoted or cancelled, rather than acting on it twice.
+pub async fn list_waiting_on(pool: &PgPool, id_parent: Uuid) -> Result<Vec<Job>, sqlx::Error> {
+    sqlx::query_as!(
+        Job,
+        r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
+                  status as "status: JobStatus",
+                  label, queue_rank, background, config as "config: Value", progress, stage,
+                  ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at
+           FROM jobs
+           WHERE depends_on = $1
+           ORDER BY created_at"#,
+        id_parent,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+// Waiting rows that will never be woken by an ordinary completion: their dependency
+// was deleted (the FK set it to NULL) or it finished while this process was not
+// running. Read once at startup, so a chain cannot be wedged by a restart.
+pub async fn list_orphaned_waiting(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
+    sqlx::query_as!(
+        Job,
+        r#"SELECT j.id_job, j.kind as "kind: JobKind", j.lane as "lane: JobLane",
+                  j.status as "status: JobStatus",
+                  j.label, j.queue_rank, j.background, j.config as "config: Value", j.progress, j.stage,
+                  j.ref_id, j.result as "result: Value", j.depends_on, j.error,
+                  j.created_at, j.started_at, j.finished_at
+           FROM jobs j
+           LEFT JOIN jobs parent ON parent.id_job = j.depends_on
+           WHERE j.status = 'waiting'
+             AND (j.depends_on IS NULL
+                  OR parent.status IN ('done', 'cancelled', 'failed'))
+           ORDER BY j.created_at"#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+// Moves a waiting job into the line, with the config its dependency's result has
+// been written into.
+//
+// It goes to the **front** of its band rather than the back. A chain is one unit of
+// work — the job it follows already held the head of the queue — so landing behind
+// whatever was queued in the meantime would silently reorder what was asked for,
+// and the whole point is that nobody is awake to notice. `reorder` still moves it
+// by hand afterwards.
+//
+// Conditional on the row still being `waiting`, so a promotion racing a cancel
+// cannot resurrect a job somebody stopped. Returns whether it moved.
+pub async fn promote(pool: &PgPool, id_job: Uuid, config: &Value) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"UPDATE jobs SET status = 'queued', config = $2,
+               queue_rank = COALESCE((
+                   SELECT MIN(queue_rank) - 1 FROM jobs live
+                   WHERE live.status IN ('queued', 'running', 'cancelling')
+                     AND live.lane = jobs.lane AND live.background = jobs.background
+               ), 1)
+           WHERE id_job = $1 AND status = 'waiting'"#,
+        id_job,
+        config,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// Closes out a waiting job that will never run, recording why on the row itself.
+//
+// `cancelled` rather than `failed`: nothing ran and nothing went wrong with *this*
+// job — the run it was waiting for did not produce what it needed. The reason is
+// what makes that legible hours later, so it is not optional.
+pub async fn cancel_waiting(pool: &PgPool, id_job: Uuid, reason: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"UPDATE jobs SET status = 'cancelled', error = $2, finished_at = now()
+           WHERE id_job = $1 AND status = 'waiting'"#,
+        id_job,
+        reason,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// The live band — running, cancelling, queued and waiting — in the order it will
+// execute.
 //
 // With two lanes there are two orders, not one, so the list is grouped by lane
 // first: within a lane the sequence is exactly what that runner will do, and the
 // board renders the groups as the separate lines they are.
+//
+// Waiting rows are live in the sense that matters here — they are work that will
+// happen and that a person may want to cancel — but they are *not* in the order,
+// because when they run depends on a job finishing rather than on a rank. They sort
+// last within their band for that reason, and the board draws them under the job
+// they follow rather than as queue positions.
 pub async fn list_active(pool: &PgPool) -> Result<Vec<Job>, sqlx::Error> {
     sqlx::query_as!(
         Job,
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                   status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
-                  ref_id, result as "result: Value", error, created_at, started_at, finished_at
+                  ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at
            FROM jobs
-           WHERE status IN ('queued', 'running', 'cancelling')
-           ORDER BY lane, background, queue_rank"#,
+           WHERE status IN ('queued', 'running', 'cancelling', 'waiting')
+           ORDER BY lane, background, (status = 'waiting'), queue_rank"#,
     )
     .fetch_all(pool)
     .await
@@ -230,7 +371,7 @@ pub async fn list_history(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                   status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
-                  ref_id, result as "result: Value", error, created_at, started_at, finished_at
+                  ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at
            FROM jobs
            WHERE status IN ('done', 'cancelled', 'failed')
            ORDER BY created_at DESC
@@ -260,7 +401,7 @@ pub async fn find_by_id(pool: &PgPool, id_job: Uuid) -> Result<Option<Job>, sqlx
         r#"SELECT id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                   status as "status: JobStatus",
                   label, queue_rank, background, config as "config: Value", progress, stage,
-                  ref_id, result as "result: Value", error, created_at, started_at, finished_at
+                  ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at
            FROM jobs WHERE id_job = $1"#,
         id_job,
     )
@@ -292,7 +433,7 @@ pub async fn claim_next(pool: &PgPool, lane: JobLane) -> Result<Option<Job>, sql
            RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                      status as "status: JobStatus",
                      label, queue_rank, background, config as "config: Value", progress, stage,
-                     ref_id, result as "result: Value", error, created_at, started_at, finished_at"#,
+                     ref_id, result as "result: Value", depends_on, error, created_at, started_at, finished_at"#,
         lane as JobLane,
     )
     .fetch_optional(pool)

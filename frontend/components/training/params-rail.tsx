@@ -458,11 +458,14 @@ function validateName(name: string): string[] {
 
 // Mirrors the backend's validate_config / validate_sft so the user sees the
 // constraints before submitting. Returns a list of human-readable problems.
-function validate(cfg: TrainConfig): string[] {
+function validate(cfg: TrainConfig, inheritsBase = false): string[] {
   const errs = validateName(cfg.model_name)
 
   if (isFineTune(cfg.mode)) {
-    if (!cfg.base_model_id) errs.push("Select a base model to fine-tune.")
+    // A follow-up has no base to select: it fine-tunes whatever the job before it
+    // produces, which is exactly why it is a follow-up.
+    if (!cfg.base_model_id && !inheritsBase)
+      errs.push("Select a base model to fine-tune.")
     if (
       cfg.mode === "kto" &&
       !(Number.isFinite(cfg.beta) && (cfg.beta ?? 0) > 0)
@@ -566,6 +569,32 @@ export interface ParamsRailProps {
   // Advances when a new model is registered, so the base-model picker refetches
   // and the just-trained model is selectable without a reload.
   modelsRefreshKey?: unknown
+  /**
+   * Render as a *step* inside another composer rather than as a composer of its
+   * own: a run queued to follow another one, which starts when that one lands.
+   *
+   * Three things follow from that and all three are the same fact. It emits no
+   * `<form>` and no submit button, because it sits inside somebody else's form and
+   * nested forms are not a thing. It shows no base-model picker, because the base
+   * is whatever the job before it produces — that is what makes it a follow-up.
+   * And it shows no presets, since a preset carries a base model and an
+   * architecture, neither of which this step gets to choose.
+   */
+  followUp?: boolean
+  /**
+   * Rendered inside the form, immediately above the submit button.
+   *
+   * The one thing that has to sit there is the follow-up list: it is part of what
+   * the button submits, so putting it after the button — which is where a sibling
+   * of this component lands — would read as a control for something else.
+   */
+  footer?: React.ReactNode
+  /**
+   * Validation problems, reported upward. A follow-up has no submit button of its
+   * own, so the composer it sits in is what has to refuse to submit — this is how
+   * it finds out. Only called in `followUp` mode.
+   */
+  onValidity?: (errors: string[]) => void
 }
 
 // The left-rail params panel: the run's identity + knobs as a hairline definition
@@ -577,6 +606,9 @@ export function ParamsRail({
   disabled,
   onStart,
   modelsRefreshKey,
+  followUp = false,
+  onValidity,
+  footer,
 }: ParamsRailProps) {
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
   const { datasets: availableDatasets, isLoading: datasetsLoading } =
@@ -648,11 +680,23 @@ export function ParamsRail({
   // The base id is derived: if the user hasn't explicitly picked one, default to
   // the first available model, keeping the select controlled and the submit correct.
   const baseModelId = cfg.base_model_id || models[0]?.id
-  const effectiveCfg: TrainConfig = isSft
-    ? { ...cfg, base_model_id: baseModelId }
-    : cfg
+  const effectiveCfg: TrainConfig = followUp
+    ? // Stripped rather than left alone: the server refuses a follow-up that names
+      // its own base, so a stale id carried in from `?from=` would be a 400 rather
+      // than a field nobody can see.
+      { ...cfg, base_model_id: undefined }
+    : isSft
+      ? { ...cfg, base_model_id: baseModelId }
+      : cfg
 
-  const errors = validate(effectiveCfg)
+  const errors = validate(effectiveCfg, followUp)
+  // Reported to the composer this step sits in, which owns the submit button.
+  // Keyed on the joined text so an unchanged list doesn't re-notify every render.
+  const errorKey = errors.join("\n")
+  React.useEffect(() => {
+    if (followUp) onValidity?.(errorKey ? errorKey.split("\n") : [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followUp, errorKey])
   const headDim =
     cfg.heads > 0 && cfg.dimensions % cfg.heads === 0
       ? cfg.dimensions / cfg.heads
@@ -665,14 +709,21 @@ export function ParamsRail({
     onStart(effectiveCfg)
   }
 
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <PresetControls
-        currentConfig={effectiveCfg}
-        disabled={disabled}
-        onLoad={onChange}
-        modelsRefreshKey={modelsRefreshKey}
-      />
+  // Held as a value rather than returned directly, because a follow-up is a step
+  // inside somebody else's form and so emits neither a form of its own (nested
+  // forms are not valid) nor a submit button (the composer it sits in owns the one
+  // submit). Everything between the two is identical, which is why this is a prop
+  // rather than a second rail.
+  const body = (
+    <>
+      {!followUp && (
+        <PresetControls
+          currentConfig={effectiveCfg}
+          disabled={disabled}
+          onLoad={onChange}
+          modelsRefreshKey={modelsRefreshKey}
+        />
+      )}
 
       {/* Mode toggle — two, not four.
           Self-train (RAFT) and preference (KTO) are stages of a cycle, not runs a
@@ -731,7 +782,7 @@ export function ParamsRail({
       </div>
 
       <dl>
-        {isSft && (
+        {isSft && !followUp && (
           <Row label="Base model">
             <select
               className="h-8 w-44 truncate rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
@@ -844,7 +895,9 @@ export function ParamsRail({
         </div>
       )}
 
-      {(isKto || isRaft) && (
+      {/* No base model to gate against yet — the counts it reads are per-model, and
+          the model does not exist until the job before this one finishes. */}
+      {(isKto || isRaft) && !followUp && (
         <SignalGate
           status={signals}
           modelId={baseModelId}
@@ -901,34 +954,46 @@ export function ParamsRail({
         </ul>
       )}
 
-      <Button
-        type="submit"
-        // A preference run with too little rated data is refused at enqueue, so
-        // the button matches that rather than letting the form post into a 400.
-        // `signals === null` (still loading, or the count failed) leaves it
-        // enabled: the server is the authority, and disabling on a failed read
-        // would strand the run behind a fetch that may never succeed.
-        disabled={
-          disabled ||
-          errors.length > 0 ||
-          (isKto && signals?.ready === false) ||
-          (isRaft && signals?.raft_ready === false)
-        }
-        className="w-full"
-      >
-        {disabled
-          ? isSft
-            ? "Fine-tuning…"
-            : "Training…"
-          : (isKto && signals?.ready === false) ||
-              (isRaft && signals?.raft_ready === false)
-            ? "Not enough signals yet"
-            : isRaft
-              ? "Start self-train"
-              : isSft
-                ? "Start fine-tune"
-                : "Start training"}
-      </Button>
+      {footer}
+
+      {!followUp && (
+        <Button
+          type="submit"
+          // A preference run with too little rated data is refused at enqueue, so
+          // the button matches that rather than letting the form post into a 400.
+          // `signals === null` (still loading, or the count failed) leaves it
+          // enabled: the server is the authority, and disabling on a failed read
+          // would strand the run behind a fetch that may never succeed.
+          disabled={
+            disabled ||
+            errors.length > 0 ||
+            (isKto && signals?.ready === false) ||
+            (isRaft && signals?.raft_ready === false)
+          }
+          className="w-full"
+        >
+          {disabled
+            ? isSft
+              ? "Fine-tuning…"
+              : "Training…"
+            : (isKto && signals?.ready === false) ||
+                (isRaft && signals?.raft_ready === false)
+              ? "Not enough signals yet"
+              : isRaft
+                ? "Start self-train"
+                : isSft
+                  ? "Start fine-tune"
+                  : "Start training"}
+        </Button>
+      )}
+    </>
+  )
+
+  return followUp ? (
+    <div className="space-y-4">{body}</div>
+  ) : (
+    <form onSubmit={submit} className="space-y-4">
+      {body}
     </form>
   )
 }

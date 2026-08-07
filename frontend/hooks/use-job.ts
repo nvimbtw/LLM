@@ -367,9 +367,28 @@ export function useJob(idJob: string) {
     }
   }, [])
 
+  // Inlined rather than calling `refresh`, so no state is written synchronously
+  // from the effect body; `refresh` stays for the socket's terminal frames and
+  // for `cancel`. Same shape as `use-signals.ts`.
   React.useEffect(() => {
-    void refresh()
-  }, [refresh])
+    let active = true
+    getJob(idJob)
+      .then((next) => {
+        if (!active) return
+        setJob(next)
+        setError(null)
+      })
+      .catch((e: unknown) => {
+        if (!active) return
+        setError(e instanceof Error ? e.message : "Failed to load the job.")
+      })
+      .finally(() => {
+        if (active) setIsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [idJob])
 
   // Attached once per job, not once per status change: the socket resolves
   // `inactive` itself, and re-attaching on every refetch would thrash it.

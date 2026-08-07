@@ -3,6 +3,7 @@
 import { Switch } from "@/components/ui/switch"
 import { useJobsContext } from "./jobs-provider"
 import { AddJobMenu } from "./add-job-menu"
+import { ChainBand } from "./chain-band"
 import { HistoryPager } from "./history-pager"
 import { JobHistory } from "./job-history"
 import { NowBand } from "./now-band"
@@ -22,9 +23,11 @@ import { QueueBand } from "./queue-band"
  */
 export function JobsView() {
   const {
+    board,
     running,
     runningNetwork,
     queued,
+    waiting,
     history,
     historyTotal,
     historyPage,
@@ -90,12 +93,24 @@ export function JobsView() {
           onCancel={cancel}
           onDelete={remove}
         />
+        {/* Below the line, because these are not in it: a follow-up starts when the
+            job it names finishes, not when its turn comes. */}
+        <ChainBand
+          jobs={waiting}
+          all={[...board.active, ...board.history]}
+          onCancel={cancel}
+          onDelete={remove}
+        />
 
-        {!isLoading && !running && !runningNetwork && queued.length === 0 && (
-          <p className="px-5 py-8 text-center text-sm text-muted-foreground">
-            Nothing queued. Add a job to put the GPU to work.
-          </p>
-        )}
+        {!isLoading &&
+          !running &&
+          !runningNetwork &&
+          queued.length === 0 &&
+          waiting.length === 0 && (
+            <p className="px-5 py-8 text-center text-sm text-muted-foreground">
+              Nothing queued. Add a job to put the GPU to work.
+            </p>
+          )}
       </section>
 
       <section className="overflow-hidden rounded-lg border border-border bg-card">

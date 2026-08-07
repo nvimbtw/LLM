@@ -55,6 +55,10 @@ struct JobResponse {
     // What the run produced, for a kind that has no table of its own to read back
     // from. Null for every other kind — see `db::job::set_result`.
     result: Option<Value>,
+    // The job this one was queued behind, for a `waiting` row. Surfaced so the board
+    // can draw a chain as a chain rather than as unrelated rows that mysteriously
+    // never start.
+    depends_on: Option<Uuid>,
     error: Option<String>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
@@ -75,6 +79,7 @@ impl From<Job> for JobResponse {
             stage: job.stage,
             ref_id: job.ref_id,
             result: job.result,
+            depends_on: job.depends_on,
             error: job.error,
             created_at: job.created_at,
             started_at: job.started_at,
@@ -182,10 +187,34 @@ async fn get_job(
 // A new job. `config` is validated against the kind here rather than in the runner,
 // so a bad training config is a 400 the moment you submit it instead of a failed
 // row hours later when it reaches the front of the queue.
+//
+// `then` is the same structure again, one step down the chain: jobs to run *after*
+// this one, against the model it produces. They are validated now and filed now —
+// the whole point is that nobody is awake later to file them — but they are filed
+// `waiting`, without a model, because the model does not exist yet. `jobs::chain`
+// fills it in when this job lands.
 #[derive(Deserialize)]
 struct CreatePayload {
     kind: JobKind,
     config: Value,
+    // Recursive through the `Vec`, which is already an indirection, so no `Box`.
+    #[serde(default)]
+    then: Vec<CreatePayload>,
+}
+
+// How deep a chain may go. Not a technical limit — the resolver is iterative — but
+// a bound on what one request can file, and eight overnight stages is already more
+// than the GPU will get through.
+const MAX_CHAIN_DEPTH: usize = 8;
+
+// One job the request asked for, validated and ready to insert. `parent` indexes
+// earlier in the same list, which is what makes the whole chain insertable in one
+// pass: a node is always prepared, and inserted, after the job it follows.
+struct PreparedJob {
+    kind: JobKind,
+    label: String,
+    config: Value,
+    parent: Option<usize>,
 }
 
 #[post("")]
@@ -195,13 +224,13 @@ async fn create_job(
     pool: web::Data<PgPool>,
     queue: web::Data<Arc<Queue>>,
 ) -> impl Responder {
-    let CreatePayload { kind, config } = payload.into_inner();
+    let CreatePayload { kind, config, then } = payload.into_inner();
 
     // A list, because one submit can queue more than one job: the benchmark's split
     // switch queues the whole budget sweep at once, so the three runs exist together
     // or not at all. Every other kind yields exactly one.
     let prepared: Vec<(String, Value)> = match kind {
-        JobKind::Train => match prepare_train(pool.get_ref(), config).await {
+        JobKind::Train => match prepare_train(pool.get_ref(), config, false).await {
             Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
@@ -233,21 +262,70 @@ async fn create_job(
         }
     };
 
-    // Inserted in order, so a sweep queues low → med → high and runs in that order.
+    let mut plan: Vec<PreparedJob> = prepared
+        .into_iter()
+        .map(|(label, config)| PreparedJob {
+            kind,
+            label,
+            config,
+            parent: None,
+        })
+        .collect();
+
+    if !then.is_empty() {
+        // A sweep is three jobs and a follow-up follows exactly one, so there is no
+        // answer to which of the three it would run behind. Refused rather than
+        // guessed at.
+        if plan.len() != 1 {
+            return HttpResponse::BadRequest()
+                .body("a benchmark sweep cannot carry follow-up jobs: queue them against one run");
+        }
+        if let Err(response) = plan_followups(pool.get_ref(), &mut plan, then).await {
+            return response;
+        }
+    }
+
+    // Inserted in order, so a sweep queues low → med → high and runs in that order,
+    // and a chain's parent always exists before the row that references it.
+    //
     // The response carries the **first** job: the caller navigates to a job page, and
-    // one of the three has to be it. A client that queued a sweep knows to look at
-    // the board for the rest, and `id_series` on the runs is what ties them together
-    // for anything that needs the set.
-    let mut created = Vec::with_capacity(prepared.len());
-    for (label, config) in &prepared {
-        match db::job::create(pool.get_ref(), kind, label, config, Some(admin.claims.sub)).await {
+    // one of them has to be it. A client that queued a sweep or a chain knows to look
+    // at the board for the rest — `id_series` ties a sweep together, `depends_on`
+    // ties a chain.
+    let mut created: Vec<db::job::Job> = Vec::with_capacity(plan.len());
+    for node in &plan {
+        let result = match node.parent {
+            None => {
+                db::job::create(
+                    pool.get_ref(),
+                    node.kind,
+                    &node.label,
+                    &node.config,
+                    Some(admin.claims.sub),
+                )
+                .await
+            }
+            Some(parent) => {
+                db::job::create_waiting(
+                    pool.get_ref(),
+                    node.kind,
+                    &node.label,
+                    &node.config,
+                    Some(admin.claims.sub),
+                    created[parent].id_job,
+                )
+                .await
+            }
+        };
+        match result {
             Ok(job) => created.push(job),
             Err(e) => {
                 eprintln!("create job db error: {}", e);
-                // A partly-queued sweep is still queued: the jobs already created are
-                // real work the user asked for, and cancelling them from here would
-                // race the runner, which may have started one. Report the failure and
-                // leave what exists — the board shows exactly what was queued.
+                // A partly-queued sweep or chain is still queued: the jobs already
+                // created are real work the user asked for, and cancelling them from
+                // here would race the runner, which may have started one. Report the
+                // failure and leave what exists — the board shows exactly what was
+                // queued.
                 return HttpResponse::InternalServerError().body("failed to queue job");
             }
         }
@@ -261,9 +339,200 @@ async fn create_job(
     }
 }
 
+// Validates the follow-up tree and appends it to `plan`, parents before children.
+//
+// Breadth-first over an explicit worklist rather than recursion: an `async fn` that
+// calls itself needs boxing, and the flat plan with parent indices is what the
+// insert loop above wants anyway.
+async fn plan_followups(
+    pool: &PgPool,
+    plan: &mut Vec<PreparedJob>,
+    then: Vec<CreatePayload>,
+) -> Result<(), HttpResponse> {
+    // (index of the job this node follows, the node, how deep it sits).
+    let mut pending: Vec<(usize, CreatePayload, usize)> =
+        then.into_iter().map(|node| (0usize, node, 1usize)).collect();
+
+    while let Some((parent, node, depth)) = pending.pop() {
+        if depth > MAX_CHAIN_DEPTH {
+            return Err(HttpResponse::BadRequest()
+                .body(format!("a chain may be at most {MAX_CHAIN_DEPTH} jobs deep")));
+        }
+
+        let CreatePayload {
+            kind,
+            config,
+            then: grandchildren,
+        } = node;
+
+        let parent_kind = plan[parent].kind;
+        let parent_label = plan[parent].label.clone();
+        let parent_storage = storage_id_of(&plan[parent]);
+
+        let (label, config) = match kind {
+            JobKind::Train => {
+                let prepared = prepare_train(pool, config, true).await?;
+                // A fine-tune that writes to its base's directory would overwrite,
+                // mid-chain, the weights it is training from. The names differ by one
+                // character often enough ("Balanced 2" → "Balanced 2.01") that this is
+                // a real mistake to make at 1am, and it is unrecoverable.
+                if let (Some(parent_storage), Some(child_storage)) =
+                    (parent_storage, storage_id_in(&prepared.1))
+                {
+                    if parent_storage == child_storage {
+                        return Err(HttpResponse::BadRequest().body(
+                            "a follow-up run must have its own model name: this one would overwrite the model it fine-tunes from",
+                        ));
+                    }
+                }
+                prepared
+            }
+            JobKind::Benchmark => prepare_benchmark_future(config, &parent_label)?,
+            // Only these two can inherit a model from the job they follow (see
+            // `jobs::chain::inject_model`). The others name their model in a field
+            // this would have to learn, and none of them is something to run
+            // unattended behind a training run.
+            _ => {
+                return Err(HttpResponse::BadRequest()
+                    .body("only training runs and benchmarks can be queued as follow-ups"));
+            }
+        };
+
+        // Everything except a pretrain consumes a model from the job before it. Two
+        // kinds can supply one: a training run produces a model, and a benchmark
+        // passes on the model it scored — which is what makes "fine-tune it, score
+        // language, score assistant" a straight line rather than a tree. See
+        // `jobs::chain::model_of`.
+        if needs_parent_model(kind, &config)
+            && !matches!(parent_kind, JobKind::Train | JobKind::Benchmark)
+        {
+            return Err(HttpResponse::BadRequest().body(
+                "a follow-up that needs a model must follow a training run or a benchmark",
+            ));
+        }
+
+        plan.push(PreparedJob {
+            kind,
+            label,
+            config,
+            parent: Some(parent),
+        });
+        let index = plan.len() - 1;
+        for grandchild in grandchildren {
+            pending.push((index, grandchild, depth + 1));
+        }
+    }
+    Ok(())
+}
+
+// Whether a follow-up will need the model its parent produces. Mirrors
+// `jobs::chain::needs_model`, which is what actually acts on it at promotion; this
+// copy exists so the impossible chain is a 400 at submit rather than a cancelled row
+// hours later.
+fn needs_parent_model(kind: JobKind, config: &Value) -> bool {
+    match kind {
+        // A pretrain starts from random weights and builds its own tokenizer, so
+        // chaining one is pure sequencing: "run this after that, on the GPU I am not
+        // awake to share out."
+        JobKind::Train => config
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .is_some_and(|mode| mode != "pretrain"),
+        _ => true,
+    }
+}
+
+// Which model directory this job will hand to the step after it, as far as can be
+// known at submit — enough for the overwrite check below.
+//
+// A *follow-up* benchmark has no `id_model` yet (it is injected at promotion), so
+// this reads None for one and the check is skipped rather than guessed at. It still
+// catches the case that matters: a fine-tune, a benchmark of it, then a second
+// fine-tune reusing the first one's name.
+fn storage_id_of(job: &PreparedJob) -> Option<Uuid> {
+    match job.kind {
+        JobKind::Train => storage_id_in(&job.config),
+        JobKind::Benchmark => job
+            .config
+            .get("id_model")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok()),
+        _ => None,
+    }
+}
+
+fn storage_id_in(config: &Value) -> Option<Uuid> {
+    config
+        .get("storage_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+// Validates a benchmark queued as somebody's follow-up.
+//
+// Separate from `prepare_benchmark` rather than a flag on it, because almost none of
+// that function applies: there is no model to look up, no tokenizer to check on disk
+// and no sweep to expand. What is left is the suite, the budget, and a label built
+// from the run this one follows — which names the model, since a training job's
+// label is its model name.
+fn prepare_benchmark_future(
+    config: Value,
+    parent_label: &str,
+) -> Result<(String, Value), HttpResponse> {
+    let parsed: BenchmarkConfig = match serde_json::from_value(config) {
+        Ok(config) => config,
+        Err(e) => {
+            return Err(HttpResponse::BadRequest().body(format!("invalid benchmark config: {e}")));
+        }
+    };
+
+    // The model is the whole reason this is a follow-up. Naming one would make it an
+    // ordinary benchmark filed in a confusing place.
+    if !parsed.id_model.is_nil() {
+        return Err(HttpResponse::BadRequest().body(
+            "a follow-up benchmark scores the model the job before it produces; it cannot name its own",
+        ));
+    }
+    // Three runs cannot come out of one waiting row, and splitting a chain into
+    // three at promotion would be a second kind of fan-out for one feature.
+    if parsed.split_thinking {
+        return Err(HttpResponse::BadRequest()
+            .body("a thinking-budget sweep cannot be queued as a follow-up: queue it afterwards"));
+    }
+    let splittable = parsed.suite != db::benchmark::BenchmarkSuite::Language;
+    if parsed.budget.is_some() && !splittable {
+        return Err(HttpResponse::BadRequest().body(
+            "the language suite has no thinking budget to set: none of its stages render a chat prompt",
+        ));
+    }
+
+    let label = match parsed.budget {
+        Some(b) => format!("{} · {} · {}", parent_label, parsed.suite.as_str(), b.as_str()),
+        None => format!("{} · {}", parent_label, parsed.suite.as_str()),
+    };
+    Ok((
+        label,
+        serde_json::json!({
+            "suite": parsed.suite,
+            "budget": parsed.budget,
+            "id_series": Option::<Uuid>::None,
+        }),
+    ))
+}
+
 // Validates a training config and resolves the storage id the run will write to,
 // returning the label and the config as it will be stored.
-async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
+//
+// `inherits_base` marks a run queued as somebody's follow-up: its base model is the
+// one the job before it will produce, so it has no `base_model_id` yet and the two
+// checks that read the base off disk cannot run. Everything else — the
+// hyperparameters, the KTO/RAFT data gates, the storage id — is as true now as it
+// will be then, and is checked now.
+async fn prepare_train(
+    pool: &PgPool,
+    config: Value,
+    inherits_base: bool,
+) -> Result<(String, Value), HttpResponse> {
     let mut config: TrainConfig = match serde_json::from_value(config) {
         Ok(config) => config,
         Err(e) => return Err(HttpResponse::BadRequest().body(format!("invalid training config: {}", e))),
@@ -271,7 +540,17 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
     if let Err(msg) = validate_config(&config) {
         return Err(HttpResponse::BadRequest().body(msg));
     }
-    if let Err(msg) = validate_sft(&config) {
+    if inherits_base {
+        // The base is whatever the job before this one produces. Naming one as well
+        // would be two answers to the same question, and the chain's answer is the
+        // one that wins at promotion — so the request is refused rather than having
+        // its explicit base silently overwritten.
+        if config.base_model_id.is_some() {
+            return Err(HttpResponse::BadRequest().body(
+                "a follow-up fine-tune trains on the model the job before it produces; it cannot name its own base",
+            ));
+        }
+    } else if let Err(msg) = validate_sft(&config) {
         return Err(HttpResponse::BadRequest().body(msg));
     }
 
@@ -295,7 +574,10 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
         config.strip_thinking = true;
     }
 
-    if config.mode != TrainMode::Pretrain {
+    // Skipped for a follow-up: there is no base on disk to read yet.
+    // `jobs::chain::inject_model` does exactly this at promotion instead, once there
+    // is, so the queued row is true from the moment it can be.
+    if config.mode != TrainMode::Pretrain && !inherits_base {
         if let Some(base_id) = config.base_model_id {
             let base_dir = storage::models_dir().join(base_id.to_string());
             if let Err(e) = training::apply_base_architecture(&mut config, &base_dir) {
@@ -391,6 +673,10 @@ async fn prepare_train(pool: &PgPool, config: Value) -> Result<(String, Value), 
 
 #[derive(Deserialize)]
 struct BenchmarkConfig {
+    // Defaulted to the nil UUID rather than required, because a benchmark queued as
+    // a *follow-up* legitimately has no model yet — it scores whatever the job
+    // before it produces. Both readers check for nil, in opposite directions.
+    #[serde(default)]
     id_model: Uuid,
     // Which of the two suites to run. Defaulted rather than required so a client that
     // predates the split still queues the language bench, which is what it meant.
@@ -428,6 +714,9 @@ async fn prepare_benchmark(
         Ok(config) => config,
         Err(_) => return Err(HttpResponse::BadRequest().body("a benchmark job needs an id_model")),
     };
+    if parsed.id_model.is_nil() {
+        return Err(HttpResponse::BadRequest().body("a benchmark job needs an id_model"));
+    }
 
     let model = match db::model::find_by_id(pool, parsed.id_model).await {
         Ok(Some(model)) => model,
@@ -844,12 +1133,32 @@ async fn cancel_job(
     // being marked cancelled while its worker carries on.
     match db::job::cancel_queued(pool.get_ref(), id_job).await {
         Ok(true) => {
+            // This path never reaches the runner, so the resolver has to be called
+            // here: without it everything queued behind this job waits forever on a
+            // model that will never be built.
+            settle_chain_after(pool.get_ref(), queue.get_ref(), id_job).await;
             queue.notify_changed();
             return HttpResponse::NoContent().finish();
         }
         Ok(false) => {}
         Err(e) => {
             eprintln!("cancel queued job db error: {}", e);
+            return HttpResponse::InternalServerError().body("failed to cancel job");
+        }
+    }
+
+    // A waiting job is cancellable too — it is work the user asked for and can
+    // change their mind about — and cancelling it takes everything chained behind it
+    // with it.
+    match db::job::cancel_waiting(pool.get_ref(), id_job, "cancelled before it started").await {
+        Ok(true) => {
+            settle_chain_after(pool.get_ref(), queue.get_ref(), id_job).await;
+            queue.notify_changed();
+            return HttpResponse::NoContent().finish();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("cancel waiting job db error: {}", e);
             return HttpResponse::InternalServerError().body("failed to cancel job");
         }
     }
@@ -876,6 +1185,31 @@ async fn cancel_job(
             eprintln!("request cancel db error: {}", e);
             HttpResponse::InternalServerError().body("failed to cancel job")
         }
+    }
+}
+
+// Settles whatever was queued behind a job that has just been closed out by a route
+// rather than by the runner.
+//
+// The queue calls `jobs::chain::resolve` itself after every job it finishes, but the
+// two routes below close a job out without it ever having run, and a follow-up left
+// waiting on a job that will never produce anything is a row that sits on the board
+// forever. Best-effort: the job is already cancelled or deleted correctly, and the
+// boot reconcile is the backstop.
+async fn settle_chain_after(pool: &PgPool, queue: &Arc<Queue>, id_job: Uuid) {
+    match db::job::find_by_id(pool, id_job).await {
+        Ok(Some(job)) => {
+            jobs::chain::resolve(pool, queue, &job).await;
+        }
+        // Deleted: the FK has already nulled its children's `depends_on`, so they are
+        // orphans rather than a chain with a head to consult.
+        Ok(None) => match db::job::list_orphaned_waiting(pool).await {
+            Ok(orphans) => {
+                jobs::chain::cancel_orphans(pool, queue, &orphans).await;
+            }
+            Err(e) => eprintln!("orphaned follow-up lookup db error: {}", e),
+        },
+        Err(e) => eprintln!("chain settle lookup db error: {}", e),
     }
 }
 
@@ -953,6 +1287,11 @@ async fn delete_job(
 
     match db::job::delete(pool.get_ref(), id_job).await {
         Ok(true) => {
+            // `ON DELETE SET NULL` has just orphaned anything chained behind this
+            // job. A follow-up whose base model will now never be built can only
+            // fail later and more expensively, so it is cancelled here with that as
+            // the recorded reason.
+            settle_chain_after(pool.get_ref(), queue.get_ref(), id_job).await;
             queue.notify_changed();
             HttpResponse::NoContent().finish()
         }

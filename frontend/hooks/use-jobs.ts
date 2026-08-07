@@ -97,11 +97,16 @@ export function useJobs(enabled = true) {
   React.useEffect(() => {
     // The queue is admin-only, so a non-admin session must not fetch it or open
     // a socket for it — both would just collect 403s for the whole session.
-    if (!enabled) {
-      setIsLoading(false)
-      return
-    }
-    void refresh()
+    // Nothing is cleared here: a disabled board reports itself as loaded and
+    // empty below, derived rather than written, so this stays a plain guard.
+    if (!enabled) return
+    // Deferred by a microtask instead of called straight from the effect body.
+    // Unlike the other hooks this one cannot inline its fetch — `refresh` owns
+    // the generation guard and the "the page you were on no longer exists" hop,
+    // and a second copy of that would be a second thing to keep correct. Its
+    // state writes are already after an `await`; the deferral only makes that
+    // legible to the compiler's effect analysis. Timing is otherwise unchanged.
+    void Promise.resolve().then(refresh)
     const stop = watchBoard({ onChanged: refresh, onProgress: patchProgress })
     return stop
   }, [enabled, refresh, patchProgress])
@@ -183,19 +188,27 @@ export function useJobs(enabled = true) {
   const runningNetwork: Job | null =
     board.active.find((j) => isLive(j) && j.lane === "network") ?? null
   const queued = board.active.filter((j) => j.status === "queued")
+  // Kept apart from `queued` because they are not in the line: a waiting job runs
+  // when the job it follows finishes, which no queue position can express. The band
+  // draws them as a chain under the queue instead of as numbered positions.
+  const waiting = board.active.filter((j) => j.status === "waiting")
 
   return {
     board,
     running,
     runningNetwork,
     queued,
+    waiting,
     history: board.history,
     historyTotal: board.historyTotal,
     historyPage,
     historyPages,
     goToHistoryPage,
     paused: board.paused,
-    isLoading,
+    // A disabled board never loads, so it is never loading. Derived rather than
+    // written from the effect, which is also what keeps a non-admin session out
+    // of a permanent spinner.
+    isLoading: enabled && isLoading,
     error,
     refresh,
     cancel,

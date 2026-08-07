@@ -64,7 +64,12 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
  */
 function runPhase(job: Job, run: ReturnType<typeof useJob>): RunPhase | null {
   switch (job.status) {
+    // Neither has begun, so neither has a phase. `waiting` also never reaches this
+    // panel — the detail page renders the queued panel for it — but the switch is
+    // total on purpose, so adding a status is a compile error rather than a
+    // silently missing case.
     case "queued":
+    case "waiting":
       return null
     case "running":
     case "cancelling":

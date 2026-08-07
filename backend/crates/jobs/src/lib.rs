@@ -12,6 +12,7 @@
 //! crate — a design change, not a move. `cycle` joins them because it drives the
 //! queue across rounds and nothing outside the web layer depends on it.
 
+pub mod chain;
 pub mod cycle;
 pub mod queue;
 pub mod train_worker;
@@ -44,6 +45,10 @@ pub async fn start(pool: PgPool) -> Running {
     reconcile_after_restart(&pool).await;
 
     let queue = Arc::new(Queue::new(pool.clone()));
+    // Before the runners start, so a chain is settled before anything can be
+    // claimed: a follow-up whose parent finished while this process was dead is
+    // promoted here, and one whose parent died mid-run is cancelled here.
+    reconcile_chains(&pool, &queue).await;
     queue.spawn();
 
     // Above the queue: it enqueues the jobs a post-training round is made of and
@@ -69,7 +74,9 @@ pub async fn start(pool: PgPool) -> Running {
 async fn reconcile_after_restart(pool: &PgPool) {
     match db::job::fail_orphaned(pool).await {
         Ok(0) => {}
-        Ok(n) => println!("closed {} interrupted job(s)", n),
+        Ok(n) => {
+            println!("closed {} interrupted job(s)", n);
+        }
         Err(e) => eprintln!("failed to close interrupted jobs: {}", e),
     }
     // Benchmark history rows are opened by the runner, so the same crash
@@ -78,5 +85,68 @@ async fn reconcile_after_restart(pool: &PgPool) {
         Ok(0) => {}
         Ok(n) => println!("closed {} interrupted benchmark run(s)", n),
         Err(e) => eprintln!("failed to close interrupted benchmark runs: {}", e),
+    }
+}
+
+/// Settle follow-ups whose dependency landed while this process was not running.
+///
+/// The queue resolves a chain the moment a job finishes, which covers every normal
+/// completion — but not the window between `db::job::finish` committing and the
+/// resolver running, and not a job closed out by `fail_orphaned` above. Both leave
+/// a row that waits forever, so the same check runs once at boot, over exactly the
+/// rows that need it (`list_orphaned_waiting`).
+///
+/// Grouped by dependency because `chain::resolve` settles all of one job's children
+/// together: five follow-ups behind one dead pretrain is one pass, not five.
+async fn reconcile_chains(pool: &PgPool, queue: &Queue) {
+    let stranded = match db::job::list_orphaned_waiting(pool).await {
+        Ok(stranded) => stranded,
+        Err(e) => {
+            eprintln!("failed to read stranded follow-up jobs: {}", e);
+            return;
+        }
+    };
+    if stranded.is_empty() {
+        return;
+    }
+
+    let mut settled: Vec<uuid::Uuid> = Vec::new();
+    let mut resolution = chain::Resolution::default();
+
+    for job in &stranded {
+        // No dependency left to consult: the FK nulled it when the job it followed
+        // was deleted. Cancelled with that as the reason.
+        let Some(id_parent) = job.depends_on else {
+            let one = chain::cancel_orphans(pool, queue, std::slice::from_ref(job)).await;
+            resolution.promoted += one.promoted;
+            resolution.cancelled += one.cancelled;
+            continue;
+        };
+        if settled.contains(&id_parent) {
+            continue;
+        }
+        settled.push(id_parent);
+
+        match db::job::find_by_id(pool, id_parent).await {
+            Ok(Some(parent)) => {
+                let one = chain::resolve(pool, queue, &parent).await;
+                resolution.promoted += one.promoted;
+                resolution.cancelled += one.cancelled;
+            }
+            // The FK makes this unreachable, so it is a corrupt row rather than a
+            // race. Cancel it rather than leave it waiting on nothing.
+            Ok(None) => {
+                let one = chain::cancel_orphans(pool, queue, std::slice::from_ref(job)).await;
+                resolution.cancelled += one.cancelled;
+            }
+            Err(e) => eprintln!("failed to read job {}: {}", id_parent, e),
+        }
+    }
+
+    if resolution.touched() {
+        println!(
+            "settled stranded follow-ups: {} queued, {} cancelled",
+            resolution.promoted, resolution.cancelled
+        );
     }
 }

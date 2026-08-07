@@ -35,6 +35,8 @@ use sqlx::PgPool;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::chain;
+
 // How many distinct prompts to read for every one actually wanted.
 //
 // `distinct_user_prompts` limits in SQL and `gather::choose_prompts` filters
@@ -487,6 +489,34 @@ impl Queue {
             eprintln!("[queue] could not close out job {}: {}", id_job, e);
         }
         eprintln!("[queue] finished job {}", id_job);
+
+        // Anything queued behind this one, now that there is a result to hand it.
+        // `db::job::finish` has exactly one caller, so this covers every job that
+        // finishes normally; the two routes that close out a job which never
+        // started call the resolver themselves.
+        //
+        // The finished row is re-read rather than reconstructed from `job` and
+        // `done`, so the resolver sees the row as it was actually written — the
+        // same view the boot reconcile and the routes hand it.
+        let resolution = match db::job::find_by_id(&self.pool, id_job).await {
+            Ok(Some(finished)) => {
+                chain::resolve(&self.pool, self, &finished).await
+            }
+            Ok(None) => chain::Resolution::default(),
+            Err(e) => {
+                eprintln!(
+                    "[queue] could not re-read job {} to settle what follows it: {}",
+                    id_job, e
+                );
+                chain::Resolution::default()
+            }
+        };
+        if resolution.touched() {
+            eprintln!(
+                "[queue] job {}: queued {} follow-up(s), cancelled {}",
+                id_job, resolution.promoted, resolution.cancelled
+            );
+        }
         self.notify_changed();
     }
 
@@ -1706,7 +1736,7 @@ fn mark_train_crashed(ctx: &TrainCtx, message: &str) {
     }
 }
 
-fn kind_name(kind: JobKind) -> &'static str {
+pub(crate) fn kind_name(kind: JobKind) -> &'static str {
     match kind {
         JobKind::Train => "train",
         JobKind::Benchmark => "benchmark",
