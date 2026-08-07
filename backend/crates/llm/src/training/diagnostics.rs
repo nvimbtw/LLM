@@ -230,23 +230,62 @@ fn activation_histogram(ws: &Workspace, layers: usize, seq_len: usize) -> Vec<f3
 }
 
 // Embedding anisotropy: average the pairwise cosine similarity among the chosen
-// frequent tokens. A high mean cosine means the embeddings are collapsing toward a
-// common direction (poor separation); a healthy space keeps most pairs
-// near-orthogonal. Returns (mean, p5, p95) of the cosines. `emb` is the already
-// host-synced embedding table (`[vocab, d]` row-major).
+// frequent tokens, **after subtracting the table's mean row**. A high mean cosine
+// means the embeddings are collapsing toward a common direction (poor separation);
+// a healthy space keeps most pairs near-orthogonal. Returns (mean, p5, p95) of the
+// cosines. `emb` is the already host-synced embedding table (`[vocab, d]` row-major).
+//
+// **Why centred, and why that changed.** Uncentred, this measured almost entirely
+// a quantity the architecture is invariant to. Tied models grow a large shared
+// offset — every row is `mu + delta_i` for one common `mu` — and on Large 1 that
+// `mu` reached 95% of the mean row norm, putting the uncentred cosine at +0.88
+// while the centred one was +0.001. The directions were as well spread as an
+// untied model's; the chart was plotting the offset.
+//
+// That offset cannot affect the output distribution. With tied embeddings the
+// logit for token i is `h·(mu + delta_i)`, and `h·mu` is the same number for every
+// token in the vocabulary — a constant shift across the row, which softmax is
+// exactly invariant to. On the input side the same `mu` is added to every position
+// and the first Pre-LN subtracts its mean straight back out. So an uncentred
+// reading that climbs all run is reporting a component with no effect on either
+// end, and it climbs precisely because nothing in the loss opposes it.
+//
+// Centring keeps the failure the chart is named after — rows genuinely losing
+// their spread show up in `delta`, which is what is plotted now — and drops the
+// part that never mattered. Expect a large step down in this series at the change,
+// on tied models especially: it is a telemetry discontinuity, not the anisotropy
+// being fixed. Nothing about any model changed.
 fn embedding_anisotropy(emb: &[f32], d: usize, freq_tokens: &[u32]) -> (f32, f32, f32) {
     if freq_tokens.len() < 2 {
         return (0.0, 0.0, 0.0);
     }
 
-    // Pre-normalize each chosen token's row so a cosine is a plain dot product.
+    // The whole table's mean row, not just the chosen tokens': the shared offset is
+    // a property of the table, and estimating it from 32 rows would subtract part of
+    // the very spread this is trying to measure.
+    let vocab = emb.len() / d.max(1);
+    let mut mu = vec![0.0f32; d];
+    if vocab > 0 {
+        for row in emb.chunks_exact(d) {
+            for (acc, x) in mu.iter_mut().zip(row) {
+                *acc += *x;
+            }
+        }
+        for acc in mu.iter_mut() {
+            *acc /= vocab as f32;
+        }
+    }
+
+    // Centre, then pre-normalize each chosen token's row so a cosine is a plain dot
+    // product.
     let units: Vec<Vec<f32>> = freq_tokens
         .iter()
         .map(|&id| {
             let row = &emb[id as usize * d..id as usize * d + d];
-            let norm = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let centred: Vec<f32> = row.iter().zip(&mu).map(|(x, m)| x - m).collect();
+            let norm = centred.iter().map(|x| x * x).sum::<f32>().sqrt();
             if norm > 0.0 {
-                row.iter().map(|x| x / norm).collect()
+                centred.iter().map(|x| x / norm).collect()
             } else {
                 vec![0.0; d]
             }
