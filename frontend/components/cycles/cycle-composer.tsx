@@ -121,12 +121,12 @@ export function CycleComposer() {
           <span className="space-y-1">
             <span className="block text-sm">Explore</span>
             <span className="block max-w-md text-xs text-muted-foreground">
-              Run all {rounds} rounds even when one does not improve. Every round
-              is still scored and its verdict recorded, and the best model is
-              still the best one measured — a round that fails is kept as{" "}
-              <span className="font-mono">explored</span> and the loop carries on
-              from it. For seeing where the trajectory goes, not for making it go
-              up.
+              Run all {rounds} rounds even when one does not improve. Every
+              round is still scored and its verdict recorded, and the best model
+              is still the best one measured — a round that fails is kept as{" "}
+              <span className="font-mono">explored</span> and the loop carries
+              on from it. For seeing where the trajectory goes, not for making
+              it go up.
             </span>
           </span>
           <Switch
@@ -145,11 +145,12 @@ export function CycleComposer() {
           <span className="space-y-1">
             <span className="block text-sm">Skip preference tuning</span>
             <span className="block max-w-md text-xs text-muted-foreground">
-              Run each round as build catalogue → self-train → benchmark, with no
-              preference stage. Scoring the two stages separately put self-train at
-              &minus;3.8 and preference at &minus;5.7 points of assistant score, and
-              preference is the only stage with no prose anchor. Turning it off
-              measures whether self-train holds on its own.
+              Run each round as build catalogue → self-train → benchmark, with
+              no preference stage. Scoring the two stages separately put
+              self-train at &minus;3.8 and preference at &minus;5.7 points of
+              assistant score, and preference is the only stage with no prose
+              anchor. Turning it off measures whether self-train holds on its
+              own.
             </span>
           </span>
           <Switch

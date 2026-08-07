@@ -349,9 +349,9 @@ function SelectBar({
                 Delete {count(chosen.length, "model")}?
               </AlertDialogTitle>
               <AlertDialogDescription>
-                This permanently removes them from the registry and deletes their
-                weights from disk. Existing messages are kept but detached. This
-                cannot be undone.
+                This permanently removes them from the registry and deletes
+                their weights from disk. Existing messages are kept but
+                detached. This cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
 
@@ -366,7 +366,9 @@ function SelectBar({
             </ul>
 
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={isDeleting}>
+                Cancel
+              </AlertDialogCancel>
               <AlertDialogAction
                 disabled={isDeleting}
                 className="bg-destructive text-white hover:bg-destructive/90"

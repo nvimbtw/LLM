@@ -144,8 +144,8 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
 
       {report.chat && (
         <p className="text-xs text-muted-foreground tabular-nums">
-          {formatNumber(report.chat.bits_per_byte, 3)} bits per assistant byte over{" "}
-          {report.chat.bytes_scored} bytes in {report.chat.conversations}{" "}
+          {formatNumber(report.chat.bits_per_byte, 3)} bits per assistant byte
+          over {report.chat.bytes_scored} bytes in {report.chat.conversations}{" "}
           held-out conversations. Reported, not scored — a base model has never
           seen the chat scaffold.
         </p>
