@@ -119,9 +119,17 @@ export function useModels(refreshKey?: unknown) {
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<Error | null>(null)
 
+  // See `use-model.ts` — the same reset-during-render, keyed on `refreshKey`, so
+  // an advancing key puts the list back into its loading state without a
+  // cascading render out of the effect.
+  const [loadedFor, setLoadedFor] = React.useState(refreshKey)
+  if (loadedFor !== refreshKey) {
+    setLoadedFor(refreshKey)
+    setIsLoading(true)
+  }
+
   React.useEffect(() => {
     let active = true
-    setIsLoading(true)
     apiFetch(`/model`)
       .then((res) => {
         if (!res.ok) throw new Error("Unable to load models.")

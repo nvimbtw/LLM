@@ -4,7 +4,8 @@ import * as React from "react"
 
 import type { ThinkBudget } from "./budget-selector"
 
-import { SESSION_CHANGED_EVENT, apiFetch, getToken } from "@/lib/api"
+import { apiFetch, getToken } from "@/lib/api"
+import { useAuth } from "@/hooks/use-auth"
 
 export interface ChatSummary {
   id: string
@@ -57,7 +58,10 @@ function mapChat(raw: RawChat): ChatSummary {
   }
 }
 
+const NO_CHATS: ChatSummary[] = []
+
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth()
   const [conversations, setConversations] = React.useState<ChatSummary[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -67,10 +71,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     // pages (/login, /signup) too. Skip the fetch when there's no token: an
     // unauthenticated /chat call 401s, which would redirect to /login and,
     // once the token is cleared, spin in an endless reload loop.
-    if (!getToken()) {
-      setIsLoading(false)
-      return
-    }
+    if (!getToken()) return
     try {
       const response = await apiFetch(`/chat`)
       if (!response.ok) throw new Error("Unable to load your chats.")
@@ -86,22 +87,41 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // This provider mounts in the root layout — before login — so the mount-time
-  // fetch can run unauthenticated and go stale. Refetch when the session
-  // changes (login), and drop the list when it's cleared (logout).
+  // The session drives the load. `useAuth` reads it as an external store now, so
+  // logging in re-runs this effect and logging out re-renders with an empty list
+  // *derived* below — which is why this hook no longer keeps its own
+  // `SESSION_CHANGED_EVENT` listener, and no longer has to remember to clear
+  // state on the way out.
+  //
+  // The fetch is inlined rather than calling `refresh`, so no state is written
+  // synchronously from the effect body; `refresh` stays for the mutations, which
+  // only run authenticated. Same shape as `use-signals.ts`.
   React.useEffect(() => {
-    refresh()
-    const onSessionChanged = () => {
-      if (getToken()) {
-        refresh()
-      } else {
-        setConversations([])
-      }
+    if (!isAuthenticated) return
+    let active = true
+    apiFetch(`/chat`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load your chats.")
+        return (await response.json()) as RawChat[]
+      })
+      .then((data) => {
+        if (!active) return
+        setConversations(data.map(mapChat))
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (!active) return
+        setError(
+          err instanceof Error ? err.message : "Unable to load your chats."
+        )
+      })
+      .finally(() => {
+        if (active) setIsLoading(false)
+      })
+    return () => {
+      active = false
     }
-    window.addEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
-    return () =>
-      window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
-  }, [refresh])
+  }, [isAuthenticated])
 
   // Pending first messages, keyed by the new chat id. A ref (not state) so the
   // value is written synchronously before navigation and read once on the chat
@@ -167,8 +187,11 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   )
 
   const value: ChatsContextValue = {
-    conversations,
-    isLoading,
+    // Logged out is derived, not stored: the previous session's titles are still
+    // sitting in `conversations` until the next load replaces them, and a
+    // sidebar that keeps showing them after a logout is the bug this prevents.
+    conversations: isAuthenticated ? conversations : NO_CHATS,
+    isLoading: isAuthenticated && isLoading,
     error,
     refresh,
     createChat,

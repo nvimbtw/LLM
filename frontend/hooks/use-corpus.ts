@@ -30,9 +30,32 @@ export function useCorpus(modelId?: string) {
     }
   }, [modelId])
 
+  // The fetch is inlined rather than calling `refresh` here so no state is written
+  // synchronously from the effect body; `refresh` stays for callers that want to
+  // re-read on demand. Same shape as `use-signals.ts`. The `active` flag is not
+  // just lint appeasement — switching model mid-flight would otherwise let the
+  // previous model's corpus land last and win.
   React.useEffect(() => {
-    void refresh()
-  }, [refresh])
+    let active = true
+    getCorpus(modelId)
+      .then((next) => {
+        if (!active) return
+        setCorpus(next)
+        setError(null)
+      })
+      .catch((e: unknown) => {
+        if (!active) return
+        setError(
+          e instanceof Error ? e.message : "Failed to read the SFT corpus."
+        )
+      })
+      .finally(() => {
+        if (active) setIsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [modelId])
 
   return { corpus, isLoading, error, refresh }
 }

@@ -96,10 +96,20 @@ export function useChat(chatId: string) {
   // waits for this so its optimistic messages aren't clobbered by the load.
   const [loadedOnce, setLoadedOnce] = React.useState(false)
 
-  React.useEffect(() => {
-    let active = true
+  // Navigating between two chats reuses this hook, so the load flags have to go
+  // back to their initial values for the new id. Done during render, not in the
+  // effect: `loadedOnce` gates the pending-first-message send, and a frame where
+  // it is still true for the *previous* chat is a frame in which that send can
+  // fire against the wrong conversation.
+  const [loadedFor, setLoadedFor] = React.useState(chatId)
+  if (loadedFor !== chatId) {
+    setLoadedFor(chatId)
     setIsLoading(true)
     setLoadedOnce(false)
+  }
+
+  React.useEffect(() => {
+    let active = true
     fetchMessages()
       .then((data) => {
         if (active) setMessages(data)

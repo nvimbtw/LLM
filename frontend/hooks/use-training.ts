@@ -4,7 +4,7 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 
 import { toast } from "@/components/ui/toast"
-import { queueTraining } from "@/lib/jobs"
+import { queueTraining, type FollowUp } from "@/lib/jobs"
 import type { TrainConfig } from "@/lib/training"
 
 export const DEFAULT_CONFIG: TrainConfig = {
@@ -77,11 +77,16 @@ export function useTrainingComposer() {
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   const start = React.useCallback(
-    async (config: TrainConfig) => {
+    async (config: TrainConfig, steps: FollowUp[] = []) => {
       setIsSubmitting(true)
       try {
-        const job = await queueTraining(config)
-        toast.success("Training run queued.", job.label)
+        const job = await queueTraining(config, steps)
+        toast.success(
+          "Training run queued.",
+          steps.length > 0
+            ? `${job.label}, and ${steps.length} job${steps.length === 1 ? "" : "s"} behind it.`
+            : job.label
+        )
         router.push(`/jobs/${job.id_job}`)
       } catch (e) {
         // The backend's 400 names the offending field ("dimensions must be a

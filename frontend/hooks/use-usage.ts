@@ -41,7 +41,6 @@ export function useUsage() {
 
   React.useEffect(() => {
     let active = true
-    setIsLoading(true)
     apiFetch(`/usage`)
       .then(async (res) => {
         if (!res.ok) throw new Error("Failed to load usage.")

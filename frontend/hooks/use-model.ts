@@ -37,11 +37,21 @@ export function useModel(id: string) {
   const [notFound, setNotFound] = React.useState(false)
   const [error, setError] = React.useState<Error | null>(null)
 
-  React.useEffect(() => {
-    let active = true
+  // Reset during render rather than in the effect. Switching model ids has to
+  // clear the previous model's outcome *before* anything paints, or the page
+  // shows the last model's 404 (or its data) for one frame while the new fetch
+  // is in flight. React re-runs this render immediately and discards the
+  // in-progress output, so nothing downstream ever sees the mismatched pair.
+  const [loadedFor, setLoadedFor] = React.useState(id)
+  if (loadedFor !== id) {
+    setLoadedFor(id)
     setIsLoading(true)
     setNotFound(false)
     setError(null)
+  }
+
+  React.useEffect(() => {
+    let active = true
     apiFetch(`/model/${id}`)
       .then(async (res) => {
         if (res.status === 404) {

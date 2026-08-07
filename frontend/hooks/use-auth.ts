@@ -5,6 +5,7 @@ import * as React from "react"
 import {
   API_URL,
   AccessLevel,
+  SESSION_CHANGED_EVENT,
   clearSession,
   getAccessLevel,
   getToken,
@@ -23,11 +24,6 @@ export interface LoginCredentials {
   password: string
 }
 
-export interface SignupDetails {
-  name: string
-  password: string
-}
-
 export interface AuthState {
   user: AuthUser | null
   isAuthenticated: boolean
@@ -35,22 +31,51 @@ export interface AuthState {
   accessLevel: AccessLevel | null
   isLoading: boolean
   login: (credentials: LoginCredentials) => Promise<void>
-  signup: (details: SignupDetails) => Promise<void>
   logout: () => Promise<void>
 }
 
-export function useAuth(): AuthState {
-  const [token, setTokenState] = React.useState<string | null>(null)
-  const [accessLevel, setAccessLevelState] = React.useState<AccessLevel | null>(
-    null
-  )
-  const [isLoading, setIsLoading] = React.useState(true)
+// The session lives in localStorage, which is an external store — so it is read
+// through `useSyncExternalStore` rather than copied into state on mount. That is
+// not only what the lint rule wants: the old version snapshotted the token once
+// per hook instance and never heard about a later change, so logging out left
+// every *other* `useAuth()` consumer (the sidebar's admin nav, the jobs
+// provider) believing the session was still live until something else
+// re-rendered them. `SESSION_CHANGED_EVENT` is already broadcast by `setToken`,
+// `setAccessLevel` and `clearSession`, so one subscription keeps them all honest.
+function subscribe(onChange: () => void) {
+  window.addEventListener(SESSION_CHANGED_EVENT, onChange)
+  // Fired by the browser in *other* tabs. Logging out in one tab should not
+  // leave a second tab holding a live-looking session.
+  window.addEventListener("storage", onChange)
+  return () => {
+    window.removeEventListener(SESSION_CHANGED_EVENT, onChange)
+    window.removeEventListener("storage", onChange)
+  }
+}
 
-  React.useEffect(() => {
-    setTokenState(getToken())
-    setAccessLevelState(getAccessLevel())
-    setIsLoading(false)
-  }, [])
+// Two subscriptions, not one returning `{ token, accessLevel }`: the snapshot
+// is compared by identity, and a fresh object every call is an infinite loop.
+const serverToken = () => null
+const serverAccessLevel = () => null
+
+// `isLoading` means "the server render and the hydration pass have not read
+// localStorage yet", which is exactly the server/client snapshot split — so it
+// needs no state of its own.
+const clientHydrated = () => false
+const serverHydrated = () => true
+
+export function useAuth(): AuthState {
+  const token = React.useSyncExternalStore(subscribe, getToken, serverToken)
+  const accessLevel = React.useSyncExternalStore(
+    subscribe,
+    getAccessLevel,
+    serverAccessLevel
+  )
+  const isLoading = React.useSyncExternalStore(
+    subscribe,
+    clientHydrated,
+    serverHydrated
+  )
 
   async function login(credentials: LoginCredentials) {
     const response = await fetch(`${API_URL}/auth`, {
@@ -70,23 +95,15 @@ export function useAuth(): AuthState {
       data.access_level as string | undefined
     )?.toLowerCase() as AccessLevel | undefined
 
+    // Access level first: both writes broadcast, and setting the token last
+    // means the render that first sees `isAuthenticated` already sees the
+    // level that goes with it.
+    if (nextAccessLevel) setAccessLevel(nextAccessLevel)
     setToken(nextToken)
-    setTokenState(nextToken)
-
-    if (nextAccessLevel) {
-      setAccessLevel(nextAccessLevel)
-      setAccessLevelState(nextAccessLevel)
-    }
-  }
-
-  async function signup(_details: SignupDetails) {
-    // Handled by useSignup -> POST /user
   }
 
   async function logout() {
     clearSession()
-    setTokenState(null)
-    setAccessLevelState(null)
   }
 
   return {
@@ -96,7 +113,6 @@ export function useAuth(): AuthState {
     accessLevel,
     isLoading,
     login,
-    signup,
     logout,
   }
 }

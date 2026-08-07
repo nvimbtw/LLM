@@ -47,7 +47,10 @@ function ThemeHotkey() {
         return
       }
 
-      if (event.key.toLowerCase() !== "d") {
+      // `key` is typed as a string but is not always one: browser autofill and
+      // password managers dispatch synthetic keydowns with it undefined, and
+      // reading `.toLowerCase()` off that threw on every autofilled login.
+      if (typeof event.key !== "string" || event.key.toLowerCase() !== "d") {
         return
       }
 
