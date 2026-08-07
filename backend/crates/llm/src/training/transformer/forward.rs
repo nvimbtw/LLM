@@ -288,14 +288,28 @@ impl Model {
         let StepDims { s, d, vocab, .. } = dims;
         // SAFETY: see contract.
         unsafe {
-            cuda_matmul(
-                d_x,
-                ws.d_w_output.ptr as *const c_void,
-                ws.d_logits.ptr as *mut c_void,
-                s as i32,
-                d as i32,
-                vocab as i32,
-            );
+            if self.ties_embeddings() {
+                // logits[s, vocab] = x[s, d] @ E[vocab, d]^T. The embedding table
+                // is stored row-per-token, so the projection reads it transposed
+                // rather than as a second `[d, vocab]` matrix.
+                cuda_matmul_bt(
+                    d_x,
+                    ws.d_embedding.ptr as *const c_void,
+                    ws.d_logits.ptr as *mut c_void,
+                    s as i32,
+                    d as i32,
+                    vocab as i32,
+                );
+            } else {
+                cuda_matmul(
+                    d_x,
+                    ws.d_w_output.ptr as *const c_void,
+                    ws.d_logits.ptr as *mut c_void,
+                    s as i32,
+                    d as i32,
+                    vocab as i32,
+                );
+            }
             cuda_clamp_f16(ws.d_logits.ptr as *mut c_void, (s * vocab) as i32);
         }
     }

@@ -96,17 +96,26 @@ const MODEL_MAGIC: &[u8; 4] = b"GORK";
 /// v4 dropped the learned absolute positional table (RoPE replaced it). v3 files
 /// still parse — `read_model` reads the table body and discards it — but they load
 /// with a warning; see the note there for why they cannot generate sensibly.
-const MODEL_VERSION: u32 = 5;
+const MODEL_VERSION: u32 = 6;
 // First version with RoPE instead of a learned absolute positional table. Below
 // it the file still carries that table's body, which has to be read and dropped
 // or every weight after it is misaligned.
 const ROPE_VERSION: u32 = 4;
 // First version carrying the final layer-norm's gamma/beta (before `w_output`).
 const FINAL_LN_VERSION: u32 = 5;
+// First version that ties the output projection to the embedding table. At and
+// above it, `w_output` is written as a 0x0 matrix and read back empty, which is
+// exactly what `Model::ties_embeddings` tests. Below it the file carries a real
+// `[d, vocab]` matrix and the model keeps using it — a pre-v6 model trained
+// against a separate projection, and synthesizing a tie would change its output.
+const TIED_UNEMBED_VERSION: u32 = 6;
 
 fn write_2d<W: std::io::Write>(w: &mut W, m: &[Vec<f32>]) -> Result<(), std::io::Error> {
+    // An empty matrix writes 0 rows and 0 columns and reads back empty. That is
+    // how an absent `w_output` (a tied model) round-trips without the reader
+    // needing to branch on the version.
     w.write_all(&(m.len() as u64).to_le_bytes())?;
-    w.write_all(&(m[0].len() as u64).to_le_bytes())?;
+    w.write_all(&(m.first().map_or(0, |r| r.len()) as u64).to_le_bytes())?;
     for row in m {
         for &v in row {
             w.write_all(&v.to_le_bytes())?;
@@ -127,7 +136,7 @@ fn write_model<W: std::io::Write>(t: &Model, w: &mut W) -> Result<(), std::io::E
     w.write_all(MODEL_MAGIC)?;
     w.write_all(&MODEL_VERSION.to_le_bytes())?;
     let d = t.wo[0].len() as i64;
-    let vocab = t.w_output[0].len() as i64;
+    let vocab = t.vocab() as i64;
     let ctx = t.max_seq_len;
     let ff = t.w1[0][0].len() as i64;
     for field in [d, vocab, ctx, t.heads, ff, t.layers] {
@@ -153,6 +162,9 @@ fn write_model<W: std::io::Write>(t: &Model, w: &mut W) -> Result<(), std::io::E
     // fine-tune of an old base keeps saving as the model it actually is.
     write_1d(w, &t.ln_final_gamma)?;
     write_1d(w, &t.ln_final_beta)?;
+    // A tied model writes a 0x0 matrix here. The dimensions are written
+    // unconditionally so the field still has a fixed shape on disk and `read_2d`
+    // stays a straight read rather than a version-conditional one.
     write_2d(w, &t.w_output)?;
     Ok(())
 }
@@ -178,6 +190,12 @@ fn read_u64<R: std::io::Read>(r: &mut R) -> Result<u64, std::io::Error> {
 fn read_2d<R: std::io::Read>(r: &mut R) -> Result<Vec<Vec<f32>>, std::io::Error> {
     let rows = read_u64(r)? as usize;
     let cols = read_u64(r)? as usize;
+    // A 0x0 matrix is how an absent `w_output` — a tied model — is stored, and
+    // `slice::chunks` panics on a zero chunk size, so it is returned directly
+    // rather than falling into the reshape below.
+    if rows == 0 || cols == 0 {
+        return Ok(Vec::new());
+    }
     let mut buf = vec![0u8; rows * cols * 4];
     r.read_exact(&mut buf)?;
     // chunks_exact(4) yields exactly-4-byte slices, so try_into can't fail here.
@@ -409,6 +427,21 @@ fn read_model<R: std::io::Read>(r: &mut R) -> Result<Model, std::io::Error> {
         ));
     }
     let w_output = read_2d(r)?;
+    // The tie is a property of the version, so the two must agree. They can only
+    // disagree if the field was misread, which would otherwise show up much later
+    // as a model that silently projects through the wrong matrix.
+    if (header.version >= TIED_UNEMBED_VERSION) != w_output.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "v{} model carries a {}x{} output projection; v{TIED_UNEMBED_VERSION}+ ties it \
+                 to the embedding table and must store none",
+                header.version,
+                w_output.len(),
+                w_output.first().map_or(0, |r| r.len()),
+            ),
+        ));
+    }
     Ok(Model {
         embedding_table,
         max_seq_len: header.max_seq_len,
@@ -465,9 +498,13 @@ impl Model {
 
     pub fn to_layer_rows(&self) -> Vec<LayerRow> {
         let mut rows = Vec::new();
+        // An empty matrix — a tied model's absent `w_output` — is emitted as a
+        // 0x0 row rather than skipped, so the row set has the same shape for
+        // every model and `from_layer_rows` can look the name up unconditionally.
         let push_2d = |rows: &mut Vec<LayerRow>, name: &str, m: &[Vec<f32>]| {
-            let shape = vec![m.len() as i64, m[0].len() as i64];
-            let mut data = Vec::with_capacity(m.len() * m[0].len() * 4);
+            let cols = m.first().map_or(0, |r| r.len());
+            let shape = vec![m.len() as i64, cols as i64];
+            let mut data = Vec::with_capacity(m.len() * cols * 4);
             for row in m {
                 for &v in row {
                     data.extend_from_slice(&v.to_le_bytes());
@@ -550,6 +587,11 @@ impl Model {
             if flat.len() != r * c {
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
                     format!("layer {} data size mismatch", name)));
+            }
+            // A 0x0 row is an absent matrix (a tied model's `w_output`), and
+            // `slice::chunks` panics on a zero chunk size.
+            if r == 0 || c == 0 {
+                return Ok(Vec::new());
             }
             Ok(flat.chunks(c).map(|c| c.to_vec()).collect())
         };

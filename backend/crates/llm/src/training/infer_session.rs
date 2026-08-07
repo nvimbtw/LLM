@@ -106,6 +106,17 @@ unsafe extern "C" {
         cols_a: i32,
         cols_b: i32,
     );
+    // C[rows_a, rows_b] = A[rows_a, cols_a] @ B[rows_b, cols_a]^T. The tied
+    // output projection needs this: the embedding table is `[vocab, d]` and the
+    // logits GEMM wants it as `[d, vocab]`.
+    fn cuda_matmul_bt(
+        a: *const c_void,
+        b: *const c_void,
+        result: *mut c_void,
+        rows_a: i32,
+        cols_a: i32,
+        rows_b: i32,
+    );
     fn cuda_add_inplace_f16(dst: *mut c_void, src: *const c_void, n: i32);
     fn cuda_feed_forward(
         input: *const c_void,
@@ -138,7 +149,10 @@ pub struct InferSession {
     d_ln_beta: Vec<DeviceBufferF16>,
     d_ln_final_gamma: DeviceBufferF16,
     d_ln_final_beta: DeviceBufferF16,
-    d_w_output: DeviceBufferF16,  // [d * vocab]
+    // Empty (and unread) when the model ties its output projection to its
+    // embedding table; `project_logits` reads `d_embedding` transposed instead.
+    d_w_output: DeviceBufferF16,  // [d * vocab], or [0] when tied
+    tied: bool,
     d_embedding: DeviceBufferF16, // [vocab * d]
 
     // ── Activation scratch, allocated at `max_s` once ──
@@ -243,7 +257,8 @@ impl InferSession {
         let h = t.heads as usize;
         let hd = t.head_dim as usize;
         let ff = t.w1[0][0].len();
-        let vocab = t.w_output[0].len();
+        let vocab = t.vocab();
+        let tied = t.ties_embeddings();
         let layers = t.layers as usize;
 
         // SAFETY: no arguments; initializes the process-wide cuBLAS handle. The
@@ -270,7 +285,8 @@ impl InferSession {
             d_ln_beta: (0..layers).map(|_| DeviceBufferF16::alloc(d)).collect(),
             d_ln_final_gamma: DeviceBufferF16::alloc(d),
             d_ln_final_beta: DeviceBufferF16::alloc(d),
-            d_w_output: DeviceBufferF16::alloc(d * vocab),
+            d_w_output: DeviceBufferF16::alloc(if tied { 0 } else { d * vocab }),
+            tied,
             d_embedding: DeviceBufferF16::alloc(vocab * d),
 
             d_x: DeviceBufferF16::alloc(max_s * d),
@@ -338,7 +354,9 @@ impl InferSession {
             self.d_ln_final_gamma.upload_f32_slice(&t.ln_final_gamma);
             self.d_ln_final_beta.upload_f32_slice(&t.ln_final_beta);
         }
-        self.d_w_output.upload_f32_slice(&flatten(&t.w_output));
+        if !self.tied {
+            self.d_w_output.upload_f32_slice(&flatten(&t.w_output));
+        }
         self.d_embedding
             .upload_f32_slice(&flatten(&t.embedding_table));
     }
@@ -746,14 +764,27 @@ impl InferSession {
         // SAFETY: `hidden` addresses rows*d f16 values; `d_logits` is allocated at
         // max_s*vocab and rows <= max_s.
         unsafe {
-            cuda_matmul(
-                hidden,
-                self.d_w_output.ptr as *const c_void,
-                self.d_logits.ptr as *mut c_void,
-                rows as i32,
-                self.d as i32,
-                self.vocab as i32,
-            );
+            if self.tied {
+                // logits = hidden @ E^T. Must match `Transformer::project_logits`
+                // exactly — `infer_agrees_with_training_forward` is the guard.
+                cuda_matmul_bt(
+                    hidden,
+                    self.d_embedding.ptr as *const c_void,
+                    self.d_logits.ptr as *mut c_void,
+                    rows as i32,
+                    self.d as i32,
+                    self.vocab as i32,
+                );
+            } else {
+                cuda_matmul(
+                    hidden,
+                    self.d_w_output.ptr as *const c_void,
+                    self.d_logits.ptr as *mut c_void,
+                    rows as i32,
+                    self.d as i32,
+                    self.vocab as i32,
+                );
+            }
         }
         infer_end("logits gemm", t);
     }

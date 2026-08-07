@@ -1267,7 +1267,10 @@ fn describe(model: &Model) -> ModelInfo {
     let parameters = vocab * d              // token embeddings
         // No positional term: RoPE is parameter-free.
         + layers * per_layer
-        + d * vocab; // output projection
+        // The output projection, unless it *is* the embedding table — a tied
+        // model has one `[vocab, d]` matrix serving both ends, so counting
+        // `d * vocab` again would report a parameter that does not exist.
+        + if model.ties_embeddings() { 0 } else { d * vocab };
 
     ModelInfo {
         dimensions: d,

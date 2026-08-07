@@ -17,23 +17,57 @@ impl Model {
         let StepDims { s, d, vocab, .. } = dims;
         // SAFETY: see contract.
         unsafe {
-            cuda_d_weight(
-                d_x,
-                ws.d_dlogits.ptr as *const c_void,
-                ws.d_dw_output.ptr,
-                s as i32,
-                d as i32,
-                vocab as i32,
-            );
-            cuda_matmul_bt(
-                ws.d_dlogits.ptr as *const c_void,
-                ws.d_w_output.ptr as *const c_void,
-                ws.d_dhidden.ptr as *mut c_void,
-                s as i32,
-                vocab as i32,
-                d as i32,
-            );
-            cuda_add_inplace_f32(ws.g_dw_output.ptr, ws.d_dw_output.ptr, (d * vocab) as i32);
+            if self.ties_embeddings() {
+                // dE[vocab, d] = dlogits[s, vocab]^T @ x[s, d] — the same GEMM as
+                // the untied case with the two operands swapped, because the tied
+                // matrix is the transpose of the projection it stands in for.
+                cuda_d_weight(
+                    ws.d_dlogits.ptr as *const c_void,
+                    d_x,
+                    ws.d_dw_output.ptr,
+                    s as i32,
+                    vocab as i32,
+                    d as i32,
+                );
+                // dhidden[s, d] = dlogits[s, vocab] @ E[vocab, d]. Untied this is
+                // a `_bt` against `[d, vocab]`; tied the matrix already has the
+                // orientation the plain matmul wants.
+                cuda_matmul(
+                    ws.d_dlogits.ptr as *const c_void,
+                    ws.d_embedding.ptr as *const c_void,
+                    ws.d_dhidden.ptr as *mut c_void,
+                    s as i32,
+                    vocab as i32,
+                    d as i32,
+                );
+                // Into the same accumulator the untied path uses, holding the
+                // transposed shape. It is clipped with every other gradient and
+                // folded into `g_d_embedding` at the optimizer step; see
+                // `Workspace::new` for why it is not summed in here.
+                cuda_add_inplace_f32(
+                    ws.g_dw_output.ptr,
+                    ws.d_dw_output.ptr,
+                    (vocab * d) as i32,
+                );
+            } else {
+                cuda_d_weight(
+                    d_x,
+                    ws.d_dlogits.ptr as *const c_void,
+                    ws.d_dw_output.ptr,
+                    s as i32,
+                    d as i32,
+                    vocab as i32,
+                );
+                cuda_matmul_bt(
+                    ws.d_dlogits.ptr as *const c_void,
+                    ws.d_w_output.ptr as *const c_void,
+                    ws.d_dhidden.ptr as *mut c_void,
+                    s as i32,
+                    vocab as i32,
+                    d as i32,
+                );
+                cuda_add_inplace_f32(ws.g_dw_output.ptr, ws.d_dw_output.ptr, (d * vocab) as i32);
+            }
         }
         ws.d_dhidden.ptr as *mut c_void
     }

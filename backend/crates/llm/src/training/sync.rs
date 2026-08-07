@@ -15,11 +15,15 @@ pub fn sync_weights_from_gpu(ws: &Workspace, t: &mut Model) {
 
     // Read back the f32 masters (the source of truth), not the f16 views — this
     // makes save lossless and drops the f16 re-quantize round-trip (ISSUE-0052).
-    let w = &mut t.w_output;
-    let flat = ws.m_w_output.to_vec();
-    for i in 0..d {
-        for j in 0..vocab {
-            w[i][j] = flat[i * vocab + j];
+    // A tied model has no separate output projection to read back; its single
+    // matrix comes down as the embedding table below.
+    if !t.ties_embeddings() {
+        let w = &mut t.w_output;
+        let flat = ws.m_w_output.to_vec();
+        for i in 0..d {
+            for j in 0..vocab {
+                w[i][j] = flat[i * vocab + j];
+            }
         }
     }
     let emb = &mut t.embedding_table;

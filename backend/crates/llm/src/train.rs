@@ -7,7 +7,9 @@ use std::time::Instant;
 
 use crate::training::gpu_workspace::Workspace;
 use crate::training::transformer::Model;
-use crate::training::optimizer::{gpu_adam_update, gpu_clip_gradients, gpu_grad_norms, read_grad_norm};
+use crate::training::optimizer::{
+    gpu_adam_update, gpu_clip_gradients, gpu_grad_norms, merge_tied_gradients, read_grad_norm,
+};
 use crate::training::sync::sync_weights_from_gpu;
 use crate::training::diagnostics::{self, Diagnostics};
 
@@ -314,6 +316,13 @@ pub fn warm_start_embeddings(model: &mut Model, ids: &[u32]) -> usize {
 /// gradient that produces is the loss spike. Seeding both ends from the table mean
 /// makes a newly-introduced token merely *unknown* (~ln(vocab) nats) instead of
 /// actively *refuted*.
+///
+/// **A tied model resets nothing here, and that is correct rather than a
+/// no-op bug.** Its output projection *is* its embedding table, so
+/// `warm_start_embeddings` has already reseeded both ends by rewriting one row —
+/// doing it again through this function would be writing the same numbers twice.
+/// `w_output` is empty for such a model, so the `d == 0` guard below returns 0.
+/// Callers should keep calling both; the count they get back is 0 by design.
 pub fn warm_start_output_columns(model: &mut Model, ids: &[u32]) -> usize {
     let d = model.w_output.len();
     let vocab = model.w_output.first().map_or(0, |r| r.len());
@@ -988,6 +997,11 @@ fn lr_at_step(base_lr: f32, step: i32, total_steps: i32) -> f32 {
 // used only to place `adam_step` on the decay curve.
 fn step_optimizer(ws: &mut Workspace, layers: i64, lr: f32, total_opt_steps: i32, adam_step: &mut i32) {
     *adam_step += 1;
+    // A tied model accumulated its two gradient paths separately so each got its
+    // own per-step clip, exactly as an untied model's two matrices do. They are
+    // one parameter from here on, so they are summed before the global clip
+    // measures them and before Adam steps them. No-op when untied.
+    merge_tied_gradients(ws);
     // Clip the accumulated gradient BEFORE the step so a rare huge gradient
     // can't blow the model up (the loss-spike-to-50 case).
     let clip = MAX_GRAD_NORM * ACCUM_STEPS as f32;
@@ -1568,6 +1582,16 @@ mod tests {
         // head_dim (here head_dim == d, since heads == 1).
         let d = 4usize;
         let mut model = Model::init(d as i64, vocab as i64, 8, 1, 2, 1);
+        // Legacy shape: give it the separate output projection a pre-v6 model
+        // carries, so this still covers the two-matrix path those models use.
+        model.w_output = vec![vec![0.0f32; vocab]; d];
+        for j in 0..d {
+            for v in 0..vocab {
+                model.w_output[j][v] = model.embedding_table[v][j];
+            }
+        }
+        assert!(!model.ties_embeddings());
+
         // A suppressed output column and a random embedding row for id 2.
         for row in &mut model.w_output {
             row[2] = -40.0;
@@ -1591,6 +1615,33 @@ mod tests {
         assert_eq!(model.embedding_table[1], untouched_embedding);
         let after: Vec<f32> = model.w_output.iter().map(|r| r[1]).collect();
         assert_eq!(after, untouched_column);
+    }
+
+    // A tied model reaches both ends through one row, so the embedding warm
+    // start is the whole job and the output-column one has nothing left to do.
+    // Its 0 is the correct answer, not a silent failure to find the model.
+    #[test]
+    fn a_tied_model_warm_starts_both_ends_from_the_embedding_alone() {
+        let (vocab, d) = (4usize, 4usize);
+        let mut model = Model::init(d as i64, vocab as i64, 8, 1, 2, 1);
+        assert!(model.ties_embeddings());
+
+        let untouched = model.embedding_table[1].clone();
+        let mean: Vec<f32> = (0..d)
+            .map(|j| model.embedding_table.iter().map(|r| r[j]).sum::<f32>() / vocab as f32)
+            .collect();
+
+        assert_eq!(warm_start_embeddings(&mut model, &[2]), 1);
+        assert_eq!(
+            warm_start_output_columns(&mut model, &[2]),
+            0,
+            "a tied model has no separate output column to reseed"
+        );
+
+        for j in 0..d {
+            assert!((model.embedding_table[2][j] - mean[j]).abs() < 1e-5);
+        }
+        assert_eq!(model.embedding_table[1], untouched, "other rows must be left alone");
     }
 
     // An id past the vocabulary is skipped, not a panic — same tolerance

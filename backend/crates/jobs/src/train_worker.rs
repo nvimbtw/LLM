@@ -289,7 +289,12 @@ fn run_pretrain(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
     eprintln!("[training] {}: tokenizing uploads…", config.model_name);
     ctx.tick(0.0, "Tokenizing");
     let stages = training::resolve_stages(&config);
-    let dataset = training::build_dataset(config.max_vocab, &stages, Some(ctx.cancel.clone()), |event| {
+    let dataset = training::build_dataset(
+        config.max_vocab,
+        &stages,
+        training::resolve_seed(config.seed),
+        Some(ctx.cancel.clone()),
+        |event| {
         handle_tokenize_event(&ctx, event);
     });
 

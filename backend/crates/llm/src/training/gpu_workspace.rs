@@ -191,6 +191,12 @@ pub struct Workspace {
     pub hd: usize,
     pub ff: usize,
     pub vocab: usize,
+    /// Whether the model this workspace serves ties its output projection to its
+    /// embedding table. When true the `*_w_output` / `*_dw_output` buffers are
+    /// unallocated (length 0) and must not be read, memset, clipped or stepped —
+    /// a zero-length allocation is a null device pointer, and a kernel launched
+    /// with a zero grid is an invalid launch, not a no-op.
+    pub tied: bool,
 }
 
 impl Workspace {
@@ -200,8 +206,25 @@ impl Workspace {
         let h = t.heads as usize;
         let hd = t.head_dim as usize;
         let ff = t.w1[0][0].len();
-        let vocab = t.w_output[0].len();
+        let vocab = t.vocab();
         let layers = t.layers as usize;
+        // A tied model has no separate output projection *parameter*, so its
+        // weight view, f32 master and two Adam moments are not allocated and
+        // `gpu_adam_update` never steps them.
+        //
+        // Its **gradient** accumulator is still allocated and still used. The
+        // projection path accumulates into it exactly as the untied path does,
+        // gets clipped with everything else, and is folded into the embedding
+        // gradient once, immediately before the optimizer step
+        // (`merge_tied_gradients`). Accumulating straight into `g_d_embedding`
+        // instead would put the two paths under a single unit-norm clip where
+        // the untied model gives each its own — a change to how much gradient
+        // the vocabulary tables get, on top of the change being made here.
+        // Keeping them separate until the step makes tying exactly a parameter
+        // change, which is what `a_tied_model_computes_what_the_untied_one_does`
+        // pins down.
+        let tied = t.ties_embeddings();
+        let unembed_len = if tied { 0 } else { d * vocab };
 
         // Contiguous per-head QKV weights [h * d * hd]
         let d_wq_all = (0..layers).map(|_| DeviceBufferF16::alloc(h * d * hd)).collect();
@@ -216,7 +239,7 @@ impl Workspace {
         let d_ln_beta = (0..layers).map(|_| DeviceBufferF16::alloc(d)).collect();
         let d_ln_final_gamma = DeviceBufferF16::alloc(d);
         let d_ln_final_beta = DeviceBufferF16::alloc(d);
-        let d_w_output = DeviceBufferF16::alloc(d * vocab);
+        let d_w_output = DeviceBufferF16::alloc(unembed_len);
         let d_embedding = DeviceBufferF16::alloc(vocab * d);
 
         // f32 master weights (same element counts as the f16 views above). Start
@@ -233,13 +256,14 @@ impl Workspace {
         let m_ln_beta = (0..layers).map(|_| Buffer::alloc_zeroed(d)).collect();
         let m_ln_final_gamma = Buffer::alloc_zeroed(d);
         let m_ln_final_beta = Buffer::alloc_zeroed(d);
-        let m_w_output = Buffer::alloc_zeroed(d * vocab);
+        let m_w_output = Buffer::alloc_zeroed(unembed_len);
         let m_embedding = Buffer::alloc_zeroed(vocab * d);
 
         // Gradient accumulators
         let g_wq_all = (0..layers).map(|_| Buffer::alloc(h * d * hd)).collect();
         let g_wk_all = (0..layers).map(|_| Buffer::alloc(h * d * hd)).collect();
         let g_wv_all = (0..layers).map(|_| Buffer::alloc(h * d * hd)).collect();
+        // Always allocated: tied, this holds the `[vocab, d]` projection gradient.
         let g_dw_output = Buffer::alloc(d * vocab);
         let g_d_embedding = Buffer::alloc(vocab * d);
         let d_token_ids = Buffer::alloc(max_s);
@@ -257,7 +281,7 @@ impl Workspace {
         let v_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
         let v_wk_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
         let v_wv_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
-        let v_dw_output = Buffer::alloc_zeroed(d * vocab);
+        let v_dw_output = Buffer::alloc_zeroed(unembed_len);
         let v_d_embedding = Buffer::alloc_zeroed(vocab * d);
         let v_dwo = (0..layers).map(|_| Buffer::alloc_zeroed(d * d)).collect();
         let v_dw1 = (0..layers).map(|_| Buffer::alloc_zeroed(d * ff)).collect();
@@ -273,7 +297,7 @@ impl Workspace {
         let s_wq_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
         let s_wk_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
         let s_wv_all = (0..layers).map(|_| Buffer::alloc_zeroed(h * d * hd)).collect();
-        let s_dw_output = Buffer::alloc_zeroed(d * vocab);
+        let s_dw_output = Buffer::alloc_zeroed(unembed_len);
         let s_d_embedding = Buffer::alloc_zeroed(vocab * d);
         let s_dwo = (0..layers).map(|_| Buffer::alloc_zeroed(d * d)).collect();
         let s_dw1 = (0..layers).map(|_| Buffer::alloc_zeroed(d * ff)).collect();
@@ -353,7 +377,7 @@ impl Workspace {
             v_all: Vec::new(),
             d_head_ptrs,
             b_sd, b_d, b_dwo, ln2_dgrad, b_dff, b_ff, b_sd_head, d_wo_x,
-            max_s, d, h, hd, ff, vocab,
+            max_s, d, h, hd, ff, vocab, tied,
         };
         ws.assert_scratch_fits();
         ws.fill_clip_table(layers);
@@ -420,9 +444,13 @@ impl Workspace {
             self.d_ln_final_beta.upload_f32_slice(&t.ln_final_beta);
             self.m_ln_final_beta.upload(&t.ln_final_beta);
         }
-        let flat_w_output: Vec<f32> = t.w_output.iter().flatten().copied().collect();
-        self.d_w_output.upload_f32_slice(&flat_w_output);
-        self.m_w_output.upload(&flat_w_output);
+        // A tied model has no separate output projection to upload; the
+        // embedding table below *is* it. See `Model::w_output`.
+        if !t.ties_embeddings() {
+            let flat_w_output: Vec<f32> = t.w_output.iter().flatten().copied().collect();
+            self.d_w_output.upload_f32_slice(&flat_w_output);
+            self.m_w_output.upload(&flat_w_output);
+        }
         let flat_embedding: Vec<f32> = t.embedding_table.iter().flatten().copied().collect();
         self.d_embedding.upload_f32_slice(&flat_embedding);
         self.m_embedding.upload(&flat_embedding);

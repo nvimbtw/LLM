@@ -373,14 +373,38 @@ the gap between them is the honest measure of how much work the constraint is do
 ~1.1 GB whether the corpus is 10 MB or 150 MB, because the two phases are separated:
 
 1. **Learn the merges from a bounded sample.** `plan_bpe_sample` takes
-   `BPE_SAMPLE_BYTES` (16 MiB) stratified **equally per dataset**, not
-   proportionally — proportional would give a large web-text dataset ~99% of the
-   budget and leave an early-curriculum dataset tokenizing at near byte level.
-   `bpe::train` deduplicates the sample to its distinct pretokens first, so its
-   peak scales with the sample's *vocabulary* rather than its length (measured:
-   267 MB peak to train a full 8192 table on 10.6 MiB and then encode 8 MiB of
-   held-out text). This constant is no longer the memory lever it was — see the
-   note in `plan_bpe_sample` on why its **composition** is now the open question.
+   `BPE_SAMPLE_BYTES` (16 MiB) split **in proportion to each dataset's size**,
+   with a floor of `MIN_DATASET_SAMPLE_SHARE` (5%) so a small early-curriculum
+   dataset can't be cut to near byte level. `bpe::train` deduplicates the sample
+   to its distinct pretokens first, so its peak scales with the sample's
+   *vocabulary* rather than its length (measured: 267 MB peak to train a full
+   8192 table on 10.6 MiB and then encode 8 MiB of held-out text).
+
+   **This was an equal split per dataset, and the change is measured, not
+   assumed.** Equal shares gave FineWeb 27.9% of the sample while it was 98.4%
+   of the text actually encoded, so the merges were fitted to a distribution the
+   corpus does not have. Held-out bytes/token at vocab 8192 over the real
+   corpora:
+
+   | split | weighted | FineWeb | Wikipedia | TinyStories | SFT chat |
+   |---|---|---|---|---|---|
+   | equal | 3.903 | 3.82 | 3.63 | 3.70 | 3.76 |
+   | proportional | **3.948** | **3.87** | 3.55 | 3.66 | **3.82** |
+
+   It is a reallocation: Wikipedia and TinyStories each give up 1–2%. They are
+   ~2% of the tokens the model reads, and both distributions that matter (web
+   text, and the chat data post-training runs on) gain.
+
+   **The sample's *size* is not a lever and raising it is wasted time.** 16 MiB
+   against 64 MiB measured 3.967 → 3.945 at vocab 8k and 4.872 → 4.889 at 64k —
+   inside noise, at 4x the tokenizer-training cost. What mattered was
+   composition, and now the vocabulary size (see "Vocabulary layout").
+
+   **The stride was also broken and is fixed.** `share.div_ceil(1)` is `share`,
+   so the stride computation always produced 1 and a sharded dataset was read
+   from its first files only — at FineWeb's real shape, 50 of 5,498 shards. The
+   stride is now derived from how many files the share actually consumes.
+   `a_sharded_dataset_is_sampled_across_its_whole_range` is the guard.
 2. **Stream-encode everything** through one reused `bpe::Encoder`, in ~4 MiB chunks,
    into a `bpe::CorpusWriter`.
 
@@ -450,6 +474,43 @@ Adding a marker to `SPECIAL_TOKENS` is therefore now safe for existing models.
 Raising `SPECIAL_BLOCK` is **not** — it moves `MERGE_BASE` and needs a fresh
 tokenizer and a re-pretrain. A marker count past the block fails the build via a
 `const` assert rather than corrupting a corpus.
+
+**The vocabulary size is the tokenizer's real lever, and the output projection
+is tied so you can afford it.** Held-out bytes/token over the real corpora,
+proportional sampling, baseline pretokenizer:
+
+| vocab | FineWeb | vs 8k | SFT chat |
+|---|---|---|---|
+| 4096 | 3.41 | −12% | 3.43 |
+| **8192** | **3.89** | — | 3.82 |
+| 16384 | 4.28 | **+10%** | 4.13 |
+| 32768 | 4.59 | **+18%** | 4.36 |
+| 65536 | 4.79 | +23% | 4.49 |
+
+Because `Model::w_output` is tied to `embedding_table` (see the field, and
+`MODEL_VERSION` 6), the vocabulary costs `vocab * d` rather than `2 * vocab * d`
+— so **tied at vocab 2V is the same parameter count as untied at V**. At the
+Large shape (d 512, 8 layers) untied@8k and tied@16k are both 33.58M
+parameters, and tied@16k compresses 10% better. It is also near-free in compute:
+the output projection doubles but there are proportionally fewer tokens, netting
+out around +1% per corpus byte (32k is +13%, which is a real cost).
+
+**Compression is not the objective, though, and this table cannot settle the
+vocabulary.** A larger vocabulary means each row is seen less often and the
+softmax is harder, and there is a real optimum that bytes/token cannot find.
+Settle it by pretraining at each size and reading the **language suite**, which
+is denominated in bits per *byte* and is therefore comparable across tokenizers
+— the only metric here that is. Do not compare `bits_per_token` across
+vocabularies; see "A benchmark must not be denominated in tokens".
+
+**The pretokenizer is not a lever, and this has been tried.** Space runs,
+newline runs, wide-set punctuation runs and digit grouping were each measured at
+vocab 8192: every variant landed within ±1% of the current splitter on FineWeb,
+and GPT-4-style punctuation-run grouping was *worse* (−1.0%) at every vocabulary
+size. The only real signal was space+newline runs on chat data (+1.3%). The 78%
+that `17767d0` recovered was the tokenizer win; there is not a second one in the
+splitting rules. `crates/tokenize/examples/tokexp.rs` is the bench — it asserts
+its baseline config reproduces `pre_tokenize_str` before comparing anything.
 
 **Corpus files are `u16`.** `corpus.bin` and its SFT/KTO siblings carry an 8-byte
 header (`LLMC`, version, element width) followed by little-endian `u16` ids, and
@@ -828,13 +889,63 @@ takes `ctx * d` floats out of every model file.
 - `Model::max_seq_len` is the context window now. It used to be read off
   `positional_table.len()` at ~14 call sites; read it through `ctx_window()`.
 
-`MODEL_VERSION` is **5** (`ROPE_VERSION` 4 and `FINAL_LN_VERSION` 5 name the two
-boundaries that change the layout). A v3 file still parses — `read_model` reads
+`MODEL_VERSION` is **6** (`ROPE_VERSION` 4, `FINAL_LN_VERSION` 5 and
+`TIED_UNEMBED_VERSION` 6 name the three boundaries that change the layout). A v3
+file still parses — `read_model` reads
 the positional table body and discards it, since the weights after it are at a
 fixed offset — but logs a warning: such a model was trained under absolute
 positions this code no longer applies *and* with a K projection that never left
 random init, so its output is meaningless. Loading is allowed only so model
 browsing and metadata keep working on old runs.
+
+## The output projection is tied to the embedding table
+
+From `MODEL_VERSION` 6, `Model::w_output` is **empty** and the embedding table is
+both ends of the network: the embedding gathers rows from it, and
+`project_logits` multiplies by it transposed (`cuda_matmul_bt` rather than
+`cuda_matmul`). Test with `Model::ties_embeddings()`, never by inspecting values
+— the same rule as `has_final_ln`, and for the same reason: a pre-v6 model
+trained *against* a separate projection, so synthesizing a tie for it would
+change what it outputs. `read_model` rejects a file whose version and tie
+disagree rather than loading a model that would project through the wrong matrix.
+
+Why: it buys exactly one doubling of the vocabulary for free. See "Vocabulary
+layout" for the compression that doubling is worth.
+
+**Tying changes the parameter count, not the gradient the vocabulary tables
+receive, and that is deliberate.** A tied model still keeps **two gradient
+accumulators** — `g_d_embedding` for the lookup path and `g_dw_output` (holding
+`[vocab, d]`, not `[d, vocab]`) for the projection path — so each still gets its
+own per-step unit-norm clip, exactly as an untied model's two matrices do. They
+are summed by `merge_tied_gradients` at the optimizer step, after the per-step
+clip and before the global clip and the Adam step. Summing them earlier, in the
+backward, would put both paths under a single clip and quietly change the
+effective learning rate on the largest tensor in the model — a second change
+riding along with this one, which would confound any vocabulary comparison.
+
+What *is* dropped is the projection's f16 view, f32 master and two Adam moments
+(14 of the 18 bytes/param), and one Adam step per optimizer step.
+
+**The guard is `a_tied_model_computes_what_the_untied_one_does`.** It builds an
+untied model whose `w_output` is literally the tied model's embedding
+transposed, runs both, and requires the same loss *and* that the tied
+accumulators equal the untied pair element-for-element. That is what catches a
+transposed operand, a `_bt` where a plain matmul belongs, or an accumulation
+landing in the wrong buffer — none of which a "gradient is non-zero" assert can
+see, and all of which would still descend a loss curve. This is the third
+parameter between the residual stream and the logits, and the previous two (the
+absolute positional table, the K projection) both shipped wired into the forward
+while receiving no gradient.
+
+`both_gradient_paths_reach_the_tied_matrix` is the complementary check, and it
+turns on an asymmetry worth knowing: the **lookup gradient is sparse** (only rows
+of tokens the chunk contains) while the **projection gradient is dense** (the
+softmax pushes down every non-target logit, so every row is written). A token
+absent from the chunk therefore isolates the projection path.
+
+`warm_start_output_columns` returns 0 for a tied model. That is correct, not a
+silent failure: `warm_start_embeddings` already reseeded both ends by rewriting
+one row. Keep calling both.
 
 **`tests/attention_learns.rs` is the guard.** With the absolute table gone, the
 copy task is a pure RoPE test — nothing else can supply position, so a broken or

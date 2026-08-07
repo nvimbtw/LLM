@@ -35,6 +35,7 @@ unsafe extern "C" {
         n: i32,
     );
     fn cuda_l2norm(v: *const f32, n: i32) -> f32;
+    fn cuda_add_inplace_f32(dst: *mut f32, src: *const f32, n: i32);
     // Device-side global gradient clip — see `gpu_clip_gradients`. All three are
     // asynchronous; none of them reads back to the host.
     fn cuda_grad_sumsq_accum(v: *const f32, n: i32, accum: *mut f32);
@@ -93,6 +94,30 @@ pub struct GradNorms {
     pub unembed: f32,
 }
 
+/// Fold a tied model's output-projection gradient into its embedding gradient,
+/// leaving one accumulator for the one parameter they share. A no-op for an
+/// untied model.
+///
+/// **Must run after the per-step clip and before the global clip and the Adam
+/// step.** Both buffers are already clipped to their own unit norm by then, so
+/// the sum is exactly what an untied model would have applied to its two
+/// matrices — which is the point: tying changes the parameter count, not how
+/// much gradient the vocabulary tables receive. Doing the merge earlier (in the
+/// backward) would put both paths under a single clip and quietly change the
+/// effective learning rate on the largest tensor in the model.
+///
+/// The layouts agree because a tied model's `g_dw_output` holds `[vocab, d]` —
+/// see `backward_unembed` — not the `[d, vocab]` an untied one holds.
+pub fn merge_tied_gradients(ws: &Workspace) {
+    if !ws.tied {
+        return;
+    }
+    // SAFETY: both are `Workspace` device allocations of `vocab * d` f32s.
+    unsafe {
+        cuda_add_inplace_f32(ws.g_d_embedding.ptr, ws.g_dw_output.ptr, (ws.vocab * ws.d) as i32);
+    }
+}
+
 pub fn gpu_grad_norms(ws: &Workspace, layers: usize) -> GradNorms {
     let mut layer_norms = Vec::with_capacity(layers);
     let mut global_sq = 0.0f64;
@@ -105,6 +130,9 @@ pub fn gpu_grad_norms(ws: &Workspace, layers: usize) -> GradNorms {
         global_sq += layer_sq;
         layer_norms.push(layer_sq.sqrt() as f32);
     }
+    // Both are live whether or not the model ties: tying merges them at the
+    // optimizer step, not in the backward, so up to that point there really are
+    // two gradient tensors to report.
     let embedding = unsafe { cuda_l2norm(ws.g_d_embedding.ptr, (ws.vocab * ws.d) as i32) };
     let unembed = unsafe { cuda_l2norm(ws.g_dw_output.ptr, (ws.d * ws.vocab) as i32) };
     global_sq += (embedding as f64).powi(2) + (unembed as f64).powi(2);
@@ -258,7 +286,12 @@ pub fn gpu_adam_update(ws: &Workspace, lr: f32, step: i32, accum_steps: usize, l
 
     unsafe {
         // 2-D weight matrices — decayed.
-        adam!(ws.g_dw_output.ptr, ws.m_w_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, wd, d * vocab);
+        // A tied model has no output-projection parameter to step: its gradient
+        // was folded into the embedding's by `merge_tied_gradients`, and the one
+        // matrix is stepped once through the embedding entry below.
+        if !ws.tied {
+            adam!(ws.g_dw_output.ptr, ws.m_w_output.ptr, ws.d_w_output.ptr, ws.v_dw_output.ptr, ws.s_dw_output.ptr, wd, d * vocab);
+        }
         adam!(ws.g_d_embedding.ptr, ws.m_embedding.ptr, ws.d_embedding.ptr, ws.v_d_embedding.ptr, ws.s_d_embedding.ptr, wd, vocab * d);
         for l in 0..layers {
             adam!(ws.g_wq_all[l].ptr, ws.m_wq_all[l].ptr, ws.d_wq_all[l].ptr, ws.v_wq_all[l].ptr, ws.s_wq_all[l].ptr, wd, h * d * hd);
@@ -326,6 +359,131 @@ mod tests {
     // pass but receiving no gradient, and in both cases the loss curve still went
     // down, so nothing caught it. A non-zero gradient on both ends is the cheapest
     // thing that would have.
+    // Expand a tied model's single matrix into the explicit `[d, vocab]` output
+    // projection it stands in for, giving a model that must compute exactly the
+    // same thing down the untied path.
+    fn untie(tied: &Model) -> Model {
+        let vocab = tied.vocab();
+        let d = tied.embedding_table[0].len();
+        let mut untied = tied.clone();
+        untied.w_output = vec![vec![0.0f32; vocab]; d];
+        for v in 0..vocab {
+            for j in 0..d {
+                untied.w_output[j][v] = tied.embedding_table[v][j];
+            }
+        }
+        untied
+    }
+
+    // Tying must be an identity on the arithmetic, not merely "trains without
+    // crashing". An untied model whose `w_output` *is* the embedding transposed
+    // has to produce the same logits and the same total gradient, so the tied
+    // model's single accumulator must equal the untied model's two, added.
+    //
+    // This is the check that catches the failures a non-zero-gradient assert
+    // cannot see: a transposed operand, a `_bt` where a plain matmul belongs, or
+    // an accumulation that lands in the wrong buffer. All three would still
+    // descend a loss curve, which is exactly how the K projection and the
+    // absolute positional table both shipped untrained.
+    #[test]
+    fn a_tied_model_computes_what_the_untied_one_does() {
+        let (vocab, dim, ctx, heads, ff_mult, layers) = (32, 16, 8, 2, 2, 3);
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 11];
+
+        let tied = Model::init(dim, vocab, ctx, heads, ff_mult, layers);
+        assert!(tied.ties_embeddings(), "a fresh model must tie");
+        let untied = untie(&tied);
+        assert!(!untied.ties_embeddings());
+
+        let mut ws_tied = Workspace::new(&tied, ctx as usize);
+        let mut ws_untied = Workspace::new(&untied, ctx as usize);
+
+        let loss_tied = pollster::block_on(tied.train_step(&mut ws_tied, &chunk, layers as usize));
+        let loss_untied =
+            pollster::block_on(untied.train_step(&mut ws_untied, &chunk, layers as usize));
+
+        assert!(
+            (loss_tied - loss_untied).abs() < 1e-3,
+            "same arithmetic must give the same loss: tied {loss_tied}, untied {loss_untied}"
+        );
+
+        // The tied accumulator against the untied pair, summed. `g_dw_output` is
+        // `[d, vocab]` and `g_d_embedding` is `[vocab, d]`, so one is transposed
+        // onto the other before comparing.
+        // Merge first: tying is applied at the optimizer step, so before it the
+        // tied workspace still holds the two halves separately — the same two an
+        // untied model holds, in the same clipped state.
+        merge_tied_gradients(&ws_tied);
+
+        let (v, d) = (vocab as usize, dim as usize);
+        let tied_grad = ws_tied.g_d_embedding.to_vec();
+        let untied_emb = ws_untied.g_d_embedding.to_vec();
+        let untied_out = ws_untied.g_dw_output.to_vec();
+
+        let mut worst = 0.0f32;
+        let mut scale = 0.0f32;
+        for i in 0..v {
+            for j in 0..d {
+                let expect = untied_emb[i * d + j] + untied_out[j * v + i];
+                let got = tied_grad[i * d + j];
+                worst = worst.max((expect - got).abs());
+                scale = scale.max(expect.abs());
+            }
+        }
+        // Both sides run the same GEMMs on the same values, so this is tight —
+        // it is not a "roughly similar" check. What little slack there is comes
+        // from f16 accumulation order in the two GEMM wirings.
+        assert!(
+            worst <= 1e-3 * scale.max(1e-6),
+            "tied gradient differs from the untied pair summed: worst {worst:e} against a \
+             largest element of {scale:e}"
+        );
+        assert!(scale > 0.0, "the untied pair produced no gradient at all");
+    }
+
+    // Both halves of the tie must be live, and they are separable: the
+    // embedding lookup writes only the rows of tokens that appear in the chunk,
+    // while the output projection writes *every* row (the softmax pushes down
+    // every non-target logit). So a token absent from the chunk isolates the
+    // projection path, and the lookup path is read off the sparse buffer.
+    #[test]
+    fn both_gradient_paths_reach_the_tied_matrix() {
+        let (vocab, dim, ctx, heads, ff_mult, layers) = (32, 16, 8, 2, 2, 3);
+        // Token 3 appears (as the first input); token 30 never does.
+        let chunk: Vec<u32> = vec![3, 7, 1, 14, 2, 9, 5, 21];
+
+        let tied = Model::init(dim, vocab, ctx, heads, ff_mult, layers);
+        let mut ws = Workspace::new(&tied, ctx as usize);
+        pollster::block_on(tied.train_step(&mut ws, &chunk, layers as usize));
+
+        let d = dim as usize;
+        let row = |buf: &Vec<f32>, tok: usize| -> f32 {
+            buf[tok * d..(tok + 1) * d].iter().map(|v| v * v).sum::<f32>().sqrt()
+        };
+
+        // The lookup half: sparse, and only over tokens the chunk contains.
+        let lookup = ws.g_d_embedding.to_vec();
+        assert!(row(&lookup, 3) > 0.0, "the embedding-lookup path is dead");
+        assert_eq!(
+            row(&lookup, 30),
+            0.0,
+            "the lookup path must not touch a token the chunk never uses"
+        );
+
+        // The projection half: dense, so it reaches a token the lookup cannot.
+        let projection = ws.g_dw_output.to_vec();
+        assert!(
+            row(&projection, 30) > 0.0,
+            "the output-projection path is dead — nothing wrote a row the lookup cannot reach"
+        );
+
+        // And the merge actually combines them into the one accumulator.
+        merge_tied_gradients(&ws);
+        let merged = ws.g_d_embedding.to_vec();
+        assert!(row(&merged, 30) > 0.0, "the merge dropped the projection path");
+        assert!(row(&merged, 3) > 0.0, "the merge dropped the lookup path");
+    }
+
     #[test]
     fn the_final_layer_norm_receives_a_gradient() {
         let (vocab, dim, ctx, heads, ff_mult, layers) = (32, 16, 8, 2, 2, 3);

@@ -62,6 +62,27 @@ pub struct Model {
     /// `has_final_ln`, never by inspecting the values.
     pub ln_final_gamma: Vec<f32>,     // [d]
     pub ln_final_beta: Vec<f32>,      // [d]
+    /// The output projection, `[d, vocab]` — **empty when the model ties its
+    /// output projection to its embedding table**, which every model from
+    /// `MODEL_VERSION` 6 does.
+    ///
+    /// Tying means there is one `[vocab, d]` matrix instead of two transposed
+    /// ones: the embedding gathers rows from it going in, and `project_logits`
+    /// multiplies by it transposed coming out. Both paths then accumulate into
+    /// the same gradient, and the optimizer steps it once.
+    ///
+    /// It is worth exactly one doubling of the vocabulary. The untied pair costs
+    /// `2 * vocab * d` parameters and the tied single costs `vocab * d`, so tied
+    /// at vocab `2V` is the same parameter count as untied at `V` — at d 512 both
+    /// are 8,388,608 — while compressing ~10% better (3.89 → 4.28 held-out
+    /// bytes/token on FineWeb at 8192 → 16384). It is also near-free in compute:
+    /// the bigger output projection costs more per token but there are
+    /// proportionally fewer tokens, which nets out at about +1% per corpus byte.
+    ///
+    /// Test with [`Model::ties_embeddings`], never by inspecting the values —
+    /// the same rule as [`Model::has_final_ln`], and for the same reason. A
+    /// pre-v6 model trained *against* a separate output projection, so
+    /// synthesizing a tie for it would change what it outputs.
     pub w_output: Vec<Vec<f32>>,
 }
 
@@ -122,7 +143,8 @@ impl Model {
             ln_final_gamma: vec![1.0f32; d],
             ln_final_beta: vec![0.0f32; d],
             heads, head_dim, layers,
-            w_output: embed(vocab, dimensions),
+            // Tied: the embedding table is the output projection. See the field.
+            w_output: Vec::new(),
         }
     }
 
@@ -130,6 +152,19 @@ impl Model {
     /// saved before `MODEL_VERSION` 5. See the `ln_final_gamma` field.
     pub fn has_final_ln(&self) -> bool {
         !self.ln_final_gamma.is_empty()
+    }
+
+    /// Whether the output projection is the embedding table transposed, rather
+    /// than a second matrix. True for every model from `MODEL_VERSION` 6; false
+    /// only for weights saved before it. See the `w_output` field.
+    pub fn ties_embeddings(&self) -> bool {
+        self.w_output.is_empty()
+    }
+
+    /// Vocabulary size, read off the embedding table — which is present whether
+    /// or not the model ties, unlike `w_output`.
+    pub fn vocab(&self) -> usize {
+        self.embedding_table.len()
     }
 
     /// The model's context window, as a `usize` for slicing.
@@ -234,7 +269,9 @@ impl Model {
             h: self.heads as usize,
             hd: self.head_dim as usize,
             ff: self.w1[0][0].len(),
-            vocab: self.w_output[0].len(),
+            // From the embedding table, which is present whether or not the
+            // model ties — `w_output` is empty for a tied one.
+            vocab: self.vocab(),
         }
     }
 
@@ -1022,8 +1059,12 @@ mod tests {
         assert!(t.b2[0].iter().all(|&v| v == 0.0), "b2 should be zero-initialized");
         assert!(t.ln_gamma[0].iter().all(|&v| v == 1.0), "ln_gamma should be one-initialized");
         assert!(t.ln_beta[0].iter().all(|&v| v == 0.0), "ln_beta should be zero-initialized");
-        assert_eq!(t.w_output.len(), 32);
-        assert_eq!(t.w_output[0].len(), 100);
+        // A fresh model ties, so there is no separate output projection: the
+        // embedding table is both ends.
+        assert!(t.ties_embeddings());
+        assert!(t.w_output.is_empty());
+        assert_eq!(t.embedding_table.len(), 100);
+        assert_eq!(t.embedding_table[0].len(), 32);
     }
 
     #[test]
@@ -1038,6 +1079,62 @@ mod tests {
     }
 
     // ── Non-GPU tests: serialization round-trips ──
+
+    // The tie must survive a save/load, and it is represented by an *absence* —
+    // the easiest kind of field to lose in a serializer. A model that came back
+    // untied would silently project through a matrix of zeros.
+    #[test]
+    fn tying_survives_a_round_trip() {
+        let t1 = Model::init(16, 50, 32, 2, 2, 1);
+        assert!(t1.ties_embeddings());
+
+        let t2 = Model::from_bytes(&t1.to_bytes().unwrap()).unwrap();
+        assert!(t2.ties_embeddings(), "a tied model came back untied");
+        assert!(t2.w_output.is_empty());
+        assert_eq!(t1.embedding_table, t2.embedding_table);
+        assert_eq!(t1.vocab(), t2.vocab());
+
+        // And the same through the layer-rows form, which is a separate encoder
+        // (used for imported checkpoints) and so a second place to lose the tie.
+        let header = ModelHeader {
+            dimensions: 16,
+            vocab_size: 50,
+            max_seq_len: 32,
+            heads: 2,
+            ff_multiplier: 2,
+            layers: 1,
+        };
+        let t3 = Model::from_layer_rows(&header, &t1.to_layer_rows()).unwrap();
+        assert!(t3.ties_embeddings(), "the layer-rows form lost the tie");
+        assert_eq!(t1.embedding_table, t3.embedding_table);
+    }
+
+    // An untied model — the pre-v6 shape — must keep its own projection rather
+    // than being silently converted. Those weights trained against it.
+    #[test]
+    fn an_untied_model_keeps_its_own_projection() {
+        let mut t1 = Model::init(16, 50, 32, 2, 2, 1);
+        let (vocab, d) = (t1.vocab(), 16usize);
+        t1.w_output = vec![vec![0.0f32; vocab]; d];
+        for v in 0..vocab {
+            for j in 0..d {
+                t1.w_output[j][v] = t1.embedding_table[v][j] * 0.5;
+            }
+        }
+        assert!(!t1.ties_embeddings());
+
+        // `write_model` stamps the current version, which declares a tie, so the
+        // consistency check in `read_model` must reject this rather than load a
+        // model whose projection would then be ignored.
+        let err = match Model::from_bytes(&t1.to_bytes().unwrap()) {
+            Err(e) => e,
+            Ok(_) => panic!("a v6 file carrying an output projection must not load"),
+        };
+        assert!(
+            err.to_string().contains("output projection"),
+            "expected the version/tie consistency check to fire, got: {err}"
+        );
+    }
 
     #[test]
     fn test_to_bytes_from_bytes_roundtrip() {

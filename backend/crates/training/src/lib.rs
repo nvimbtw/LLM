@@ -303,11 +303,26 @@ pub enum TokenizeEvent<'a> {
 // 16 MiB used to cost when the trainer held the whole corpus as chars *and* as ids
 // alongside a never-compacted positional index.
 //
-// This constant is therefore no longer the memory cliff it was, and it is now the
-// binding constraint on tokenizer *quality* instead: see `plan_bpe_sample` for why
-// the sample's composition matters more than its size. Raising it is safe on the
-// memory side; still measure, since the encode pass that follows is unchanged.
+// This constant is therefore no longer the memory cliff it was, and its *size* is
+// not the lever either — see `plan_bpe_sample`, whose composition is. Measured at
+// vocab 8192 and 65536, held-out bytes/token over the real corpora:
+//
+//   sample    vocab 8k    vocab 64k
+//   16 MiB      3.967       4.872
+//   64 MiB      3.945       4.889
+//
+// Identical inside noise at 4x the tokenizer-training time. Raising it is safe on
+// the memory side and buys nothing; leave it here.
 const BPE_SAMPLE_BYTES: usize = 16 * 1024 * 1024;
+
+// The least of the BPE sample any one dataset may be cut to, as a percent of
+// `BPE_SAMPLE_BYTES`. `plan_bpe_sample` splits the budget by corpus share, which
+// left to itself would give a 1.5 GB web-text dataset ~98% of it and leave a small
+// early-curriculum dataset tokenizing at nearly byte level. The floor bounds that
+// without giving up the gains proportional sampling actually delivers; it is
+// capped at an equal split, so it stays meaningful however many datasets a run
+// selects.
+const MIN_DATASET_SAMPLE_SHARE: usize = 5;
 
 // Bytes per streaming read. Chunks end on a line break, so this is a floor rather
 // than an exact size.
@@ -342,10 +357,12 @@ fn xorshift_next(state: &mut u64) -> u64 {
     *state
 }
 
-// Fisher–Yates shuffle using the shared xorshift PRNG, seeded fresh each run.
-fn shuffle<T>(items: &mut [T]) {
-    shuffle_seeded(items, rng_seed());
-}
+// There is deliberately no wall-clock-seeded `shuffle` wrapper. Its only caller
+// was `select_txt`, where it meant a dataset whose `count` was smaller than what
+// is on disk drew a *different random subset on every run* — so two runs of one
+// config trained on different corpora, and any A/B holding the corpus constant
+// was measuring two things at once. Every shuffle takes an explicit seed; the
+// run's own resolved seed is threaded down from `build_dataset`.
 
 // Fisher–Yates shuffle from an explicit seed, so callers that need a
 // reproducible order (the per-epoch training shuffle) can derive one from a
@@ -384,7 +401,12 @@ pub fn resolve_stages(cfg: &TrainConfig) -> Vec<CurriculumStage> {
 // Collects the `.txt` files in `dir`, optionally sampling `num` of them at
 // random. `zero_means_all` distinguishes "0 = use everything" (books) from
 // "0 = none" (synthetic data, which is opt-in). A missing dir yields no files.
-fn select_txt(dir: &Path, num: usize, zero_means_all: bool) -> io::Result<Vec<PathBuf>> {
+fn select_txt(
+    dir: &Path,
+    num: usize,
+    zero_means_all: bool,
+    seed: u64,
+) -> io::Result<Vec<PathBuf>> {
     let mut paths: Vec<PathBuf> = if dir.is_dir() {
         fs::read_dir(dir)?
             .filter_map(|e| e.ok())
@@ -402,7 +424,9 @@ fn select_txt(dir: &Path, num: usize, zero_means_all: bool) -> io::Result<Vec<Pa
         num.min(paths.len())
     };
     if take < paths.len() {
-        shuffle(&mut paths);
+        // Seeded, not wall-clock: two runs of one config must select the same
+        // files. See `build_dataset`'s `seed` parameter.
+        shuffle_seeded(&mut paths, seed);
         paths.truncate(take);
         paths.sort(); // stable concatenation order for the chosen subset
     }
@@ -497,6 +521,14 @@ fn count_chat_documents() -> io::Result<usize> {
 pub fn build_dataset(
     max_vocab: u32,
     stages: &[CurriculumStage],
+    // The run's *resolved* seed (see `resolve_seed`), which picks **which files**
+    // each dataset selection draws when its `count` is less than what is on disk.
+    // It has to be the run's own seed rather than a fresh time seed, or two runs
+    // of the same config train on different data: the selection is a random
+    // subset, so a wall-clock shuffle silently makes every run a different
+    // experiment. That is fatal to any A/B where the corpus is meant to be the
+    // control — a vocabulary sweep, for instance.
+    seed: u64,
     cancel: Option<Arc<AtomicBool>>,
     on_event: impl Fn(TokenizeEvent),
 ) -> io::Result<Option<DatasetStats>> {
@@ -507,7 +539,7 @@ pub fn build_dataset(
     // could still read a stale directory.
     render_chat_documents()?;
 
-    let files = collect_tagged(stages)?;
+    let files = collect_tagged(stages, seed)?;
     // Byte lengths, not character counts: the exact count needs a full read of
     // every file, and this fires before any of them are opened so the dashboard
     // is populated immediately. `Encode` events correct it as files complete.
@@ -574,7 +606,7 @@ struct TaggedFile {
 // subfolder of uploads/; `select_txt` pulls `count` .txt files from it (0 => all).
 // Files keep their per-stage grouping so the training loop can feed one stage at
 // a time.
-fn collect_tagged(stages: &[CurriculumStage]) -> io::Result<Vec<TaggedFile>> {
+fn collect_tagged(stages: &[CurriculumStage], seed: u64) -> io::Result<Vec<TaggedFile>> {
     let uploads = storage::uploads_dir();
     let mut tagged: Vec<TaggedFile> = Vec::new();
     for (stage, spec) in stages.iter().enumerate() {
@@ -590,7 +622,15 @@ fn collect_tagged(stages: &[CurriculumStage]) -> io::Result<Vec<TaggedFile>> {
             } else {
                 uploads.join(&sel.name)
             };
-            for path in select_txt(&dir, sel.count, true)? {
+            // Each (stage, dataset) pair gets its own derived seed, so adding a
+            // dataset to one stage does not reshuffle what every other stage
+            // selected. Mixing the name in means the same dataset at two stages
+            // draws two different subsets rather than the identical one twice.
+            let mut sub = seed ^ (stage as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            for b in sel.name.as_bytes() {
+                sub = sub.rotate_left(5) ^ (*b as u64);
+            }
+            for path in select_txt(&dir, sel.count, true, sub)? {
                 let bytes = fs::metadata(&path)?.len();
                 tagged.push(TaggedFile { stage, dataset: sel.name.clone(), path, bytes });
             }
@@ -619,63 +659,138 @@ struct SampleSlice {
 // input it is mostly a time one, and `BPE_SAMPLE_BYTES` says what the budget now
 // buys.
 //
-// Shares are **equal per dataset, not proportional to size**. Proportional would
-// hand a large web-text dataset essentially the whole budget and leave a small
-// early-curriculum dataset with kilobytes, so that stage would tokenize at nearly
-// byte level — precisely where token efficiency matters most for a small model.
+// Shares are **proportional to each dataset's size, with a floor.** This was an
+// equal split per dataset, on the worry that proportional would hand a large
+// web-text dataset essentially the whole budget and leave an early-curriculum one
+// tokenizing at nearly byte level. That has now been measured and the worry does
+// not survive it: the equal split gave FineWeb 27.9% of the sample while it was
+// 98.4% of the text actually encoded, so the merges were fitted to a distribution
+// the corpus does not have.
 //
-// **This is worth re-examining, and has not been.** On the corpus that trained
-// `Large 1` the equal split gave FineWeb 27.9% of the sample while it was 98.4% of
-// the text actually encoded, so the merges were fitted to a distribution the corpus
-// does not have. The stated worry cuts the other way too: simple English is a
-// *subset* of general English, so merges learned from web text cover TinyStories
-// far better than the reverse. Measure before changing it — but do not read the
-// current split as a settled result.
-// Water-filling from the smallest group up means a dataset too small to use its
-// share donates the remainder to the larger ones automatically.
+// Held-out bytes/token at vocab 8192, tokenizer trained on a 16 MiB sample of the
+// real corpora (`examples/tokexp.rs` in the tokenize crate):
+//
+//   split          weighted  FineWeb  Wikipedia  TinyStories  SFT chat
+//   equal            3.903     3.82      3.63        3.70        3.76
+//   proportional     3.948     3.87      3.55        3.66        3.82
+//
+// It is a reallocation, not a free lunch — TinyStories and Wikipedia each give up
+// ~1-2% — but they are ~2% of the tokens the model actually reads, and the two
+// distributions that matter (web text, and the chat data post-training runs on)
+// both gain. The floor is what keeps the donors from collapsing: a dataset never
+// drops below `MIN_DATASET_SAMPLE_SHARE` of the budget however small it is, which
+// is the original worry kept as an invariant rather than as the whole policy.
+//
+// Water-filling means a dataset too small to use its share donates the remainder
+// to the ones that can.
 fn plan_bpe_sample(files: &[TaggedFile], budget: usize) -> Vec<SampleSlice> {
     let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (i, f) in files.iter().enumerate() {
         groups.entry(f.dataset.as_str()).or_default().push(i);
     }
 
-    // Smallest total first, so each step's `remaining / groups_left` share already
-    // accounts for what the groups before it could not use.
-    let mut ordered: Vec<(u64, Vec<usize>)> = groups
+    let ordered: Vec<(u64, Vec<usize>)> = groups
         .into_values()
         .map(|idx| (idx.iter().map(|&i| files[i].bytes).sum::<u64>(), idx))
         .collect();
-    ordered.sort_by_key(|(total, _)| *total);
+    if ordered.is_empty() {
+        return Vec::new();
+    }
 
-    let mut slices = Vec::new();
-    let mut remaining = budget;
-    let mut groups_left = ordered.len();
-    for (total, idx) in ordered {
-        if groups_left == 0 {
+    let corpus_total: u64 = ordered.iter().map(|(t, _)| *t).sum();
+    if corpus_total == 0 {
+        return Vec::new();
+    }
+
+    // Every group's floor comes off the top; what is left is split by size. The
+    // floor is capped at an equal split so it can never over-subscribe the budget
+    // when there are many datasets.
+    let n = ordered.len();
+    let floor = (budget / n).min(budget * MIN_DATASET_SAMPLE_SHARE / 100);
+    let proportional = budget.saturating_sub(floor * n);
+
+    let mut want: Vec<usize> = ordered
+        .iter()
+        .map(|(total, _)| {
+            let share = (proportional as u128 * *total as u128 / corpus_total as u128) as usize;
+            floor + share
+        })
+        .collect();
+
+    // Water-fill: a group asked for more than it has donates the excess to the
+    // groups that still have headroom, in proportion to that headroom. Bounded
+    // because each pass either places every spare byte or runs out of headroom.
+    for _ in 0..n {
+        let mut spare = 0usize;
+        for (i, (total, _)) in ordered.iter().enumerate() {
+            if want[i] > *total as usize {
+                spare += want[i] - *total as usize;
+                want[i] = *total as usize;
+            }
+        }
+        if spare == 0 {
             break;
         }
-        let share = (remaining / groups_left).min(total as usize);
-        groups_left -= 1;
-        remaining -= share;
+        let headroom: u128 = ordered
+            .iter()
+            .enumerate()
+            .map(|(i, (t, _))| (*t as usize).saturating_sub(want[i]) as u128)
+            .sum();
+        if headroom == 0 {
+            break;
+        }
+        for (i, (total, _)) in ordered.iter().enumerate() {
+            let room = (*total as usize).saturating_sub(want[i]) as u128;
+            want[i] += (spare as u128 * room / headroom) as usize;
+        }
+    }
 
-        // Stride across the group rather than taking its first files, which on a
-        // sharded dataset would sample one shard and miss the rest of its range.
+    let mut slices = Vec::new();
+    for (i, (total, idx)) in ordered.iter().enumerate() {
+        let share = want[i].min(*total as usize);
+        if share == 0 {
+            continue;
+        }
+
+        // Stride across the group so a sharded dataset is sampled over its whole
+        // range. The stride has to be derived from how many files the share will
+        // actually consume: `idx.len() / files_needed`, not `idx.len() / share`,
+        // which is what this computed before — `share.div_ceil(1)` is just `share`,
+        // so `wanted` collapsed to `idx.len()` and the stride was always 1. That
+        // read the *first* ~50 of FineWeb's 5,498 shards, which is precisely the
+        // failure this stride exists to avoid.
+        let avg = (*total / idx.len() as u64).max(1);
+        let files_needed = ((share as u64 / avg).max(1) as usize).min(idx.len());
+        let stride = (idx.len() / files_needed).max(1);
+
         let mut left = share;
-        let wanted = idx.len().min(share.div_ceil(1).max(1));
-        let stride = (idx.len() / wanted.max(1)).max(1);
-        for &i in idx.iter().step_by(stride) {
+        for &f in idx.iter().step_by(stride) {
             if left == 0 {
                 break;
             }
-            let take = (files[i].bytes as usize).min(left);
+            let take = (files[f].bytes as usize).min(left);
             if take > 0 {
-                slices.push(SampleSlice { file: i, bytes: take });
+                slices.push(SampleSlice { file: f, bytes: take });
                 left -= take;
             }
         }
-        // Anything the stride could not place (every strided file was smaller than
-        // its share) goes back into the pool for the groups behind.
-        remaining += left;
+        // The strided pass can come up short when every file it landed on was
+        // smaller than its slice. Fill from whatever is left, in order.
+        if left > 0 {
+            for &f in idx.iter() {
+                if left == 0 {
+                    break;
+                }
+                if slices.iter().any(|s| s.file == f) {
+                    continue;
+                }
+                let take = (files[f].bytes as usize).min(left);
+                if take > 0 {
+                    slices.push(SampleSlice { file: f, bytes: take });
+                    left -= take;
+                }
+            }
+        }
     }
     slices
 }
@@ -2668,16 +2783,39 @@ mod sft_tests {
         totals
     }
 
-    // The reason the sample is stratified at all: proportional shares would give a
-    // huge dataset essentially the whole budget and leave a small one with
-    // kilobytes, so the small dataset's stage would tokenize at near byte level.
+    // The sample follows the corpus: a dataset that is 99.5% of the text gets
+    // ~95% of the tokenizer's sample, not the 50% an equal split gave it. This is
+    // the change the measurement in `plan_bpe_sample` bought.
     #[test]
-    fn a_small_dataset_is_not_drowned_out_by_a_huge_one() {
+    fn the_sample_follows_the_corpus_rather_than_splitting_evenly() {
         let files = vec![tagged("tiny", 8 << 20), tagged("huge", 1600 << 20)];
-        let totals = sampled_per_dataset(&files, 16 << 20);
+        let budget = 16 << 20;
+        let totals = sampled_per_dataset(&files, budget);
 
-        assert_eq!(totals["tiny"], 8 << 20, "the small dataset must contribute all it has");
-        assert_eq!(totals["huge"], 8 << 20, "the large one takes only the rest");
+        let huge_share = totals["huge"] as f64 / budget as f64;
+        assert!(
+            huge_share > 0.90,
+            "the dataset that is 99.5% of the corpus should dominate the sample, got {huge_share:.3}"
+        );
+        // The old equal split would have given each exactly half.
+        assert!(totals["huge"] > totals["tiny"] * 5);
+    }
+
+    // The floor is the equal split's surviving half: however lopsided the corpus,
+    // a selected dataset never falls below `MIN_DATASET_SAMPLE_SHARE` of the
+    // budget, so its stage cannot end up tokenizing at near byte level.
+    #[test]
+    fn no_dataset_is_cut_below_the_floor() {
+        let budget = 16 << 20;
+        let files = vec![tagged("tiny", 8 << 20), tagged("huge", 1600 << 20)];
+        let totals = sampled_per_dataset(&files, budget);
+
+        let floor = budget * MIN_DATASET_SAMPLE_SHARE / 100;
+        assert!(
+            totals["tiny"] >= floor,
+            "tiny got {} but the floor is {floor}",
+            totals["tiny"]
+        );
     }
 
     // A dataset too small to fill its share hands the remainder back rather than
@@ -2685,10 +2823,19 @@ mod sft_tests {
     #[test]
     fn an_undersized_dataset_donates_its_leftover_share() {
         let files = vec![tagged("tiny", 1 << 20), tagged("big", 100 << 20), tagged("mid", 20 << 20)];
-        let totals = sampled_per_dataset(&files, 30 << 20);
+        let budget = 30 << 20;
+        let totals = sampled_per_dataset(&files, budget);
 
-        assert_eq!(totals.values().sum::<usize>(), 30 << 20, "budget should be spent");
+        // `tiny` is smaller than even the floor, so it contributes everything it
+        // has and the rest of the budget goes to the two that can use it.
         assert_eq!(totals["tiny"], 1 << 20);
+        let spent = totals.values().sum::<usize>();
+        assert!(spent <= budget, "spent {spent} over budget {budget}");
+        assert!(
+            spent > budget - (budget / 100),
+            "water-filling should place nearly the whole budget, spent {spent} of {budget}"
+        );
+        assert!(totals["big"] > totals["mid"], "shares should follow corpus size");
     }
 
     #[test]
@@ -2702,6 +2849,60 @@ mod sft_tests {
         let files = vec![tagged("only", 500 << 20)];
         let totals = sampled_per_dataset(&files, 4 << 20);
         assert_eq!(totals["only"], 4 << 20);
+    }
+
+    // Two runs of one config must select the same files. `select_txt` shuffled
+    // with a wall-clock seed, so any dataset whose `count` was smaller than what
+    // is on disk drew a *different random subset every run* — which quietly makes
+    // any A/B a comparison of two corpora as well as of whatever was under test.
+    #[test]
+    fn a_seeded_selection_picks_the_same_files_every_time() {
+        let dir = std::env::temp_dir().join(format!("seltxt_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..40 {
+            fs::write(dir.join(format!("shard{i:03}.txt")), "x\n").unwrap();
+        }
+
+        let pick = |seed: u64| -> Vec<PathBuf> { select_txt(&dir, 8, true, seed).unwrap() };
+
+        assert_eq!(pick(1337), pick(1337), "the same seed must select the same files");
+        assert_ne!(pick(1337), pick(99), "a different seed should select differently");
+        assert_eq!(pick(1337).len(), 8);
+
+        // `count: 0` means everything, so it is seed-independent by construction.
+        assert_eq!(select_txt(&dir, 0, true, 1).unwrap(), select_txt(&dir, 0, true, 2).unwrap());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // The stride has to spread the share over the whole shard range. It did not:
+    // `share.div_ceil(1)` is `share`, so the stride was always 1 and a sharded
+    // dataset was sampled from its first few files only. At FineWeb's real shape
+    // that read 50 of 5,498 shards.
+    #[test]
+    fn a_sharded_dataset_is_sampled_across_its_whole_range() {
+        // 500 shards of 256 KiB = 125 MiB; a 16 MiB budget consumes ~64 of them.
+        let files: Vec<TaggedFile> = (0..500)
+            .map(|i| TaggedFile {
+                stage: 0,
+                dataset: "web".to_string(),
+                path: PathBuf::from(format!("/tmp/web-{i}.txt")),
+                bytes: 256 << 10,
+            })
+            .collect();
+
+        let picked: Vec<usize> =
+            plan_bpe_sample(&files, 16 << 20).into_iter().map(|s| s.file).collect();
+
+        assert!(!picked.is_empty());
+        let max = *picked.iter().max().unwrap();
+        assert!(
+            max > 400,
+            "the sample should reach the tail of the shard range, highest index was {max}"
+        );
+        // And it should not simply be the first N files in order.
+        assert!(picked.windows(2).any(|w| w[1] > w[0] + 1), "expected a stride > 1");
     }
 
     // A file with no line break has no safe cut point, so it must be refused
@@ -2782,7 +2983,7 @@ mod sft_tests {
             ],
         );
 
-        let stats = build_dataset(512, &stages, None, |_| {}).unwrap().expect("not cancelled");
+        let stats = build_dataset(512, &stages, 1337, None, |_| {}).unwrap().expect("not cancelled");
         assert_eq!(stats.files, 3);
         assert_eq!(stats.documents, 3);
 
@@ -2834,7 +3035,7 @@ mod sft_tests {
         let b: String = (0..200).map(|i| format!("a lazy dog {i} sleeps soundly\n")).collect();
         let stages = stage_over(&tmp, "Prose", &[("a.txt", a.as_str()), ("b.txt", b.as_str())]);
 
-        build_dataset(600, &stages, None, |_| {}).unwrap().expect("not cancelled");
+        build_dataset(600, &stages, 1337, None, |_| {}).unwrap().expect("not cancelled");
 
         let corpus =
             tokenize::bpe::load_corpus(&storage::datasets_dir().join("corpus.bin").to_string_lossy())
@@ -2877,7 +3078,7 @@ mod sft_tests {
         fs::write(tokenizer.join("merges.bin"), b"previous merges").unwrap();
 
         let cancel = Arc::new(AtomicBool::new(true));
-        let outcome = build_dataset(512, &stages, Some(cancel), |_| {}).unwrap();
+        let outcome = build_dataset(512, &stages, 1337, Some(cancel), |_| {}).unwrap();
 
         assert!(outcome.is_none(), "a pre-cancelled build must report cancellation");
         assert_eq!(fs::read(datasets.join("corpus.bin")).unwrap(), b"previous corpus");
@@ -2933,7 +3134,7 @@ mod sft_tests {
         let stages = vec![CurriculumStage { name: None, datasets, epochs: 1 }];
 
         let started = std::time::Instant::now();
-        let stats = build_dataset(8192, &stages, None, |event| {
+        let stats = build_dataset(8192, &stages, 1337, None, |event| {
             if let TokenizeEvent::Encode { files_done, files, chars } = event {
                 eprintln!("  encode {files_done}/{files} files, {chars} chars");
             }
@@ -2998,7 +3199,7 @@ mod sft_tests {
             "Chat should be listed as a dataset with its pretrain-share count",
         );
 
-        let stats = build_dataset(512, &stages, None, |_| {}).unwrap().expect("not cancelled");
+        let stats = build_dataset(512, &stages, 1337, None, |_| {}).unwrap().expect("not cancelled");
         assert_eq!(stats.files, 1 + expected, "the run must include the chat documents");
 
         // The scaffold markers reach the corpus, which is the whole reason the chat
@@ -3019,7 +3220,7 @@ mod sft_tests {
         )
         .unwrap();
         let grown = count_chat_documents().unwrap();
-        let stats = build_dataset(512, &stages, None, |_| {}).unwrap().unwrap();
+        let stats = build_dataset(512, &stages, 1337, None, |_| {}).unwrap().unwrap();
         assert_eq!(stats.files, 1 + grown, "a later run must see conversations added since");
 
         fs::remove_dir_all(&tmp).ok();
@@ -3032,7 +3233,7 @@ mod sft_tests {
         let _ = fs::remove_dir_all(&tmp);
         let stages = stage_over(&tmp, "Prose", &[]);
 
-        let err = build_dataset(512, &stages, None, |_| {}).unwrap_err();
+        let err = build_dataset(512, &stages, 1337, None, |_| {}).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
 
         fs::remove_dir_all(&tmp).ok();
