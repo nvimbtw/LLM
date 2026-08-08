@@ -160,7 +160,12 @@ def load_corpus() -> np.ndarray:
     path = storage.corpus_path()
     if not path.is_file():
         raise FileNotFoundError(f"No corpus at {path}; build the dataset first.")
-    return np.fromfile(path, dtype=CORPUS_DTYPE)
+    # Mapped, not read. `fromfile` makes the whole corpus resident and private —
+    # 745 MiB of anonymous memory on the 390M-token corpus, on a machine with
+    # 7 GiB — and training reads it in small spans it can page in on demand. A
+    # mapping is backed by the file, so the kernel can reclaim it under pressure
+    # instead of the process being killed.
+    return np.memmap(path, dtype=CORPUS_DTYPE, mode="r")
 
 
 def load_segments() -> tuple[int, list[DocSpan], list[dict]]:

@@ -150,7 +150,7 @@ def scratch_storage():
 
 
 def actual_steps(corpus: np.ndarray, plan: DataPlan, cfg: TrainConfig) -> int:
-    length = plan_mod.stream_length(len(corpus), plan)
+    length = len(plan_mod.EpochStream(corpus, plan, 0))
     return plan_mod.batch_count(length, cfg.ctx_window, cfg.batch_size)
 
 
@@ -244,8 +244,10 @@ def micro(args) -> None:
         weight_decay=cfg.weight_decay, fused=(device == "cuda"),
     )
 
-    stream, stream_mask = plan_mod.epoch_stream(corpus, plan, 0, None)
-    batches = plan_mod.iter_batches(stream, cfg.ctx_window, cfg.batch_size, stream_mask)
+    stream = plan_mod.EpochStream(corpus, plan, 0, None)
+    batches = plan_mod.iter_batches(
+        stream, cfg.ctx_window, cfg.batch_size, False, loop.staging_allocator(device)
+    )
 
     phase = Phase(device)
     measuring = False
@@ -468,25 +470,49 @@ def check(args) -> None:
 
     print("batching")
     corpus, docs = fixture(200_000)
+    mask = (np.arange(len(corpus)) % 3 == 0).astype(np.uint8)
     plan = DataPlan(documents=docs, eot_id=0, shuffle=True, seed=7)
-    stream, _ = plan_mod.epoch_stream(corpus, plan, 0, None)
-    mask = (np.arange(len(stream)) % 3 == 0).astype(np.uint8)
 
+    # The reference: the epoch built the way it used to be, all at once.
+    eager, eager_mask = _epoch_stream_eager(corpus, plan, 0, mask)
+    lazy = plan_mod.EpochStream(corpus, plan, 0, mask)
+    gathered = np.empty(len(lazy), dtype=np.int64)
+    lazy.gather(0, len(lazy), gathered)
+    expect("lazy epoch has the same length", len(lazy) == len(eager), f"{len(lazy):,} tokens")
+    expect("lazy gather reproduces the concatenated epoch", np.array_equal(gathered, eager))
+
+    # Compared as they are produced, never collected: `iter_batches` yields views
+    # into one reused buffer, so a list of them would be the last batch repeated.
+    # That is the contract the training loop relies on and it is asserted below.
     ctx, batch = 128, 6
-    new = list(plan_mod.iter_batches(stream, ctx, batch, mask))
-    old = list(_iter_batches_rowwise(stream, ctx, batch, mask))
-    expect("same number of batches", len(new) == len(old), f"{len(new)}")
+    fresh = plan_mod.iter_batches(lazy, ctx, batch, True)
+    reference = _iter_batches_rowwise(eager, ctx, batch, eager_mask)
+    matched = 0
+    identical = True
+    first = None
+    for (a, b, e), (c, d, f) in zip(fresh, reference):
+        if first is None:
+            first = (a.copy(), b.copy())
+        identical &= np.array_equal(a, c) and np.array_equal(b, d) and np.array_equal(e, f)
+        matched += 1
     expect(
-        "inputs, targets and weights identical to the row-at-a-time version",
-        all(
-            np.array_equal(a, c) and np.array_equal(b, d) and np.array_equal(e, f)
-            for (a, b, e), (c, d, f) in zip(new, old)
-        ),
+        "same number of batches",
+        matched == plan_mod.batch_count(len(lazy), ctx, batch),
+        f"{matched}",
     )
-    inputs, targets, _ = new[0]
+    expect("inputs, targets and weights identical to the row-at-a-time version", identical)
     expect(
         "targets are inputs shifted one token left",
-        np.array_equal(inputs[0, 1:], targets[0, :-1]),
+        np.array_equal(first[0][0, 1:], first[1][0, :-1]),
+    )
+
+    # The loop copies each batch to the device before asking for the next, so
+    # reuse is safe; a caller that held on to one would silently read the next
+    # batch's tokens, and this is the line that says so out loud.
+    held = [arrays[0] for arrays in plan_mod.iter_batches(lazy, ctx, batch, True)]
+    expect(
+        "batches are views into one reused buffer, valid until the next",
+        all(np.shares_memory(held[0], other) for other in held[1:]),
     )
 
     print("loss")
@@ -588,6 +614,32 @@ def check(args) -> None:
     if failures:
         raise SystemExit(f"{len(failures)} check(s) failed: {', '.join(failures)}")
     print("all checks passed")
+
+
+def _epoch_stream_eager(corpus, plan, epoch, mask=None, documents=None):
+    """`epoch_stream` as it was before `EpochStream` replaced it.
+
+    The whole epoch concatenated into one array — the thing that cost a second
+    copy of the corpus and OOM-killed a 390M-token run. Kept here as the
+    reference the lazy version is diffed against.
+    """
+    documents = list(plan.documents if documents is None else documents)
+    if plan.shuffle:
+        np.random.default_rng(plan.seed + epoch).shuffle(documents)
+
+    separator = np.array([plan.eot_id], dtype=corpus.dtype)
+    tokens, masks = [], []
+    for doc in documents:
+        end = doc.start + doc.length
+        tokens.append(corpus[doc.start : end])
+        tokens.append(separator)
+        if mask is not None:
+            masks.append(mask[doc.start : end])
+            masks.append(np.zeros(1, dtype=np.uint8))
+
+    if not tokens:
+        return corpus, mask
+    return np.concatenate(tokens), (np.concatenate(masks) if mask is not None else None)
 
 
 def _iter_batches_rowwise(stream, ctx_window, batch_size, mask=None):
