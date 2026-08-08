@@ -51,8 +51,9 @@ class Diagnostics:
     act_rms_layers: list[float] = field(default_factory=list)
     # Per-head attention entropy, normalized to [0,1], grouped by layer.
     attn_entropy: list[list[float]] = field(default_factory=list)
-    # Pairwise cosine similarity among the most-frequent tokens' embeddings. A
-    # high mean means the table is collapsing toward one direction.
+    # Pairwise cosine similarity among the most-frequent tokens' embeddings, after
+    # subtracting the table's mean row. A high mean means the table is collapsing
+    # toward one direction.
     emb_cos_mean: float = 0.0
     emb_cos_p5: float = 0.0
     emb_cos_p95: float = 0.0
@@ -134,8 +135,23 @@ def _embedding_metrics(model: Transformer, tokens: list[int]) -> dict:
         return {}
 
     with torch.no_grad():
-        rows = model.embedding.weight[torch.tensor(tokens, device=model.embedding.weight.device)]
-        unit = torch.nn.functional.normalize(rows.float(), dim=1)
+        weight = model.embedding.weight
+        rows = weight[torch.tensor(tokens, device=weight.device)]
+        # Centred, because uncentred this measured almost entirely a quantity the
+        # architecture is invariant to. Tied models grow a large shared offset —
+        # every row is `mu + delta_i` for one common `mu` — and that offset cannot
+        # affect the output distribution: the logit for token i is `h·(mu + delta_i)`,
+        # and `h·mu` is the same number for every token, a constant shift across the
+        # row that softmax is exactly invariant to. On the input side the same `mu`
+        # lands at every position and the first Pre-LN subtracts its mean back out.
+        # An uncentred reading climbs all run precisely because nothing in the loss
+        # opposes a component that never reaches the loss.
+        #
+        # The mean row is taken over the whole table, not just the chosen tokens':
+        # the offset is a property of the table, and estimating it from 32 rows would
+        # subtract part of the very spread this is trying to measure.
+        mu = weight.float().mean(dim=0, keepdim=True)
+        unit = torch.nn.functional.normalize(rows.float() - mu, dim=1)
         cosine = unit @ unit.T
         # Self-similarity is 1 by construction and would drag the mean up with
         # a number that says nothing about the geometry.
