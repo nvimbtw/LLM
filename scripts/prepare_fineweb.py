@@ -46,6 +46,7 @@ Usage:
     python3 prepare_fineweb.py --dry-run              # just show the projections
 """
 
+import paths
 import argparse
 import glob
 import json
@@ -63,8 +64,8 @@ except ImportError:
     )
 
 REPO_ID = "EleutherAI/fineweb-edu-dedup-10b"
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads/FineWeb"
-EVAL_DIR = "/home/x_x/Programming/LLM/backend/data/eval/corpus"
+OUT_DIR = paths.dataset_dir("FineWeb")
+EVAL_DIR = paths.eval_corpus_dir()
 EOT = "<|endoftext|>"
 
 # Bytes of source text per token under this project's BPE, measured over real

@@ -2,7 +2,7 @@
 """
 Generate synthetic SFT chat data with a cheap LLM, via the `opencode` CLI.
 
-The hand-curated conversations in `backend/data/raw/sft/synthetic.jsonl` are the
+The hand-curated conversations in `engine/data/sft/synthetic.jsonl` are the
 gold set: real coding-agent sessions (long pasted context, terse expert replies,
 tool-driven investigations). They are the *style target*, and they are never
 written to by this script — generated output goes to a sibling file
@@ -82,6 +82,7 @@ Usage:
         --base-url http://localhost:11434/v1 --model qwen3:8b --count 50
 """
 
+import paths
 import argparse
 import glob
 import json
@@ -95,7 +96,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-SFT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/sft"
+SFT_DIR = paths.sft_dir()
 DEFAULT_OUT = os.path.join(SFT_DIR, "synthetic_llm.jsonl")
 DEFAULT_EXEMPLARS = os.path.join(SFT_DIR, "synthetic.jsonl")
 DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"

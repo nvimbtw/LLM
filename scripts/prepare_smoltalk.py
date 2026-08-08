@@ -104,6 +104,7 @@ Usage:
     python3 scripts/prepare_smoltalk.py --limit 20000      # a subset, for a trial run
 """
 
+import paths
 import argparse
 import glob
 import json
@@ -117,7 +118,7 @@ REPO = "HuggingFaceTB/smol-smoltalk"
 
 # Repo-relative, resolved against this file so the script runs from anywhere.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SFT_DIR = os.path.join(ROOT, "backend", "data", "raw", "sft")
+SFT_DIR = paths.sft_dir()
 
 # The files this script owns. Everything else in raw/sft/ is left alone unless
 # --replace-all is passed, so a hand-written set can sit beside this one.
@@ -390,7 +391,7 @@ def main() -> None:
         action="store_true",
         help="empty raw/sft/ rather than only removing this script's own output",
     )
-    ap.add_argument("--cache-dir", default=os.path.join(ROOT, "backend", "data", "raw", "downloads", "smoltalk"))
+    ap.add_argument("--cache-dir", default=os.path.join(ROOT, ".cache", "smoltalk"))
     args = ap.parse_args()
 
     import pyarrow.parquet as pq

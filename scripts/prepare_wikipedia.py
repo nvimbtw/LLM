@@ -12,7 +12,7 @@ by a config of the form "<date>.<lang>" (e.g. "20231101.en", "20231101.simple").
 This mirrors prepare_tinystories.py: it downloads shard(s) for one config, reads
 articles out of the parquet row groups, and writes one article per .txt file —
 each re-terminated with a single `<|endoftext|>`, the document-boundary marker
-the Rust pretrain builder (backend/src/training.rs: build_dataset) concatenates
+the engine's pretrain builder (engine/llm/corpus/pack.py) concatenates
 on. Each file is prefixed with the article title as a heading line.
 
 Unlike the old TinyStories layout, datasets now live in their OWN subfolder of
@@ -34,6 +34,7 @@ Usage:
     python3 prepare_wikipedia.py --lang de --date 20231101
 """
 
+import paths
 import argparse
 import glob
 import json
@@ -51,7 +52,7 @@ except ImportError:
     )
 
 REPO_ID = "wikimedia/wikipedia"
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads/Wikipedia"
+OUT_DIR = paths.dataset_dir("Wikipedia")
 EOT = "<|endoftext|>"
 
 
