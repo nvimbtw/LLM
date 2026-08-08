@@ -1,0 +1,126 @@
+{
+  "_comment": [
+    "Training presets, sized against measured throughput on the RTX 3060 in this",
+    "machine. `config` is a TrainConfig body: POST it to the engine's /train, or",
+    "save it through the backend's /training/presets to get it into the UI.",
+    "",
+    "Sizing rule: Chinchilla puts the compute-optimal point at ~20 training tokens",
+    "per parameter. Parameters here means non-embedding \u2014 with a tied 8k-vocab",
+    "table the embedding is a lookup, not compute, and counting it would size the",
+    "corpus for arithmetic that never happens. `tokens` below is 20x non-embedding",
+    "and is trained for exactly one epoch, so the model never sees a token twice.",
+    "",
+    "Every hours figure is the marginal step rate from a real loop.run over the",
+    "packed corpus, taken between report frames so compilation is excluded.",
+    "Repeat measurements on this card spread about 4%, so treat them as +/- 5%.",
+    "See README, 'Sizing a run', for how to derive another one."
+  ],
+  "presets": [
+    {
+      "name": "Chinchilla 1",
+      "notes": "The compute-optimal run that fits in an hour. 18.15M params, 14.48M non-embedding; 290M tokens at 20.0 per non-embedding parameter, one epoch, 35.4k steps, ~1.03h, 1.4 GiB VRAM. Needs a repack: the packed corpus is 391M tokens and this wants 290M, so rebuild_dataset is on and the FineWeb cap of 4070 files trims it. Budget 10-20 min for the tokenizer and pack before the first step.",
+      "config": {
+        "model_name": "Chinchilla 1",
+        "dimensions": 448,
+        "heads": 7,
+        "layers": 6,
+        "ff_multiplier": 4,
+        "ctx_window": 512,
+        "max_vocab": 8192,
+        "batch_size": 16,
+        "epochs": 1,
+        "lr": 0.0003,
+        "warmup_steps": 1000,
+        "grad_clip": 1.0,
+        "weight_decay": 0.1,
+        "datasets": [
+          {
+            "name": "FineWeb",
+            "count": 4070
+          },
+          {
+            "name": "Wikipedia"
+          },
+          {
+            "name": "TinyStories"
+          },
+          {
+            "name": "Synthetic"
+          }
+        ],
+        "shuffle": true,
+        "seed": 0,
+        "rebuild_dataset": true,
+        "precision": "bf16",
+        "compile_model": true,
+        "allow_tf32": true
+      }
+    },
+    {
+      "name": "Chinchilla 1 (whole corpus)",
+      "notes": "The same rule applied to the corpus already on disk, so nothing is repacked. 23.10M params, 18.90M non-embedding; all 391M tokens at 20.7 per non-embedding parameter, one epoch, 47.7k steps, ~1.66h, 1.6 GiB VRAM. Two thirds of an hour over target buys 27% more model and skips the repack \u2014 the better first run unless the corpus is being changed anyway.",
+      "config": {
+        "model_name": "Chinchilla 1 whole",
+        "dimensions": 512,
+        "heads": 8,
+        "layers": 6,
+        "ff_multiplier": 4,
+        "ctx_window": 512,
+        "max_vocab": 8192,
+        "batch_size": 16,
+        "epochs": 1,
+        "lr": 0.0003,
+        "warmup_steps": 1000,
+        "grad_clip": 1.0,
+        "weight_decay": 0.1,
+        "datasets": [],
+        "shuffle": true,
+        "seed": 0,
+        "rebuild_dataset": false,
+        "precision": "bf16",
+        "compile_model": true,
+        "allow_tf32": true
+      }
+    },
+    {
+      "name": "Smoke",
+      "notes": "Deliberately not compute-optimal: 38M tokens against a 7.39M-parameter trunk is 5.2 per parameter, a quarter of Chinchilla. It exists to prove the pipeline end to end in ~5 minutes of training (4.7k steps at 320d/4h/6L), not to produce a model worth keeping. Repacks first, but only 500 FineWeb files, so the pack is quick too.",
+      "config": {
+        "model_name": "Smoke",
+        "dimensions": 320,
+        "heads": 4,
+        "layers": 6,
+        "ff_multiplier": 4,
+        "ctx_window": 512,
+        "max_vocab": 8192,
+        "batch_size": 16,
+        "epochs": 1,
+        "lr": 0.0003,
+        "warmup_steps": 200,
+        "grad_clip": 1.0,
+        "weight_decay": 0.1,
+        "datasets": [
+          {
+            "name": "FineWeb",
+            "count": 500
+          },
+          {
+            "name": "Wikipedia"
+          },
+          {
+            "name": "TinyStories"
+          },
+          {
+            "name": "Synthetic"
+          }
+        ],
+        "shuffle": true,
+        "seed": 0,
+        "rebuild_dataset": true,
+        "precision": "bf16",
+        "compile_model": true,
+        "allow_tf32": true
+      }
+    }
+  ]
+}
