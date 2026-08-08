@@ -6,13 +6,10 @@ import { useRouter } from "next/navigation"
 import { useJob } from "@/hooks/use-job"
 import { chatId } from "@/lib/jobs"
 import { JobBenchmarkPanel } from "./job-benchmark-panel"
-import { JobCataloguePanel } from "./job-catalogue-panel"
 import { JobChatPanel } from "./job-chat-panel"
-import { JobGatherPanel } from "./job-gather-panel"
 import { JobHeader } from "./job-header"
 import { JobQueuedPanel } from "./job-queued-panel"
 import { JobSynthPanel } from "./job-synth-panel"
-import { JobTeachPanel } from "./job-teach-panel"
 import { JobTrainPanel } from "./job-train-panel"
 
 /**
@@ -76,12 +73,7 @@ export function JobDetail({ idJob }: JobDetailProps) {
             {/* Only reachable for an older chat job whose config names no
                 conversation; anything current redirected above. */}
             {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
-            {job.kind === "gather" && <JobGatherPanel job={job} run={run} />}
-            {job.kind === "autolabel" && (
-              <JobCataloguePanel job={job} run={run} />
-            )}
             {job.kind === "synth" && <JobSynthPanel job={job} run={run} />}
-            {job.kind === "teach" && <JobTeachPanel job={job} run={run} />}
           </>
         )}
       </div>

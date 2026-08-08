@@ -46,11 +46,8 @@ use crate::{chain, discord};
 // with many more follow-ups than that.
 const PROMPT_OVERFETCH: i64 = 4;
 
-use labeling::autolabel;
 use db;
 use db::job::{JobKind, JobLane, JobStatus};
-use labeling::gather;
-use storage;
 use synth;
 use crate::train_worker::{self, TrainCtx, TrainPhase, TrainState};
 
@@ -68,7 +65,7 @@ const IDLE_POLL: Duration = Duration::from_secs(5);
 // ceiling so a model that never emits it can't generate forever (the sliding
 // context window means it otherwise wouldn't stop on its own). The decoding knobs
 // are no longer constants here — they ride on the `ChatRequest`, defaulting to
-// `llm::sample::SamplingParams::default()` for a row queued without them.
+// `engine::SamplingParams::default()` for a row queued without them.
 const MAX_TOKENS: usize = 4096;
 
 // One coarse progress report from a worker thread.
@@ -93,7 +90,6 @@ pub enum Snapshot {
     // number that says whether the run is working is the per-tier split — a run can
     // accept a thousand questions and put every answer in one bucket, which `Synth`'s
     // counters have no field to show.
-    Teach(Arc<Mutex<TeachState>>),
 }
 
 // Everything a synthetic-data run has produced so far.
@@ -113,33 +109,6 @@ pub struct SynthState {
 // How many accepted conversations the snapshot keeps. A screenful and a bit.
 const SYNTH_FEED: usize = 24;
 
-// Everything a local-teacher run has produced so far.
-pub struct TeachState {
-    pub stage: String,
-    pub fraction: f64,
-    pub reports: Vec<synth::teach::TeachReport>,
-    // The most recent triples, in full — all three answers together, which is the
-    // only way to see whether the tiers actually differ by reasoning depth rather
-    // than by answer quality.
-    pub accepted: Vec<synth::teach::AcceptedTriple>,
-    // Three counts, not one, because the run has three units and reporting only the
-    // first one made the tier bars look like they contradicted it: `questions` is
-    // what `target` bounds, `answers` is what the bars add up to, and
-    // `complete_triples` is how many questions got all three tiers — the unit the
-    // format is actually for.
-    pub questions: usize,
-    pub answers: usize,
-    pub complete_triples: usize,
-    // Questions by tiers covered — the distribution behind `complete_triples`.
-    pub by_tiers: Vec<usize>,
-    pub target: usize,
-    pub duplicates: usize,
-    // Answers filed per tier, in `Tier::ALL` order. The headline number: three
-    // roughly equal counts mean the budgets separated, one bucket holding
-    // everything means the teacher ignored the instruction.
-    pub per_tier: Vec<(String, usize)>,
-    pub relabelled: usize,
-}
 
 // Triples carry three replies each, so the feed is heavier per entry than
 // `SYNTH_FEED`'s and holds fewer of them.
@@ -193,32 +162,15 @@ impl Live {
                 })
                 .to_string()
             }
-            Snapshot::Teach(state) => {
-                let st = lock(state);
-                serde_json::json!({
-                    "type": "snapshot",
-                    "status": "running",
-                    "stage": st.stage,
-                    "fraction": st.fraction,
-                    "reports": st.reports,
-                    "accepted": st.accepted,
-                    "questions": st.questions,
-                    "answers": st.answers,
-                    "complete_triples": st.complete_triples,
-                    "by_tiers": st.by_tiers,
-                    "target": st.target,
-                    "duplicates": st.duplicates,
-                    "per_tier": st.per_tier,
-                    "relabelled": st.relabelled,
-                })
-                .to_string()
-            }
         }
     }
 }
 
 pub struct Queue {
     pool: PgPool,
+    // The Python engine. Every device job — training, benchmarking, a chat turn —
+    // is a call into this rather than a CUDA thread in this process.
+    engine: engine::Client,
     // Wakes a runner when a job is enqueued, cancelled, or the queue is resumed.
     // One per lane: `notify_one` parks a permit when nobody is waiting, and a single
     // shared `Notify` would let the wrong runner consume the other's wake-up — a
@@ -236,10 +188,11 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub fn new(pool: PgPool) -> Queue {
+    pub fn new(pool: PgPool, engine: engine::Client) -> Queue {
         let (events, _rx) = broadcast::channel(BROADCAST_CAPACITY);
         Queue {
             pool,
+            engine,
             wake_device: Notify::new(),
             wake_network: Notify::new(),
             live: Mutex::new(Vec::new()),
@@ -378,29 +331,6 @@ impl Queue {
         let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
         let (progress_tx, progress_rx) = mpsc::unbounded_channel::<ProgressTick>();
 
-        // Both consumers of the thumbs feedback read files, so refresh them from the
-        // table before either kind starts. Done here, on the async side that owns
-        // the pool, because the workers below are blocking CUDA threads that must
-        // never touch Postgres.
-        //
-        // Cheap enough to run unconditionally (one query, two small writes) and
-        // safer than gating on the training mode: a KTO run that found a stale
-        // export would silently tune on yesterday's feedback.
-        // Auto-labelling is in this list because its first stage calibrates the
-        // judge against the human ratings — reading a stale export would fit the
-        // threshold to yesterday's thumbs and silently ignore the ones just given.
-        if matches!(
-            job.kind,
-            JobKind::Train | JobKind::Benchmark | JobKind::Autolabel
-        ) {
-            if let Err(e) = export_preference_data(&self.pool).await {
-                // Not fatal for either kind. A benchmark reports "no feedback" and
-                // scores every other stage; a KTO run fails later, in its dataset
-                // build, with a message about what it actually found.
-                eprintln!("[queue] could not export preference feedback: {}", e);
-            }
-        }
-
         // The held-out 15% of `raw/sft/`, written where `llm::eval::chat` and the
         // markup suite read it. Derived per run for the same reason the preference
         // export above is, and for the same reason a training run rebuilds its own
@@ -409,17 +339,6 @@ impl Queue {
         //
         // Not fatal — the markup suite still scores its pair stage without a chat
         // set, and reports the rest as unavailable rather than as failures.
-        if job.kind == JobKind::Benchmark {
-            // Blocking file IO, so off the runtime thread.
-            match tokio::task::spawn_blocking(training::export_chat_eval_set).await {
-                Ok(Ok(0)) => eprintln!("[queue] no held-out conversations to export"),
-                Ok(Ok(n)) => eprintln!("[queue] exported {n} held-out conversations"),
-                Ok(Err(e)) => {
-                    eprintln!("[queue] could not export the held-out chat set: {}", e)
-                }
-                Err(e) => eprintln!("[queue] chat eval export panicked: {}", e),
-            }
-        }
 
         // Free the chat path's resident inference session before anything else
         // takes the card.
@@ -435,7 +354,6 @@ impl Queue {
         // A chat job is exempt, since releasing right before generating would throw
         // away the cache that makes consecutive turns cheap.
         if job.kind != JobKind::Chat {
-            llm::infer::release();
         }
 
         let done = match job.kind {
@@ -451,20 +369,8 @@ impl Queue {
                 self.run_chat(&job, cancel.clone(), tx, progress_tx, progress_rx)
                     .await
             }
-            JobKind::Autolabel => {
-                self.run_autolabel(&job, cancel.clone(), tx, progress_tx, progress_rx)
-                    .await
-            }
-            JobKind::Gather => {
-                self.run_gather(&job, cancel.clone(), tx, progress_tx, progress_rx)
-                    .await
-            }
             JobKind::Synth => {
                 self.run_synth(&job, cancel.clone(), tx, progress_tx, progress_rx)
-                    .await
-            }
-            JobKind::Teach => {
-                self.run_teach(&job, cancel.clone(), tx, progress_tx, progress_rx)
                     .await
             }
         };
@@ -568,6 +474,8 @@ impl Queue {
             cancel,
             tx.clone(),
             progress_tx,
+            self.engine.clone(),
+            tokio::runtime::Handle::current(),
         ));
         self.go_live(job.id_job, JobKind::Train, Live {
             id_job: job.id_job,
@@ -647,8 +555,8 @@ impl Queue {
                 return Done::failed("could not load the model to benchmark".to_string());
             }
         };
-        let model_dir = storage::models_dir().join(id_model.to_string());
-        if !model_dir.join("merges.bin").exists() {
+        let model_dir = engine::paths::data_root().join("artifacts/models").join(id_model.to_string());
+        if !model_dir.join("tokenizer.json").exists() {
             return Done::failed("the model has no tokenizer on disk; it cannot be benchmarked".to_string());
         }
 
@@ -663,7 +571,7 @@ impl Queue {
         // dropped — a sweep missing its middle point is worse than a failed job.
         let budget = match job.config.get("budget") {
             Some(value) if !value.is_null() => {
-                match serde_json::from_value::<llm::chat_template::ThinkBudget>(value.clone()) {
+                match serde_json::from_value::<engine::ThinkBudget>(value.clone()) {
                     Ok(budget) => Some(budget),
                     Err(_) => {
                         return Done::failed(
@@ -679,15 +587,10 @@ impl Queue {
             .get("id_series")
             .and_then(|v| v.as_str())
             .and_then(|s| Uuid::parse_str(s).ok());
-        let suite_version = match suite {
-            db::benchmark::BenchmarkSuite::Language => llm::eval::SCORE_VERSION as i32,
-            db::benchmark::BenchmarkSuite::Markup => {
-                llm::eval::markup::MARKUP_SCORE_VERSION as i32
-            }
-            db::benchmark::BenchmarkSuite::Assistant => {
-                llm::eval::ASSISTANT_SCORE_VERSION as i32
-            }
-        };
+        // Read back off the report the engine produces, not compiled in here: the
+        // scoring constants live with the code that applies them, and a copy on
+        // this side would silently disagree after an engine change.
+        let suite_version = 0i32;
         if let Err(e) = db::benchmark::create(
             &self.pool,
             id_run,
@@ -720,70 +623,90 @@ impl Queue {
         let reporting = state.clone();
         let frame_tx = tx.clone();
         let worker_cancel = cancel.clone();
+        let engine_client = self.engine.clone();
+        let model_name_for_engine = id_model.to_string();
+        // Captured out here: the worker runs on a plain thread with no reactor of
+        // its own, so it needs this runtime's handle to drive the engine calls.
+        let handle = tokio::runtime::Handle::current();
         let outcome = self
             .spawn_worker(job.id_job, progress_rx, move || {
-                // Read before the dir is moved into the config: how this model was
-                // trained decides how its held-out replies must be rendered, or the
-                // assistant score charges a stripped model for thinking tokens it
-                // was taught never to emit.
-                let reasoning = training::model_reasoning(&model_dir);
-                let mut config = llm::eval::EvalConfig::new(model_dir, &storage::eval_dir());
-                // Renders every held-out conversation under one marker. Reaches the
-                // assistant suite entirely and the markup suite's conversation
-                // stages; the language suite renders no chat prompt and ignores it.
-                config.budget = budget;
-                config.reasoning = reasoning;
-                let on_progress: llm::eval::ProgressCallback = Box::new(move |stage, fraction| {
-                    {
-                        let mut st = lock(&reporting);
-                        st.stage = stage.to_string();
-                        st.fraction = fraction;
-                    }
-                    let _ = progress_tx.send(ProgressTick {
-                        fraction,
-                        stage: stage.to_string(),
+                let suite_name = match suite {
+                    db::benchmark::BenchmarkSuite::Language => "language",
+                    db::benchmark::BenchmarkSuite::Markup => "markup",
+                    db::benchmark::BenchmarkSuite::Assistant => "assistant",
+                };
+                let _ = (&model_dir, budget);
+
+                // The worker thread is blocking (it was CUDA once); the engine
+                // speaks async HTTP. Bridging on this thread keeps the existing
+                // progress/frame plumbing rather than restructuring the runner.
+                handle.block_on(async move {
+                    let started = engine_client
+                        .evaluate(&engine::client::EvalRequest {
+                            model_name: model_name_for_engine,
+                            suite: Some(suite_name.to_string()),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    // Cancellation crosses process boundaries here: the queue
+                    // still signals through its flag, and this turns that into the
+                    // engine's own cancel, which lands at a step boundary.
+                    let watcher_cancel = worker_cancel.clone();
+                    let watcher_client = engine_client.clone();
+                    let run_id = started.run_id.clone();
+                    let watcher = tokio::spawn(async move {
+                        loop {
+                            if watcher_cancel.load(Ordering::Relaxed) {
+                                let _ = watcher_client.cancel(&run_id).await;
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
                     });
-                    emit(&frame_tx, frame(
-                        "progress",
-                        serde_json::json!({ "stage": stage, "fraction": fraction }),
-                    ));
-                });
-                // Three suites, one worker: each returns a `Serialize` report and the
-                // terminal handling below only reads `score` out of the serialized
-                // form, so the difference is erased here rather than duplicated
-                // through the whole run/complete/fail path.
-                match suite {
-                    db::benchmark::BenchmarkSuite::Language => {
-                        llm::eval::run_language(&config, on_progress, Some(worker_cancel))
-                            .map(|report| report.map(|r| serde_json::to_value(&r)))
+
+                    let finished = engine_client
+                        .follow(&started.run_id, |event| {
+                            if let engine::RunEvent::Progress(p) = event {
+                                let fraction =
+                                    p.get("fraction").and_then(|f| f.as_f64()).unwrap_or(0.0);
+                                let stage = format!("{suite_name} suite");
+                                {
+                                    let mut st = lock(&reporting);
+                                    st.stage = stage.clone();
+                                    st.fraction = fraction;
+                                }
+                                let _ = progress_tx.send(ProgressTick {
+                                    fraction,
+                                    stage: stage.clone(),
+                                });
+                                emit(&frame_tx, frame("progress", p));
+                            }
+                        })
+                        .await
+                        .map_err(|e| e.to_string());
+                    watcher.abort();
+                    let finished = finished?;
+
+                    if finished.is_cancelled() {
+                        return Ok(None);
                     }
-                    db::benchmark::BenchmarkSuite::Markup => {
-                        llm::eval::run_markup(&config, on_progress, Some(worker_cancel))
-                            .map(|report| report.map(|r| serde_json::to_value(&r)))
+                    if let Some(error) = finished.error {
+                        return Err(error);
                     }
-                    db::benchmark::BenchmarkSuite::Assistant => {
-                        llm::eval::run_assistant(&config, on_progress, Some(worker_cancel))
-                            .map(|report| report.map(|r| serde_json::to_value(&r)))
-                    }
-                }
+                    Ok(finished.result)
+                })
             })
             .await;
 
         let fraction = lock(&state).fraction;
         match outcome {
             Ok(Ok(Some(report))) => {
-                // The composite score is NaN when nothing could be measured, and
-                // `to_value` renders that as null — so reading the score back out
-                // of the serialized form yields exactly the verdict the report
-                // shows, rather than a number that would plot as a real zero.
-                let value = match report {
-                    Ok(value) => value,
-                    Err(e) => {
-                        let msg = format!("could not serialize the report: {}", e);
-                        self.fail_benchmark(id_run, &msg).await;
-                        return Done::failed(msg);
-                    }
-                };
+                // The composite score is null when nothing could be measured, so
+                // reading it back out yields exactly the verdict the report shows
+                // rather than a number that would plot as a real zero.
+                let value = report;
                 let score = value.get("score").and_then(|s| s.as_f64());
                 // Read the same generic way as the score, so all three suites are
                 // still one path here — every report carries `tokens_used`.
@@ -842,303 +765,7 @@ impl Queue {
         }
     }
 
-    // Generates candidate replies for a set of prompts, scores them with the
-    // rule-based judge, and appends the labelled pairs to the preference *training*
-    // data. Produces no model and no database record beyond the job row itself —
-    // its whole output is a JSONL file the next KTO run will read.
-    async fn run_autolabel(
-        self: &Arc<Self>,
-        job: &db::job::Job,
-        cancel: Arc<AtomicBool>,
-        tx: broadcast::Sender<String>,
-        progress_tx: mpsc::UnboundedSender<ProgressTick>,
-        progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
-    ) -> Done {
-        let request: autolabel::AutolabelRequest = match serde_json::from_value(job.config.clone())
-        {
-            Ok(request) => request,
-            Err(e) => return Done::failed(format!("stored autolabel config is unreadable: {e}")),
-        };
 
-        // Resolved now rather than at enqueue: a model can be deleted while its job
-        // waits in line.
-        let model_dir = storage::models_dir().join(request.id_model.to_string());
-        if !model_dir.join("merges.bin").exists() {
-            return Done::failed(
-                "the model has no tokenizer on disk; it cannot generate".to_string(),
-            );
-        }
-
-        // Prompts come from the real user turns people have actually sent — the
-        // distribution the model is going to be used on. Reading them here is the
-        // only database work this job does; the worker below is a blocking CUDA
-        // thread and never touches the pool.
-        //
-        // Routed through `gather::choose_prompts` rather than used raw, for the two
-        // reasons that function documents: stored turns include follow-ups that lost
-        // their antecedent and prose fragments that are not questions at all, and a
-        // history too thin to fill the batch should top up from the seed list rather
-        // than run short. Both were true here — the catalogue this replaced was
-        // generated substantially against sentence stubs.
-        // Over-fetched on purpose: the limit lands in SQL, *before*
-        // `is_standalone_prompt` drops follow-ups and sentence fragments, so asking
-        // for exactly `max_prompts` returns fewer usable ones than that and the batch
-        // tops up from the 24 hard-coded seeds instead of from real history.
-        let history = match db::message::distinct_user_prompts(
-            &self.pool,
-            request.max_prompts.saturating_mul(PROMPT_OVERFETCH),
-        )
-        .await
-        {
-            Ok(prompts) => prompts,
-            Err(e) => {
-                eprintln!("[queue] autolabel prompt lookup failed: {e}");
-                return Done::failed("could not load prompts to generate from".to_string());
-            }
-        };
-        let prompts = gather::choose_prompts(history, request.max_prompts as usize, 0);
-        if prompts.is_empty() {
-            return Done::failed(
-                "no usable prompts to generate from — send some chat turns first".to_string(),
-            );
-        }
-
-        let state = Arc::new(Mutex::new(SimpleState {
-            stage: "Loading model".to_string(),
-            fraction: 0.0,
-            text: String::new(),
-        }));
-        self.go_live(job.id_job, JobKind::Autolabel, Live {
-            id_job: job.id_job,
-            cancel: cancel.clone(),
-            tx: tx.clone(),
-            snapshot: Snapshot::Simple(state.clone()),
-        });
-
-        let reporting = state.clone();
-        let frame_tx = tx.clone();
-        // One clone per closure: each is `move`d into its own callback, and they
-        // outlive the block that creates them.
-        let frame_tx_calibration = tx.clone();
-        let frame_tx_verdict = tx.clone();
-        let worker_cancel = cancel.clone();
-        let outcome = self
-            .spawn_worker(job.id_job, progress_rx, move || {
-                let on_progress: autolabel::ProgressCallback = Box::new(move |stage, fraction| {
-                    {
-                        let mut st = lock(&reporting);
-                        st.stage = stage.to_string();
-                        st.fraction = fraction;
-                    }
-                    let _ = progress_tx.send(ProgressTick {
-                        fraction,
-                        stage: stage.to_string(),
-                    });
-                    emit(&frame_tx, frame(
-                        "progress",
-                        serde_json::json!({ "stage": stage, "fraction": fraction }),
-                    ));
-                });
-                // The calibration lands once, up front — it decides whether the
-                // rest of the run means anything, so the page should not have to
-                // wait until the end to show it.
-                let calibration_tx = frame_tx_calibration;
-                let on_calibration: autolabel::CalibrationCallback =
-                    Box::new(move |calibration| {
-                        emit(
-                            &calibration_tx,
-                            frame("calibration", serde_json::json!(calibration)),
-                        );
-                    });
-
-                // One frame per verdict. Carries the text as well as the score
-                // because "what did it actually generate" is the question the
-                // numbers cannot answer — a catalogue can be perfectly balanced
-                // and still be six hundred variations of one bad sentence.
-                let verdict_tx = frame_tx_verdict;
-                let on_verdict: autolabel::VerdictCallback = Box::new(move |prompt, verdict| {
-                    emit(
-                        &verdict_tx,
-                        frame(
-                            "verdict",
-                            serde_json::json!({
-                                "prompt": prompt,
-                                "response": verdict.text,
-                                "good": verdict.good,
-                                "score": verdict.score,
-                            }),
-                        ),
-                    );
-                });
-
-                autolabel::run(
-                    &model_dir,
-                    &prompts,
-                    &request,
-                    on_progress,
-                    on_calibration,
-                    on_verdict,
-                    Some(worker_cancel),
-                )
-            })
-            .await;
-
-        let fraction = lock(&state).fraction;
-        match outcome {
-            Ok(Ok(Some(stats))) => {
-                emit(&tx, frame("autolabel", serde_json::json!(stats)));
-                Done::done()
-            }
-            Ok(Ok(None)) => Done::cancelled(fraction),
-            Ok(Err(e)) => Done::failed(e),
-            Err(panic) => Done::failed(panic),
-        }
-    }
-
-    // Generates a batch of short replies for a person to rate. The autolabel twin
-    // with the judge replaced by a human — so unlike autolabel it writes no file:
-    // the replies land in `signal_samples` unrated, and only a rated one becomes
-    // training data.
-    async fn run_gather(
-        self: &Arc<Self>,
-        job: &db::job::Job,
-        cancel: Arc<AtomicBool>,
-        tx: broadcast::Sender<String>,
-        progress_tx: mpsc::UnboundedSender<ProgressTick>,
-        progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
-    ) -> Done {
-        let request: gather::GatherRequest = match serde_json::from_value(job.config.clone()) {
-            Ok(request) => request,
-            Err(e) => return Done::failed(format!("stored gather config is unreadable: {e}")),
-        };
-
-        // Resolved now rather than at enqueue: a model can be deleted while its job
-        // waits in line.
-        let model_dir = storage::models_dir().join(request.id_model.to_string());
-        if !model_dir.join("merges.bin").exists() {
-            return Done::failed(
-                "the model has no tokenizer on disk; it cannot generate".to_string(),
-            );
-        }
-
-        // Real prompts where they exist, seeds to top up. Both database reads happen
-        // here, on the async side that owns the pool; the worker below is a blocking
-        // CUDA thread and never touches it.
-        let batch = request.batch.clamp(1, 64);
-        let history = match db::message::distinct_user_prompts(
-            &self.pool,
-            (batch as i64).saturating_mul(PROMPT_OVERFETCH),
-        )
-        .await
-        {
-            Ok(prompts) => prompts,
-            Err(e) => {
-                eprintln!("[queue] gather prompt lookup failed: {e}");
-                return Done::failed("could not load prompts to generate from".to_string());
-            }
-        };
-        // Rotated by how much has been gathered already, so a second batch on an
-        // empty history asks different questions than the first rather than
-        // regenerating the same list of seeds.
-        let seed_offset = match db::signal::counts(&self.pool).await {
-            Ok(counts) => (counts.desirable + counts.undesirable + counts.pending) as usize,
-            // Only picks the starting question; a failed count is not worth failing
-            // the run over.
-            Err(_) => 0,
-        };
-        let prompts = gather::choose_prompts(history, batch as usize, seed_offset);
-        if prompts.is_empty() {
-            return Done::failed("no prompts to generate from".to_string());
-        }
-
-        let state = Arc::new(Mutex::new(SimpleState {
-            stage: "Loading model".to_string(),
-            fraction: 0.0,
-            text: String::new(),
-        }));
-        self.go_live(job.id_job, JobKind::Gather, Live {
-            id_job: job.id_job,
-            cancel: cancel.clone(),
-            tx: tx.clone(),
-            snapshot: Snapshot::Simple(state.clone()),
-        });
-
-        // Samples cross back one at a time so the panel can be rating the third
-        // reply while the fourth generates — the whole reason this is a stream and
-        // not a batch handed over at the end. The writer task holds the pool; the
-        // worker only sends down the channel.
-        let (sample_tx, mut sample_rx) = mpsc::unbounded_channel::<(String, String)>();
-        let writer_pool = self.pool.clone();
-        let writer_tx = tx.clone();
-        let id_job = job.id_job;
-        let id_model = request.id_model;
-        let writer = tokio::spawn(async move {
-            while let Some((prompt, response)) = sample_rx.recv().await {
-                match db::signal::insert(&writer_pool, id_job, id_model, &prompt, &response).await {
-                    Ok(sample) => emit(&writer_tx, frame("sample", serde_json::json!({
-                        "id_sample": sample.id_sample,
-                        "prompt": sample.prompt,
-                        "response": sample.response,
-                    }))),
-                    // The reply is lost, but the run isn't: the rest of the batch is
-                    // still worth generating, and a sample that was never stored is
-                    // one the panel simply never offers.
-                    Err(e) => eprintln!("[queue] could not store a gathered sample: {e}"),
-                }
-            }
-        });
-
-        let reporting = state.clone();
-        let frame_tx = tx.clone();
-        let worker_cancel = cancel.clone();
-        let outcome = self
-            .spawn_worker(job.id_job, progress_rx, move || {
-                let on_progress: gather::ProgressCallback = Box::new(move |stage, fraction| {
-                    {
-                        let mut st = lock(&reporting);
-                        st.stage = stage.to_string();
-                        st.fraction = fraction;
-                    }
-                    let _ = progress_tx.send(ProgressTick {
-                        fraction,
-                        stage: stage.to_string(),
-                    });
-                    emit(&frame_tx, frame(
-                        "progress",
-                        serde_json::json!({ "stage": stage, "fraction": fraction }),
-                    ));
-                });
-                let on_sample: gather::SampleCallback = Box::new(move |prompt, response| {
-                    // Fails only if the writer task is gone, i.e. at shutdown.
-                    let _ = sample_tx.send((prompt.to_string(), response.to_string()));
-                });
-                gather::run(
-                    &model_dir,
-                    &prompts,
-                    &request,
-                    on_progress,
-                    on_sample,
-                    Some(worker_cancel),
-                )
-            })
-            .await;
-
-        // The worker is finished, so its sender is dropped and the writer drains and
-        // exits. Awaited before the terminal row is written, so a client that reacts
-        // to the finished job never fetches the batch before its last row is in.
-        let _ = writer.await;
-
-        let fraction = lock(&state).fraction;
-        match outcome {
-            Ok(Ok(Some(stats))) => {
-                emit(&tx, frame("gather", serde_json::json!(stats)));
-                Done::done()
-            }
-            Ok(Ok(None)) => Done::cancelled(fraction),
-            Ok(Err(e)) => Done::failed(e),
-            Err(panic) => Done::failed(panic),
-        }
-    }
 
     async fn fail_benchmark(&self, id_run: Uuid, error: &str) {
         if let Err(e) = db::benchmark::fail(&self.pool, id_run, error).await {
@@ -1159,7 +786,7 @@ impl Queue {
             Err(e) => return Done::failed(format!("stored chat request is unreadable: {}", e)),
         };
 
-        let model_dir = storage::models_dir().join(request.id_model.to_string());
+        let model_dir = engine::paths::data_root().join("artifacts/models").join(request.id_model.to_string());
 
         // Loaded at run time, not enqueue: by the time a queued turn reaches the
         // GPU the conversation may have grown, and the model should see the
@@ -1168,12 +795,12 @@ impl Queue {
         let history = match db::message::list_for_chat(&self.pool, request.id_chat).await {
             Ok(messages) => messages
                 .into_iter()
-                .map(|m| llm::chat_template::Turn {
+                .map(|m| engine::Turn {
                     // id_user set => a person sent it; otherwise an assistant reply.
                     role: if m.id_user.is_some() {
-                        llm::chat_template::Role::User
+                        engine::Role::User
                     } else {
-                        llm::chat_template::Role::Assistant
+                        engine::Role::Assistant
                     },
                     text: m.content,
                 })
@@ -1202,6 +829,9 @@ impl Queue {
         let system = request.system.clone();
         let budget = request.budget;
         let sampling = request.sampling;
+        let engine_client = self.engine.clone();
+        let model_name = request.id_model.to_string();
+        let handle = tokio::runtime::Handle::current();
         let outcome = self
             .spawn_worker(job.id_job, progress_rx, move || {
                 // A chat turn has no measurable total, so it reports one tick to
@@ -1210,19 +840,47 @@ impl Queue {
                     fraction: 0.0,
                     stage: "Generating".to_string(),
                 });
-                llm::infer::generate_chat_response_streaming(
-                    &model_dir,
-                    system.as_deref(),
-                    &history,
-                    budget,
-                    MAX_TOKENS,
-                    sampling,
-                    Some(&worker_cancel),
-                    |token| {
-                        lock(&accumulating).text.push_str(token);
-                        emit(&frame_tx, frame("token", serde_json::json!({ "value": token })));
-                    },
-                )
+
+                let mut request =
+                    engine::client::ChatRequest::new(model_name, history, MAX_TOKENS as i64)
+                        .with_sampling(sampling);
+                request.system = system;
+                request.budget = budget;
+
+                handle.block_on(async move {
+                    // Cancellation reaches the engine over HTTP; the queue's flag
+                    // is still what the rest of the runner watches.
+                    let watcher_cancel = worker_cancel.clone();
+                    let watcher_client = engine_client.clone();
+                    let watcher = tokio::spawn(async move {
+                        loop {
+                            if watcher_cancel.load(Ordering::Relaxed) {
+                                if let Ok(active) = watcher_client.health().await {
+                                    if let Some(id) =
+                                        active.get("active_run").and_then(|v| v.as_str())
+                                    {
+                                        let _ = watcher_client.cancel(id).await;
+                                    }
+                                }
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        }
+                    });
+
+                    let result = engine_client
+                        .chat_stream(&request, |token| {
+                            lock(&accumulating).text.push_str(token);
+                            emit(
+                                &frame_tx,
+                                frame("token", serde_json::json!({ "value": token })),
+                            );
+                        })
+                        .await
+                        .map_err(|e| e.to_string());
+                    watcher.abort();
+                    result
+                })
             })
             .await;
 
@@ -1259,7 +917,7 @@ impl Queue {
             request.id_chat,
             Some(request.id_model),
             &reply.text,
-            reply.output_tokens as i32,
+            reply.generated_tokens as i32,
         )
         .await
         {
@@ -1278,8 +936,8 @@ impl Queue {
                 &self.pool,
                 id_user,
                 Some(request.id_model),
-                reply.input_tokens as i32,
-                reply.output_tokens as i32,
+                reply.prompt_tokens as i32,
+                reply.generated_tokens as i32,
             )
             .await
             {
@@ -1395,7 +1053,14 @@ impl Queue {
         // `spawn_worker`, which only knows how to await a thread. Same throttle, same
         // reason: the frames carry the truth, this is so a fresh page load has a
         // sane bar before its socket attaches.
-        let run = synth::run(&request, on_progress, on_call, on_accepted, cancel.clone());
+        let run = synth::run(
+            &request,
+            &self.engine,
+            on_progress,
+            on_call,
+            on_accepted,
+            cancel.clone(),
+        );
         tokio::pin!(run);
         let mut last_write = Instant::now() - PROGRESS_WRITE_INTERVAL;
         let outcome = loop {
@@ -1430,164 +1095,6 @@ impl Queue {
         }
     }
 
-    // Generates thinking-budget triples with a local GGUF on the GPU.
-    //
-    // The same job as `run_synth` in intent and the opposite in plumbing.
-    // `synth::run` is `async` because it waits on sockets, so it is polled inline
-    // with `tokio::select!`. `teach::run` is a blocking llama.cpp decode loop —
-    // FFI into CUDA, exactly like training — so it goes through `spawn_worker`
-    // onto its own OS thread. Polling it inline would block the runner's whole
-    // reactor for the length of the run, which on this queue means every socket
-    // and every progress write stalls behind it.
-    async fn run_teach(
-        self: &Arc<Self>,
-        job: &db::job::Job,
-        cancel: Arc<AtomicBool>,
-        tx: broadcast::Sender<String>,
-        progress_tx: mpsc::UnboundedSender<ProgressTick>,
-        progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
-    ) -> Done {
-        let request: synth::teach::TeachRequest = match serde_json::from_value(job.config.clone()) {
-            Ok(request) => request,
-            Err(e) => return Done::failed(format!("stored teaching config is unreadable: {e}")),
-        };
-
-        // Checked now rather than inside the worker so a missing GGUF fails the job
-        // immediately with a useful message, instead of after the queue has spent a
-        // slot spinning up a thread. `Teacher::load` checks again — it has to, the
-        // file can vanish while the job waits in line — but this is the message a
-        // person sees.
-        let model_path = storage::teacher_dir().join(&request.teacher.model_file);
-        if !model_path.is_file() {
-            return Done::failed(format!(
-                "no teacher model at {} — download a GGUF into {} first",
-                model_path.display(),
-                storage::teacher_dir().display(),
-            ));
-        }
-
-        let state = Arc::new(Mutex::new(TeachState {
-            stage: "Loading the teacher".to_string(),
-            fraction: 0.0,
-            reports: Vec::new(),
-            accepted: Vec::new(),
-            questions: 0,
-            answers: 0,
-            complete_triples: 0,
-            by_tiers: vec![0, 0, 0],
-            target: request.count,
-            duplicates: 0,
-            per_tier: Vec::new(),
-            relabelled: 0,
-        }));
-        self.go_live(job.id_job, JobKind::Teach, Live {
-            id_job: job.id_job,
-            cancel: cancel.clone(),
-            tx: tx.clone(),
-            snapshot: Snapshot::Teach(state.clone()),
-        });
-
-        // One clone per closure: each is `move`d into its own callback and they all
-        // outlive the block that builds them.
-        let progress_state = state.clone();
-        let report_state = state.clone();
-        let triple_state = state.clone();
-        let frame_progress = tx.clone();
-        let frame_report = tx.clone();
-        let frame_triple = tx.clone();
-        let worker_cancel = cancel.clone();
-
-        let outcome = self
-            .spawn_worker(job.id_job, progress_rx, move || {
-                let on_progress: synth::teach::ProgressCallback =
-                    Box::new(move |stage, fraction| {
-                        {
-                            let mut st = lock(&progress_state);
-                            st.stage = stage.to_string();
-                            st.fraction = fraction;
-                        }
-                        let _ = progress_tx.send(ProgressTick {
-                            fraction,
-                            stage: stage.to_string(),
-                        });
-                        emit(&frame_progress, frame(
-                            "progress",
-                            serde_json::json!({ "stage": stage, "fraction": fraction }),
-                        ));
-                    });
-
-                // One frame per model call. What makes a run diagnosable: a teacher
-                // whose output is all rejected for one reason, a teacher repeating
-                // itself, and a teacher that is simply slow are three different
-                // failures a progress bar renders identically.
-                let on_report: synth::teach::ReportCallback = Box::new(move |report| {
-                    {
-                        let mut st = lock(&report_state);
-                        st.reports.push(report.clone());
-                        st.questions = report.total_questions;
-                        st.answers = report.total_answers;
-                        st.complete_triples = report.total_complete;
-                        st.by_tiers = report.total_by_tiers.clone();
-                        st.duplicates = report.duplicates;
-                    }
-                    // `teach_call`, not `call`: the synth path already owns that
-                    // name and its payload is a different shape. A job is only ever
-                    // one kind so the two never reach the same socket, but the
-                    // frontend narrows a frame by its `type` alone — sharing the
-                    // name would have it read a `TeachReport` as a `SynthCall`.
-                    emit(&frame_report, frame("teach_call", serde_json::json!(report)));
-                });
-
-                // One frame per accepted triple, carrying all three answers. The
-                // per-tier tally is accumulated here rather than read off the final
-                // stats so a page attaching mid-run sees whether the budgets are
-                // separating, which is the one thing worth watching.
-                let on_triple: synth::teach::TripleCallback = Box::new(move |triple| {
-                    {
-                        let mut st = lock(&triple_state);
-                        for answer in &triple.answers {
-                            let tier = answer.filed_as.as_str().to_string();
-                            match st.per_tier.iter_mut().find(|(t, _)| *t == tier) {
-                                Some(slot) => slot.1 += 1,
-                                None => st.per_tier.push((tier, 1)),
-                            }
-                            if answer.filed_as != answer.requested {
-                                st.relabelled += 1;
-                            }
-                        }
-                        st.accepted.insert(0, triple.clone());
-                        st.accepted.truncate(TEACH_FEED);
-                    }
-                    emit(&frame_triple, frame("teach_triple", serde_json::json!(triple)));
-                });
-
-                synth::teach::run(&request, on_progress, on_report, on_triple, worker_cancel)
-            })
-            .await;
-
-        let fraction = lock(&state).fraction;
-        match outcome {
-            Ok(Ok(Some(stats))) => {
-                let value = serde_json::json!(stats);
-                // Persisted as well as emitted. The frame reaches whoever is watching
-                // *now*; without the row, reopening a finished run showed an empty
-                // page, because a teaching run has no domain table of its own to read
-                // back from. A failure to store is not a failure of the run — the
-                // conversations are already on disk — so it is logged and swallowed.
-                if let Err(e) = db::job::set_result(&self.pool, job.id_job, &value).await {
-                    eprintln!("[queue] could not store the teaching report: {}", e);
-                }
-                emit(&tx, frame("teach", value));
-                Done::done()
-            }
-            // A cancelled run keeps what it wrote — each answer is appended as it is
-            // accepted — so this is a partial success reported as a cancellation,
-            // not a loss.
-            Ok(Ok(None)) => Done::cancelled(fraction),
-            Ok(Err(e)) => Done::failed(e),
-            Err(panic) => Done::failed(panic),
-        }
-    }
 
     // ── worker plumbing ─────────────────────────────────────────────────────
 
@@ -1701,13 +1208,13 @@ pub struct ChatRequest {
     // existed — renders no marker, which is the unbudgeted prompt the model has
     // always been given.
     #[serde(default)]
-    pub budget: Option<llm::chat_template::ThinkBudget>,
+    pub budget: Option<engine::ThinkBudget>,
     // Temperature / top-k / top-p, as picked in the composer. Defaulted rather
     // than optional so a row queued before these were sendable — and one from a
     // client that omits them — decodes at the serving defaults instead of failing
     // to parse.
     #[serde(default)]
-    pub sampling: llm::sample::SamplingParams,
+    pub sampling: engine::SamplingParams,
 }
 
 // How far a cancelled training run had got, for the terminal row.
@@ -1743,10 +1250,7 @@ pub(crate) fn kind_name(kind: JobKind) -> &'static str {
         JobKind::Train => "train",
         JobKind::Benchmark => "benchmark",
         JobKind::Chat => "chat",
-        JobKind::Autolabel => "autolabel",
-        JobKind::Gather => "gather",
         JobKind::Synth => "synth",
-        JobKind::Teach => "teach",
     }
 }
 
@@ -1793,104 +1297,6 @@ pub fn frame(kind: &str, mut obj: serde_json::Value) -> String {
 // Fraction of rated replies reserved for the benchmark and never trained on.
 const HELDOUT_FRACTION: u64 = 5; // 1 in 5 = 20%
 
-// Exports every rated assistant reply as JSONL, split into a training slice
-// (`raw/preference/`, read by `build_kto_dataset`) and a held-out slice
-// (`eval/preference/`, read by the benchmark's preference stage). Returns
-// (train, heldout) counts.
-//
-// This is the whole bridge between the feedback table and both consumers, and it is
-// files rather than queries because the llm crate has no database awareness — the
-// `eval` binary has to be runnable against a directory alone.
-//
-// **Why the split exists.** Preference tuning and the preference benchmark would
-// otherwise read the same examples, and the margin rising after a tune would prove
-// only that the model memorized the examples it was just trained on. Held-out is
-// the only version of that number that means anything.
-//
-// **Why it splits on the prompt, not the reply.** All replies to the same prompt
-// must land on the same side. The benchmark's paired accuracy compares an approved
-// and a rejected reply to one prompt against each other; if the split ran per reply,
-// a pair could straddle it and the tune would have seen half of a judgement the
-// benchmark then scores.
-//
-// **Why a hash and not a shuffle.** The assignment has to be stable across runs —
-// a reply that was held out last time must be held out this time, or successive
-// benchmarks of the same model would score different data and the trend chart would
-// be comparing two different measurements.
-//
-// Both files are rewritten whole rather than appended to. They are projections of
-// the table, not logs: a rating can be changed or withdrawn, and an append-only file
-// would keep scoring verdicts the user has since taken back.
-async fn export_preference_data(pool: &PgPool) -> Result<(usize, usize), String> {
-    let rated = db::message::list_rated(pool)
-        .await
-        .map_err(|e| format!("query failed: {e}"))?;
-
-    // The two sources of thumbs — replies rated in a conversation, and replies
-    // generated by a gather job purely to be rated — flow into one file. They are
-    // the same judgement about the same kind of object, so KTO has no reason to
-    // distinguish them, and the held-out split below treats them identically: it
-    // hashes the prompt, so a gathered sample and a chat reply to the same question
-    // still land on the same side.
-    let gathered = db::signal::list_rated(pool)
-        .await
-        .map_err(|e| format!("query failed: {e}"))?;
-    let rated: Vec<db::message::RatedReply> = rated
-        .into_iter()
-        .chain(gathered.into_iter().map(|s| db::message::RatedReply {
-            prompt: Some(s.prompt),
-            response: s.response,
-            feedback: s.feedback,
-        }))
-        .collect();
-
-    let train_dir = storage::preference_dir();
-    let heldout_dir = storage::eval_dir().join("preference");
-    for dir in [&train_dir, &heldout_dir] {
-        std::fs::create_dir_all(dir).map_err(|e| format!("could not create {dir:?}: {e}"))?;
-    }
-
-    let mut train = String::new();
-    let mut heldout = String::new();
-    let mut train_n = 0usize;
-    let mut heldout_n = 0usize;
-
-    for reply in rated {
-        // A reply with no preceding user turn has no prompt to condition on, so
-        // scoring it would measure the wrong conditional. Dropped rather than
-        // exported half-formed.
-        let (Some(prompt), Some(feedback)) = (reply.prompt, reply.feedback) else {
-            continue;
-        };
-        let label = match feedback {
-            db::message::Feedback::Up => "up",
-            db::message::Feedback::Down => "down",
-        };
-        // Built through serde_json rather than string-formatted, so a reply
-        // containing a quote or a newline can't produce a line that won't parse back.
-        let line = serde_json::json!({
-            "prompt": prompt,
-            "response": reply.response,
-            "label": label,
-        });
-
-        if prompt_hash(prompt.trim()) % HELDOUT_FRACTION == 0 {
-            heldout.push_str(&line.to_string());
-            heldout.push('\n');
-            heldout_n += 1;
-        } else {
-            train.push_str(&line.to_string());
-            train.push('\n');
-            train_n += 1;
-        }
-    }
-
-    for (dir, body) in [(&train_dir, train), (&heldout_dir, heldout)] {
-        let path = dir.join(storage::HUMAN_FEEDBACK_FILE);
-        std::fs::write(&path, body).map_err(|e| format!("could not write {path:?}: {e}"))?;
-    }
-    Ok((train_n, heldout_n))
-}
 
 // FNV-1a over the prompt. Any stable hash would do; the standard library's is
 // explicitly not stable across builds, which is exactly the property that would

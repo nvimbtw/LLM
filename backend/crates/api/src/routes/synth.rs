@@ -18,48 +18,6 @@ use synth;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(get_corpus);
-    cfg.service(list_teachers);
-}
-
-/// One GGUF sitting in the teacher directory, available to generate with.
-#[derive(serde::Serialize)]
-struct TeacherFile {
-    file: String,
-    bytes: u64,
-}
-
-/// The local models available to a `teach` job.
-///
-/// Exists so the composer can offer a list rather than a text box. A teacher is
-/// named by bare file name (never a path — see `teacher::Teacher::load`), and those
-/// names are long, exact, and case-sensitive: `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`
-/// typed by hand is a 400 more often than not.
-///
-/// The directory not existing is not an error. It is the normal state before anyone
-/// has downloaded a model, and an empty list is the honest answer — the composer
-/// renders that as "put a .gguf here", which is more useful than a 500.
-#[get("/teachers")]
-async fn list_teachers(_admin: AdminUser) -> impl Responder {
-    let dir = storage::teacher_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return HttpResponse::Ok().json(Vec::<TeacherFile>::new());
-    };
-
-    let mut files: Vec<TeacherFile> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("gguf") {
-                return None;
-            }
-            let name = path.file_name()?.to_str()?.to_string();
-            let bytes = entry.metadata().ok()?.len();
-            Some(TeacherFile { file: name, bytes })
-        })
-        .collect();
-    files.sort_by(|a, b| a.file.cmp(&b.file));
-
-    HttpResponse::Ok().json(files)
 }
 
 #[derive(Deserialize)]
@@ -72,24 +30,23 @@ struct CorpusQuery {
 }
 
 #[get("/corpus")]
-async fn get_corpus(_admin: AdminUser, query: web::Query<CorpusQuery>) -> impl Responder {
+async fn get_corpus(
+    _admin: AdminUser,
+    engine: web::Data<engine::Client>,
+    query: web::Query<CorpusQuery>,
+) -> impl Responder {
     let id_model = query.into_inner().id_model;
 
-    // Reading every conversation and BPE-encoding it is real CPU work — tens of
-    // milliseconds over a few hundred conversations, and unbounded in principle —
-    // so it goes to a blocking thread rather than stalling an actix worker.
-    let result = web::block(move || synth::corpus_stats(id_model)).await;
+    // The measuring is the engine's now, so this awaits HTTP rather than
+    // occupying a blocking thread.
+    let result = synth::corpus_stats(engine.get_ref(), id_model).await;
 
     match result {
-        Ok(Ok(stats)) => HttpResponse::Ok().json(stats),
-        // A named model with no tokenizer on disk, or an unreadable meta.json: the
-        // caller picked a model that cannot measure anything, which is their input
-        // being wrong rather than the server failing.
-        Ok(Err(message)) => HttpResponse::BadRequest().body(message),
-        Err(e) => {
-            eprintln!("corpus stats join error: {}", e);
-            HttpResponse::InternalServerError().body("failed to read the SFT corpus")
-        }
+        Ok(stats) => HttpResponse::Ok().json(stats),
+        // A named model with no tokenizer, or an unreadable meta.json: the caller
+        // picked a model that cannot measure anything, which is their input being
+        // wrong rather than the server failing.
+        Err(message) => HttpResponse::BadRequest().body(message),
     }
 }
 

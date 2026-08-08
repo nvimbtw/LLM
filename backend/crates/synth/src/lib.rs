@@ -12,7 +12,7 @@
 //
 // Here both are answered by the real thing: the tag vocabulary is *derived* from
 // `SPECIAL_TOKENS`, and the budget check renders the conversation through
-// `llm::chat_template::build_training_example` with the base model's own merges and
+// the engine's `/chat/measure`, which renders it through the same template and
 // counts the tokens SFT will actually chunk. A conversation that would not fit is
 // rejected at generation rather than discovered later as a window full of context
 // with no assistant token in it.
@@ -36,7 +36,6 @@ use uuid::Uuid;
 // module rather than a crate because it reuses this file's validator, exemplar
 // sampling, tag vocabulary and token budget wholesale — the only thing it
 // replaces is where the text comes from and what gets written.
-pub mod teach;
 
 
 // ── the request ─────────────────────────────────────────────────────────────
@@ -643,33 +642,38 @@ fn tags_in(text: &str) -> Result<Vec<String>, String> {
 
 // ── the token budget ────────────────────────────────────────────────────────
 
-// The tokenizer and context window a conversation has to fit, loaded from the base
-// model that will train on it. This is the check the Python could not do.
+// The tokenizer and context window a conversation has to fit, taken from the base
+// model that will train on it.
+//
+// The measurement is made *by the engine*, not here. It has to be: the engine owns
+// the tokenizer now, and a length computed against a second implementation would
+// be a different number than the one `build_sft_dataset` will produce — which is
+// the whole point of the check.
 pub struct Budget {
-    merges: Vec<((u32, u32), u32)>,
+    engine: engine::Client,
+    model_name: String,
     pub ctx_window: usize,
 }
 
 impl Budget {
-    // `merges.bin` sits next to the weights; the context window is the `ctx_window`
-    // the run was configured with, read from the model's own meta.json rather than
-    // by loading the weights — this needs one number, not 100M parameters.
-    pub fn load(model_dir: &Path) -> Result<Budget, String> {
-        let merges = tokenize::bpe::load_merges(&model_dir.join("merges.bin").to_string_lossy())
-            .map_err(|e| format!("could not read the model's tokenizer: {e}"))?;
-
-        let meta = fs::read_to_string(model_dir.join("meta.json"))
-            .map_err(|e| format!("could not read the model's meta.json: {e}"))?;
-        let parsed: serde_json::Value = serde_json::from_str(&meta)
-            .map_err(|e| format!("the model's meta.json is unreadable: {e}"))?;
-        let ctx_window = parsed
-            .get("config")
-            .and_then(|c| c.get("ctx_window"))
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| "the model's meta.json names no context window".to_string())?;
+    // The context window is read from the model's own meta.json rather than by
+    // loading the weights — this needs one number, not 100M parameters.
+    pub async fn load(engine: engine::Client, model_name: &str) -> Result<Budget, String> {
+        let model_name = model_name.to_string();
+        // The window comes from the engine's own record of the run, not from a
+        // file read here: the engine owns the models directory.
+        let ctx_window = engine
+            .models()
+            .await
+            .map_err(|e| format!("could not list models: {e}"))?
+            .into_iter()
+            .find(|m| m.name == model_name)
+            .and_then(|m| m.config.get("ctx_window").and_then(|v| v.as_u64()))
+            .ok_or_else(|| format!("no context window recorded for model {model_name}"))?;
 
         Ok(Budget {
-            merges,
+            engine,
+            model_name,
             ctx_window: ctx_window as usize,
         })
     }
@@ -689,12 +693,12 @@ impl Budget {
     /// Measured against the exemplars specifically, since they are drawn from the
     /// same corpus as the output and carry the same markup density — the tags cost
     /// one token each regardless of how many characters they spell.
-    pub fn word_capacity(&self, exemplars: &[&Conversation]) -> usize {
+    pub async fn word_capacity(&self, exemplars: &[&Conversation]) -> usize {
         let mut words = 0usize;
         let mut tokens = 0usize;
         for conv in exemplars {
             words += conv.turns.iter().map(|t| t.text.split_whitespace().count()).sum::<usize>();
-            tokens += self.tokens(conv);
+            tokens += self.tokens(conv).await;
         }
         if words == 0 || tokens == 0 {
             return 0;
@@ -715,39 +719,44 @@ impl Budget {
     /// than the teacher's — a budget is what the *student* spends at inference,
     /// and this tokenizer is trained on a small corpus with short merges, so its
     /// tokens-per-word ratio is nothing like a large tokenizer's.
-    pub fn text_tokens(&self, text: &str) -> usize {
-        tokenize::bpe::encode(text, &self.merges).len()
+    pub async fn text_tokens(&self, text: &str) -> usize {
+        self.engine
+            .count_tokens(&self.model_name, text)
+            .await
+            .unwrap_or(0)
     }
 
     // How many tokens this conversation occupies once rendered for training —
-    // exactly what `build_sft_dataset` will produce for it, because it is the same
-    // call with the same merges.
-    pub fn tokens(&self, conv: &Conversation) -> usize {
-        let turns: Vec<llm::chat_template::Turn> = conv
+    // exactly what the SFT dataset build will produce for it, because the engine
+    // renders it through the same template with the same tokenizer.
+    //
+    // No budget marker and no thinking-strip: this is a length check against the
+    // widest rendering, and measuring a narrower one would under-report a
+    // conversation a later unstripped run still has to fit. The engine applies
+    // that policy; see its `/chat/measure`.
+    //
+    // An unreachable engine reports 0 rather than failing the run: this is a
+    // pre-filter, and losing it costs an over-long conversation being rejected
+    // later by the dataset build, not a wrong result.
+    pub async fn tokens(&self, conv: &Conversation) -> usize {
+        let turns = conv
             .turns
             .iter()
-            .map(|t| llm::chat_template::Turn {
-                role: if t.role == "user" {
-                    llm::chat_template::Role::User
-                } else {
-                    llm::chat_template::Role::Assistant
-                },
+            .map(|t| engine::Turn {
+                role: if t.role == "user" { engine::Role::User } else { engine::Role::Assistant },
                 text: t.text.clone(),
             })
             .collect();
-        // No budget: this measures whether a conversation fits the window, and a
-        // budget marker is one token — below the resolution of that question.
-        // `Keep` for the same reason: this is a length check against the widest
-        // rendering, and stripping here would under-measure a conversation that a
-        // later unstripped run has to fit.
-        let (ids, _) = llm::chat_template::build_training_example(
-            conv.system.as_deref(),
-            &turns,
-            None,
-            &self.merges,
-            llm::chat_template::Reasoning::Keep,
-        );
-        ids.len()
+
+        self.engine
+            .measure(&engine::client::MeasureRequest {
+                model_name: self.model_name.clone(),
+                turns,
+                system: conv.system.clone(),
+            })
+            .await
+            .map(|m| m.tokens)
+            .unwrap_or(0)
     }
 }
 
@@ -1512,18 +1521,19 @@ async fn cancellable<T>(
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     request: &SynthRequest,
+    engine: &engine::Client,
     on_progress: ProgressCallback,
     on_call: CallCallback,
     on_accepted: AcceptedCallback,
     cancel: Arc<AtomicBool>,
 ) -> Result<Option<SynthStats>, String> {
-    let dir = storage::sft_dir();
+    let dir = engine::paths::sft_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("could not open the SFT directory: {e}"))?;
     let exemplar_path = dir.join(&request.exemplar_file);
     let out_path = dir.join(&request.out_file);
 
     let budget = match request.id_model {
-        Some(id) => Some(Budget::load(&storage::models_dir().join(id.to_string()))?),
+        Some(id) => Some(Budget::load(engine.clone(), &id.to_string()).await?),
         None => None,
     };
 
@@ -1552,10 +1562,10 @@ pub async fn run(
     // corpus, so a wider sample is both steadier and cheaper than re-measuring per
     // call. Zero when no model was named, which means no length rule is stated.
     let pool_refs: Vec<&Conversation> = pool.iter().collect();
-    let capacity = budget
-        .as_ref()
-        .map(|b| b.word_capacity(&pool_refs))
-        .unwrap_or(0);
+    let capacity = match budget.as_ref() {
+        Some(b) => b.word_capacity(&pool_refs).await,
+        None => 0,
+    };
     if capacity > 0 {
         eprintln!(
             "[synth] window holds ~{capacity} words per conversation{}",
@@ -1684,7 +1694,10 @@ pub async fn run(
                 continue;
             }
 
-            let tokens = budget.as_ref().map(|b| b.tokens(&conv));
+            let tokens = match budget.as_ref() {
+                Some(b) => Some(b.tokens(&conv).await),
+                None => None,
+            };
             if let (Some(tokens), Some(budget)) = (tokens, budget.as_ref()) {
                 if tokens > budget.ctx_window {
                     tally(
@@ -1876,10 +1889,13 @@ pub struct CorpusStats {
 
 // Reads the whole SFT corpus. Blocking (file IO plus BPE encoding over every
 // conversation), so the route runs it on a blocking thread.
-pub fn corpus_stats(id_model: Option<Uuid>) -> Result<CorpusStats, String> {
-    let dir = storage::sft_dir();
+pub async fn corpus_stats(
+    engine: &engine::Client,
+    id_model: Option<Uuid>,
+) -> Result<CorpusStats, String> {
+    let dir = engine::paths::sft_dir();
     let budget = match id_model {
-        Some(id) => Some(Budget::load(&storage::models_dir().join(id.to_string()))?),
+        Some(id) => Some(Budget::load(engine.clone(), &id.to_string()).await?),
         None => None,
     };
 
@@ -1934,7 +1950,7 @@ pub fn corpus_stats(id_model: Option<Uuid>) -> Result<CorpusStats, String> {
                 }
             }
             if let Some(budget) = budget.as_ref() {
-                let tokens = budget.tokens(&conv);
+                let tokens = budget.tokens(&conv).await;
                 stats.tokens.push(tokens);
                 if tokens > budget.ctx_window {
                     stats.over_budget += 1;

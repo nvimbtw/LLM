@@ -73,10 +73,12 @@ function runPhase(job: Job, run: ReturnType<typeof useJob>): RunPhase | null {
       return null
     case "running":
     case "cancelling":
-      // Phase 1 finishing is what flips this, before the first loss frame — so a
-      // slow GPU start reads as "training, nothing yet" rather than as a
-      // tokenizer that has stalled.
-      return run.tokenize.done ? "training" : "tokenizing"
+      // A running train job is training. There is no separate phase 1 any more:
+      // the engine builds the dataset as part of the run and does not report it,
+      // so there is no `tokenize.done` to wait for — keying off it left every
+      // running job reading as "tokenizing" for its whole life, which showed the
+      // pre-training placeholder instead of the loss chart.
+      return "training"
     case "done":
       return "done"
     case "cancelled":
