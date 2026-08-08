@@ -511,6 +511,69 @@ def check(args) -> None:
         torch.equal(loop._loss(logits, y, w, 97), expected),
     )
 
+    print("fused qkv projection")
+    torch.manual_seed(3)
+    model = Transformer(64, 32, 4, 2, 4, 16)
+    attn = model.blocks[0].attn
+    x = torch.randn(2, 16, 32)
+    cos, sin = model.rope_cos[:16], model.rope_sin[:16]
+    fused, _ = attn(x, cos, sin)
+
+    # The same attention with Q, K and V projected one at a time, which is what
+    # the fused weight is a concatenation of.
+    wq, wk, wv = attn.wqkv.weight.chunk(3, dim=0)
+    def head(proj):
+        return (x @ proj.T).view(2, 16, 4, 8).transpose(1, 2)
+    from llm.model.transformer import apply_rope
+    q = apply_rope(head(wq), cos, sin)
+    k = apply_rope(head(wk), cos, sin)
+    v = head(wv)
+    separate = attn.wo(
+        torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+        .transpose(1, 2)
+        .reshape(2, 16, 32)
+    )
+    expect(
+        "fused projection matches three separate ones",
+        torch.allclose(fused, separate, atol=1e-6),
+        f"max Δ {(fused - separate).abs().max().item():.2e}",
+    )
+
+    legacy = {}
+    for key, value in model.state_dict().items():
+        if key.endswith("attn.wqkv.weight"):
+            base = key[: -len("wqkv.weight")]
+            for name, part in zip(("q", "k", "v"), value.chunk(3, dim=0)):
+                legacy[f"{base}w{name}.weight"] = part.clone()
+        else:
+            legacy[key] = value
+    reloaded = Transformer(64, 32, 4, 2, 4, 16)
+    reloaded.load_state_dict(legacy)
+    expect(
+        "checkpoints with separate wq/wk/wv still load",
+        all(
+            torch.equal(a, b)
+            for a, b in zip(model.state_dict().values(), reloaded.state_dict().values())
+        ),
+    )
+
+    print("incremental decode")
+    torch.manual_seed(5)
+    gen = Transformer(48, 32, 4, 2, 4, 24).eval()
+    prompt = torch.randint(0, 48, (1, 9))
+    with torch.no_grad():
+        whole, _ = gen(prompt)
+        caches = gen.empty_caches()
+        stepwise = []
+        for i in range(prompt.shape[1]):
+            out, caches = gen(prompt[:, i : i + 1], caches, pos_offset=i)
+            stepwise.append(out)
+    expect(
+        "cached decode reproduces the full-context forward",
+        torch.allclose(whole, torch.cat(stepwise, dim=1), atol=1e-5),
+        f"max Δ {(whole - torch.cat(stepwise, dim=1)).abs().max().item():.2e}",
+    )
+
     print("loss log")
     log = loop._LossLog(4, device)
     for v in [3.0, 1.0, 4.0, 1.0, 5.0]:

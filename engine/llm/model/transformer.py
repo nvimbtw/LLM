@@ -58,18 +58,38 @@ class Attention(nn.Module):
         # keeps the fused kernel.
         self.record_attention = False
         self.last_attention: torch.Tensor | None = None
-        self.wq = nn.Linear(dimensions, dimensions, bias=False)
-        self.wk = nn.Linear(dimensions, dimensions, bias=False)
-        self.wv = nn.Linear(dimensions, dimensions, bias=False)
+        # Q, K and V as one [d, 3d] projection rather than three [d, d] ones.
+        # Same arithmetic — the weight is their vertical concatenation and the
+        # output is sliced back apart — but one GEMM instead of three, and on
+        # this hardware that is not a wash. A [4096,256]x[256,256] matmul only
+        # reaches 6.9 TFLOPS on an RTX 3060 against a 18.7 peak, because 256
+        # output columns tile into too few thread blocks to fill 28 SMs; at 768
+        # columns the same kernel reaches 15.4. Measured 3.7% off the step.
+        self.wqkv = nn.Linear(dimensions, 3 * dimensions, bias=False)
         self.wo = nn.Linear(dimensions, dimensions, bias=False)
+
+    def init_projections(self) -> None:
+        """Initialize `wqkv` as the three separate projections it stands in for.
+
+        Xavier's bound is sqrt(6 / (fan_in + fan_out)), so initializing a [d, 3d]
+        weight as one matrix would draw from a visibly narrower distribution than
+        three [d, d] ones — a quieter Q, K and V at step 0 for no reason but the
+        layout. Each third gets the fan it would have had on its own.
+        """
+        for third in self.wqkv.weight.data.chunk(3, dim=0):
+            nn.init.xavier_uniform_(third)
 
     def forward(self, x, cos, sin, cache=None):
         batch, seq, _ = x.shape
 
-        def split(proj):
-            return proj(x).view(batch, seq, self.heads, self.head_dim).transpose(1, 2)
-
-        q, k, v = split(self.wq), split(self.wk), split(self.wv)
+        # [batch, seq, 3d] -> 3 x [batch, heads, seq, head_dim]. The projection's
+        # output is laid out q|k|v, so this is a view and an unbind, not a copy.
+        q, k, v = (
+            self.wqkv(x)
+            .view(batch, seq, 3, self.heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+            .unbind(0)
+        )
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
 
@@ -103,6 +123,21 @@ class Attention(nn.Module):
         weights = torch.softmax(scores, dim=-1)
         self.last_attention = weights.detach()
         return weights @ v
+
+    def _load_from_state_dict(self, state_dict, prefix, *args):
+        """Accept checkpoints written before Q, K and V shared one projection.
+
+        `wqkv` is exactly `cat([wq, wk, wv])` — nn.Linear stores its weight
+        [out, in], and the fused output is laid out q|k|v — so an old checkpoint
+        converts here rather than needing a migration pass over every file on
+        disk. Weights saved by this build already have the fused key and skip it.
+        """
+        legacy = [f"{prefix}w{name}.weight" for name in ("q", "k", "v")]
+        if all(key in state_dict for key in legacy):
+            state_dict[f"{prefix}wqkv.weight"] = torch.cat(
+                [state_dict.pop(key) for key in legacy], dim=0
+            )
+        super()._load_from_state_dict(state_dict, prefix, *args)
 
 
 class FeedForward(nn.Module):
@@ -171,6 +206,10 @@ class Transformer(nn.Module):
         self.register_buffer("rope_sin", sin, persistent=False)
 
         self.apply(self._init_weights)
+        # After the sweep, not instead of it: `apply` sees an nn.Linear and
+        # cannot know that this one stands for three.
+        for block in self.blocks:
+            block.attn.init_projections()
 
     @staticmethod
     def _init_weights(module):
