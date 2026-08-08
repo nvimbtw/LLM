@@ -21,6 +21,7 @@ it one. Regenerate with: python3 scripts/write_gold_general.py (from the repo ro
 """
 
 import json
+import paths
 import os
 
 C = []

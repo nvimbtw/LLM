@@ -88,6 +88,44 @@ Actual data (scraped HTML, processed text, tokenized output, model weights) live
 - `documents` table: one row per crawled page, tracks status, file paths, crawl depth/parent, content hash for dedup.
 - `jobs` table: the GPU queue (see below).
 
+## The Python engine
+
+Training and inference run in `engine/` (PyTorch), not in this workspace.
+`crates/engine` is the only crate that knows that: it spawns the engine as a
+child of the Actix server, health-checks it before the server reports ready,
+restarts it if it dies, and kills it on shutdown. Everything above it calls
+typed functions and never learns there is a subprocess involved.
+
+The process is owned by `main.rs` for the same reason the job queue is: there is
+one engine, it holds the GPU, and it lives as long as the server does.
+
+Configured entirely by environment, because none of these are properties of the
+project — they are properties of the machine:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ENGINE_DIR` | `../engine` | Working directory; `main:app` resolves against it |
+| `ENGINE_PYTHON` | `$ENGINE_DIR/.venv/bin/python` | Interpreter; started as `-m uvicorn` |
+| `ENGINE_HOST` | `127.0.0.1` | |
+| `ENGINE_PORT` | `8001` | 8000 is commonly taken by a local Apache |
+| `ENGINE_AUTOSTART` | `true` | Off = "an engine is already running, do not spawn" |
+| `ENGINE_STARTUP_TIMEOUT_SECS` | `60` | Importing torch is slow on a cold cache |
+
+Two things that are load-bearing and non-obvious:
+
+- **`ENGINE_PYTHON` is made absolute but never `canonicalize`d.** A virtualenv's
+  `bin/python` is a symlink to the system interpreter, and Python derives
+  `sys.prefix` from the path it was invoked by — resolving the link hands over
+  the system interpreter, which has no idea it is in a venv, and `-m uvicorn`
+  fails against a venv where uvicorn is plainly installed.
+- **Absolute at all, because `Command` resolves the program path *after*
+  chdir-ing into `current_dir`.** A relative `ENGINE_PYTHON` would otherwise be
+  looked up under `$ENGINE_DIR/`, failing with a bare ENOENT.
+
+Autostart off is the normal development setup: run `uvicorn main:app --reload`
+in another terminal and the server attaches to it. `start` still fails if
+nothing is listening, so a forgotten engine is caught at boot either way.
+
 ## The GPU queue
 
 There is one GPU, so there is one runner and one line. **Every** use of the device —

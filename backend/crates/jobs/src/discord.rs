@@ -322,9 +322,7 @@ mod tests {
         // Every assistant turn is a job. Notifying on those is the failure mode
         // this filter exists to prevent.
         assert!(!should_notify(&job(JobKind::Chat, false)));
-        // As is a cycle round, which is ~50 jobs of its own.
         assert!(!should_notify(&job(JobKind::Train, true)));
-        assert!(!should_notify(&job(JobKind::Autolabel, false)));
         assert!(!should_notify(&job(JobKind::Synth, false)));
     }
 

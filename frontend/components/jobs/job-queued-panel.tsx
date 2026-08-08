@@ -202,47 +202,6 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           blurb: section.blurb,
         })),
       }
-    case "autolabel":
-      return {
-        title: "What it will do",
-        steps: [
-          {
-            name: "Calibrate the judge",
-            blurb:
-              "The scorer is measured against the replies you rated. A coin-flip AUC refuses the run.",
-          },
-          {
-            name: "Generate and rank",
-            blurb:
-              "Several candidates per prompt; the best and worst become one thumbs-up and one thumbs-down.",
-          },
-          {
-            name: "Write the catalogue",
-            blurb: "Uncertain pairs are skipped rather than guessed at.",
-          },
-        ],
-      }
-    case "gather":
-      return {
-        title: "What it will do",
-        steps: [
-          {
-            name: "Generate the batch",
-            blurb:
-              "One reply per prompt, at a temperature high enough to differ.",
-          },
-          {
-            name: "Hand them to you",
-            blurb:
-              "Rating starts on the first finished reply — you don't wait for the batch.",
-          },
-          {
-            name: "Unlock the preference run",
-            blurb:
-              "Both verdicts count: a tune needs examples to push down too.",
-          },
-        ],
-      }
     case "synth":
       return {
         title: "What it will do",
@@ -263,27 +222,6 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           },
         ],
       }
-    case "teach":
-      return {
-        title: "What it will do",
-        steps: [
-          {
-            name: "Load the teacher",
-            blurb: "The GGUF is offloaded to the device — the slow part, once.",
-          },
-          {
-            name: "Answer at three budgets",
-            blurb:
-              "One question, three answers: short, medium and long thinking.",
-          },
-          {
-            name: "File by what was written",
-            blurb:
-              "Each answer's tier comes from measuring its thinking block, not from what was asked for.",
-          },
-        ],
-      }
-    // Chat never reaches this page — a queued turn goes to its conversation.
     case "chat":
       return {
         title: "What it will do",

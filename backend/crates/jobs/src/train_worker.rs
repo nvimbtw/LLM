@@ -21,7 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use db::model::NewModel;
 use crate::queue::{ProgressTick, emit, frame, lock};
-use training::{self, TokenizeEvent, TrainConfig, TrainMode};
+use training::{self, TrainConfig, TrainMode};
 
 const MAX_LOG_LINES: usize = 500;
 const MAX_LOSS_POINTS: usize = 4000;
@@ -50,6 +50,10 @@ const MERGE_SHARE: f64 = 0.35;
 #[derive(Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrainPhase {
+    // Kept for the stored shape of runs recorded before the engine took over
+    // dataset building. Nothing enters it now: the engine tokenizes as part of a
+    // run and does not report it separately, because at these corpus sizes it is
+    // over in seconds and a phase nobody watches is a phase worth not having.
     Tokenizing,
     Training,
     Done,
@@ -89,6 +93,10 @@ pub struct TrainState {
 // while the run is in flight.
 pub struct TrainCtx {
     pub cancel: Arc<AtomicBool>,
+    pub engine: engine::Client,
+    // The worker runs on a plain thread with no reactor, so engine calls are
+    // driven through this rather than awaited directly.
+    pub handle: tokio::runtime::Handle,
     pub tx: broadcast::Sender<String>,
     pub state: Mutex<TrainState>,
     // Coarse progress for the durable row. The runner throttles these; this side
@@ -102,13 +110,17 @@ impl TrainCtx {
         cancel: Arc<AtomicBool>,
         tx: broadcast::Sender<String>,
         progress_tx: mpsc::UnboundedSender<ProgressTick>,
+        engine: engine::Client,
+        handle: tokio::runtime::Handle,
     ) -> TrainCtx {
         TrainCtx {
             cancel,
+            engine,
+            handle,
             tx,
             progress_tx,
             state: Mutex::new(TrainState {
-                phase: TrainPhase::Tokenizing,
+                phase: TrainPhase::Training,
                 config,
                 tokenize: serde_json::json!({}),
                 train: serde_json::json!({}),
@@ -178,449 +190,172 @@ pub fn snapshot_frame(state: &TrainState) -> String {
 // Takes the context by `Arc` rather than by reference because `ProgressCallback`
 // is a `'static` boxed closure: the crate's train loop holds it for the duration
 // of the run, so it has to own its handle on the state it reports into.
-pub fn run(ctx: Arc<TrainCtx>, config: TrainConfig) -> Outcome {
-    match config.mode {
-        TrainMode::Pretrain => run_pretrain(ctx, config),
-        TrainMode::Sft => run_sft(ctx, config),
-        TrainMode::Kto => run_kto(ctx, config),
-        // RAFT is SFT with a different phase 1, so it shares the whole path and
-        // only swaps the dataset builder.
-        TrainMode::Raft => run_sft(ctx, config),
-    }
-}
-
-// Runs both phases for a KTO preference job: render the thumbs-rated replies into
-// a masked dataset (scoring each one under the base model for its reference
-// log-probability), then preference-tune the base.
+// Drives one engine run to its terminal state, translating its progress frames
+// into the frames the dashboard already speaks.
 //
-// Structurally identical to `run_sft` — same base resolution, same architecture
-// inheritance, same finish plumbing — because it is the same two-phase shape with a
-// different phase 1 and a different train entry point.
-fn run_kto(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
-    let created_at = Utc::now().to_rfc3339();
-
-    let base_model_dir = match config.base_model_id {
-        Some(id) => storage::models_dir().join(id.to_string()),
-        None => return fail(&ctx, "KTO run is missing a base_model_id".to_string()),
-    };
-
-    if let Err(e) = training::apply_base_architecture(&mut config, &base_model_dir) {
-        eprintln!(
-            "[training] {}: could not inherit base architecture ({}); registry metadata may be off",
-            config.model_name, e
-        );
-    }
-
-    // ---- Phase 1: rated replies → kto_corpus.bin + kto_mask.bin + kto_index.json ----
-    //
-    // This phase is slower than SFT's: it runs a forward pass per example to record
-    // the reference log-probabilities. That cost is paid once here rather than every
-    // epoch in phase 2.
-    eprintln!("[training] {}: building KTO dataset…", config.model_name);
-    ctx.tick(0.0, "Scoring rated replies under the base model");
-    let dataset = match training::build_kto_dataset(&base_model_dir, config.catalogue_scope()) {
-        Ok(stats) => {
-            if stats.desirable == 0 || stats.undesirable == 0 {
-                // One-sided feedback has no contrast to learn from: the model can
-                // only be told to push everything up or everything down, which is
-                // not a preference. Better to refuse than to burn a run producing a
-                // uniformly-shifted model.
-                return fail(
-                    &ctx,
-                    format!(
-                        "preference tuning needs both thumbs up and thumbs down — got {} up and {} down",
-                        stats.desirable, stats.undesirable
-                    ),
-                );
-            }
-            let obj = serde_json::json!({
-                "examples": stats.examples,
-                "desirable": stats.desirable,
-                "undesirable": stats.undesirable,
-                "total_tokens": stats.total_tokens,
-                "trainable_tokens": stats.trainable_tokens,
-                "skipped_too_long": stats.skipped_too_long,
-                "skipped_no_reply": stats.skipped_no_reply,
-                "progress": 1.0,
-                "done": true,
-            });
-            {
-                let mut st = lock(&ctx.state);
-                st.tokenize = obj.clone();
-                st.phase = TrainPhase::Training;
-            }
-            emit(&ctx.tx, frame("tokenize", obj));
-            serde_json::json!(stats)
-        }
-        Err(e) => return fail(&ctx, format!("KTO dataset build failed: {}", e)),
-    };
-
-    // ---- Phase 2: preference-tune from the base ----
-    eprintln!(
-        "[training] {}: starting KTO tune ({} epochs, beta {}, base {})",
-        config.model_name,
-        config.epochs,
-        config.beta,
-        base_model_dir.display(),
-    );
+// The engine owns tokenization and the training loop now, so the two phases this
+// used to run itself collapse into one call and one event stream.
+fn drive(ctx: &Arc<TrainCtx>, start: Result<engine::RunSnapshot, engine::EngineError>) -> Result<serde_json::Value, String> {
+    let started = start.map_err(|e| e.to_string())?;
+    let engine_client = ctx.engine.clone();
+    let cancel = ctx.cancel.clone();
     let reporting = ctx.clone();
-    let on_progress: llm::train::ProgressCallback =
-        Box::new(move |p| handle_train_progress(&reporting, p));
 
-    let outcome = training::run_kto_training(&config, on_progress, ctx.cancel.clone());
-    eprintln!("[training] {}: KTO returned {:?}", config.model_name, outcome);
-    finish(&ctx, &config, &dataset, &created_at, outcome)
-}
-
-// Runs both phases for a pretrain job. Both crate calls are synchronous and
-// blocking, which is exactly why the caller gives this a plain OS thread and not a
-// task on the actix runtime.
-fn run_pretrain(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
-    let created_at = Utc::now().to_rfc3339();
-
-    // Resolve the shuffle seed now (0 => a fresh time seed) so the value that
-    // actually drives the run is the one persisted to meta.json — a shuffled run
-    // must be reproducible from its recorded config.
-    config.seed = training::resolve_seed(config.seed);
-
-    // ---- Phase 1: tokenize / build the dataset ----
-    // Curriculum runs build per-stage document spans; a plain run collapses to a
-    // single implicit stage. `resolve_stages` unifies the two.
-    eprintln!("[training] {}: tokenizing uploads…", config.model_name);
-    ctx.tick(0.0, "Tokenizing");
-    let stages = training::resolve_stages(&config);
-    let dataset = training::build_dataset(
-        config.max_vocab,
-        &stages,
-        training::resolve_seed(config.seed),
-        Some(ctx.cancel.clone()),
-        |event| {
-        handle_tokenize_event(&ctx, event);
-    });
-
-    let dataset = match dataset {
-        // Ingestion is now interruptible, so a cancel during phase 1 ends the run
-        // here instead of being noticed only at phase 2's first step boundary.
-        Ok(None) => {
-            lock(&ctx.state).phase = TrainPhase::Cancelled;
-            return Outcome::Cancelled;
-        }
-        Ok(Some(stats)) => {
-            let obj = serde_json::json!({
-                "files": stats.files,
-                "chars": stats.chars,
-                "vocab": stats.vocab_size,
-                "merges": stats.merges,
-                "documents": stats.documents,
-                "progress": 1.0,
-                "done": true,
-            });
-            {
-                let mut st = lock(&ctx.state);
-                st.tokenize = obj.clone();
-                st.phase = TrainPhase::Training;
-            }
-            emit(&ctx.tx, frame("tokenize", obj));
-            stats
-        }
-        Err(e) => return fail(&ctx, format!("tokenization failed: {}", e)),
-    };
-
-    // ---- Phase 2: train ----
-    eprintln!(
-        "[training] {}: starting GPU training ({}d, {}ctx, {}h, {}L, {}ep, {} tokens)",
-        config.model_name,
-        config.dimensions,
-        config.ctx_window,
-        config.heads,
-        config.layers,
-        config.epochs,
-        dataset.corpus_len,
-    );
-    let reporting = ctx.clone();
-    let on_progress: llm::train::ProgressCallback =
-        Box::new(move |p| handle_train_progress(&reporting, p));
-
-    let outcome = training::run_training(&config, on_progress, ctx.cancel.clone());
-    eprintln!("[training] {}: training returned {:?}", config.model_name, outcome);
-    finish(&ctx, &config, &serde_json::json!(dataset), &created_at, outcome)
-}
-
-// Runs both phases for an SFT job: render the chat conversations into the masked
-// dataset using the base model's tokenizer, then fine-tune the base. Shares the
-// progress/finish plumbing with the pretrain path.
-fn run_sft(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
-    let created_at = Utc::now().to_rfc3339();
-
-    // A fine-tune reshuffles its conversations every epoch, so it has a seed to
-    // resolve for the same reason pretraining does: `0` means "pick a fresh one",
-    // and the value that actually drove the run has to be the one meta.json
-    // records, or the run is not reproducible from its own record.
-    config.seed = training::resolve_seed(config.seed);
-
-    // The base model to fine-tune from; its tokenizer renders the dataset and its
-    // weights are the starting point. The enqueue route guarantees this is present
-    // and resolves, but we resolve defensively (the id is untrusted here).
-    let base_model_dir = match config.base_model_id {
-        Some(id) => storage::models_dir().join(id.to_string()),
-        None => return fail(&ctx, "SFT run is missing a base_model_id".to_string()),
-    };
-
-    // The SFT fine-tune inherits the base's architecture (it loads the base
-    // weights), so overwrite the request's placeholder arch fields with the base's
-    // real ones — otherwise the registered model records the wrong dimensions/
-    // context/param-count. Best-effort: a failure here only affects metadata.
-    if let Err(e) = training::apply_base_architecture(&mut config, &base_model_dir) {
-        eprintln!(
-            "[training] {}: could not inherit base architecture ({}); registry metadata may be off",
-            config.model_name, e
-        );
-    }
-
-    // ---- Phase 1: render conversations → sft_corpus.bin + sft_mask.bin ----
-    //
-    // The two modes differ here and nowhere else: SFT renders the hand-written
-    // conversations in raw/sft/, RAFT renders the catalogue entries this model's own
-    // generations earned an "up" for. Both produce the same two files under the same
-    // masking convention, so phase 2 is byte-for-byte the same run.
-    let is_raft = config.mode == TrainMode::Raft;
-    let what = if is_raft { "RAFT" } else { "SFT" };
-    eprintln!("[training] {}: building {} dataset…", config.model_name, what);
-    ctx.tick(0.0, &format!("Building {} dataset", what));
-    let built = if is_raft {
-        training::build_raft_dataset(&base_model_dir, config.catalogue_scope()).map(|s| {
-            (
-                serde_json::json!({
-                    "conversations": s.examples,
-                    "total_tokens": s.total_tokens,
-                    "trainable_tokens": s.trainable_tokens,
-                    "duplicates": s.duplicates,
-                    "skipped_too_long": s.skipped_too_long,
-                    "replay_tokens": s.replay_tokens,
-                    "progress": 1.0,
-                    "done": true,
-                }),
-                serde_json::json!(s),
-            )
-        })
-    } else {
-        let reasoning = training::strip_thinking_for(config.mode, config.strip_thinking);
-        training::build_sft_dataset(&base_model_dir, reasoning).map(|s| {
-            (
-                serde_json::json!({
-                    "conversations": s.conversations,
-                    "total_tokens": s.total_tokens,
-                    "trainable_tokens": s.trainable_tokens,
-                    "skipped_too_long": s.skipped_too_long,
-                    "replay_tokens": s.replay_tokens,
-                    "progress": 1.0,
-                    "done": true,
-                }),
-                serde_json::json!(s),
-            )
-        })
-    };
-    let dataset = match built {
-        Ok((obj, stats)) => {
-            {
-                let mut st = lock(&ctx.state);
-                st.tokenize = obj.clone();
-                st.phase = TrainPhase::Training;
-            }
-            emit(&ctx.tx, frame("tokenize", obj));
-            stats
-        }
-        Err(e) => return fail(&ctx, format!("{} dataset build failed: {}", what, e)),
-    };
-
-    // ---- Phase 2: fine-tune from the base ----
-    eprintln!(
-        "[training] {}: starting {} fine-tune ({} epochs, base {})",
-        config.model_name,
-        what,
-        config.epochs,
-        base_model_dir.display(),
-    );
-    let reporting = ctx.clone();
-    let on_progress: llm::train::ProgressCallback =
-        Box::new(move |p| handle_train_progress(&reporting, p));
-
-    let outcome = training::run_sft_training(&config, on_progress, ctx.cancel.clone());
-    eprintln!("[training] {}: {} returned {:?}", config.model_name, what, outcome);
-    finish(&ctx, &config, &dataset, &created_at, outcome)
-}
-
-fn handle_tokenize_event(ctx: &TrainCtx, event: TokenizeEvent) {
-    match event {
-        TokenizeEvent::Start { files, chars } => {
-            let obj = serde_json::json!({
-                "files": files,
-                "chars": chars,
-                "vocab": 256,
-                "merges": 0,
-                "progress": 0.0,
-                "done": false,
-            });
-            lock(&ctx.state).tokenize = obj.clone();
-            emit(&ctx.tx, frame("tokenize", obj));
-        }
-        TokenizeEvent::Merge { done, total } => {
-            let progress = if total > 0 {
-                MERGE_SHARE * (done as f64 / total as f64)
-            } else {
-                0.0
-            };
-            // Keep files/chars already recorded by the Start event.
-            let obj = {
-                let mut st = lock(&ctx.state);
-                if let Some(map) = st.tokenize.as_object_mut() {
-                    map.insert(
-                        "vocab".into(),
-                        serde_json::json!(tokenize::bpe::vocab_size(done as usize)),
-                    );
-                    map.insert("merges".into(), serde_json::json!(done));
-                    map.insert("progress".into(), serde_json::json!(progress));
+    ctx.handle.block_on(async move {
+        // The queue signals cancellation with a flag; the engine takes an HTTP
+        // call that lands at a step boundary.
+        let watcher_client = engine_client.clone();
+        let run_id = started.run_id.clone();
+        let watcher = tokio::spawn(async move {
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = watcher_client.cancel(&run_id).await;
+                    return;
                 }
-                st.tokenize.clone()
-            };
-            ctx.tick(
-                TOKENIZE_SHARE * progress,
-                &format!("Tokenizing ({}/{} merges)", done, total),
-            );
-            emit(&ctx.tx, frame("tokenize", obj));
-        }
-        TokenizeEvent::Encode { files_done, files, chars } => {
-            let progress = if files > 0 {
-                MERGE_SHARE + (1.0 - MERGE_SHARE) * (files_done as f64 / files as f64)
-            } else {
-                MERGE_SHARE
-            };
-            // Corrects the byte-length estimate `Start` carried, and leaves the
-            // vocab/merges figures at the values the merge phase finished on.
-            let obj = {
-                let mut st = lock(&ctx.state);
-                if let Some(map) = st.tokenize.as_object_mut() {
-                    map.insert("chars".into(), serde_json::json!(chars));
-                    map.insert("progress".into(), serde_json::json!(progress));
-                }
-                st.tokenize.clone()
-            };
-            ctx.tick(
-                TOKENIZE_SHARE * progress,
-                &format!("Encoding ({}/{} files)", files_done, files),
-            );
-            emit(&ctx.tx, frame("tokenize", obj));
-        }
-        TokenizeEvent::Log(line) => {
-            push_capped(&mut lock(&ctx.state).log, line.to_string());
-            emit(&ctx.tx, frame("log", serde_json::json!({ "line": line })));
-        }
-    }
-}
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
 
-// Renders a diagnostics snapshot into the `{ step, … }` JSON the frontend charts
-// consume. Non-finite metrics (e.g. an empty embedding metric on a tiny vocab)
-// serialize to null via `json!`, matching the batch-spread convention, so the
-// client simply skips those points. Kept separate from the `train` frame builder
-// so the (larger, per-report-only) diagnostics payload lives in one place.
-fn diag_frame(step: u64, d: &llm::training::diagnostics::Diagnostics) -> serde_json::Value {
-    serde_json::json!({
-        "step": step,
-        "grad_global": d.grad_global,
-        "grad_layers": d.grad_layers,
-        "grad_embedding": d.grad_embedding,
-        "grad_unembed": d.grad_unembed,
-        "update_ratio_layers": d.update_ratio_layers,
-        "act_rms_layers": d.act_rms_layers,
-        "attn_entropy": d.attn_entropy,
-        "emb_cos_mean": d.emb_cos_mean,
-        "emb_cos_p5": d.emb_cos_p5,
-        "emb_cos_p95": d.emb_cos_p95,
-        "act_hist": d.act_hist,
-        "emb_pca": d.emb_pca,
-        "emb_pca3": d.emb_pca3,
+        let finished = engine_client
+            .follow(&started.run_id, |event| {
+                if let engine::RunEvent::Progress(p) = event {
+                    let num = |k: &str| p.get(k).and_then(|v| v.as_f64());
+                    // Fraction of the whole run, for the durable row's coarse bar.
+                    let fraction = match (num("step"), num("total_steps")) {
+                        (Some(step), Some(total)) if total > 0.0 => step / total,
+                        _ => 0.0,
+                    };
+
+                    if let (Some(step), Some(loss)) = (num("step"), num("loss")) {
+                        let mut st = lock(&reporting.state);
+                        push_loss(&mut st.loss_series, [step, loss]);
+                        // The per-window spread, which the chart draws as a band
+                        // around the line.
+                        if let (Some(lo), Some(avg), Some(hi)) =
+                            (num("batch_min"), num("batch_avg"), num("batch_max"))
+                        {
+                            push_batch(&mut st.batch_series, [step, lo, avg, hi]);
+                        }
+                        if let Some(d) = p.get("diag").filter(|d| !d.is_null()) {
+                            push_diag(&mut st.diag_series, d.clone());
+                        }
+                        // Kept whole so a socket attaching mid-run gets the same
+                        // shape as one that watched from the start.
+                        st.train = p.clone();
+                        st.phase = TrainPhase::Training;
+                    }
+
+                    let stage = p
+                        .get("stage_name")
+                        .and_then(|v| v.as_str())
+                        .map(|n| format!("Training: {n}"))
+                        .unwrap_or_else(|| "Training".to_string());
+                    reporting.tick(fraction, &stage);
+                    emit(&reporting.tx, frame("train", p));
+                }
+            })
+            .await
+            .map_err(|e| e.to_string());
+        watcher.abort();
+
+        let finished = finished?;
+        if finished.is_cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        if let Some(error) = finished.error {
+            return Err(error);
+        }
+        Ok(finished.result.unwrap_or(serde_json::Value::Null))
     })
 }
 
-fn handle_train_progress(ctx: &TrainCtx, p: llm::train::TrainingProgress) {
-    // Run-global chunk count: a monotonic x-axis across all curriculum stages
-    // (per-epoch `chunk` resets and `total_chunks` differs between stages, so the
-    // old (epoch-1)*total_chunks+chunk formula would jump backwards at a stage
-    // boundary).
-    let step = p.global_step;
-    // Render the diagnostics (present only on mid-epoch report frames) before the
-    // main object so it can be embedded in the live frame and stored for reattach.
-    let diag = p.diagnostics.as_ref().map(|d| diag_frame(step, d));
-    let obj = serde_json::json!({
-        "epoch": p.epoch,
-        "total_epochs": p.total_epochs,
-        "chunk": p.chunk,
-        "total_chunks": p.total_chunks,
-        "stage": p.stage,
-        "stage_name": p.stage_name,
-        "loss": p.loss,
-        "avg_loss": p.avg_loss,
-        "min_loss": p.min_loss,
-        "max_loss": p.max_loss,
-        "batch_min": p.batch_min,
-        "batch_avg": p.batch_avg,
-        "batch_max": p.batch_max,
-        "eta_secs": p.eta_secs,
-        "epoch_done": p.epoch_done,
-        "epoch_duration_secs": p.epoch_duration_secs,
-        "checkpoint_path": p.checkpoint_path,
-        "step": step,
-        // Present only on mid-epoch report frames; null otherwise so the client
-        // knows there's no fresh diagnostics sample on this frame.
-        "diag": diag,
-    });
-    {
-        let mut st = lock(&ctx.state);
-        st.train = obj.clone();
-        if p.loss.is_finite() {
-            push_loss(&mut st.loss_series, [step as f64, p.loss]);
-        }
-        if !p.epoch_done && p.batch_avg.is_finite() {
-            push_batch(
-                &mut st.batch_series,
-                [
-                    step as f64,
-                    p.batch_min as f64,
-                    p.batch_avg as f64,
-                    p.batch_max as f64,
-                ],
-            );
-        }
-        if let Some(d) = diag {
-            push_diag(&mut st.diag_series, d);
-        }
-    }
-    ctx.tick(TOKENIZE_SHARE + (1.0 - TOKENIZE_SHARE) * epoch_fraction(&p), &stage_label(&p));
-    emit(&ctx.tx, frame("train", obj));
-}
+// Sentinel distinguishing "stopped on request" from a real failure, since both
+// come back through the same Result.
+const CANCELLED: &str = "\u{0}cancelled";
 
-// How far through the run we are, as epochs completed plus progress within the
-// current one. Approximate for a curriculum run, whose stages have different chunk
-// counts — good enough for a coarse bar, and the exact position is in the frames.
-fn epoch_fraction(p: &llm::train::TrainingProgress) -> f64 {
-    if p.total_epochs <= 0 {
-        return 0.0;
-    }
-    let within = if p.total_chunks > 0 {
-        p.chunk as f64 / p.total_chunks as f64
-    } else {
-        0.0
+fn run_pretrain(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
+    let created_at = Utc::now().to_rfc3339();
+    config.seed = training::resolve_seed(config.seed);
+
+    ctx.tick(0.0, "Training");
+    let request = engine::client::TrainRequest {
+        model_name: config.storage_id.to_string(),
+        dimensions: Some(config.dimensions),
+        heads: Some(config.heads),
+        layers: Some(config.layers),
+        ff_multiplier: Some(config.ff_multiplier),
+        ctx_window: Some(config.ctx_window),
+        max_vocab: Some(config.max_vocab as i64),
+        epochs: Some(config.epochs),
+        lr: Some(config.lr as f64),
+        datasets: config.datasets.iter().map(|d| d.name.clone()).collect(),
+        shuffle: Some(config.shuffle),
+        seed: Some(config.seed),
+        rebuild_dataset: Some(true),
+        ..Default::default()
     };
-    let done = (p.epoch as f64 - 1.0 + within) / p.total_epochs as f64;
-    done.clamp(0.0, 1.0)
-}
 
-fn stage_label(p: &llm::train::TrainingProgress) -> String {
-    match &p.stage_name {
-        Some(name) => format!("{} · epoch {}/{}", name, p.epoch, p.total_epochs),
-        None => format!("Epoch {}/{}", p.epoch, p.total_epochs),
+    let started = ctx.handle.block_on(ctx.engine.train(&request));
+    match drive(&ctx, started) {
+        Ok(result) => finish(&ctx, &config, &result, &created_at, Ok(false)),
+        Err(e) if e == CANCELLED => {
+            lock(&ctx.state).phase = TrainPhase::Cancelled;
+            Outcome::Cancelled
+        }
+        Err(e) => fail(&ctx, format!("training failed: {e}")),
     }
 }
+
+fn run_sft(ctx: Arc<TrainCtx>, config: TrainConfig) -> Outcome {
+    let created_at = Utc::now().to_rfc3339();
+    let Some(base) = config.base_model_id else {
+        return fail(&ctx, "SFT run is missing a base_model_id".to_string());
+    };
+
+    ctx.tick(0.0, "Training");
+    let request = engine::client::SftRequest {
+        model_name: config.storage_id.to_string(),
+        base_model: base.to_string(),
+        epochs: Some(config.epochs),
+        lr: Some(config.lr as f64),
+        strip_thinking: Some(training::strip_thinking_for(config.mode, config.strip_thinking)),
+        rebuild_dataset: Some(true),
+        ..Default::default()
+    };
+
+    let started = ctx.handle.block_on(ctx.engine.sft(&request));
+    match drive(&ctx, started) {
+        Ok(result) => finish(&ctx, &config, &result, &created_at, Ok(false)),
+        Err(e) if e == CANCELLED => {
+            lock(&ctx.state).phase = TrainPhase::Cancelled;
+            Outcome::Cancelled
+        }
+        Err(e) => fail(&ctx, format!("fine-tuning failed: {e}")),
+    }
+}
+
+pub fn run(ctx: Arc<TrainCtx>, config: TrainConfig) -> Outcome {
+    // A socket that was already open when this run started never receives the
+    // attach-time snapshot, so without this it never learns the run's phase at
+    // all — `status` stays null and the page renders the pre-training placeholder
+    // for the whole run however many live frames arrive.
+    emit(&ctx.tx, snapshot_frame(&lock(&ctx.state)));
+
+    match config.mode {
+        TrainMode::Pretrain => run_pretrain(ctx, config),
+        TrainMode::Sft => run_sft(ctx, config),
+        // RAFT is SFT with a different phase 1, so it shares the whole path and
+        // only swaps the dataset builder.
+    }
+}
+
+
+
+
+
+
+
+
 
 // Maps a training outcome (cancelled / completed / errored) onto the terminal
 // state, writing the run's meta.json on the way out. `Ok(true)` is the crate's
@@ -656,7 +391,7 @@ fn finish(
     let payload = match &error {
         Some(msg) => frame("error", serde_json::json!({ "message": msg })),
         None => {
-            let model_dir = storage::models_dir().join(config.storage_id.to_string());
+            let model_dir = engine::paths::data_root().join("artifacts/models").join(config.storage_id.to_string());
             frame(
                 "done",
                 serde_json::json!({

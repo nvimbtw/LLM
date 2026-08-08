@@ -7,8 +7,7 @@ edition = "2021"
 # No sqlx and no actix: a training run is described by a plain `TrainConfig`,
 # and persisting or serving the result belongs to the layers above.
 [dependencies]
-llm = { path = "../llm" }
-storage = { path = "../storage" }
+engine = { path = "../engine" }
 tokenize = { path = "../tokenize" }
 chrono = { version = "0.4.45", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

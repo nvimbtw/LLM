@@ -10,7 +10,6 @@ use db;
 use db::user::AccessLevel;
 use crate::routes::validate;
 use crate::extractors::{AdminUser, AuthUser};
-use storage;
 
 // Response shape sent to clients. Kept separate from the db `Model` struct per
 // the layering rules, even though they currently carry the same fields.
@@ -145,7 +144,7 @@ async fn delete_model(
     let id = path.into_inner();
     match db::model::delete(pool.get_ref(), id).await {
         Ok(Some(_name)) => {
-            let dir = storage::models_dir().join(id.to_string());
+            let dir = engine::paths::data_root().join("artifacts/models").join(id.to_string());
             if let Err(e) = fs::remove_dir_all(&dir) {
                 // The row is already gone; a missing/half-removed directory isn't
                 // worth failing the request over — log and report success.

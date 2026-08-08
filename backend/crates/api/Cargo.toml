@@ -4,12 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+engine = { path = "../engine" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 jobs = { path = "../jobs" }
-labeling = { path = "../labeling" }
-llm = { path = "../llm" }
-storage = { path = "../storage" }
 synth = { path = "../synth" }
 tokenize = { path = "../tokenize" }
 training = { path = "../training" }

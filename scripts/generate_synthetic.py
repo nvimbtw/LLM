@@ -35,13 +35,14 @@ Usage:
     python3 generate_synthetic.py [--count 100] [--out /path/to/dir]
 """
 
+import paths
 import argparse
 import os
 import random
 import re
 
 SEED = 42
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads/Synthetic"
+OUT_DIR = paths.dataset_dir("Synthetic")
 
 # Generic assistant system prompts. A fraction of conversations open with one so
 # the <|system|>/<|/system|> tokens (and this framing) are trained in pretraining

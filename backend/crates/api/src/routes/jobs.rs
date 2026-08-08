@@ -21,7 +21,6 @@ use db;
 use db::job::{Job, JobKind, JobLane, JobStatus};
 use crate::extractors::AdminUser;
 use jobs::queue::Queue;
-use storage;
 use training::{TrainConfig, TrainMode};
 use crate::ws;
 
@@ -241,19 +240,7 @@ async fn create_job(
         // A chat turn needs a persisted user message to reply to, which only the
         // chat socket can create. Accepting one here would queue a reply to
         // nothing.
-        JobKind::Autolabel => match prepare_autolabel(pool.get_ref(), config).await {
-            Ok(prepared) => vec![prepared],
-            Err(response) => return response,
-        },
-        JobKind::Gather => match prepare_gather(pool.get_ref(), config).await {
-            Ok(prepared) => vec![prepared],
-            Err(response) => return response,
-        },
         JobKind::Synth => match prepare_synth(pool.get_ref(), config).await {
-            Ok(prepared) => vec![prepared],
-            Err(response) => return response,
-        },
-        JobKind::Teach => match prepare_teach(pool.get_ref(), config).await {
             Ok(prepared) => vec![prepared],
             Err(response) => return response,
         },
@@ -579,7 +566,7 @@ async fn prepare_train(
     // is, so the queued row is true from the moment it can be.
     if config.mode != TrainMode::Pretrain && !inherits_base {
         if let Some(base_id) = config.base_model_id {
-            let base_dir = storage::models_dir().join(base_id.to_string());
+            let base_dir = engine::paths::data_root().join("artifacts/models").join(base_id.to_string());
             if let Err(e) = training::apply_base_architecture(&mut config, &base_dir) {
                 eprintln!(
                     "queue {}: could not inherit base architecture ({}); the row keeps the requested values",
@@ -589,65 +576,7 @@ async fn prepare_train(
         }
     }
 
-    // A KTO run with too little data used to be discovered the expensive way: the
-    // job queued, waited its turn, loaded the base model, and *then* failed in
-    // `build_kto_dataset` with "no rated replies found" — or worse, succeeded on
-    // thirty examples and quietly narrowed the model.
-    //
-    // Both bars are checked, seed first: rating is what unblocks auto-labelling,
-    // and auto-labelling is what fills the catalogue, so reporting them in that
-    // order names the step that is actually next.
-    if config.mode == TrainMode::Kto {
-        let counts = match db::signal::counts(pool).await {
-            Ok(counts) => counts,
-            Err(e) => {
-                eprintln!("signal count db error: {}", e);
-                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
-            }
-        };
-        if let Err(msg) = labeling::gather::check_signals(counts.desirable, counts.undesirable) {
-            return Err(HttpResponse::BadRequest().body(msg));
-        }
 
-        let (auto_up, auto_down) =
-            labeling::autolabel::catalogue_counts(config.catalogue_scope());
-        let (approved, rejected) =
-            (counts.desirable + auto_up, counts.undesirable + auto_down);
-        if let Err(msg) = labeling::gather::check_catalogue(approved, rejected) {
-            return Err(HttpResponse::BadRequest().body(msg));
-        }
-
-        // The backstop under the catalogue bar. Clamped rather than refused: the
-        // config is otherwise fine, and silently running it five times over a
-        // small catalogue is the failure — not the request itself.
-        let cap = labeling::gather::max_epochs_for(approved + rejected);
-        if config.epochs > cap {
-            config.epochs = cap;
-        }
-    }
-
-    // RAFT consumes only the approved half, so it is gated on that count alone —
-    // and capped on it too, since max-likelihood over a handful of replies for five
-    // epochs is the same overfit KTO's cap exists to prevent, with a denser signal
-    // driving it.
-    if config.mode == TrainMode::Raft {
-        let counts = match db::signal::counts(pool).await {
-            Ok(counts) => counts,
-            Err(e) => {
-                eprintln!("signal count db error: {}", e);
-                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
-            }
-        };
-        let (auto_up, _) = labeling::autolabel::catalogue_counts(config.catalogue_scope());
-        let approved = counts.desirable + auto_up;
-        if let Err(msg) = labeling::gather::check_raft(approved) {
-            return Err(HttpResponse::BadRequest().body(msg));
-        }
-        let cap = labeling::gather::max_epochs_for(approved);
-        if config.epochs > cap {
-            config.epochs = cap;
-        }
-    }
 
     // Resolve the storage id (which names the on-disk weights dir): reuse the
     // existing model's id on a retrain of the same name, else mint a new one.
@@ -686,7 +615,7 @@ struct BenchmarkConfig {
     /// the unbudgeted run — each conversation keeps the marker it was written with —
     /// which is what every config before this meant and still means.
     #[serde(default)]
-    budget: Option<llm::chat_template::ThinkBudget>,
+    budget: Option<engine::ThinkBudget>,
     /// Queue the whole sweep: one run per budget, sharing a series id so the chart
     /// draws them as one line. Ignored on the language suite, which renders no chat
     /// prompt and would produce three identical scores.
@@ -729,7 +658,7 @@ async fn prepare_benchmark(
 
     // Weights are keyed by the model's UUID, not its name, so a renamed model still
     // resolves.
-    let model_dir = storage::models_dir().join(parsed.id_model.to_string());
+    let model_dir = engine::paths::data_root().join("artifacts/models").join(parsed.id_model.to_string());
     if !model_dir.join("merges.bin").exists() {
         return Err(HttpResponse::BadRequest()
             .body("model has no tokenizer on disk; it cannot be benchmarked"));
@@ -751,11 +680,11 @@ async fn prepare_benchmark(
     // The suite is in the label because every suite shows up in one job history and
     // one board, and "Balanced 1" twice tells you nothing about which is which. A
     // swept run carries its budget for the same reason, three times over.
-    let label = |budget: Option<llm::chat_template::ThinkBudget>| match budget {
+    let label = |budget: Option<engine::ThinkBudget>| match budget {
         Some(b) => format!("{} · {} · {}", model.name, parsed.suite.as_str(), b.as_str()),
         None => format!("{} · {}", model.name, parsed.suite.as_str()),
     };
-    let job = |budget: Option<llm::chat_template::ThinkBudget>, series: Option<Uuid>| {
+    let job = |budget: Option<engine::ThinkBudget>, series: Option<Uuid>| {
         (
             label(budget),
             serde_json::json!({
@@ -774,103 +703,13 @@ async fn prepare_benchmark(
     // One id for the sweep, minted here because this is the only place that knows
     // the three runs are one thing.
     let series = Uuid::new_v4();
-    Ok(llm::chat_template::ThinkBudget::ALL
+    Ok(engine::ThinkBudget::ALL
         .iter()
         .map(|budget| job(Some(*budget), Some(series)))
         .collect())
 }
 
-// Validates an auto-labelling config: the model that will generate the candidates
-// must exist and have a tokenizer on disk, and the run must ask for enough
-// candidates per prompt to have a best and a worst.
-async fn prepare_autolabel(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: labeling::autolabel::AutolabelRequest = match serde_json::from_value(config) {
-        Ok(config) => config,
-        Err(_) => {
-            return Err(HttpResponse::BadRequest().body("an autolabel job needs an id_model"));
-        }
-    };
 
-    if parsed.candidates < 2 {
-        return Err(HttpResponse::BadRequest()
-            .body("candidates must be at least 2 — one reply cannot be ranked against itself"));
-    }
-    if parsed.max_prompts < 1 {
-        return Err(HttpResponse::BadRequest().body("max_prompts must be at least 1"));
-    }
-    if !(parsed.temperature.is_finite() && parsed.temperature > 0.0) {
-        // Temperature 0 is argmax, which would produce N identical candidates and a
-        // spread of exactly zero — every prompt would be skipped as flat.
-        return Err(HttpResponse::BadRequest().body("temperature must be a positive number"));
-    }
-
-    let model = match db::model::find_by_id(pool, parsed.id_model).await {
-        Ok(Some(model)) => model,
-        Ok(None) => return Err(HttpResponse::NotFound().body("model not found")),
-        Err(e) => {
-            eprintln!("autolabel model lookup db error: {}", e);
-            return Err(HttpResponse::InternalServerError().body("failed to queue job"));
-        }
-    };
-
-    let model_dir = storage::models_dir().join(parsed.id_model.to_string());
-    if !model_dir.join("merges.bin").exists() {
-        return Err(HttpResponse::BadRequest()
-            .body("model has no tokenizer on disk; it cannot generate"));
-    }
-
-    match serde_json::to_value(&parsed) {
-        Ok(value) => Ok((model.name, value)),
-        Err(e) => {
-            eprintln!("serialize autolabel config error: {}", e);
-            Err(HttpResponse::InternalServerError().body("failed to queue job"))
-        }
-    }
-}
-
-// Validates a gather config. Nearly `prepare_autolabel` — the same model must
-// exist and be able to generate — minus the candidate count, since a gather run
-// produces one reply per prompt and there is nothing to rank them against.
-async fn prepare_gather(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: labeling::gather::GatherRequest = match serde_json::from_value(config) {
-        Ok(config) => config,
-        Err(_) => {
-            return Err(HttpResponse::BadRequest().body("a gather job needs an id_model"));
-        }
-    };
-
-    if parsed.batch < 1 {
-        return Err(HttpResponse::BadRequest().body("batch must be at least 1"));
-    }
-    if !(parsed.temperature.is_finite() && parsed.temperature > 0.0) {
-        // Temperature 0 is argmax, which makes every reply to a similar prompt the
-        // same reply — a batch of near-identical text to rate.
-        return Err(HttpResponse::BadRequest().body("temperature must be a positive number"));
-    }
-
-    let model = match db::model::find_by_id(pool, parsed.id_model).await {
-        Ok(Some(model)) => model,
-        Ok(None) => return Err(HttpResponse::NotFound().body("model not found")),
-        Err(e) => {
-            eprintln!("gather model lookup db error: {}", e);
-            return Err(HttpResponse::InternalServerError().body("failed to queue job"));
-        }
-    };
-
-    let model_dir = storage::models_dir().join(parsed.id_model.to_string());
-    if !model_dir.join("merges.bin").exists() {
-        return Err(HttpResponse::BadRequest()
-            .body("model has no tokenizer on disk; it cannot generate"));
-    }
-
-    match serde_json::to_value(&parsed) {
-        Ok(value) => Ok((model.name, value)),
-        Err(e) => {
-            eprintln!("serialize gather config error: {}", e);
-            Err(HttpResponse::InternalServerError().body("failed to queue job"))
-        }
-    }
-}
 
 // Validates a synthetic-generation request.
 //
@@ -919,7 +758,7 @@ async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), 
         return Err(HttpResponse::BadRequest()
             .body("generated conversations cannot be written into the gold exemplar file"));
     }
-    if !storage::sft_dir().join(&parsed.exemplar_file).exists() {
+    if !engine::paths::sft_dir().join(&parsed.exemplar_file).exists() {
         return Err(HttpResponse::BadRequest().body(
             "no gold conversations to imitate — generation copies the style of real \
              ones, and with none to show it produces generic chat data",
@@ -939,7 +778,7 @@ async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), 
                 return Err(HttpResponse::InternalServerError().body("failed to queue job"));
             }
         }
-        let model_dir = storage::models_dir().join(id_model.to_string());
+        let model_dir = engine::paths::data_root().join("artifacts/models").join(id_model.to_string());
         if !model_dir.join("merges.bin").exists() {
             return Err(HttpResponse::BadRequest().body(
                 "that model has no tokenizer on disk, so there is no way to measure \
@@ -957,120 +796,6 @@ async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), 
     }
 }
 
-// Validates a local-teacher request.
-//
-// The `prepare_synth` twin, and it checks a different set of things because the
-// failure modes are different: there is no provider or API key, but there *is* a
-// weights file that has to exist on disk and a set of tier thresholds that have to
-// be ordered.
-async fn prepare_teach(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: synth::teach::TeachRequest = match serde_json::from_value(config) {
-        Ok(config) => config,
-        Err(e) => {
-            return Err(HttpResponse::BadRequest().body(format!("invalid teaching config: {e}")));
-        }
-    };
-
-    // A file name, never a path — the same rule as the SFT file names below, for
-    // the same reason. `teacher::Teacher::load` enforces it again at load time; a
-    // 400 here is so a person finds out on submit.
-    let model_file = parsed.teacher.model_file.trim();
-    if model_file.is_empty() {
-        return Err(HttpResponse::BadRequest().body("name the teacher model to generate with"));
-    }
-    if model_file.contains('/') || model_file.contains('\\') || model_file.contains("..") {
-        return Err(HttpResponse::BadRequest()
-            .body("the teacher model must be a plain file name inside the teacher directory"));
-    }
-    let model_path = storage::teacher_dir().join(model_file);
-    if !model_path.is_file() {
-        return Err(HttpResponse::BadRequest().body(format!(
-            "no teacher model named {model_file} — put a .gguf in {}",
-            storage::teacher_dir().display()
-        )));
-    }
-
-    if parsed.count < 1 {
-        return Err(HttpResponse::BadRequest().body("count must be at least 1"));
-    }
-    if parsed.teacher.n_ctx < 1024 {
-        // The prompt alone carries several exemplars; below this there is no room
-        // for three answers and the run would fail on its first call.
-        return Err(HttpResponse::BadRequest()
-            .body("n_ctx must be at least 1024 to hold the prompt and three answers"));
-    }
-    if !(parsed.sample.temperature.is_finite() && parsed.sample.temperature > 0.0) {
-        // Temperature 0 is argmax, and this is a diversity task: every call would
-        // return the same triple, all but the first deduplicated away.
-        return Err(HttpResponse::BadRequest().body("temperature must be a positive number"));
-    }
-    // Thresholds define three ranges, so they have to be strictly increasing. Equal
-    // bounds would make the middle tier unreachable and silently produce a two-tier
-    // corpus, which is exactly the failure this feature exists to avoid.
-    //
-    // `0/0` is not a pair of bounds, it is the request to derive them from the
-    // student's context window — the default, and what the composer sends. It has
-    // to be allowed through here or the only correct configuration is the one the
-    // route rejects.
-    let derive_bounds = parsed.low_max_tokens == 0 && parsed.med_max_tokens == 0;
-    if !derive_bounds && parsed.low_max_tokens >= parsed.med_max_tokens {
-        return Err(HttpResponse::BadRequest().body(
-            "the low thinking budget must be smaller than the medium one, or the \
-             middle tier can never be filled",
-        ));
-    }
-
-    if parsed.exemplar_file.contains('/')
-        || parsed.exemplar_file.contains('\\')
-        || !parsed.exemplar_file.ends_with(".jsonl")
-    {
-        return Err(HttpResponse::BadRequest()
-            .body("file names must be plain .jsonl names inside the SFT directory"));
-    }
-    if !storage::sft_dir().join(&parsed.exemplar_file).exists() {
-        return Err(HttpResponse::BadRequest().body(
-            "no gold conversations to imitate — generation copies the style of real \
-             ones, and with none to show it produces generic chat data",
-        ));
-    }
-    // The tier files are what a run writes; reading exemplars from one would feed a
-    // run its own output and collapse the style onto itself.
-    for tier in synth::teach::Tier::ALL {
-        if parsed.exemplar_file == synth::teach::tier_file_name(tier) {
-            return Err(HttpResponse::BadRequest().body(
-                "that file is where this job writes its output — imitating it would \
-                 feed the run its own generations",
-            ));
-        }
-    }
-
-    let mut label = format!("{} × {}", model_file, parsed.count);
-    if let Some(id_model) = parsed.id_model {
-        match db::model::find_by_id(pool, id_model).await {
-            Ok(Some(model)) => label = format!("{} → {}", model_file, model.name),
-            Ok(None) => return Err(HttpResponse::NotFound().body("model not found")),
-            Err(e) => {
-                eprintln!("teach model lookup db error: {}", e);
-                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
-            }
-        }
-        let model_dir = storage::models_dir().join(id_model.to_string());
-        if !model_dir.join("merges.bin").exists() {
-            return Err(HttpResponse::BadRequest().body(
-                "that model has no tokenizer on disk, so there is no way to measure a \
-                 thinking budget in its tokens",
-            ));
-        }
-    }
-
-    match serde_json::to_value(&parsed) {
-        Ok(value) => Ok((label, value)),
-        Err(e) => {
-            eprintln!("serialize teach config error: {}", e);
-            Err(HttpResponse::InternalServerError().body("failed to queue job"))
-        }
-    }
-}
 
 // Where to move a queued job: directly after `after`, or to the front of the
 // queued band when it is absent. Expressed as a neighbour rather than an index so
@@ -1614,12 +1339,9 @@ fn validate_config(cfg: &TrainConfig) -> Result<(), &'static str> {
     if cfg.max_vocab < 256 {
         return Err("max_vocab must be at least 256");
     }
-    if cfg.mode == TrainMode::Kto && !(cfg.beta.is_finite() && cfg.beta > 0.0) {
-        return Err("beta must be a positive number");
-    }
-    // Pretrain builds its corpus from the selected upload datasets; the two
-    // fine-tuning modes ignore them (SFT trains on chat data, KTO on rated
-    // replies), so only require a selection for pretrain. A curriculum run supplies
+    // Pretrain builds its corpus from the selected upload datasets; SFT ignores
+    // them (it trains on chat data), so only require a selection for pretrain.
+    // A curriculum run supplies
     // its datasets per stage instead of the flat list.
     if cfg.mode == TrainMode::Pretrain {
         if cfg.curriculum.is_empty() {
@@ -1665,7 +1387,7 @@ fn validate_sft(cfg: &TrainConfig) -> Result<(), &'static str> {
     let base_id = cfg
         .base_model_id
         .ok_or("base_model_id is required for a fine-tuning run")?;
-    let base_dir = storage::models_dir().join(base_id.to_string());
+    let base_dir = engine::paths::data_root().join("artifacts/models").join(base_id.to_string());
     if !base_dir.join("model.bin").is_file() {
         return Err("base_model_id does not resolve to an existing model");
     }

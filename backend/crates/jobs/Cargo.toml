@@ -7,10 +7,8 @@ edition = "2021"
 # broadcast of live frames and an mpsc of progress ticks, and the socket layer
 # above subscribes to those.
 [dependencies]
+engine = { path = "../engine" }
 db = { path = "../db" }
-labeling = { path = "../labeling" }
-llm = { path = "../llm" }
-storage = { path = "../storage" }
 synth = { path = "../synth" }
 tokenize = { path = "../tokenize" }
 training = { path = "../training" }

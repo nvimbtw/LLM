@@ -4,16 +4,14 @@
 //! device — a training run, a benchmark, a chat turn — is a row in `jobs`, and
 //! `queue` is the only thing that starts one.
 //!
-//! **These three are one crate by necessity, not by preference.**
+//! **`queue` and `train_worker` are one crate by necessity, not by preference.**
 //! `train_worker` reads `queue::{ProgressTick, emit, frame, lock}` and `queue`
 //! calls `train_worker::{run, snapshot_frame}` and matches on its `Outcome`.
 //! That is a cycle, and Rust has no circular crate dependencies. Splitting them
-//! means first extracting the shared progress/telemetry types into a fourth
-//! crate — a design change, not a move. `cycle` joins them because it drives the
-//! queue across rounds and nothing outside the web layer depends on it.
+//! means first extracting the shared progress/telemetry types into a third
+//! crate — a design change, not a move.
 
 pub mod chain;
-pub mod cycle;
 pub mod discord;
 pub mod queue;
 pub mod train_worker;
@@ -22,7 +20,6 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
-use crate::cycle::Cycles;
 use crate::queue::Queue;
 
 /// The running drivers, for the HTTP layer to register as shared state.
@@ -31,38 +28,29 @@ use crate::queue::Queue;
 /// from different workers; cloning shares the driver rather than copying it.
 pub struct Running {
     pub queue: Arc<Queue>,
-    pub cycles: Arc<Cycles>,
 }
 
 /// Bring the job system up: reconcile what a dead process left behind, then
-/// start the runners and the cycle driver.
+/// start the runners.
 ///
 /// The counterpart of `db::create_pool`, which likewise does more than its name
 /// suggests (migrations, admin seeding) because that is the db's own startup
 /// ritual. This is the job system's. The entrypoint should not have to know
-/// that a crashed run leaves rows to clean up, how many lanes there are, or in
-/// what order the two drivers start.
-pub async fn start(pool: PgPool) -> Running {
+/// that a crashed run leaves rows to clean up or how many lanes there are.
+pub async fn start(pool: PgPool, engine: engine::Client) -> Running {
     // Said at boot rather than discovered by waiting for a message that was never
     // configured to arrive.
     discord::report_configuration();
     reconcile_after_restart(&pool).await;
 
-    let queue = Arc::new(Queue::new(pool.clone()));
+    let queue = Arc::new(Queue::new(pool.clone(), engine));
     // Before the runners start, so a chain is settled before anything can be
     // claimed: a follow-up whose parent finished while this process was dead is
     // promoted here, and one whose parent died mid-run is cancelled here.
     reconcile_chains(&pool, &queue).await;
     queue.spawn();
 
-    // Above the queue: it enqueues the jobs a post-training round is made of and
-    // advances when they finish, and it never touches the device itself — a
-    // driver that held the GPU would deadlock against its own children. Started
-    // after the queue because it subscribes to the queue's event channel.
-    let cycles = Arc::new(Cycles::new(pool.clone(), queue.clone()));
-    cycles.spawn();
-
-    Running { queue, cycles }
+    Running { queue }
 }
 
 /// Close out rows left `running` by a process that died.

@@ -156,8 +156,8 @@ const MAX_TOP_K: u32 = 1000;
 // Fold the frame's optional knobs onto the serving defaults, rejecting a value
 // that is out of range rather than quietly clamping it — a request asking for a
 // temperature of 50 is a bug in the caller, and answering it with 2.0 hides that.
-fn resolve_sampling(frame: &SendMessageFrame) -> Result<llm::sample::SamplingParams, &'static str> {
-    let mut params = llm::sample::SamplingParams::default();
+fn resolve_sampling(frame: &SendMessageFrame) -> Result<engine::SamplingParams, &'static str> {
+    let mut params = engine::SamplingParams::default();
     if let Some(temperature) = frame.temperature {
         if !temperature.is_finite() || !(MIN_TEMPERATURE..=MAX_TEMPERATURE).contains(&temperature) {
             return Err("temperature must be between 0.01 and 2.0");
@@ -197,6 +197,7 @@ async fn chat_ws(
     body: web::Payload,
     pool: web::Data<PgPool>,
     queue: web::Data<Arc<Queue>>,
+    engine: web::Data<engine::Client>,
     jwt_secret: web::Data<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, msg_stream) = actix_ws::handle(&req, body)?;
@@ -204,10 +205,12 @@ async fn chat_ws(
     // Owned clones for the 'static task: PgPool is an Arc internally (cheap to
     // clone), and we copy the secret string.
     let pool = pool.get_ref().clone();
+    // Cheap to clone: the client is Arc-backed and shares one connection pool.
+    let engine = engine.get_ref().clone();
     let queue = queue.get_ref().clone();
     let secret = jwt_secret.get_ref().clone();
 
-    actix_web::rt::spawn(chat_session(session, msg_stream, pool, queue, secret));
+    actix_web::rt::spawn(chat_session(session, msg_stream, pool, queue, engine, secret));
 
     Ok(response)
 }
@@ -219,6 +222,7 @@ async fn chat_session(
     mut stream: actix_ws::MessageStream,
     pool: PgPool,
     queue: Arc<Queue>,
+    engine: engine::Client,
     secret: String,
 ) {
     // (user id, is_admin) once authenticated. is_admin gates use of private models.
@@ -252,12 +256,7 @@ async fn chat_session(
                     },
                     // Authenticated: handle a chat turn, streaming tokens back.
                     Some((uid, is_admin)) => {
-                        if handle_message(
-                            &mut session,
-                            &mut stream,
-                            &pool,
-                            &queue,
-                            uid,
+                        if handle_message(&mut session, &mut stream, &pool, &queue, &engine, uid,
                             is_admin,
                             text,
                         )
@@ -300,6 +299,7 @@ async fn handle_message(
     stream: &mut actix_ws::MessageStream,
     pool: &PgPool,
     queue: &Arc<Queue>,
+    engine: &engine::Client,
     user_id: Uuid,
     is_admin: bool,
     text: &str,
@@ -333,7 +333,7 @@ async fn handle_message(
     let budget = match frame.budget.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => None,
         Some(s) if s.eq_ignore_ascii_case("auto") => None,
-        Some(s) => match llm::chat_template::ThinkBudget::parse(s) {
+        Some(s) => match engine::ThinkBudget::parse(s) {
             Some(budget) => Some(budget),
             None => return session.text(ws::error_frame("unknown thinking budget")).await,
         },
@@ -352,11 +352,15 @@ async fn handle_message(
     let Some(model) = resolve_model(session, pool, frame.model_id, is_admin).await? else {
         return Ok(());
     };
-    let model_dir = storage::models_dir().join(model.id_model.to_string());
-
-    // Non-fatal: if the tokenizer can't be read the message is still saved, just
-    // with a 0 token count rather than blocking the turn.
-    let user_tokens = llm::infer::encode_count(&model_dir, content).unwrap_or(0) as i32;
+    // Counted by the engine: it owns the tokenizer, and a second implementation
+    // here would report a different number than the model actually sees.
+    //
+    // Non-fatal: an unreachable engine still saves the message, with a 0 count
+    // rather than blocking the turn.
+    let user_tokens = engine
+        .count_tokens(&model.id_model.to_string(), content)
+        .await
+        .unwrap_or(0) as i32;
     if !persist_user_message(session, pool, chat_id, user_id, content, user_tokens).await? {
         return Ok(());
     }
@@ -883,7 +887,7 @@ mod tests {
     #[test]
     fn an_empty_frame_is_the_serving_defaults() {
         let params = resolve_sampling(&frame(None, None, None)).expect("defaults rejected");
-        let default = llm::sample::SamplingParams::default();
+        let default = engine::SamplingParams::default();
         assert_eq!(params.temperature, default.temperature);
         assert_eq!(params.top_k, default.top_k);
         assert_eq!(params.top_p, default.top_p);
@@ -895,8 +899,8 @@ mod tests {
     fn one_knob_can_be_sent_without_the_others() {
         let params = resolve_sampling(&frame(Some(0.3), None, None)).expect("rejected");
         assert_eq!(params.temperature, 0.3);
-        assert_eq!(params.top_k, llm::sample::DEFAULT_TOP_K);
-        assert_eq!(params.top_p, llm::sample::DEFAULT_TOP_P);
+        assert_eq!(params.top_k, engine::chat::DEFAULT_TOP_K);
+        assert_eq!(params.top_p, engine::chat::DEFAULT_TOP_P);
     }
 
     #[test]
