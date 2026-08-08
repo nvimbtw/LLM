@@ -6,12 +6,41 @@ One object rather than a positional argument list: the Rust `train()` needed
 had to be threaded through each layer by hand.
 """
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # `model_name` collides with pydantic v2's protected `model_` namespace, which
 # would warn on every instantiation. The field name is worth keeping — it is
 # what the Rust config, the job rows, and the on-disk layout all call it.
 _ALLOW_MODEL_PREFIX = ConfigDict(protected_namespaces=())
+
+
+class DatasetSelection(BaseModel):
+    """A dataset to train on, optionally capped to its first `count` files.
+
+    The cap is what keeps a run's size under control when one folder dwarfs the
+    rest: FineWeb averages ~70k tokens per file and holds 99% of the corpus here,
+    so `{"name": "FineWeb", "count": 500}` is the difference between a 56M-token
+    run and a 390M-token one.
+
+    Files are ordered by name and the first `count` taken, so a capped run is
+    reproducible and a re-pack selects the same text. `None` or `0` means all of
+    them.
+
+    A bare string parses as an uncapped selection, so `["FineWeb"]` and
+    `[{"name": "FineWeb"}]` are the same request.
+    """
+
+    name: str
+    count: int | None = Field(
+        default=None, ge=0, description="take only the first N files; 0 or null means all"
+    )
+
+
+def _as_selections(value):
+    """Accept `["Name"]`, `[{"name": ..., "count": ...}]`, or a mix of both."""
+    if not isinstance(value, list):
+        return value
+    return [{"name": item} if isinstance(item, str) else item for item in value]
 
 
 class CurriculumStage(BaseModel):
@@ -24,8 +53,10 @@ class CurriculumStage(BaseModel):
     """
 
     name: str | None = None
-    datasets: list[str] = Field(default_factory=list)
+    datasets: list[DatasetSelection] = Field(default_factory=list)
     epochs: int = 1
+
+    _normalize = field_validator("datasets", mode="before")(_as_selections)
 
 
 class TrainConfig(BaseModel):
@@ -52,9 +83,10 @@ class TrainConfig(BaseModel):
     weight_decay: float = 0.1
 
     # ── Data ────────────────────────────────────────────────────────────────
-    datasets: list[str] = Field(
+    datasets: list[DatasetSelection] = Field(
         default_factory=list,
-        description="dataset folders to train on; empty means all of them",
+        description="dataset folders to train on; empty means all of them. Each entry is "
+        "a name or {name, count} to cap it to its first N files",
     )
     curriculum: list[CurriculumStage] = Field(
         default_factory=list,
@@ -66,6 +98,28 @@ class TrainConfig(BaseModel):
         default=False,
         description="re-tokenize even when a corpus is already on disk",
     )
+
+    # ── Performance ─────────────────────────────────────────────────────────
+    # These change speed, and `precision` changes numerics. Defaults are the fast
+    # path; drop to "fp32" and compile=False to reproduce a run bit-for-bit
+    # against the pre-Ampere-features behaviour.
+    precision: str = Field(
+        default="bf16",
+        pattern="^(bf16|fp16|fp32)$",
+        description="bf16 unlocks the flash-attention kernel, which fp32 cannot use at all; "
+        "master weights stay fp32 either way",
+    )
+    compile_model: bool = Field(
+        default=True,
+        description="torch.compile the forward/backward; worth ~1.4x on top of bf16 at small "
+        "model sizes, where kernel launch overhead dominates. Falls back to eager if it fails",
+    )
+    allow_tf32: bool = Field(
+        default=True,
+        description="TF32 for fp32 matmuls on Ampere+; torch defaults this off",
+    )
+
+    _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 
     @model_validator(mode="after")
     def _check_architecture(self):

@@ -13,7 +13,6 @@ optimizer plumbing that file needs — reading raw device buffers, reconstructin
 Adam moments — is `p.grad` and a parameter snapshot here.
 """
 
-from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -25,6 +24,11 @@ from llm.model.transformer import Transformer
 # computed once per run, so the measurement follows the same tokens over training
 # rather than drifting with whatever is common in the current batch.
 ANISOTROPY_TOKENS = 32
+
+# Tokens per block when counting corpus frequencies. Bounds the int64 temporary
+# `np.bincount` makes internally: 8M tokens is a 64 MiB cast, against the 3.1 GiB
+# a whole 390M-token corpus would need in one pass.
+_COUNT_BLOCK = 1 << 23
 
 ACT_HIST_BINS = 24
 ACT_HIST_RANGE = 4.0
@@ -70,10 +74,28 @@ def frequent_tokens(corpus: np.ndarray, count: int = ANISOTROPY_TOKENS) -> list[
 
     Computed once per run — the corpus is fixed — so the embedding metrics track
     the same tokens for the whole of training.
+
+    Counted with `bincount` over blocks rather than `Counter(corpus.tolist())`.
+    `tolist()` boxes every token into a Python int — 36 bytes against the 2 it
+    occupies as uint16 — so on a real corpus it asks for ~18x the corpus size in
+    RAM (390M tokens wanted ~13 GiB) and the OOM killer arrives before the first
+    training step. Blocking the bincount also bounds its internal intp cast,
+    which would otherwise copy the whole corpus to int64.
     """
-    counts = Counter(corpus.tolist())
-    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [token_id for token_id, _ in ranked[:count]]
+    flat = corpus.reshape(-1)
+    if flat.size == 0:
+        return []
+
+    width = int(flat.max()) + 1
+    counts = np.zeros(width, dtype=np.int64)
+    for start in range(0, flat.size, _COUNT_BLOCK):
+        counts += np.bincount(flat[start : start + _COUNT_BLOCK], minlength=width)
+
+    # At most `width` entries survive (the vocabulary, not the corpus), so the
+    # exact ordering below is cheap: highest count first, ties broken by id.
+    present = np.flatnonzero(counts)
+    ranked = sorted(present.tolist(), key=lambda t: (-int(counts[t]), int(t)))
+    return ranked[:count]
 
 
 def snapshot_weights(model: Transformer) -> list[torch.Tensor]:

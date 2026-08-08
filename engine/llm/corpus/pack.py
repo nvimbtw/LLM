@@ -27,6 +27,20 @@ from llm.corpus.sources import SourceFile
 # vocabulary at 65536 — far above anything this project trains.
 CORPUS_DTYPE = np.uint16
 
+# How many tokens to hold before writing a block out.
+#
+# The corpus is streamed to disk rather than assembled whole because a Python list
+# boxes every element: 28 bytes for the int object plus an 8-byte list slot, against
+# the 2 bytes the same token occupies as uint16. Buffering a whole corpus therefore
+# costs about 18x its packed size — a 250 MB corpus.bin needs ~4.5 GiB of RAM to
+# build — and the OOM killer takes the process before the file is ever written. The
+# Rust `build_dataset` this was ported from streamed, so the ceiling arrived with
+# the port rather than with any change in the data.
+#
+# 2M tokens is ~72 MiB of buffer and a 4 MiB write. Peak memory no longer scales
+# with the corpus.
+FLUSH_TOKENS = 1 << 21
+
 
 @dataclass
 class DocSpan:
@@ -73,29 +87,10 @@ def pack(files: list[SourceFile], tok: Tokenizer, stages: list[dict] | None = No
         if tok.token_to_id(name) is not None
     }
 
-    stream: list[int] = []
     documents: list[DocSpan] = []
     seen: set[int] = set()
     chars = 0
-
-    for source in files:
-        text = source.path.read_text(encoding="utf-8", errors="replace")
-        chars += len(text)
-        ids = bpe.encode(tok, text)
-        if not ids:
-            continue
-
-        documents.append(
-            DocSpan(
-                dataset=source.dataset,
-                start=len(stream),
-                length=len(ids),
-                stage=source.stage,
-            )
-        )
-        stream.extend(ids)
-        stream.append(eot_id)
-        seen.update(marker_ids.intersection(ids))
+    corpus_len = 0
 
     storage.ensure_dir(storage.datasets_dir())
 
@@ -103,7 +98,40 @@ def pack(files: list[SourceFile], tok: Tokenizer, stages: list[dict] | None = No
     # previous corpus intact rather than a truncated file that still loads.
     corpus = storage.corpus_path()
     partial = corpus.with_suffix(".bin.partial")
-    np.asarray(stream, dtype=CORPUS_DTYPE).tofile(partial)
+
+    buffer: list[int] = []
+
+    def flush() -> None:
+        if buffer:
+            out.write(np.asarray(buffer, dtype=CORPUS_DTYPE).tobytes())
+            buffer.clear()
+
+    with partial.open("wb") as out:
+        for source in files:
+            text = source.path.read_text(encoding="utf-8", errors="replace")
+            chars += len(text)
+            ids = bpe.encode(tok, text)
+            if not ids:
+                continue
+
+            documents.append(
+                DocSpan(
+                    dataset=source.dataset,
+                    start=corpus_len,
+                    length=len(ids),
+                    stage=source.stage,
+                )
+            )
+            buffer.extend(ids)
+            buffer.append(eot_id)
+            corpus_len += len(ids) + 1
+            seen.update(marker_ids.intersection(ids))
+
+            if len(buffer) >= FLUSH_TOKENS:
+                flush()
+
+        flush()
+
     partial.replace(corpus)
 
     storage.segments_path().write_text(
@@ -122,7 +150,7 @@ def pack(files: list[SourceFile], tok: Tokenizer, stages: list[dict] | None = No
         files=len(files),
         chars=chars,
         vocab_size=vocab,
-        corpus_len=len(stream),
+        corpus_len=corpus_len,
         documents=len(documents),
         special_ids_seen=sorted(seen),
     )

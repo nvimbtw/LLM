@@ -14,6 +14,7 @@ when the *data* changes, not when the architecture or the learning rate does.
 
 import json
 import time
+from collections import Counter
 from threading import Event
 
 from llm import storage
@@ -36,7 +37,11 @@ def build_dataset(cfg: TrainConfig) -> pack.PackStats:
             + (f" for datasets {cfg.datasets}" if cfg.datasets else "")
         )
 
-    print(f"[1/6] Collected {len(files)} file(s) from {len(set(f.dataset for f in files))} dataset(s)")
+    # Per-dataset counts, because a cap that silently failed to apply is otherwise
+    # invisible until the run's wall-clock comes in several times over.
+    per_dataset = Counter(f.dataset for f in files)
+    breakdown = ", ".join(f"{name} {n:,}" for name, n in sorted(per_dataset.items()))
+    print(f"[1/6] Collected {len(files):,} file(s) from {len(per_dataset)} dataset(s): {breakdown}")
 
     print(f"[2/6] Training tokenizer (max_vocab {cfg.max_vocab})")
     tokenizer = bpe.train([f.path for f in files], cfg.max_vocab)
@@ -142,6 +147,12 @@ def run(
         "model_name": cfg.model_name,
         "parameters": model.parameter_count(),
         "device": device,
+        # Recorded because they change throughput by ~2.5x and precision changes
+        # numerics: two runs with the same config and very different curves or
+        # wall-clocks are otherwise indistinguishable after the fact.
+        "precision": cfg.precision,
+        "compiled": cfg.compile_model,
+        "tf32": cfg.allow_tf32,
         "vocab": model.vocab,
         "corpus_tokens": len(corpus),
         "documents": len(data_plan.documents),

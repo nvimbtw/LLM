@@ -12,6 +12,7 @@ on and what it is served cannot drift apart.
 """
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from tokenizers import Tokenizer
 from llm import storage
 from llm.chat.template import Reasoning, Role, ThinkBudget, Turn, build_training_example
 from llm.corpus import bpe, special
-from llm.corpus.pack import CORPUS_DTYPE, DocSpan
+from llm.corpus.pack import CORPUS_DTYPE, FLUSH_TOKENS, DocSpan
 
 
 @dataclass
@@ -40,23 +41,27 @@ def conversation_files() -> list[Path]:
     return sorted(storage.sft_dir().glob("*.jsonl"))
 
 
-def read_conversations(files: list[Path]) -> list[dict]:
-    """Every conversation across the given JSONL files.
+def read_conversations(files: list[Path]) -> Iterator[dict]:
+    """Every conversation across the given JSONL files, one at a time.
 
     A malformed line is skipped rather than fatal: these files are generated in
     bulk, and one bad row should not cost the whole fine-tune.
+
+    Yields rather than returning a list, and reads line by line rather than
+    `read_text().splitlines()`, because the SFT set runs to hundreds of megabytes
+    of JSONL: materializing it as parsed dicts costs several times its size on
+    disk, on top of the corpus being built from it.
     """
-    conversations: list[dict] = []
     for path in files:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                conversations.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return conversations
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
 
 def _turns(raw: dict) -> list[Turn] | None:
@@ -85,45 +90,78 @@ def build(
 ) -> SftStats:
     """Render every conversation into the aligned corpus/mask pair."""
     files = files if files is not None else conversation_files()
-    conversations = read_conversations(files)
-    if not conversations:
+
+    eot_id = bpe.token_id(tokenizer, special.END_OF_TEXT)
+
+    documents: list[DocSpan] = []
+    skipped = 0
+    total_tokens = 0
+    trainable_tokens = 0
+
+    storage.ensure_dir(storage.datasets_dir())
+
+    # Both files are streamed for the same reason `pack.pack` is — a Python list
+    # boxes every token, so buffering the whole corpus costs many times its packed
+    # size — and both go through a `.partial` so a failed or empty build cannot
+    # leave a half-written pair behind. They must stay aligned 1:1; `load()`
+    # rejects a length mismatch, and writing them in lockstep here is what makes
+    # that check pass.
+    corpus_final, mask_final = storage.sft_corpus_path(), storage.sft_mask_path()
+    corpus_partial = corpus_final.with_suffix(".bin.partial")
+    mask_partial = mask_final.with_suffix(".bin.partial")
+
+    token_buffer: list[int] = []
+    mask_buffer: list[int] = []
+
+    def flush() -> None:
+        if token_buffer:
+            corpus_out.write(np.asarray(token_buffer, dtype=CORPUS_DTYPE).tobytes())
+            mask_out.write(np.asarray(mask_buffer, dtype=np.uint8).tobytes())
+            token_buffer.clear()
+            mask_buffer.clear()
+
+    with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
+        for raw in read_conversations(files):
+            turns = _turns(raw)
+            if turns is None:
+                skipped += 1
+                continue
+
+            budget = ThinkBudget.parse(raw["budget"]) if raw.get("budget") else None
+            ids, example_mask = build_training_example(
+                raw.get("system"), turns, tokenizer, budget, reasoning
+            )
+            if not ids:
+                skipped += 1
+                continue
+
+            documents.append(DocSpan(dataset="sft", start=total_tokens, length=len(ids)))
+            token_buffer.extend(ids)
+            mask_buffer.extend(example_mask)
+            # The separator is scaffold between conversations, never a target: the
+            # model must not learn to predict one conversation from another.
+            token_buffer.append(eot_id)
+            mask_buffer.append(0)
+
+            total_tokens += len(ids) + 1
+            trainable_tokens += sum(example_mask)
+
+            if len(token_buffer) >= FLUSH_TOKENS:
+                flush()
+
+        flush()
+
+    if not documents:
+        corpus_partial.unlink(missing_ok=True)
+        mask_partial.unlink(missing_ok=True)
         raise ValueError(
             f"No conversations found in {storage.sft_dir()} — SFT needs .jsonl "
             f"files of {{system?, turns: [{{role, text}}], budget?}}"
         )
 
-    eot_id = bpe.token_id(tokenizer, special.END_OF_TEXT)
+    corpus_partial.replace(corpus_final)
+    mask_partial.replace(mask_final)
 
-    tokens: list[int] = []
-    mask: list[int] = []
-    documents: list[DocSpan] = []
-    skipped = 0
-
-    for raw in conversations:
-        turns = _turns(raw)
-        if turns is None:
-            skipped += 1
-            continue
-
-        budget = ThinkBudget.parse(raw["budget"]) if raw.get("budget") else None
-        ids, example_mask = build_training_example(
-            raw.get("system"), turns, tokenizer, budget, reasoning
-        )
-        if not ids:
-            skipped += 1
-            continue
-
-        documents.append(DocSpan(dataset="sft", start=len(tokens), length=len(ids)))
-        tokens.extend(ids)
-        mask.extend(example_mask)
-        # The separator is scaffold between conversations, never a target: the
-        # model must not learn to predict one conversation from another.
-        tokens.append(eot_id)
-        mask.append(0)
-
-    storage.ensure_dir(storage.datasets_dir())
-    np.asarray(tokens, dtype=CORPUS_DTYPE).tofile(storage.sft_corpus_path())
-    np.asarray(mask, dtype=np.uint8).tofile(storage.sft_mask_path())
     storage.sft_segments_path().write_text(
         json.dumps(
             {"eot_id": eot_id, "documents": [asdict(d) for d in documents]}, indent=2
@@ -133,8 +171,8 @@ def build(
 
     return SftStats(
         conversations=len(documents),
-        total_tokens=len(tokens),
-        trainable_tokens=int(sum(mask)),
+        total_tokens=total_tokens,
+        trainable_tokens=trainable_tokens,
         skipped=skipped,
     )
 
