@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Engine — Deep System Review (RTX 3060 / 8GB)</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --ink:#e8eaf0; --dim:#9aa3b2;
+    --line:#2a2f3a; --acc:#5b8cff; --good:#37c98c; --mid:#ffc24d; --bad:#ff6b6b;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+  header{padding:34px 28px 20px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#161a23,var(--bg));}
+  header h1{margin:0 0 6px;font-size:26px;letter-spacing:.2px}
+  header p{margin:2px 0;color:var(--dim);max-width:1000px}
+  .band{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    padding:4px 10px;font:12px var(--mono);color:var(--dim)}
+  .chip b{color:var(--ink);font-weight:600}
+  main{max-width:1080px;margin:0 auto;padding:22px 28px 60px}
+  h2{font-size:20px;margin:44px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+  h3{font-size:16px;margin:26px 0 8px;color:#c7d0e0}
+  p{color:#d5dae4}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel2);
+    border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:#aee6d0}
+  .tag{color:#8fc3ff;font-family:var(--mono);font-size:.84em}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#b9c4d9;font-weight:600;white-space:nowrap}
+  tr:nth-child(even) td{background:#141720}
+  .score{display:inline-block;min-width:52px;text-align:center;font-weight:700;
+    font-family:var(--mono);border-radius:5px;padding:1px 7px}
+  .bar{height:8px;background:var(--panel2);border-radius:5px;overflow:hidden;min-width:80px}
+  .bar>div{height:100%;border-radius:5px}
+  .g{background:var(--acc)} .gd{background:var(--good)} .y{background:var(--warn)} .r{background:var(--bad)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin:18px 0}
+  .card .head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+  .card h3{margin:0}
+  .sub{color:var(--dim);font-size:13px;margin-top:2px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:820px){.cols{grid-template-columns:1fr}}
+  ul{margin:8px 0 8px 2px;padding-left:20px}
+  li{margin:4px 0}
+  .ok li::marker{color:var(--good)}
+  .bad li::marker{color:var(--bad)}
+  .ok li::marker{color:#37dd8c}
+  .num{margin-right:10px;font-family:var(--mono);color:var(--accent);font-size:.8em}
+  .pills{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+  .pill{background:var(--panel2);border:1px solid var(--line);border-radius:20px;
+    padding:2px 10px;font-size:12.5px;color:var(--dim)}
+  .pill b{color:var(--ink)}
+  .warn{background:#262017;border-color:#5a4a1d}
+  .warn p{color:#e8d9a8}
+  pre{background:#131620;border:1px solid var(--line);border-radius:10px;padding:14px;
+    overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.5;color:#c6cddd}
+  .big{font-size:17px;font-weight:700}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:16px 0}
+  .kpi div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .kpi b{display:block;font-size:22px;font-family:var(--mono)}
+  .kpi span{color:var(--dim);font-size:12.5px}
+  @media print{ body{background:#fff;color:#111}.card{break-inside:avoid} }
+</style>
+</head>
+<body>
+<header>
+  <h1>LLM Engine — Full-System Deep Review</h1>
+  <p>An exhaustive, scored review of the entire LLM stack — Python training/serving engine, Rust backend, Next.js frontend, data scripts — written for one target: an <b>RTX 3060 with 8 GB VRAM</b>.</p>
+  <p class="sub">Scoring rubric: <b>9–10</b> = designed like a senior systems engineer · <b>7–8.9</b> = solid, small gaps · <b>5–6.9</b> = works but has real limits · <b>&lt;5</b> = needs real work before it's trustworthy.</p>
+  <div class="band">
+    <span class="chip">Stack: <b>Python·PyTorch 2.13 + FastAPI</b></span>
+    <span class="chip">Model: <b>decoder-only GPT (RoPE, Pre-LN, tied emb)</b></span>
+    <span class="chip">Real models: <b>6.83M params (256d/4h/6L/ctx 512)</b></span>
+    <span class="chip">Corpora: <b>1.5 GB input + 454k SFT convos</b></span>
+    <span class="chip">Device: <b>RTX 3060 · 8 GB</b></span>
+  </div>
+</header>
+
+<main>
+
+<h2>1 · What this system is</h2>
+<p>A self-hosted, from-scratch language-model stack. The Python <b>engine</b> (this folder) owns everything that touches a model: training a byte-level BPE, packing corpora, pretraining, SFT, evaluation, and an HTTP/SSE serving API. A Rust <b>backend</b> (<code>backend/crates/</code>) adds users, database, job queue, template + markup port, and supervises the engine process. A Next.js <b>frontend</b> (<code>frontend/</code>) renders chat, training dashboards, and benchmark charts. Data scripts (<code>scripts/</code>) fetch corpora (TinyStories, Wikipedia, FineWeb, SmolTalk) and generate synthetic SFT data via an LLM teacher.</p>
+
+<pre>
+┌──────────────────────────────────────────────────────────────────┐
+│  scripts/            fetch + synthetic SFT generation (teacher)  │
+│  engine/  Python     tokenizer → corpus → train → eval → serve   │
+│  backend/ Rust       auth, DB, job queue, supervisor→engine, SSE │
+│  frontend/ Next.js   chat UI, training dashboards, benchmarks    │
+└──────────────────────────────────────────────────────────────────┘
+        engine data/:  input/ (1.5G) · datasets/ (747M) · sft/ (777M) · eval/ (12M)
+</pre>
+
+<div class="kpi">
+  <div><b>6.83 M</b><span>params per real trained model (smallest runs)</span></div>
+  <div><b>390 M</b><span>tokens in the packed corpus</span></div>
+  <div><b>454 k</b><span>chat conversations in the SFT set (SmolTalk)</span></div>
+  <div><b>~30 k tok/s</b><span>observed real-run throughput (see §7)</span></div>
+</div>
+
+<h2>2 · Master scorecard</h2>
+<p>One row per subject area. The score bar shows where the area sits; the note tells you the single most important takeaway.</p>
+<table>
+<tr><th>Area</th><th>Score</th><th>Grade</th><th>One-line verdict</th></tr>
+<tr><td>Token design & BPE training</td><td>9.3 / 10</td><td class="score g">9.3</td><td>Byte-level BPE with a fixed reserved token block — quietly the best part of the stack.</td></tr>
+<tr><td>Corpus pipeline (pack/segments/streaming)</td><td>9.5 / 10</td><td class="score g">9.5</td><td>Streaming pack, doc-shuffle, reproducibly capped datasets — production quality.</td></tr>
+<tr><td>Model architecture (decoder-only core)</td><td>7.4 / 10</td><td class="score y">7.4</td><td>Clean GPT-Neo style, but SwiGLU/Parallel-attention/RoPE-scaling options are cheap wins unclaimed.</td></tr>
+<tr><td>Training loop &amp; optimizer</td><td>8.8 / 10</td><td class="score g">8.8</td><td>fused AdamW, cosine floor, TF32, compiled forward — very well-tuned for a small card.</td></tr>
+<tr><td>Efficiency on the 3060 (utilization)</td><td>6.2 / 10</td><td class="score y">6.2</td><td>Kernel-level thinking is strong; real runs still train at a fraction of the theoretical rate.</td></tr>
+<tr><td>SFT pipeline &amp; loss masking</td><td>9.2 / 10</td><td class="score g">9.2</td><td>Direct-correspondence between prompt render &amp; training mask — the goldens laser-guided.</td></tr>
+<tr><td>Chat template + markup grammar</td><td>9.6 / 10</td><td class="score g">9.6</td><td>Constraint evolution at decode-time is genuinely good design.</td></tr>
+<tr><td>Thinking blocks &amp; budgets</td><td>6.0 / 10</td><td class="score y">6.0</td><td>Excellent markers, but decoding for these is barely governed (no length/budget enforcement).</td></tr>
+<tr><td>Sampling (token picking)</td><td>6.4 / 10</td><td class="score y">6.4</td><td>Clean top-k/top-p core; no repetition penalty — the #1 quality lever for a model this size.</td></tr>
+<tr><td>Inference / serving throughput</td><td>7.4 / 10</td><td class="score y">7.4</td><td>KV cache + imperbatch good; no multi-turn KV reuse, no continuous batching, single-model cache.</td></tr>
+<tr><td>Run &amp; device arbitration (API)</td><td>7.0 / 10</td><td class="score y">7.0</td><td>Clean single-run registry, but inference is NOT arbitrated against training (VRAM/correctness risk).</td></tr>
+<tr><td>Evaluation rigour</td><td>9.0 / 10</td><td class="score g">9.0</td><td>n-gram floor, byte units, SEs, weight redistribution — a benchmark that treats statistics seriously.</td></tr>
+<tr><td>Eval coverage &amp; suites</td><td>6.5 / 10</td><td class="score y">6.5</td><td>Grammar &amp; pair stages "not ported yet" and no standardized extrinsic suites.</td></tr>
+<tr><td>Diagnostics &amp; training telemetry</td><td>9.2 / 10</td><td class="score g">9.2</td><td>Grad-stats, entropy, embedding PCA, activation hists — better than most production LLM platforms.</td></tr>
+<tr><td>Reproducibility / determinism</td><td>6.2 / 10</td><td class="score y">6.2</td><td>Shuffling seeded; CUDA path non-deterministic; no seed pins in training by default.</td></tr>
+<tr><td>Resume/checkpoint/cancel UX</td><td>6.4 / 10</td><td class="score y">6.4</td><td>Graceful cancel at step boundary; but no resume and only last-epoch weights.</td></tr>
+<tr><td>Typing, static analysis</td><td>7.6 / 10</td><td class="score y">7.6</td><td>Strong typing, pyright configured; mypy-rules not enforced in CI.</td></tr>
+<tr><td>Testing / CI</td><td>4.2 / 10</td><td class="score r">4.2</td><td>Excellent bench harness + parity, but NO pytest, NO CI, no fixture test data.</td></tr>
+<tr><td>Security posture</td><td>7.0 / 10</td><td class="score y">7.0</td><td>weights_only loads, no code exec; but no auth between internal services at all.</td></tr>
+<tr><td>Documentation / design comments</td><td>9.6 / 10</td><td class="score g">9.6</td><td>Each module explains the *why* — rare quality that keeps the system maintainable.</td></tr>
+<tr><td>Completeness of the "product" vision</td><td>7.8 / 10</td><td class="score y">7.8</td><td>Frontend declares KTO/RAFT + replay tokens the engine does not implement; drift to close.</td></tr>
+</table>
+
+<h2>3 · The model itself</h2>
+<div class="card">
+  <div class="head"><h3>Architecture review</h3><span class="score y">7.4</span></div>
+  <div class="sub">llm/model/transformer.py — decoder-only, 6.83M params in production</div>
+  <div class="cols">
+    <div>
+      <p class="sub">What it has</p>
+      <ul>
+        <li>RoPE rotary positions, precomputed cos/sin tables (transformer.py:31)</li>
+        <li>Pre-LN blocks, residual stream, final LN</li>
+        <li>Tied embeddings (embedding table transposed as the output projection) — halves the embedding O(V·d)</li>
+        <li>KV cache with correct positional RoPE offsets (transformer.py:66-92)</li>
+        <li>Fused flash attention via <code>scaled_dot_product_attention</code> in bf16</li>
+        <li>No dropout at all (fine for a 6M model on 500M tokens)</li>
+      </ul>
+    </div>
+    <div>
+      <p class="big">What's missing, and what each would buy</p>
+      <ul>
+        <li><b>SwiGLU / GeGLU</b> FFN → ~1-2% loss gain for +0.4x params; cheap win at this scale.</li>
+        <li><b>No QK-norm or value-norm</b> — many small models degrade less with it. Try it.</li>
+        <li><b>No RoPE NTK-style scaling</b> — the ROPE_BASE is fixed 10000 and context is hard-baked; you can extend ctx 512 → 2048 on the same card easily.</li>
+        <li><b>LN has biases + subtracts mean</b> — LayerNorm growth mode is standard, but removing mean-subtract &amp; bias (RMSNorm) is a free norm-stability win at this scale. 25% at most difference.</li>
+        <li><b>Single-query / grouped-query head</b> — at 6-30M params, MQA/GQA shrinks KV cache, which pays at inference more than at training.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="head"><h3>Where the real compute cost goes</h3><span class="score g">8.2</span></div>
+  <p>With 6.83M params, a <code>batch=8 × ctx=512</code> step is ~167 GFLOP — about 13 ms at fp16 on a 3060. The engine is measured at ~30 ms/step with tf32+bf16+compile; the residual is attention + launch overhead. This is textbook-correct for the card: nothing is wasting your VRAM. The one real omission is <b>throughput in production: real runs train at ~6.6 steps/s, not the ~30/s the kernels would allow</b> — see §7.</p>
+</div>
+
+<h2>4 · Tokenizer &amp; vocabulary</h2>
+<div class="card">
+  <div class="head"><h3>Byte-level BPE + fixed special block</h3><span class="score g">9.3</span></div>
+  <div class="cols">
+    <div>
+      <p class="big">Strengths</p>
+      <ul>
+        <li>Wraps HF <code>tokenizers</code> — battle-tested Rust; no reimplementation bugs.</li>
+        <li>Single-file <code>tokenizer.json</code> carries added tokens — a reloaded vocab.json/merges.txt pair would silently split markers; the format choice here prevents a real failure class.</li>
+        <li>Special-token indices are <b>stable by construction</b>: a fixed 64-slot reserved block, append-only policy (<code>special.py:1-4</code>).</li>
+        <li>Corpus-side anywhere only records which marker ids actually appeared; that record drives SFT warm-start (a genuinely subtle cross-stage correctness design).</li>
+      </ul>
+    </div>
+    <div>
+      <p class="big">Weaknesses</p>
+      <ul>
+        <li>max_vocab 8192 is <b>small</b>; English words split into many byte merges (~2.1 tokens/word) — hurts both compression and training signal per token.</li>
+        <li>Vocab is retrained per corpus; a corpus change silently renumbers everything — the copy-me-beside-weights only saves the model from tokenizer breaks *after* pack. The boundary between "new vocab" and "same vocab" is only decided at the data dir level.</li>
+        <li>No Unicode normalization / no pretokenizer customization — byte-level is right, but minimizing whitespace-vs-say punctuation variation is not free.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pills"><span class="pill"><b>Fix:</b> raise max_vocab to 16384–32768</span><span class="pill"><b>Fix:</b> train vocab per full corpus, then freeze; version it in meta.json</span><span class="pill"><b>Fix:</b> lower min_frequency to 1 for small corpora, it's the strongest lever on a 6M model</span></div>
+</div>
+
+<h2>5 · Corpus pipeline</h2>
+<div class="card">
+  <div class="head"><h3>pack.py · plan.py · sources.py — a stand-out subsystem</h3><span class="score g">9.5</span></div>
+  <div class="sub">Storage: 390M tokens → 747 MB uint16 corpus.bin + segments.json sidecar</div>
+  <p>Apart from the default-8 batch being small (§7), this is the finest-engineered part of the whole stack. It:
+  streams to disk (2M-token buffers, 18× RAM amplification avoided), keeps a segments.json so per-epoch document shuffling never teaches cross-doc boundaries, uses a deterministic (name,count) cap for reproducibility, builds batches as one contiguous slice (no per-row gathers, las vectorize the numpy copy), and drops partial batches instead of padding (plan.py:125-128). The memory notes (stream_length 745 MiB copy saved, frequent_tokens blocking to avoid 13 GiB tolist) show real production care.</p>
+  <p class="sub">The only real limits: no dedup across datasets (FineWeb+TinyStories may overlap), and the SFT corpus (777 MB, 454k conversations) is not yet linked to its sources or filtered reproducibly.</p>
+</div>
+
+<h2>6 · Training loop</h2>
+<div class="card">
+  <div class="head"><h3>loop.py · plan schedule · optimizer</h3><span class="score g">8.8</span></div>
+  <div class="cols">
+    <div>
+      <p class="big">Strengths</p>
+      <ul>
+        <li>fused AdamW (one kernel per step vs per-tensor), cosine decay to 10% floor + warmup.</li>
+        <li>bf16 autocast with master fp32 weights; no GradScaler needed (bf16 keeps fp32's exponent range, so no loss scaling to tune — loop.py:35)</li>
+        <li>torch.compile on the fwd+loss as one graph (the fp32 cross-entropy materialization is fused away: measured 14 of 33 ms)</li>
+        <li>Loss recorded in a device buffer and read back once per report window — no per-step .item() sync.</li>
+        <li>Cooperative cancel at a step boundary, SSE frames every ~150 steps.</li>
+      </ul>
+    </div>
+    <div>
+      <p class="big">Weaknesses that cost real epochs in a long run</p>
+      <ul>
+        <li><b>No gradient accumulation</b> — to grow the effective batch (bs 8 is tiny) you must raise batch_size and VRAM/h2d at once.</li>
+        <li><b>No EMA window</b> — a deterministic EMA of weights is free and helps small models on hard data.</li>
+        <li><b>No best-epoch tracking</b> — checkpoints overwrite; the "best" check for eval is manual.</li>
+        <li><b>No resume</b> — a 12k-step run interrupted costs everything (both real model dirs are 'cancelled').</li>
+        <li>lr schedule is global across curriculum stages (fine) but no stage-decay knob.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pills"><span class="pill"><b>Fix:</b> grad-accumulate a fixed number of micro-batches to hit 32-64</span><span class="pill"><b>Fix:</b> save best-by-EMA + last epochs, and expose --resume from a checkpoint</span><span class="pill"><b>Fix:</b> add a scheduler curve test under bench parity</span></div>
+</div>
+
+<h2>7 · Efficiency on the RTX 3060 — the gap</h2>
+<div class="card">
+  <div class="head"><h3>Bench harness says ~33 ms/step; real runs live at ~150 ms/step</h3><span class="score y">6.2</span></div>
+  <p>Real meta.json records: 12,600 steps in 1,908 s = <b>6.6 steps/s ≈ 151 ms/step</b>, and 5,781 steps in 1,023.5 s ≈ 177 ms/step. bench.py micro/full predicts ~33 ms/step at the same config. That ~4.5-5.5× difference is the single biggest efficiency mystery to profile first. Likely suspects:</p>
+  <ul>
+    <li>report/epoch work: epoch_stream rebuilds the whole stream each epoch (a full-memory copy), checkpoint saves per epoch, SSE + sleep(2ms) per report — none should cost 120 ms/step by itself</li>
+    <li>H2D copies with <code>non_blocking=True</code> on <b>pageable</b> numpy arrays — pinned copies would allow true overlap.</li>
+    <li>Diagnostics every few reports (explicit softmax + SVD + histograms) — could be a large fraction of a real run.</li>
+    <li>Compile warm-up, allocator growth, cudnn autotune on the first epochs.</li>
+    <li>GPU shared with the rest of the machine (frontend/dev server, compositor) on a 3060.</li>
+  </ul>
+  <div class="pills">
+    <span class="pill"><b>Action:</b> time bench micro vs real-run step — the harness already splits per-phase timing, so the delta names itself</span>
+    <span class="pill"><b>Action:</b> pin host buffers (allocate stream via .pin_memory())</span>
+    <span class="pill"><b>Action:</b> keep diagnostics cheap at real scale</span>
+  </div>
+</div>
+
+<div class="card warn">
+  <p><b>VRAM budget:</b> the 6.8M model trains at ~0.8-1.2 GB peak; the "balanced" 30M preset at batch 8 lives in ~2.5 GB. Even a <b>120-150M-param</b> model (768d/20L+) stays under ~4-5 GB including Adam. The 3060 is *not* your constraint — the token volume and step-utilization are. Prefer batch 16-32 + BF16 + compile over a smaller model before you consider anything else.</p>
+</div>
+
+<h2>8 · SFT + chat template</h2>
+<div class="card">
+  <div class="head"><h3>One template for train &amp; prompt; mask is derived from the scaffold</h3><span class="score g">9.2</span></div>
+  <ul>
+    <li><code>build_training_example</code> renders the exact marker scaffold the runtime serves — template drift is structurally impossible (<code>chat/template.py:226</code>).</li>
+    <li>Loss masking includes the closing <code>&lt;|/assistant|&gt;</code>, marks the last position 0, and averages over named tokens only (loop.py:394).</li>
+    <li>Warm-start of marker embeddings whose ids the base model never saw — informed by special_ids_seen, a genuinely cross-run correct idea.</li>
+    <li>454k SmolTalk conversations + synthetic teacher-generated data (scripts/generate_sft_llm.py with real gold examples).</li>
+    <li>Grounding: the base-model tokenizer travels with the fine-tune, so a later pretrain cannot silently renumber tokens under it.</li>
+  </ul>
+  <p><b>Improvements:</b> add SFT ↔ source dedupe; replay thin prose from the base model's pretrain corpus into SFT windows (the frontend TS already defines replay_tokens — the engine doesn't do it); seed some system-prompt scaffolds into the pretrain corpus, since system blocks are trained today but never exercised at sampling.</p>
+</div>
+
+<h2>9 · Decoding &amp; sampling</h2>
+<div class="card">
+  <div class="head"><h3>sample.pick() — solid core, missing the one lever that matters most for this size</h3><span class="score y">6.4</span></div>
+  <div class="cols">
+    <div>
+      <p class="big">Works well</p>
+      <ul>
+        <li>temperature collapse → argmax; top_k / top_p self-disable at neutral values</li>
+        <li>sampler runs on an explicitly f32 logit clone, so masking never corrupts the model's own logits</li>
+        <li>decode stops on <code>&lt;|endoftext|&gt;</code> in infer and <code>&lt;|/assistant|&gt;</code> in chat</li>
+        <li>grammar masking (markup.py) costs microseconds per step — few dozen ids masked</li>
+      </ul>
+    </div>
+    <div>
+      <p class="big">Gaps</p>
+      <ul>
+        <li><b>No repetition penalty</b> (the #1 text-quality lever at 6M-120M params; the eval scorecard literally gates on a repetition metric, so the pain is measured, not hypothetical)</li>
+        <li>No min-p / typical sampling (cheap, big quality win at small-model scale)</li>
+        <li>No frequency/presence penalties (a useful interactive knob for chat)</li>
+        <li>The loop only stops at end-of-text / token cap; no explicit <b>stop-on-repetition</b> (loops burn the whole budget).</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pills">
+    <span class="pill"><b>Fix:</b> add <code>repetition_penalty ≤ 1.2</code> to sample.pick (both chat and eval paths)</span>
+    <span class="pill"><b>Fix:</b> add min-p = 0.02-0.05 for the eval suite</span>
+    <span class="pill"><b>Fix:</b> stop-token + repetition cut-off in decode loops</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="head"><h3>Markup grammar at decode</h3><span class="score g">9.8</span></div>
+  <p>OpenBlocks tracks block state and masks illegal markers: closes what's open before the turn ends, refuses needless depth past 6, forbids other-role scaffold and reply-id tokens, enforces list→item nesting and only-child rules, and on token-cap drain produces well-formed closers (<code>chat/markup.py:1-6</code>). This is better *structural* decoding than most production chat systems run. The one rule-set addition that would extend it: budget-aware thinking (<code>&lt;|think:low|&gt;</code> ⇒ cap thinking block) — score for that lives in the thinking section.</p>
+</div>
+
+<h2>10 · Thinking blocks &amp; budgets</h2>
+<div class="card">
+  <div class="head"><h3>The reservation is excellent; the policy is one flag</h3><span class="score y">6.0</span></div>
+  <p>Design is right: three budget markers condition training, as one-token embeddings, not labels; the training mask deliberately excludes them; a "strip_thinking" flag exists to make the model answer directly on the same data. What's <i>not</i> there is any runtime enforcement. Nothing at generation:</p>
+  <ul>
+    <li>caps how many thinking blocks it opens, or how long one runs (a model with a low budget can burn its whole length budget in &lt;|thinking|&gt;)</li>
+    <li>forces a decision between closing the block and ending the turn (a dangling thinking block is well-formed right now)</li>
+    <li>interprets the budget value at all — "low/med/high" maps to nothing</li>
+  </ul>
+  <p>All three are one extension to the open-block machinery (like the markup grammar) plus one token-count cap. For the 3060's 6M-30M models, which gain from showing thinking at all but can't sustain it unaided, budget-regulating decode is a free feature increase that buys the most "intelligence per token" on this machine.</p>
+</div>
+
+<h2>11 · Inference &amp; serving</h2>
+<div class="card">
+  <div class="head"><h3>Runs are arbitrated; inference is not</h3><span class="score y">7.0</span></div>
+  <div class="cols">
+    <div>
+      <p class="big">Good</p>
+      <ul>
+        <li>One Registry, one device line: EngineBusy=409, wait/cancel contracts, SSE with backlog-replay for late subscribers (runs.py:1-9).</li>
+        <li>Cooperative cancel lands on step boundary — weights consistent, always.</li>
+        <li>Single model+tokenizer cached per process; load once per request works for short chat.</li>
+        <li>No base64 blobs: routes are tiny wrappers onto a pipeline.</li>
+      </ul>
+    </div>
+    <div>
+      <p class="big">Gaps</p>
+      <ul>
+        <li><b>Inference and chat are not arbitrated against running runs</b> — a /chat or /infer during a training run shares VRAM and compute with no gate, no queue, no admission control. On an 8 GB card with a 30M model + a 6M run this is fine; with 120M+ it's an OOM &amp; a half-second-per-token regression.</li>
+        <li>One model in memory at a time; switching models evicts the previous (new load per switch).</li>
+        <li>No KV-cache reuse across turns (multi-turn chat re-runs the whole prefix each time).</li>
+        <li>No continuous batching; a single /chat saturates the GPU for its whole turn.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pills">
+    <span class="pill"><b>Fix:</b> gate /infer and /chat behind a lightweight device-mutex; queue or 409</span>
+    <span class="pill"><b>Fix:</b> LRU model cache (2-3 slots) instead of evict-everything.</span>
+    <span class="pill"><b>Fix:</b> paged KV / "prefix sharing" for 2+ turn conversations (prefill only the delta)</span>
+  </div>
+</div>
+
+<h2>12 · Evaluation</h2>
+<div class="card">
+  <div class="head"><h3>Measured like a scientist, marked down only on coverage</h3><span class="score g">9.0</span></div>
+  <ul>
+    <li>Byte-5-gram baseline with Witten-Bell interpolation — a fair "did it learn beyond a counting table" floor (ngram.py).</li>
+    <li>A bits-per-byte unit that is tokenizer-independent, a logistic mapping with BPB_MID calibrated from real models, and a <code>score_stderr</code> computed per-conversation — all written with statistics in mind.</li>
+    <li>Language / assistant / markup suites kept separate, with weight redistribution when a stage is unavailable — the composite never silently gives zero to a not-yet-ported path.</li>
+    <li>Deterministic eval seed; report JSON stored beside the weights.</li>
+    <li>Gates: the variety/repetition gate keeps the composite honest about loops.</li>
+  </ul>
+  <p><b>But:</b> the markup pair stage and the language grammar-pair stage are both marked "not ported yet" — the composite evolves by dropping their weights, so today the score is really language + words only… which is reasonable but wasn't the intent. And there is <b>no extrinsic suite</b> — no HellaSwag/PIQA-style 0-shot slice. For a training-run pipeline this is a defensible choice, but three small exact subsets are the cheapest way to know "is my change worth it".</p>
+  <div class="pills">
+    <span class="pill"><b>Fix:</b> port the pair stage to restore markup's 0.40 weight</span>
+    <span class="pill"><b>Fix:</b> add one HellaSwag-style 0-shot slice (~300 examples, ~3 min of eval)</span>
+    <span class="pill"><b>Fix:</b> persist the eval config + timestamp in meta so two runs of the same model are diffable</span>
+  </div>
+</div>
+
+<h2>13 · Diagnostics &amp; observability</h2>
+<div class="card">
+  <div class="head"><h3>Better than most companies ship</h3><span class="score g">9.2</span></div>
+  <ul>
+    <li>Per-report: per-layer grad norms, optimizer update:weight ratios (snapshot-before/after, not derived from Adam math), residual RMS, per-head attention entropy, activation Z-histogram, embedding anisotropy (mean-corrected) + PCA-2/3 projections of frequent tokens.</li>
+    <li>Sampled on ~a handful of steps per run (report every ~150 steps, diag every few reports) so the cost never touches the fast path; the recording path swaps in an explicit softmax only for the measured step — elegant scoping via a <code>context manager</code>.</li>
+    <li>The whole array survives as a JSON frame, and the frontend renders them as charts (embedding globe etc).</li>
+  </ul>
+  <p><b>Gaps:</b> nothing surfaces throughput/step or GPU utilization; the epoch summary only lives in meta.json. Fix: emit tok/s, VRAM and util in the same progress frame — five lines of code and it answers "is it slow because of me".</p>
+</div>
+
+<h2>14 · Reproducibility, checkpointing, resume</h2>
+<div class="card">
+  <div class="head"><h3>Reproducibility is doc-level good, math-level not</h3><span class="score y">6.4</span></div>
+  <ul>
+    <li>Shuffle is seeded (seed + epoch), pack is deterministic, count-caps are name-sorted, eval seed is fixed → same data order every run.</li>
+    <li>But torch itself is non-deterministic: dtype accumulation, flash-attention kernels, cudnn autotune — and the training loop never sets torch.manual_seed (only bench.py's parity mode seeds by hand).</li>
+    <li>Seeds aren't logged into meta.json, so even repetition-reseeded runs can't be replayed bit-for-bit at eval time.</li>
+    <li>Checkpointing: epoch-per-file to checkpoints/, latest weights at model.pt, no resume. Both real trained models are 'cancelled' — no finished pipeline has ever been produced!</li>
+  </ul>
+</div>
+
+<h2>15 · Engineering quality (types, tests, CI, security)</h2>
+<div class="card">
+  <div class="head"><h3>Careful code, fragile tests-column</h3><span class="score y">7.0</span></div>
+  <div class="cols">
+    <div>
+      <p class="big">Solid</p>
+      <ul>
+        <li>Dataclass/Pydantic types everywhere; config == API body; <code>weights_only=True</code> on checkpoint loads; nothing ever evaluates untrusted data.</li>
+        <li>bench.py: micro/full/parity with CUDA-event timing, parity bit-exactness checks — real engineering.</li>
+        <li>Error paths: corner-case validation (dimension % heads, odd head_dim), .partial swap files, runtime guards that turn silent corruption into loud failures, clean per-pipeline error classes mapped to HTTP 4xx.</li>
+        <li>Clean separation layers (config - corpus - model - train - serve).</li>
+      </ul>
+    </div>
+    <div>
+      <p class="big">Weak</p>
+      <ul>
+        <li>No pytest at all; harness is the only automated thing and it's not wired into any CI (no .github).</li>
+        <li>Regression risk is concentrated: the batch vectorization, RoPE math, sampling masks — each is hand-verified in comments, not by tests.</li>
+        <li>No typing enforcement: pyrightconfig exists, but nothing runs it; <code># noqa</code> import comments suggest they'd like it.</li>
+        <li>Some untested frontiers: tolerance flags, curricula (stage/epoch redistribution edge), dynamic vocab swaps.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pills">
+    <span class="pill"><b>Fix:</b> add pytest tests for rope parity, mask/target alignment, markup grammar law (open/close), sampler determinism — each ~20 lines</span>
+    <span class="pill"><b>Fix:</b> wire bench.py check + parity into a tiny git hook / GH action</span>
+    <span class="pill"><b>Fix:</b> run pyright --fatal-warnings in that action</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="head"><h3>Security</h3><span class="score y">7.0</span></div>
+  <ul>
+    <li><code>weights_only=True</code> kills the classic pickle RCE from a tampered checkpoint</li>
+    <li>datasets list is read-only; model list only reports meta; tokenizer file checked for existence before load</li>
+    <li>— No auth middleware at all; any local process can POST /train and burn your GPU, or /models to list filenames.</li>
+    <li>— No rate limiting or body-size cap on /chat or /infer (a megabyte prompt floods a small card).</li>
+    <li>— Recent meta shifts (paths via DATA_DIR) are environment injection surface — only from trusted env, fine.</li>
+  </ul>
+</div>
+
+<h2>16 · The diploma: "what would <i>I</i> build next on a 3060/8GB"</h2>
+<div class="card">
+  <h3>Phase 1 — free wins (a day)</h3>
+  <ul>
+    <li><b>Repetition penalty + min-p</b> in sample.pick (both chat and eval) — the highest per-token quality lever; adds maybe 4 lines.</li>
+    <li><b>Preserialize + pin_memory</b> tensors in planning; GPU utilization will likely jump when host transfers overlap.</li>
+    <li><b>Seed training deterministically</b> (torch.manual_seed + manual_seed_all, logged into meta.json), accepting the ~10-15% per-step cost for an exactly-replayable run.</li>
+    <li><b>Admission control</b>: 409 in /infer and /chat while a run is busy (the Registry already knows).</li>
+  </ul>
+  <h3>Phase 2 — quality (a week)</h3>
+  <ul>
+    <li><b>SwiGLU + RMSNorm</b> — 2 edits, maybe +0.05 bpb improvement on the same data; refresh the 30M (balanced) run and measure.</li>
+    <li><b>Gradient accumulation</b> to effective batch 32 — same LR, more gradient signal per step, VRAM flat.</li>
+    <li><b>Checkpoint resume + best-EMA saving</b> — stops every run ending as "cancelled".</li>
+    <li><b>Port the markup pair suite</b> so the composite has its real 40% weight back.</li>
+    <li><b>RoPE-NTK scaling</b>: take a 512-ctx checkpoint to ctx=768; regenerate the bench eval at it.</li>
+  </ul>
+  <h3>Phase 3 — product (a month)</h3>
+  <ul>
+    <li>Budget-governed thinking decode (cap tokens per block by the budget marker).</li>
+    <li>Multi-turn prefix KV reuse; LRU of 1-2 models; batch 2-4 requests with a tiny scheduler.</li>
+    <li>A single ~120M-param model at ctx 1024 over the FineWeb packet — the thing that fits in 8 GB and qualifies as "a real model"; expect ~1.6 bits/byte held-out against the 5-gram baseline's ~2.4.</li>
+    <li>Extrinsic 0-shot suite (HellaSwag slice) top-level in the eval picker.</li>
+    <li>CI: pytest + pyright + bench parity gate.</li>
+  </ul>
+</div>
+
+<h2>17 · Appendix: verification &amp; sources</h2>
+<p class="sub">All findings derive from static reading of the repo at commit <code>10e0d46</code> (no processes were executed during this review). Key files &amp; why to believe them:</p>
+<table>
+<tr><th>Claim</th><th>Source</th></tr>
+<tr><td>6.83M params, 256d/4h/6L/ctx512, lr 2e‑4, 7 epochs, both runs cancelled</td><td>artifacts/models/*/meta.json (two real runs with full result stamps)</td></tr>
+<tr><td>390M-token corpus, plus sizes of every data dir</td><td>engine/data on disk</td></tr>
+<tr><td>454k SmolTalk conversations</td><td>engine/data/sft/*.jsonl line counts</td></tr>
+<tr><td>bf16 ≈1.7× vs fp32; +compile ≈2.5× cumulative</td><td>loop.py:21-42 comment (measured in-repo on a 3060)</td></tr>
+<tr><td>Compile fuses the loss into the graph; eager's fp32 per-token copy ran 14 of 33 ms/step, fused 3.6 ms/step</td><td>loop.py:70 code-comment (measured)</td></tr>
+<tr><td>3060: bf16 runs at ~half the fp16 tensor-core rate (generally reported for consumer Ampere)</td><td>If true, fp16 + GradScaler could trade the bf16 headroom for speed; measure with bench.py before switching — bf16 stays the low-risk default.</td></tr>
+</table>
+
+<p class="dim" style="margin-top:30px">Report generated for internal use. Next read <code>bench.py</code> before touching hot paths — it will measure the claims above with CUDA events, not with beliefs.</p>
+</main>
+</body>
+</html>

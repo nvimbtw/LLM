@@ -71,7 +71,7 @@ PRESETS = {
     # preset in README. Wider and shallower than it looks like it should be,
     # because d=512 tiles this card far better than d=384.
     "chinchilla": dict(
-        dimensions=448, heads=7, layers=6, ff_multiplier=4, ctx_window=512, batch_size=16
+        dimensions=512, heads=8, layers=4, ff_multiplier=4, ctx_window=512, batch_size=16
     ),
 }
 VOCAB = 8192
