@@ -259,7 +259,7 @@ fn inject_model(kind: JobKind, config: &mut Value, id_model: Uuid) -> Result<(),
             // correctly, the row just carries the requested numbers.
             let mut cfg: training::TrainConfig = serde_json::from_value(Value::Object(object.clone()))
                 .map_err(|e| format!("the follow-up's stored config is unreadable: {e}"))?;
-            let base_dir = storage::models_dir().join(id_model.to_string());
+            let base_dir = engine::paths::data_root().join("artifacts/models").join(id_model.to_string());
             if let Err(e) = training::apply_base_architecture(&mut cfg, &base_dir) {
                 eprintln!(
                     "[chain] {}: could not inherit the base architecture ({}); the row keeps the requested values",
@@ -290,7 +290,6 @@ mod tests {
     #[test]
     fn a_fine_tune_needs_a_model_and_a_pretrain_does_not() {
         assert!(needs_model(JobKind::Train, &json!({ "mode": "sft" })));
-        assert!(needs_model(JobKind::Train, &json!({ "mode": "kto" })));
         assert!(!needs_model(JobKind::Train, &json!({ "mode": "pretrain" })));
         // Absent means pretrain, matching `TrainMode`'s own default — a config
         // written by an older client must not be read as a fine-tune with no base.
@@ -370,6 +369,6 @@ mod tests {
     #[test]
     fn a_kind_that_cannot_inherit_a_model_is_refused_rather_than_guessed_at() {
         let mut config = json!({ "id_model": "whatever" });
-        assert!(inject_model(JobKind::Autolabel, &mut config, Uuid::new_v4()).is_err());
+        assert!(inject_model(JobKind::Synth, &mut config, Uuid::new_v4()).is_err());
     }
 }

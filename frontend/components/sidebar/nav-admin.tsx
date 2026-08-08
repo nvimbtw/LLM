@@ -26,10 +26,6 @@ import { KIND_LABEL } from "@/lib/jobs"
 const items = [
   { title: "Benchmark", href: "/benchmark", icon: Gauge },
   { title: "Jobs", href: "/jobs", icon: ListOrdered },
-  // Cycles sit above Jobs conceptually — one cycle is a dozen jobs — but below it
-  // here, because the queue is what you check constantly and a cycle is what you
-  // check twice a day.
-  { title: "Cycles", href: "/cycles", icon: Repeat },
   // The corpus, not the composer: this page is what you check before deciding to
   // generate, and generation is queued from the job menu like every other kind.
   { title: "SFT corpus", href: "/synth", icon: Sparkles },

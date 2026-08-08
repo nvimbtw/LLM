@@ -12,12 +12,9 @@ members = [
     "crates/api",
     "crates/crypto",
     "crates/db",
+    "crates/engine",
     "crates/jobs",
-    "crates/labeling",
-    "crates/llm",
-    "crates/storage",
     "crates/synth",
-    "crates/teacher",
     "crates/tokenize",
     "crates/training",
 ]
@@ -30,6 +27,7 @@ members = [
 [dependencies]
 api = { path = "crates/api" }
 db = { path = "crates/db" }
+engine = { path = "crates/engine" }
 jobs = { path = "crates/jobs" }
 actix-cors = "0.7.1"
 actix-web = "4"

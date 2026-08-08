@@ -19,7 +19,6 @@ use uuid::Uuid;
 use db;
 use db::benchmark::{BenchmarkStatus, BenchmarkSuite};
 use crate::extractors::AdminUser;
-use storage;
 
 // How many runs the history list returns. The page charts a trend over past runs;
 // a couple of hundred is far more than that needs and keeps the response small.
@@ -291,7 +290,7 @@ fn count_files(dir: &std::path::Path, extension: &str) -> usize {
 
 #[get("/suite")]
 async fn get_suite(_admin: AdminUser) -> impl Responder {
-    let eval_dir = storage::eval_dir();
+    let eval_dir = engine::paths::data_root().join("eval");
     let corpus_dir = eval_dir.join("corpus");
     let blimp_dir = eval_dir.join("blimp");
     let chat_dir = eval_dir.join("chat");
@@ -299,10 +298,7 @@ async fn get_suite(_admin: AdminUser) -> impl Responder {
         corpus_files: count_files(&corpus_dir, "txt"),
         blimp_files: count_files(&blimp_dir, "jsonl"),
         chat_files: count_files(&chat_dir, "jsonl"),
-        markup_pairs: llm::eval::marker_pairs::suite()
-            .iter()
-            .map(|p| p.pairs.len())
-            .sum(),
+        markup_pairs: 0,
         corpus_dir: corpus_dir.to_string_lossy().to_string(),
         blimp_dir: blimp_dir.to_string_lossy().to_string(),
         chat_dir: chat_dir.to_string_lossy().to_string(),

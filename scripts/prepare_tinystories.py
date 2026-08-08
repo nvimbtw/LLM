@@ -8,7 +8,7 @@ curated set of short, simple synthetic stories — clean prose with no OCR/scan
 noise — so unlike PG-19 it needs no cleaning. The dataset ships as raw .txt
 files whose stories are already separated by `<|endoftext|>`, which is exactly
 the document-boundary convention the Rust pretrain builder
-(backend/src/training.rs: build_dataset) expects: it concatenates the uploaded
+(engine/llm/corpus/pack.py) expects: it concatenates the
 .txt files, and a single trailing `<|endoftext|>` per file marks where one
 document ends and the next begins.
 
@@ -24,6 +24,7 @@ Usage:
     python3 prepare_tinystories.py --split train      # the (much larger) train split
 """
 
+import paths
 import argparse
 import glob
 import json
@@ -36,7 +37,7 @@ REPO_ID = "roneneldan/TinyStories"
 # Datasets now live in their own subfolder of uploads/ (each is a checkbox in the
 # training UI); write to uploads/TinyStories so clear_previous only ever touches
 # this dataset and leaves sibling datasets (Synthetic, Wikipedia, …) alone.
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/uploads/TinyStories"
+OUT_DIR = paths.dataset_dir("TinyStories")
 EOT = "<|endoftext|>"
 
 # The dataset's raw text files. V2 is the GPT-4-only regeneration (higher quality

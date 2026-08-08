@@ -3,8 +3,6 @@
 import { Panel } from "@/components/ui/panel"
 import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
 import type {
-  AutolabelConfig,
-  GatherConfig,
   Job,
   SynthConfig,
   TeachConfig,
@@ -109,39 +107,8 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
         blocks: [],
       }
     }
-    case "autolabel": {
-      const config = job.config as AutolabelConfig | null
-      if (!config) return null
-      return {
-        description: "As queued",
-        rows: [
-          ["Model", job.label],
-          ["Prompts", String(config.max_prompts)],
-          ["Candidates each", String(config.candidates)],
-          ["Temperature", String(config.temperature)],
-        ],
-        blocks: [],
-      }
-    }
-    case "gather": {
-      const config = job.config as GatherConfig | null
-      if (!config) return null
-      return {
-        description: "As queued",
-        rows: [
-          ["Model", job.label],
-          ["Replies", String(config.batch ?? "—")],
-          ["Temperature", String(config.temperature ?? "—")],
-        ],
-        blocks: [],
-      }
-    }
     case "synth":
       return synth(job.config as SynthConfig | null)
-    case "teach":
-      return teach(job.config as TeachConfig | null)
-    // A chat turn's config is a prompt and a model, and the conversation shows
-    // both better than a table would.
     case "chat":
       return null
   }

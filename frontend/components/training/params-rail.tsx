@@ -6,12 +6,10 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
-import { SignalGate } from "@/components/training/signal-gate"
 import { PresetControls } from "@/components/training/preset-controls"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
 import { useDatasets } from "@/hooks/use-datasets"
 import { useModels } from "@/hooks/use-models"
-import { useSignals } from "@/hooks/use-signals"
 import { cn } from "@/lib/utils"
 import { isFineTune } from "@/lib/training"
 import type {
@@ -615,7 +613,6 @@ export function ParamsRail({
     useDatasets()
   // Only meaningful in preference mode, but hooks can't be conditional — and it
   // is one small count, read once per mount.
-  const { status: signals } = useSignals(modelsRefreshKey)
 
   const setField = (key: keyof TrainConfig, value: string) => {
     onChange({
@@ -895,17 +892,6 @@ export function ParamsRail({
         </div>
       )}
 
-      {/* No base model to gate against yet — the counts it reads are per-model, and
-          the model does not exist until the job before this one finishes. */}
-      {(isKto || isRaft) && !followUp && (
-        <SignalGate
-          status={signals}
-          modelId={baseModelId}
-          mode={isRaft ? "raft" : "kto"}
-          disabled={disabled}
-        />
-      )}
-
       {isSft ? (
         <p className="text-xs text-muted-foreground">
           Architecture (dimensions, context, heads, layers) is inherited from
@@ -959,29 +945,14 @@ export function ParamsRail({
       {!followUp && (
         <Button
           type="submit"
-          // A preference run with too little rated data is refused at enqueue, so
-          // the button matches that rather than letting the form post into a 400.
-          // `signals === null` (still loading, or the count failed) leaves it
-          // enabled: the server is the authority, and disabling on a failed read
-          // would strand the run behind a fetch that may never succeed.
-          disabled={
-            disabled ||
-            errors.length > 0 ||
-            (isKto && signals?.ready === false) ||
-            (isRaft && signals?.raft_ready === false)
-          }
+          disabled={disabled || errors.length > 0}
           className="w-full"
         >
           {disabled
             ? isSft
               ? "Fine-tuning…"
               : "Training…"
-            : (isKto && signals?.ready === false) ||
-                (isRaft && signals?.raft_ready === false)
-              ? "Not enough signals yet"
-              : isRaft
-                ? "Start self-train"
-                : isSft
+            : isSft
                   ? "Start fine-tune"
                   : "Start training"}
         </Button>

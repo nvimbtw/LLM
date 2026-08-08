@@ -1,9 +1,0 @@
-[package]
-name = "storage"
-version = "0.1.0"
-edition = "2021"
-
-# Deliberately dependency-free. This crate is the bottom of the dependency
-# order: it owns the on-disk layout under `data/` and nothing else, so every
-# other crate may depend on it and it may depend on none of them.
-[dependencies]

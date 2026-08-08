@@ -26,34 +26,6 @@ pub enum TrainMode {
     #[default]
     Pretrain,
     Sft,
-    // Preference tuning on thumbs-rated replies (KTO). Like SFT it fine-tunes an
-    // existing model named by `base_model_id`, but from the chat feedback rather
-    // than from a conversation corpus.
-    Kto,
-    // Rejection-sampling fine-tuning (RAFT): ordinary SFT, but on the model's *own*
-    // generations that cleared the catalogue's bar.
-    //
-    // **Why this exists next to KTO rather than instead of it.** They are not
-    // alternatives, they are an engine and a brake. RAFT's signal is the full
-    // token distribution over a good reply — hundreds of bits — so it moves the
-    // model toward the good region fast, which is what teaches a model at this
-    // stage to form English at all. But it can only reinforce; it has no way to
-    // express "don't do this". KTO's signal is one bit per example, far weaker,
-    // but its undesirable term is the only mechanism here that actively pushes
-    // probability *down* on a failure mode.
-    //
-    // Run in that order (RAFT then KTO on the same catalogue) they compose rather
-    // than compete: after RAFT the good examples already sit at high probability,
-    // so KTO's gradient on them saturates (see `llm::kto::step`) and it spends its
-    // budget almost entirely on suppressing the bad half.
-    Raft,
-}
-
-// The KTO default, matching `llm::kto::KtoParams::default`. 0.1 is the paper's
-// value and the usual starting point: low enough that the tune can move, high
-// enough that the KL anchor still holds.
-fn default_beta() -> f64 {
-    0.1
 }
 
 /// Whether a run of `mode` renders its chat data with reasoning, given what the
@@ -63,11 +35,11 @@ fn default_beta() -> f64 {
 /// and anything reconstructing a model's rendering cannot disagree about it. A
 /// pretrain corpus carries chat to expose the *scaffold* — the markers a later SFT
 /// would otherwise meet at random init — and a thinking block is not scaffold.
-pub fn strip_thinking_for(mode: TrainMode, requested: bool) -> llm::chat_template::Reasoning {
+pub fn strip_thinking_for(mode: TrainMode, requested: bool) -> bool {
     match mode {
-        TrainMode::Pretrain => llm::chat_template::Reasoning::Strip,
-        _ if requested => llm::chat_template::Reasoning::Strip,
-        _ => llm::chat_template::Reasoning::Keep,
+        TrainMode::Pretrain => true,
+        _ if requested => true,
+        _ => false,
     }
 }
 
@@ -93,32 +65,6 @@ pub struct TrainConfig {
     // the route boundary for SFT.
     #[serde(default)]
     pub base_model_id: Option<Uuid>,
-    // KTO only: strength of the KL anchor holding the tune near the base model.
-    // Defaulted rather than required so a body written for the other two modes
-    // still deserializes; see `llm::kto::KtoParams::beta` for what it does.
-    #[serde(default = "default_beta")]
-    pub beta: f64,
-    // RAFT and KTO only: which *round's* generations to train on, as the cycle it
-    // belongs to plus the round number within it. The catalogue file is append-only
-    // and spans every round every cycle has ever run, so without this a round trains
-    // on the union of all of them — the oldest and worst generations accumulating the
-    // most total gradient, round after round.
-    //
-    // **This was keyed on the generating model and that did not work.** Every re-run
-    // of a cycle starts from the same seed and generates with it, so every run stamped
-    // the same `id_model` and the scope did not separate them: measured across four
-    // runs of one cycle, the catalogue went 320 → 604 → 900 examples and the round
-    // score fell 58.39 → 56.85 → 54.41 in step with it. A round is the unit that is
-    // actually unique, and `(id_cycle, round)` names one without a database round-trip
-    // — the cycle holds both before it enqueues anything.
-    //
-    // `None` means "the whole catalogue", which is what a hand-started run from the
-    // API gets: outside a cycle there is no round to scope to, and the old behaviour
-    // is the only one that has a meaning there.
-    #[serde(default)]
-    pub catalogue_cycle: Option<Uuid>,
-    #[serde(default)]
-    pub catalogue_round: Option<i32>,
     // Which upload datasets (subfolders of uploads/) go into this run's corpus,
     // each with how many of its .txt files to sample at random (0 => all of that
     // dataset). Pretrain only — SFT ignores it. `#[serde(default)]` keeps
@@ -166,18 +112,6 @@ pub struct TrainConfig {
     // which would have pointed the run at the wrong weights directory.
     #[serde(default)]
     pub storage_id: Uuid,
-}
-
-impl TrainConfig {
-    /// The round this run's catalogue is scoped to, or `None` for the whole file.
-    ///
-    /// The two halves are stored as separate fields because that is what survives a
-    /// JSONB round trip through the job row cleanly, but every consumer wants them
-    /// together — and a half-set pair is meaningless, so this refuses one without the
-    /// other rather than inventing a round 0.
-    pub fn catalogue_scope(&self) -> Option<(Uuid, i32)> {
-        self.catalogue_cycle.zip(self.catalogue_round)
-    }
 }
 
 // One curriculum stage: a set of datasets trained for a fixed number of epochs
@@ -260,7 +194,7 @@ pub struct DocSpan {
     pub len: usize,
 }
 
-// The SFT/RAFT counterpart of `Segments`, written next to `sft_corpus.bin`: one
+// The SFT counterpart of `Segments`, written next to `sft_corpus.bin`: one
 // span per *conversation*, exclusive of the `<|endoftext|>` baked in between them.
 //
 // Separate from `Segments` rather than a reuse of it because the two answer
@@ -281,17 +215,6 @@ pub struct SftSpan {
     pub len: usize,
 }
 
-// What `build_dataset` reports as it runs, so the caller can stream progress.
-pub enum TokenizeEvent<'a> {
-    // Fires before any file is opened, so the dashboard populates immediately.
-    // `chars` is the summed byte length from `metadata` — exact for ASCII, up to
-    // ~2x high for heavy unicode — and is corrected by `Encode` as files complete.
-    Start { files: usize, chars: usize },
-    Merge { done: u32, total: u32 },
-    // The streaming pass. `chars` is the running exact count over files finished.
-    Encode { files_done: usize, files: usize, chars: usize },
-    Log(&'a str),
-}
 
 // How much text trains the BPE merge table.
 //
@@ -446,152 +369,8 @@ fn is_safe_dataset_name(name: &str) -> bool {
         && !name.contains('\0')
 }
 
-// Scans uploads/ for its immediate subfolders — each one a selectable dataset —
-// and counts the `.txt` files in each. Sorted by name for a stable UI order; a
-// missing uploads dir yields an empty list rather than an error.
-pub fn list_datasets() -> io::Result<Vec<DatasetInfo>> {
-    let uploads = storage::uploads_dir();
-    if !uploads.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in fs::read_dir(&uploads)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue; // loose files at the uploads root aren't datasets
-        }
-        // A non-UTF-8 dir name can't round-trip to JSON / a request — skip it.
-        let name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let files = fs::read_dir(entry.path())?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("txt"))
-            .count();
-        // A real `uploads/Chat` folder would be shadowed by the virtual entry
-        // below, so don't offer it twice under one name.
-        if name == CHAT_DATASET {
-            continue;
-        }
-        out.push(DatasetInfo { name, files });
-    }
 
-    // The chat conversations, offered like any other dataset even though no folder
-    // holds them: they are rendered from `raw/sft/` when a run starts. Counted from
-    // the source rather than from the last render, so the number is right before
-    // any run has happened and moves the moment conversations are added.
-    let chat = count_chat_documents().unwrap_or(0);
-    if chat > 0 {
-        out.push(DatasetInfo { name: CHAT_DATASET.to_string(), files: chat });
-    }
 
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
-}
-
-// How many conversations the pretrain share holds. `Ok(0)` rather than an error
-// when there are none — an install with no conversations yet should simply not be
-// offered the dataset.
-fn count_chat_documents() -> io::Result<usize> {
-    match read_sft_conversations() {
-        Ok(conversations) => Ok(conversations
-            .iter()
-            .filter(|c| chat_destination(c) == ChatDestination::Pretrain)
-            .count()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
-        Err(e) => Err(e),
-    }
-}
-
-// writes the files `llm::train` consumes: a flat token-id `corpus.bin` in
-// `datasets/`, `merges.bin` in `artifacts/tokenizer/`, and a `segments.json`
-// sidecar recording each document's token span + curriculum stage. Progress is
-// pushed through `on_event` (synchronous; runs on the caller's thread).
-//
-// One BPE tokenizer is trained over ALL stages' files (a shared vocabulary is
-// mandatory — the token ids must line up across stages so the model's embeddings
-// mean the same thing throughout). We pre-tokenize each file on its own so we can
-// map its words back to a token span after BPE, and bake a single <|endoftext|>
-// separator between documents so the default (unshuffled) corpus already reads
-// with document boundaries.
-// `Ok(None)` means the caller asked for a cancel and the build stopped early — a
-// distinct outcome from `Err`, matching `llm::eval::run`. A cancelled or failed
-// build leaves the previous corpus/merges/segments untouched.
-pub fn build_dataset(
-    max_vocab: u32,
-    stages: &[CurriculumStage],
-    // The run's *resolved* seed (see `resolve_seed`), which picks **which files**
-    // each dataset selection draws when its `count` is less than what is on disk.
-    // It has to be the run's own seed rather than a fresh time seed, or two runs
-    // of the same config train on different data: the selection is a random
-    // subset, so a wall-clock shuffle silently makes every run a different
-    // experiment. That is fatal to any A/B where the corpus is meant to be the
-    // control — a vocabulary sweep, for instance.
-    seed: u64,
-    cancel: Option<Arc<AtomicBool>>,
-    on_event: impl Fn(TokenizeEvent),
-) -> io::Result<Option<DatasetStats>> {
-    // Before anything else, so the run's chat documents are derived from the
-    // conversations as they are now rather than from whenever someone last
-    // exported them. Cheap (a few hundred small files) and unconditional: gating
-    // it on the curriculum naming `Chat` would mean a run that added the stage
-    // could still read a stale directory.
-    render_chat_documents()?;
-
-    let files = collect_tagged(stages, seed)?;
-    // Byte lengths, not character counts: the exact count needs a full read of
-    // every file, and this fires before any of them are opened so the dashboard
-    // is populated immediately. `Encode` events correct it as files complete.
-    let estimated_chars: usize = files.iter().map(|f| f.bytes as usize).sum();
-    on_event(TokenizeEvent::Start { files: files.len(), chars: estimated_chars });
-
-    let sample = plan_bpe_sample(&files, BPE_SAMPLE_BYTES);
-    let Some(merges) = train_sample_merges(&files, &sample, max_vocab, &cancel, &on_event)? else {
-        return Ok(None);
-    };
-
-    // A lone <|endoftext|> encodes to its single reserved id; use it as the
-    // document separator, exactly like the SFT boundary between conversations.
-    let eot_id = *tokenize::bpe::encode("<|endoftext|>", &merges).first().unwrap_or(&256);
-
-    let datasets_dir = storage::datasets_dir();
-    let tokenizer_dir = storage::tokenizer_dir();
-    fs::create_dir_all(&datasets_dir)?;
-    fs::create_dir_all(&tokenizer_dir)?;
-    let corpus_partial = datasets_dir.join("corpus.bin.partial");
-
-    let streamed = stream_encode(&files, &merges, eot_id, &corpus_partial, &cancel, &on_event);
-    let streamed = match streamed {
-        Ok(Some(streamed)) => streamed,
-        // Nothing is renamed into place on either path, so the previous dataset
-        // survives; only the partial needs clearing.
-        other => {
-            let _ = fs::remove_file(&corpus_partial);
-            return other.map(|_| None);
-        }
-    };
-
-    let segments = Segments {
-        eot_id,
-        stages: stages
-            .iter()
-            .map(|s| StageMeta { name: s.name.clone(), epochs: s.epochs })
-            .collect(),
-        documents: streamed.documents,
-    };
-    finalize_dataset(&corpus_partial, &merges, &segments)?;
-
-    Ok(Some(DatasetStats {
-        files: files.len(),
-        chars: streamed.chars,
-        vocab_size: tokenize::bpe::vocab_size(merges.len()),
-        merges: merges.len(),
-        corpus_len: streamed.corpus_len,
-        documents: segments.documents.len(),
-        special_ids_seen: streamed.special_ids,
-    }))
-}
 
 // One selected file, with the size the sample planner needs. Sizes come from
 // `metadata` so planning costs no reads.
@@ -602,49 +381,6 @@ struct TaggedFile {
     bytes: u64,
 }
 
-// Every selected file, tagged with the stage it belongs to. A dataset is a
-// subfolder of uploads/; `select_txt` pulls `count` .txt files from it (0 => all).
-// Files keep their per-stage grouping so the training loop can feed one stage at
-// a time.
-fn collect_tagged(stages: &[CurriculumStage], seed: u64) -> io::Result<Vec<TaggedFile>> {
-    let uploads = storage::uploads_dir();
-    let mut tagged: Vec<TaggedFile> = Vec::new();
-    for (stage, spec) in stages.iter().enumerate() {
-        for sel in &spec.datasets {
-            if !is_safe_dataset_name(&sel.name) {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid dataset name"));
-            }
-            // `Chat` is rendered from `raw/sft/`, not uploaded, so it is read from
-            // where this build just wrote it. The name takes precedence over an
-            // `uploads/Chat` folder if one exists.
-            let dir = if sel.name == CHAT_DATASET {
-                chat_documents_dir()
-            } else {
-                uploads.join(&sel.name)
-            };
-            // Each (stage, dataset) pair gets its own derived seed, so adding a
-            // dataset to one stage does not reshuffle what every other stage
-            // selected. Mixing the name in means the same dataset at two stages
-            // draws two different subsets rather than the identical one twice.
-            let mut sub = seed ^ (stage as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            for b in sel.name.as_bytes() {
-                sub = sub.rotate_left(5) ^ (*b as u64);
-            }
-            for path in select_txt(&dir, sel.count, true, sub)? {
-                let bytes = fs::metadata(&path)?.len();
-                tagged.push(TaggedFile { stage, dataset: sel.name.clone(), path, bytes });
-            }
-        }
-    }
-
-    if tagged.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no .txt files found in the selected datasets",
-        ));
-    }
-    Ok(tagged)
-}
 
 // How much of one file to feed the tokenizer trainer.
 struct SampleSlice {
@@ -652,195 +388,7 @@ struct SampleSlice {
     bytes: usize,
 }
 
-// Which slices of which files train the BPE merges.
-//
-// The tokenizer learns from a bounded sample rather than the whole corpus. That
-// was originally a memory constraint; since `bpe::train` started deduplicating its
-// input it is mostly a time one, and `BPE_SAMPLE_BYTES` says what the budget now
-// buys.
-//
-// Shares are **proportional to each dataset's size, with a floor.** This was an
-// equal split per dataset, on the worry that proportional would hand a large
-// web-text dataset essentially the whole budget and leave an early-curriculum one
-// tokenizing at nearly byte level. That has now been measured and the worry does
-// not survive it: the equal split gave FineWeb 27.9% of the sample while it was
-// 98.4% of the text actually encoded, so the merges were fitted to a distribution
-// the corpus does not have.
-//
-// Held-out bytes/token at vocab 8192, tokenizer trained on a 16 MiB sample of the
-// real corpora (`examples/tokexp.rs` in the tokenize crate):
-//
-//   split          weighted  FineWeb  Wikipedia  TinyStories  SFT chat
-//   equal            3.903     3.82      3.63        3.70        3.76
-//   proportional     3.948     3.87      3.55        3.66        3.82
-//
-// It is a reallocation, not a free lunch — TinyStories and Wikipedia each give up
-// ~1-2% — but they are ~2% of the tokens the model actually reads, and the two
-// distributions that matter (web text, and the chat data post-training runs on)
-// both gain. The floor is what keeps the donors from collapsing: a dataset never
-// drops below `MIN_DATASET_SAMPLE_SHARE` of the budget however small it is, which
-// is the original worry kept as an invariant rather than as the whole policy.
-//
-// Water-filling means a dataset too small to use its share donates the remainder
-// to the ones that can.
-fn plan_bpe_sample(files: &[TaggedFile], budget: usize) -> Vec<SampleSlice> {
-    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (i, f) in files.iter().enumerate() {
-        groups.entry(f.dataset.as_str()).or_default().push(i);
-    }
 
-    let ordered: Vec<(u64, Vec<usize>)> = groups
-        .into_values()
-        .map(|idx| (idx.iter().map(|&i| files[i].bytes).sum::<u64>(), idx))
-        .collect();
-    if ordered.is_empty() {
-        return Vec::new();
-    }
-
-    let corpus_total: u64 = ordered.iter().map(|(t, _)| *t).sum();
-    if corpus_total == 0 {
-        return Vec::new();
-    }
-
-    // Every group's floor comes off the top; what is left is split by size. The
-    // floor is capped at an equal split so it can never over-subscribe the budget
-    // when there are many datasets.
-    let n = ordered.len();
-    let floor = (budget / n).min(budget * MIN_DATASET_SAMPLE_SHARE / 100);
-    let proportional = budget.saturating_sub(floor * n);
-
-    let mut want: Vec<usize> = ordered
-        .iter()
-        .map(|(total, _)| {
-            let share = (proportional as u128 * *total as u128 / corpus_total as u128) as usize;
-            floor + share
-        })
-        .collect();
-
-    // Water-fill: a group asked for more than it has donates the excess to the
-    // groups that still have headroom, in proportion to that headroom. Bounded
-    // because each pass either places every spare byte or runs out of headroom.
-    for _ in 0..n {
-        let mut spare = 0usize;
-        for (i, (total, _)) in ordered.iter().enumerate() {
-            if want[i] > *total as usize {
-                spare += want[i] - *total as usize;
-                want[i] = *total as usize;
-            }
-        }
-        if spare == 0 {
-            break;
-        }
-        let headroom: u128 = ordered
-            .iter()
-            .enumerate()
-            .map(|(i, (t, _))| (*t as usize).saturating_sub(want[i]) as u128)
-            .sum();
-        if headroom == 0 {
-            break;
-        }
-        for (i, (total, _)) in ordered.iter().enumerate() {
-            let room = (*total as usize).saturating_sub(want[i]) as u128;
-            want[i] += (spare as u128 * room / headroom) as usize;
-        }
-    }
-
-    let mut slices = Vec::new();
-    for (i, (total, idx)) in ordered.iter().enumerate() {
-        let share = want[i].min(*total as usize);
-        if share == 0 {
-            continue;
-        }
-
-        // Stride across the group so a sharded dataset is sampled over its whole
-        // range. The stride has to be derived from how many files the share will
-        // actually consume: `idx.len() / files_needed`, not `idx.len() / share`,
-        // which is what this computed before — `share.div_ceil(1)` is just `share`,
-        // so `wanted` collapsed to `idx.len()` and the stride was always 1. That
-        // read the *first* ~50 of FineWeb's 5,498 shards, which is precisely the
-        // failure this stride exists to avoid.
-        let avg = (*total / idx.len() as u64).max(1);
-        let files_needed = ((share as u64 / avg).max(1) as usize).min(idx.len());
-        let stride = (idx.len() / files_needed).max(1);
-
-        let mut left = share;
-        for &f in idx.iter().step_by(stride) {
-            if left == 0 {
-                break;
-            }
-            let take = (files[f].bytes as usize).min(left);
-            if take > 0 {
-                slices.push(SampleSlice { file: f, bytes: take });
-                left -= take;
-            }
-        }
-        // The strided pass can come up short when every file it landed on was
-        // smaller than its slice. Fill from whatever is left, in order.
-        if left > 0 {
-            for &f in idx.iter() {
-                if left == 0 {
-                    break;
-                }
-                if slices.iter().any(|s| s.file == f) {
-                    continue;
-                }
-                let take = (files[f].bytes as usize).min(left);
-                if take > 0 {
-                    slices.push(SampleSlice { file: f, bytes: take });
-                    left -= take;
-                }
-            }
-        }
-    }
-    slices
-}
-
-// Reads the sampled slices and trains the merge table on them.
-//
-// Cancellation is checked between files. It is deliberately **not** checked inside
-// `bpe::train`, which would mean threading a flag through the tokenizer crate: the
-// sample is bounded, so that call is the one uninterruptible window in the build.
-fn train_sample_merges(
-    files: &[TaggedFile],
-    sample: &[SampleSlice],
-    max_vocab: u32,
-    cancel: &Option<Arc<AtomicBool>>,
-    on_event: &impl Fn(TokenizeEvent),
-) -> io::Result<Option<Vec<((u32, u32), u32)>>> {
-    let mut pre: Vec<Vec<char>> = Vec::new();
-    let mut buf = String::new();
-    for slice in sample {
-        if cancelled(cancel) {
-            return Ok(None);
-        }
-        let mut reader = BufReader::new(File::open(&files[slice.file].path)?);
-        // One chunk capped at the slice size: whole lines only, so the sample never
-        // ends mid-marker or mid-character.
-        if read_chunk(&mut reader, slice.bytes, CHUNK_MAX_BYTES, &mut buf, &files[slice.file].path)? {
-            pre.extend(tokenize::pretokenize::pre_tokenize_text(&buf));
-        }
-    }
-
-    if pre.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the selected datasets hold no text to train a tokenizer on",
-        ));
-    }
-
-    // The crate reports progress as a plain log string ("BPE merge x/y"); forward
-    // the raw line for the log panel and parse the counts out for the dashboard.
-    // The corpus it returns is discarded — the full corpus, including these bytes,
-    // is re-encoded in the streaming pass so there is exactly one code path
-    // producing token ids.
-    let (_, _, merges) = tokenize::bpe::train(pre, Some(max_vocab), |line| {
-        if let Some((done, total)) = parse_merge_progress(line) {
-            on_event(TokenizeEvent::Merge { done, total });
-        }
-        on_event(TokenizeEvent::Log(line));
-    })?;
-    Ok(Some(merges))
-}
 
 // What the streaming pass produced.
 struct Streamed {
@@ -850,121 +398,7 @@ struct Streamed {
     special_ids: Vec<u32>,
 }
 
-// Encodes every file into `corpus_path`, one chunk at a time.
-//
-// This is the pass that makes a multi-gigabyte corpus fit: nothing larger than one
-// chunk is ever resident, so peak memory is constant in corpus size. Chunk cuts
-// land only on newlines, which `pretokenize::split_punctuation` already treats as
-// a hard pretoken boundary, so the ids are identical to encoding each file whole
-// (`bpe::tests::test_chunking_at_newlines_is_seam_free` is the guard on that).
-fn stream_encode(
-    files: &[TaggedFile],
-    merges: &[((u32, u32), u32)],
-    eot_id: u32,
-    corpus_path: &Path,
-    cancel: &Option<Arc<AtomicBool>>,
-    on_event: &impl Fn(TokenizeEvent),
-) -> io::Result<Option<Streamed>> {
-    let encoder = tokenize::bpe::Encoder::new(merges);
-    let mut writer = tokenize::bpe::CorpusWriter::create(&corpus_path.to_string_lossy())?;
-    let mut documents: Vec<DocSpan> = Vec::new();
-    let mut seen = vec![false; tokenize::pretokenize::NUM_SPECIAL];
-    let mut chars = 0usize;
 
-    // Reused across every chunk of every file, so the streaming loop allocates
-    // nothing per iteration.
-    let mut text = String::new();
-    let mut ids: Vec<u32> = Vec::new();
-
-    // At tens of thousands of files one event per file is tens of thousands of
-    // broadcast frames and state-lock acquisitions; ~200 over a build is plenty to
-    // animate a progress bar.
-    let report_every = (files.len() / PROGRESS_REPORTS_PER_BUILD).max(1);
-
-    for (index, file) in files.iter().enumerate() {
-        let mut reader = BufReader::new(File::open(&file.path)?);
-        // Reserved before the first chunk: the separator belongs between files, and
-        // a file that turns out to be empty must not leave a stray one behind.
-        let start = writer.len() + usize::from(!writer.is_empty());
-        let mut len = 0usize;
-
-        while read_chunk(&mut reader, CHUNK_TARGET_BYTES, CHUNK_MAX_BYTES, &mut text, &file.path)? {
-            // Between chunks, not just between files: one large file is minutes of
-            // work, and a cancel that waits for it looks broken.
-            if cancelled(cancel) {
-                return Ok(None);
-            }
-            chars += text.chars().count();
-            ids.clear();
-            encoder.encode_into(&text, &mut ids);
-            if ids.is_empty() {
-                continue;
-            }
-            if len == 0 && !writer.is_empty() {
-                writer.write(&[eot_id])?;
-            }
-            for &id in &ids {
-                if let Some(slot) = (id as usize).checked_sub(256) {
-                    if let Some(flag) = seen.get_mut(slot) {
-                        *flag = true;
-                    }
-                }
-            }
-            writer.write(&ids)?;
-            len += ids.len();
-        }
-
-        if len > 0 {
-            documents.push(DocSpan {
-                stage: file.stage,
-                dataset: file.dataset.clone(),
-                start,
-                len,
-            });
-        }
-        if index % report_every == 0 || index + 1 == files.len() {
-            on_event(TokenizeEvent::Encode {
-                files_done: index + 1,
-                files: files.len(),
-                chars,
-            });
-        }
-    }
-
-    let corpus_len = writer.finish()?;
-    let special_ids = seen
-        .iter()
-        .enumerate()
-        .filter(|&(_, &flag)| flag)
-        .map(|(slot, _)| 256 + slot as u32)
-        .collect();
-    Ok(Some(Streamed { documents, corpus_len, chars, special_ids }))
-}
-
-// Publishes the build by renaming the partials into place.
-//
-// The corpus goes last so its appearance is the commit point. Three renames are
-// not atomic together and nothing here pretends otherwise: there is no I/O between
-// them, and every failure that actually happens — a cancel, an OOM, a full disk —
-// happens during the streaming pass minutes earlier, before any of this runs.
-fn finalize_dataset(
-    corpus_partial: &Path,
-    merges: &[((u32, u32), u32)],
-    segments: &Segments,
-) -> io::Result<()> {
-    let datasets_dir = storage::datasets_dir();
-    let tokenizer_dir = storage::tokenizer_dir();
-    let merges_partial = tokenizer_dir.join("merges.bin.partial");
-    let segments_partial = datasets_dir.join("segments.json.partial");
-
-    tokenize::bpe::save_merges(merges, &merges_partial.to_string_lossy())?;
-    save_segments(segments, &segments_partial)?;
-
-    fs::rename(&merges_partial, tokenizer_dir.join("merges.bin"))?;
-    fs::rename(&segments_partial, datasets_dir.join("segments.json"))?;
-    fs::rename(corpus_partial, datasets_dir.join("corpus.bin"))?;
-    Ok(())
-}
 
 fn cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
     cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst))
@@ -1081,96 +515,7 @@ fn parse_merge_progress(line: &str) -> Option<(u32, u32)> {
     Some((done.trim().parse().ok()?, total.trim().parse().ok()?))
 }
 
-// Maps a run onto the on-disk layout and invokes `llm::train`. Returns Ok(true)
-// if the run was cancelled, Ok(false) if it completed.
-pub fn run_training(
-    cfg: &TrainConfig,
-    on_progress: llm::train::ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> io::Result<bool> {
-    let model_dir = storage::models_dir().join(cfg.storage_id.to_string());
-    let datasets_dir = storage::datasets_dir();
-    let corpus_path = datasets_dir.join("corpus.bin");
-    let merges_path = storage::tokenizer_dir().join("merges.bin");
-    let checkpoints_dir = model_dir.join("checkpoints");
 
-    // The document/stage plan for the training loop. A dataset built before this
-    // feature (no segments.json) falls back to one stage of `epochs` epochs over
-    // the whole corpus as a single document — identical to the old behaviour.
-    let plan = match load_segments(&datasets_dir.join("segments.json"))? {
-        Some(segments) => llm::train::DataPlan {
-            stages: (0..segments.stages.len())
-                .map(|si| llm::train::Stage {
-                    name: segments.stages[si].name.clone(),
-                    epochs: segments.stages[si].epochs,
-                    docs: segments
-                        .documents
-                        .iter()
-                        .filter(|d| d.stage == si)
-                        .map(|d| llm::train::DocSpan { start: d.start, len: d.len })
-                        .collect(),
-                })
-                .collect(),
-            eot_id: segments.eot_id,
-            shuffle: cfg.shuffle,
-            seed: resolve_seed(cfg.seed),
-        },
-        None => llm::train::DataPlan::whole_corpus(cfg.epochs),
-    };
-
-    llm::train::train(
-        cfg.dimensions,
-        cfg.ctx_window,
-        cfg.heads,
-        cfg.layers,
-        cfg.lr,
-        cfg.ff_multiplier,
-        &model_dir,
-        &corpus_path,
-        &merges_path,
-        Some(&checkpoints_dir),
-        plan,
-        on_progress,
-        Some(cancel),
-    )
-}
-
-// Maps an SFT run onto the on-disk layout and invokes `llm::sft_train`. Mirrors
-// `run_training` but loads a pretrained base (resolved from `cfg.base_model_id`)
-// and drives the masked SFT path. Returns Ok(true) if cancelled, Ok(false) if it
-// completed. The dataset (`sft_corpus.bin` + `sft_mask.bin`) must already have
-// been built by `build_sft_dataset` — the caller runs that as phase 1.
-pub fn run_sft_training(
-    cfg: &TrainConfig,
-    on_progress: llm::train::ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> io::Result<bool> {
-    // The route validates presence, but this crate is also called directly (tests,
-    // future callers), so guard here rather than trust the invariant.
-    let base_id = cfg.base_model_id.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "SFT run requires a base_model_id")
-    })?;
-    let base_model_dir = storage::models_dir().join(base_id.to_string());
-    let sft_corpus_path = storage::datasets_dir().join("sft_corpus.bin");
-    let sft_mask_path = storage::datasets_dir().join("sft_mask.bin");
-    let out_model_dir = storage::models_dir().join(cfg.storage_id.to_string());
-    let checkpoints_dir = out_model_dir.join("checkpoints");
-
-    let warm_start_ids = untrained_marker_ids(&base_model_dir, &sft_corpus_path)?;
-
-    llm::train::sft_train(
-        &base_model_dir,
-        &sft_corpus_path,
-        &sft_mask_path,
-        &out_model_dir,
-        sft_plan(cfg)?,
-        &warm_start_ids,
-        cfg.lr,
-        Some(&checkpoints_dir),
-        on_progress,
-        Some(cancel),
-    )
-}
 
 // The chat scaffold, as marker text. Used only as the fallback reset set for a
 // base model whose meta.json predates `DatasetStats::special_ids_seen`: before
@@ -1223,22 +568,22 @@ fn untrained_marker_ids(base_model_dir: &Path, corpus_path: &Path) -> io::Result
 ///
 /// Best-effort by design: a missing, unreadable or pre-`strip_thinking` meta.json
 /// yields `Keep`, which is what every model already on disk was trained under.
-pub fn model_reasoning(model_dir: &Path) -> llm::chat_template::Reasoning {
+pub fn model_reasoning(model_dir: &Path) -> bool {
     let stripped = fs::read_to_string(model_dir.join("meta.json"))
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .and_then(|meta| meta.get("config")?.get("strip_thinking")?.as_bool())
         .unwrap_or(false);
     if stripped {
-        llm::chat_template::Reasoning::Strip
+        true
     } else {
-        llm::chat_template::Reasoning::Keep
+        false
     }
 }
 
 // A whole corpus file as ids, widened to the u32 the rest of this module speaks.
 //
-// Only for the SFT/KTO corpora, which are bounded by the conversation set and so
+// Only for the SFT corpus, which is bounded by the conversation set and so
 // are small. The pretrain corpus is hundreds of millions of tokens and must never
 // come through here — `append_prose_replay` reads the spans it needs instead.
 fn read_corpus(path: &Path) -> io::Result<Vec<u32>> {
@@ -1255,7 +600,7 @@ fn read_corpus(path: &Path) -> io::Result<Vec<u32>> {
 // `dataset` object is a different shape per mode (`DatasetStats` for pretrain,
 // `SftDatasetStats` for a fine-tune) and only the one field is wanted from either.
 // Each mode records the markers its model has now seen — a fine-tune unions its own
-// corpus with its base's — so the record composes down a pretrain → SFT → KTO
+// corpus with its base's — so the record composes down a pretrain → SFT
 // chain instead of only describing the last hop.
 //
 // An empty list is treated as absent rather than as "saw no markers": that is what
@@ -1287,43 +632,6 @@ fn scaffold_ids() -> Vec<u32> {
         .collect()
 }
 
-// The conversation order for an SFT/RAFT run: one document per conversation,
-// reshuffled every epoch.
-//
-// A fine-tune is where a fixed order bites hardest. The corpus is small enough
-// that every epoch is the same few hundred conversations, and generation writes
-// them out grouped — a whole call's batch of one topic lands consecutively, so a
-// fixed order trains topic-by-topic and the last conversations in the file are the
-// ones the model ends every epoch believing. Reordering costs one permutation per
-// epoch and removes that.
-//
-// Unlike pretraining, this doesn't ask the config: `cfg.shuffle` is a pretrain knob
-// (its composer offers it, the fine-tune composers don't), and there is no
-// curriculum here whose order a shuffle would destroy. A dataset built before the
-// sidecar existed, or one holding a single conversation, has nothing to permute and
-// falls back to the whole corpus in built order.
-fn sft_plan(cfg: &TrainConfig) -> io::Result<llm::train::DataPlan> {
-    let sidecar = storage::datasets_dir().join(SFT_SEGMENTS_FILE);
-    let segments = match load_sft_segments(&sidecar)? {
-        Some(segments) if segments.conversations.len() > 1 => segments,
-        _ => return Ok(llm::train::DataPlan::whole_corpus(cfg.epochs)),
-    };
-
-    Ok(llm::train::DataPlan {
-        stages: vec![llm::train::Stage {
-            name: None,
-            epochs: cfg.epochs,
-            docs: segments
-                .conversations
-                .iter()
-                .map(|c| llm::train::DocSpan { start: c.start, len: c.len })
-                .collect(),
-        }],
-        eot_id: segments.eot_id,
-        shuffle: true,
-        seed: resolve_seed(cfg.seed),
-    })
-}
 
 #[derive(Serialize)]
 struct RunMeta<'a> {
@@ -1392,7 +700,9 @@ pub fn write_meta(
     status: &str,
     created_at: &str,
 ) -> io::Result<()> {
-    let model_dir = storage::models_dir().join(cfg.storage_id.to_string());
+    let model_dir = engine::paths::data_root()
+        .join("artifacts/models")
+        .join(cfg.storage_id.to_string());
     fs::create_dir_all(&model_dir)?;
     let meta = RunMeta {
         config: cfg,
@@ -1443,7 +753,7 @@ pub struct SftConversation {
     // Absent everywhere else, and absent renders as nothing, so the conversations
     // that predate this are tokenized exactly as they were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    budget: Option<llm::chat_template::ThinkBudget>,
+    budget: Option<engine::ThinkBudget>,
 }
 
 // Summary of what the SFT build produced, for the dashboard + meta.json.
@@ -1478,7 +788,7 @@ pub struct SftDatasetStats {
     pub skipped_too_long: usize,
     // Every marker the fine-tuned model will have trained on: this corpus's,
     // unioned with the base's own record. The union is what makes the record
-    // compose down a pretrain → SFT → KTO chain — without it, a KTO run would read
+    // compose down a pretrain → SFT chain — without it, a fine-tune would read
     // its SFT base as having seen only the SFT corpus and warm-start markers the
     // pretrain had already taught it. See `DatasetStats::special_ids_seen`.
     pub special_ids_seen: Vec<u32>,
@@ -1523,18 +833,6 @@ fn cap_user_turn(text: &str) -> String {
     }
 }
 
-// Map the JSONL role string onto the chat-template Role. Unknown roles are a
-// hard error — bad training data should fail loudly, not train on the wrong mask.
-fn parse_role(role: &str) -> io::Result<llm::chat_template::Role> {
-    match role {
-        "user" => Ok(llm::chat_template::Role::User),
-        "assistant" => Ok(llm::chat_template::Role::Assistant),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown conversation role {:?} (expected user|assistant)", other),
-        )),
-    }
-}
 
 // ── The chat corpus split ───────────────────────────────────────────────────
 //
@@ -1642,134 +940,8 @@ pub fn chat_destination(conv: &SftConversation) -> ChatDestination {
 /// virtual: `list_datasets` reports it, and `build_dataset` renders it fresh.
 pub const CHAT_DATASET: &str = "Chat";
 
-/// Where a run's rendered chat documents land: under `datasets/`, with the rest of
-/// what a build produces, and rebuilt from scratch every time.
-fn chat_documents_dir() -> PathBuf {
-    storage::datasets_dir().join("chat")
-}
-
-// Renders this run's share of the conversations into `datasets/chat/`, one file
-// per conversation, and returns how many.
-//
-// Called at the top of every `build_dataset` so a pretrain is self-contained: it
-// derives its chat documents from `raw/sft/` the same way it derives its
-// tokenizer and its corpus, rather than depending on someone having run an export
-// first. Adding conversations and starting a run is enough.
-//
-// Only the pretrain share (see `chat_destination`). The SFT share is left alone —
-// `build_sft_dataset` reads `raw/sft/` and filters it directly, so the
-// conversations exist in exactly one place and there is nothing to keep in sync.
-//
-// One file per conversation because `build_dataset` records a document span per
-// file: that is what lets the training loop shuffle and stage conversations
-// individually rather than as one undifferentiated blob.
-fn render_chat_documents() -> io::Result<usize> {
-    // No conversations is a normal state — a first pretrain, or an install that
-    // does not use chat data at all — so it renders nothing rather than failing a
-    // run that never asked for the `Chat` dataset in the first place.
-    let conversations = match read_sft_conversations() {
-        Ok(conversations) => conversations,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e),
-    };
-
-    let dir = chat_documents_dir();
-    // A full rebuild, not an append: a conversation removed from the source must
-    // not survive as an orphan file from a previous run.
-    reset_dir(&dir)?;
-
-    let mut written = 0usize;
-    for (index, conv) in conversations.iter().enumerate() {
-        if chat_destination(conv) != ChatDestination::Pretrain {
-            continue;
-        }
-        let turns = conversation_turns(conv)?;
-        // Unconditionally stripped — see `strip_thinking_for`. This is the only
-        // path that writes chat into a *pretrain* corpus.
-        let text = llm::chat_template::render_conversation(
-            conv.system.as_deref(),
-            &turns,
-            conv.budget,
-            llm::chat_template::Reasoning::Strip,
-        );
-        fs::write(dir.join(format!("chat{index:05}.txt")), text)?;
-        written += 1;
-    }
-    Ok(written)
-}
-
-// Empties a derived directory, creating it if absent. Only the files are removed,
-// so a directory someone is watching keeps its identity.
-/// Writes the held-out share of `raw/sft/` to `eval/chat/heldout.jsonl`.
-///
-/// `chat_destination` has split conversations three ways since it was written, and
-/// the `Eval` 15% had **no consumer at all** — it was computed, excluded from both
-/// pretraining and SFT, and then dropped on the floor. `llm::eval::chat` has been
-/// reading `eval/chat/` for just as long and finding nothing, so `"chat": null`
-/// appeared in every benchmark report ever produced, and the one instrument built to
-/// show a fine-tune working never ran. This is the missing half.
-///
-/// Called by `jobs::queue` before a benchmark, next to `export_preference_data`, for
-/// the reason the module header gives about `render_chat_documents`: a run derives its
-/// own inputs, rather than depending on someone having remembered to run an export.
-/// The split is a hash of conversation *content*, so this is deterministic and
-/// idempotent — running it twice writes the same bytes, and adding conversations never
-/// re-partitions the existing ones.
-///
-/// One file rather than one per conversation: `eval::chat::load` reads whole JSONL
-/// files and this set is consumed as a unit, so there is no span bookkeeping to do.
-pub fn export_chat_eval_set() -> io::Result<usize> {
-    // `read_sft_conversations` reports "no conversations" as `NotFound`, which is the
-    // right answer for a *training* run — it cannot build an SFT dataset out of
-    // nothing. Here it is the ordinary state of a fresh install, and the markup suite
-    // still scores its pair stage without a chat set, so it must not surface as an
-    // error the queue logs before every single benchmark.
-    let conversations = match read_sft_conversations() {
-        Ok(conversations) => conversations,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e),
-    };
-    let mut held_out: Vec<&SftConversation> = conversations
-        .iter()
-        .filter(|c| chat_destination(c) == ChatDestination::Eval)
-        .collect();
-
-    // The eval share is a *fraction*, so it grows without bound with the source set:
-    // at 454k imported conversations it is ~68,000, and the assistant suite is one
-    // forward pass each. That is a 2.5-hour benchmark where it used to be 40
-    // seconds, run three times per cycle round — enough to make the cycle unusable
-    // while measuring nothing the first thousand did not already measure.
-    //
-    // Selected by the same content hash the split uses, lowest first. That is stable
-    // in the way that matters: a conversation's place in the order depends only on
-    // itself, so re-running the exporter over the same set gives the same holdout,
-    // and the set is spread across the whole corpus rather than being its first
-    // files. Adding conversations can still displace one — no cap avoids that — but
-    // nothing already selected moves on its own.
-    if held_out.len() > MAX_HELDOUT_CONVERSATIONS {
-        held_out.sort_by_key(|c| conversation_hash(c));
-        held_out.truncate(MAX_HELDOUT_CONVERSATIONS);
-    }
 
 
-    let dir = storage::eval_dir().join("chat");
-    reset_dir(&dir)?;
-    if held_out.is_empty() {
-        // No conversations at all is the normal state of a fresh install, and an
-        // empty directory is exactly how `eval::chat::load` expects to be told so.
-        return Ok(0);
-    }
-
-    let mut out = String::new();
-    for conversation in &held_out {
-        // Serialized back into the shape it came in as — `SftConversation` skips a
-        // `None` system field for precisely this round trip.
-        out.push_str(&serde_json::to_string(conversation).map_err(io::Error::other)?);
-        out.push('\n');
-    }
-    fs::write(dir.join("heldout.jsonl"), out)?;
-    Ok(held_out.len())
-}
 
 fn reset_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
@@ -1781,210 +953,10 @@ fn reset_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-// Every conversation in `raw/sft/*.jsonl`, in a stable order.
-//
-// Shared by the exporter and the SFT dataset builder so both see the same set; the
-// order is by sorted filename then line, which keeps a rebuild byte-identical.
-fn read_sft_conversations() -> io::Result<Vec<SftConversation>> {
-    let sft = storage::sft_dir();
-    let mut files: Vec<PathBuf> = if sft.is_dir() {
-        fs::read_dir(&sft)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    files.sort();
-    if files.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no .jsonl conversation files found in the SFT dir",
-        ));
-    }
 
-    let mut conversations = Vec::new();
-    for path in &files {
-        let content = fs::read_to_string(path)?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            conversations.push(serde_json::from_str(line).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("bad conversation JSON in {}: {}", path.display(), e),
-                )
-            })?);
-        }
-    }
-    Ok(conversations)
-}
 
-// Whether the conversation still has something for the model to learn to say once
-// `reasoning` has been applied. Always true under `Keep`, where nothing is removed.
-fn any_reply_survives(
-    turns: &[llm::chat_template::Turn],
-    reasoning: llm::chat_template::Reasoning,
-) -> bool {
-    if reasoning == llm::chat_template::Reasoning::Keep {
-        return true;
-    }
-    turns.iter().any(|t| {
-        t.role == llm::chat_template::Role::Assistant
-            && !llm::chat_template::strip_thinking(&t.text).is_empty()
-    })
-}
 
-// A conversation's turns as chat-template turns, applying the long-user-turn cap.
-fn conversation_turns(conv: &SftConversation) -> io::Result<Vec<llm::chat_template::Turn>> {
-    let mut turns = Vec::with_capacity(conv.turns.len());
-    for t in &conv.turns {
-        let role = parse_role(&t.role)?;
-        let text = match role {
-            llm::chat_template::Role::User => cap_user_turn(&t.text),
-            llm::chat_template::Role::Assistant => t.text.clone(),
-        };
-        turns.push(llm::chat_template::Turn { role, text });
-    }
-    Ok(turns)
-}
 
-// Reads every `.jsonl` conversation file in the SFT dir, renders each conversation
-// through the canonical chat template using the **base model's** tokenizer, and
-// writes the aligned `sft_corpus.bin` + `sft_mask.bin` to `datasets/`.
-//
-// The tokenizer is loaded from `base_model_dir/merges.bin` and is NOT retrained:
-// SFT is a fine-tune, so the token ids must match exactly what the base model
-// already learned. Training a fresh BPE here would renumber the vocab (and the
-// special-marker ids) and the fine-tune would be gibberish.
-//
-// `reasoning` comes from the run's `strip_thinking`, via `strip_thinking_for`. A
-// conversation whose assistant turns are *all* empty once stripped is dropped
-// rather than trained on: it would otherwise teach "answer with nothing and stop",
-// which is a worse lesson than the reasoning it replaced. (Measured against the
-// corpus on disk when this landed: 0 of 1,849 assistant turns, so this is
-// insurance, not a filter that is doing quiet work.)
-pub fn build_sft_dataset(
-    base_model_dir: &Path,
-    reasoning: llm::chat_template::Reasoning,
-) -> io::Result<SftDatasetStats> {
-    let merges_path = base_model_dir.join("merges.bin");
-    let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
-
-    // Between conversations, a single <|endoftext|> with mask 0 marks the boundary
-    // so the model sees a separator but is never trained to predict across two
-    // unrelated conversations.
-    let eot = tokenize::bpe::encode("<|endoftext|>", &merges);
-
-    // Only this base model's SFT share — the rest of the set is seeded into
-    // pretraining or held back for eval. See the chat-split header for why the
-    // three must not overlap.
-    let all = read_sft_conversations()?;
-    let share: Vec<&SftConversation> = all
-        .iter()
-        .filter(|c| chat_destination(c) == ChatDestination::Sft)
-        .collect();
-    if share.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no conversations fell in the SFT share of the chat split",
-        ));
-    }
-
-    // The window every rendered conversation has to fit. Read off the base model,
-    // because SFT is a fine-tune and the only window that matters is the one the
-    // weights were built for.
-    let ctx = base_ctx_window(base_model_dir);
-
-    let mut corpus: Vec<u32> = Vec::new();
-    let mut mask: Vec<u8> = Vec::new();
-    let mut spans: Vec<SftSpan> = Vec::new();
-    let mut conversations = 0usize;
-    let mut skipped_too_long = 0usize;
-
-    for conv in share {
-        let turns = conversation_turns(conv)?;
-        if !any_reply_survives(&turns, reasoning) {
-            continue;
-        }
-
-        let (ids, m) = llm::chat_template::build_training_example(
-            conv.system.as_deref(),
-            &turns,
-            conv.budget,
-            &merges,
-            reasoning,
-        );
-        if ids.is_empty() {
-            continue;
-        }
-        if ids.len() > ctx {
-            // Not merely wasteful: this would become a span in `sft_segments.json`
-            // longer than the window `sft_train` is given, so the run would train on
-            // a silently truncated example. The same guard KTO and RAFT already have.
-            skipped_too_long += 1;
-            continue;
-        }
-
-        // Boundary before every conversation after the first.
-        if !corpus.is_empty() {
-            corpus.extend(&eot);
-            mask.extend(std::iter::repeat_n(0u8, eot.len()));
-        }
-        spans.push(SftSpan { start: corpus.len(), len: ids.len() });
-        corpus.extend(&ids);
-        mask.extend(&m);
-        conversations += 1;
-    }
-
-    let chat_trainable = mask.iter().filter(|&&b| b != 0).count();
-    let replay_tokens =
-        append_prose_replay(&mut corpus, &mut mask, &mut spans, base_model_dir, &eot, chat_trainable)?;
-
-    if corpus.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "SFT input produced no tokens (empty conversations?)",
-        ));
-    }
-
-    let datasets = storage::datasets_dir();
-    fs::create_dir_all(&datasets)?;
-    tokenize::bpe::save_corpus(&corpus, &datasets.join("sft_corpus.bin").to_string_lossy())?;
-    fs::write(datasets.join("sft_mask.bin"), &mask)?;
-    save_sft_segments(
-        &SftSegments { eot_id: *eot.first().unwrap_or(&256), conversations: spans },
-        &datasets.join(SFT_SEGMENTS_FILE),
-    )?;
-
-    let trainable_tokens = mask.iter().filter(|&&b| b != 0).count();
-    Ok(SftDatasetStats {
-        conversations,
-        total_tokens: corpus.len(),
-        trainable_tokens,
-        replay_tokens,
-        skipped_too_long,
-        special_ids_seen: markers_after_training(base_model_dir, &corpus),
-    })
-}
-
-/// The context window a base model was built for, from its own `meta.json`.
-///
-/// Best-effort, and `usize::MAX` when it cannot be read — an unknown window means
-/// there is no basis for calling anything too long, and refusing every conversation
-/// would be a far worse failure than keeping one that overruns. Every model this
-/// has ever written records it; the fallback is for a hand-assembled directory.
-fn base_ctx_window(base_model_dir: &Path) -> usize {
-    fs::read_to_string(base_model_dir.join("meta.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|meta| meta.get("config")?.get("ctx_window")?.as_u64())
-        .map(|ctx| ctx as usize)
-        .unwrap_or(usize::MAX)
-}
 
 // ── Prose replay ────────────────────────────────────────────────────────────
 //
@@ -2004,133 +976,7 @@ const REPLAY_TOKENS_PER_CHAT_TOKEN: f64 = 1.0;
 // depth in one article.
 const MAX_REPLAY_DOC_TOKENS: usize = 2048;
 
-// Appends prose from the base model's pretraining corpus, fully masked in (every
-// position trains, as it did during pretraining), and records a span per document
-// so the epoch shuffle interleaves replay with conversations rather than leaving it
-// in one block at the end.
-//
-// Returns the number of replay tokens added, which is 0 when replay is skipped.
-//
-// **The guard is the important part.** `corpus.bin` is only meaningful under the
-// tokenizer that produced it, and it is overwritten by every pretrain run. If a
-// later pretrain rebuilt it with a fresh BPE, its ids mean something else entirely
-// under this base model's `merges.bin` and replaying it would train the model on
-// noise — silently, since nothing downstream can tell. So the two tokenizers are
-// compared byte for byte and replay is skipped loudly on a mismatch.
-fn append_prose_replay(
-    corpus: &mut Vec<u32>,
-    mask: &mut Vec<u8>,
-    spans: &mut Vec<SftSpan>,
-    base_model_dir: &Path,
-    eot: &[u32],
-    chat_trainable: usize,
-) -> io::Result<usize> {
-    let budget = (chat_trainable as f64 * REPLAY_TOKENS_PER_CHAT_TOKEN) as usize;
-    if budget == 0 {
-        return Ok(0);
-    }
 
-    let datasets = storage::datasets_dir();
-    if !same_tokenizer(base_model_dir, &storage::tokenizer_dir().join("merges.bin"))? {
-        eprintln!(
-            "SFT replay: the pretrain corpus was tokenized with a different tokenizer \
-             than this base model — skipping replay rather than training on ids that \
-             mean something else"
-        );
-        return Ok(0);
-    }
-
-    let Some(segments) = load_segments(&datasets.join("segments.json"))? else {
-        eprintln!("SFT replay: no segments.json next to corpus.bin — skipping replay");
-        return Ok(0);
-    };
-    // The spans are read individually rather than loading corpus.bin, which at
-    // pretrain scale is hundreds of millions of tokens against the few hundred
-    // thousand replay actually samples.
-    let prose_path = datasets.join("corpus.bin").to_string_lossy().to_string();
-    if segments.documents.is_empty() {
-        return Ok(0);
-    }
-
-    // Shuffled so the replay is a sample of the whole corpus rather than its first
-    // documents, which are one dataset and one curriculum stage. Seeded from the
-    // budget so a rebuild of the same dataset picks the same documents.
-    let mut order: Vec<usize> = (0..segments.documents.len()).collect();
-    shuffle_indices(&mut order, budget as u64);
-
-    // Breadth first, then depth. One pass takes at most `MAX_REPLAY_DOC_TOKENS` from
-    // each document, so replay is a wide sample of the corpus before it is a deep one;
-    // a further pass takes the *next* slice of each, at a fresh offset.
-    //
-    // The passes exist because one is not enough any more. A pass over the 11,104
-    // documents on disk yields 7.1M tokens, which was ample against an SFT set of a
-    // couple of thousand conversations and is 14% of the budget against 454,000 —
-    // the fine-tune would have been anchored at a seventh of the intended strength,
-    // silently, with `replay_tokens` the only sign and nothing to compare it to.
-    //
-    // Bounded: `offset` grows by `MAX_REPLAY_DOC_TOKENS` every pass, so every
-    // document is exhausted in finite time and `progressed` ends the loop when they
-    // all are — replay stops short of its budget rather than repeating the corpus,
-    // because the same tokens twice is not more of the old distribution.
-    let mut added = 0usize;
-    let mut pass = 0usize;
-    while added < budget {
-        let offset = pass * MAX_REPLAY_DOC_TOKENS;
-        let mut progressed = false;
-        for &index in &order {
-            if added >= budget {
-                break;
-            }
-            let doc = &segments.documents[index];
-            let Some(left) = doc.len.checked_sub(offset) else {
-                continue;
-            };
-            let want = left.min(MAX_REPLAY_DOC_TOKENS).min(budget - added);
-            // A one-token span has nothing to predict and would be a chunk the
-            // training loop skips; not worth a document boundary.
-            if want < 2 {
-                continue;
-            }
-            let span = tokenize::bpe::load_corpus_span(&prose_path, doc.start + offset, want)?;
-            if span.len() < 2 {
-                continue;
-            }
-            progressed = true;
-
-            if !corpus.is_empty() {
-                corpus.extend(eot);
-                mask.extend(std::iter::repeat_n(0u8, eot.len()));
-            }
-            spans.push(SftSpan { start: corpus.len(), len: span.len() });
-            corpus.extend(span.iter().map(|&t| u32::from(t)));
-            // Every position trains: this is ordinary language modelling, the
-            // objective the tokens were pretrained under. The masking convention is a
-            // property of chat examples, not of the file format.
-            mask.extend(std::iter::repeat_n(1u8, span.len()));
-            added += span.len();
-        }
-        if !progressed {
-            break;
-        }
-        pass += 1;
-    }
-
-    Ok(added)
-}
-
-// Whether the base model's tokenizer is byte-identical to the one that produced
-// `corpus.bin`. A missing file on either side is a mismatch, not an error — the
-// caller's response to both is the same, and "cannot prove they match" is the
-// answer that keeps a run from training on misinterpreted ids.
-fn same_tokenizer(base_model_dir: &Path, corpus_merges: &Path) -> io::Result<bool> {
-    let (Ok(base), Ok(built)) = (
-        fs::read(base_model_dir.join("merges.bin")),
-        fs::read(corpus_merges),
-    ) else {
-        return Ok(false);
-    };
-    Ok(base == built)
-}
 
 // Fisher–Yates over an explicit seed, so a rebuild picks the same documents.
 // Mirrors `llm::train::shuffle_seeded`; `| 1` keeps xorshift out of its zero state.
@@ -2144,449 +990,6 @@ fn shuffle_indices(order: &mut [usize], seed: u64) {
     }
 }
 
-// The marker set a fine-tune's output model should record: everything its corpus
-// contains, plus everything its base already knew. A base with no record
-// contributes nothing, so the union degrades to "what this corpus taught" rather
-// than inventing history for a model that never wrote any down.
-fn markers_after_training(base_model_dir: &Path, corpus: &[u32]) -> Vec<u32> {
-    let mut seen = special_ids_in(corpus);
-    seen.extend(model_special_ids_seen(base_model_dir).unwrap_or_default());
-    seen.sort_unstable();
-    seen.dedup();
-    seen
-}
-
-#[derive(Debug, Serialize)]
-pub struct RaftDatasetStats {
-    pub examples: usize,
-    pub total_tokens: usize,
-    pub trainable_tokens: usize,
-    // Winners dropped as exact repeats of an earlier one. Reported because a high
-    // number is the model saying the same thing to every prompt — which trains fine
-    // and narrows hard, and is invisible from the example count alone.
-    pub duplicates: usize,
-    pub skipped_too_long: usize,
-    // As `SftDatasetStats::replay_tokens`. Zero here means the tokenizer guard
-    // refused the replay, and the run is the unanchored self-train that replay
-    // exists to prevent — which for RAFT is the more dangerous of the two modes,
-    // since its examples are the model's own output.
-    pub replay_tokens: usize,
-    // As `SftDatasetStats::special_ids_seen` — RAFT writes the same `sft_corpus.bin`
-    // and trains through the same entry point, so its output model must carry the
-    // same record or a later fine-tune reads it as having seen nothing.
-    pub special_ids_seen: Vec<u32>,
-}
-
-// Builds the RAFT dataset: every catalogue entry labelled `up`, rendered through
-// the same chat template and masking convention SFT uses.
-//
-// **This deliberately writes `sft_corpus.bin` / `sft_mask.bin`.** RAFT *is* SFT —
-// identical loss, identical masking, identical training loop — differing only in
-// where the conversations came from. A separate pair of files would mean a second
-// copy of `sft_train` reading them, and two loops that must not drift apart. Phase
-// 1 always rebuilds these before phase 2 reads them, so an SFT run and a RAFT run
-// overwriting each other's dataset is no more of a problem than two SFT runs are.
-//
-// **Exact duplicates are dropped.** A model that answers three prompts with the
-// same sentence contributes that sentence three times, and max-likelihood training
-// would weight it triple — accelerating exactly the collapse this loop has to avoid.
-// Near-duplicates (same sentence, one word different) are *not* caught here; that
-// wants an edit-distance or n-gram overlap pass, and is the obvious next guard.
-//
-// **It replays prose, for the same reason `build_sft_dataset` does and more
-// urgently.** RAFT is plain masked cross-entropy through `sft_train` — no KL term,
-// nothing holding it near the base model — over a few hundred short replies. KTO
-// at least has `ref_logprob` anchoring it. Left unanchored, this stage is a
-// full-parameter fine-tune on the model's own output, which is the textbook
-// recipe for collapsing onto it: the model's language ability decays into the
-// register of whatever cleared the judge's bar, and the language benchmark reads
-// that as a regression because it is one. See `append_prose_replay`.
-pub fn build_raft_dataset(
-    base_model_dir: &Path,
-    catalogue_round: Option<(Uuid, i32)>,
-) -> io::Result<RaftDatasetStats> {
-    let merges_path = base_model_dir.join("merges.bin");
-    let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
-    let eot = tokenize::bpe::encode("<|endoftext|>", &merges);
-
-    // The same lines `build_kto_dataset` reads — RAFT just keeps one half of the
-    // split instead of both.
-    let lines = read_catalogue(catalogue_round)?;
-
-    let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
-    let ctx = model.ctx_window();
-
-    let mut corpus: Vec<u32> = Vec::new();
-    let mut mask: Vec<u8> = Vec::new();
-    let mut spans: Vec<SftSpan> = Vec::new();
-    let mut examples = 0usize;
-    let mut duplicates = 0usize;
-    let mut skipped_too_long = 0usize;
-    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-    for line in &lines {
-        if line.label != "up" {
-            continue;
-        }
-        if line.prompt.trim().is_empty() || line.response.trim().is_empty() {
-            continue;
-        }
-        let key = (
-            line.prompt.trim().to_string(),
-            line.response.trim().to_string(),
-        );
-        if !seen.insert(key) {
-            duplicates += 1;
-            continue;
-        }
-
-        let turns = vec![
-            llm::chat_template::Turn {
-                role: llm::chat_template::Role::User,
-                text: line.prompt.clone(),
-            },
-            llm::chat_template::Turn {
-                role: llm::chat_template::Role::Assistant,
-                text: line.response.clone(),
-            },
-        ];
-        // `Keep` is the identity here: these are the model's *own* generations,
-        // produced unbudgeted (see `labeling::autolabel`), so there is no thinking
-        // block to strip — and a model trained under `Strip` does not emit one.
-        let (ids, m) = llm::chat_template::build_training_example(
-            None,
-            &turns,
-            None,
-            &merges,
-            llm::chat_template::Reasoning::Keep,
-        );
-
-        // Unlike KTO — where a truncated example would be scored against a whole-reply
-        // reference log-probability and mean two different things — a long example
-        // here is merely one SFT can't fit in a window. Dropped for the same reason
-        // either way: a half-rendered conversation teaches half a conversation.
-        if ids.len() < 2 || ids.len() > ctx {
-            skipped_too_long += 1;
-            continue;
-        }
-        if !m.iter().any(|&b| b != 0) {
-            continue;
-        }
-
-        if !corpus.is_empty() {
-            corpus.extend(&eot);
-            mask.extend(std::iter::repeat_n(0u8, eot.len()));
-        }
-        spans.push(SftSpan { start: corpus.len(), len: ids.len() });
-        corpus.extend(&ids);
-        mask.extend(&m);
-        examples += 1;
-    }
-
-    if examples == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no approved replies in the catalogue — build the catalogue first, or \
-             the bar is set above anything this model currently produces",
-        ));
-    }
-
-    // Counted before replay: the budget is a multiple of the *reply* tokens, and
-    // replay's own fully-masked-in tokens must not enlarge the budget they are
-    // being measured against.
-    let reply_trainable = mask.iter().filter(|&&b| b != 0).count();
-    let replay_tokens =
-        append_prose_replay(&mut corpus, &mut mask, &mut spans, base_model_dir, &eot, reply_trainable)?;
-
-    let datasets = storage::datasets_dir();
-    fs::create_dir_all(&datasets)?;
-    tokenize::bpe::save_corpus(&corpus, &datasets.join("sft_corpus.bin").to_string_lossy())?;
-    fs::write(datasets.join("sft_mask.bin"), &mask)?;
-    save_sft_segments(
-        &SftSegments { eot_id: *eot.first().unwrap_or(&256), conversations: spans },
-        &datasets.join(SFT_SEGMENTS_FILE),
-    )?;
-
-    Ok(RaftDatasetStats {
-        examples,
-        total_tokens: corpus.len(),
-        trainable_tokens: mask.iter().filter(|&&b| b != 0).count(),
-        duplicates,
-        skipped_too_long,
-        replay_tokens,
-        special_ids_seen: markers_after_training(base_model_dir, &corpus),
-    })
-}
-
-#[derive(Debug, Serialize)]
-pub struct KtoDatasetStats {
-    pub examples: usize,
-    pub desirable: usize,
-    pub undesirable: usize,
-    pub total_tokens: usize,
-    pub trainable_tokens: usize,
-    // Rated replies that were read but could not be used, and why — surfaced
-    // because on a dataset this small, silently dropping half the feedback is the
-    // difference between a tune that can work and one that cannot.
-    pub skipped_too_long: usize,
-    pub skipped_no_reply: usize,
-    // As `SftDatasetStats::special_ids_seen`, so the record survives a third hop.
-    pub special_ids_seen: Vec<u32>,
-}
-
-// One rated reply, as written by `queue::export_preference_data` (the human half)
-// or `labeling::autolabel` (the generated half).
-#[derive(Deserialize)]
-struct RatedLine {
-    prompt: String,
-    response: String,
-    label: String,
-    // Which model generated this reply. Absent on the human-rated export and on
-    // every catalogue line written before the field existed — see
-    // `read_catalogue` for what that absence means.
-    #[serde(default)]
-    id_cycle: Option<Uuid>,
-    #[serde(default)]
-    round: Option<i32>,
-}
-
-// Every rated reply in `raw/preference/`, optionally narrowed to one round's
-// generations. `only` is `(id_cycle, round)`; see `TrainConfig::catalogue_cycle` for
-// why the round rather than the generating model.
-//
-// **The exemption is by file, not by missing stamp.** `feedback.jsonl` is kept
-// whole under every filter: it is what a person clicked, it is the seed and the
-// audit rather than any round's output, and it is a few dozen lines against
-// thousands. Everything else is generated, and a generated line with no round stamp
-// is one written before the stamp existed — which is precisely the accumulated
-// backlog the scoping exists to stop training on, so under a filter it is dropped.
-//
-// Reading the stamp alone cannot make that distinction: human lines have no stamp
-// either, so "keep the unstamped" grandfathers the entire pre-existing catalogue
-// and the filter selects nothing it was meant to select.
-//
-// Both dataset builders read through this so they can never disagree about what
-// the catalogue *is*; they differ only in which half of it they keep.
-fn read_catalogue(only: Option<(Uuid, i32)>) -> io::Result<Vec<RatedLine>> {
-    let dir = storage::preference_dir();
-    let mut files: Vec<PathBuf> = if dir.is_dir() {
-        fs::read_dir(&dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    files.sort();
-
-    let mut lines: Vec<RatedLine> = Vec::new();
-    for path in &files {
-        let human = path.file_name().and_then(|n| n.to_str())
-            == Some(storage::HUMAN_FEEDBACK_FILE);
-        let content = fs::read_to_string(path)?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // A malformed line is skipped rather than fatal: this file is a machine
-            // export, and one bad row should not block a tune over hundreds of good
-            // ones.
-            let Ok(parsed) = serde_json::from_str::<RatedLine>(line) else {
-                continue;
-            };
-            // An unstamped generated line is backlog: it predates the stamp, so
-            // there is no round it can be attributed to and no way to tell it from
-            // one written six rounds ago.
-            if let Some((want_cycle, want_round)) = only {
-                let mine =
-                    parsed.id_cycle == Some(want_cycle) && parsed.round == Some(want_round);
-                if !human && !mine {
-                    continue;
-                }
-            }
-            lines.push(parsed);
-        }
-    }
-    Ok(lines)
-}
-
-// Builds the KTO dataset from the exported thumbs feedback: token spans, the reply
-// mask, and each example's reference log-probability under the base model.
-//
-// **Why the base model is loaded here.** KTO needs `log π_ref(reply | prompt)` for
-// every example. Computing it now, once, and storing it in the index means the
-// training loop never holds two models on the GPU — the alternative (a resident
-// frozen copy) would double weight memory and add a forward pass per step for a
-// number that never changes.
-//
-// **Why examples longer than the context window are dropped rather than truncated.**
-// A KTO reward is a property of a whole reply. A truncated example would be trained
-// against a reference log-probability computed over a different span, so its reward
-// would be measuring two different things — worse than not training on it at all.
-pub fn build_kto_dataset(
-    base_model_dir: &Path,
-    catalogue_round: Option<(Uuid, i32)>,
-) -> io::Result<KtoDatasetStats> {
-    let merges_path = base_model_dir.join("merges.bin");
-    let merges = tokenize::bpe::load_merges(&merges_path.to_string_lossy())?;
-
-    // The *training* slice only. The held-out slice lives under `eval/preference/`
-    // and is the benchmark's alone — training on it would make the reported margin
-    // meaningless.
-    //
-    // **`catalogue_round` is the round whose candidates these are, not this run's
-    // base.** KTO runs after RAFT, so its base is the model RAFT just produced, which
-    // has never generated a catalogue line — keying off the base would select nothing.
-    // The cycle passes its own round, which is the same set RAFT trained on and is
-    // what makes the two stages compose.
-    let lines = read_catalogue(catalogue_round)?;
-
-    if lines.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no rated replies found — collect some thumbs up/down in the chat first",
-        ));
-    }
-
-    let model = llm::training::transformer::Model::load(&base_model_dir.to_string_lossy())?;
-    let ctx = model.ctx_window();
-    // One session for every reference log-probability in this pass, rather than
-    // re-uploading the weights per scored example.
-    let mut session = llm::training::infer_session::InferSession::new(&model, ctx);
-
-    let mut corpus: Vec<u32> = Vec::new();
-    let mut mask: Vec<u8> = Vec::new();
-    let mut examples: Vec<llm::kto::KtoExample> = Vec::new();
-    let mut skipped_too_long = 0usize;
-    let mut skipped_no_reply = 0usize;
-
-    for line in &lines {
-        let desirable = match line.label.as_str() {
-            "up" => true,
-            "down" => false,
-            _ => continue,
-        };
-
-        let turns = vec![
-            llm::chat_template::Turn {
-                role: llm::chat_template::Role::User,
-                text: line.prompt.clone(),
-            },
-            llm::chat_template::Turn {
-                role: llm::chat_template::Role::Assistant,
-                text: line.response.clone(),
-            },
-        ];
-        // `Keep` is the identity here: these are the model's *own* generations,
-        // produced unbudgeted (see `labeling::autolabel`), so there is no thinking
-        // block to strip — and a model trained under `Strip` does not emit one.
-        let (ids, m) = llm::chat_template::build_training_example(
-            None,
-            &turns,
-            None,
-            &merges,
-            llm::chat_template::Reasoning::Keep,
-        );
-
-        if ids.len() < 2 || ids.len() > ctx {
-            skipped_too_long += 1;
-            continue;
-        }
-        if !m.iter().any(|&b| b != 0) {
-            skipped_no_reply += 1;
-            continue;
-        }
-
-        // The reference log-probability over exactly the masked (reply) positions —
-        // the same positions `train_step_kto` will sum over, so the two are
-        // comparable.
-        let Some(ref_logprob) = llm::kto::reference_logprob(&mut session, &ids, &m) else {
-            skipped_no_reply += 1;
-            continue;
-        };
-
-        examples.push(llm::kto::KtoExample {
-            offset: corpus.len(),
-            len: ids.len(),
-            desirable,
-            ref_logprob,
-        });
-        corpus.extend(&ids);
-        mask.extend(&m);
-    }
-
-    if examples.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "every rated reply was unusable ({skipped_too_long} too long for the \
-                 {ctx}-token context, {skipped_no_reply} with no reply tokens)"
-            ),
-        ));
-    }
-
-    let datasets = storage::datasets_dir();
-    fs::create_dir_all(&datasets)?;
-    tokenize::bpe::save_corpus(&corpus, &datasets.join("kto_corpus.bin").to_string_lossy())?;
-    fs::write(datasets.join("kto_mask.bin"), &mask)?;
-
-    let desirable = examples.iter().filter(|e| e.desirable).count();
-    let undesirable = examples.len() - desirable;
-    let index = llm::kto::KtoIndex { examples };
-    fs::write(
-        datasets.join("kto_index.json"),
-        serde_json::to_string(&index).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("could not encode index: {e}"))
-        })?,
-    )?;
-
-    Ok(KtoDatasetStats {
-        examples: index.examples.len(),
-        desirable,
-        undesirable,
-        total_tokens: corpus.len(),
-        trainable_tokens: mask.iter().filter(|&&b| b != 0).count(),
-        skipped_too_long,
-        skipped_no_reply,
-        special_ids_seen: markers_after_training(base_model_dir, &corpus),
-    })
-}
-
-// `run_sft_training`'s preference twin. The dataset must already have been built
-// by `build_kto_dataset` — the caller runs that as phase 1.
-pub fn run_kto_training(
-    cfg: &TrainConfig,
-    on_progress: llm::train::ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> io::Result<bool> {
-    let base_id = cfg.base_model_id.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "KTO run requires a base_model_id")
-    })?;
-    let base_model_dir = storage::models_dir().join(base_id.to_string());
-    let datasets = storage::datasets_dir();
-    let out_model_dir = storage::models_dir().join(cfg.storage_id.to_string());
-    let checkpoints_dir = out_model_dir.join("checkpoints");
-
-    let kto_corpus_path = datasets.join("kto_corpus.bin");
-    let warm_start_ids = untrained_marker_ids(&base_model_dir, &kto_corpus_path)?;
-
-    llm::train::kto_train(
-        &base_model_dir,
-        &kto_corpus_path,
-        &datasets.join("kto_mask.bin"),
-        &datasets.join("kto_index.json"),
-        &out_model_dir,
-        cfg.epochs,
-        &warm_start_ids,
-        cfg.lr,
-        cfg.beta,
-        Some(&checkpoints_dir),
-        on_progress,
-        Some(cancel),
-    )
-}
 
 // ── Synthetic SFT data generator (ISSUE-0036) ───────────────────────────────
 //
@@ -2638,26 +1041,6 @@ const CAPITALS: &[(&str, &str)] = &[
 // sees (and learns to ignore for loss) the system scaffold on some fraction.
 const SYSTEM_PROMPT_ODDS: u64 = 3;
 
-/// Generates `count` templated chat conversations and writes them as one JSONL
-/// file (`synthetic.jsonl`) into `storage::sft_dir()`, the input dir that
-/// `build_sft_dataset` reads. Each line is a `{system?, turns:[…]}` object ending
-/// on an assistant turn, matching the SFT dataset schema. Returns `count`.
-pub fn generate_sft_examples(count: usize) -> io::Result<usize> {
-    let sft = storage::sft_dir();
-    fs::create_dir_all(&sft)?;
-
-    let mut state = rng_seed();
-    let mut out = String::new();
-    for _ in 0..count {
-        let conv = make_example(&mut state);
-        // Serializing a struct we built ourselves can only fail on an allocator
-        // fault; propagate anyway rather than unwrap (R3).
-        out.push_str(&serde_json::to_string(&conv)?);
-        out.push('\n');
-    }
-    fs::write(sft.join("synthetic.jsonl"), out)?;
-    Ok(count)
-}
 
 // Builds one conversation: pick a category, optionally prepend a system prompt.
 fn make_example(state: &mut u64) -> GenConversation {
@@ -3260,7 +1643,7 @@ mod sft_tests {
     fn a_budget_label_does_not_repartition_the_split() {
         let plain = conversation("why is the sky blue?", "rayleigh scattering");
         let before = chat_destination(&plain);
-        for budget in llm::chat_template::ThinkBudget::ALL {
+        for budget in engine::ThinkBudget::ALL {
             let mut labelled = conversation("why is the sky blue?", "rayleigh scattering");
             labelled.budget = Some(budget);
             assert_eq!(chat_destination(&labelled), before, "{budget:?} moved the split");
@@ -3274,7 +1657,7 @@ mod sft_tests {
     fn the_on_disk_budget_label_is_read_back() {
         let line = r#"{"turns":[{"role":"user","text":"q"},{"role":"assistant","text":"a"}],"group":"g","budget":"med","think_tokens":269}"#;
         let conv: SftConversation = serde_json::from_str(line).unwrap();
-        assert_eq!(conv.budget, Some(llm::chat_template::ThinkBudget::Med));
+        assert_eq!(conv.budget, Some(engine::ThinkBudget::Med));
 
         // …and a conversation without one still round-trips as the JSON it came in
         // as, rather than gaining a `"budget": null`.
@@ -3442,7 +1825,7 @@ mod sft_tests {
         );
         fs::write(sft.join("data.jsonl"), jsonl).unwrap();
 
-        let stats = build_sft_dataset(&base, llm::chat_template::Reasoning::Keep).unwrap();
+        let stats = build_sft_dataset(&base, false).unwrap();
         assert_eq!(stats.conversations, 2);
         // No pretrain corpus exists under this temp root, so the tokenizer guard
         // refuses replay and the corpus is conversations only — which is what the
@@ -3463,22 +1846,22 @@ mod sft_tests {
         let expected = llm::chat_template::build_training_example(
             None,
             &[
-                llm::chat_template::Turn { role: llm::chat_template::Role::User, text: q1.clone() },
-                llm::chat_template::Turn { role: llm::chat_template::Role::Assistant, text: a1.clone() },
+                engine::Turn { role: engine::Role::User, text: q1.clone() },
+                engine::Turn { role: engine::Role::Assistant, text: a1.clone() },
             ],
             None,
             &merges,
-            llm::chat_template::Reasoning::Keep,
+            false,
         ).1.iter().filter(|&&b| b != 0).count()
         + llm::chat_template::build_training_example(
             Some("be nice"),
             &[
-                llm::chat_template::Turn { role: llm::chat_template::Role::User, text: q2.clone() },
-                llm::chat_template::Turn { role: llm::chat_template::Role::Assistant, text: a2.clone() },
+                engine::Turn { role: engine::Role::User, text: q2.clone() },
+                engine::Turn { role: engine::Role::Assistant, text: a2.clone() },
             ],
             None,
             &merges,
-            llm::chat_template::Reasoning::Keep,
+            false,
         ).1.iter().filter(|&&b| b != 0).count();
         assert_eq!(stats.trainable_tokens, expected);
         assert!(stats.trainable_tokens < stats.total_tokens);
@@ -3606,10 +1989,10 @@ mod sft_tests {
             // Must end on an assistant turn.
             assert_eq!(conv.turns.last().unwrap().role, "assistant");
 
-            let turns: Vec<llm::chat_template::Turn> = conv
+            let turns: Vec<engine::Turn> = conv
                 .turns
                 .iter()
-                .map(|t| llm::chat_template::Turn {
+                .map(|t| engine::Turn {
                     role: parse_role(&t.role).unwrap(),
                     text: t.text.clone(),
                 })
@@ -3619,7 +2002,7 @@ mod sft_tests {
                 &turns,
                 conv.budget,
                 &merges,
-                llm::chat_template::Reasoning::Keep,
+                false,
             );
             assert!(!ids.is_empty(), "example rendered to no tokens: {}", line);
             assert!(
@@ -3800,158 +2183,3 @@ mod chat_eval_export_tests {
     }
 }
 
-#[cfg(test)]
-mod catalogue_tests {
-    use super::*;
-    use std::fs;
-
-    // Writes a preference directory under a temp DATA_DIR and returns its root.
-    // `generated` lands in the auto-label file, `human` in the feedback file, and
-    // the two are treated differently on purpose. Caller must hold ENV_LOCK.
-    fn catalogue_root(
-        name: &str,
-        generated: &[serde_json::Value],
-        human: &[serde_json::Value],
-    ) -> PathBuf {
-        let tmp = std::env::temp_dir().join(format!("catalogue_{name}_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        let dir = tmp.join("raw").join("preference");
-        fs::create_dir_all(&dir).unwrap();
-        let body = |lines: &[serde_json::Value]| -> String {
-            lines.iter().map(|l| format!("{l}\n")).collect()
-        };
-        fs::write(dir.join(storage::AUTOLABEL_FILE), body(generated)).unwrap();
-        fs::write(dir.join(storage::HUMAN_FEEDBACK_FILE), body(human)).unwrap();
-        // SAFETY: single-threaded under ENV_LOCK; DATA_DIR drives storage::root().
-        unsafe { std::env::set_var("DATA_DIR", &tmp) };
-        tmp
-    }
-
-    // A generated line stamped with the round that wrote it. `id_model` rides along
-    // as provenance the way the real writer emits it, and is deliberately *not* what
-    // the filter reads — keying on it is the bug this scoping replaced.
-    fn stamped(round: (Uuid, i32), response: &str) -> serde_json::Value {
-        serde_json::json!({
-            "prompt": "why is the sky blue?",
-            "response": response,
-            "label": "up",
-            "id_model": Uuid::new_v4(),
-            "id_cycle": round.0,
-            "round": round.1,
-        })
-    }
-
-    fn unstamped(response: &str) -> serde_json::Value {
-        serde_json::json!({
-            "prompt": "why is the sky blue?",
-            "response": response,
-            "label": "up",
-        })
-    }
-
-    // The whole point of the provenance stamp. The catalogue file is append-only
-    // and spans every round a cycle has ever run; without this filter round 7's
-    // self-train is a max-likelihood pass over rounds 1-7's output, and the
-    // earliest and worst generations accumulate the most total gradient.
-    #[test]
-    fn a_round_reads_only_its_own_generations() {
-        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let cycle = Uuid::new_v4();
-        let mine = (cycle, 3);
-        // The *same cycle*, an earlier round. This is the case keying on the
-        // generating model could never see: a re-run generates with the same seed, so
-        // model id alone puts both of these in the same bucket.
-        let theirs = (cycle, 2);
-        let tmp = catalogue_root(
-            "scoped",
-            &[
-                stamped(mine, "this round"),
-                stamped(theirs, "an earlier round"),
-                stamped(mine, "this round again"),
-            ],
-            &[],
-        );
-
-        let lines = read_catalogue(Some(mine)).unwrap();
-        assert_eq!(lines.len(), 2);
-        assert!(lines.iter().all(|l| l.response.starts_with("this round")));
-
-        fs::remove_dir_all(&tmp).ok();
-    }
-
-    // The exemption that matters, and the one that must not be over-broad: human
-    // ratings are the seed and the audit, a few dozen hand-clicked judgements
-    // against thousands of generated lines, and they belong in every run.
-    #[test]
-    fn human_ratings_survive_every_filter() {
-        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let mine = (Uuid::new_v4(), 1);
-        let tmp = catalogue_root(
-            "human",
-            &[stamped(mine, "generated"), stamped((Uuid::new_v4(), 1), "someone else's")],
-            &[unstamped("hand rated")],
-        );
-
-        let lines = read_catalogue(Some(mine)).unwrap();
-        assert_eq!(lines.len(), 2);
-        assert!(lines.iter().any(|l| l.response == "hand rated"));
-
-        fs::remove_dir_all(&tmp).ok();
-    }
-
-    // The bug this file had on its first cut: exempting *every* unstamped line
-    // rather than every human one. An unstamped line in the auto-label file is a
-    // generation from before the stamp existed — exactly the accumulated backlog
-    // the scoping exists to stop training on. Grandfathering it in makes the
-    // filter inert on any install with a pre-existing catalogue, which is every
-    // install that has ever run the loop.
-    #[test]
-    fn unstamped_generations_are_backlog_and_are_dropped() {
-        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let mine = (Uuid::new_v4(), 1);
-        let tmp = catalogue_root(
-            "backlog",
-            &[
-                stamped(mine, "this round"),
-                unstamped("written before the stamp existed"),
-                unstamped("and another"),
-            ],
-            &[],
-        );
-
-        let lines = read_catalogue(Some(mine)).unwrap();
-        assert_eq!(lines.len(), 1, "legacy catalogue must not ride along");
-        assert_eq!(lines[0].response, "this round");
-
-        fs::remove_dir_all(&tmp).ok();
-    }
-
-    // A run started by hand from the API has no round to scope to, and must see
-    // the file exactly as it did before scoping existed.
-    #[test]
-    fn no_filter_reads_the_whole_catalogue() {
-        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = catalogue_root(
-            "whole",
-            &[stamped((Uuid::new_v4(), 1), "a"), unstamped("b")],
-            &[unstamped("c")],
-        );
-
-        assert_eq!(read_catalogue(None).unwrap().len(), 3);
-
-        fs::remove_dir_all(&tmp).ok();
-    }
-
-    // A round that generated nothing gets nothing back — it does not silently fall
-    // through to the whole file. The empty result is what makes the size gates fire
-    // and the round refuse, which is the correct outcome.
-    #[test]
-    fn a_round_with_no_generations_selects_nothing() {
-        let _guard = storage::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = catalogue_root("empty", &[stamped((Uuid::new_v4(), 1), "someone else's")], &[]);
-
-        assert!(read_catalogue(Some((Uuid::new_v4(), 1))).unwrap().is_empty());
-
-        fs::remove_dir_all(&tmp).ok();
-    }
-}

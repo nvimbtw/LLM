@@ -13,13 +13,7 @@ export type JobKind =
   | "train"
   | "benchmark"
   | "chat"
-  | "autolabel"
-  | "gather"
   | "synth"
-  // Generation from a local model on the GPU. The `synth` twin, and on the other
-  // lane for that reason: it loads a quantized teacher onto the device, so it
-  // stands in the same line as training and chat rather than beside them.
-  | "teach"
 
 /**
  * Which runner a job stands in front of. `device` is the GPU line — one job at a
@@ -292,34 +286,7 @@ export function queueBenchmark(
   )
 }
 
-/** Config for an auto-labelling run. Mirrors the backend `AutolabelRequest`. */
-export interface AutolabelConfig {
-  id_model: string
-  // Candidate replies generated per prompt. The best and worst become one
-  // thumbs-up and one thumbs-down example, so this must be at least 2.
-  candidates: number
-  max_prompts: number
-  // Above the chat default on purpose: candidates have to differ from each other
-  // for a best/worst split to mean anything.
-  temperature: number
-}
 
-export function queueAutolabel(config: AutolabelConfig): Promise<Job> {
-  return enqueue("autolabel", config)
-}
-
-/** Config for a signal-gathering run. Mirrors the backend `GatherRequest`. */
-export interface GatherConfig {
-  id_model: string
-  // Replies to generate for rating. Sized to be finishable in one sitting —
-  // rating is the scarce resource, not generation.
-  batch?: number
-  temperature?: number
-}
-
-export function queueGather(config: GatherConfig): Promise<Job> {
-  return enqueue("gather", config)
-}
 
 /**
  * What an auto-labelling run did. Mirrors the backend `AutolabelStats`.
@@ -490,9 +457,6 @@ export interface TeachConfig {
   seed?: number
 }
 
-export function queueTeach(config: TeachConfig): Promise<Job> {
-  return enqueue("teach", config)
-}
 
 /** One model call in a teaching run, as it completes. */
 export interface TeachCall {
@@ -616,10 +580,7 @@ export const KIND_LABEL: Record<JobKind, string> = {
   train: "Train",
   benchmark: "Benchmark",
   chat: "Chat",
-  autolabel: "Build catalogue",
-  gather: "Gather signals",
   synth: "Generate SFT data",
-  teach: "Teach locally",
 }
 
 /**
@@ -637,10 +598,7 @@ export const KIND_CHIP: Record<JobKind, string> = {
   train: "text-kind-train bg-kind-train/14",
   benchmark: "text-kind-benchmark bg-kind-benchmark/14",
   chat: "text-kind-chat bg-kind-chat/14",
-  autolabel: "text-kind-autolabel bg-kind-autolabel/14",
-  gather: "text-kind-gather bg-kind-gather/14",
   synth: "text-kind-synth bg-kind-synth/14",
-  teach: "text-kind-teach bg-kind-teach/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
@@ -671,19 +629,9 @@ export function throbberMode(
       return "generating"
     // Auto-labelling is generation with a scorer attached, and generating is what
     // it spends effectively all of its time doing.
-    case "autolabel":
-      return "generating"
-    // Gathering is generation with a person, rather than a rule, doing the
-    // judging — and generating is all the GPU is doing either way.
-    case "gather":
-      return "generating"
-    // Synthesis is generation too, just somebody else's model doing it. The
-    // throbber says what is happening, not which device it happens on.
     case "synth":
       return "generating"
     // Teaching is the same generation on our own device.
-    case "teach":
-      return "generating"
   }
 }
 

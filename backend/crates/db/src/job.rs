@@ -15,20 +15,10 @@ pub enum JobKind {
     Train,
     Benchmark,
     Chat,
-    // Generate candidate replies and label them with the rule-based judge, writing
-    // preference training data. GPU work like the rest, so it queues like the rest.
-    Autolabel,
-    // Generate short replies for a *person* to rate, so a KTO run has something to
-    // train on. The autolabel twin with the judge replaced by a human.
-    Gather,
     // Ask a cheap hosted model for synthetic SFT conversations, validate them, and
     // append the survivors to the SFT corpus. The only kind that touches no local
     // compute at all — see `lane`.
     Synth,
-    // The same job as `Synth` but against a *local* GGUF run through llama.cpp,
-    // producing thinking-budget triples. Holds the device, so unlike `Synth` it
-    // queues on the GPU line — see `lane`.
-    Teach,
 }
 
 // Which runner executes a kind of work.
@@ -64,16 +54,7 @@ impl JobKind {
     pub fn lane(self) -> JobLane {
         match self {
             JobKind::Synth => JobLane::Network,
-            // `Teach` is the local-model twin of `Synth` and lands on the other
-            // lane for that exact reason: it loads a quantized model onto the GPU
-            // and decodes there, so it contends for the device with every training
-            // run and chat turn.
-            JobKind::Train
-            | JobKind::Benchmark
-            | JobKind::Chat
-            | JobKind::Autolabel
-            | JobKind::Gather
-            | JobKind::Teach => JobLane::Device,
+            JobKind::Train | JobKind::Benchmark | JobKind::Chat => JobLane::Device,
         }
     }
 }
@@ -160,7 +141,7 @@ pub async fn create(
     config: &Value,
     id_user: Option<Uuid>,
 ) -> Result<Job, sqlx::Error> {
-    create_in_band(pool, kind, label, config, id_user, false, None, None).await
+    create_in_band(pool, kind, label, config, id_user, false).await
 }
 
 // Enqueues at the back of a *band*. The rank is `max + 1` over the live jobs in the
@@ -173,16 +154,14 @@ pub async fn create_in_band(
     config: &Value,
     id_user: Option<Uuid>,
     background: bool,
-    id_cycle: Option<Uuid>,
-    cycle_role: Option<&str>,
 ) -> Result<Job, sqlx::Error> {
     sqlx::query_as!(
         Job,
-        r#"INSERT INTO jobs (kind, lane, label, config, id_user, background, id_cycle, cycle_role, queue_rank)
-           VALUES ($1, $8, $2, $3, $4, $5, $6, $7, (
+        r#"INSERT INTO jobs (kind, lane, label, config, id_user, background, queue_rank)
+           VALUES ($1, $6, $2, $3, $4, $5, (
                SELECT COALESCE(MAX(queue_rank), 0) + 1 FROM jobs
                WHERE status IN ('queued', 'running', 'cancelling')
-                 AND lane = $8 AND background = $5
+                 AND lane = $6 AND background = $5
            ))
            RETURNING id_job, kind as "kind: JobKind", lane as "lane: JobLane",
                      status as "status: JobStatus",
@@ -193,8 +172,6 @@ pub async fn create_in_band(
         config,
         id_user,
         background,
-        id_cycle,
-        cycle_role,
         // Not a parameter of this function: the lane follows from the kind, so
         // there is no call site that could disagree with the runner about which
         // line a job is standing in.

@@ -12,12 +12,12 @@ use actix_web::{HttpResponse, Responder, get, web};
 
 use crate::extractors::AdminUser;
 
-// Lists the selectable pretrain datasets — the subfolders of uploads/, each with
-// its .txt count — so the params rail can render a checkbox per dataset with an
-// "n / <files>" sample cap.
+// The corpora the engine has on disk, so the params rail can render a checkbox
+// per dataset. Proxied rather than read here: the engine owns the data, and a
+// second filesystem view on this side could only ever disagree with it.
 #[get("/datasets")]
-async fn list_datasets(_admin: AdminUser) -> impl Responder {
-    match training::list_datasets() {
+async fn list_datasets(_admin: AdminUser, engine: web::Data<engine::Client>) -> impl Responder {
+    match engine.datasets().await {
         Ok(list) => HttpResponse::Ok().json(list),
         Err(e) => {
             eprintln!("list datasets error: {}", e);
