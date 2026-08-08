@@ -32,6 +32,61 @@ def pick_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def autocast_dtype(precision: str, device: str) -> torch.dtype | None:
+    """The autocast dtype for this run, or None to stay in fp32.
+
+    bf16 is the default and matters more than it looks: `scaled_dot_product_
+    attention` has no flash kernel for fp32 inputs, so an fp32 run silently falls
+    back to the memory-efficient or math backend and pays for the attention matrix
+    it did not need to materialize. Measured on an RTX 3060 at 256d/4h/6L/ctx512,
+    bf16 is ~1.7x fp32 and torch.compile on top of it ~2.5x.
+
+    bf16 over fp16 because it has fp32's exponent range: no GradScaler, no loss
+    scaling to tune, and no silent overflow to inf in the backward pass. Master
+    weights stay fp32 under autocast either way — only the ops are cast.
+    """
+    if device != "cuda" or precision == "fp32":
+        return None
+    if precision == "bf16" and not torch.cuda.is_bf16_supported():
+        return torch.float16
+    return torch.bfloat16 if precision == "bf16" else torch.float16
+
+
+def compiled(fn, enabled: bool):
+    """`torch.compile` a callable, falling back to eager if compilation fails.
+
+    A failure here is a performance regression, not a broken run — the same
+    weights train either way — so it must not take the run down with it. Inductor
+    needs a working C compiler and writable cache, neither guaranteed.
+    """
+    if not enabled:
+        return fn
+    try:
+        return torch.compile(fn)
+    except Exception:
+        return fn
+
+
+def step_fn(model: Transformer, vocab: int):
+    """The forward pass and its loss as one callable, so both compile together.
+
+    Compiling the model alone leaves cross-entropy in eager, and on this model
+    that is not a rounding error: the logits are [batch x ctx, vocab], autocast
+    puts cross-entropy on its fp32 list, and eager therefore materializes the
+    whole tensor a second time in fp32 before reducing it away. Measured at
+    256d/8k-vocab/ctx512/bs8, that cast and the softmax around it were 14 of 33
+    ms per step. Inside the graph, inductor fuses the cast into the softmax's
+    reduction and the fp32 copy never exists — the same arithmetic, 3.6 ms/step
+    cheaper, and peak memory drops from 724 to 430 MiB.
+    """
+
+    def forward_loss(x, y, w):
+        logits, _ = model(x)
+        return _loss(logits, y, w, vocab)
+
+    return forward_loss
+
+
 def lr_at(step: int, total_steps: int, cfg: TrainConfig) -> float:
     """Linear warmup, then cosine decay to MIN_LR_RATIO of the peak."""
     if step < cfg.warmup_steps:
@@ -58,11 +113,34 @@ def run(
     model.to(device)
     model.train()
 
+    # TF32 for whatever stays in fp32 (the loss, and the whole run under
+    # precision="fp32"). Torch has defaulted this off since 1.12; on Ampere it is
+    # ~1.1x for a tenth of a bit of mantissa on matmul accumulation.
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = cfg.allow_tf32
+        torch.backends.cudnn.allow_tf32 = cfg.allow_tf32
+
+    amp_dtype = autocast_dtype(cfg.precision, device)
+    # Diagnostic steps run the *uncompiled* callable. Recording swaps the
+    # attention implementation (an explicit softmax for the entropy readout),
+    # which is a different graph — routing it through the compiled one would
+    # trigger a recompile on the way in and another on the way out, every single
+    # time. Both close over the same module, so this is a dispatch choice rather
+    # than a copy of anything.
+    eager = step_fn(model, model.vocab)
+    fast = compiled(eager, cfg.compile_model and device == "cuda")
+
+    # The fused optimizer runs the whole parameter update in one kernel instead of
+    # one per tensor. At six layers that is a few hundred launches a step saved,
+    # which matters here precisely because the model is small enough for launch
+    # overhead to be a real share of the step. CUDA-only, so it is asked for
+    # rather than assumed.
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.lr,
         betas=(0.9, 0.95),
         weight_decay=cfg.weight_decay,
+        fused=(device == "cuda"),
     )
 
     # Every epoch reorders the same documents, so the batch count is stable and
@@ -71,8 +149,8 @@ def run(
     # Each stage holds different documents, so its step count is its own.
     stage_steps = []
     for stage in stages:
-        stream, _ = plan_mod.epoch_stream(corpus, data_plan, 0, mask, stage.documents)
-        stage_steps.append(plan_mod.batch_count(len(stream), cfg.ctx_window, cfg.batch_size))
+        length = plan_mod.stream_length(len(corpus), data_plan, stage.documents)
+        stage_steps.append(plan_mod.batch_count(length, cfg.ctx_window, cfg.batch_size))
     total_steps = sum(n * st.epochs for n, st in zip(stage_steps, stages))
     if total_steps == 0:
         raise ValueError(
@@ -91,7 +169,7 @@ def run(
 
     started = time.time()
     step = 0
-    losses: list[float] = []
+    log = _LossLog(interval, device)
     grad = None
 
     def report(
@@ -105,13 +183,16 @@ def run(
         stage,
         chunk: int,
         steps_this_epoch: int,
-        epoch_losses: list[float],
         lr: float,
         epoch_started: float,
         done: bool = False,
         checkpoint_path: str | None = None,
     ) -> None:
-        window = losses[-interval:] or [0.0]
+        # Every step since the last frame is still on the device; a consumer is
+        # about to read all of it, so this is where the one transfer belongs.
+        log.flush()
+        epoch_losses = log.epoch
+        window = log.values[-interval:] or [0.0]
         elapsed = time.time() - started
         # Projected from the rate achieved so far rather than from the last
         # window: a single slow batch should not swing the estimate a person is
@@ -154,7 +235,7 @@ def run(
       for stage_epoch in range(stage.epochs):
         epoch = epochs_done + stage_epoch
         epoch_started = time.time()
-        epoch_losses: list[float] = []
+        log.start_epoch()
         chunk = 0
         steps_this_epoch = stage_steps[stage_index]
         # Seeded off the global epoch so no two epochs of a run — in any stage —
@@ -169,10 +250,28 @@ def run(
             # Cooperative cancellation at a step boundary: the weights are
             # consistent here, mid-backward they are not.
             if cancel is not None and cancel.is_set():
-                return _summary(step, total_steps, losses, started, cancelled=True)
+                log.flush()
+                return _summary(step, total_steps, log.values, started, cancelled=True)
 
-            x = torch.from_numpy(inputs).to(device)
-            y = torch.from_numpy(targets).to(device)
+            # An SFT window can contain no assistant tokens at all, which makes
+            # the loss exactly zero and its gradient nothing. Stepping on it is
+            # harmless but pollutes the reported average with zeros that are not
+            # measurements of anything, so the window is skipped outright.
+            #
+            # Decided here, on the host, from the mask that is still a numpy
+            # array. Asking the same question of the uploaded tensor would mean
+            # reading a device scalar back on every step of every SFT run — a
+            # synchronization point on the one path that least needs it.
+            if weights is not None and not weights.any():
+                continue
+
+            x = torch.from_numpy(inputs).to(device, non_blocking=True)
+            y = torch.from_numpy(targets).to(device, non_blocking=True)
+            w = (
+                torch.from_numpy(weights).to(device, non_blocking=True)
+                if weights is not None
+                else None
+            )
 
             lr = lr_at(step, total_steps, cfg)
             for group in optimizer.param_groups:
@@ -186,15 +285,13 @@ def run(
             context = collector if diagnosing else _nothing()
 
             with context:
-                logits, _ = model(x)
-                loss = _loss(logits, y, weights, model.vocab, device)
-
-            # An SFT window can contain no assistant tokens at all, which makes
-            # the loss exactly zero and its gradient nothing. Stepping on it is
-            # harmless but pollutes the reported average with zeros that are not
-            # measurements of anything, so the window is skipped outright.
-            if loss is None:
-                continue
+                forward = eager if diagnosing else fast
+                with torch.autocast(
+                    device_type="cuda", dtype=amp_dtype, enabled=amp_dtype is not None
+                ):
+                    # Cross-entropy is on autocast's fp32 list, so the softmax and
+                    # its gradient run in full precision regardless of amp_dtype.
+                    loss = forward(x, y, w)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -207,14 +304,13 @@ def run(
 
             optimizer.step()
 
-            losses.append(loss.item())
-            epoch_losses.append(loss.item())
+            log.record(loss)
             step += 1
             chunk += 1
 
             if measuring:
                 report(epoch, stage_index, stage, chunk, steps_this_epoch,
-                       epoch_losses, lr, epoch_started)
+                       lr, epoch_started)
                 # Hand the GIL to the event loop so the frame just published
                 # actually goes out.
                 #
@@ -240,10 +336,11 @@ def run(
         if on_progress:
             grad = None
             report(epoch, stage_index, stage, chunk, steps_this_epoch,
-                   epoch_losses, lr, epoch_started, done=True, checkpoint_path=str(saved))
+                   lr, epoch_started, done=True, checkpoint_path=str(saved))
       epochs_done += stage.epochs
 
-    return _summary(step, total_steps, losses, started, cancelled=False)
+    log.flush()
+    return _summary(step, total_steps, log.values, started, cancelled=False)
 
 
 @contextmanager
@@ -252,12 +349,58 @@ def _nothing():
     yield
 
 
-def _loss(logits, targets, weights, vocab: int, device: str):
+class _LossLog:
+    """Per-step losses, read back from the device one report window at a time.
+
+    `loss.item()` after every step is a synchronization point: it blocks the host
+    until that step's kernels have retired, so the host cannot queue the next
+    step's work while the current one runs. On a step this small — a few hundred
+    kernels the host is already only just keeping ahead of — that costs about
+    1.2 ms of 29, for a number nothing reads until the next report frame.
+
+    So the losses accumulate in a device buffer and come back in one transfer, at
+    exactly the moment a consumer first needs them. Same values, one sync per
+    ~150 steps instead of one per step.
+    """
+
+    def __init__(self, window: int, device: str):
+        self.buffer = torch.zeros(window, device=device)
+        self.pending = 0
+        self.values: list[float] = []
+        self.epoch: list[float] = []
+
+    def record(self, loss) -> None:
+        self.buffer[self.pending] = loss.detach()
+        self.pending += 1
+        # The window is the report interval, so this drains on the same step the
+        # report does. It is here as well because a skipped SFT window makes the
+        # two counts drift, and overrunning the buffer would be an IndexError
+        # thousands of steps into a run.
+        if self.pending == len(self.buffer):
+            self.flush()
+
+    def flush(self) -> None:
+        if self.pending:
+            drained = self.buffer[: self.pending].tolist()
+            self.values.extend(drained)
+            self.epoch.extend(drained)
+            self.pending = 0
+
+    def start_epoch(self) -> None:
+        self.flush()
+        self.epoch = []
+
+
+def _loss(logits, targets, weights, vocab: int):
     """Cross-entropy, restricted to the masked positions when SFT supplies one.
 
     Averaged over the *trainable* tokens rather than all of them: dividing by the
     window would make a batch's loss depend on how much user context happened to
     sit beside the reply, so identical replies would report different losses.
+
+    A window with nothing trainable in it never reaches here — the caller drops
+    it while the mask is still a host array, so this can divide without first
+    reading a device scalar back.
     """
     flat_logits = logits.reshape(-1, vocab)
     flat_targets = targets.reshape(-1)
@@ -265,13 +408,9 @@ def _loss(logits, targets, weights, vocab: int, device: str):
     if weights is None:
         return F.cross_entropy(flat_logits, flat_targets)
 
-    w = torch.from_numpy(weights).to(device).reshape(-1)
-    trainable = w.sum()
-    if trainable.item() == 0:
-        return None
-
+    w = weights.reshape(-1)
     per_token = F.cross_entropy(flat_logits, flat_targets, reduction="none")
-    return (per_token * w).sum() / trainable
+    return (per_token * w).sum() / w.sum()
 
 
 def _summary(step, total_steps, losses, started, cancelled: bool) -> dict:

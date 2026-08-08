@@ -91,6 +91,25 @@ def epoch_stream(
     return np.concatenate(tokens), (np.concatenate(masks) if mask is not None else None)
 
 
+def stream_length(
+    corpus_len: int, plan: DataPlan, documents: list[DocSpan] | None = None
+) -> int:
+    """How long `epoch_stream` would be, without building it.
+
+    Mirrors that function exactly: one separator per document, and the whole
+    corpus when there are no documents. Shuffling reorders, so the length does
+    not depend on the epoch.
+
+    Exists because the step count is measured before training starts, and
+    materializing the stream just to read its length costs a full copy of the
+    corpus — 745 MiB on a 390M-token run, once per stage, immediately discarded.
+    """
+    documents = plan.documents if documents is None else documents
+    if not documents:
+        return corpus_len
+    return sum(doc.length + 1 for doc in documents)
+
+
 def batch_count(stream_len: int, ctx_window: int, batch_size: int) -> int:
     """How many full batches a stream of this length yields."""
     windows = max(0, (stream_len - 1) // ctx_window)
@@ -113,17 +132,28 @@ def iter_batches(
     """
     windows = (len(stream) - 1) // ctx_window
     usable = windows - (windows % batch_size)
+    # A batch's rows are consecutive windows of one flat stream, so the batch is
+    # a single contiguous slice reshaped — not `batch_size` separate gathers. Row
+    # r covers [(start+r)*ctx, (start+r+1)*ctx), and those intervals tile the
+    # slice exactly, which is as true of the one-token-shifted targets as of the
+    # inputs.
+    span = batch_size * ctx_window
 
     for start in range(0, usable, batch_size):
-        inputs = np.empty((batch_size, ctx_window), dtype=np.int64)
-        targets = np.empty((batch_size, ctx_window), dtype=np.int64)
-        weights = np.empty((batch_size, ctx_window), dtype=np.float32) if mask is not None else None
-
-        for row in range(batch_size):
-            offset = (start + row) * ctx_window
-            inputs[row] = stream[offset : offset + ctx_window]
-            targets[row] = stream[offset + 1 : offset + ctx_window + 1]
-            if weights is not None:
-                weights[row] = mask[offset : offset + ctx_window]
+        offset = start * ctx_window
+        # The cast is the copy. `stream` is uint16 and torch has no such dtype,
+        # and cross-entropy wants int64 targets, so one astype per array does the
+        # widening and the copy at once.
+        inputs = stream[offset : offset + span].astype(np.int64).reshape(batch_size, ctx_window)
+        targets = (
+            stream[offset + 1 : offset + span + 1]
+            .astype(np.int64)
+            .reshape(batch_size, ctx_window)
+        )
+        weights = (
+            mask[offset : offset + span].astype(np.float32).reshape(batch_size, ctx_window)
+            if mask is not None
+            else None
+        )
 
         yield inputs, targets, weights
