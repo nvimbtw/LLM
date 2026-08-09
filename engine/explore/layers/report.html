@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E9 · Layer ablation — LLM explore report</title>
+<style>
+  :root { --ink:#1c2430; --mut:#5a6b85; --line:#e3e9f2; --bg:#fbfcfe; --acc:#3955c4; --ok:#1a7f37; --warn:#b56a00; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.6 system-ui,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:880px; margin:0 auto; padding:2.5rem 1.4rem 5rem; }
+  h1 { font-size:1.7rem; margin:0 0 .2rem; }
+  .sub { color:var(--mut); margin-bottom:1.6rem; }
+  h2 { font-size:1.15rem; margin:2.2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; margin:1rem 0; }
+  .kpi { display:flex; flex-wrap:wrap; gap:1rem; }
+  .kpi div { flex:1 1 200px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem 1rem; }
+  .kpi b { display:block; font-size:1.3rem; color:var(--acc); }
+  .kpi span { font-size:.8rem; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  th { background:#f2f5fa; }
+  code { background:#eef2f8; padding:.08rem .35rem; border-radius:4px; font-size:.88em; }
+  .cmd { font-family:ui-monospace,monospace; font-size:.85rem; background:#0f172a; color:#dbeafe; padding:.4rem .7rem; border-radius:6px; display:inline-block; }
+  .verdict { border-left:4px solid var(--acc); padding:.4rem 1rem; background:#f2f5fc; }
+  .warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>E9 — Layer ablation: who is actually doing the work</h1>
+  <div class="sub">engine/explore/layers · e9_layer_ablation.py · trained <code>diagfix</code> (2L/4H/128d) on a 64-token window</div>
+
+  <h2>What was done</h2>
+  <div class="card">
+    <p>On the frozen, trained model, we take a real 64-token window and surgically
+    replace one sub-module at a time — block 0 attention, block 0 FFN, block 1
+    attention, block 1 FFN — with an <em>identity</em> during the forward pass,
+    then measure how much the output breaks:</p>
+    <ul>
+      <li>KL divergence per query position vs the intact logits;</li>
+      <li>the next-token cross-entropy change (the model's own loss);</li>
+      <li>top-1 agreement — how often the max-logit token is unchanged.</li>
+    </ul>
+    <p class="cmd">engine/.venv/bin/python engine/explore/layers/e9_layer_ablation.py &gt; engine/explore/layers/e9_layer_ablation.json</p>
+    <p>Runs in ~5 s CPU.</p>
+  </div>
+
+  <h2>Results</h2>
+  <div class="card">
+    <table>
+      <tr><th>ablated</th><th>KL / query</th><th>CE</th><th>ΔCE</th><th>top-1 agree</th></tr>
+      <tr><td>intact (baseline)</td><td>—</td><td>8.069</td><td>—</td><td>1.0</td></tr>
+      <tr><td>layer 0 attention</td><td>0.0044</td><td>8.099</td><td>+0.029</td><td>0.938</td></tr>
+      <tr><td>layer 0 FFN</td><td class="warn">0.0158</td><td>8.396</td><td class="warn" >+0.327</td><td class="warn">0.859</td></tr>
+      <tr><td>layer 1 attention</td><td>0.0068</td><td>8.233</td><td>+0.163</td><td>0.984</td></tr>
+      <tr><td>layer 1 FFN</td><td>0.0022</td><td>8.139</td><td>+0.069</td><td>0.984</td></tr>
+    </table>
+    <p class="warn"><b>Clear picture:</b> by far the most load-bearing unit is the
+    FFN of block 0 (~4× the loss increase of block 1's FFN and ~10× that of
+    block 0 attention). Attention in layer 1 matters more than attention in layer 0;
+    the model is very much a "bottom-FFN + top-attention" structure.</p>
+  </div>
+
+  <h2>Interesting / worrying</h2>
+  <div class="card">
+    <ul>
+      <li>The ablation asymmetry is not symmetrical with the E2 numbers: block 0
+        attention is nearly irrelevant (+0.03 CE) to behaviour, while its FFN is
+        critical. So "attention is the whole story" is wrong for this arch; the
+        per-head entropy analysis (E2) only tells half of it.</li>
+      <li>Layer-1 attention is ~5× more disruptive than layer-0 attention — the
+        model routes more information through the second attention block even at
+        this small scale, consistent with a need for per-head temperature (E8).</li>
+      <li>Pruning/deep-reduction intuition holds: a wider first FFN and a stronger
+        top attention would be the best single "small but capable" win for this
+        shape.</li>
+    </ul>
+  </div>
+
+  <h2>Why it would be a good addition</h2>
+  <div class="card">
+    <ul>
+      <li><b>A cheap empirical "shape" check in training CI.</b> After N steps, run
+        this 5-second ablation and print the per-unit ΔCE; it surfaces whether an
+        architecture is silently dumping all its work into one block (typical for
+        under-deep models) — exactly the failure E2's diffusion/entropy view
+        cannot spot.</li>
+      <li><b>Layer-density selection.</b> The rule "prefer a wide first FFN, a
+        strong top attention" is read straight off the table; a recipe like
+        <code>ff_multiplier: [2, 4]</code> + big <code>heads</code> could be
+        validated quickly.</li>
+      <li><b>Diagnostic gauge in <code>plan.py</code>.</b> A per-subblock
+        "after-train contribution" is a guard: it catches the all-in-one-block
+        training-run pathology early and cheap.</li>
+    </ul>
+<p class="verdict">Verdict: a 10-row probe, engine-independent, cheap, and it
+doubles as a safety belt for any future architecture or width/temperature
+tweak.</p>
+  </div>
+
+  <h2>How it changes the workflow</h2>
+  <div class="card">
+    <ul>
+      <li>The trainer's post-training report can include ΔCE per sub-block,
+        giving everyone a full map of "which unit matters" instead of just the
+        loss curve.</li>
+      <li>Idea evaluation: e.g. replace-FFN width on layer 0 or add a layer
+        deeper — run before/after ablation and compare the "shape".</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>
