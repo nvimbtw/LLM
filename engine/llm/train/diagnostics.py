@@ -55,6 +55,11 @@ class Diagnostics:
     act_rms_layers: list[float] = field(default_factory=list)
     # Per-head attention entropy, normalized to [0,1], grouped by layer.
     attn_entropy: list[list[float]] = field(default_factory=list)
+    # Per-head learned softmax temperature, grouped by layer. Empty unless the run
+    # enabled it. Entropy alone cannot separate a head that has nothing to say from
+    # one whose temperature is holding it flat, so the two are read together: a
+    # diffuse head whose temperature is climbing is still specializing.
+    attn_temperature: list[list[float]] = field(default_factory=list)
     # Pairwise cosine similarity among the most-frequent tokens' embeddings, after
     # subtracting the table's mean row. A high mean means the table is collapsing
     # toward one direction.
@@ -276,6 +281,11 @@ class Collector:
             update_ratio_layers=ratios,
             act_rms_layers=[float(a.float().pow(2).mean().sqrt()) for a in activations],
             attn_entropy=[_entropy(w) for w in attention if w is not None],
+            attn_temperature=[
+                block.attn.log_temperature.detach().exp().float().cpu().tolist()
+                for block in self.model.blocks
+                if block.attn.log_temperature is not None
+            ],
             act_hist=_activation_histogram(activations[-1]) if activations else [],
         )
         for key, value in _embedding_metrics(self.model, self.tokens).items():

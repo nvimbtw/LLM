@@ -119,6 +119,8 @@ def run(
         layers=cfg.layers,
         ff_multiplier=cfg.ff_multiplier,
         ctx_window=cfg.ctx_window,
+        rope_base=cfg.rope_base,
+        learned_temperature=cfg.learned_temperature,
     )
     print(
         f"[4/6] Model: {model.parameter_count():,} parameters, "

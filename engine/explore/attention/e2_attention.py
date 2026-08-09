@@ -89,10 +89,17 @@ if __name__ == "__main__":
     from llm import storage
     from llm.model.checkpoint import load as ckpt_load
 
+    # The checkpoint to probe: argv[1], else the model the report describes.
+    model_name = sys.argv[1] if len(sys.argv) > 1 else "diagfix"
+
     ids = window_ids()
-    init = Transformer(8192, 128, 4, 2, 4, 256)
-    trained, _ = ckpt_load(storage.weights_path("diagfix"), "cpu")
+    trained, arch = ckpt_load(storage.weights_path(model_name), "cpu")
     trained.eval()
+    # The control is "the same architecture, untrained", so it is built from the
+    # checkpoint's own arch rather than a literal. Hardcoding the shape silently
+    # compares a trained model against a differently-shaped random one as soon as
+    # this is pointed at any run but the original.
+    init = Transformer(**arch)
 
     layers = {}
     for tag, model in (("init", init), ("trained", trained)):
@@ -103,9 +110,10 @@ if __name__ == "__main__":
             layers[tag].append(d)
 
     out = {
+        "model": model_name,
         "window_tokens": len(ids),
         "layer_count": len(atts),
-        "heads": 4,
+        "heads": arch["heads"],
         "per_layer": layers,
     }
     emit("e2_attention", out)

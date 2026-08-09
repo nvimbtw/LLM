@@ -24,7 +24,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # The frequency base for RoPE. 10000 is the value from the original paper and
-# what the Rust side uses; changing it changes what every trained model expects.
+# what the Rust side uses; changing it changes what every trained model expects,
+# so it travels in the checkpoint's arch block rather than being read from here
+# at load time. This constant is only the default for a fresh model.
+#
+# The base sets how fast each channel rotates, and therefore how far apart two
+# positions can be before the highest-frequency channels have completed a full
+# lap and stopped distinguishing them at all. Raising it pushes that horizon out
+# at the cost of fine-grained local resolution.
 ROPE_BASE = 10000.0
 
 
@@ -47,10 +54,25 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
 
 
 class Attention(nn.Module):
-    def __init__(self, dimensions: int, heads: int):
+    def __init__(self, dimensions: int, heads: int, learned_temperature: bool = False):
         super().__init__()
         self.heads = heads
         self.head_dim = dimensions // heads
+        # One softmax temperature per head, learned. The fixed 1/sqrt(head_dim)
+        # scale is a single temperature shared by every head, so heads cannot
+        # individually choose to look at one token or average over many — they can
+        # only move the *content* of their attention, not its sharpness.
+        #
+        # Held in log space so the temperature stays positive under any update and
+        # so zero-init means exactly tau=1: with the parameter off, and at step 0
+        # with it on, this is bit-for-bit the arithmetic that came before.
+        #
+        # None rather than a disabled parameter: an unused nn.Parameter would still
+        # enter the state_dict and make every checkpoint incompatible with a build
+        # that has the flag off.
+        self.log_temperature = (
+            nn.Parameter(torch.zeros(heads)) if learned_temperature else None
+        )
         # Diagnostics only. `scaled_dot_product_attention` never materializes the
         # attention matrix — that is most of why it is fast — so measuring where
         # the heads look needs an explicit softmax. Off by default and flipped on
@@ -92,6 +114,15 @@ class Attention(nn.Module):
         )
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
+
+        # Scaling q scales the scores, and scaling the scores IS the temperature:
+        # softmax(t*q.k/sqrt(d)) is what a per-head temperature t means. Folding it
+        # into q instead of into the scores keeps the whole thing inside
+        # `scaled_dot_product_attention` — the fused kernel never has to
+        # materialize an attention matrix for this, so per-head temperature costs
+        # one elementwise multiply and no flash-attention path.
+        if self.log_temperature is not None:
+            q = q * self.log_temperature.exp().view(1, -1, 1, 1).to(q.dtype)
 
         if cache is not None:
             past_k, past_v = cache
@@ -154,10 +185,16 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     """One Pre-LN transformer block."""
 
-    def __init__(self, dimensions: int, heads: int, ff_multiplier: int):
+    def __init__(
+        self,
+        dimensions: int,
+        heads: int,
+        ff_multiplier: int,
+        learned_temperature: bool = False,
+    ):
         super().__init__()
         self.ln_attn = nn.LayerNorm(dimensions)
-        self.attn = Attention(dimensions, heads)
+        self.attn = Attention(dimensions, heads, learned_temperature)
         self.ln_ff = nn.LayerNorm(dimensions)
         self.ff = FeedForward(dimensions, ff_multiplier)
         self.record_activations = False
@@ -183,6 +220,8 @@ class Transformer(nn.Module):
         layers: int,
         ff_multiplier: int,
         ctx_window: int,
+        rope_base: float = ROPE_BASE,
+        learned_temperature: bool = False,
     ):
         super().__init__()
         self.vocab = vocab
@@ -191,15 +230,18 @@ class Transformer(nn.Module):
         self.layers = layers
         self.ff_multiplier = ff_multiplier
         self.ctx_window = ctx_window
+        self.rope_base = rope_base
+        self.learned_temperature = learned_temperature
         self.head_dim = dimensions // heads
 
         self.embedding = nn.Embedding(vocab, dimensions)
         self.blocks = nn.ModuleList(
-            Block(dimensions, heads, ff_multiplier) for _ in range(layers)
+            Block(dimensions, heads, ff_multiplier, learned_temperature)
+            for _ in range(layers)
         )
         self.ln_final = nn.LayerNorm(dimensions)
 
-        cos, sin = rope_tables(self.head_dim, ctx_window)
+        cos, sin = rope_tables(self.head_dim, ctx_window, rope_base)
         # Buffers, not parameters: derived from the architecture, and they move
         # with .to(device) instead of having to be passed around.
         self.register_buffer("rope_cos", cos, persistent=False)

@@ -5,8 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
 
+import torch
+
 from llm import storage
 from llm.corpus import bpe
+from llm.eval import ablation
 from llm.eval import chat as chat_stage
 from llm.eval import corpus as corpus_stage
 from llm.eval import generate, markup as markup_stage, score, surface
@@ -21,6 +24,11 @@ class LanguageReport:
     vocab: int
     corpus: dict | None = None
     surface: dict | None = None
+    # Per-sublayer contribution, from silencing each in turn. Cheap enough to run
+    # on every eval (two forwards per block over one window) and it answers a
+    # question the composite score cannot: not how good the model is, but which
+    # part of it is responsible.
+    ablation: dict | None = None
     score: dict = field(default_factory=dict)
     samples: list[dict] = field(default_factory=list)
     cancelled: bool = False
@@ -75,6 +83,12 @@ def run_language(
     lexicon = surface.Lexicon.build(split.train + split.heldout)
     metrics = surface.analyze([s.text for s in drawn], lexicon)
     report.surface = metrics.as_dict()
+
+    note("ablation", "per-sublayer contribution")
+    heldout_ids = tokenizer.encode(split.heldout).ids[: model.ctx_window]
+    if len(heldout_ids) > 1:
+        window = torch.tensor([heldout_ids], dtype=torch.long, device=device)
+        report.ablation = ablation.ablate(model, window, model_name).as_dict()
 
     note("score")
     breakdown = score.composite(

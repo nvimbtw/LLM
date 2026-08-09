@@ -17,7 +17,13 @@ from llm.model.transformer import Transformer
 # Bump when a change makes previously-saved weights mean something different.
 CHECKPOINT_VERSION = 1
 
-_ARCH_FIELDS = ("vocab", "dimensions", "heads", "layers", "ff_multiplier", "ctx_window")
+# `rope_base` is last and the Transformer defaults it: a checkpoint saved before
+# it existed simply omits the key and loads at the original 10000.0, which is
+# what it was trained with. That is why this needs no version bump.
+_ARCH_FIELDS = (
+    "vocab", "dimensions", "heads", "layers", "ff_multiplier", "ctx_window", "rope_base",
+    "learned_temperature",
+)
 
 
 def save(model: Transformer, path: Path, **extra) -> Path:

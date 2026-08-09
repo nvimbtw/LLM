@@ -36,6 +36,14 @@ from llm.corpus import bpe, pack
 from llm.model.checkpoint import load as ckpt_load
 
 
+def target_model() -> str:
+    """The checkpoint to probe: `argv[1]`, else the model the report was written
+    against. Passing a name is how this probe gets re-run after a real training
+    run — the numbers in report.html came off a 45-step model and describe that
+    model, not the architecture."""
+    return sys.argv[1] if len(sys.argv) > 1 else "diagfix"
+
+
 def emit(name, data):
     print(json.dumps({"experiment": name, **data},
                       default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)))
@@ -66,7 +74,8 @@ class ZeroFF(nn.Module):
 
 
 def main():
-    model, _ = ckpt_load(storage.weights_path("diagfix"), "cpu")
+    model_name = target_model()
+    model, _ = ckpt_load(storage.weights_path(model_name), "cpu")
     model.eval()
     tok = bpe.load()
     corpus = pack.load_corpus()
@@ -116,6 +125,11 @@ def main():
             }
 
     emit("e9_layer_ablation", {
+        # Ablation deltas only mean anything relative to how much the model had
+        # learned: a baseline near ln(vocab) is a model still at chance, and
+        # "which sub-block matters" is not yet a question it can answer.
+        "model": model_name,
+        "layers": len(model.blocks),
         "window": {"doc": 0, "seq": 63, "ref_ce": round(ref_nll, 4)},
         "ablation": results,
         "baseline": {"intact_ce": round(ref_nll, 4)},

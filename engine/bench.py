@@ -34,6 +34,7 @@ the project's.
 
 import argparse
 import json
+import math
 import os
 import statistics
 import time
@@ -52,6 +53,7 @@ import torch  # noqa: E402
 
 from llm.config import TrainConfig  # noqa: E402
 from llm.corpus.pack import DocSpan  # noqa: E402
+from llm.model import checkpoint  # noqa: E402
 from llm.model.transformer import Transformer  # noqa: E402
 from llm.train import loop, plan as plan_mod  # noqa: E402
 from llm.train.plan import DataPlan  # noqa: E402
@@ -605,6 +607,130 @@ def check(args) -> None:
         torch.allclose(whole, torch.cat(stepwise, dim=1), atol=1e-5),
         f"max Δ {(whole - torch.cat(stepwise, dim=1)).abs().max().item():.2e}",
     )
+
+    print("rope base")
+    torch.manual_seed(7)
+    from llm.model.transformer import rope_tables
+    default = Transformer(64, 32, 4, 2, 4, 16)
+    widened = Transformer(64, 32, 4, 2, 4, 16, rope_base=500_000.0)
+    expect("the default base is unchanged", default.rope_base == 10_000.0)
+    expect(
+        "a custom base reaches the tables",
+        torch.allclose(widened.rope_cos, rope_tables(8, 16, 500_000.0)[0])
+        and not torch.allclose(widened.rope_cos, default.rope_cos),
+    )
+    # The base is architecture, not a hyperparameter the loader can guess: weights
+    # trained under one base decode to noise under another.
+    with scratch_storage():
+        saved = checkpoint.save(widened, SCRATCH / "rope.pt")
+        _, arch = checkpoint.load(saved)
+        expect("the base travels in the checkpoint", arch["rope_base"] == 500_000.0)
+
+        blob = torch.load(saved, weights_only=True)
+        del blob["arch"]["rope_base"]
+        torch.save(blob, SCRATCH / "legacy.pt")
+        legacy_model, _ = checkpoint.load(SCRATCH / "legacy.pt")
+        expect(
+            "checkpoints saved before the base existed load at 10000",
+            legacy_model.rope_base == 10_000.0,
+        )
+
+    print("per-head attention temperature")
+    torch.manual_seed(11)
+    plain = Transformer(64, 32, 4, 2, 4, 16)
+    torch.manual_seed(11)
+    tempered = Transformer(64, 32, 4, 2, 4, 16, learned_temperature=True)
+    added = set(tempered.state_dict()) - set(plain.state_dict())
+    expect(
+        "off leaves the state dict exactly as it was",
+        not any("log_temperature" in k for k in plain.state_dict()),
+    )
+    expect(
+        "on adds one temperature per head per layer, and nothing else",
+        added == {"blocks.0.attn.log_temperature", "blocks.1.attn.log_temperature"}
+        and sum(p.numel() for n, p in tempered.named_parameters()
+                if n.endswith("log_temperature")) == 4 * 2,
+    )
+
+    # Zero in log space is tau=1, so an untrained temperature must reproduce the
+    # untempered model bit for bit — otherwise turning the flag on would silently
+    # be a different architecture rather than a strictly larger one.
+    tempered.load_state_dict(plain.state_dict(), strict=False)
+    plain.eval(), tempered.eval()
+    ids = torch.randint(0, 64, (2, 8))
+    with torch.no_grad():
+        before, _ = plain(ids)
+        at_init, _ = tempered(ids)
+    expect(
+        "tau=1 is the untempered model exactly",
+        torch.equal(before, at_init),
+        f"max Δ {(before - at_init).abs().max().item():.2e}",
+    )
+
+    with torch.no_grad():
+        tempered.blocks[0].attn.log_temperature.fill_(1.5)
+        sharpened, _ = tempered(ids)
+    expect("a non-unit temperature changes the output", not torch.allclose(before, sharpened, atol=1e-4))
+
+    # Temperature is folded into q so the fused kernel keeps the whole operation.
+    # The explicit path the diagnostics use has to agree, or every entropy and
+    # peak-mass number measured under a learned temperature is measuring a
+    # different model than the one that trained.
+    with torch.no_grad():
+        fused_out, _ = tempered(ids)
+        for blk in tempered.blocks:
+            blk.attn.record_attention = True
+        recorded, _ = tempered(ids)
+        for blk in tempered.blocks:
+            blk.attn.record_attention = False
+    expect(
+        "the recording path agrees with the fused one under temperature",
+        torch.allclose(fused_out, recorded, atol=1e-5),
+        f"max Δ {(fused_out - recorded).abs().max().item():.2e}",
+    )
+
+    tempered.train()
+    tempered(ids)[0].square().mean().backward()
+    grad = tempered.blocks[0].attn.log_temperature.grad
+    expect(
+        "each head gets its own gradient",
+        grad is not None and torch.isfinite(grad).all() and grad.abs().sum() > 0,
+    )
+
+    print("sublayer ablation")
+    from llm.eval.ablation import ablate
+    torch.manual_seed(13)
+    probe = Transformer(128, 32, 4, 3, 4, 32)
+    ids = torch.randint(0, 128, (1, 32))
+    probe.train()
+    probe.eval()
+    with torch.no_grad():
+        untouched, _ = probe(ids)
+    report = ablate(probe, ids, "bench")
+    with torch.no_grad():
+        after, _ = probe(ids)
+    expect("one entry per sublayer", len(report.units) == 3 * 2)
+    expect(
+        "every sublayer is put back",
+        torch.equal(untouched, after)
+        and all(
+            type(b.attn).__name__ == "Attention" and type(b.ff).__name__ == "FeedForward"
+            for b in probe.blocks
+        ),
+    )
+    expect(
+        "chance is ln(vocab) and learned_nats measures down from it",
+        abs(report.chance_ce - math.log(128)) < 1e-3
+        and abs((report.chance_ce - report.intact_ce) - report.learned_nats) < 1e-3,
+    )
+    # An untrained model is at chance, so silencing a block cannot reliably hurt
+    # it. The guard exists so this reads as "nothing to attribute" rather than as
+    # a finding about the architecture.
+    expect("an untrained model reports no learning to attribute", report.learned_nats < 0.5)
+
+    probe.train()
+    ablate(probe, ids, "bench")
+    expect("training mode survives the probe", probe.training)
 
     print("loss log")
     log = loop._LossLog(4, device)

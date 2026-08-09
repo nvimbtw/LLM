@@ -70,6 +70,21 @@ class TrainConfig(BaseModel):
     layers: int = 4
     ff_multiplier: int = 4
     ctx_window: int = 256
+    rope_base: float = Field(
+        default=10000.0,
+        gt=1.0,
+        description="RoPE frequency base. Higher keeps distant positions distinguishable "
+        "further out, at the cost of fine-grained local resolution; the usable range is "
+        "roughly proportional to it. Travels with the checkpoint, so inference reuses "
+        "whatever the run trained with",
+    )
+    learned_temperature: bool = Field(
+        default=False,
+        description="give every attention head its own learned softmax temperature, so a "
+        "head can choose how sharp or diffuse it is instead of inheriting one shared "
+        "1/sqrt(head_dim). Adds `heads` parameters per layer and starts at exactly the "
+        "untempered behaviour; off keeps the state_dict byte-identical to older runs",
+    )
 
     # ── Tokenizer ───────────────────────────────────────────────────────────
     max_vocab: int = 8192

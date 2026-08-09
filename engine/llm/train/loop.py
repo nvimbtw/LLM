@@ -162,8 +162,23 @@ def run(
     # which matters here precisely because the model is small enough for launch
     # overhead to be a real share of the step. CUDA-only, so it is asked for
     # rather than assumed.
+    # Attention temperatures are excluded from weight decay. Decay pulls a weight
+    # toward zero, and zero in log-temperature space is tau=1 — the shared scale a
+    # per-head temperature exists to escape. Left in the main group, the decay term
+    # would quietly argue against every head that tried to specialize. Everything
+    # else keeps the single flat group it has always had.
+    temperatures = [p for n, p in model.named_parameters() if n.endswith("log_temperature")]
+    if temperatures:
+        decayed = [p for p in model.parameters() if not any(p is t for t in temperatures)]
+        groups = [
+            {"params": decayed, "weight_decay": cfg.weight_decay},
+            {"params": temperatures, "weight_decay": 0.0},
+        ]
+    else:
+        groups = [{"params": list(model.parameters()), "weight_decay": cfg.weight_decay}]
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        groups,
         lr=cfg.lr,
         betas=(0.9, 0.95),
         weight_decay=cfg.weight_decay,

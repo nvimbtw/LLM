@@ -45,7 +45,9 @@ def _cos_stats(rows: torch.Tensor) -> dict:
 
 
 def main():
-    model, arch = trained_model("diagfix")
+    # The checkpoint to probe: argv[1], else the model the report describes.
+    model_name = sys.argv[1] if len(sys.argv) > 1 else "diagfix"
+    model, arch = trained_model(model_name)
     tokens = frequent_tokens(pack.load_corpus(), 32)
     metrics = _embedding_metrics(model, tokens)
 
@@ -78,6 +80,7 @@ def main():
         spread = float(centred.norm(dim=1).mean())
 
     emit("e3_geometry", {
+        "model": model_name,
         "arch": arch,
         "frequent_token_metrics": {
             "emb_cos_mean": metrics["emb_cos_mean"],
