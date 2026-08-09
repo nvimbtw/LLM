@@ -1,0 +1,50 @@
+{
+    "experiment": "e3_geometry",
+    "arch": {
+        "vocab": 8192,
+        "dimensions": 128,
+        "heads": 4,
+        "layers": 2,
+        "ff_multiplier": 4,
+        "ctx_window": 256
+    },
+    "frequent_token_metrics": {
+        "emb_cos_mean": 0.2809123992919922,
+        "emb_cos_p5": 0.13220318108797074,
+        "emb_cos_p95": 0.4276781097054481
+    },
+    "cosine_uncentred": {
+        "mean": 0.009789188392460346,
+        "p5": -0.16767972707748413,
+        "p95": 0.19639384746551514
+    },
+    "cosine_centred": {
+        "mean": 0.01221197098493576,
+        "p5": -0.16723373532295227,
+        "p95": 0.2003902643918991
+    },
+    "shared_offset": {
+        "mean_row_norm": 0.04,
+        "mean_centred_row_norm": 0.177,
+        "offset_share_of_total_norm": 0.185
+    },
+    "pca_spectrum": {
+        "dims": 128,
+        "top_12_variance_share": [
+            0.0552,
+            0.067,
+            0.0785,
+            0.0897,
+            0.1008,
+            0.1118,
+            0.1227,
+            0.1335,
+            0.1441,
+            0.1547,
+            0.1652,
+            0.1756
+        ],
+        "dims_for_50pct": 48,
+        "dims_for_90pct": 108
+    }
+}
