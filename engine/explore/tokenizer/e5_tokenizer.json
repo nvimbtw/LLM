@@ -1,0 +1,88 @@
+{
+    "experiment": "e5_tokenizer",
+    "vocab_size": 8192,
+    "special_block": 64,
+    "markers_reserved": 41,
+    "marker_ids_assigned": 41,
+    "corpus_tokens": 110277,
+    "alive_tokens": 7352,
+    "alive_share": 0.8975,
+    "top_tokens": [
+        {
+            "id": 262,
+            "count": 5148
+        },
+        {
+            "id": 77,
+            "count": 4454
+        },
+        {
+            "id": 324,
+            "count": 4298
+        },
+        {
+            "id": 75,
+            "count": 3976
+        },
+        {
+            "id": 338,
+            "count": 2527
+        },
+        {
+            "id": 351,
+            "count": 2072
+        }
+    ],
+    "token_entropy_bits": 9.994,
+    "tokens_per_probe_word": {
+        "the": [
+            1069
+        ],
+        "continent": [
+            130,
+            4004
+        ],
+        "countries": [
+            7873,
+            646
+        ],
+        "united": [
+            423,
+            748
+        ],
+        "australia": [
+            128,
+            432,
+            553,
+            427
+        ],
+        "afghanistan": [
+            1665,
+            831
+        ],
+        "international": [
+            323,
+            991,
+            812
+        ],
+        "responsibility": [
+            633,
+            143,
+            1095,
+            938,
+            2380
+        ]
+    },
+    "mean_tokens_per_word": 2.62,
+    "tokens_per_character": 0.237,
+    "marker_sample": {
+        "<|endoftext|>": 0,
+        "<|par|>": 1,
+        "<|/par|>": 2,
+        "<|code|>": 3,
+        "<|/code|>": 4,
+        "<|user|>": 5,
+        "<|/user|>": 6,
+        "<|assistant|>": 7
+    }
+}
