@@ -7,7 +7,7 @@ or in `llm.server`.
 
 import asyncio
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import StreamingResponse
 
 from llm.config import (
@@ -24,7 +24,7 @@ from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import infer as infer_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import train as train_pipeline
-from llm.server import sse
+from llm.server import sse, ws
 from llm.server.runs import REGISTRY, EngineBusy
 
 app = FastAPI(title="LLM engine")
@@ -61,6 +61,26 @@ async def train(cfg: TrainConfig, wait: bool = False):
     if wait:
         await REGISTRY.wait(run)
     return run.snapshot()
+
+
+@app.websocket("/train")
+async def train_socket(websocket: WebSocket):
+    """The same run as `POST /train`, start to finish over one socket.
+
+    Send `{"config": {...}}`; receive a `started` frame carrying the run id,
+    then every progress frame as it happens, then one of done/cancelled/error.
+    Send `{"type": "cancel"}` at any point to stop it.
+
+    It is the same registry either way, so a run started here is listed at
+    /runs and can still be followed or cancelled over HTTP.
+    """
+    await ws.serve_run(
+        websocket,
+        REGISTRY,
+        "train",
+        TrainConfig,
+        lambda cfg: lambda on_progress, cancel: train_pipeline.run(cfg, on_progress, cancel),
+    )
 
 
 @app.post("/sft", status_code=202)

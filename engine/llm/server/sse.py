@@ -1,9 +1,12 @@
 """Server-sent events framing.
 
-SSE rather than a WebSocket because the traffic is one-directional — the engine
-reports, the caller listens — and cancellation is a separate POST rather than a
-message on the same socket. That keeps the consumer a plain HTTP client with no
-handshake to get wrong.
+This is the listen-only path: the engine reports, the caller listens, and
+cancellation is a separate POST. That keeps the consumer a plain HTTP client
+with no handshake to get wrong, and it replays a run from the start, so it is
+also how anything reattaches to a run already in flight.
+
+A caller that has to talk back — the queue, which cancels — takes the socket in
+`ws.py` instead and gets the same events over it.
 """
 
 import json
