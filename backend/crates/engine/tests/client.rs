@@ -4,6 +4,7 @@
 //! device lock. `cargo test -p engine -- --test-threads=1`
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -288,4 +289,87 @@ async fn chats_streams_measures_and_counts() {
     let markers = client.markers().await.expect("markers");
     assert!(markers.markers.contains(&"<|assistant|>".to_string()));
     assert!(markers.markers.len() <= markers.block_size);
+}
+
+#[tokio::test]
+async fn trains_over_one_socket() {
+    let Some(cfg) = config(8138) else { return };
+    let url = cfg.base_url();
+    let _engine = Engine::start(cfg).await.expect("engine starts");
+    let client = Client::new(url);
+
+    let frames = Arc::new(Mutex::new((0usize, false)));
+    let seen = frames.clone();
+    let finished = client
+        .train_stream(
+            &tiny("socket-train"),
+            Arc::new(AtomicBool::new(false)),
+            move |event| {
+                let mut s = seen.lock().unwrap();
+                match event {
+                    RunEvent::Progress(_) => s.0 += 1,
+                    RunEvent::Done(_) => s.1 = true,
+                    other => panic!("unexpected terminal frame: {other:?}"),
+                }
+            },
+        )
+        .await
+        .expect("train over socket");
+
+    let (progress, done) = *frames.lock().unwrap();
+    assert!(progress > 0, "expected progress frames, got none");
+    assert!(done, "socket should end on a done frame");
+    assert_eq!(finished.status, "completed", "train failed: {:?}", finished.error);
+
+    // The run is the registry's like any other, so it is still addressable by id.
+    let again = client.run(&finished.run_id).await.expect("run by id");
+    assert_eq!(again.status, "completed");
+}
+
+#[tokio::test]
+async fn cancels_over_the_same_socket() {
+    let Some(cfg) = config(8139) else { return };
+    let url = cfg.base_url();
+    let _engine = Engine::start(cfg).await.expect("engine starts");
+    let client = Client::new(url);
+
+    let mut long = tiny("socket-cancel");
+    long.epochs = Some(20);
+
+    // Flipped on the first progress frame — the same flag the queue sets, read
+    // on the socket's own poll. Keyed to the run reaching the loop rather than
+    // to a sleep, so the assertion does not depend on how fast the corpus packs.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let trigger = cancel.clone();
+    let finished = client
+        .train_stream(&long, cancel, move |event| {
+            if let RunEvent::Progress(p) = event {
+                if p.get("step").is_some() {
+                    trigger.store(true, Ordering::Relaxed);
+                }
+            }
+        })
+        .await
+        .expect("train over socket");
+    assert!(finished.is_cancelled(), "expected cancelled, got {}", finished.status);
+}
+
+#[tokio::test]
+async fn a_busy_engine_refuses_the_socket_before_a_run_exists() {
+    let Some(cfg) = config(8140) else { return };
+    let url = cfg.base_url();
+    let _engine = Engine::start(cfg).await.expect("engine starts");
+    let client = Client::new(url);
+
+    let mut long = tiny("socket-busy");
+    long.epochs = Some(20);
+    let first = client.train(&long).await.expect("first accepted");
+
+    let err = client
+        .train_stream(&tiny("socket-busy-2"), Arc::new(AtomicBool::new(false)), |_| {})
+        .await
+        .expect_err("second refused");
+    assert!(err.to_string().contains("still active"), "engine's detail was lost: {err}");
+
+    client.cancel(&first.run_id).await.ok();
 }

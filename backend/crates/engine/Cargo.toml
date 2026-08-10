@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 # Owns the Python engine process: spawning it, keeping it alive, and talking to
-# it over HTTP. Depends on nothing else in the workspace — it is a boundary to a
+# it over HTTP and a socket. Depends on nothing else in the workspace — it is a boundary to a
 # foreign process, not a consumer of this project's domain types, and keeping it
 # leaf-level means the crates that will call it can sit anywhere above it.
 [dependencies]
@@ -15,7 +15,12 @@ tokio = { version = "1", features = ["process", "time", "rt", "sync", "macros", 
 
 # The supervisor's whole job is managing a real process, so its tests spawn one.
 # They need the engine's venv present and are skipped (not failed) without it.
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+
+# The engine is a local child process reached over plain HTTP, so the socket
+# client needs no TLS stack at all — `ws://` only, and rustls is not pulled in a
+# second time behind reqwest's.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

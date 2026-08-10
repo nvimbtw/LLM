@@ -7,10 +7,14 @@
 //! would have to be edited every time a metric is added.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::chat::{SamplingParams, ThinkBudget, Turn};
 
@@ -312,12 +316,130 @@ impl Client {
         format!("{}{}", self.base_url, path)
     }
 
+    /// The same host and path, as a socket. Only the scheme differs, so the
+    /// base URL stays the one knob configuring where the engine is.
+    fn ws_url(&self, path: &str) -> String {
+        let base = match self.base_url.split_once("://") {
+            Some(("http", rest)) => format!("ws://{rest}"),
+            Some(("https", rest)) => format!("wss://{rest}"),
+            _ => self.base_url.clone(),
+        };
+        format!("{base}{path}")
+    }
+
     pub async fn health(&self) -> Result<Value> {
         self.get("/").await
     }
 
     pub async fn train(&self, req: &TrainRequest) -> Result<RunSnapshot> {
         self.post("/train", req).await
+    }
+
+    /// Start a training run and stream it to completion over one socket.
+    ///
+    /// The whole run lives on this connection: the config goes up, every frame
+    /// comes back as the engine emits it, and setting `cancel` sends a cancel
+    /// message down the same socket rather than opening a second HTTP call that
+    /// has to find the run again by id. Progress payloads are identical to the
+    /// ones `follow` yields, so a caller reads either the same way.
+    ///
+    /// The returned snapshot is read back from `/runs/{id}` once the stream
+    /// ends: the terminal frame says what happened, but the run itself is the
+    /// authority on its final status.
+    pub async fn train_stream<F>(
+        &self,
+        req: &TrainRequest,
+        cancel: Arc<AtomicBool>,
+        mut on_event: F,
+    ) -> Result<RunSnapshot>
+    where
+        F: FnMut(RunEvent),
+    {
+        let (socket, _) = tokio_tungstenite::connect_async(self.ws_url("/train"))
+            .await
+            .map_err(|e| EngineError::Transport(e.to_string()))?;
+        let (mut sink, mut stream) = socket.split();
+
+        let opening = serde_json::json!({ "config": req }).to_string();
+        sink.send(Message::text(opening))
+            .await
+            .map_err(|e| EngineError::Transport(e.to_string()))?;
+
+        // Held until the socket closes: a run that never announced itself is a
+        // run there is nothing to ask about afterwards.
+        let mut run_id: Option<String> = None;
+        let mut cancel_sent = false;
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+
+        loop {
+            let frame = tokio::select! {
+                _ = poll.tick(), if !cancel_sent => {
+                    if cancel.load(Ordering::Relaxed) {
+                        let _ = sink.send(Message::text(r#"{"type":"cancel"}"#)).await;
+                        cancel_sent = true;
+                    }
+                    continue;
+                }
+                frame = stream.next() => frame,
+            };
+
+            let Some(frame) = frame else { break };
+            let text = match frame.map_err(|e| EngineError::Transport(e.to_string()))? {
+                Message::Text(text) => text,
+                Message::Close(_) => break,
+                // Ping/pong are answered under this API; nothing else is spoken.
+                _ => continue,
+            };
+
+            let mut payload: Value = serde_json::from_str(text.as_str())
+                .map_err(|e| EngineError::Decode(format!("{e}: {text}")))?;
+            // Lifted off the payload rather than left on it, so what reaches the
+            // caller is exactly the event body the SSE path delivers.
+            let kind = payload
+                .as_object_mut()
+                .and_then(|frame| frame.remove("type"))
+                .and_then(|kind| kind.as_str().map(str::to_string))
+                .unwrap_or_default();
+
+            match kind.as_str() {
+                "started" => {
+                    run_id = payload.get("run_id").and_then(|id| id.as_str()).map(str::to_string);
+                }
+                "progress" => on_event(RunEvent::Progress(payload)),
+                "done" => {
+                    on_event(RunEvent::Done(payload));
+                    break;
+                }
+                "cancelled" => {
+                    on_event(RunEvent::Cancelled(payload));
+                    break;
+                }
+                "error" => {
+                    let detail = payload
+                        .get("error")
+                        .and_then(|e| e.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    // Refused before a run existed — a busy engine or a config it
+                    // would not take. That is this call failing, not a run
+                    // failing, and it surfaces the way `train` used to.
+                    if run_id.is_none() {
+                        return Err(EngineError::Status { code: 409, detail });
+                    }
+                    on_event(RunEvent::Error(detail));
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let _ = sink.close().await;
+        match run_id {
+            Some(run_id) => self.run(&run_id).await,
+            None => Err(EngineError::Transport(
+                "train socket closed before the run started".into(),
+            )),
+        }
     }
 
     pub async fn sft(&self, req: &SftRequest) -> Result<RunSnapshot> {

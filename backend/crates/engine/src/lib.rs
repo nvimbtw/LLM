@@ -1,4 +1,5 @@
-//! The boundary to the Python engine: the process, and the HTTP calls into it.
+//! The boundary to the Python engine: the process, and the calls into it — HTTP
+//! for everything short, a WebSocket for a training run, which is neither.
 //!
 //! Training and inference run in `engine/` (PyTorch) rather than in this
 //! workspace. This crate is the only place that knows that — everything above

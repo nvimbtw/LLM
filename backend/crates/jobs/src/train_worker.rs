@@ -219,54 +219,90 @@ fn drive(ctx: &Arc<TrainCtx>, start: Result<engine::RunSnapshot, engine::EngineE
         let finished = engine_client
             .follow(&started.run_id, |event| {
                 if let engine::RunEvent::Progress(p) = event {
-                    let num = |k: &str| p.get(k).and_then(|v| v.as_f64());
-                    // Fraction of the whole run, for the durable row's coarse bar.
-                    let fraction = match (num("step"), num("total_steps")) {
-                        (Some(step), Some(total)) if total > 0.0 => step / total,
-                        _ => 0.0,
-                    };
-
-                    if let (Some(step), Some(loss)) = (num("step"), num("loss")) {
-                        let mut st = lock(&reporting.state);
-                        push_loss(&mut st.loss_series, [step, loss]);
-                        // The per-window spread, which the chart draws as a band
-                        // around the line.
-                        if let (Some(lo), Some(avg), Some(hi)) =
-                            (num("batch_min"), num("batch_avg"), num("batch_max"))
-                        {
-                            push_batch(&mut st.batch_series, [step, lo, avg, hi]);
-                        }
-                        if let Some(d) = p.get("diag").filter(|d| !d.is_null()) {
-                            push_diag(&mut st.diag_series, d.clone());
-                        }
-                        // Kept whole so a socket attaching mid-run gets the same
-                        // shape as one that watched from the start.
-                        st.train = p.clone();
-                        st.phase = TrainPhase::Training;
-                    }
-
-                    let stage = p
-                        .get("stage_name")
-                        .and_then(|v| v.as_str())
-                        .map(|n| format!("Training: {n}"))
-                        .unwrap_or_else(|| "Training".to_string());
-                    reporting.tick(fraction, &stage);
-                    emit(&reporting.tx, frame("train", p));
+                    report(&reporting, &p);
                 }
             })
             .await
             .map_err(|e| e.to_string());
         watcher.abort();
 
-        let finished = finished?;
-        if finished.is_cancelled() {
-            return Err(CANCELLED.to_string());
-        }
-        if let Some(error) = finished.error {
-            return Err(error);
-        }
-        Ok(finished.result.unwrap_or(serde_json::Value::Null))
+        outcome(finished?)
     })
+}
+
+// The same, over one socket: the config goes up on it, every frame comes back on
+// it, and cancellation is a message on it rather than a polling loop holding a
+// second connection open. Pretraining is the long run and the one being watched
+// frame by frame, so it is the one that takes this path.
+fn drive_socket(
+    ctx: &Arc<TrainCtx>,
+    request: &engine::client::TrainRequest,
+) -> Result<serde_json::Value, String> {
+    let reporting = ctx.clone();
+    let cancel = ctx.cancel.clone();
+
+    ctx.handle.block_on(async {
+        let finished = ctx
+            .engine
+            .train_stream(request, cancel, |event| {
+                if let engine::RunEvent::Progress(p) = event {
+                    report(&reporting, &p);
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+        outcome(finished)
+    })
+}
+
+// One engine progress frame, translated into the frames the dashboard already
+// speaks and folded into the catch-up snapshot.
+fn report(ctx: &Arc<TrainCtx>, p: &serde_json::Value) {
+    let num = |k: &str| p.get(k).and_then(|v| v.as_f64());
+    // Fraction of the whole run, for the durable row's coarse bar.
+    let fraction = match (num("step"), num("total_steps")) {
+        (Some(step), Some(total)) if total > 0.0 => step / total,
+        _ => 0.0,
+    };
+
+    if let (Some(step), Some(loss)) = (num("step"), num("loss")) {
+        let mut st = lock(&ctx.state);
+        push_loss(&mut st.loss_series, [step, loss]);
+        // The per-window spread, which the chart draws as a band around the line.
+        if let (Some(lo), Some(avg), Some(hi)) =
+            (num("batch_min"), num("batch_avg"), num("batch_max"))
+        {
+            push_batch(&mut st.batch_series, [step, lo, avg, hi]);
+        }
+        if let Some(d) = p.get("diag").filter(|d| !d.is_null()) {
+            push_diag(&mut st.diag_series, d.clone());
+        }
+        // Kept whole so a socket attaching mid-run gets the same shape as one
+        // that watched from the start.
+        st.train = p.clone();
+        st.phase = TrainPhase::Training;
+    }
+
+    let stage = p
+        .get("stage_name")
+        .and_then(|v| v.as_str())
+        .map(|n| format!("Training: {n}"))
+        .unwrap_or_else(|| "Training".to_string());
+    ctx.tick(fraction, &stage);
+    emit(&ctx.tx, frame("train", p.clone()));
+}
+
+// A finished run as the queue's Result: cancellation is not a failure, but it
+// travels the same channel, so it goes as a sentinel.
+fn outcome(finished: engine::RunSnapshot) -> Result<serde_json::Value, String> {
+    if finished.is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    if let Some(error) = finished.error {
+        return Err(error);
+    }
+    Ok(finished.result.unwrap_or(serde_json::Value::Null))
 }
 
 // Sentinel distinguishing "stopped on request" from a real failure, since both
@@ -295,8 +331,7 @@ fn run_pretrain(ctx: Arc<TrainCtx>, mut config: TrainConfig) -> Outcome {
         ..Default::default()
     };
 
-    let started = ctx.handle.block_on(ctx.engine.train(&request));
-    match drive(&ctx, started) {
+    match drive_socket(&ctx, &request) {
         Ok(result) => finish(&ctx, &config, &result, &created_at, Ok(false)),
         Err(e) if e == CANCELLED => {
             lock(&ctx.state).phase = TrainPhase::Cancelled;
