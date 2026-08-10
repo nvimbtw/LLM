@@ -236,6 +236,20 @@ def datasets():
     return {"datasets": sources.catalogue()}
 
 
+@app.get("/sft/datasets")
+def sft_datasets():
+    """What SFT sets are on disk, for a caller choosing which to fine-tune on.
+
+    Read-only for the same reason `/datasets` is — the fetch scripts fill these
+    folders, nothing is uploaded through the API. File count and bytes rather
+    than a conversation count: the latter costs a full pass over hundreds of
+    megabytes of JSONL per request, and tells sets apart no better.
+    """
+    from llm.corpus import sft as sft_corpus
+
+    return {"datasets": sft_corpus.catalogue()}
+
+
 @app.get("/models")
 def models():
     """Trained models on disk, with the architecture each was built with."""
