@@ -24,3 +24,13 @@ pub fn data_root() -> PathBuf {
 pub fn sft_dir() -> PathBuf {
     data_root().join("sft")
 }
+
+/// A trained model's weights, under its storage id.
+///
+/// The name is the engine's (`llm/storage.py:weights_path`), not this side's: the
+/// engine writes the file and this side only ever asks whether it is there. Spelled
+/// once, here — the previous caller had the pre-port `model.bin` inlined, which
+/// resolved to nothing after the rename and failed every fine-tune at validation.
+pub fn model_weights(storage_id: &str) -> PathBuf {
+    data_root().join("artifacts/models").join(storage_id).join("model.pt")
+}

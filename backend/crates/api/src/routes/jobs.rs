@@ -1374,7 +1374,7 @@ fn is_power_of_two(n: i64) -> bool {
 
 // Extra validation for the two fine-tuning runs (a no-op for pretrain): the base
 // model to fine-tune from must be named and must resolve to an on-disk model (a
-// `model.bin` under its UUID dir). A bad or missing base is a client error (400),
+// weights file under its UUID dir). A bad or missing base is a client error (400),
 // not a server fault — catch it here so a job is never queued against a nonexistent
 // base. Note: the model hyperparameters (dimensions/ctx_window/…) are ignored for a
 // fine-tune — they are loaded from the base — but must still pass
@@ -1387,8 +1387,7 @@ fn validate_sft(cfg: &TrainConfig) -> Result<(), &'static str> {
     let base_id = cfg
         .base_model_id
         .ok_or("base_model_id is required for a fine-tuning run")?;
-    let base_dir = engine::paths::data_root().join("artifacts/models").join(base_id.to_string());
-    if !base_dir.join("model.bin").is_file() {
+    if !engine::paths::model_weights(&base_id.to_string()).is_file() {
         return Err("base_model_id does not resolve to an existing model");
     }
     Ok(())
