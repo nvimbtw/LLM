@@ -64,19 +64,32 @@ def run(
     tokenizer = bpe.load(storage.model_dir(cfg.base_model))
 
     reasoning = Reasoning.STRIP if cfg.strip_thinking else Reasoning.KEEP
-    if cfg.rebuild_dataset or not sft_corpus.is_built():
-        stats = sft_corpus.build(tokenizer, reasoning)
+    # Resolved before the key is derived, so "every set on disk" keys as the sets
+    # that are actually there — a run asking for all of them after a new set was
+    # fetched must not reuse a build that predates it.
+    selection = sft_corpus.resolve(cfg.datasets)
+    if not selection:
+        raise FileNotFoundError(
+            f"No SFT sets under {storage.sft_dir()} — fetch conversations first"
+        )
+    key = sft_corpus.dataset_key(selection, reasoning)
+    named = ", ".join(f"{name}[:{cap}]" if cap else name for name, cap in selection)
+
+    sft_corpus.clear_legacy()
+    if cfg.rebuild_dataset or not sft_corpus.is_built(key, selection, reasoning):
+        stats = sft_corpus.build(tokenizer, selection, reasoning)
         print(
-            f"[2/5] {stats.conversations:,} conversations, {stats.total_tokens:,} tokens, "
-            f"{stats.trainable_tokens:,} trainable ({stats.trainable_fraction:.0%})"
+            f"[2/5] {named} ({reasoning.value}) -> {stats.conversations:,} conversations, "
+            f"{stats.total_tokens:,} tokens, {stats.trainable_tokens:,} trainable "
+            f"({stats.trainable_fraction:.0%})"
             + (f", {stats.skipped} skipped" if stats.skipped else "")
         )
     else:
         stats = None
-        print("[2/5] Reusing the SFT dataset already on disk")
+        print(f"[2/5] Reusing the built dataset for {named} ({reasoning.value})")
 
-    corpus, mask = sft_corpus.load()
-    eot_id, documents, _ = sft_corpus.load_segments()
+    corpus, mask = sft_corpus.load(key)
+    eot_id, documents, _ = sft_corpus.load_segments(key)
 
     # Markers this dataset uses that the base never saw, warm-started before the
     # first step — see llm/train/warm_start.py for why the caller decides this.
@@ -135,7 +148,14 @@ def run(
         "parameters": model.parameter_count(),
         "device": device,
         "warm_started": reset,
-        "dataset": stats.__dict__ if stats else "reused",
+        # What this model was actually fine-tuned on, which is the only durable
+        # way to tell two runs from the same base model apart afterwards.
+        "dataset": {
+            "sets": [{"name": name, "count": cap} for name, cap in selection],
+            "reasoning": reasoning.value,
+            "key": key,
+            **(stats.__dict__ if stats else {"reused": True}),
+        },
         "trainable_tokens": int(mask.sum()),
         "total_tokens": len(corpus),
         **summary,

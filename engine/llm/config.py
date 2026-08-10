@@ -189,14 +189,34 @@ class SftConfig(BaseModel):
     grad_clip: float = 1.0
     weight_decay: float = 0.1
 
+    # ── Data ────────────────────────────────────────────────────────────────
+    # Which SFT sets to fine-tune on, exactly as `TrainConfig.datasets` selects
+    # pretrain corpora.
+    #
+    # Deliberately not a curriculum: the point is two *separate* runs from one
+    # base model — a non-thinking fine-tune and a thinking one — producing two
+    # models that can be loaded and compared against each other. Ordered stages
+    # would collapse them into a single set of weights.
+    datasets: list[DatasetSelection] = Field(
+        default_factory=list,
+        description="SFT set folders to fine-tune on; empty means all of them. Each entry "
+        "is a name or {name, count} to cap it to its first N files",
+    )
+
     # Drop the <|thinking|> blocks from the chat data this run trains on,
     # teaching the model to answer directly — for a model too small to hold a
     # reasoning block together.
+    #
+    # Independent of `datasets` on purpose. Pointing this at a thinking set is
+    # usually a mistake, but it is also the only way to build a strip-thinking
+    # control against the same conversations, so the two levers stay separate.
     strip_thinking: bool = False
 
     shuffle: bool = True
     seed: int = 0
     rebuild_dataset: bool = False
+
+    _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 
 
 class ChatTurn(BaseModel):
