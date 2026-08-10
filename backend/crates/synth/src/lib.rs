@@ -2420,8 +2420,13 @@ mod e2e {
     /// and that one each used to hold a private lock over the same process-global,
     /// so neither excluded the other and a `synth` test could move `DATA_DIR` out
     /// from under a `training` build mid-run.
+    /// Lived in `storage` while `training`'s tests shared it. Those tests went
+    /// with the dataset-building code they covered, so this module is the only
+    /// one repointing `DATA_DIR` and owns the lock outright.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn exclusive_data_dir() -> std::sync::MutexGuard<'static, ()> {
-        storage::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // A one-shot OpenAI-compatible endpoint returning canned delimiter output.
@@ -2459,7 +2464,7 @@ mod e2e {
     async fn a_run_writes_only_what_survives_validation() {
         let _guard = exclusive_data_dir();
         let dir = std::env::temp_dir().join(format!("synth-e2e-{}", Uuid::new_v4()));
-        let sft = dir.join("raw/sft");
+        let sft = dir.join("sft");
         fs::create_dir_all(&sft).unwrap();
         unsafe { std::env::set_var("DATA_DIR", &dir) };
 
@@ -2492,6 +2497,9 @@ mod e2e {
         let seen = calls.clone();
         let stats = run(
             &request,
+            // Never dialled: the client is only used to load a think budget, and
+            // these requests carry no id_model.
+            &engine::Client::new("http://127.0.0.1:0"),
             Box::new(|_, _| {}),
             Box::new(move |report| seen.lock().unwrap().push(report.clone())),
             Box::new(|_| {}),
@@ -2579,7 +2587,7 @@ mod e2e {
     ) {
         let _guard = exclusive_data_dir();
         let dir = std::env::temp_dir().join(format!("synth-auth-{}", Uuid::new_v4()));
-        let sft = dir.join("raw/sft");
+        let sft = dir.join("sft");
         fs::create_dir_all(&sft).unwrap();
         unsafe { std::env::set_var("DATA_DIR", &dir) };
 
@@ -2604,6 +2612,9 @@ mod e2e {
 
         let error = run(
             &request,
+            // Never dialled: the client is only used to load a think budget, and
+            // these requests carry no id_model.
+            &engine::Client::new("http://127.0.0.1:0"),
             Box::new(|_, _| {}),
             Box::new(|_| {}),
             Box::new(|_| {}),
