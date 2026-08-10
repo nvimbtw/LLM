@@ -89,7 +89,7 @@ def run(
         print(f"[2/5] Reusing the built dataset for {named} ({reasoning.value})")
 
     corpus, mask = sft_corpus.load(key)
-    eot_id, documents, _ = sft_corpus.load_segments(key)
+    eot_id, documents, info = sft_corpus.load_segments(key)
 
     # Markers this dataset uses that the base never saw, warm-started before the
     # first step — see llm/train/warm_start.py for why the caller decides this.
@@ -98,7 +98,13 @@ def run(
         for name in special.token_list()
         if tokenizer.token_to_id(name) is not None
     }
-    used = sorted(marker_ids.intersection(corpus.tolist()))
+    # The build records this, so the corpus is normally never read for it. Only a
+    # dataset built before the field existed is scanned, and then in bounded
+    # chunks — this is the step that OOM-killed the engine when it asked for the
+    # whole corpus as a Python list.
+    used = info.get("special_ids_seen")
+    if used is None:
+        used = sft_corpus.special_ids_in(corpus, marker_ids, eot_id)
     to_reset = untrained_marker_ids(used, _base_special_ids(cfg.base_model))
     reset = warm_start_embeddings(model, to_reset)
     print(

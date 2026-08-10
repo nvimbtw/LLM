@@ -21,7 +21,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +47,12 @@ class SftStats:
     total_tokens: int
     trainable_tokens: int
     skipped: int
+    # Which reserved marker ids this dataset actually contained, sorted. Mirrors
+    # `PackStats.special_ids_seen`, and collected the same way: accumulated per
+    # conversation during the build, off the few hundred ids that conversation
+    # produced. The whole-corpus alternative is what OOM-killed the run — see
+    # `special_ids_in`.
+    special_ids_seen: list[int] = field(default_factory=list)
 
     @property
     def trainable_fraction(self) -> float:
@@ -167,6 +173,16 @@ def build(
 
     eot_id = bpe.token_id(tokenizer, special.END_OF_TEXT)
 
+    # Intersected against each conversation as it is rendered, so the answer to
+    # "which markers does this dataset use?" is known by the time the build ends
+    # and the corpus never has to be scanned for it.
+    marker_ids = {
+        tokenizer.token_to_id(name)
+        for name in special.token_list()
+        if tokenizer.token_to_id(name) is not None
+    }
+    seen: set[int] = set()
+
     documents: list[DocSpan] = []
     skipped = 0
     total_tokens = 0
@@ -219,6 +235,7 @@ def build(
 
             total_tokens += len(ids) + 1
             trainable_tokens += sum(example_mask)
+            seen.update(marker_ids.intersection(ids))
 
             if len(token_buffer) >= FLUSH_TOKENS:
                 flush()
@@ -246,6 +263,7 @@ def build(
                 "eot_id": eot_id,
                 "sets": [[name, cap] for name, cap in selection],
                 "reasoning": reasoning.value,
+                "special_ids_seen": sorted(seen),
                 "documents": [asdict(d) for d in documents],
             },
             indent=2,
@@ -258,6 +276,7 @@ def build(
         total_tokens=total_tokens,
         trainable_tokens=trainable_tokens,
         skipped=skipped,
+        special_ids_seen=sorted(seen),
     )
 
 
@@ -267,9 +286,15 @@ def load(key: str) -> tuple[np.ndarray, np.ndarray]:
     A length mismatch means the dataset was built inconsistently and every
     window's mask slice would be shifted — fail cleanly rather than train on a
     misaligned target.
+
+    Mapped, not read, for the reason `pack.load_corpus` is: `fromfile` makes both
+    files resident and private — 1.7 GiB on the full conversation set, on a
+    machine with 7 GiB — while training only ever reads small contiguous spans of
+    them (`EpochStream.gather`). A mapping is backed by the file, so the kernel
+    reclaims it under pressure instead of the process being killed.
     """
-    corpus = np.fromfile(storage.sft_corpus_path(key), dtype=CORPUS_DTYPE)
-    mask = np.fromfile(storage.sft_mask_path(key), dtype=np.uint8)
+    corpus = np.memmap(storage.sft_corpus_path(key), dtype=CORPUS_DTYPE, mode="r")
+    mask = np.memmap(storage.sft_mask_path(key), dtype=np.uint8, mode="r")
     if len(corpus) != len(mask):
         raise ValueError(
             f"SFT corpus/mask length mismatch: {len(corpus)} tokens vs {len(mask)} mask bytes"
@@ -283,8 +308,49 @@ def load_segments(key: str) -> tuple[int, list[DocSpan], dict]:
     if not path.is_file():
         return 0, [], {}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    info = {"sets": raw.get("sets", []), "reasoning": raw.get("reasoning")}
+    info = {
+        "sets": raw.get("sets", []),
+        "reasoning": raw.get("reasoning"),
+        # Absent on a build made before it was recorded; None means "unknown", so
+        # the caller scans rather than concluding the dataset uses no markers.
+        "special_ids_seen": raw.get("special_ids_seen"),
+    }
     return raw["eot_id"], [DocSpan(**d) for d in raw["documents"]], info
+
+
+# How many tokens to test at a time when a dataset has to be scanned. 8M tokens
+# is a 16 MiB window of the mapping and a bounded `np.unique` over it, so peak
+# memory is flat no matter how long the corpus is.
+SCAN_CHUNK = 1 << 23
+
+
+def special_ids_in(corpus: np.ndarray, marker_ids: set[int], separator_id: int) -> list[int]:
+    """Which of `marker_ids` occur in `corpus`, scanned in bounded chunks.
+
+    The fallback for a build whose sidecar predates `special_ids_seen`; `build`
+    records the answer directly and nothing needs to come here.
+
+    Chunked and vectorized rather than `marker_ids.intersection(corpus.tolist())`,
+    which is how this was written and what OOM-killed the engine: `tolist` boxes
+    every token into a Python int at ~36 bytes against the 2 the mapping holds,
+    so a 587M-token dataset asked the kernel for ~21 GiB to answer a question
+    about thirty ids.
+
+    `separator_id` is excluded because this has to answer the *same* question
+    `build` and `pack.pack` answer, and both count only a document's own tokens —
+    the separator is written between documents, outside the ids they record. A
+    pretrain corpus of plain text therefore never lists it as seen, so counting it
+    here would mark the stop token as one the base never trained and warm-start
+    would reset the embedding row the base leans on hardest to stop generating.
+    """
+    found: set[int] = set()
+    wanted = marker_ids - {separator_id}
+    for start in range(0, len(corpus), SCAN_CHUNK):
+        chunk = np.unique(np.asarray(corpus[start : start + SCAN_CHUNK]))
+        found.update(wanted.intersection(chunk.tolist()))
+        if found == wanted:
+            break
+    return sorted(found)
 
 
 def is_built(key: str, selection: list[tuple[str, int | None]], reasoning: Reasoning) -> bool:
