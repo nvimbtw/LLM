@@ -16,8 +16,14 @@ __pycache__/
 engine/.venv/
 
 # The engine owns the corpora, models and datasets. They arrive via the fetch
-# scripts and are regenerated, not versioned.
+# scripts and are regenerated, not versioned. This also covers what a fetch
+# leaves beside them: .prepare_state.json and .prepare_logs/ from prepare_all.py.
 engine/data/
+
+# Datasets a fetch script stages inside the repo. prepare_smoltalk.py's
+# --cache-dir defaults here and snapshot_download()s the whole source repo into
+# it — gigabytes, one `git add .` away from the history.
+/.cache/
 
 # Local secrets and connection strings.
 .env
