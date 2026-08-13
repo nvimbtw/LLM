@@ -22,6 +22,7 @@ from store.schema import (
     Message,
     Model,
     QueueState,
+    Role,
     Run,
     RunKind,
     RunStatus,
@@ -30,7 +31,7 @@ from store.schema import (
 
 __all__ = [
     "Base", "Benchmark", "BenchmarkStatus", "Chat", "Feedback", "Message", "Model",
-    "QueueState", "Run", "RunKind", "RunStatus", "Suite",
+    "QueueState", "Role", "Run", "RunKind", "RunStatus", "Suite",
     "configure", "session", "url",
 ]
 

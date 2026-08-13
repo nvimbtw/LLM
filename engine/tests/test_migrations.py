@@ -96,7 +96,7 @@ def test_the_schema_round_trips_through_postgres(scratch_database):
 
     import store
     from store import queries as q
-    from store.schema import Feedback, RunKind, Suite
+    from store.schema import Feedback, Role, RunKind, Suite
 
     command.upgrade(Config("alembic.ini"), "head")
     store.configure(scratch_database)
@@ -107,7 +107,7 @@ def test_the_schema_round_trips_through_postgres(scratch_database):
             db, model_id=uuid.uuid4(), name="pg", parameters={"nested": {"ok": True}}
         )
         chat = q.create_chat(db, owner, "c")
-        reply = q.add_message(db, chat_id=chat.id, content="a", model_id=model.id)
+        reply = q.add_message(db, role=Role.assistant, chat_id=chat.id, content="a", model_id=model.id)
         q.set_feedback(db, reply.id, owner, Feedback.up)
         q.open_benchmark(db, model=model, suite=Suite.language, score=42.0)
         q.enqueue(db, kind=RunKind.train, label="r", config={"a": [1, 2]})

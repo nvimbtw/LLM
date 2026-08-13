@@ -90,6 +90,7 @@ def upgrade() -> None:
     op.create_table('messages',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('chat_id', sa.Uuid(), nullable=False),
+    sa.Column('role', sa.Enum('user', 'assistant', name='role'), nullable=False),
     sa.Column('model_id', sa.Uuid(), nullable=True),
     sa.Column('content', sa.Text(), nullable=False),
     sa.Column('tokens', sa.Integer(), nullable=False),

@@ -11,7 +11,17 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from store.schema import Benchmark, Chat, Message, Model, QueueState, Run, RunStatus, Suite
+from store.schema import (
+    Benchmark,
+    Chat,
+    Message,
+    Model,
+    QueueState,
+    Role,
+    Run,
+    RunStatus,
+    Suite,
+)
 
 #: How far apart two adjacent ranks must stay before the band is renumbered.
 #: Doubles run out of midpoints after ~50 inserts between one pair.
@@ -134,11 +144,14 @@ def add_message(
     db: Session,
     *,
     chat_id: uuid.UUID,
+    role: Role,
     content: str,
     tokens: int = 0,
     model_id: uuid.UUID | None = None,
 ) -> Message:
-    message = Message(chat_id=chat_id, content=content, tokens=tokens, model_id=model_id)
+    message = Message(
+        chat_id=chat_id, role=role, content=content, tokens=tokens, model_id=model_id
+    )
     db.add(message)
     db.flush()
     return message

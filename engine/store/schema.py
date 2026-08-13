@@ -76,6 +76,11 @@ class BenchmarkStatus(str, enum.Enum):
     failed = "failed"
 
 
+class Role(str, enum.Enum):
+    user = "user"
+    assistant = "assistant"
+
+
 class Feedback(str, enum.Enum):
     up = "up"
     down = "down"
@@ -119,7 +124,12 @@ class Chat(Base):
 
 
 class Message(Base):
-    """One turn. `model_id` set means the assistant wrote it."""
+    """One turn.
+
+    `role` is stored rather than derived from `model_id`: deleting a model nulls
+    the credit, and a reply must not turn into a question because the model that
+    wrote it is gone.
+    """
 
     __tablename__ = "messages"
 
@@ -127,6 +137,8 @@ class Message(Base):
     chat_id: Mapped[uuid.UUID] = mapped_column(
         Key, ForeignKey("chats.id", ondelete="CASCADE"), index=True
     )
+    role: Mapped[Role] = mapped_column(Enum(Role, name="role"))
+    #: Which model wrote it, while that model still exists.
     model_id: Mapped[uuid.UUID | None] = mapped_column(
         Key, ForeignKey("models.id", ondelete="SET NULL")
     )
@@ -140,10 +152,6 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
-
-    @property
-    def role(self) -> str:
-        return "assistant" if self.model_id is not None else "user"
 
 
 class Benchmark(Base):

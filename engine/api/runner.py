@@ -17,7 +17,8 @@ from collections.abc import Callable
 from typing import Any
 
 import store
-from api.runs import Event, Registry, Run
+from api.handlers import HANDLERS
+from api.runs import REGISTRY, Event, Registry, Run
 from store import queries as q
 from store.schema import RunKind, RunStatus
 
@@ -205,6 +206,10 @@ class _ThrottledProgress:
                 run.progress = float(frame["fraction"])
             if isinstance(frame.get("stage"), str):
                 run.stage = frame["stage"]
+
+
+#: One device, so one runner. Routes enqueue onto this; the lifespan drains it.
+RUNNER = Runner(REGISTRY, HANDLERS)
 
 
 def _produced(result: dict | None) -> uuid.UUID | None:

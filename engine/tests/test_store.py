@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from store import queries as q
-from store.schema import Feedback, RunKind, RunStatus, Suite
+from store.schema import Feedback, Role, RunKind, RunStatus, Suite
 
 ALICE = uuid.uuid4()
 BOB = uuid.uuid4()
@@ -65,8 +65,8 @@ def test_listing_is_scoped_to_one_owner(db):
 
 def test_a_chats_tokens_are_summed_from_its_messages(db, model):
     chat = q.create_chat(db, ALICE, "counted")
-    q.add_message(db, chat_id=chat.id, content="hi", tokens=3)
-    q.add_message(db, chat_id=chat.id, content="hello", tokens=4, model_id=model.id)
+    q.add_message(db, role=Role.user, chat_id=chat.id, content="hi", tokens=3)
+    q.add_message(db, role=Role.assistant, chat_id=chat.id, content="hello", tokens=4, model_id=model.id)
 
     assert q.list_chats(db, ALICE) == [(chat, 7)]
 
@@ -86,7 +86,7 @@ def test_renaming_and_deleting_refuse_a_stranger(db):
 
 def test_deleting_a_chat_takes_its_messages(db):
     chat = q.create_chat(db, ALICE, "doomed")
-    q.add_message(db, chat_id=chat.id, content="hi")
+    q.add_message(db, role=Role.user, chat_id=chat.id, content="hi")
     db.flush()
 
     assert q.delete_chat(db, chat.id, ALICE) is True
@@ -117,8 +117,8 @@ def test_distinct_owners_backs_the_reconciliation_sweep(db):
 
 def test_authorship_is_encoded_by_which_id_is_set(db, model):
     chat = q.create_chat(db, ALICE, "c")
-    user = q.add_message(db, chat_id=chat.id, content="q")
-    reply = q.add_message(db, chat_id=chat.id, content="a", model_id=model.id)
+    user = q.add_message(db, role=Role.user, chat_id=chat.id, content="q")
+    reply = q.add_message(db, role=Role.assistant, chat_id=chat.id, content="a", model_id=model.id)
 
     assert user.role == "user"
     assert reply.role == "assistant"
@@ -126,7 +126,7 @@ def test_authorship_is_encoded_by_which_id_is_set(db, model):
 
 def test_feedback_starts_unrated_and_is_scoped_to_the_owner(db, model):
     chat = q.create_chat(db, ALICE, "c")
-    reply = q.add_message(db, chat_id=chat.id, content="a", model_id=model.id)
+    reply = q.add_message(db, role=Role.assistant, chat_id=chat.id, content="a", model_id=model.id)
 
     assert reply.feedback is None
     assert q.set_feedback(db, reply.id, BOB, Feedback.up) is False
@@ -136,7 +136,7 @@ def test_feedback_starts_unrated_and_is_scoped_to_the_owner(db, model):
 
 def test_feedback_can_be_cleared(db, model):
     chat = q.create_chat(db, ALICE, "c")
-    reply = q.add_message(db, chat_id=chat.id, content="a", model_id=model.id)
+    reply = q.add_message(db, role=Role.assistant, chat_id=chat.id, content="a", model_id=model.id)
     q.set_feedback(db, reply.id, ALICE, Feedback.down)
 
     assert q.set_feedback(db, reply.id, ALICE, None) is True
