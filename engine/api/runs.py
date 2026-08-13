@@ -133,6 +133,34 @@ class Registry:
         ).start()
         return run
 
+    def adopt(self, run_id: str, kind: str, config: dict[str, Any]) -> Run:
+        """Register a run the queue has just claimed, and return its live state.
+
+        The row already exists and already says `running`; this is the
+        in-memory half — the cancel flag a step boundary reads, the frame
+        history a late subscriber replays.
+        """
+        run = Run(id=run_id, kind=kind, config=config)
+        if self._loop is not None:
+            run._finished = asyncio.Event()
+        with self._lock:
+            self._runs[run.id] = run
+        return run
+
+    def finish(self, run: Run, status: str, **fields: Any) -> None:
+        """Close out a live run and tell its subscribers, once."""
+        run.status = status
+        run.result = fields.get("result")
+        run.error = fields.get("error")
+        run.finished_at = time.time()
+
+        kind = {"completed": "done", "cancelled": "cancelled", "failed": "error"}[status]
+        payload = {"error": run.error} if status == "failed" else {"result": run.result}
+        self.publish(run, Event(kind, payload))
+
+        if run._finished is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(run._finished.set)
+
     def _execute(self, run: Run, target) -> None:
         """The worker thread body. Never raises — a run's failure is data."""
         try:
