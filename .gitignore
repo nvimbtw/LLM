@@ -27,3 +27,9 @@ engine/data/
 
 # Local secrets and connection strings.
 .env
+
+# Scratch evaluations and backups that live in the working tree but are not
+# part of the project. Listed so a `git add -A` cannot sweep them into a commit.
+/continuous-thinking-evaluation.html
+/mcp-evaluation.html
+*.bak
