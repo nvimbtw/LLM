@@ -63,3 +63,18 @@ def recorded_trace() -> dict:
     if not TRACE.is_file():
         pytest.fail(f"no recorded trace at {TRACE}; run tests.fixtures.record")
     return json.loads(TRACE.read_text())
+
+
+@pytest.fixture
+def store_session():
+    """A throwaway database per test.
+
+    SQLite in memory rather than the real Postgres: the schema uses nothing
+    dialect-specific, and a test that needs a server is a test nobody runs.
+    The Postgres path is covered by the migration check in test_migrations.py.
+    """
+    import store
+
+    factory = store.configure("sqlite+pysqlite:///:memory:", create=True)
+    yield store.session
+    store._sessions = factory
