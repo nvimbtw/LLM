@@ -297,14 +297,22 @@ def latest_benchmark(
 
 
 def enqueue(db: Session, *, kind, label: str, config: dict, owner_id=None, **fields) -> Run:
-    """Add a run above every other queued one."""
+    """Add a run at the back of the line.
+
+    A run naming `depends_on` starts `waiting` instead: it consumes a model that
+    does not exist yet, so it is not a queue position, it is "after that one".
+    """
     highest = db.scalar(select(func.max(Run.rank)).where(Run.status == RunStatus.queued))
+    status = fields.pop("status", None) or (
+        RunStatus.waiting if fields.get("depends_on") else RunStatus.queued
+    )
     run = Run(
         kind=kind,
         label=label,
         config=config,
         owner_id=owner_id,
         rank=(highest or 0.0) + 1.0,
+        status=status,
         **fields,
     )
     db.add(run)
@@ -336,17 +344,23 @@ def active_runs(db: Session) -> list[Run]:
     return list(db.scalars(select(Run).where(Run.status.in_(live)).order_by(Run.rank)))
 
 
+_TERMINAL = (RunStatus.done, RunStatus.cancelled, RunStatus.failed)
+
+
 def run_history(db: Session, limit: int = 50, offset: int = 0) -> list[Run]:
-    terminal = (RunStatus.done, RunStatus.cancelled, RunStatus.failed)
     return list(
         db.scalars(
             select(Run)
-            .where(Run.status.in_(terminal))
+            .where(Run.status.in_(_TERMINAL))
             .order_by(Run.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
     )
+
+
+def count_history(db: Session) -> int:
+    return db.scalar(select(func.count()).select_from(Run).where(Run.status.in_(_TERMINAL))) or 0
 
 
 def finish_run(db: Session, run_id: uuid.UUID, status: RunStatus, **fields) -> Run | None:
@@ -424,7 +438,13 @@ def reorder(db: Session, run_id: uuid.UUID, after: uuid.UUID | None) -> bool:
 
 
 def waiting_on(db: Session, run_id: uuid.UUID) -> list[Run]:
-    return list(db.scalars(select(Run).where(Run.depends_on == run_id)))
+    """Runs still waiting on this one. A dependent that was cancelled in the
+    meantime is not among them — promoting it would resurrect it."""
+    return list(
+        db.scalars(
+            select(Run).where(Run.depends_on == run_id, Run.status == RunStatus.waiting)
+        )
+    )
 
 
 # ── queue state ─────────────────────────────────────────────────────────────

@@ -90,7 +90,10 @@ async def test_chat_stream_frames_concatenate_to_the_same_reply(client, recorded
 async def test_runs_separates_the_live_band_from_the_history(client):
     """Two lists because a client renders them differently: the band is short
     and complete, the history is long and paged."""
-    assert (await client.get("/runs")).json() == {"active": [], "history": []}
+    board = (await client.get("/runs")).json()
+    assert (board["active"], board["history"]) == ([], [])
+    assert board["history_total"] == 0
+    assert board["paused"] is False
 
 
 async def test_an_absent_run_404s(client):

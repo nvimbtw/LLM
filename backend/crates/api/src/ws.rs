@@ -25,5 +25,5 @@ pub fn authenticate(text: &str, secret: &str) -> Option<Claims> {
 
 // Standard error frame shared by the socket handlers.
 pub fn error_frame(message: &str) -> String {
-    serde_json::json!({ "type": "error", "message": message }).to_string()
+    serde_json::json!({ "type": "error", "error": message }).to_string()
 }

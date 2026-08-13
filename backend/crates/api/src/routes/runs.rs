@@ -31,6 +31,12 @@ async fn sft(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>)
     answer(engine.post(&started_by(&admin), "/sft", body.into_inner()).await?)
 }
 
+/// A sequence, each step running against the model the one before it produced.
+#[post("/chain")]
+async fn chain(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
+    answer(engine.post(&started_by(&admin), "/runs/chain", body.into_inner()).await?)
+}
+
 #[post("/benchmark")]
 async fn benchmark(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
     answer(engine.post(&started_by(&admin), "/eval", body.into_inner()).await?)
@@ -83,6 +89,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(train);
     cfg.service(sft);
     cfg.service(benchmark);
+    cfg.service(chain);
     cfg.service(pause);
     cfg.service(list);
     cfg.service(get_one);

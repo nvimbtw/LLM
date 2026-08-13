@@ -112,6 +112,7 @@ def _model(model: Model | None, directory) -> dict:
         "family": model.family if model else None,
         "context": model.context if model else None,
         "published": model.published if model else False,
+        "parameters": model.parameters if model else None,
         "created_at": model.created_at.isoformat() if model and model.created_at else None,
         "has_weights": bool(directory and (directory / "model.pt").is_file()),
         "config": _meta(directory),

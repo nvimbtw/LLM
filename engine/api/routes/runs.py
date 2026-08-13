@@ -9,6 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 import store
 from api import auth, sse
@@ -40,6 +41,38 @@ async def evaluate(cfg: EvalConfig, wait: bool = False, owner: str = Depends(aut
     return await _queue(RunKind.benchmark, cfg.model_name, cfg.model_dump(), wait, owner)
 
 
+class Step(BaseModel):
+    kind: RunKind
+    config: dict
+
+
+@router.post("/runs/chain", status_code=202)
+def queue_chain(steps: list[Step], owner: str = Depends(auth.require_service)):
+    """Queue a sequence, each step running against the model the one before it
+    produced.
+
+    A flat list rather than a tree: "then, then, then" is what a person means,
+    and a step naming its own model would be a second answer to the question the
+    chain exists to leave open — so the first config names a model and the rest
+    have theirs filled in when their predecessor lands.
+    """
+    if not steps:
+        raise HTTPException(status_code=400, detail="a chain needs at least one step")
+
+    queued, after = [], None
+    for step in steps:
+        run_id = RUNNER.enqueue(
+            step.kind,
+            label=str(step.config.get("model_name") or step.kind.value),
+            config=step.config,
+            owner_id=_owner_id(owner),
+            depends_on=after,
+        )
+        queued.append(snapshot(run_id))
+        after = run_id
+    return queued
+
+
 @router.get("/runs")
 def list_runs(limit: int = 50, offset: int = 0):
     """The live band and the history behind it.
@@ -51,6 +84,10 @@ def list_runs(limit: int = 50, offset: int = 0):
         return {
             "active": [row(r) for r in q.active_runs(db)],
             "history": [row(r) for r in q.run_history(db, limit, offset)],
+            "history_offset": offset,
+            "history_limit": limit,
+            "history_total": q.count_history(db),
+            "paused": q.is_paused(db),
         }
 
 
@@ -149,6 +186,7 @@ def row(run: Run) -> dict:
         "progress": run.progress,
         "stage": run.stage,
         "ref_id": str(run.ref_id) if run.ref_id else None,
+        "depends_on": str(run.depends_on) if run.depends_on else None,
         "result": run.result,
         "error": run.error,
         "created_at": run.created_at.isoformat() if run.created_at else None,

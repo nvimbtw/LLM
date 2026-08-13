@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Any
 
 import store
+from api import chain
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
 from store import queries as q
@@ -157,6 +158,8 @@ class Runner:
     def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> None:
         with store.session() as db:
             q.finish_run(db, run_id, status, **fields)
+        if chain.promote(run_id, fields.get("ref_id")):
+            self.wake()
 
     async def wait(self, run_id: uuid.UUID, poll_secs: float = 0.05) -> None:
         """Block until a run reaches a terminal state.
