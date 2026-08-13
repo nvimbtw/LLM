@@ -118,3 +118,8 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_chats_owner_id'), table_name='chats')
     op.drop_table('chats')
     # ### end Alembic commands ###
+
+    # Autogenerate drops the tables and leaves the enum types behind, so the
+    # next upgrade fails on `CREATE TYPE ... already exists`.
+    for name in ('role', 'feedback', 'suite', 'benchmark_status', 'run_kind', 'run_status'):
+        op.execute(f'DROP TYPE IF EXISTS {name}')
