@@ -18,13 +18,13 @@ def data_root(tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def _clear_model_cache():
-    """`orchestrate.infer` memoizes one model per process, keyed by name alone —
+    """`orchestrate.chat` memoizes one model per process, keyed by name alone —
     so a test that rebuilt `tiny` would otherwise get the previous weights."""
-    from llm.orchestrate import infer
+    from llm.orchestrate import chat
 
-    infer._CACHE.clear()
+    chat._CACHE.clear()
     yield
-    infer._CACHE.clear()
+    chat._CACHE.clear()
 
 
 @pytest.fixture

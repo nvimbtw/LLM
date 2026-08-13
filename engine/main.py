@@ -14,14 +14,11 @@ from llm.config import (
     ChatConfig,
     CountRequest,
     EvalConfig,
-    InferConfig,
-    MeasureRequest,
     SftConfig,
     TrainConfig,
 )
 from llm.orchestrate import chat as chat_pipeline
 from llm.orchestrate import evaluate as eval_pipeline
-from llm.orchestrate import infer as infer_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import train as train_pipeline
 from llm.server import sse, ws
@@ -151,48 +148,6 @@ def cancel_run(run_id: str):
     return {"run_id": run.id, "cancelling": True}
 
 
-@app.post("/infer")
-def infer(cfg: InferConfig):
-    """Generate a continuation of `prompt` from a trained model."""
-    try:
-        return infer_pipeline.run(cfg)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/infer/stream")
-async def infer_stream(cfg: InferConfig):
-    """Generate, streaming each token as SSE. Ends with a `done` frame carrying
-    the same summary `/infer` returns."""
-
-    # StopIteration must not cross the thread boundary: asyncio cannot carry it
-    # in a Future and converts it to a RuntimeError, which silently swallows the
-    # generator's return value — the summary this endpoint exists to deliver.
-    # Advancing behind a sentinel keeps it on the worker thread.
-    def advance(generator):
-        try:
-            return next(generator), None
-        except StopIteration as done:
-            return None, done.value or {}
-
-    async def frames():
-        generator = infer_pipeline.stream(cfg)
-        while True:
-            try:
-                piece, summary = await asyncio.to_thread(advance, generator)
-            except (FileNotFoundError, ValueError) as e:
-                yield sse.token_frame("error", {"error": str(e)})
-                return
-            if summary is not None:
-                yield sse.token_frame("done", summary)
-                return
-            yield sse.token_frame("token", piece)
-
-    return StreamingResponse(frames(), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS)
-
-
 @app.post("/chat")
 def chat(cfg: ChatConfig):
     """Generate the next assistant turn for a conversation."""
@@ -228,20 +183,6 @@ async def chat_stream(cfg: ChatConfig):
             yield sse.token_frame("token", piece)
 
     return StreamingResponse(frames(), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS)
-
-
-@app.post("/chat/measure")
-def measure(req: MeasureRequest):
-    """Token cost of a conversation as SFT would render it."""
-    try:
-        return chat_pipeline.measure(
-            req.model_name,
-            {"system": req.system, "turns": [t.model_dump() for t in req.turns]},
-        )
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/datasets")
@@ -288,12 +229,6 @@ def models():
                 pass
         out.append(entry)
     return {"models": out}
-
-
-@app.get("/markers")
-def markers():
-    """The reserved marker vocabulary."""
-    return chat_pipeline.markers()
 
 
 @app.post("/tokenize/count")

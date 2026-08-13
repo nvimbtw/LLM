@@ -1,9 +1,9 @@
 """The chat pipeline: a conversation in, an assistant turn out.
 
-Distinct from `infer`, which continues raw prose. This renders the whole
-conversation through the canonical template — the same one SFT trains on — and
-generates the next assistant turn under the marker grammar, so a reply is
-well-formed markup rather than something the frontend has to guess at.
+Renders the whole conversation through the canonical template — the same one
+SFT trains on — and generates the next assistant turn under the marker grammar,
+so a reply is well-formed markup rather than something the frontend has to
+guess at.
 """
 
 import time
@@ -16,11 +16,27 @@ from llm.chat.template import Role, ThinkBudget, Turn, build_prompt
 from llm.config import ChatConfig
 from llm.corpus import bpe
 from llm.model import checkpoint, sample
-from llm.orchestrate.infer import load
+from llm.train.loop import pick_device
 
 # Headroom left for the reply before the prompt starts evicting its own freshest
 # tokens. The prompt is truncated oldest-first to leave this much room.
 RESERVE_FOR_REPLY = 256
+
+_CACHE: dict = {}
+
+
+def load(model_name: str):
+    """The model + tokenizer for `model_name`, loaded once per process.
+
+    Cached because loading weights per request would dominate the cost of a
+    short generation.
+    """
+    if _CACHE.get("name") != model_name:
+        device = pick_device()
+        model, _ = checkpoint.load(storage.weights_path(model_name), device)
+        tokenizer = bpe.load(storage.model_dir(model_name))
+        _CACHE.update(name=model_name, model=model, tokenizer=tokenizer, device=device)
+    return _CACHE["model"], _CACHE["tokenizer"], _CACHE["device"]
 
 
 @torch.inference_mode()
@@ -107,48 +123,6 @@ def run(cfg: ChatConfig) -> dict:
             next(generator)
         except StopIteration as done:
             return done.value
-
-
-def measure(model_name: str, conversation: dict) -> dict:
-    """Token cost of a conversation as SFT would render it.
-
-    The generator uses this to reject an over-long conversation at generation
-    time rather than discovering it later as a training window full of context
-    with no assistant token in it. Rendered under KEEP and with no budget: that
-    is the widest rendering, and measuring a narrower one would under-report a
-    conversation a later unstripped run still has to fit.
-    """
-    from llm.chat.template import Reasoning, build_training_example
-
-    tokenizer = bpe.load(storage.model_dir(model_name))
-    turns = [
-        Turn(role=Role(t["role"]), text=t.get("text", ""))
-        for t in conversation.get("turns", [])
-        if t.get("role") in ("user", "assistant")
-    ]
-    if len(turns) != len(conversation.get("turns", [])):
-        raise ValueError("every turn must have role 'user' or 'assistant'")
-
-    ids, mask = build_training_example(
-        conversation.get("system"), turns, tokenizer, None, Reasoning.KEEP
-    )
-    return {
-        "model_name": model_name,
-        "tokens": len(ids),
-        "trainable_tokens": int(sum(mask)),
-    }
-
-
-def markers() -> dict:
-    """The reserved marker vocabulary, so a caller can derive its tag set from
-    the real thing rather than keeping a second copy in sync."""
-    from llm.corpus import special
-
-    return {
-        "markers": special.SPECIAL_TOKENS,
-        "block_size": special.SPECIAL_BLOCK,
-        "end_of_text": special.END_OF_TEXT,
-    }
 
 
 def count_tokens(model_name: str, text: str) -> dict:

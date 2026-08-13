@@ -54,14 +54,6 @@ async def test_models_lists_weights_on_disk(client):
     assert listed[TINY_MODEL]["has_weights"] is True
 
 
-async def test_markers_exposes_the_reserved_block(client):
-    body = (await client.get("/markers")).json()
-    assert body["end_of_text"] == "<|endoftext|>"
-    assert body["block_size"] == 64
-    assert body["end_of_text"] in body["markers"]
-    assert len(body["markers"]) <= body["block_size"]
-
-
 async def test_tokenize_count_matches_the_recorded_trace(client, recorded_trace):
     response = await client.post(
         "/tokenize/count", json={"model_name": TINY_MODEL, "text": trace_spec.QUESTION}
@@ -102,36 +94,6 @@ async def test_chat_stream_frames_concatenate_to_the_same_reply(client, recorded
     assert tokens == recorded_trace["sampled"]["text"]
     assert len(done) == 1
     assert done[0]["data"]["text"] == recorded_trace["sampled"]["text"]
-
-
-async def test_chat_measure_counts_a_conversation(client):
-    response = await client.post(
-        "/chat/measure",
-        json={
-            "model_name": TINY_MODEL,
-            "turns": [
-                {"role": "user", "text": "hello"},
-                {"role": "assistant", "text": "hi"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["tokens"] > body["trainable_tokens"] > 0
-
-
-async def test_infer_continues_a_prompt(client):
-    response = await client.post(
-        "/infer",
-        json={"model_name": TINY_MODEL, "prompt": "the cat", "max_tokens": 8, "seed": 3},
-    )
-    assert response.status_code == 200
-    assert response.json()["generated_tokens"] <= 8
-
-
-async def test_infer_404s_for_an_unknown_model(client):
-    response = await client.post("/infer", json={"model_name": UNKNOWN, "prompt": "x"})
-    assert response.status_code == 404
 
 
 async def test_runs_is_a_bare_list(client):
