@@ -219,3 +219,35 @@ mod tests {
         assert!(verify_service_token(&token, "engine", SERVICE).is_err());
     }
 }
+
+
+/// The token seam, verified against the same vector the engine checks.
+///
+/// Two implementations of one format drift silently: the symptom is a 401 in
+/// production, long after whichever side changed. `contracts/service-token.json`
+/// is the shared fixture, and both suites read it.
+#[cfg(test)]
+mod contract {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct Vector {
+        secret: String,
+        audience: String,
+        expected_act: String,
+        token: String,
+    }
+
+    fn vector() -> Vector {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../contracts/service-token.json");
+        let raw = std::fs::read_to_string(path).expect("contracts/service-token.json");
+        serde_json::from_str(&raw).expect("valid contract fixture")
+    }
+
+    #[test]
+    fn the_shared_vector_verifies() {
+        let v = vector();
+        let caller = verify_service_token(&v.token, &v.audience, &v.secret).expect("verifies");
+        assert_eq!(caller, Caller::User(Uuid::parse_str(&v.expected_act).unwrap()));
+    }
+}

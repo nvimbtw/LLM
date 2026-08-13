@@ -8,10 +8,10 @@ or in `api/`.
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.responses import StreamingResponse
 
-from api import sse, ws
+from api import auth, sse, ws
 from api.runs import REGISTRY, EngineBusy
 from llm.config import (
     ChatConfig,
@@ -30,10 +30,28 @@ from llm.orchestrate import train as train_pipeline
 async def lifespan(_: FastAPI):
     # Worker threads publish progress onto this loop; see Registry.bind_loop.
     REGISTRY.bind_loop(asyncio.get_running_loop())
+    if not auth.enforced():
+        print("engine: ENGINE_SERVICE_SECRET unset — accepting unauthenticated callers")
     yield
 
 
-app = FastAPI(title="LLM engine", lifespan=lifespan)
+# Applied to the whole app rather than per route: a new endpoint is
+# authenticated because it exists, not because someone remembered to decorate
+# it. A WebSocket upgrade is an HTTP request, so the socket routes are covered
+# by the same check — an unsigned handshake is refused before the socket exists.
+app = FastAPI(
+    title="LLM engine",
+    lifespan=lifespan,
+    dependencies=[Depends(auth.require_service)],
+    # FastAPI serves /docs, /redoc and /openapi.json itself, and its own routes
+    # bypass the dependency above — so the whole API surface was enumerable by
+    # anything that could reach the port. The engine has one client and it calls
+    # typed methods; the schema is still reachable in-process via app.openapi()
+    # for anything that needs to generate against it.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 @app.get("/")

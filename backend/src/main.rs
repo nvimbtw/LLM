@@ -25,13 +25,18 @@ async fn main() -> std::io::Result<()> {
     //
     // Held to the end of `main`: dropping the handle kills the child, so it must
     // outlive the HTTP server rather than the setup block it was created in.
-    let engine = engine::Engine::start(engine::EngineConfig::from_env())
+    let engine_config = engine::EngineConfig::from_env();
+    let service_secret = engine_config.service_secret.clone();
+    let engine = engine::Engine::start(engine_config)
         .await
         .expect("failed to start the python engine");
     println!("engine ready at {}", engine.base_url());
 
     // After the engine, because every device job the runners claim calls into it.
-    let engine_client = engine::Client::new(engine.base_url());
+    let engine_client = match service_secret {
+        Some(secret) => engine::Client::new(engine.base_url()).with_secret(secret),
+        None => engine::Client::new(engine.base_url()),
+    };
     let jobs = jobs::start(pool.clone(), engine_client.clone()).await;
 
     HttpServer::new(move || {

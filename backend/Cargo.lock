@@ -397,6 +397,7 @@ dependencies = [
  "chrono",
  "jsonwebtoken",
  "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "uuid",
@@ -1055,6 +1056,7 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "auth",
  "futures-util",
  "reqwest",
  "serde",

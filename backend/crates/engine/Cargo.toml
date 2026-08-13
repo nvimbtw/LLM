@@ -8,6 +8,7 @@ edition = "2021"
 # foreign process, not a consumer of this project's domain types, and keeping it
 # leaf-level means the crates that will call it can sit anywhere above it.
 [dependencies]
+auth = { path = "../auth" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

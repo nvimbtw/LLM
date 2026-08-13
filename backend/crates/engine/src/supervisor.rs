@@ -41,7 +41,7 @@ impl Engine {
         let base_url = config.base_url();
 
         if !config.autostart {
-            wait_until_healthy(&base_url, config.startup_timeout).await.map_err(|e| {
+            wait_until_healthy(&base_url, config.startup_timeout, config.service_secret.as_deref()).await.map_err(|e| {
                 format!("ENGINE_AUTOSTART is off and no engine is answering at {base_url}: {e}")
             })?;
             return Ok(Engine { config, shutdown: None });
@@ -62,7 +62,7 @@ impl Engine {
         // process answers 200, and the supervisor reports ready while every
         // request goes to an engine with the wrong configuration. That failure is
         // silent, survives restarts, and looks exactly like a config bug.
-        if let Err(e) = wait_until_healthy_child(&mut child, &base_url, config.startup_timeout).await
+        if let Err(e) = wait_until_healthy_child(&mut child, &base_url, config.startup_timeout, config.service_secret.as_deref()).await
         {
             return Err(format!("engine spawned but never became healthy: {e}"));
         }
@@ -133,7 +133,7 @@ async fn supervise(config: EngineConfig, mut child: Child, mut shutdown: watch::
                         // actually serving. Resetting on spawn alone would let
                         // an engine that dies during startup retry every second
                         // forever, which is the loop this bound exists to stop.
-                        if wait_until_healthy(&config.base_url(), config.startup_timeout)
+                        if wait_until_healthy(&config.base_url(), config.startup_timeout, config.service_secret.as_deref())
                             .await
                             .is_ok()
                         {
@@ -164,6 +164,7 @@ fn spawn(config: &EngineConfig) -> Result<Child, String> {
         .current_dir(&config.dir)
         // The engine resolves every path through this; see EngineConfig::data_dir.
         .env("DATA_DIR", &config.data_dir)
+        .envs(config.service_secret.iter().map(|s| ("ENGINE_SERVICE_SECRET", s)))
         // Inherited, so the engine's own logs land in the server's output
         // instead of filling an OS pipe buffer and blocking it once nobody
         // reads them.
@@ -186,6 +187,7 @@ async fn wait_until_healthy_child(
     child: &mut Child,
     base_url: &str,
     timeout: Duration,
+    secret: Option<&str>,
 ) -> std::result::Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut last = "no attempt made".to_string();
@@ -197,7 +199,7 @@ async fn wait_until_healthy_child(
                  else is probably already listening on {base_url}"
             ));
         }
-        match health_once(base_url).await {
+        match health_once(base_url, secret).await {
             Ok(()) => return Ok(()),
             Err(e) => last = e,
         }
@@ -207,12 +209,15 @@ async fn wait_until_healthy_child(
     Err(format!("timed out after {timeout:?} (last: {last})"))
 }
 
-async fn health_once(base_url: &str) -> std::result::Result<(), String> {
+async fn health_once(
+    base_url: &str,
+    secret: Option<&str>,
+) -> std::result::Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?;
-    match client.get(base_url).send().await {
+    match sign(client.get(base_url), secret).send().await {
         Ok(r) if r.status().is_success() => Ok(()),
         Ok(r) => Err(format!("HTTP {}", r.status())),
         Err(e) => Err(e.to_string()),
@@ -220,7 +225,15 @@ async fn health_once(base_url: &str) -> std::result::Result<(), String> {
 }
 
 /// Poll `GET /` until it answers or the timeout expires.
-async fn wait_until_healthy(base_url: &str, timeout: Duration) -> Result<(), String> {
+///
+/// Signed like every other call: an engine with a secret configured answers
+/// 401 to an unsigned probe, so an unauthenticated health check would report a
+/// perfectly healthy engine as never having started.
+async fn wait_until_healthy(
+    base_url: &str,
+    timeout: Duration,
+    secret: Option<&str>,
+) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -230,7 +243,7 @@ async fn wait_until_healthy(base_url: &str, timeout: Duration) -> Result<(), Str
     let mut last = "no attempt made".to_string();
 
     while tokio::time::Instant::now() < deadline {
-        match client.get(base_url).send().await {
+        match sign(client.get(base_url), secret).send().await {
             Ok(r) if r.status().is_success() => return Ok(()),
             Ok(r) => last = format!("HTTP {}", r.status()),
             Err(e) => last = e.to_string(),
@@ -239,4 +252,13 @@ async fn wait_until_healthy(base_url: &str, timeout: Duration) -> Result<(), Str
     }
 
     Err(format!("timed out after {timeout:?} (last: {last})"))
+}
+
+/// Attach a service token, when one is configured.
+fn sign(request: reqwest::RequestBuilder, secret: Option<&str>) -> reqwest::RequestBuilder {
+    let Some(secret) = secret else { return request };
+    match auth::token::issue_service_token("engine", &auth::Caller::System, &[], secret) {
+        Ok(token) => request.bearer_auth(token),
+        Err(_) => request,
+    }
 }

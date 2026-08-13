@@ -32,6 +32,10 @@ pub struct EngineConfig {
     /// `data/`. The engine owns that tree outright — corpora arrive through the
     /// fetch scripts, and this side only names them in a curriculum.
     pub data_dir: PathBuf,
+    /// Shared with the engine as `ENGINE_SERVICE_SECRET`. Unset leaves both
+    /// sides unauthenticated, which is the development pair — the engine says
+    /// so at startup rather than pretending otherwise.
+    pub service_secret: Option<String>,
     /// How long to wait for a freshly spawned engine to answer its health check
     /// before giving up. Importing torch is slow enough (seconds, and more on a
     /// cold page cache) that a short timeout would flap.
@@ -48,6 +52,7 @@ impl Default for EngineConfig {
             host: "127.0.0.1".to_string(),
             port: 8001,
             autostart: true,
+            service_secret: None,
             startup_timeout: Duration::from_secs(60),
         }
     }
@@ -89,6 +94,9 @@ impl EngineConfig {
             data_dir,
             host: env_or("ENGINE_HOST", defaults.host),
             port: parse_env("ENGINE_PORT").unwrap_or(defaults.port),
+            service_secret: std::env::var("ENGINE_SERVICE_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
             // Anything but an explicit falsey value keeps the default on: the
             // failure mode of spawning an engine nobody asked for is a wasted
             // process, and of *not* spawning one is a server that looks healthy

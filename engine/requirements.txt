@@ -33,5 +33,6 @@ torch==2.13.0
 tqdm==4.70.0
 typing-inspection==0.4.2
 typing_extensions==4.16.0
+PyJWT==2.10.1
 uvicorn==0.52.1
 websockets==17.0.1

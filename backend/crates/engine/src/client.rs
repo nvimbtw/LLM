@@ -297,10 +297,16 @@ pub enum RunEvent {
 
 // ── Client ──────────────────────────────────────────────────────────────────
 
+/// The audience every token this client mints is addressed to.
+const AUDIENCE: &str = "engine";
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     base_url: String,
+    /// Unset means the engine is not enforcing authentication either — the
+    /// development pair. A mismatch is a 401, which is the intended failure.
+    service_secret: Option<String>,
 }
 
 impl Client {
@@ -314,11 +320,49 @@ impl Client {
                 .build()
                 .unwrap_or_default(),
             base_url: base_url.into(),
+            service_secret: None,
         }
+    }
+
+    pub fn with_secret(mut self, secret: impl Into<String>) -> Client {
+        self.service_secret = Some(secret.into());
+        self
+    }
+
+    /// A token for one call, or nothing when no secret is configured.
+    ///
+    /// Minted per request rather than cached: it lives for a minute, and a
+    /// cached one would have to be refreshed on a schedule to save an HMAC.
+    fn authorization(&self, caller: &auth::Caller) -> Option<String> {
+        let secret = self.service_secret.as_ref()?;
+        auth::token::issue_service_token(AUDIENCE, caller, &[], secret)
+            .ok()
+            .map(|token| format!("Bearer {token}"))
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+
+    /// The socket handshake, carrying the same token an HTTP call would.
+    ///
+    /// A WebSocket upgrade is an HTTP request, so the engine's app-wide
+    /// dependency checks it there — an unsigned handshake is refused with 401
+    /// before the socket exists.
+    fn ws_request(&self, path: &str) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let mut request = self
+            .ws_url(path)
+            .into_client_request()
+            .map_err(|e| EngineError::Transport(e.to_string()))?;
+        if let Some(header) = self.authorization(&auth::Caller::System) {
+            let value = header
+                .parse()
+                .map_err(|_| EngineError::Transport("unencodable service token".into()))?;
+            request.headers_mut().insert("authorization", value);
+        }
+        Ok(request)
     }
 
     /// The same host and path, as a socket. Only the scheme differs, so the
@@ -360,7 +404,7 @@ impl Client {
     where
         F: FnMut(RunEvent),
     {
-        let (socket, _) = tokio_tungstenite::connect_async(self.ws_url("/train"))
+        let (socket, _) = tokio_tungstenite::connect_async(self.ws_request("/train")?)
             .await
             .map_err(|e| EngineError::Transport(e.to_string()))?;
         let (mut sink, mut stream) = socket.split();
@@ -645,8 +689,7 @@ impl Client {
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
         let response = self
-            .http
-            .get(self.url(path))
+            .sign(self.http.get(self.url(path)))
             .send()
             .await
             .map_err(|e| EngineError::Transport(e.to_string()))?;
@@ -659,13 +702,19 @@ impl Client {
         body: &B,
     ) -> Result<T> {
         let response = self
-            .http
-            .post(self.url(path))
+            .sign(self.http.post(self.url(path)))
             .json(body)
             .send()
             .await
             .map_err(|e| EngineError::Transport(e.to_string()))?;
         decode(response).await
+    }
+
+    fn sign(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.authorization(&auth::Caller::System) {
+            Some(header) => request.header(reqwest::header::AUTHORIZATION, header),
+            None => request,
+        }
     }
 }
 
