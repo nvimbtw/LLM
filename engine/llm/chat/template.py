@@ -205,7 +205,6 @@ def build_prompt(
     scaffold = cost(ASSISTANT_OPEN) + cost(budget_str) + cost(system_str)
     allowance = max(0, ctx_window - reserve_for_reply)
 
-    # Walk newest -> oldest, keeping whole turns while they fit.
     used = scaffold
     start = len(history)
     for i in range(len(history) - 1, -1, -1):
@@ -247,8 +246,6 @@ def build_training_example(
     model sees them at generation time — and makes the mask exact. The cost is
     that the concatenated tokenization can differ by ~1 token at each seam.
     """
-    # Each entry is one rendered piece plus whether its tokens are a training
-    # target. Order matters — pieces are concatenated in the order appended.
     segments: list[tuple[str, bool]] = []
 
     if block := _system_block(system):
