@@ -1,15 +1,10 @@
-// Orchestrates the upload -> tokenize -> train pipeline. The `llm` and
-// `tokenize` crates are deliberately layout-agnostic (they take explicit paths);
-// this module is where `storage.rs` (the single source of truth for the data
-// layout) is mapped onto those crate calls. Plain free functions, no traits.
+// The run configuration the API validates and the queue stores, plus the few
+// helpers that read a model's own record back off disk. Dataset building and
+// training itself belong to the engine.
 
-use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
@@ -224,48 +219,10 @@ pub struct SftSpan {
 }
 
 
-// How much text trains the BPE merge table.
-//
-// `bpe::train` now collapses the sample to its **distinct** pretokens before
-// learning anything, so its footprint scales with the sample's vocabulary rather
-// than its length — and natural text repeats itself heavily, so that is a far
-// slower curve. Measured end to end (train a full 8192 table on a 10.6 MiB sample,
-// then encode 8 MiB of held-out text) peak RSS was 267 MB, against the ~1 GB that
-// 16 MiB used to cost when the trainer held the whole corpus as chars *and* as ids
-// alongside a never-compacted positional index.
-//
-// This constant is therefore no longer the memory cliff it was, and its *size* is
-// not the lever either — see `plan_bpe_sample`, whose composition is. Measured at
-// vocab 8192 and 65536, held-out bytes/token over the real corpora:
-//
-//   sample    vocab 8k    vocab 64k
-//   16 MiB      3.967       4.872
-//   64 MiB      3.945       4.889
-//
-// Identical inside noise at 4x the tokenizer-training time. Raising it is safe on
-// the memory side and buys nothing; leave it here.
-const BPE_SAMPLE_BYTES: usize = 16 * 1024 * 1024;
 
-// The least of the BPE sample any one dataset may be cut to, as a percent of
-// `BPE_SAMPLE_BYTES`. `plan_bpe_sample` splits the budget by corpus share, which
-// left to itself would give a 1.5 GB web-text dataset ~98% of it and leave a small
-// early-curriculum dataset tokenizing at nearly byte level. The floor bounds that
-// without giving up the gains proportional sampling actually delivers; it is
-// capped at an equal split, so it stays meaningful however many datasets a run
-// selects.
-const MIN_DATASET_SAMPLE_SHARE: usize = 5;
 
-// Bytes per streaming read. Chunks end on a line break, so this is a floor rather
-// than an exact size.
-const CHUNK_TARGET_BYTES: usize = 4 * 1024 * 1024;
 
-// A chunk that grows past this without meeting a line break means a file with no
-// line structure, and so no safe point to cut. Refuse it rather than read it whole
-// and exhaust memory.
-const CHUNK_MAX_BYTES: usize = 64 * 1024 * 1024;
 
-// Roughly how many `Encode` events a whole build emits, regardless of file count.
-const PROGRESS_REPORTS_PER_BUILD: usize = 200;
 
 // Reads every `.txt` in the uploads dir, trains a fresh BPE tokenizer, and
 // A time-seeded xorshift64 state. Avoids pulling in the `rand` crate for the few
@@ -288,23 +245,6 @@ fn xorshift_next(state: &mut u64) -> u64 {
     *state
 }
 
-// There is deliberately no wall-clock-seeded `shuffle` wrapper. Its only caller
-// was `select_txt`, where it meant a dataset whose `count` was smaller than what
-// is on disk drew a *different random subset on every run* — so two runs of one
-// config trained on different corpora, and any A/B holding the corpus constant
-// was measuring two things at once. Every shuffle takes an explicit seed; the
-// run's own resolved seed is threaded down from `build_dataset`.
-
-// Fisher–Yates shuffle from an explicit seed, so callers that need a
-// reproducible order (the per-epoch training shuffle) can derive one from a
-// stored seed. `| 1` keeps xorshift out of its fixed zero state.
-fn shuffle_seeded<T>(items: &mut [T], seed: u64) {
-    let mut state = seed | 1;
-    for i in (1..items.len()).rev() {
-        let j = (xorshift_next(&mut state) % (i as u64 + 1)) as usize;
-        items.swap(i, j);
-    }
-}
 
 // Resolve a run's shuffle seed: `0` (the request/meta default) means "pick a
 // fresh time seed"; any other value is used as-is. Called once at run start so
@@ -329,242 +269,31 @@ pub fn resolve_stages(cfg: &TrainConfig) -> Vec<CurriculumStage> {
     }
 }
 
-// Collects the `.txt` files in `dir`, optionally sampling `num` of them at
-// random. `zero_means_all` distinguishes "0 = use everything" (books) from
-// "0 = none" (synthetic data, which is opt-in). A missing dir yields no files.
-fn select_txt(
-    dir: &Path,
-    num: usize,
-    zero_means_all: bool,
-    seed: u64,
-) -> io::Result<Vec<PathBuf>> {
-    let mut paths: Vec<PathBuf> = if dir.is_dir() {
-        fs::read_dir(dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("txt"))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    paths.sort(); // deterministic base order before any sampling
-
-    let take = if zero_means_all && num == 0 {
-        paths.len()
-    } else {
-        num.min(paths.len())
-    };
-    if take < paths.len() {
-        // Seeded, not wall-clock: two runs of one config must select the same
-        // files. See `build_dataset`'s `seed` parameter.
-        shuffle_seeded(&mut paths, seed);
-        paths.truncate(take);
-        paths.sort(); // stable concatenation order for the chosen subset
-    }
-    Ok(paths)
-}
-
-// Rejects a dataset name that isn't a plain, single-segment folder name, so a
-// request can't escape the uploads dir via path traversal (`..`, absolute paths,
-// nested segments). Every selected name is checked before it's joined to
-// uploads/.
-fn is_safe_dataset_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.contains('\0')
-}
 
 
 
 
-// One selected file, with the size the sample planner needs. Sizes come from
-// `metadata` so planning costs no reads.
-struct TaggedFile {
-    stage: usize,
-    dataset: String,
-    path: PathBuf,
-    bytes: u64,
-}
-
-
-// How much of one file to feed the tokenizer trainer.
-struct SampleSlice {
-    file: usize,
-    bytes: usize,
-}
 
 
 
-// What the streaming pass produced.
-struct Streamed {
-    documents: Vec<DocSpan>,
-    corpus_len: usize,
-    chars: usize,
-    special_ids: Vec<u32>,
-}
 
 
 
-fn cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
-    cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst))
-}
-
-/// Reads whole lines into `buf` (cleared first) until it holds at least `target`
-/// bytes or the file ends. `Ok(false)` means end of file with nothing read.
-///
-/// Cutting only after a `'\n'` is what makes chunked encoding exact rather than
-/// approximate: `replace_special_characters` maps a newline to `'Ċ'` and
-/// `split_punctuation` splits on it, so a newline is already a pretoken boundary
-/// and no token can span one. It also means a cut can never land inside a
-/// multi-byte character or a `<|marker|>`, neither of which contains a newline.
-///
-/// `max` is a parameter rather than read from the constant so the no-newline
-/// rejection can be tested without a 64 MiB fixture.
-fn read_chunk(
-    reader: &mut BufReader<File>,
-    target: usize,
-    max: usize,
-    buf: &mut String,
-    path: &Path,
-) -> io::Result<bool> {
-    buf.clear();
-    while buf.len() < target {
-        let read = reader.read_line(buf)?;
-        if read == 0 {
-            break;
-        }
-        if buf.len() > max {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "{}: no line break in the first {} MiB — there is no safe point to \
-                     split this file, so shard it or add line breaks before uploading",
-                    path.display(),
-                    max >> 20
-                ),
-            ));
-        }
-    }
-    Ok(!buf.is_empty())
-}
-
-// The reserved special-token ids present in a token stream, sorted and deduped.
-//
-// Membership is asked of the tokenizer (`special_char_from_id`) rather than
-// tested as a range, so the unallocated tail of the reserved block counts as
-// absent — those slots hold no marker and nothing can have emitted them.
-fn special_ids_in(tokens: &[u32]) -> Vec<u32> {
-    let mut seen: Vec<u32> = tokens
-        .iter()
-        .copied()
-        .filter(|&id| tokenize::pretokenize::special_char_from_id(id).is_some())
-        .collect();
-    seen.sort_unstable();
-    seen.dedup();
-    seen
-}
-
-// Writes the document-boundary sidecar as pretty JSON next to corpus.bin.
-fn save_segments(segments: &Segments, path: &Path) -> io::Result<()> {
-    let json = serde_json::to_vec_pretty(segments)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(path, json)
-}
-
-// Loads the document-boundary sidecar. Returns `Ok(None)` when it's absent — a
-// dataset built before this feature existed — so the training loop can fall back
-// to treating the whole corpus as one document (full back-compat).
-fn load_segments(path: &Path) -> io::Result<Option<Segments>> {
-    match fs::read(path) {
-        Ok(bytes) => {
-            let segments: Segments = serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            Ok(Some(segments))
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-// Writes the conversation-boundary sidecar next to sft_corpus.bin. Best-effort at
-// the call sites: a dataset without it still trains, just in a fixed order.
-fn save_sft_segments(segments: &SftSegments, path: &Path) -> io::Result<()> {
-    let json = serde_json::to_vec(segments)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(path, json)
-}
-
-// `Ok(None)` when the sidecar is absent — a dataset built before this existed —
-// so the SFT run falls back to the whole corpus as one fixed-order document.
-fn load_sft_segments(path: &Path) -> io::Result<Option<SftSegments>> {
-    match fs::read(path) {
-        Ok(bytes) => {
-            let segments: SftSegments = serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            Ok(Some(segments))
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-// The name of the sidecar, as both builders write it and `run_sft_training` reads
-// it. Named once so the two halves cannot drift.
-const SFT_SEGMENTS_FILE: &str = "sft_segments.json";
-
-// Parses the tokenize crate's "BPE merge {done}/{total}" line into numbers.
-// Returns None for any other log line (kept tolerant of format drift).
-fn parse_merge_progress(line: &str) -> Option<(u32, u32)> {
-    let rest = line.strip_prefix("BPE merge ")?;
-    let (done, total) = rest.split_once('/')?;
-    Some((done.trim().parse().ok()?, total.trim().parse().ok()?))
-}
 
 
 
-// The chat scaffold, as marker text. Used only as the fallback reset set for a
-// base model whose meta.json predates `DatasetStats::special_ids_seen`: before
-// that field existed the pretrain corpora were prose + document markup, so the
-// scaffold is the part we can still assert was absent. Anything richer would be a
-// guess about a corpus no longer on disk.
-const LEGACY_SCAFFOLD_MARKERS: [&str; 6] = [
-    "<|user|>",
-    "<|/user|>",
-    "<|assistant|>",
-    "<|/assistant|>",
-    "<|system|>",
-    "<|/system|>",
-];
 
-// Which marker embeddings a fine-tune will feed that its base model never trained:
-// the special ids used by the fine-tune's corpus, minus those the base has seen.
-//
-// The base's side comes from its `meta.json` — see `DatasetStats::special_ids_seen`
-// for why it cannot be recovered any other way. A base with no such record (every
-// model trained before the field existed) falls back to the chat scaffold, which is
-// exactly the set the previous hardcoded implementation reset, so an old model
-// behaves as it did before.
-//
-// A missing or unparseable base meta.json yields the fallback set, not an error:
-// warm-starting six rows that may already be trained is a far smaller mistake than
-// refusing to fine-tune at all. A missing *corpus* is a real failure and propagates.
-fn untrained_marker_ids(base_model_dir: &Path, corpus_path: &Path) -> io::Result<Vec<u32>> {
-    let used = special_ids_in(&read_corpus(corpus_path)?);
 
-    match model_special_ids_seen(base_model_dir) {
-        Some(seen) => Ok(used.into_iter().filter(|id| !seen.contains(id)).collect()),
-        None => {
-            eprintln!(
-                "warm-start: base model records no marker set; \
-                 falling back to the chat scaffold"
-            );
-            Ok(scaffold_ids())
-        }
-    }
-}
+
+
+
+
+
+
+
+
+
+
 
 /// How a trained model's chat data was rendered, from its own `meta.json`.
 ///
@@ -589,17 +318,6 @@ pub fn model_reasoning(model_dir: &Path) -> bool {
     }
 }
 
-// A whole corpus file as ids, widened to the u32 the rest of this module speaks.
-//
-// Only for the SFT corpus, which is bounded by the conversation set and so
-// are small. The pretrain corpus is hundreds of millions of tokens and must never
-// come through here — `append_prose_replay` reads the spans it needs instead.
-fn read_corpus(path: &Path) -> io::Result<Vec<u32>> {
-    Ok(tokenize::bpe::load_corpus(&path.to_string_lossy())?
-        .into_iter()
-        .map(u32::from)
-        .collect())
-}
 
 // The markers a model has trained on, from its own `meta.json`, or `None` when it
 // carries no usable record.
@@ -630,15 +348,6 @@ pub fn model_special_ids_seen(model_dir: &Path) -> Option<Vec<u32>> {
     Some(seen)
 }
 
-fn scaffold_ids() -> Vec<u32> {
-    LEGACY_SCAFFOLD_MARKERS
-        .iter()
-        // A lone special marker encodes to exactly its one reserved id, so the
-        // merge list is irrelevant — deriving the ids through `encode` keeps this
-        // correct if `SPECIAL_TOKENS` is ever reordered.
-        .filter_map(|m| tokenize::bpe::encode(m, &[]).first().copied())
-        .collect()
-}
 
 
 #[derive(Serialize)]
@@ -802,44 +511,7 @@ pub struct SftDatasetStats {
     pub special_ids_seen: Vec<u32>,
 }
 
-// Longest user turn kept, in bytes; beyond this the head is dropped and the tail
-// kept.
-//
-// Conversations captured from a real session carry pasted logs, file listings and
-// terminal transcripts. In the curated set the median user turn is 126 bytes and
-// the largest is 109,118 — and those giants are almost pure context. They fill
-// whole context windows containing no assistant token at all, so the chunk's loss
-// is exactly zero and the step teaches nothing (`llm::train::trainable_chunks_in`).
-// Before this cap, 85% of the SFT chunks were such windows, one run of 184 of them
-// consecutively.
-//
-// 4000 was chosen against the data rather than picked round: it truncates 5 of 47
-// turns while lifting the assistant's share of the dataset from 12% to ~45% —
-// under the 50% the trainable fraction is documented to sit below. A tighter cap
-// buys little and cuts three times as many turns.
-//
-// **The tail is kept, not the head.** A long turn is pasted context followed by
-// the actual request, and the request is what the reply answers.
-const MAX_USER_TURN_BYTES: usize = 4000;
 
-fn cap_user_turn(text: &str) -> String {
-    if text.len() <= MAX_USER_TURN_BYTES {
-        return text.to_string();
-    }
-    let mut start = text.len() - MAX_USER_TURN_BYTES;
-    // `text.len()` is bytes, so the cut can land inside a multi-byte character.
-    while start < text.len() && !text.is_char_boundary(start) {
-        start += 1;
-    }
-    let tail = &text[start..];
-    // Prefer starting at a line break when one is close, so the kept text doesn't
-    // begin mid-sentence. Far-away breaks are ignored — a log with 3000-byte lines
-    // would otherwise lose most of the budget.
-    match tail.find('\n') {
-        Some(i) if i < 200 => tail[i + 1..].to_string(),
-        _ => tail.to_string(),
-    }
-}
 
 
 // ── The chat corpus split ───────────────────────────────────────────────────
@@ -881,19 +553,6 @@ pub enum ChatDestination {
     Eval,
 }
 
-/// Most conversations `export_chat_eval_set` will write, however large the eval
-/// share grows.
-///
-/// 1,000 rather than the 305 the suite ran on before, because the error bar is what
-/// the cycle's gate is built on. Measured: `bits_per_byte_stderr` fell from ~0.015
-/// to ~0.012 and the score's from ~0.83 points to ~0.66. Less than the 1/sqrt(n)
-/// that count suggests, because the sampling unit is the conversation and the
-/// clustering is what it is — which is also why pushing to ten thousand would buy
-/// little against a linear cost in benchmark time.
-///
-/// **Changing it re-partitions the holdout and invalidates comparability**, exactly
-/// as the share constants do. Bump `ASSISTANT_SCORE_VERSION` with it.
-const MAX_HELDOUT_CONVERSATIONS: usize = 1_000;
 
 
 // FNV-1a over the conversation's content.
@@ -951,52 +610,16 @@ pub const CHAT_DATASET: &str = "Chat";
 
 
 
-fn reset_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    for entry in fs::read_dir(dir)?.flatten() {
-        if entry.path().is_file() {
-            fs::remove_file(entry.path())?;
-        }
-    }
-    Ok(())
-}
 
 
 
 
 
 
-// ── Prose replay ────────────────────────────────────────────────────────────
-//
-// How many prose tokens to mix in per trainable chat token. At 1.0 half the
-// gradient signal in an SFT run comes from the pretraining distribution.
-//
-// Without replay, a fine-tune on a few hundred conversations is a full-parameter
-// pass over a corpus a fraction of a percent the size of the pretrain set, with
-// nothing anchoring the model to prose — the model trades its language ability for
-// the fine-tune's register, which is catastrophic forgetting doing exactly what it
-// says. Interleaving the base's own pretraining text is the standard remedy.
-const REPLAY_TOKENS_PER_CHAT_TOKEN: f64 = 1.0;
-
-// Longest span taken from any one pretrain document. A Wikipedia article can be
-// tens of thousands of tokens, and taking whole documents would spend the entire
-// replay budget on two of them — the point is breadth of the old distribution, not
-// depth in one article.
-const MAX_REPLAY_DOC_TOKENS: usize = 2048;
 
 
 
-// Fisher–Yates over an explicit seed, so a rebuild picks the same documents.
-// Mirrors `llm::train::shuffle_seeded`; `| 1` keeps xorshift out of its zero state.
-fn shuffle_indices(order: &mut [usize], seed: u64) {
-    let mut state = seed | 1;
-    for i in (1..order.len()).rev() {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        order.swap(i, (state % (i as u64 + 1)) as usize);
-    }
-}
+
 
 
 // ── Synthetic SFT data generator (ISSUE-0036) ───────────────────────────────
@@ -1014,10 +637,8 @@ fn shuffle_indices(order: &mut [usize], seed: u64) {
 // ISSUE-0037. One justified module-level allow rather than scattering it (R7).
 #[allow(dead_code)]
 mod synthetic {
-    use super::{rng_seed, xorshift_next};
+    use super::xorshift_next;
     use serde::Serialize;
-    use std::fs;
-    use std::io;
 
 // A conversation in the on-disk JSONL shape (`SftConversation`'s serialize twin;
 // that one is deserialize-only). `system` is omitted from the line when absent.
@@ -1118,121 +739,15 @@ fn echo_example(state: &mut u64) -> (String, String) {
 mod sft_tests {
     use super::*;
 
-    #[test]
-    fn a_short_user_turn_is_left_alone() {
-        let text = "why is the sky blue?";
-        assert_eq!(cap_user_turn(text), text);
-    }
 
-    #[test]
-    fn a_long_user_turn_keeps_its_tail() {
-        // The request comes after the pasted context, so the tail is the half that
-        // the assistant's reply actually answers.
-        let text = format!("{}\nso what is wrong with it?", "x".repeat(MAX_USER_TURN_BYTES * 2));
-        let capped = cap_user_turn(&text);
-        assert!(capped.len() <= MAX_USER_TURN_BYTES);
-        assert!(capped.ends_with("so what is wrong with it?"), "got {capped:?}");
-    }
 
-    #[test]
-    fn capping_never_splits_a_multibyte_character() {
-        // A paste of emoji: every cut offset lands mid-character unless guarded.
-        for extra in 0..8 {
-            let text = "🙂".repeat(MAX_USER_TURN_BYTES / 2 + extra);
-            let capped = cap_user_turn(&text);
-            assert!(capped.len() <= MAX_USER_TURN_BYTES);
-            assert!(capped.chars().all(|c| c == '🙂'), "cut produced a broken char");
-        }
-    }
 
-    #[test]
-    fn a_far_away_line_break_does_not_eat_the_budget() {
-        // One enormous line: there is no nearby break to align to, so the tail is
-        // kept as-is rather than being trimmed to the next break thousands of
-        // bytes later.
-        let text = "y".repeat(MAX_USER_TURN_BYTES * 3);
-        let capped = cap_user_turn(&text);
-        assert_eq!(capped.len(), MAX_USER_TURN_BYTES);
-    }
 
     // ── streaming dataset build ──
 
-    fn tagged(dataset: &str, bytes: u64) -> TaggedFile {
-        TaggedFile {
-            stage: 0,
-            dataset: dataset.to_string(),
-            path: PathBuf::from(format!("/tmp/{dataset}-{bytes}.txt")),
-            bytes,
-        }
-    }
 
-    // Two runs of one config must select the same files. `select_txt` shuffled
-    // with a wall-clock seed, so any dataset whose `count` was smaller than what
-    // is on disk drew a *different random subset every run* — which quietly makes
-    // any A/B a comparison of two corpora as well as of whatever was under test.
-    #[test]
-    fn a_seeded_selection_picks_the_same_files_every_time() {
-        let dir = std::env::temp_dir().join(format!("seltxt_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        for i in 0..40 {
-            fs::write(dir.join(format!("shard{i:03}.txt")), "x\n").unwrap();
-        }
 
-        let pick = |seed: u64| -> Vec<PathBuf> { select_txt(&dir, 8, true, seed).unwrap() };
 
-        assert_eq!(pick(1337), pick(1337), "the same seed must select the same files");
-        assert_ne!(pick(1337), pick(99), "a different seed should select differently");
-        assert_eq!(pick(1337).len(), 8);
-
-        // `count: 0` means everything, so it is seed-independent by construction.
-        assert_eq!(select_txt(&dir, 0, true, 1).unwrap(), select_txt(&dir, 0, true, 2).unwrap());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    // A file with no line break has no safe cut point, so it must be refused
-    // rather than read whole — that read is exactly the OOM this design avoids.
-    #[test]
-    fn a_file_without_line_breaks_is_refused_by_name() {
-        let dir = std::env::temp_dir().join(format!("chunk_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("oneline.txt");
-        fs::write(&path, "x".repeat(4096)).unwrap();
-
-        let mut reader = BufReader::new(File::open(&path).unwrap());
-        let mut buf = String::new();
-        let err = read_chunk(&mut reader, 64, 128, &mut buf, &path).unwrap_err();
-
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("oneline.txt"), "message must name the file: {err}");
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn chunks_end_on_line_breaks_and_cover_the_file() {
-        let dir = std::env::temp_dir().join(format!("chunk_ok_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("lines.txt");
-        let text: String = (0..500).map(|i| format!("line number {i}\n")).collect();
-        fs::write(&path, &text).unwrap();
-
-        let mut reader = BufReader::new(File::open(&path).unwrap());
-        let mut buf = String::new();
-        let mut rebuilt = String::new();
-        let mut chunks = 0;
-        while read_chunk(&mut reader, 256, 1 << 20, &mut buf, &path).unwrap() {
-            assert!(buf.ends_with('\n'), "chunk must end on a line break");
-            rebuilt.push_str(&buf);
-            chunks += 1;
-        }
-
-        assert!(chunks > 1, "fixture should need several chunks, got {chunks}");
-        assert_eq!(rebuilt, text, "chunks must reassemble into the original file");
-
-        fs::remove_dir_all(&dir).ok();
-    }
 
     // Sets up a temp DATA_DIR with `files` under one uploads dataset and returns
     // the stages that select it. Caller must hold ENV_LOCK.
@@ -1352,43 +867,6 @@ mod sft_tests {
         assert!((share(eval) - expected_eval as f64).abs() < 5.0, "{}", share(eval));
     }
 
-    // The eval share is a fraction of the source set, so an import of a few hundred
-    // thousand conversations makes the assistant suite a multi-hour job. The cap is
-    // what stops that, and it has to select the *same* conversations every time or
-    // the benchmark measures a different holdout on every run.
-    #[test]
-    fn the_held_out_cap_is_bounded_and_reproducible() {
-        let all: Vec<SftConversation> = (0..MAX_HELDOUT_CONVERSATIONS * 20)
-            .map(|i| conversation(&format!("question {i}"), &format!("reply {i}")))
-            .collect();
-
-        let select = || {
-            let mut held: Vec<&SftConversation> = all
-                .iter()
-                .filter(|c| chat_destination(c) == ChatDestination::Eval)
-                .collect();
-            assert!(
-                held.len() > MAX_HELDOUT_CONVERSATIONS,
-                "the fixture must be large enough for the cap to bite",
-            );
-            held.sort_by_key(|c| conversation_hash(c));
-            held.truncate(MAX_HELDOUT_CONVERSATIONS);
-            held.iter().map(|c| conversation_hash(c)).collect::<Vec<_>>()
-        };
-
-        let first = select();
-        assert_eq!(first.len(), MAX_HELDOUT_CONVERSATIONS);
-        assert_eq!(first, select(), "the same set must produce the same holdout");
-
-        // Every selected conversation is genuinely in the eval share — the cap must
-        // narrow the holdout, never reach into what training is allowed to see.
-        for conversation in all
-            .iter()
-            .filter(|c| first.contains(&conversation_hash(c)))
-        {
-            assert_eq!(chat_destination(conversation), ChatDestination::Eval);
-        }
-    }
 
     // The system prompt is part of the conversation, so two otherwise-identical
     // conversations under different system prompts are different examples and must

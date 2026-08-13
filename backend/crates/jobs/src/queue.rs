@@ -32,14 +32,6 @@ use uuid::Uuid;
 
 use crate::{chain, discord};
 
-// How many distinct prompts to read for every one actually wanted.
-//
-// `distinct_user_prompts` limits in SQL and `gather::choose_prompts` filters
-// afterwards, so the two have to be sized apart or the filter eats into the batch and
-// the shortfall is made up from the 24 hard-coded seeds. Measured on the current
-// history, ~80% of stored user turns pass the filter; 4x leaves room for a history
-// with many more follow-ups than that.
-const PROMPT_OVERFETCH: i64 = 4;
 
 use db;
 use db::job::{JobKind, JobLane, JobStatus};

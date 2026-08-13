@@ -14,7 +14,6 @@ members = [
     "crates/db",
     "crates/engine",
     "crates/jobs",
-    "crates/tokenize",
     "crates/training",
 ]
 

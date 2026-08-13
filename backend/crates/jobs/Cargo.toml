@@ -9,7 +9,6 @@ edition = "2021"
 [dependencies]
 engine = { path = "../engine" }
 db = { path = "../db" }
-tokenize = { path = "../tokenize" }
 training = { path = "../training" }
 chrono = { version = "0.4.45", features = ["serde"] }
 # One outbound POST per finished run, to the Discord webhook (see discord.rs).
