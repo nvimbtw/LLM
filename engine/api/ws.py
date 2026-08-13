@@ -15,7 +15,7 @@ from typing import Any, Callable
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 
-from llm.server.runs import EngineBusy, Registry, Run
+from api.runs import EngineBusy, Registry, Run
 
 # What a run is started with: the same two seams `Registry.start` takes.
 Pipeline = Callable[[Any], Callable[..., dict[str, Any]]]

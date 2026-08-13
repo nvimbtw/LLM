@@ -18,7 +18,7 @@ UNKNOWN = "no-such-model"
 @pytest.fixture
 async def client(data_root):
     import main
-    from llm.server.runs import REGISTRY
+    from api.runs import REGISTRY
 
     # `main` binds this in an on_event("startup") hook, which ASGITransport
     # never fires — worker threads publish progress onto the loop it names.
@@ -134,7 +134,7 @@ async def test_train_runs_end_to_end_and_writes_a_model(client):
 
 async def test_train_rejects_a_second_run_while_one_holds_the_device(client, monkeypatch):
     """One GPU, one line — the invariant the whole queue design rests on."""
-    from llm.server.runs import REGISTRY
+    from api.runs import REGISTRY
 
     started = REGISTRY.start("train", {}, lambda on_progress, cancel: _block(cancel))
     try:

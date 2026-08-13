@@ -12,7 +12,7 @@ A caller that has to talk back — the queue, which cancels — takes the socket
 import json
 from typing import Any, AsyncIterator
 
-from llm.server.runs import Event, Registry, Run
+from api.runs import Event, Registry, Run
 
 
 def frame(event: Event) -> str:

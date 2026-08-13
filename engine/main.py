@@ -2,14 +2,17 @@
 
 Nothing else belongs here — no path building, no pipeline steps, no torch
 import. If a route grows past a few lines, the logic belongs in an orchestrator
-or in `llm.server`.
+or in `api/`.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import StreamingResponse
 
+from api import sse, ws
+from api.runs import REGISTRY, EngineBusy
 from llm.config import (
     ChatConfig,
     CountRequest,
@@ -21,16 +24,16 @@ from llm.orchestrate import chat as chat_pipeline
 from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import train as train_pipeline
-from llm.server import sse, ws
-from llm.server.runs import REGISTRY, EngineBusy
-
-app = FastAPI(title="LLM engine")
 
 
-@app.on_event("startup")
-async def _bind_loop():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     # Worker threads publish progress onto this loop; see Registry.bind_loop.
     REGISTRY.bind_loop(asyncio.get_running_loop())
+    yield
+
+
+app = FastAPI(title="LLM engine", lifespan=lifespan)
 
 
 @app.get("/")
