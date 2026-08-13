@@ -57,14 +57,18 @@ async fn a_call_carries_a_token_for_the_service_it_names() {
 }
 
 #[tokio::test]
-async fn an_unsecured_proxy_sends_no_authorization_at_all() {
+async fn an_unsecured_proxy_still_says_who_it_acts_for() {
+    // The signature is worthless without a shared secret, but `act` is not: an
+    // open service reads it, and every owner-scoped route needs it.
     let (url, handle) = stub(Box::leak(ok("{}").into_boxed_str()));
     let proxy = Proxy::new(url, AUDIENCE, None);
+    let who = uuid::Uuid::new_v4();
 
-    proxy.get(&auth::Caller::System, "/").await.expect("reaches the stub");
+    proxy.get(&auth::Caller::User(who), "/chats").await.expect("reaches the stub");
 
     let request = handle.join().unwrap();
-    assert!(!request.to_lowercase().contains("authorization:"));
+    assert!(request.to_lowercase().contains("authorization:"), "no token was sent");
+    assert!(request.contains(&who.to_string()) || request.to_lowercase().contains("bearer"));
 }
 
 #[tokio::test]

@@ -14,6 +14,8 @@ re-broken — by someone doing the obvious thing.
 | 0005 | [Vocabulary layout](0005-vocabulary-layout.md) | `llm/corpus/special.py` |
 | 0006 | [Pretrain and SFT are one pipeline](0006-pretrain-and-sft-are-one-pipeline.md) | `llm/orchestrate/` |
 | 0007 | [The thinking budget](0007-the-thinking-budget.md) | `llm/chat/template.py` |
+| 0008 | [Two databases, one opaque owner](0008-two-databases-one-opaque-owner.md) | the seam between backend and engine |
+| 0009 | [A chat turn is not a queued run](0009-a-chat-turn-is-not-a-queued-run.md) | scheduling |
 
 0000 is the exception: it describes code that no longer exists. It is kept
 because the failures it records — a backward pass that never ran, a benchmark
@@ -22,4 +24,7 @@ into.
 
 Several records predate the redesign and describe the system as it was when the
 finding was made. Where a record and the code disagree, the code is current and
-the record is evidence.
+the record is evidence. 0001 is the largest of those: its scheduling half is
+superseded by 0008 and 0009, and everything it says about the post-train cycle
+describes code that has since been deleted — kept because the measurements in it
+are the reason it was.

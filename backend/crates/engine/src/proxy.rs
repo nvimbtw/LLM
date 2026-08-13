@@ -15,6 +15,10 @@ use crate::{EngineError, Result};
 
 pub use reqwest::Method;
 
+/// The key a token is signed with when there is no shared secret. It exists so
+/// the claims have a carrier, not to prove anything.
+const UNSIGNED: &str = "unsigned";
+
 /// One frame of an engine event stream.
 #[derive(Clone, Debug)]
 pub struct Frame {
@@ -36,7 +40,7 @@ pub struct Proxy {
     /// Who the tokens are addressed to. A token minted for one service is
     /// refused by every other.
     audience: String,
-    /// Unset means the engine is not enforcing authentication either — the
+    /// Unset means the service is not enforcing authentication either — the
     /// development pair. A mismatch is a 401, which is the intended failure.
     secret: Option<String>,
 }
@@ -155,12 +159,17 @@ impl Proxy {
         Ok(frames(response.bytes_stream()))
     }
 
-    /// A token for one call, or nothing when no secret is configured.
+    /// A token for one call.
     ///
     /// Minted per request rather than cached: it lives for a minute, and a
     /// cached one would have to be refreshed on a schedule to save an HMAC.
+    ///
+    /// With no shared secret the token is still sent, signed with a placeholder
+    /// nobody verifies. The signature is worthless there and so is the one the
+    /// service would have checked — but `act` still says who the call is for,
+    /// and without it every owner-scoped route is unusable in development.
     fn authorization(&self, caller: &auth::Caller) -> Option<String> {
-        let secret = self.secret.as_ref()?;
+        let secret = self.secret.as_deref().unwrap_or(UNSIGNED);
         auth::token::issue_service_token(&self.audience, caller, &[], secret)
             .ok()
             .map(|token| format!("Bearer {token}"))
@@ -301,9 +310,17 @@ mod tests {
     }
 
     #[test]
-    fn no_secret_means_no_header_at_all() {
+    fn without_a_secret_the_claim_survives_and_the_signature_does_not() {
+        let who = uuid::Uuid::new_v4();
         let proxy = Proxy::new("http://x", "engine", None);
-        assert!(proxy.authorization(&auth::Caller::System).is_none());
+        let header = proxy.authorization(&auth::Caller::User(who)).expect("still sent");
+        let token = header.strip_prefix("Bearer ").unwrap();
+
+        // An enforcing service refuses it, which is the intended failure.
+        assert!(auth::token::verify_service_token(token, "engine", "real").is_err());
+        // An open one still learns who the call is for.
+        let caller = auth::token::verify_service_token(token, "engine", UNSIGNED).expect("read");
+        assert!(matches!(caller, auth::Caller::User(id) if id == who));
     }
 
     #[test]

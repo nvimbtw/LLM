@@ -11,7 +11,10 @@
 -- takes ownership of the queue. Dropping them here would be a migration
 -- superseded a few commits later.
 
-DELETE FROM jobs WHERE kind = 'synth';
+-- Compared as text, not as the enum: a database whose `job_type` never carried
+-- the value cannot parse the literal, and this has to be a no-op there rather
+-- than a migration that refuses to run.
+DELETE FROM jobs WHERE kind::text = 'synth';
 
 -- Postgres cannot drop a value from an enum in place, so the type is rebuilt.
 ALTER TYPE job_type RENAME TO job_type_old;
