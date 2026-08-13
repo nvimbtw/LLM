@@ -119,6 +119,19 @@ def test_the_three_suites_are_scored_independently():
     assert all("version" in s for s in scores.values())
 
 
+@pytest.mark.parametrize("suite", SUITES)
+def test_every_report_says_which_model_it_describes(suite):
+    """A report is read long after the run, so it carries the model rather than
+    leaving a reader to join it back to one."""
+    model = _evaluate(suite)["model"]
+
+    assert model["id"] == TINY_MODEL
+    # Filled in by whoever owns the row; the pipeline cannot resolve a name.
+    assert model["name"] is None
+    assert (model["layers"], model["dimensions"], model["heads"]) == (2, 32, 4)
+    assert model["parameters"] > 0
+
+
 def test_eval_rejects_an_unknown_suite():
     with pytest.raises(ValueError, match="unknown suite"):
         eval_pipeline.run(EvalConfig(model_name=TINY_MODEL, suite="nonsense"))

@@ -96,13 +96,18 @@ impl Proxy {
             request = request.json(&body);
         }
 
-        let response =
-            request.send().await.map_err(|e| EngineError::Transport(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| EngineError::Transport(e.to_string()))?;
         if !response.status().is_success() {
             return Err(status_error(response).await);
         }
 
-        let text = response.text().await.map_err(|e| EngineError::Transport(e.to_string()))?;
+        let text = response
+            .text()
+            .await
+            .map_err(|e| EngineError::Transport(e.to_string()))?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -145,8 +150,10 @@ impl Proxy {
             request = request.json(&body);
         }
 
-        let response =
-            request.send().await.map_err(|e| EngineError::Transport(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| EngineError::Transport(e.to_string()))?;
         if !response.status().is_success() {
             return Err(status_error(response).await);
         }
@@ -161,7 +168,7 @@ impl Proxy {
     /// `act` is not — without it every owner-scoped route is unusable.
     fn authorization(&self, caller: &auth::Caller) -> Option<String> {
         let secret = self.secret.as_deref().unwrap_or(UNSIGNED);
-        auth::token::issue_service_token(&self.audience, caller, &[], secret)
+        auth::token::issue_service_token(&self.audience, caller, &[""], secret)
             .ok()
             .map(|token| format!("Bearer {token}"))
     }
@@ -210,7 +217,10 @@ fn parse(frame: &str) -> Option<Frame> {
     if kind.is_empty() {
         return None;
     }
-    Some(Frame { kind, data: serde_json::from_str(&data).unwrap_or(Value::Null) })
+    Some(Frame {
+        kind,
+        data: serde_json::from_str(&data).unwrap_or(Value::Null),
+    })
 }
 
 /// FastAPI puts its reason in `detail`; anything else is passed through
@@ -221,7 +231,10 @@ async fn status_error(response: reqwest::Response) -> EngineError {
     let body = response.text().await.unwrap_or_default();
     let detail = serde_json::from_str::<Value>(&body)
         .ok()
-        .and_then(|v| v.get("detail").map(|d| d.to_string().trim_matches('"').to_string()))
+        .and_then(|v| {
+            v.get("detail")
+                .map(|d| d.to_string().trim_matches('"').to_string())
+        })
         .unwrap_or(body);
     EngineError::Status { code, detail }
 }
@@ -237,7 +250,10 @@ mod tests {
     }
 
     async fn collect(pieces: &[&str]) -> Vec<Frame> {
-        frames(chunks(pieces)).filter_map(|f| async { f.ok() }).collect().await
+        frames(chunks(pieces))
+            .filter_map(|f| async { f.ok() })
+            .collect()
+            .await
     }
 
     #[tokio::test]
@@ -281,9 +297,17 @@ mod tests {
     fn only_a_terminal_frame_ends_a_stream() {
         let final_kinds = ["done", "error", "cancelled"];
         for kind in final_kinds {
-            assert!(Frame { kind: kind.into(), data: Value::Null }.is_final());
+            assert!(Frame {
+                kind: kind.into(),
+                data: Value::Null
+            }
+            .is_final());
         }
-        assert!(!Frame { kind: "progress".into(), data: Value::Null }.is_final());
+        assert!(!Frame {
+            kind: "progress".into(),
+            data: Value::Null
+        }
+        .is_final());
     }
 
     #[test]
@@ -300,7 +324,9 @@ mod tests {
     fn without_a_secret_the_claim_survives_and_the_signature_does_not() {
         let who = uuid::Uuid::new_v4();
         let proxy = Proxy::new("http://x", "engine", None);
-        let header = proxy.authorization(&auth::Caller::User(who)).expect("still sent");
+        let header = proxy
+            .authorization(&auth::Caller::User(who))
+            .expect("still sent");
         let token = header.strip_prefix("Bearer ").unwrap();
 
         // An enforcing service refuses it, which is the intended failure.
@@ -314,7 +340,9 @@ mod tests {
     fn the_token_names_the_person_the_call_is_for() {
         let who = uuid::Uuid::new_v4();
         let proxy = Proxy::new("http://x", "engine", Some("s".into()));
-        let header = proxy.authorization(&auth::Caller::User(who)).expect("signed");
+        let header = proxy
+            .authorization(&auth::Caller::User(who))
+            .expect("signed");
         let token = header.strip_prefix("Bearer ").unwrap();
 
         let caller = auth::token::verify_service_token(token, "engine", "s").expect("valid");

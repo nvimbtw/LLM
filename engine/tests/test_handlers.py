@@ -106,6 +106,7 @@ def test_a_benchmark_opens_a_row_when_it_reaches_the_device(
         handlers.eval_pipeline,
         "run",
         lambda cfg, on_progress, stop: {
+            "model": {"id": cfg.model_name, "name": None, "layers": 2},
             "score": {"score": 62.5, "version": 3},
             "tokens_used": 900,
             "conversations": 12,
@@ -123,6 +124,32 @@ def test_a_benchmark_opens_a_row_when_it_reaches_the_device(
         assert run.suite is Suite.markup
         assert run.status is BenchmarkStatus.done
         assert run.eval_tokens == 900
+
+
+def test_a_report_learns_the_name_the_pipeline_could_not_know(
+    store_session, monkeypatch, progress, cancel
+):
+    """The pipeline knows a model by its weights directory. What a person calls
+    it is a row, so the handler is where the two meet."""
+    model_id = uuid.uuid4()
+    with store.session() as db:
+        q.upsert_model(db, model_id=model_id, name="Smoke 2")
+
+    monkeypatch.setattr(
+        handlers.eval_pipeline,
+        "run",
+        lambda cfg, on_progress, stop: {
+            "model": {"id": cfg.model_name, "name": None},
+            "score": {"score": 1.0},
+        },
+    )
+
+    report = handlers.benchmark({"model_name": str(model_id)}, progress, cancel)
+
+    assert report["model"]["id"] == str(model_id)
+    assert report["model"]["name"] == "Smoke 2"
+    with store.session() as db:
+        assert q.benchmarks_of(db, model_id)[0].report["model"]["name"] == "Smoke 2"
 
 
 def test_a_failed_benchmark_closes_its_row_with_the_reason(

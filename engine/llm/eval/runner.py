@@ -18,10 +18,40 @@ from llm.model import checkpoint
 
 
 @dataclass
-class LanguageReport:
-    model_name: str
-    parameters: int
+class ModelInfo:
+    """Which model a report describes, and how it is built.
+
+    `id` is the weights directory and what an API call names it by. `name` is
+    what a person calls it, which lives in a database `llm/` has never heard of
+    — whoever owns that row fills it in.
+    """
+
+    id: str
+    name: str | None
+    layers: int
+    dimensions: int
+    heads: int
+    context: int
     vocab: int
+    parameters: int
+
+    @classmethod
+    def of(cls, model, model_id: str) -> "ModelInfo":
+        return cls(
+            id=model_id,
+            name=None,
+            layers=model.layers,
+            dimensions=model.dimensions,
+            heads=model.heads,
+            context=model.ctx_window,
+            vocab=model.vocab,
+            parameters=model.parameter_count(),
+        )
+
+
+@dataclass
+class LanguageReport:
+    model: ModelInfo
     corpus: dict | None = None
     surface: dict | None = None
     # Per-sublayer contribution, from silencing each in turn. Cheap enough to run
@@ -34,7 +64,7 @@ class LanguageReport:
     cancelled: bool = False
 
     def as_dict(self) -> dict:
-        return dict(vars(self))
+        return {**vars(self), "model": vars(self.model)}
 
 
 def run_language(
@@ -57,11 +87,7 @@ def run_language(
     model, _ = checkpoint.load(storage.weights_path(model_name), device)
     tokenizer = bpe.load(storage.model_dir(model_name))
 
-    report = LanguageReport(
-        model_name=model_name,
-        parameters=model.parameter_count(),
-        vocab=model.vocab,
-    )
+    report = LanguageReport(model=ModelInfo.of(model, model_name))
 
     def note(stage: str, detail: str = "") -> None:
         if on_progress:
@@ -108,13 +134,13 @@ def run_language(
 class AssistantReport:
     """The assistant suite: bits per held-out reply byte, through a logistic."""
 
-    model_name: str
+    model: ModelInfo
     chat: dict | None = None
     score: dict = field(default_factory=dict)
     conversations: int = 0
 
     def as_dict(self) -> dict:
-        return dict(vars(self))
+        return {**vars(self), "model": vars(self.model)}
 
 
 def run_assistant(model_name: str, device: str = "cpu", cancel: Event | None = None,
@@ -136,7 +162,7 @@ def run_assistant(model_name: str, device: str = "cpu", cancel: Event | None = N
 
     metrics = chat_stage.summarize(scored)
     return AssistantReport(
-        model_name=model_name,
+        model=ModelInfo.of(model, model_name),
         chat=metrics.as_dict() if metrics else None,
         score=chat_stage.assistant_score(metrics),
         conversations=len(scored),
@@ -147,14 +173,14 @@ def run_assistant(model_name: str, device: str = "cpu", cancel: Event | None = N
 class MarkupReport:
     """The markup suite: does the model use the marker grammar correctly?"""
 
-    model_name: str
+    model: ModelInfo
     positions: dict | None = None
     structure: dict | None = None
     score: dict = field(default_factory=dict)
     conversations: int = 0
 
     def as_dict(self) -> dict:
-        return dict(vars(self))
+        return {**vars(self), "model": vars(self.model)}
 
 
 def run_markup(model_name: str, device: str = "cpu", cancel: Event | None = None,
@@ -181,7 +207,7 @@ def run_markup(model_name: str, device: str = "cpu", cancel: Event | None = None
         structure=None,
     )
     return MarkupReport(
-        model_name=model_name,
+        model=ModelInfo.of(model, model_name),
         positions=positions.as_dict() if positions else None,
         structure=None,
         score=breakdown,

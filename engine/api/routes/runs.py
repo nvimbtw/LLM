@@ -23,22 +23,34 @@ router = APIRouter(tags=["runs"])
 
 
 @router.post("/train", status_code=202)
-async def train(cfg: TrainConfig, wait: bool = False, owner: str = Depends(auth.require_service)):
+async def train(
+    cfg: TrainConfig,
+    display_name: str | None = None,
+    wait: bool = False,
+    owner: str = Depends(auth.require_service),
+):
     """Queue a pretraining run."""
-    return await _queue(RunKind.train, cfg.model_name, cfg.model_dump(), wait, owner)
+    config = {**cfg.model_dump(), "display_name": display_name or cfg.model_name}
+    return await _queue(RunKind.train, config["display_name"], config, wait, owner)
 
 
 @router.post("/sft", status_code=202)
-async def sft(cfg: SftConfig, wait: bool = False, owner: str = Depends(auth.require_service)):
+async def sft(
+    cfg: SftConfig,
+    display_name: str | None = None,
+    wait: bool = False,
+    owner: str = Depends(auth.require_service),
+):
     """Queue a fine-tune. The same kind of run as /train — what makes it a
     fine-tune is naming a base model to start from."""
-    return await _queue(RunKind.train, cfg.model_name, cfg.model_dump(), wait, owner)
+    config = {**cfg.model_dump(), "display_name": display_name or cfg.model_name}
+    return await _queue(RunKind.train, config["display_name"], config, wait, owner)
 
 
 @router.post("/eval", status_code=202)
 async def evaluate(cfg: EvalConfig, wait: bool = False, owner: str = Depends(auth.require_service)):
     """Queue a benchmark."""
-    return await _queue(RunKind.benchmark, cfg.model_name, cfg.model_dump(), wait, owner)
+    return await _queue(RunKind.benchmark, _label(cfg.model_name), cfg.model_dump(), wait, owner)
 
 
 class Step(BaseModel):
@@ -63,7 +75,7 @@ def queue_chain(steps: list[Step], owner: str = Depends(auth.require_service)):
     for step in steps:
         run_id = RUNNER.enqueue(
             step.kind,
-            label=str(step.config.get("model_name") or step.kind.value),
+            label=_step_label(step),
             config=step.config,
             owner_id=_owner_id(owner),
             depends_on=after,
@@ -156,6 +168,23 @@ def set_pause(paused: bool = True):
     if not paused:
         RUNNER.wake()
     return {"paused": paused}
+
+
+def _step_label(step: "Step") -> str:
+    if step.kind is RunKind.benchmark:
+        return _label(str(step.config.get("model_name") or ""))
+    return str(step.config.get("display_name") or step.config.get("model_name") or "train")
+
+
+def _label(model_name: str) -> str:
+    """What to call a run in a list. A model's id is its weights directory, so
+    the label has to be looked up or the board reads as a column of uuids."""
+    with store.session() as db:
+        try:
+            model = q.get_model(db, uuid.UUID(model_name))
+        except ValueError:
+            model = q.find_model_by_name(db, model_name)
+        return model.name if model else model_name
 
 
 async def _queue(kind: RunKind, label: str, config: dict, wait: bool, owner: str) -> dict:

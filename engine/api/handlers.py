@@ -58,7 +58,7 @@ def benchmark(config: dict, progress, cancel) -> dict:
         if model is None:
             raise FileNotFoundError(f"no model {cfg.model_name}")
         opened = q.open_benchmark(db, model=model, suite=Suite(cfg.suite))
-        benchmark_id = opened.id
+        benchmark_id, display_name = opened.id, model.name
 
     try:
         report = eval_pipeline.run(cfg, progress, cancel)
@@ -68,6 +68,10 @@ def benchmark(config: dict, progress, cancel) -> dict:
                 db, benchmark_id, status=BenchmarkStatus.failed, error=f"{type(e).__name__}: {e}"
             )
         raise
+
+    # The pipeline knows the model by its directory; the name is a row it has
+    # never heard of, so it is filled in here.
+    report["model"]["name"] = display_name
 
     score = report.get("score") or {}
     with store.session() as db:
