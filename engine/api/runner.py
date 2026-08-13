@@ -41,7 +41,7 @@ class Runner:
     def __init__(self, registry: Registry, handlers: dict[RunKind, Handler]) -> None:
         self._registry = registry
         self._handlers = handlers
-        self._wake = asyncio.Event()
+        self._wake: asyncio.Event | None = None
         self._current: uuid.UUID | None = None
 
     # ── queueing ────────────────────────────────────────────────────────────
@@ -64,8 +64,13 @@ class Runner:
         return run_id
 
     def wake(self) -> None:
-        """Ask the drain loop to look now rather than at the next idle poll."""
-        self._wake.set()
+        """Ask the drain loop to look now rather than at the next idle poll.
+
+        Silent when nothing is draining — the loop rereads the queue when it
+        starts, so there is nothing to miss.
+        """
+        if self._wake is not None:
+            self._wake.set()
 
     def cancel(self, run_id: uuid.UUID) -> bool:
         """Ask a run to stop. Queued rows stop immediately; a running one stops
@@ -87,16 +92,23 @@ class Runner:
     # ── the loop ────────────────────────────────────────────────────────────
 
     async def drain_forever(self) -> None:
-        while True:
-            try:
-                await self._drain_once()
-            except Exception as e:  # a broken run must not stop the queue
-                print(f"runner: {type(e).__name__}: {e}")
-            try:
-                await asyncio.wait_for(self._wake.wait(), timeout=IDLE_POLL_SECS)
-            except TimeoutError:
-                pass
-            self._wake.clear()
+        # The event belongs to whichever loop is draining, so it is made here
+        # rather than in __init__ — an asyncio.Event binds to the first loop
+        # that waits on it and refuses every one after.
+        self._wake = asyncio.Event()
+        try:
+            while True:
+                try:
+                    await self._drain_once()
+                except Exception as e:  # a broken run must not stop the queue
+                    print(f"runner: {type(e).__name__}: {e}")
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=IDLE_POLL_SECS)
+                except TimeoutError:
+                    pass
+                self._wake.clear()
+        finally:
+            self._wake = None
 
     async def _drain_once(self) -> None:
         while (claimed := self._claim()) is not None:
@@ -144,6 +156,20 @@ class Runner:
     def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> None:
         with store.session() as db:
             q.finish_run(db, run_id, status, **fields)
+
+    async def wait(self, run_id: uuid.UUID, poll_secs: float = 0.05) -> None:
+        """Block until a run reaches a terminal state.
+
+        Polls the row rather than waiting on the live handle: a run that is
+        still queued has no handle yet, and that is exactly when a caller most
+        wants to wait.
+        """
+        while True:
+            with store.session() as db:
+                run = db.get(store.Run, run_id)
+                if run is None or run.status.is_terminal:
+                    return
+            await asyncio.sleep(poll_secs)
 
     # ── introspection ───────────────────────────────────────────────────────
 

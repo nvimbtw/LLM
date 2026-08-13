@@ -78,3 +78,44 @@ def store_session():
     factory = store.configure("sqlite+pysqlite:///:memory:", create=True)
     yield store.session
     store._sessions = factory
+
+
+@pytest.fixture
+async def engine_client(data_root, store_session):
+    """The app with the wiring its lifespan would have done.
+
+    `ASGITransport` never runs lifespan, so the store binding and the drain
+    loop have to be started here — without the loop a queued run never
+    executes and anything waiting on one hangs rather than failing.
+    """
+    import asyncio
+    import contextlib
+
+    from httpx import ASGITransport, AsyncClient
+
+    import main
+    from api.runs import REGISTRY
+
+    REGISTRY.bind_loop(asyncio.get_running_loop())
+    drain = asyncio.create_task(main.RUNNER.drain_forever())
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=main.app), base_url="http://engine"
+        ) as client:
+            yield client
+    finally:
+        # Awaited, not just cancelled: the loop dies with this test, and a task
+        # left pending on it keeps a waiter on the runner's wake event that the
+        # next test's `set()` would then try to resolve on a closed loop.
+        drain.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain
+
+
+@pytest.fixture
+def trained_id() -> str:
+    """A model's weights live under its id, so a run names the directory it
+    will write and the display name is a separate column."""
+    import uuid
+
+    return str(uuid.uuid4())
