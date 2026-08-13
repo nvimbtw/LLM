@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::routes::validate;
-use crate::jwt;
+use auth::token as jwt;
 
 #[derive(Deserialize)]
 struct LoginPayload {
@@ -35,7 +35,7 @@ async fn login(
         }
     };
 
-    let is_valid = match crypto::password::verify_password(&payload.password, &user.password) {
+    let is_valid = match auth::password::verify_password(&payload.password, &user.password) {
         Ok(valid) => valid,
         Err(e) => {
             eprintln!("password verify error: {}", e);
@@ -47,7 +47,7 @@ async fn login(
         return HttpResponse::Unauthorized().body("invalid username or password");
     }
 
-    let token = match jwt::generate_token(
+    let token = match jwt::issue_user_token(
         user.id_user,
         user.access_level.clone(),
         jwt_secret.get_ref(),
@@ -63,7 +63,7 @@ async fn login(
     // client-side. The matching decrypt happens in the AuthUser extractor.
     // access_level is returned alongside so the frontend can branch admin vs.
     // normal UI without decrypting the token — it stays authoritative server-side.
-    match crypto::token_cipher::encrypt(&token, jwt_secret.get_ref()) {
+    match auth::token_cipher::encrypt(&token, jwt_secret.get_ref()) {
         Ok(encrypted) => HttpResponse::Ok().json(serde_json::json!({
             "token": encrypted,
             "access_level": user.access_level,

@@ -7,7 +7,7 @@ pub mod preset;
 pub mod usage;
 pub mod user;
 
-use crypto::password;
+use auth::password;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {

@@ -10,7 +10,7 @@ edition = "2024"
 [workspace]
 members = [
     "crates/api",
-    "crates/crypto",
+    "crates/auth",
     "crates/db",
     "crates/engine",
     "crates/jobs",

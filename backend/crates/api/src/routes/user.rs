@@ -4,7 +4,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::routes::validate;
-use crate::{extractors::AuthUser, jwt};
+use crate::extractors::AuthUser;
+use auth::token as jwt;
 
 // Response shape sent to clients. The db `User` struct carries the password
 // hash, so we never serialize it directly — this strips that field.
@@ -62,7 +63,7 @@ async fn insert_user(
         return HttpResponse::BadRequest().body(msg);
     }
 
-    let pwd_hash = match crypto::password::hash_password(password) {
+    let pwd_hash = match auth::password::hash_password(password) {
         Ok(hash) => hash,
         Err(e) => {
             // Log the real cause server-side; never leak internals to the client.
@@ -170,7 +171,7 @@ async fn update_user(
 
     // Hash the new password (if one was supplied) before it touches the db.
     let pwd_hash = match &payload.password {
-        Some(password) => match crypto::password::hash_password(password) {
+        Some(password) => match auth::password::hash_password(password) {
             Ok(hash) => Some(hash),
             Err(e) => {
                 eprintln!("password hash error: {}", e);

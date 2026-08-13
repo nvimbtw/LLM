@@ -1,5 +1,5 @@
 // Boundary limits for user-supplied fields, enforced in the route layer before
-// values reach the db/crypto layers. Oversized input is rejected with 400 rather
+// values reach the db and auth layers. Oversized input is rejected with 400 rather
 // than exhausting resources (e.g. hashing a megabyte-long password) or tripping
 // column limits deeper in the stack. Lengths are counted in Unicode scalar values
 // (`chars()`), not bytes, so a limit means the same thing to the user regardless

@@ -1,0 +1,18 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition = "2021"
+
+# Who the caller is, and what they may do. `db` depends on this for
+# `AccessLevel`, so nothing here may depend on `db` — or on actix, which would
+# drag the HTTP layer under the layer that authorizes it.
+[dependencies]
+argon2 = "0.5"
+aes-gcm = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }

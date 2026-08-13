@@ -2,12 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, sqlx::Type, Serialize, Deserialize)]
-#[sqlx(type_name = "access_level", rename_all = "lowercase")]
-pub enum AccessLevel {
-    User,
-    Admin,
-}
+pub use auth::AccessLevel;
 
 pub struct User {
     pub id_user: Uuid,

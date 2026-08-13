@@ -10,8 +10,8 @@ use actix_web::{
     web,
 };
 
-use crate::jwt::{self, Claims};
-use crypto::token_cipher;
+use auth::token::{self as jwt, Claims};
+use auth::token_cipher;
 use db::user::AccessLevel;
 
 // Shared verification used by every auth extractor: pull the
@@ -49,7 +49,7 @@ fn authenticate(req: &HttpRequest) -> Result<Claims, actix_web::Error> {
         None => return Err(ErrorUnauthorized("invalid token")),
     };
 
-    jwt::verify_token(&token, &secret).map_err(|e| {
+    jwt::verify_user_token(&token, &secret).map_err(|e| {
         // Covers bad signature, expiry, malformed token, etc. Log the
         // specifics server-side; tell the client nothing beyond 401.
         eprintln!("jwt verify error: {}", e);

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 engine = { path = "../engine" }
-crypto = { path = "../crypto" }
+auth = { path = "../auth" }
 db = { path = "../db" }
 jobs = { path = "../jobs" }
 training = { path = "../training" }

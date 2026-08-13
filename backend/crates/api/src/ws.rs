@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use crate::jwt::{self, Claims};
+use auth::token::{self as jwt, Claims};
 
 // The very first frame a client sends over any socket: the encrypted token,
 // the same value the HTTP routes pass as `Authorization: Bearer`.
@@ -19,8 +19,8 @@ struct AuthFrame {
 // all-or-nothing stance as the `AuthUser` extractor.
 pub fn authenticate(text: &str, secret: &str) -> Option<Claims> {
     let frame: AuthFrame = serde_json::from_str(text).ok()?;
-    let jwt = crypto::token_cipher::decrypt(&frame.token, secret)?;
-    jwt::verify_token(&jwt, secret).ok()
+    let jwt = auth::token_cipher::decrypt(&frame.token, secret)?;
+    jwt::verify_user_token(&jwt, secret).ok()
 }
 
 // Standard error frame shared by the socket handlers.
