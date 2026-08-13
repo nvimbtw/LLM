@@ -12,14 +12,9 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("failed to connect to database / run migrations");
 
-    // The Python engine runs training, inference, and everything they own. It is
-    // spawned here, as a child of the server, because it holds the GPU for as
-    // long as the server lives. `start` returns only once it answers its health
-    // check, so a misconfigured engine fails the boot rather than every request
-    // an hour later.
-    //
-    // Held to the end of `main`: dropping the handle kills the child, so it must
-    // outlive the HTTP server rather than the setup block it was created in.
+    // Spawned here, as a child of the server, because it holds the GPU for as
+    // long as the server lives — and held to the end of `main`, because dropping
+    // the handle kills it.
     let engine_config = engine::EngineConfig::from_env();
     let service_secret = engine_config.service_secret.clone();
     let engine = engine::Engine::start(engine_config)
@@ -50,9 +45,8 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await?;
 
-    // Explicit rather than relying on the drop at end of scope, so the engine is
-    // stopped on the graceful-shutdown path too and not left holding the device
-    // while the next boot tries to bind its port.
+    // Explicit, so a graceful shutdown also stops the engine rather than leaving
+    // it holding the port the next boot needs.
     engine.shutdown();
     Ok(())
 }

@@ -29,6 +29,9 @@ backend/
     └── api/           routes + extractors + sockets               → engine, db, auth
 ```
 
+The database holds three tables: `users`, `training_presets`, and sqlx's own
+migration ledger. Everything else moved to the engine.
+
 Dependency order is strictly one-directional and Cargo enforces it — a cycle
 simply fails to compile. `crates/*` are workspace members subordinate to
 `backend`; never create a crate outside `crates/`.
@@ -116,8 +119,15 @@ Routes map failures to status codes and log the cause; they never return a
 
 ## Code style
 
-- A comment that restates the code is deleted.
-- A comment longer than its function means the function needs a better name, a
-  smaller body, or to be split.
-- The *why* that would otherwise be re-broken stays, and is short.
+Naming carries the meaning; comments carry only what naming cannot.
+
+- **A comment that restates its code is deleted.** If a function is well named
+  and well scoped, saying so again in prose is noise that buries the comments
+  that matter.
+- **A comment longer than its function is a design signal**, not documentation:
+  the function needs a better name, a smaller body, or to be split.
+- **What stays** is the *why* behind something well named but not readable at a
+  glance — a trap that was walked into once (`canonicalize` and the venv), a
+  status chosen deliberately (404 rather than 403 so existence is not leaked),
+  an ordering that is load-bearing (`/me` registered before `/{id}`).
 - Long-form findings live in [`docs/decisions/`](../docs/decisions/), not here.

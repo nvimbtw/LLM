@@ -1,5 +1,3 @@
-//! What corpora the engine has on disk, for composing a curriculum.
-
 use actix_web::{get, web};
 use engine::Proxy;
 

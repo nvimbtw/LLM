@@ -1,13 +1,9 @@
-//! The HTTP layer: route handlers, the auth extractors they rely on, socket
-//! authentication, and JWT issuance/verification.
+//! The HTTP layer: routes, the guards in front of them, and socket handshakes.
 //!
-//! Route files are HTTP-only — parse a request, call `db::`, map the result to
-//! an `HttpResponse` with the right status. No SQL lives here, and a `db` struct
-//! is never serialized straight back to a client (`db::user::User` carries the
-//! password hash).
-//!
-//! Tokens are minted and verified in `auth`, which also owns `AccessLevel` —
-//! that is what lets this layer stay HTTP-only.
+//! Routes are HTTP-only. A route parses a request, calls `db::` or forwards to
+//! a service, and maps the result to a status. No SQL lives here, and a `db`
+//! struct is never serialized straight to a client — `db::user::User` carries
+//! the password hash.
 
 pub mod extractors;
 pub mod routes;

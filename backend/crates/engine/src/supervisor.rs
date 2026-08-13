@@ -1,9 +1,8 @@
 //! Owns the Python engine process for the lifetime of the server.
 //!
 //! There is one engine and it holds the GPU, so its lifecycle belongs to
-//! whatever else is long-lived — the Actix server — rather than to individual
-//! jobs. The supervisor spawns it, waits for it to answer, restarts it if it
-//! dies, and kills it on shutdown.
+//! whatever else is long-lived — the Actix server — rather than to any one
+//! request.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -13,59 +12,51 @@ use tokio::sync::watch;
 
 use crate::config::EngineConfig;
 
-// Restart backoff bounds. A crash-looping engine (bad venv, port already bound)
-// should not spin the CPU retrying, but a one-off segfault should come back
-// quickly enough that a queued job barely notices.
+// A crash-looping engine must not spin the CPU retrying, but a one-off segfault
+// should come back before a queued run notices.
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// A handle to the running engine. Dropping it stops the supervisor and kills
-/// the child.
 #[derive(Debug)]
 pub struct Engine {
     config: EngineConfig,
-    // Signals the supervisor task to stop. `None` when the engine is externally
-    // managed (autostart off), where there is no task and nothing to kill.
+    /// `None` when the engine is externally managed: no task, nothing to kill.
     shutdown: Option<watch::Sender<bool>>,
 }
 
 impl Engine {
-    /// Start the engine and wait until it answers its health check.
+    /// Start the engine and wait until it answers.
     ///
-    /// With autostart off this only verifies that something is already
-    /// listening, so a developer running `uvicorn --reload` by hand gets the
-    /// same up-front failure as a misconfigured spawn rather than a surprise at
-    /// the first job.
+    /// Returning only once it is *serving* is the point: a server that boots
+    /// green and fails every request is the outcome worth avoiding. With
+    /// autostart off this verifies that something is already listening, so a
+    /// hand-run `uvicorn --reload` fails the same way a misconfigured spawn does.
     pub async fn start(config: EngineConfig) -> Result<Engine, String> {
         let base_url = config.base_url();
+        let secret = config.service_secret.clone();
 
         if !config.autostart {
-            wait_until_healthy(&base_url, config.startup_timeout, config.service_secret.as_deref()).await.map_err(|e| {
-                format!("ENGINE_AUTOSTART is off and no engine is answering at {base_url}: {e}")
-            })?;
+            wait_until_healthy(&base_url, config.startup_timeout, secret.as_deref(), None)
+                .await
+                .map_err(|e| {
+                    format!("ENGINE_AUTOSTART is off and no engine answers at {base_url}: {e}")
+                })?;
             return Ok(Engine { config, shutdown: None });
         }
 
-        // Paths made absolute here, before anything spawns with a different
-        // working directory. See `EngineConfig::resolved`.
+        // Before anything spawns with a different working directory.
         let config = config.resolved()?;
-
         let mut child = spawn(&config)?;
-        // Health-check before returning, so `start` failing means "the engine is
-        // not usable" rather than "the process exists". A server that boots
-        // green and fails every job is the outcome worth avoiding.
-        //
-        // The child is watched alongside the port, and that is not belt-and-braces.
-        // Health-checking the port alone cannot tell a healthy new engine from a
-        // *stale one still holding the port*: the new child dies on bind, the old
-        // process answers 200, and the supervisor reports ready while every
-        // request goes to an engine with the wrong configuration. That failure is
-        // silent, survives restarts, and looks exactly like a config bug.
-        if let Err(e) = wait_until_healthy_child(&mut child, &base_url, config.startup_timeout, config.service_secret.as_deref()).await
-        {
-            return Err(format!("engine spawned but never became healthy: {e}"));
-        }
+
+        wait_until_healthy(
+            &base_url,
+            config.startup_timeout,
+            secret.as_deref(),
+            Some(&mut child),
+        )
+        .await
+        .map_err(|e| format!("engine spawned but never became healthy: {e}"))?;
 
         let (tx, rx) = watch::channel(false);
         tokio::spawn(supervise(config.clone(), child, rx));
@@ -95,16 +86,13 @@ impl Drop for Engine {
     }
 }
 
-/// The supervision loop: wait on the child, restart it if it dies unexpectedly,
-/// kill it when asked to stop.
 async fn supervise(config: EngineConfig, mut child: Child, mut shutdown: watch::Receiver<bool>) {
     let mut backoff = BACKOFF_START;
 
     loop {
         tokio::select! {
-            // Biased so a shutdown racing a crash always wins: the alternative
-            // is spawning a replacement microseconds before being told to stop,
-            // which orphans it.
+            // Biased so a shutdown racing a crash always wins; the alternative
+            // spawns a replacement microseconds before being told to stop.
             biased;
 
             _ = shutdown.changed() => {
@@ -129,14 +117,17 @@ async fn supervise(config: EngineConfig, mut child: Child, mut shutdown: watch::
                 match spawn(&config) {
                     Ok(replacement) => {
                         child = replacement;
-                        // Only reset the backoff once the replacement is
-                        // actually serving. Resetting on spawn alone would let
-                        // an engine that dies during startup retry every second
-                        // forever, which is the loop this bound exists to stop.
-                        if wait_until_healthy(&config.base_url(), config.startup_timeout, config.service_secret.as_deref())
-                            .await
-                            .is_ok()
-                        {
+                        // Reset only once the replacement is serving. Resetting
+                        // on spawn alone lets an engine that dies during startup
+                        // retry every second forever.
+                        let healthy = wait_until_healthy(
+                            &config.base_url(),
+                            config.startup_timeout,
+                            config.service_secret.as_deref(),
+                            None,
+                        )
+                        .await;
+                        if healthy.is_ok() {
                             backoff = BACKOFF_START;
                         }
                     }
@@ -162,77 +153,34 @@ fn spawn(config: &EngineConfig) -> Result<Child, String> {
             &config.port.to_string(),
         ])
         .current_dir(&config.dir)
-        // The engine resolves every path through this; see EngineConfig::data_dir.
         .env("DATA_DIR", &config.data_dir)
         .envs(config.service_secret.iter().map(|s| ("ENGINE_SERVICE_SECRET", s)))
-        // Inherited, so the engine's own logs land in the server's output
-        // instead of filling an OS pipe buffer and blocking it once nobody
-        // reads them.
+        // Inherited so the engine's logs land in the server's output rather than
+        // filling a pipe buffer and blocking on it once nobody reads them.
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        // Kills the child if this handle is ever dropped without `shutdown`
-        // being called — a panicking supervisor task must not leave a process
-        // holding the GPU. It does NOT cover the parent being SIGKILLed; on that
-        // path the engine is orphaned and has to be reaped by hand.
+        // Covers a panicking supervisor task, which must not leave a process
+        // holding the GPU. It does *not* cover the parent being SIGKILLed —
+        // that path orphans the engine and it has to be reaped by hand.
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", config.python.display()))
 }
 
-/// Poll for health, failing early if the child dies first.
+/// Poll `GET /` until it answers, `child` dies, or the timeout expires.
 ///
-/// A child that exits during startup is almost always a port collision, so the
-/// error says so rather than leaving the caller with a bare timeout.
-async fn wait_until_healthy_child(
-    child: &mut Child,
-    base_url: &str,
-    timeout: Duration,
-    secret: Option<&str>,
-) -> std::result::Result<(), String> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut last = "no attempt made".to_string();
-
-    while tokio::time::Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "the engine process exited during startup ({status}) — something \
-                 else is probably already listening on {base_url}"
-            ));
-        }
-        match health_once(base_url, secret).await {
-            Ok(()) => return Ok(()),
-            Err(e) => last = e,
-        }
-        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
-    }
-
-    Err(format!("timed out after {timeout:?} (last: {last})"))
-}
-
-async fn health_once(
-    base_url: &str,
-    secret: Option<&str>,
-) -> std::result::Result<(), String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())?;
-    match sign(client.get(base_url), secret).send().await {
-        Ok(r) if r.status().is_success() => Ok(()),
-        Ok(r) => Err(format!("HTTP {}", r.status())),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Poll `GET /` until it answers or the timeout expires.
+/// Watching the child is not belt-and-braces: the port alone cannot tell a
+/// healthy new engine from a *stale one still holding it* — the new child dies
+/// on bind, the old process answers 200, and every request then goes to an
+/// engine with the wrong configuration.
 ///
-/// Signed like every other call: an engine with a secret configured answers
-/// 401 to an unsigned probe, so an unauthenticated health check would report a
-/// perfectly healthy engine as never having started.
+/// Signed like every other call, because an engine with a secret answers 401 to
+/// an unsigned probe and would look like it never started.
 async fn wait_until_healthy(
     base_url: &str,
     timeout: Duration,
     secret: Option<&str>,
+    mut child: Option<&mut Child>,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -243,6 +191,13 @@ async fn wait_until_healthy(
     let mut last = "no attempt made".to_string();
 
     while tokio::time::Instant::now() < deadline {
+        if let Some(Ok(Some(status))) = child.as_deref_mut().map(Child::try_wait) {
+            return Err(format!(
+                "the engine exited during startup ({status}) — something else is \
+                 probably already listening on {base_url}"
+            ));
+        }
+
         match sign(client.get(base_url), secret).send().await {
             Ok(r) if r.status().is_success() => return Ok(()),
             Ok(r) => last = format!("HTTP {}", r.status()),
@@ -254,10 +209,9 @@ async fn wait_until_healthy(
     Err(format!("timed out after {timeout:?} (last: {last})"))
 }
 
-/// Attach a service token, when one is configured.
 fn sign(request: reqwest::RequestBuilder, secret: Option<&str>) -> reqwest::RequestBuilder {
     let Some(secret) = secret else { return request };
-    match auth::token::issue_service_token("engine", &auth::Caller::System, &[], secret) {
+    match auth::token::issue_service_token(crate::AUDIENCE, &auth::Caller::System, &[], secret) {
         Ok(token) => request.bearer_auth(token),
         Err(_) => request,
     }

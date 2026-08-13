@@ -1,10 +1,10 @@
 pub mod preset;
-pub mod usage;
 pub mod user;
 
 use auth::password;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
+/// Connect, migrate, and make sure there is somebody who can log in.
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let pool = PgPoolOptions::new()
         .max_connections(5)

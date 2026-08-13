@@ -72,8 +72,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(ask);
 }
 
-/// Mounted at `/messages`: a rating is aimed at a turn, not at the conversation
-/// it happens to sit in.
+/// Mounted at `/messages`: a rating is aimed at a turn, not at its conversation.
 pub fn configure_messages(cfg: &mut web::ServiceConfig) {
     cfg.service(rate);
 }

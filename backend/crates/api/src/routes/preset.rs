@@ -1,3 +1,6 @@
+//! Named training configs. `config` is stored opaquely — a run validates its
+//! own shape when it starts, so there is nothing to check here but the name.
+
 use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -5,12 +8,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use db;
 use crate::extractors::AuthUser;
 
-// Response shape sent to clients. Kept separate from the db `Preset` struct per
-// the layering rules, even though they currently carry the same fields. `id_user`
-// is deliberately not echoed — the client only ever sees its own presets.
+/// `id_user` is deliberately absent: a client only ever sees its own presets.
 #[derive(Serialize)]
 struct PresetResponse {
     id_preset: Uuid,
@@ -32,16 +32,6 @@ impl From<db::preset::Preset> for PresetResponse {
     }
 }
 
-// The preset store treats `config` as an opaque JSON blob — the `/training` POST
-// validates the config's shape when a run actually starts, so there's nothing to
-// check here beyond a non-empty, trimmed name.
-fn validate_name(name: &str) -> Result<(), HttpResponse> {
-    if name.trim().is_empty() {
-        return Err(HttpResponse::BadRequest().body("preset name is required"));
-    }
-    Ok(())
-}
-
 #[derive(Deserialize)]
 struct CreatePresetPayload {
     name: String,
@@ -54,18 +44,31 @@ struct UpdatePresetPayload {
     config: Option<Value>,
 }
 
+fn blank_name() -> HttpResponse {
+    HttpResponse::BadRequest().body("preset name is required")
+}
+
+/// A preset owned by someone else reads as absent, never as forbidden.
+fn not_found() -> HttpResponse {
+    HttpResponse::NotFound().body("preset not found")
+}
+
+/// `(id_user, name)` is UNIQUE, so a clash is the client's to resolve.
+fn duplicate_name() -> HttpResponse {
+    HttpResponse::Conflict().body("preset name already exists")
+}
+
+fn failed(action: &str, e: sqlx::Error) -> HttpResponse {
+    eprintln!("{action} preset db error: {e}");
+    HttpResponse::InternalServerError().body(format!("failed to {action} preset"))
+}
+
 #[get("")]
 async fn list_presets(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
     match db::preset::list_for_user(pool.get_ref(), auth.claims.sub).await {
-        Ok(presets) => {
-            let body: Vec<PresetResponse> =
-                presets.into_iter().map(PresetResponse::from).collect();
-            HttpResponse::Ok().json(body)
-        }
-        Err(e) => {
-            eprintln!("list presets db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to list presets")
-        }
+        Ok(presets) => HttpResponse::Ok()
+            .json(presets.into_iter().map(PresetResponse::from).collect::<Vec<_>>()),
+        Err(e) => failed("list", e),
     }
 }
 
@@ -76,19 +79,14 @@ async fn create_preset(
     pool: web::Data<PgPool>,
 ) -> impl Responder {
     let name = payload.name.trim();
-    if let Err(resp) = validate_name(name) {
-        return resp;
+    if name.is_empty() {
+        return blank_name();
     }
+
     match db::preset::create(pool.get_ref(), auth.claims.sub, name, &payload.config).await {
         Ok(preset) => HttpResponse::Created().json(PresetResponse::from(preset)),
-        // UNIQUE(id_user, name): the user already has a preset by this name.
-        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-            HttpResponse::Conflict().body("preset name already exists")
-        }
-        Err(e) => {
-            eprintln!("create preset db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to create preset")
-        }
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => duplicate_name(),
+        Err(e) => failed("create", e),
     }
 }
 
@@ -99,38 +97,25 @@ async fn update_preset(
     payload: web::Json<UpdatePresetPayload>,
     pool: web::Data<PgPool>,
 ) -> impl Responder {
-    // A supplied name must be non-empty; an omitted name leaves it unchanged.
-    let name = match payload.name.as_deref().map(str::trim) {
-        Some(n) => {
-            if let Err(resp) = validate_name(n) {
-                return resp;
-            }
-            Some(n)
-        }
-        None => None,
-    };
+    let name = payload.name.as_deref().map(str::trim);
+    if name == Some("") {
+        return blank_name();
+    }
 
-    match db::preset::update(
+    let updated = db::preset::update(
         pool.get_ref(),
         path.into_inner(),
         auth.claims.sub,
         name,
         payload.config.as_ref(),
     )
-    .await
-    {
+    .await;
+
+    match updated {
         Ok(Some(preset)) => HttpResponse::Ok().json(PresetResponse::from(preset)),
-        // Not found *for this user* — a preset owned by someone else reads as 404,
-        // never 403, so its existence isn't leaked (mirrors get_model).
-        Ok(None) => HttpResponse::NotFound().body("preset not found"),
-        // (id_user, name) is UNIQUE; renaming onto an existing name is a conflict.
-        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-            HttpResponse::Conflict().body("preset name already exists")
-        }
-        Err(e) => {
-            eprintln!("update preset db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to update preset")
-        }
+        Ok(None) => not_found(),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => duplicate_name(),
+        Err(e) => failed("update", e),
     }
 }
 
@@ -142,11 +127,8 @@ async fn delete_preset(
 ) -> impl Responder {
     match db::preset::delete(pool.get_ref(), path.into_inner(), auth.claims.sub).await {
         Ok(true) => HttpResponse::NoContent().finish(),
-        Ok(false) => HttpResponse::NotFound().body("preset not found"),
-        Err(e) => {
-            eprintln!("delete preset db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to delete preset")
-        }
+        Ok(false) => not_found(),
+        Err(e) => failed("delete", e),
     }
 }
 

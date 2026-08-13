@@ -3,17 +3,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::routes::validate;
 use crate::extractors::AuthUser;
-use auth::token as jwt;
+use crate::routes::validate;
+use auth::{AccessLevel, token::Claims};
 
-// Response shape sent to clients. The db `User` struct carries the password
-// hash, so we never serialize it directly — this strips that field.
+/// The db `User` carries the password hash, so it is never serialized directly.
 #[derive(Serialize)]
 struct UserResponse {
     id_user: Uuid,
     username: String,
-    access_level: db::user::AccessLevel,
+    access_level: AccessLevel,
 }
 
 impl From<db::user::User> for UserResponse {
@@ -26,10 +25,25 @@ impl From<db::user::User> for UserResponse {
     }
 }
 
-// Self-or-admin policy: a caller may act on their own record, and admins may
-// act on anyone. Used by the /{id} handlers; /me is implicitly always self.
-fn authorized(claims: &jwt::Claims, target: Uuid) -> bool {
-    claims.sub == target || matches!(claims.access_level, db::user::AccessLevel::Admin)
+fn is_self_or_admin(claims: &Claims, target: Uuid) -> bool {
+    claims.sub == target || matches!(claims.access_level, AccessLevel::Admin)
+}
+
+fn forbidden() -> HttpResponse {
+    HttpResponse::Forbidden().body("forbidden")
+}
+
+fn not_found() -> HttpResponse {
+    HttpResponse::NotFound().body("user not found")
+}
+
+fn taken() -> HttpResponse {
+    HttpResponse::Conflict().body("username already exists")
+}
+
+fn failed(action: &str, e: impl std::fmt::Display) -> HttpResponse {
+    eprintln!("{action} user error: {e}");
+    HttpResponse::InternalServerError().body(format!("failed to {action} user"))
 }
 
 #[derive(Deserialize)]
@@ -43,87 +57,46 @@ async fn insert_user(
     payload: web::Json<CreateUserPayload>,
     pool: web::Data<PgPool>,
 ) -> impl Responder {
-    let username = &payload.username;
-    let password = &payload.password;
-
-    if let Err(msg) = validate::field_len(
-        "username",
-        username,
-        validate::MIN_USERNAME_LEN,
-        validate::MAX_USERNAME_LEN,
-    ) {
+    if let Err(msg) = validate::username(&payload.username) {
         return HttpResponse::BadRequest().body(msg);
     }
-    if let Err(msg) = validate::field_len(
-        "password",
-        password,
-        validate::MIN_PASSWORD_LEN,
-        validate::MAX_PASSWORD_LEN,
-    ) {
+    if let Err(msg) = validate::password(&payload.password) {
         return HttpResponse::BadRequest().body(msg);
     }
 
-    let pwd_hash = match auth::password::hash_password(password) {
+    let hash = match auth::password::hash_password(&payload.password) {
         Ok(hash) => hash,
-        Err(e) => {
-            // Log the real cause server-side; never leak internals to the client.
-            eprintln!("password hashing failed: {}", e);
-            return HttpResponse::InternalServerError().body("failed to create user");
-        }
+        Err(e) => return failed("create", e),
     };
 
-    match db::user::create(
-        pool.get_ref(),
-        username.as_str(),
-        pwd_hash.as_str(),
-        Some(db::user::AccessLevel::User),
-    )
-    .await
+    match db::user::create(pool.get_ref(), &payload.username, &hash, Some(AccessLevel::User)).await
     {
-        Ok(_) => HttpResponse::Ok().body("inserting user"),
-        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-            HttpResponse::Conflict().body("username already exists")
-        }
-        Err(e) => {
-            eprintln!("failed to create user: {}", e);
-            HttpResponse::InternalServerError().body("failed to create user")
-        }
+        Ok(_) => HttpResponse::Created().finish(),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => taken(),
+        Err(e) => failed("create", e),
     }
 }
 
-// Resolves the authenticated caller from their token alone — no id in the URL,
-// so the frontend never needs to know (or decrypt) its own user id.
+/// Resolved from the token alone, so a client never needs to know its own id.
 #[get("/me")]
 async fn get_me(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
-    match db::user::find_by_id(pool.get_ref(), auth.claims.sub).await {
-        Ok(Some(user)) => HttpResponse::Ok().json(UserResponse::from(user)),
-        Ok(None) => HttpResponse::NotFound().body("user not found"),
-        Err(e) => {
-            eprintln!("get me db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to get user")
-        }
-    }
+    fetch(pool.get_ref(), auth.claims.sub).await
 }
 
 #[get("/{id}")]
-async fn get_user(
-    auth: AuthUser,
-    path: web::Path<Uuid>,
-    pool: web::Data<PgPool>,
-) -> impl Responder {
+async fn get_user(auth: AuthUser, path: web::Path<Uuid>, pool: web::Data<PgPool>) -> impl Responder {
     let id = path.into_inner();
-
-    if !authorized(&auth.claims, id) {
-        return HttpResponse::Forbidden().body("forbidden");
+    if !is_self_or_admin(&auth.claims, id) {
+        return forbidden();
     }
+    fetch(pool.get_ref(), id).await
+}
 
-    match db::user::find_by_id(pool.get_ref(), id).await {
+async fn fetch(pool: &PgPool, id: Uuid) -> HttpResponse {
+    match db::user::find_by_id(pool, id).await {
         Ok(Some(user)) => HttpResponse::Ok().json(UserResponse::from(user)),
-        Ok(None) => HttpResponse::NotFound().body("user not found"),
-        Err(e) => {
-            eprintln!("get user db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to get user")
-        }
+        Ok(None) => not_found(),
+        Err(e) => failed("get", e),
     }
 }
 
@@ -141,63 +114,28 @@ async fn update_user(
     pool: web::Data<PgPool>,
 ) -> impl Responder {
     let id = path.into_inner();
-
-    if !authorized(&auth.claims, id) {
-        return HttpResponse::Forbidden().body("forbidden");
+    if !is_self_or_admin(&auth.claims, id) {
+        return forbidden();
     }
 
-    if let Some(msg) = payload.username.as_deref().and_then(|u| {
-        validate::field_len(
-            "username",
-            u,
-            validate::MIN_USERNAME_LEN,
-            validate::MAX_USERNAME_LEN,
-        )
-        .err()
-    }) {
+    if let Some(Err(msg)) = payload.username.as_deref().map(validate::username) {
         return HttpResponse::BadRequest().body(msg);
     }
-    if let Some(msg) = payload.password.as_deref().and_then(|p| {
-        validate::field_len(
-            "password",
-            p,
-            validate::MIN_PASSWORD_LEN,
-            validate::MAX_PASSWORD_LEN,
-        )
-        .err()
-    }) {
+    if let Some(Err(msg)) = payload.password.as_deref().map(validate::password) {
         return HttpResponse::BadRequest().body(msg);
     }
 
-    // Hash the new password (if one was supplied) before it touches the db.
-    let pwd_hash = match &payload.password {
-        Some(password) => match auth::password::hash_password(password) {
-            Ok(hash) => Some(hash),
-            Err(e) => {
-                eprintln!("password hash error: {}", e);
-                return HttpResponse::InternalServerError().body("failed to update user");
-            }
-        },
-        _ => None,
+    let hash = match payload.password.as_deref().map(auth::password::hash_password) {
+        Some(Ok(hash)) => Some(hash),
+        Some(Err(e)) => return failed("update", e),
+        None => None,
     };
 
-    match db::user::update(
-        pool.get_ref(),
-        id,
-        payload.username.as_deref(),
-        pwd_hash.as_deref(),
-    )
-    .await
-    {
+    match db::user::update(pool.get_ref(), id, payload.username.as_deref(), hash.as_deref()).await {
         Ok(Some(user)) => HttpResponse::Ok().json(UserResponse::from(user)),
-        Ok(_) => HttpResponse::NotFound().body("user not found"),
-        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-            HttpResponse::Conflict().body("username already exists")
-        }
-        Err(e) => {
-            eprintln!("update user db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to update user")
-        }
+        Ok(None) => not_found(),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => taken(),
+        Err(e) => failed("update", e),
     }
 }
 
@@ -209,33 +147,27 @@ async fn delete_user(
     engine: web::Data<engine::Proxy>,
 ) -> impl Responder {
     let id = path.into_inner();
-
-    if !authorized(&auth.claims, id) {
-        return HttpResponse::Forbidden().body("forbidden");
+    if !is_self_or_admin(&auth.claims, id) {
+        return forbidden();
     }
 
-    // The engine's conversations go first. Its erase is idempotent, so a
-    // deletion that fails here can be retried; the other order would leave
-    // chats owned by an id nothing can resolve.
+    // The engine goes first, and its erase is idempotent: this order can be
+    // retried, the other leaves chats owned by an id nothing can resolve.
     if let Err(e) = engine.delete(&::auth::Caller::System, &format!("/owners/{id}")).await {
-        eprintln!("engine erase error: {}", e);
+        eprintln!("engine erase error: {e}");
         return HttpResponse::BadGateway().body("failed to erase this user's conversations");
     }
 
     match db::user::delete(pool.get_ref(), id).await {
         Ok(true) => HttpResponse::NoContent().finish(),
-        Ok(false) => HttpResponse::NotFound().body("user not found"),
-        Err(e) => {
-            eprintln!("delete user db error: {}", e);
-            HttpResponse::InternalServerError().body("failed to delete user")
-        }
+        Ok(false) => not_found(),
+        Err(e) => failed("delete", e),
     }
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(insert_user);
-    // get_me must be registered before get_user: otherwise "/me" would be
-    // captured by the "/{id}" pattern and fail to parse as a UUID.
+    // Before get_user, or "/me" is captured by "/{id}" and fails to parse.
     cfg.service(get_me);
     cfg.service(get_user);
     cfg.service(update_user);

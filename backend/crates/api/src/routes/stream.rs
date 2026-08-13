@@ -1,9 +1,7 @@
-//! Sockets: the browser's half of a stream the engine sends as SSE.
+//! The browser's half of a stream the engine sends as SSE.
 //!
 //! The engine reports over plain HTTP because it has one consumer and no
-//! handshake to get wrong. A browser wants a socket — so this is where the two
-//! meet: frames are relayed as they arrive, and the one thing a client sends
-//! back, cancelling a run, goes out as an ordinary request.
+//! handshake to get wrong; a browser wants a socket. This is where the two meet.
 
 use actix_web::{HttpRequest, HttpResponse, get, web};
 use engine::{Frame, Proxy};
@@ -91,8 +89,7 @@ async fn chat_session(
     let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
     let caller = auth::Caller::User(claims.sub);
 
-    // The turn to answer arrives after the token, on the same socket — one
-    // connection for the question and the reply it streams back.
+    // One connection for the question and the reply it streams back.
     let Some(ask) = next_json(&mut stream).await else { return };
 
     let path = format!("/chats/{chat_id}/messages/stream");
@@ -105,11 +102,6 @@ async fn chat_session(
     let _ = session.close(None).await;
 }
 
-/// Read the token frame every socket opens with.
-///
-/// Browsers cannot set a header on a WebSocket handshake, so the token comes as
-/// the first message instead — the same value the HTTP routes carry as
-/// `Authorization: Bearer`.
 async fn handshake(
     session: &mut actix_ws::Session,
     stream: &mut actix_ws::MessageStream,
@@ -151,7 +143,7 @@ async fn next_json(stream: &mut actix_ws::MessageStream) -> Option<Value> {
     }
 }
 
-/// Engine frames, flattened onto a `type` field the client switches on.
+/// Frames flattened onto a `type` field the client switches on.
 async fn relay(
     session: &mut actix_ws::Session,
     frames: impl Stream<Item = engine::Result<Frame>>,

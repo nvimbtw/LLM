@@ -1,7 +1,4 @@
 //! The queue. One device, one line — and the engine is the one holding it.
-//!
-//! Starting a run is admin work. Watching one is not: a run's progress is on
-//! the job board for anyone signed in.
 
 use actix_web::{HttpRequest, delete, get, patch, post, web};
 use engine::Proxy;
@@ -9,7 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{Answer, answer, caller};
+use crate::upstream::{Answer, answer, caller, with_query};
 
 #[get("")]
 async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
@@ -70,18 +67,8 @@ async fn remove(_admin: AdminUser, run_id: web::Path<Uuid>, engine: web::Data<Pr
     answer(engine.delete(&auth::Caller::System, &format!("/runs/{run_id}")).await?)
 }
 
-/// Who asked for the run, so the engine can record it on the row.
 fn started_by(admin: &AdminUser) -> auth::Caller {
     auth::Caller::User(admin.claims.sub)
-}
-
-/// The caller's query string, passed through untouched — paging and flags are
-/// the engine's to define, and restating them here would need editing twice.
-fn with_query(path: &str, req: &HttpRequest) -> String {
-    match req.query_string() {
-        "" => path.to_string(),
-        query => format!("{path}?{query}"),
-    }
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

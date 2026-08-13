@@ -1,7 +1,4 @@
-//! Trained models and their scores. Both live in the engine.
-//!
-//! Editing and deleting are admin work: a model is shared, so publishing one or
-//! removing its weights is not a decision any signed-in person gets to make.
+//! Trained models. A model is shared, so changing one is admin work.
 
 use actix_web::{delete, get, patch, web};
 use engine::Proxy;

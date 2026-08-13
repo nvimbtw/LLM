@@ -15,11 +15,10 @@ use crate::{EngineError, Result};
 
 pub use reqwest::Method;
 
-/// The key a token is signed with when there is no shared secret. It exists so
-/// the claims have a carrier, not to prove anything.
+/// Signs a token when there is no shared secret: a carrier for the claims, not
+/// a proof of anything.
 const UNSIGNED: &str = "unsigned";
 
-/// One frame of an engine event stream.
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub kind: String,
@@ -27,7 +26,6 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Whether this frame ends the stream.
     pub fn is_final(&self) -> bool {
         matches!(self.kind.as_str(), "done" | "error" | "cancelled")
     }
@@ -40,8 +38,7 @@ pub struct Proxy {
     /// Who the tokens are addressed to. A token minted for one service is
     /// refused by every other.
     audience: String,
-    /// Unset means the service is not enforcing authentication either — the
-    /// development pair. A mismatch is a 401, which is the intended failure.
+    /// Unset means the service is not enforcing either — the development pair.
     secret: Option<String>,
 }
 
@@ -112,10 +109,8 @@ impl Proxy {
         serde_json::from_str(&text).map_err(|e| EngineError::Decode(format!("{e}: {text}")))
     }
 
-    /// An engine event stream, frame by frame.
-    ///
-    /// The engine replays whatever a run has already emitted, so a caller that
-    /// attaches late — or reattaches after a restart — sees the whole run.
+    /// A service's event stream, frame by frame. It replays what a run has
+    /// already emitted, so attaching late still sees the whole run.
     pub async fn events(
         &self,
         caller: &auth::Caller,
@@ -124,8 +119,8 @@ impl Proxy {
         self.streaming(caller, Method::GET, path, None).await
     }
 
-    /// The same, for a stream a request has to open with a body — a chat turn
-    /// is asked and answered on one connection.
+    /// The same for a stream that has to be opened with a body — a chat turn is
+    /// asked and answered on one connection.
     pub async fn stream(
         &self,
         caller: &auth::Caller,
@@ -159,15 +154,11 @@ impl Proxy {
         Ok(frames(response.bytes_stream()))
     }
 
-    /// A token for one call.
-    ///
     /// Minted per request rather than cached: it lives for a minute, and a
-    /// cached one would have to be refreshed on a schedule to save an HMAC.
+    /// cached one would need refreshing on a schedule to save one HMAC.
     ///
-    /// With no shared secret the token is still sent, signed with a placeholder
-    /// nobody verifies. The signature is worthless there and so is the one the
-    /// service would have checked — but `act` still says who the call is for,
-    /// and without it every owner-scoped route is unusable in development.
+    /// Sent even with no shared secret. The signature is worthless then, but
+    /// `act` is not — without it every owner-scoped route is unusable.
     fn authorization(&self, caller: &auth::Caller) -> Option<String> {
         let secret = self.secret.as_deref().unwrap_or(UNSIGNED);
         auth::token::issue_service_token(&self.audience, caller, &[], secret)
@@ -180,9 +171,7 @@ impl Proxy {
     }
 }
 
-/// Reassemble SSE frames from a byte stream.
-///
-/// Frames are delimited by a blank line, and a chunk can split one anywhere, so
+/// Frames are delimited by a blank line and a chunk can split one anywhere, so
 /// only whole frames are emitted and the remainder stays buffered.
 fn frames<B: AsRef<[u8]>>(
     bytes: impl Stream<Item = reqwest::Result<B>>,
@@ -224,11 +213,9 @@ fn parse(frame: &str) -> Option<Frame> {
     Some(Frame { kind, data: serde_json::from_str(&data).unwrap_or(Value::Null) })
 }
 
-/// Turns a failed response into an error carrying the engine's own message.
-///
-/// FastAPI puts it in `detail`; anything else is passed through verbatim rather
-/// than replaced with a generic string, since the engine's message is the only
-/// thing that says what actually went wrong.
+/// FastAPI puts its reason in `detail`; anything else is passed through
+/// verbatim, since the service's own message is the only thing that says what
+/// went wrong.
 async fn status_error(response: reqwest::Response) -> EngineError {
     let code = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();

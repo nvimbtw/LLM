@@ -6,7 +6,6 @@
 
 pub mod config;
 pub mod error;
-pub mod paths;
 pub mod proxy;
 pub mod supervisor;
 

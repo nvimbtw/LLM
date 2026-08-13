@@ -1,18 +1,14 @@
-//! What a person's conversations have cost. Counted where the turns are stored.
+//! What a person's conversations have cost, counted where the turns are stored.
 
 use actix_web::{HttpRequest, get, web};
 use engine::Proxy;
 
 use crate::extractors::AuthUser;
-use crate::upstream::{Answer, answer, caller};
+use crate::upstream::{Answer, answer, caller, with_query};
 
 #[get("")]
 async fn get_usage(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
-    let path = match req.query_string() {
-        "" => "/usage".to_string(),
-        query => format!("/usage?{query}"),
-    };
-    answer(engine.get(&caller(&user), &path).await?)
+    answer(engine.get(&caller(&user), &with_query("/usage", &req)).await?)
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

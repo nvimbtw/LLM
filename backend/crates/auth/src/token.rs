@@ -19,7 +19,6 @@ pub type Result<T> = std::result::Result<T, jsonwebtoken::errors::Error>;
 const WEB_AUDIENCE: &str = "web";
 const SERVICE_ISSUER: &str = "backend";
 
-/// How long a browser session lasts before it has to log in again.
 const USER_TTL_HOURS: i64 = 24;
 
 /// How long a service token is good for. Minted per request, one hop over
@@ -50,7 +49,6 @@ pub struct ServiceClaims {
     pub exp: usize,
 }
 
-/// Who a service token says is calling.
 #[derive(Debug, PartialEq)]
 pub enum Caller {
     /// A request made on a person's behalf.

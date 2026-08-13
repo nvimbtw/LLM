@@ -5,15 +5,11 @@ use engine::Proxy;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{Answer, answer, caller};
+use crate::upstream::{Answer, answer, caller, with_query};
 
 #[get("")]
 async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
-    let path = match req.query_string() {
-        "" => "/benchmarks".to_string(),
-        query => format!("/benchmarks?{query}"),
-    };
-    answer(engine.get(&caller(&user), &path).await?)
+    answer(engine.get(&caller(&user), &with_query("/benchmarks", &req)).await?)
 }
 
 #[get("/suite")]

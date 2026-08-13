@@ -1,12 +1,11 @@
+//! Presets are personal, so every query here is scoped to `id_user`: ownership
+//! is enforced in SQL rather than only in the handler above it.
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-// A named training-parameter set as stored in the registry. `config` holds a
-// TrainConfig-shaped JSON blob (inspectable, not queried column-wise), the same
-// approach as `models.parameters`. Presets are personal: every query below is
-// scoped to `id_user` so ownership is enforced in SQL, not just in the handler.
 pub struct Preset {
     pub id_preset: Uuid,
     pub name: String,
@@ -15,8 +14,6 @@ pub struct Preset {
     pub updated_at: DateTime<Utc>,
 }
 
-// Newest-updated first, so the picker surfaces recently-touched presets. Scoped
-// to the owner.
 pub async fn list_for_user(pool: &PgPool, id_user: Uuid) -> Result<Vec<Preset>, sqlx::Error> {
     sqlx::query_as!(
         Preset,
@@ -31,8 +28,6 @@ pub async fn list_for_user(pool: &PgPool, id_user: Uuid) -> Result<Vec<Preset>, 
     .await
 }
 
-// Inserts a new preset for the owner. May surface a UNIQUE(id_user, name)
-// violation, which the route layer maps to 409.
 pub async fn create(
     pool: &PgPool,
     id_user: Uuid,
@@ -53,11 +48,8 @@ pub async fn create(
     .await
 }
 
-// Updates a preset in place, owner-scoped. `name`/`config` are optional so a PUT
-// can change either independently; COALESCE keeps the existing value when an arg
-// is NULL. `updated_at` always advances so the recency ordering stays meaningful.
-// Returns None when no preset with that id belongs to this user. A rename that
-// collides with another of the user's presets surfaces a UNIQUE violation (→ 409).
+/// COALESCE keeps the existing value, so an omitted field is left alone.
+/// None when no preset with that id belongs to this user.
 pub async fn update(
     pool: &PgPool,
     id_preset: Uuid,
@@ -83,8 +75,7 @@ pub async fn update(
     .await
 }
 
-// Deletes a preset, owner-scoped. Returns true if a row was removed, false if no
-// such preset belongs to this user (→ 404).
+/// True when a row was actually removed.
 pub async fn delete(pool: &PgPool, id_preset: Uuid, id_user: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM training_presets WHERE id_preset = $1 AND id_user = $2",
