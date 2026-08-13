@@ -39,7 +39,7 @@ async fn a_signed_client_reaches_an_enforcing_engine() {
     let url = cfg.base_url();
     let _engine = Engine::start(cfg).await.expect("engine starts");
 
-    Proxy::new(url, Some(SECRET.into()))
+    Proxy::new(url, engine::AUDIENCE, Some(SECRET.into()))
         .get(&auth::Caller::System, "/")
         .await
         .expect("signed call accepted");
@@ -51,7 +51,7 @@ async fn an_unsigned_client_is_refused_by_an_enforcing_engine() {
     let url = cfg.base_url();
     let _engine = Engine::start(cfg).await.expect("engine starts");
 
-    let err = Proxy::new(url, None)
+    let err = Proxy::new(url, engine::AUDIENCE, None)
         .get(&auth::Caller::System, "/")
         .await
         .expect_err("must be refused");
@@ -64,7 +64,7 @@ async fn the_wrong_secret_is_refused() {
     let url = cfg.base_url();
     let _engine = Engine::start(cfg).await.expect("engine starts");
 
-    let err = Proxy::new(url, Some("not-the-secret".into()))
+    let err = Proxy::new(url, engine::AUDIENCE, Some("not-the-secret".into()))
         .get(&auth::Caller::System, "/")
         .await
         .expect_err("must be refused");

@@ -27,7 +27,7 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to start the python engine");
     println!("engine ready at {}", engine.base_url());
 
-    let proxy = engine::Proxy::new(engine.base_url(), service_secret);
+    let proxy = engine::Proxy::new(engine.base_url(), engine::AUDIENCE, service_secret);
 
     HttpServer::new(move || {
         let cors = Cors::default()

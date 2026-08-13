@@ -10,6 +10,9 @@ pub mod paths;
 pub mod proxy;
 pub mod supervisor;
 
+/// What a token addressed to this service says in its `aud`.
+pub const AUDIENCE: &str = "engine";
+
 pub use config::EngineConfig;
 pub use error::{EngineError, Result};
 pub use proxy::{Frame, Method, Proxy};

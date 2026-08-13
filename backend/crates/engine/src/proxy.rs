@@ -1,9 +1,12 @@
-//! Forwarding to the engine.
+//! Forwarding to a service.
 //!
-//! The backend does not model what the engine owns. It authenticates a person,
+//! The backend does not model what a service owns. It authenticates a person,
 //! signs a short-lived token saying who it acts for, and passes the request on
-//! — so a field the engine adds needs no change here, and a status it returns
+//! — so a field the service adds needs no change here, and a status it returns
 //! reaches the client as itself rather than flattened into a generic failure.
+//!
+//! Nothing here names the engine. A second service is a second `Proxy` with its
+//! own audience and its own routers above it; this is the whole seam.
 
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
@@ -11,9 +14,6 @@ use serde_json::Value;
 use crate::{EngineError, Result};
 
 pub use reqwest::Method;
-
-/// The audience every token this side mints is addressed to.
-const AUDIENCE: &str = "engine";
 
 /// One frame of an engine event stream.
 #[derive(Clone, Debug)]
@@ -33,13 +33,20 @@ impl Frame {
 pub struct Proxy {
     http: reqwest::Client,
     base_url: String,
+    /// Who the tokens are addressed to. A token minted for one service is
+    /// refused by every other.
+    audience: String,
     /// Unset means the engine is not enforcing authentication either — the
     /// development pair. A mismatch is a 401, which is the intended failure.
     secret: Option<String>,
 }
 
 impl Proxy {
-    pub fn new(base_url: impl Into<String>, secret: Option<String>) -> Proxy {
+    pub fn new(
+        base_url: impl Into<String>,
+        audience: impl Into<String>,
+        secret: Option<String>,
+    ) -> Proxy {
         Proxy {
             // No global timeout: a run's event stream is open for as long as
             // the run lasts. Connect timeouts still apply.
@@ -48,6 +55,7 @@ impl Proxy {
                 .build()
                 .unwrap_or_default(),
             base_url: base_url.into(),
+            audience: audience.into(),
             secret,
         }
     }
@@ -153,7 +161,7 @@ impl Proxy {
     /// cached one would have to be refreshed on a schedule to save an HMAC.
     fn authorization(&self, caller: &auth::Caller) -> Option<String> {
         let secret = self.secret.as_ref()?;
-        auth::token::issue_service_token(AUDIENCE, caller, &[], secret)
+        auth::token::issue_service_token(&self.audience, caller, &[], secret)
             .ok()
             .map(|token| format!("Bearer {token}"))
     }

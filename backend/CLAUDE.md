@@ -1,7 +1,8 @@
 # CLAUDE.md
 
-The Rust half: HTTP, auth, and the seam to the Python engine. Training and
-inference live in `engine/` — nothing here computes anything about a model.
+The Rust half: people, sessions, and the seam to the services behind it. It owns
+users and presets and nothing else — models, conversations, runs and scores live
+in `engine/`, and this side forwards to them.
 
 ## Tech stack
 
@@ -22,12 +23,10 @@ backend/
 ├── Cargo.toml         workspace root AND the binary package
 ├── src/main.rs        HttpServer setup, CORS, app_data
 └── crates/
-    ├── crypto/        argon2 hashing, AES token cipher
-    ├── db/            one module per entity, sqlx + migrations/   → crypto
-    ├── engine/        the engine subprocess, and typed calls into it
-    ├── training/      the run config the API validates             → engine
-    ├── jobs/          queue + train_worker + chain (owns the pool) → db, training
-    └── api/           routes + extractors + ws + jwt               → jobs, db, crypto
+    ├── auth/          argon2 hashing, the token cipher, JWT issue/verify
+    ├── db/            users and presets — sqlx + migrations/      → auth
+    ├── engine/        the engine subprocess, and the proxy to it  → auth
+    └── api/           routes + extractors + sockets               → engine, db, auth
 ```
 
 Dependency order is strictly one-directional and Cargo enforces it — a cycle
@@ -39,19 +38,36 @@ simply fails to compile. `crates/*` are workspace members subordinate to
 
 ## Layering rules
 
-- **`api/routes/*.rs`** — HTTP only. Parse, call `db::`, map to `HttpResponse`.
-  Each file exposes `pub fn configure(cfg: &mut web::ServiceConfig)`.
+- **`api/routes/*.rs`** — HTTP only. Parse, call `db::` or the proxy, map to a
+  response. Each file exposes `pub fn configure(cfg: &mut web::ServiceConfig)`.
 - **`db/*.rs`** — SQL only. Returns `Result<T, sqlx::Error>`, never an
   `HttpResponse`. A `db` struct is never serialized to a client:
   `db::user::User` carries the password hash.
-- **`crypto/*.rs`** — no DB or HTTP awareness, enforced by its manifest naming
+- **`auth/*.rs`** — no DB or HTTP awareness, enforced by its manifest naming
   neither `sqlx` nor `actix-web`.
 - Composite operations spanning concerns (login: look up, verify, issue a
   token) live in `api/routes/`, not `db/`.
 
-`jwt` lives in `api` rather than `crypto` because its `Claims` carry a
-`db::user::AccessLevel`, and `db` depends on `crypto` — the other direction is
-a cycle. `api` is the only layer that issues or verifies a token anyway.
+## Proxy routes
+
+A route for something a service owns forwards rather than re-models it. The
+payload is `serde_json::Value` on purpose — a field the engine adds needs no
+change here, and `upstream::Upstream` carries the service's own status back, so
+a 404 stays a 404 instead of becoming a generic 502.
+
+The one thing this side decides is **who is asking**: `upstream::caller` turns
+the verified user token into the `act` claim of a short-lived service token, and
+the service scopes by that. A user token is never forwarded.
+
+## Adding a service
+
+`Proxy` names no service. A second one is:
+
+1. a crate beside `engine/` owning its process and its `AUDIENCE`,
+2. a `Proxy` built with that audience in `main.rs`, registered as `app_data`,
+3. route files above it, mounted in `routes/mod.rs`.
+
+Nothing in `api` or `auth` changes.
 
 ## Database conventions
 
@@ -63,10 +79,9 @@ a cycle. `api` is the only layer that issues or verifies a token anyway.
 
 ## The Python engine
 
-Training and inference run in `engine/` (PyTorch). `crates/engine` is the only
-crate that knows that: it spawns the engine as a child of the Actix server,
-health-checks it before the server reports ready, restarts it if it dies, and
-kills it on shutdown. Everything above calls typed functions.
+`crates/engine` is the only crate that knows the engine is a subprocess: it
+spawns it as a child of the Actix server, health-checks it before the server
+reports ready, restarts it if it dies, and kills it on shutdown.
 
 Configured by environment, because these are properties of the machine:
 
@@ -78,6 +93,7 @@ Configured by environment, because these are properties of the machine:
 | `ENGINE_PORT` | `8001` | 8000 is commonly taken by a local Apache |
 | `ENGINE_AUTOSTART` | `true` | Off = "an engine is already running, do not spawn" |
 | `ENGINE_STARTUP_TIMEOUT_SECS` | `60` | Importing torch is slow on a cold cache |
+| `ENGINE_SERVICE_SECRET` | unset | Shared with the engine; unset leaves both open |
 
 Two things that are load-bearing and non-obvious:
 
