@@ -56,3 +56,37 @@ pub fn answer(value: Value) -> Answer {
 pub fn caller(user: &AuthUser) -> auth::Caller {
     auth::Caller::User(user.claims.sub)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_of(e: EngineError) -> u16 {
+        Upstream::from(e).status_code().as_u16()
+    }
+
+    #[test]
+    fn a_services_refusal_reaches_the_client_as_itself() {
+        // Flattening these into one code is what makes a client guess.
+        for code in [400, 401, 403, 404, 409, 422] {
+            assert_eq!(status_of(EngineError::Status { code, detail: "x".into() }), code);
+        }
+    }
+
+    #[test]
+    fn a_service_this_side_cannot_reach_is_this_sides_problem() {
+        assert_eq!(status_of(EngineError::Transport("refused".into())), 502);
+        assert_eq!(status_of(EngineError::Decode("garbage".into())), 502);
+    }
+
+    #[test]
+    fn a_status_no_http_client_could_mean_falls_back_rather_than_panicking() {
+        assert_eq!(status_of(EngineError::Status { code: 9999, detail: "?".into() }), 502);
+    }
+
+    #[test]
+    fn the_body_says_what_failed() {
+        let error = Upstream::from(EngineError::Status { code: 404, detail: "no run 7".into() });
+        assert!(error.to_string().contains("no run 7"));
+    }
+}

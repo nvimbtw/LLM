@@ -229,3 +229,91 @@ async fn status_error(response: reqwest::Response) -> EngineError {
         .unwrap_or(body);
     EngineError::Status { code, detail }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    fn chunks(pieces: &[&str]) -> impl Stream<Item = reqwest::Result<Vec<u8>>> {
+        let owned: Vec<_> = pieces.iter().map(|p| Ok(p.as_bytes().to_vec())).collect();
+        stream::iter(owned)
+    }
+
+    async fn collect(pieces: &[&str]) -> Vec<Frame> {
+        frames(chunks(pieces)).filter_map(|f| async { f.ok() }).collect().await
+    }
+
+    #[tokio::test]
+    async fn a_frame_split_across_chunks_is_reassembled() {
+        let seen = collect(&["event: progr", "ess\ndata: {\"step\"", ": 1}\n\n"]).await;
+
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].kind, "progress");
+        assert_eq!(seen[0].data["step"], 1);
+    }
+
+    #[tokio::test]
+    async fn several_frames_in_one_chunk_all_arrive() {
+        let seen = collect(&["event: a\ndata: 1\n\nevent: b\ndata: 2\n\n"]).await;
+
+        let kinds: Vec<_> = seen.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_no_terminator_is_held_rather_than_guessed_at() {
+        assert!(collect(&["event: progress\ndata: {}"]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_no_event_name_is_not_a_frame() {
+        assert!(collect(&["data: {}\n\n"]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unreadable_data_still_delivers_the_event_name() {
+        // The name is what a consumer switches on; losing the whole frame
+        // because its payload is malformed would hide a terminal `done`.
+        let seen = collect(&["event: done\ndata: not json\n\n"]).await;
+
+        assert_eq!(seen[0].kind, "done");
+        assert!(seen[0].data.is_null());
+    }
+
+    #[test]
+    fn only_a_terminal_frame_ends_a_stream() {
+        let final_kinds = ["done", "error", "cancelled"];
+        for kind in final_kinds {
+            assert!(Frame { kind: kind.into(), data: Value::Null }.is_final());
+        }
+        assert!(!Frame { kind: "progress".into(), data: Value::Null }.is_final());
+    }
+
+    #[test]
+    fn a_token_is_addressed_to_the_service_it_was_built_for() {
+        let proxy = Proxy::new("http://x", "engine", Some("s".into()));
+        let header = proxy.authorization(&auth::Caller::System).expect("signed");
+        let token = header.strip_prefix("Bearer ").expect("bearer scheme");
+
+        assert!(auth::token::verify_service_token(token, "engine", "s").is_ok());
+        assert!(auth::token::verify_service_token(token, "other", "s").is_err());
+    }
+
+    #[test]
+    fn no_secret_means_no_header_at_all() {
+        let proxy = Proxy::new("http://x", "engine", None);
+        assert!(proxy.authorization(&auth::Caller::System).is_none());
+    }
+
+    #[test]
+    fn the_token_names_the_person_the_call_is_for() {
+        let who = uuid::Uuid::new_v4();
+        let proxy = Proxy::new("http://x", "engine", Some("s".into()));
+        let header = proxy.authorization(&auth::Caller::User(who)).expect("signed");
+        let token = header.strip_prefix("Bearer ").unwrap();
+
+        let caller = auth::token::verify_service_token(token, "engine", "s").expect("valid");
+        assert!(matches!(caller, auth::Caller::User(id) if id == who));
+    }
+}
