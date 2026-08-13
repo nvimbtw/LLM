@@ -33,7 +33,7 @@ import { cn } from "@/lib/utils"
  */
 export interface JobHistoryProps {
   jobs: Job[]
-  onRetry: (id: string) => void
+  onRetry: (job: Job) => void
   onDelete: (id: string) => void
 }
 
@@ -85,7 +85,7 @@ function HistoryRow({
   onDelete,
 }: {
   job: Job
-  onRetry: (id: string) => void
+  onRetry: (job: Job) => void
   onDelete: (id: string) => void
 }) {
   const ran = durationSeconds(job)
@@ -155,7 +155,7 @@ function HistoryRow({
                 second answer to the same question. */}
             <DropdownMenuItem
               disabled={job.kind === "chat"}
-              onClick={() => onRetry(job.id_job)}
+              onClick={() => onRetry(job)}
             >
               <RotateCcw />
               Run again

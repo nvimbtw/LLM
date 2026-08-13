@@ -21,10 +21,6 @@
   --color-kind-train: var(--kind-train);
   --color-kind-benchmark: var(--kind-benchmark);
   --color-kind-chat: var(--kind-chat);
-  --color-kind-autolabel: var(--kind-autolabel);
-  --color-kind-gather: var(--kind-gather);
-  --color-kind-synth: var(--kind-synth);
-  --color-kind-teach: var(--kind-teach);
   --color-tier-low: var(--tier-low);
   --color-tier-med: var(--tier-med);
   --color-tier-high: var(--tier-high);
@@ -165,15 +161,6 @@
   --kind-train: #3f5f96;
   --kind-benchmark: #4e6733;
   --kind-chat: #655a80;
-  --kind-autolabel: #94425e;
-  --kind-gather: #785b12;
-  --kind-synth: #316a72;
-  /* Generation from a local teacher. A rust, deliberately not a variant of
-       `--kind-synth`'s teal: the two are the same job to a reader of the code and
-       different jobs to a reader of the board — one spends money, the other blocks
-       the GPU — so they should not be told apart by shade. Measures 5.24:1 against
-       its own 14% tint. */
-  --kind-teach: #9b3f20;
   /* The colour the throbber's rings turn while it is thinking or running a tool —
        the one place in the app a second hue is spent on a status mark. Its whole
        job is to not be mistakable for `--primary` at a hairline width, which is why
@@ -257,10 +244,6 @@
   --kind-train: #8ba4b0;
   --kind-benchmark: #8fb08f;
   --kind-chat: #ada0ae;
-  --kind-autolabel: #d08c86;
-  --kind-gather: #c4b28a;
-  --kind-synth: #7fb0a8;
-  --kind-teach: #e09a6a;
   /* Lightened rather than flipped, like the kind chips above: it has to read out
        of a near-black card at a hairline width. Dragon's surimi orange — warmer and
        brighter than the light-mode step, because the mark is a thin line on

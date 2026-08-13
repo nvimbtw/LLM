@@ -243,15 +243,6 @@ class ChatConfig(BaseModel):
     seed: int | None = None
 
 
-class MeasureRequest(BaseModel):
-    """A conversation to price against SFT's window."""
-
-    model_config = _ALLOW_MODEL_PREFIX
-    model_name: str
-    turns: list[ChatTurn]
-    system: str | None = None
-
-
 class CountRequest(BaseModel):
     model_config = _ALLOW_MODEL_PREFIX
     model_name: str
@@ -278,20 +269,3 @@ class EvalConfig(BaseModel):
     # Fixed so a benchmark is reproducible: two runs of one model must not differ
     # because the sampler drew differently.
     seed: int = 1234
-
-
-class InferConfig(BaseModel):
-    model_config = _ALLOW_MODEL_PREFIX
-
-    model_name: str
-    prompt: str
-    max_tokens: int = 128
-
-    # Each filter is disabled by its own neutral value — temperature 0.0
-    # collapses to argmax, a top_k past the vocabulary keeps everything, and a
-    # top_p of 1.0 cuts nothing — so wanting one filter need not mean knowing
-    # about the other two.
-    temperature: float = 0.8
-    top_k: int = 40
-    top_p: float = 0.95
-    seed: int | None = None

@@ -52,7 +52,6 @@ PAIRS: list[tuple[str, str]] = [
     ("<|thinking|>", "<|/thinking|>"),
 ]
 
-# Markers that open and close nothing, legal wherever prose is.
 STANDALONE = ["<|divider|>"]
 
 
@@ -75,8 +74,6 @@ class Rules:
     end_of_text: int
 
     def is_special(self, token_id: int) -> bool:
-        # Contiguous by construction — the reserved block — but read off the
-        # collected ids rather than reconstructing that layout here.
         return bool(self.marker_ids) and self.marker_ids[0] <= token_id <= self.marker_ids[-1]
 
     @classmethod

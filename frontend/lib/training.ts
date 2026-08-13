@@ -195,20 +195,20 @@ export interface TrainingSnapshot {
 }
 
 export async function listDatasets(): Promise<DatasetInfo[]> {
-  const res = await fetch(`${API_URL}/training/datasets`, {
+  const res = await fetch(`${API_URL}/datasets`, {
     headers: authHeaders(),
   })
   if (!res.ok) return []
-  return (await res.json()) as DatasetInfo[]
+  return ((await res.json()) as { datasets: DatasetInfo[] }).datasets
 }
 
 // The conversation sets a fine-tune picks from. A separate catalogue from
 // `listDatasets` because they are different folders on disk — a run selects
 // prose corpora or SFT sets, never a mix of the two.
 export async function listSftDatasets(): Promise<DatasetInfo[]> {
-  const res = await fetch(`${API_URL}/training/sft/datasets`, {
+  const res = await fetch(`${API_URL}/sft/datasets`, {
     headers: authHeaders(),
   })
   if (!res.ok) return []
-  return (await res.json()) as DatasetInfo[]
+  return ((await res.json()) as { datasets: DatasetInfo[] }).datasets
 }

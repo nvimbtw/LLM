@@ -3,20 +3,7 @@
 import * as React from "react"
 
 import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
-import {
-  cancelJob,
-  getJob,
-  type Calibration,
-  type CatalogueReport,
-  type Job,
-  type SynthAccepted,
-  type SynthCall,
-  type SynthReport,
-  type TeachAccepted,
-  type TeachCall,
-  type TeachReport,
-  type Verdict,
-} from "@/lib/jobs"
+import { cancelJob, getJob, type Job } from "@/lib/jobs"
 import { attachJob, type Attachment } from "@/lib/jobs-socket"
 import type {
   DiagPoint,
@@ -31,16 +18,6 @@ import type {
 const MAX_LOSS_POINTS = 500
 const MAX_BATCH_POINTS = 60
 const MAX_DIAG_POINTS = 500
-// Generated replies kept in full for the catalogue feed. A screenful and a bit —
-// it is a live window, not a log.
-const MAX_VERDICT_FEED = 30
-// Generated conversations kept in full. Matches the backend's own snapshot window,
-// so a reattach and a live run show the same depth of feed.
-const MAX_SYNTH_FEED = 24
-// Triples kept in full. Fewer than the synth feed because each carries three
-// answers, and it matches the backend's own `TEACH_FEED` so a reattach and a live
-// run show the same depth.
-const MAX_TEACH_FEED = 8
 
 function downsample<T>(arr: T[], max: number): T[] {
   let out = arr
@@ -89,60 +66,6 @@ export function useJob(idJob: string) {
   const [checkpoints, setCheckpoints] = React.useState<string[]>([])
   const [log, setLog] = React.useState<string[]>([])
   const [runConfig, setRunConfig] = React.useState<TrainConfig | null>(null)
-
-  // Bumped once per reply a gather job produces. A nudge, not a payload: the
-  // sample itself is already a row, and the rating panel refetches — so there is
-  // one description of a pending sample rather than a REST shape and a frame shape
-  // that drift apart.
-  const [sampleTick, setSampleTick] = React.useState(0)
-
-  // The catalogue report an auto-labelling run emits when it finishes: the
-  // calibration it ran against your ratings, and what it wrote. Live only — it
-  // arrives as one frame at the end and is not stored on the job, so a reload
-  // falls back to the running catalogue count from /signals.
-  const [catalogue, setCatalogue] = React.useState<CatalogueReport | null>(null)
-
-  // The calibration, which arrives once before any labelling, and every verdict as
-  // it is decided. Unlike the final report these are available *during* the run,
-  // which is the point: a catalogue pass is minutes long and writes nothing until
-  // it ends.
-  const [calibration, setCalibration] = React.useState<Calibration | null>(null)
-  // Only the most recent replies are kept in full. The text is what makes the feed
-  // worth watching and also what makes it heavy, and nothing reads back past the
-  // last screenful.
-  const [verdicts, setVerdicts] = React.useState<Verdict[]>([])
-  // Every score, though — they are two numbers each, and the distribution needs
-  // all of them to be the distribution.
-  const [verdictScores, setVerdictScores] = React.useState<
-    { score: number; good: boolean }[]
-  >([])
-
-  // A generation run: one record per model call (which the figures are drawn
-  // from), the recent conversations in full, and the report that lands at the end.
-  // The calls are kept in full rather than downsampled — a run is tens of calls,
-  // not thousands of steps.
-  const [synthCalls, setSynthCalls] = React.useState<SynthCall[]>([])
-  const [synthAccepted, setSynthAccepted] = React.useState<SynthAccepted[]>([])
-  const [synthAdded, setSynthAdded] = React.useState(0)
-  const [synth, setSynth] = React.useState<SynthReport | null>(null)
-
-  // A local-teacher run. Same shape of accumulation as a generation run, kept in
-  // its own state rather than folded into it: the unit is a question with up to
-  // three answers, not a conversation, and the per-tier tally has no counterpart on
-  // the synth side.
-  //
-  // Three counters because the run has three units, and holding only the first is
-  // what let a "45 triples" headline sit beside tier bars summing to 75.
-  const [teachCalls, setTeachCalls] = React.useState<TeachCall[]>([])
-  const [teachAccepted, setTeachAccepted] = React.useState<TeachAccepted[]>([])
-  const [teachQuestions, setTeachQuestions] = React.useState(0)
-  const [teachAnswers, setTeachAnswers] = React.useState(0)
-  const [teachComplete, setTeachComplete] = React.useState(0)
-  // `[one tier, two tiers, all three]`, so the coverage figure draws the same
-  // whether the page attached mid-run or is reading a finished report.
-  const [teachByTiers, setTeachByTiers] = React.useState<number[]>([0, 0, 0])
-  const [teachPerTier, setTeachPerTier] = React.useState<[string, number][]>([])
-  const [teach, setTeach] = React.useState<TeachReport | null>(null)
 
   // The live stage line for a benchmark, and the text so far for a chat turn.
   const [stage, setStage] = React.useState<string | null>(null)
@@ -196,37 +119,6 @@ export function useJob(idJob: string) {
             downsample((snap.diag_series as DiagPoint[]) ?? [], MAX_DIAG_POINTS)
           )
           setLog((snap.log as string[]) ?? [])
-        } else if (Array.isArray(snap.calls)) {
-          // A generation snapshot: the whole accumulation, so a page attaching ten
-          // minutes in draws the run so far rather than starting from empty.
-          setSynthCalls(snap.calls as SynthCall[])
-          setSynthAccepted((snap.accepted as SynthAccepted[]) ?? [])
-          setSynthAdded(typeof snap.added === "number" ? snap.added : 0)
-          if (typeof snap.stage === "string") setStage(snap.stage)
-          if (typeof snap.fraction === "number") setFraction(snap.fraction)
-        } else if (Array.isArray(snap.reports)) {
-          // A teaching snapshot. Told apart by `reports` rather than `calls` — the
-          // two accumulations are the same idea over different units, and a shared
-          // field name would make a teach snapshot parse as a synth one.
-          setTeachCalls(snap.reports as TeachCall[])
-          setTeachAccepted((snap.accepted as TeachAccepted[]) ?? [])
-          setTeachQuestions(
-            typeof snap.questions === "number" ? snap.questions : 0
-          )
-          setTeachAnswers(typeof snap.answers === "number" ? snap.answers : 0)
-          setTeachComplete(
-            typeof snap.complete_triples === "number"
-              ? snap.complete_triples
-              : 0
-          )
-          setTeachByTiers(
-            Array.isArray(snap.by_tiers)
-              ? (snap.by_tiers as number[])
-              : [0, 0, 0]
-          )
-          setTeachPerTier((snap.per_tier as [string, number][]) ?? [])
-          if (typeof snap.stage === "string") setStage(snap.stage)
-          if (typeof snap.fraction === "number") setFraction(snap.fraction)
         } else {
           if (typeof snap.stage === "string") setStage(snap.stage)
           if (typeof snap.fraction === "number") setFraction(snap.fraction)
@@ -300,65 +192,6 @@ export function useJob(idJob: string) {
       case "token":
         setText((prev) => prev + String(frame.value ?? ""))
         break
-      case "sample":
-        setSampleTick((n) => n + 1)
-        break
-      case "autolabel":
-        setCatalogue(frame as unknown as CatalogueReport)
-        break
-      case "call": {
-        const call = frame as unknown as SynthCall
-        setSynthCalls((prev) => [...prev, call])
-        setSynthAdded(call.total)
-        break
-      }
-      case "accepted": {
-        const accepted = frame as unknown as SynthAccepted
-        setSynthAccepted((prev) => [accepted, ...prev].slice(0, MAX_SYNTH_FEED))
-        break
-      }
-      case "synth":
-        setSynth(frame as unknown as SynthReport)
-        break
-      case "teach_call": {
-        const call = frame as unknown as TeachCall
-        setTeachCalls((prev) => [...prev, call])
-        setTeachQuestions(call.total_questions)
-        setTeachAnswers(call.total_answers)
-        setTeachComplete(call.total_complete)
-        setTeachByTiers(call.total_by_tiers ?? [0, 0, 0])
-        break
-      }
-      case "teach_triple": {
-        const triple = frame as unknown as TeachAccepted
-        setTeachAccepted((prev) => [triple, ...prev].slice(0, MAX_TEACH_FEED))
-        // Tallied here rather than read off the final report, so a page watching a
-        // run sees whether the budgets are separating while there is still time to
-        // stop a run that is putting every answer in one bucket.
-        setTeachPerTier((prev) => {
-          const next = new Map(prev)
-          for (const answer of triple.answers) {
-            next.set(answer.filed_as, (next.get(answer.filed_as) ?? 0) + 1)
-          }
-          return [...next.entries()]
-        })
-        break
-      }
-      case "teach":
-        setTeach(frame as unknown as TeachReport)
-        break
-      case "calibration":
-        setCalibration(frame as unknown as Calibration)
-        break
-      case "verdict": {
-        const verdict = frame as unknown as Verdict
-        setVerdicts((prev) => [verdict, ...prev].slice(0, MAX_VERDICT_FEED))
-        setVerdictScores((prev) => [
-          ...prev,
-          { score: verdict.score, good: verdict.good },
-        ])
-        break
-      }
       case "done":
       case "error":
         // The row is authoritative for the terminal state — refetching it is what
@@ -443,26 +276,5 @@ export function useJob(idJob: string) {
     stage,
     fraction,
     text,
-    // gather
-    sampleTick,
-    // synth
-    synthCalls,
-    synthAccepted,
-    synthAdded,
-    synth,
-    // teach
-    teachCalls,
-    teachAccepted,
-    teachQuestions,
-    teachAnswers,
-    teachComplete,
-    teachByTiers,
-    teachPerTier,
-    teach,
-    // autolabel
-    catalogue,
-    calibration,
-    verdicts,
-    verdictScores,
   }
 }

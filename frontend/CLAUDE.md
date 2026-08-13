@@ -28,7 +28,6 @@ frontend/
 │   ├── signup/
 │   ├── models/
 │   ├── training/
-│   ├── files/
 │   ├── usage/
 │   └── profile/
 ├── components/
@@ -36,7 +35,6 @@ frontend/
 │   ├── auth/
 │   ├── chat/
 │   ├── conversations/
-│   ├── files/
 │   ├── models/
 │   ├── profile/
 │   ├── sidebar/
@@ -45,8 +43,10 @@ frontend/
 ├── hooks/           Custom React hooks (use-chat, use-models, use-auth, etc.)
 ├── lib/             Pure utilities, API helpers, socket clients
 │   ├── api.ts           HTTP helpers, auth token management
-│   ├── chat-socket.ts   WebSocket chat streaming
-│   ├── training-socket.ts
+│   ├── chat-socket.ts   one socket per chat, streaming a reply
+│   ├── jobs.ts          the queue: types and REST
+│   ├── jobs-socket.ts   one socket per run, relaying its frames
+│   ├── benchmark.ts     scores and the reports behind them
 │   ├── message-parser.ts
 │   ├── user-parser.ts
 │   └── utils.ts          cn() and other small helpers
@@ -91,76 +91,85 @@ frontend/
 - Use `cn()` from `@/lib/utils` for conditional class merging.
 - Follow the existing design: Geist font (sans), the shadcn/ui color tokens, the sidebar layout.
 
+### Where the data lives
+
+The backend owns people, sessions and presets. Everything else — models,
+conversations, runs, scores, usage — belongs to the Python engine, and the
+backend forwards to it. So a route here is `/chats`, `/models`, `/runs`,
+`/benchmarks`, `/usage`, and the shape that comes back is the engine's.
+
+Two names are adapted at the wire rather than renamed through every component,
+each in one place: the engine's `run_id` is this side's `id_job` (`lib/jobs.ts`),
+and its `benchmark_id` is `id_run` (`lib/benchmark.ts`). Nothing else is
+reshaped — a field the engine adds arrives without a change here.
+
 ### Stream protocol (chat)
 
-The chat WebSocket lives in `lib/chat-socket.ts` and follows this wire protocol:
+One socket per chat, opened at `/ws/chats/{id}`:
 
 ```
 client → { token }                            (auth frame)
 server → { type: "ready" }
-client → { chat_id, content, model_id, system?, budget?,
+client → { model_name, text, system?, budget?,
            temperature?, top_k?, top_p? }
-                                              (chat_id null = new chat)
-server → { type: "queued", job_id, chat_id, ahead }
-server → { type: "token", value }             (repeated)
-server → { type: "done", chat_id, id_message }
-server → { type: "error", message }
-client → { action: "cancel" }
+server → { type: "token", token }             (repeated)
+server → { type: "done", message_id, content, tokens, usage }
+server → { type: "error", error }
 ```
 
-A reply is a job on the GPU queue, so `queued` always arrives before the first
-token — with `ahead: 0` when the turn starts immediately, so there is one code path
-rather than two. Because the job outlives the socket, closing the tab no longer
-loses the reply: the runner persists it either way.
+The chat exists before the socket opens — its id is in the URL — so there is no
+"which conversation is this" frame and no id to wait for coming back. The reply
+is written when the last token lands, so closing the tab loses it rather than
+storing half of one.
 
-`budget` is the composer's thinking-budget dropdown (`components/chat/budget-selector.tsx`)
-— `"low" | "med" | "high"`, matching the labels the SFT corpus is tagged with, since
-the string sent becomes the marker the model was trained under. **"Auto" is the
-absence of a budget, not a fourth value**: it is omitted from the frame entirely, so
-the backend renders no marker and the model is prompted exactly as it always was.
-Unlike `systemPrompt` it is *not* a setting — how hard you want the model to think is
-a property of the question, so it lives as composer state and rides through
-`PendingMessage` when a new chat navigates.
+`budget` is the composer's thinking-budget dropdown
+(`components/chat/budget-selector.tsx`) — `"low" | "med" | "high"`, matching the
+labels the SFT corpus is tagged with, since the string sent becomes the marker
+the model was trained under. **"Auto" is the absence of a budget, not a fourth
+value**: it is omitted from the frame entirely, so the engine renders no marker
+and the model is prompted exactly as it always was. Unlike `systemPrompt` it is
+*not* a setting — how hard you want the model to think is a property of the
+question, so it lives as composer state and rides through `PendingMessage` when
+a new chat navigates.
 
-`temperature` / `top_k` / `top_p` are the decoding knobs, and unlike `budget` they
-**are** settings (`lib/settings.ts`, rendered as sliders in the ⌘K modal) — how
-random you want decoding to be is a standing preference, not a property of one
-question. Each is omitted individually when unset or non-finite, and the backend
-(`routes/chat.rs::resolve_sampling`) then falls back to
-`llm::sample::SamplingParams::default()`. The route **rejects** an out-of-range
-value rather than clamping it, so slider bounds must stay inside the ranges it
-accepts: temperature 0.01–2.0, top-k 1–1000, top-p 0.0–1.0.
+`temperature` / `top_k` / `top_p` are the decoding knobs, and unlike `budget`
+they **are** settings (`lib/settings.ts`, rendered as sliders in the ⌘K modal) —
+how random you want decoding to be is a standing preference, not a property of
+one question. Each is omitted individually when unset or non-finite, and the
+engine then falls back to its own defaults.
 
 ### The jobs queue
 
-Everything that uses the GPU — training, benchmarks, chat turns — is a job. See
-`lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one socket, two
-subscriptions: the whole board, or one job's frames).
+Everything that uses the GPU — training and benchmarks — is a run in the
+engine's queue. See `lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one
+socket per run, relaying the engine's own frames).
 
-- **Board events are nudges, not payloads.** The socket sends `{ type: "changed" }`
-  and the client refetches `GET /jobs`, so there is exactly one description of a job
-  rather than a REST shape and a socket shape that drift apart.
-- `hooks/use-jobs.ts` owns the board; `hooks/use-job.ts` owns one job — its durable
-  row plus whatever it is broadcasting. **Panels render from the row first and treat
-  live state as an enrichment**, because a queued or finished job has no frames at
-  all (the socket answers `inactive`).
-- Composers live at `/jobs/new/*` and are *only* forms: submitting queues a job and
-  hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>` seeds a
-  composer from a previous run's stored config.
-- **A chat turn has no job page.** It is queued from a conversation, never from the
-  jobs menu, and the conversation is where its reply belongs — so every row links
-  through `jobHref()` (`/chat/{id}` for a chat job, `/jobs/{id}` for everything
-  else) and `/jobs/{id}` for one redirects there.
+- **The board polls.** It moves when a run is queued, starts or ends — rare
+  enough that a 3s refetch of `GET /runs` says the same thing a nudge would,
+  without a second live connection to keep alive across sleeps and restarts.
+- `hooks/use-jobs.ts` owns the board; `hooks/use-job.ts` owns one job — its
+  durable row plus whatever it is broadcasting. **Panels render from the row
+  first and treat live state as an enrichment**, because a queued or finished
+  job has no frames at all.
+- Composers live at `/jobs/new/*` and are *only* forms: submitting queues a run
+  and hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>`
+  seeds a composer from a previous run's stored config.
+- **A chat turn is not a run.** It is answered directly, on the socket that
+  asked for it — an interactive turn behind a three-hour training run is a chat
+  nobody can use.
 - **Queued is a state with a body, not an empty version of the finished one.**
-  Every non-chat kind renders `JobQueuedPanel` while it waits: the config recap,
-  its place in its lane's line, and what the run will do once it starts. Per-kind
-  panels therefore only have to handle running and terminal.
+  Every kind renders `JobQueuedPanel` while it waits: the config recap, its
+  place in the line, and what the run will do once it starts.
 - `ConfigRecap` is shared and switches on `job.kind`. A new kind adds its rows
   there rather than growing a recap of its own.
+- A **chain** is a flat list of steps, each running against the model the one
+  before it produced. A follow-up waits rather than queueing: its model does not
+  exist yet, so a queue position would be a lie about when it runs.
 - `/benchmark` is history and analysis only — it no longer starts runs.
-- The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are how
-  a running job says what it is. Give **one** instance a changing `mode` so it morphs
-  between them as the queue advances rather than cutting. `NowBand` is that instance.
+- The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are
+  how a running job says what it is. Give **one** instance a changing `mode` so
+  it morphs between them as the queue advances rather than cutting. `NowBand` is
+  that instance.
 
 ### Throbber or dot
 

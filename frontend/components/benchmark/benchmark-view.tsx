@@ -17,7 +17,7 @@ import { CorpusPanel } from "./corpus-panel"
 import { MarkupPanel } from "./markup-panel"
 import { DurationPanel } from "./duration-panel"
 import { GenerationPanel } from "./generation-panel"
-import { GrammarPanel } from "./grammar-panel"
+import { AblationPanel } from "./ablation-panel"
 import { HistoryPanel } from "./history-panel"
 import { ModelFilter } from "./model-filter"
 import { TokensPanel } from "./tokens-panel"
@@ -193,20 +193,27 @@ export function BenchmarkView() {
       <div ref={reportRef} className="flex scroll-mt-6 flex-col gap-6">
         {report && detail ? (
           <>
-            <ScoreCard report={report} modelName={detail.model_name} />
+            <ScoreCard report={report} />
             {isMarkupReport(report) ? (
               <MarkupPanel report={report} />
             ) : isLanguageReport(report) ? (
               <>
                 <div className="grid gap-6 xl:grid-cols-2">
-                  <GrammarPanel grammar={report.grammar} />
                   <CorpusPanel corpus={report.corpus} />
+                  {report.ablation && (
+                    <AblationPanel ablation={report.ablation} />
+                  )}
                 </div>
-                <GenerationPanel generation={report.generation} />
+                {report.surface && (
+                  <GenerationPanel
+                    surface={report.surface}
+                    samples={report.samples}
+                  />
+                )}
               </>
             ) : null}
             <p className="text-xs text-muted-foreground tabular-nums">
-              Completed in {formatDuration(report.duration_secs)}.
+              Completed in {formatDuration(report.total_secs)}.
             </p>
           </>
         ) : active ? (

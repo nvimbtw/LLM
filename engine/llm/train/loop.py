@@ -87,8 +87,6 @@ def step_fn(model: Transformer, vocab: int):
     return forward_loss
 
 
-# numpy dtype -> the torch dtype of the same width, for allocating a batch
-# buffer that both libraries can address without a conversion in between.
 _TORCH_DTYPE = {np.dtype(np.int64): torch.int64, np.dtype(np.float32): torch.float32}
 
 
@@ -140,9 +138,7 @@ def run(
     model.to(device)
     model.train()
 
-    # TF32 for whatever stays in fp32 (the loss, and the whole run under
-    # precision="fp32"). Torch has defaulted this off since 1.12; on Ampere it is
-    # ~1.1x for a tenth of a bit of mantissa on matmul accumulation.
+    # ~1.1x on Ampere for a tenth of a bit of matmul mantissa. Torch defaults it off.
     if device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = cfg.allow_tf32
         torch.backends.cudnn.allow_tf32 = cfg.allow_tf32
@@ -157,11 +153,9 @@ def run(
     eager = step_fn(model, model.vocab)
     fast = compiled(eager, cfg.compile_model and device == "cuda")
 
-    # The fused optimizer runs the whole parameter update in one kernel instead of
-    # one per tensor. At six layers that is a few hundred launches a step saved,
-    # which matters here precisely because the model is small enough for launch
-    # overhead to be a real share of the step. CUDA-only, so it is asked for
-    # rather than assumed.
+    # One kernel for the whole update instead of one per tensor: a few hundred
+    # launches a step saved, which matters at a size where launch overhead is a
+    # real share of it. CUDA-only, so asked for rather than assumed.
     # Attention temperatures are excluded from weight decay. Decay pulls a weight
     # toward zero, and zero in log-temperature space is tau=1 — the shared scale a
     # per-head temperature exists to escape. Left in the main group, the decay term
@@ -185,10 +179,7 @@ def run(
         fused=(device == "cuda"),
     )
 
-    # Every epoch reorders the same documents, so the batch count is stable and
-    # the schedule can be built from one measurement.
     stages = data_plan.ordered_stages(cfg.epochs)
-    # Each stage holds different documents, so its step count is its own.
     stage_steps = []
     for stage in stages:
         length = len(plan_mod.EpochStream(corpus, data_plan, 0, mask, stage.documents))
@@ -201,7 +192,6 @@ def run(
             f"batches. Add data, or lower either setting."
         )
 
-    # Tracks the same frequent tokens for the whole run; see frequent_tokens.
     collector = Collector(model, corpus)
 
     # Cadence follows the run's length, so a 200-step run and a 200k-step run
@@ -231,8 +221,6 @@ def run(
         done: bool = False,
         checkpoint_path: str | None = None,
     ) -> None:
-        # Every step since the last frame is still on the device; a consumer is
-        # about to read all of it, so this is where the one transfer belongs.
         log.flush()
         epoch_losses = log.epoch
         window = log.values[-interval:] or [0.0]
@@ -281,8 +269,6 @@ def run(
         log.start_epoch()
         chunk = 0
         steps_this_epoch = stage_steps[stage_index]
-        # Seeded off the global epoch so no two epochs of a run — in any stage —
-        # see the same document order.
         stream = plan_mod.EpochStream(corpus, data_plan, epoch, mask, stage.documents)
 
         for inputs, targets, weights in plan_mod.iter_batches(
@@ -294,15 +280,10 @@ def run(
                 log.flush()
                 return _summary(step, total_steps, log.values, started, cancelled=True)
 
-            # An SFT window can contain no assistant tokens at all, which makes
-            # the loss exactly zero and its gradient nothing. Stepping on it is
-            # harmless but pollutes the reported average with zeros that are not
-            # measurements of anything, so the window is skipped outright.
-            #
-            # Decided here, on the host, from the mask that is still a numpy
-            # array. Asking the same question of the uploaded tensor would mean
-            # reading a device scalar back on every step of every SFT run — a
-            # synchronization point on the one path that least needs it.
+            # A window with no assistant tokens has exactly zero loss, which would
+            # pollute the reported average with non-measurements. Answered from the
+            # host-side mask: asking the uploaded tensor would sync the device on
+            # every step of every SFT run.
             if weights is not None and not weights.any():
                 continue
 
@@ -348,19 +329,10 @@ def run(
             if measuring:
                 report(epoch, stage_index, stage, chunk, steps_this_epoch,
                        lr, epoch_started)
-                # Hand the GIL to the event loop so the frame just published
-                # actually goes out.
-                #
-                # Training runs on a worker thread and publishes through
-                # `call_soon_threadsafe`; the loop needs the GIL to drain that
-                # queue and write the SSE frame. A tight training loop holds it
-                # almost continuously, so without this the frames accumulate and
-                # flush only when the run ends — the whole run appears at once,
-                # which is indistinguishable from "streaming is broken".
-                #
-                # `time.sleep` is the yield that actually releases the GIL;
-                # `sleep(0)` does not. At ~150 reports this costs well under a
-                # second across an entire run.
+                # Hands the GIL to the event loop so the frame just published actually
+                # goes out. Without it a tight loop holds the GIL and every frame flushes
+                # at once when the run ends, which looks exactly like broken streaming.
+                # `sleep(0)` does not release it.
                 time.sleep(0.002)
 
         saved = checkpoint.save(
@@ -368,8 +340,6 @@ def run(
             storage.checkpoints_dir(cfg.model_name) / f"epoch{epoch + 1:03d}.pt",
             epoch=epoch + 1,
         )
-        # An epoch-boundary frame, so the chart gets a point at the end of every
-        # epoch rather than only when a report interval happens to land there.
         if on_progress:
             grad = None
             report(epoch, stage_index, stage, chunk, steps_this_epoch,

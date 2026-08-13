@@ -1,12 +1,12 @@
 pub mod auth;
-pub mod benchmark;
-pub mod chat;
+pub mod benchmarks;
+pub mod chats;
+pub mod datasets;
 pub mod health;
-pub mod jobs;
-pub mod model;
+pub mod models;
 pub mod preset;
-pub mod synth;
-pub mod training;
+pub mod runs;
+pub mod stream;
 pub mod usage;
 pub mod user;
 pub mod validate;
@@ -14,17 +14,19 @@ pub mod validate;
 use actix_web::web;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    // Owned here: people, their sessions, and the presets they compose runs from.
     cfg.service(web::scope("/health").configure(health::configure));
-    cfg.service(web::scope("/user").configure(user::configure));
     cfg.service(web::scope("/auth").configure(auth::configure));
-    cfg.service(web::scope("/benchmark").configure(benchmark::configure));
-    cfg.service(web::scope("/chat").configure(chat::configure));
-    cfg.service(web::scope("/jobs").configure(jobs::configure));
-    cfg.service(web::scope("/model").configure(model::configure));
-    // Registered before "/training" so the more specific prefix matches first.
-    cfg.service(web::scope("/synth").configure(synth::configure));
-    // Registered before "/training" so the more specific prefix matches first.
-    cfg.service(web::scope("/training/presets").configure(preset::configure));
-    cfg.service(web::scope("/training").configure(training::configure));
+    cfg.service(web::scope("/user").configure(user::configure));
+    cfg.service(web::scope("/presets").configure(preset::configure));
+
+    // Owned by the engine, reached through it.
+    cfg.service(web::scope("/chats").configure(chats::configure));
+    cfg.service(web::scope("/messages").configure(chats::configure_messages));
+    cfg.service(web::scope("/models").configure(models::configure));
+    cfg.service(web::scope("/benchmarks").configure(benchmarks::configure));
+    cfg.service(web::scope("/runs").configure(runs::configure));
     cfg.service(web::scope("/usage").configure(usage::configure));
+    cfg.service(web::scope("/ws").configure(stream::configure));
+    cfg.configure(datasets::configure);
 }

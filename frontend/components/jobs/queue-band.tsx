@@ -135,10 +135,6 @@ export function QueueBand({
 
               <span className="shrink-0 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
                 {KIND_LABEL[job.kind]}
-                {/* Said on the row because position alone would lie: a network job
-                    sits in this list behind GPU work it does not wait for, and will
-                    start the moment its own runner is free. */}
-                {job.lane === "network" && " · network"}
               </span>
 
               <span className="hidden w-14 shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">

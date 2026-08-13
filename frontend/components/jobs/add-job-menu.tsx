@@ -4,11 +4,8 @@ import Link from "next/link"
 import {
   Dumbbell,
   Gauge,
-  GraduationCap,
   MessageSquare,
   Plus,
-  Sparkles,
-  ThumbsUp,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -32,7 +29,6 @@ import {
 const OPTIONS = [
   { label: "Train a model", href: "/jobs/new/train", icon: Dumbbell },
   { label: "Benchmark a model", href: "/jobs/new/benchmark", icon: Gauge },
-  { label: "Generate SFT data", href: "/jobs/new/synth", icon: Sparkles },
   { label: "Chat", href: "/chat", icon: MessageSquare },
 ]
 

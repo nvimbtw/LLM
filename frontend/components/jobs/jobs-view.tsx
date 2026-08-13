@@ -25,7 +25,6 @@ export function JobsView() {
   const {
     board,
     running,
-    runningNetwork,
     queued,
     waiting,
     history,
@@ -56,11 +55,7 @@ export function JobsView() {
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
             <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
-              {summarize(
-                queued.length,
-                running !== null || runningNetwork !== null,
-                paused
-              )}
+              {summarize(queued.length, running !== null, paused)}
             </p>
           </div>
 
@@ -80,12 +75,6 @@ export function JobsView() {
         </header>
 
         <NowBand job={running} paused={paused} onCancel={cancel} />
-        {/* The network lane gets its own band rather than a slot in the same one:
-            it is a second thing happening at the same time, and folding it into
-            "what is running" would imply the two are taking turns. */}
-        {runningNetwork && (
-          <NowBand job={runningNetwork} paused={paused} onCancel={cancel} />
-        )}
         <QueueBand
           jobs={queued}
           paused={paused}
@@ -104,7 +93,6 @@ export function JobsView() {
 
         {!isLoading &&
           !running &&
-          !runningNetwork &&
           queued.length === 0 &&
           waiting.length === 0 && (
             <p className="px-5 py-8 text-center text-sm text-muted-foreground">

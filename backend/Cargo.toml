@@ -10,13 +10,9 @@ edition = "2024"
 [workspace]
 members = [
     "crates/api",
-    "crates/crypto",
+    "crates/auth",
     "crates/db",
     "crates/engine",
-    "crates/jobs",
-    "crates/synth",
-    "crates/tokenize",
-    "crates/training",
 ]
 
 # The binary is an entrypoint and nothing else, so it depends on exactly what
@@ -28,7 +24,6 @@ members = [
 api = { path = "crates/api" }
 db = { path = "crates/db" }
 engine = { path = "crates/engine" }
-jobs = { path = "crates/jobs" }
 actix-cors = "0.7.1"
 actix-web = "4"
 dotenvy = "0.15"

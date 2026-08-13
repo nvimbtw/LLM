@@ -1,17 +1,18 @@
-//! The boundary to the Python engine: the process, and the calls into it — HTTP
-//! for everything short, a WebSocket for a training run, which is neither.
+//! The boundary to the Python engine: the process, and the hop into it.
 //!
-//! Training and inference run in `engine/` (PyTorch) rather than in this
-//! workspace. This crate is the only place that knows that — everything above
-//! it calls typed functions and never learns there is a subprocess involved.
+//! Training, inference and everything they own live in `engine/` (PyTorch).
+//! This crate spawns that process, keeps it alive, and forwards signed requests
+//! to it. It models none of what the engine owns — see `proxy`.
 
-pub mod chat;
-pub mod client;
 pub mod config;
-pub mod paths;
+pub mod error;
+pub mod proxy;
 pub mod supervisor;
 
-pub use chat::{Role, SamplingParams, ThinkBudget, Turn};
-pub use client::{Client, EngineError, RunEvent, RunSnapshot};
+/// What a token addressed to this service says in its `aud`.
+pub const AUDIENCE: &str = "engine";
+
 pub use config::EngineConfig;
+pub use error::{EngineError, Result};
+pub use proxy::{Frame, Method, Proxy};
 pub use supervisor::Engine;

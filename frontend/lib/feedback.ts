@@ -13,7 +13,7 @@ export async function setMessageFeedback(
   messageId: string,
   feedback: Feedback | null
 ): Promise<void> {
-  const response = await apiFetch(`/chat/message/${messageId}/feedback`, {
+  const response = await apiFetch(`/messages/${messageId}/feedback`, {
     method: "PUT",
     body: JSON.stringify({ feedback }),
   })

@@ -33,14 +33,10 @@ export interface JobQueuedPanelProps {
 export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
   const { board, paused, reorder } = useJobsContext()
 
-  // Position within its own lane. The device and network runners proceed
-  // independently, so a generation run is not waiting behind a training run and
-  // counting it would overstate the wait.
-  const lane = board.active.filter((j) => j.lane === job.lane)
-  const queued = lane.filter((j) => j.status === "queued")
+  const queued = board.active.filter((j) => j.status === "queued")
   const index = queued.findIndex((j) => j.id_job === job.id_job)
   const ahead = index < 0 ? 0 : index
-  const running = lane.find(isRunning) ?? null
+  const running = board.active.find(isRunning) ?? null
 
   const next = whatHappens(job)
 
@@ -83,10 +79,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
             </p>
           </Panel>
         ) : (
-          <Panel
-            title="In line"
-            description={job.lane === "device" ? "GPU queue" : "Network queue"}
-          >
+          <Panel title="In line" description="GPU queue">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="font-display text-4xl leading-none font-semibold tabular-nums">
                 {ahead === 0 ? "Next" : ordinal(ahead + 1)}
@@ -201,26 +194,6 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           name: `${section.name} · ${Math.round(section.weight * 100)}%`,
           blurb: section.blurb,
         })),
-      }
-    case "synth":
-      return {
-        title: "What it will do",
-        steps: [
-          {
-            name: "Call the provider",
-            blurb:
-              "A few conversations per call, so a long batch doesn't arrive truncated.",
-          },
-          {
-            name: "Validate each one",
-            blurb:
-              "Duplicates, short thinking blocks and over-length conversations are dropped.",
-          },
-          {
-            name: "Append to the corpus",
-            blurb: "Accepted conversations appear here as they are written.",
-          },
-        ],
       }
     case "chat":
       return {

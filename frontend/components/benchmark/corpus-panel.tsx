@@ -40,9 +40,7 @@ export function CorpusPanel({ corpus }: { corpus: CorpusMetrics | null }) {
   return (
     <Panel
       title="Held-out text"
-      description={`${formatCompact(corpus.bytes_scored)} bytes · ${corpus.files} ${
-        corpus.files === 1 ? "file" : "files"
-      }`}
+      description={`${formatCompact(corpus.tokens_scored)} tokens scored`}
     >
       <div className="flex flex-col gap-4">
         <Bar

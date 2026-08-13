@@ -20,8 +20,8 @@ export interface Model {
   published: boolean
 }
 
-// Shape returned by GET /model (see backend routes/model.rs ModelResponse).
-// `parameters` is the training run's stored config + dataset stats.
+// Shape returned by GET /models. `parameters` is the training run's stored
+// config and the summary it finished with.
 export interface RawModelConfig {
   dimensions?: number
   ctx_window?: number
@@ -33,7 +33,7 @@ export interface RawModelConfig {
   epochs?: number
 }
 
-export interface RawModelDataset {
+export interface RawModelResult {
   files?: number
   chars?: number
   vocab_size?: number
@@ -42,17 +42,18 @@ export interface RawModelDataset {
 }
 
 export interface RawModel {
-  id_model: string
+  model_id: string
   name: string
   description: string | null
   parameters: {
     config?: RawModelConfig
-    dataset?: RawModelDataset
+    result?: RawModelResult
   } | null
   context: number | null
   family: string | null
   published: boolean
-  created_at: string
+  has_weights: boolean
+  created_at: string | null
 }
 
 // Rough transformer parameter count from the training config — enough for a
@@ -63,7 +64,7 @@ export function estimateParams(raw: RawModel): number {
   const d = c.dimensions
   const ctx = c.ctx_window ?? 0
   const ff = c.ff_multiplier ?? 4
-  const vocab = raw.parameters?.dataset?.vocab_size ?? c.max_vocab ?? 0
+  const vocab = raw.parameters?.result?.vocab_size ?? c.max_vocab ?? 0
   // embeddings (token in + out) + positions + per-layer attention & FFN
   const perLayer = d * d * (4 + 2 * ff)
   return Math.round(2 * vocab * d + ctx * d + c.layers * perLayer)
@@ -85,7 +86,7 @@ export function mapModel(raw: RawModel): Model {
       ? `${c.layers}-layer transformer, ${c.dimensions}d`
       : "Custom trained model")
   return {
-    id: raw.id_model,
+    id: raw.model_id,
     name: raw.name,
     family: raw.family ?? "Custom",
     tier: tierFor(raw),
@@ -105,7 +106,7 @@ export function mapModel(raw: RawModel): Model {
  * see `ModelsGrid`'s batch flow, which needs to delete by id and nothing else.
  */
 export async function deleteModel(id: string): Promise<void> {
-  const res = await apiFetch(`/model/${id}`, { method: "DELETE" })
+  const res = await apiFetch(`/models/${id}`, { method: "DELETE" })
   if (!res.ok) {
     throw new Error((await res.text()) || "Failed to delete the model.")
   }
@@ -130,13 +131,15 @@ export function useModels(refreshKey?: unknown) {
 
   React.useEffect(() => {
     let active = true
-    apiFetch(`/model`)
+    apiFetch(`/models`)
       .then((res) => {
         if (!res.ok) throw new Error("Unable to load models.")
-        return res.json() as Promise<RawModel[]>
+        return res.json() as Promise<{ models: RawModel[] }>
       })
       .then((data) => {
-        if (active) setModels(data.map(mapModel))
+        // A directory with no row has no id to address, so it is not offered.
+        if (active)
+          setModels(data.models.filter((m) => m.parameters).map(mapModel))
       })
       .catch((err) => {
         if (active)
