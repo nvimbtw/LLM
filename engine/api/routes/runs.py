@@ -91,6 +91,16 @@ def cancel_run(run_id: uuid.UUID):
     return {"run_id": str(run_id), "cancelling": True}
 
 
+@router.delete("/runs/{run_id}")
+def delete_run(run_id: uuid.UUID):
+    """Forget a finished run. A live one is cancelled first."""
+    require_row(run_id)
+    with store.session() as db:
+        if not q.delete_run(db, run_id):
+            raise HTTPException(status_code=409, detail="a live run is cancelled, not deleted")
+    return {"run_id": str(run_id), "deleted": True}
+
+
 @router.patch("/runs/{run_id}")
 def reorder_run(run_id: uuid.UUID, after: uuid.UUID | None = None):
     """Move a queued run within the line, to sit after another or at the front."""

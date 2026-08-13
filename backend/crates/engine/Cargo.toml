@@ -14,14 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "time", "rt", "sync", "macros", "io-util"] }
 
-# The supervisor's whole job is managing a real process, so its tests spawn one.
-# They need the engine's venv present and are skipped (not failed) without it.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-
-# The engine is a local child process reached over plain HTTP, so the socket
-# client needs no TLS stack at all — `ws://` only, and rustls is not pulled in a
-# second time behind reqwest's.
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

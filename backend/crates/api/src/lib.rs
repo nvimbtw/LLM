@@ -11,6 +11,7 @@
 
 pub mod extractors;
 pub mod routes;
+pub mod upstream;
 pub mod ws;
 
 pub use routes::configure;

@@ -1,12 +1,12 @@
 //! The authenticated hop, against a real engine.
 //!
-//! Everything else about the client is covered by the engine's own suite; what
+//! Everything else about the hop is covered by the engine's own suite; what
 //! only this side can prove is that a token minted here opens a door there.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use engine::{Client, Engine, EngineConfig};
+use engine::{Engine, EngineConfig, Proxy};
 
 const SECRET: &str = "seam-test-secret";
 
@@ -39,7 +39,10 @@ async fn a_signed_client_reaches_an_enforcing_engine() {
     let url = cfg.base_url();
     let _engine = Engine::start(cfg).await.expect("engine starts");
 
-    Client::new(url).with_secret(SECRET).health().await.expect("signed call accepted");
+    Proxy::new(url, Some(SECRET.into()))
+        .get(&auth::Caller::System, "/")
+        .await
+        .expect("signed call accepted");
 }
 
 #[tokio::test]
@@ -48,7 +51,10 @@ async fn an_unsigned_client_is_refused_by_an_enforcing_engine() {
     let url = cfg.base_url();
     let _engine = Engine::start(cfg).await.expect("engine starts");
 
-    let err = Client::new(url).health().await.expect_err("must be refused");
+    let err = Proxy::new(url, None)
+        .get(&auth::Caller::System, "/")
+        .await
+        .expect_err("must be refused");
     assert!(err.to_string().contains("401"), "wrong failure: {err}");
 }
 
@@ -58,9 +64,8 @@ async fn the_wrong_secret_is_refused() {
     let url = cfg.base_url();
     let _engine = Engine::start(cfg).await.expect("engine starts");
 
-    let err = Client::new(url)
-        .with_secret("not-the-secret")
-        .health()
+    let err = Proxy::new(url, Some("not-the-secret".into()))
+        .get(&auth::Caller::System, "/")
         .await
         .expect_err("must be refused");
     assert!(err.to_string().contains("401"), "wrong failure: {err}");

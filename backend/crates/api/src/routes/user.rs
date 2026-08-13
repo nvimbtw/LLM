@@ -206,6 +206,7 @@ async fn delete_user(
     auth: AuthUser,
     path: web::Path<Uuid>,
     pool: web::Data<PgPool>,
+    engine: web::Data<engine::Proxy>,
 ) -> impl Responder {
     let id = path.into_inner();
 
@@ -213,15 +214,17 @@ async fn delete_user(
         return HttpResponse::Forbidden().body("forbidden");
     }
 
+    // The engine's conversations go first. Its erase is idempotent, so a
+    // deletion that fails here can be retried; the other order would leave
+    // chats owned by an id nothing can resolve.
+    if let Err(e) = engine.delete(&::auth::Caller::System, &format!("/owners/{id}")).await {
+        eprintln!("engine erase error: {}", e);
+        return HttpResponse::BadGateway().body("failed to erase this user's conversations");
+    }
+
     match db::user::delete(pool.get_ref(), id).await {
         Ok(true) => HttpResponse::NoContent().finish(),
         Ok(false) => HttpResponse::NotFound().body("user not found"),
-        // chats/messages reference users(id_user); deleting a user that still
-        // has rows pointing at it trips the FK constraint — that's a client
-        // conflict, not a server fault.
-        Err(sqlx::Error::Database(db_err)) if db_err.is_foreign_key_violation() => {
-            HttpResponse::Conflict().body("user has associated data")
-        }
         Err(e) => {
             eprintln!("delete user db error: {}", e);
             HttpResponse::InternalServerError().body("failed to delete user")

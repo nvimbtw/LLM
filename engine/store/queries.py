@@ -8,7 +8,7 @@ has to be a type error rather than a silent full-table read.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from store.schema import (
@@ -180,6 +180,68 @@ def set_feedback(db: Session, message_id: uuid.UUID, owner_id: uuid.UUID, feedba
     return True
 
 
+# ── usage ───────────────────────────────────────────────────────────────────
+#
+# Derived from the messages themselves rather than from a separate ledger: a
+# user turn is what was asked, an assistant turn is what was generated, and a
+# second table recording the same numbers can only ever drift from them.
+
+
+def usage_by_day(db: Session, owner_id: uuid.UUID, since: datetime) -> list[tuple]:
+    """(day, asked, generated, replies) per day, oldest first."""
+    day = func.date(Message.created_at).label("day")
+    return list(
+        db.execute(
+            select(day, _asked(), _generated(), _replies())
+            .join(Chat, Chat.id == Message.chat_id)
+            .where(Chat.owner_id == owner_id, Message.created_at >= since)
+            .group_by(day)
+            .order_by(day)
+        )
+    )
+
+
+def usage_by_model(db: Session, owner_id: uuid.UUID, since: datetime) -> list[tuple]:
+    """(model_id, name, tokens, replies) per model, heaviest first.
+
+    A null model is one since deleted; its replies still count against the
+    total, and the caller labels them.
+    """
+    total = func.coalesce(func.sum(Message.tokens), 0).label("tokens")
+    return list(
+        db.execute(
+            select(Message.model_id, Model.name, total, _replies())
+            .join(Chat, Chat.id == Message.chat_id)
+            .outerjoin(Model, Model.id == Message.model_id)
+            .where(
+                Chat.owner_id == owner_id,
+                Message.created_at >= since,
+                Message.role == Role.assistant,
+            )
+            .group_by(Message.model_id, Model.name)
+            .order_by(total.desc())
+        )
+    )
+
+
+def _asked():
+    return func.coalesce(
+        func.sum(case((Message.role == Role.user, Message.tokens), else_=0)), 0
+    ).label("asked")
+
+
+def _generated():
+    return func.coalesce(
+        func.sum(case((Message.role == Role.assistant, Message.tokens), else_=0)), 0
+    ).label("generated")
+
+
+def _replies():
+    return func.coalesce(
+        func.sum(case((Message.role == Role.assistant, 1), else_=0)), 0
+    ).label("replies")
+
+
 # ── benchmarks ──────────────────────────────────────────────────────────────
 
 
@@ -296,6 +358,17 @@ def finish_run(db: Session, run_id: uuid.UUID, status: RunStatus, **fields) -> R
     for key, value in fields.items():
         setattr(run, key, value)
     return run
+
+
+def delete_run(db: Session, run_id: uuid.UUID) -> bool:
+    """Forget a finished run. A live one is cancelled, never deleted — dropping
+    the row would leave its worker writing to nothing."""
+    run = db.get(Run, run_id)
+    if run is None or not run.status.is_terminal:
+        return False
+    db.delete(run)
+    db.flush()
+    return True
 
 
 def fail_orphaned(db: Session) -> int:

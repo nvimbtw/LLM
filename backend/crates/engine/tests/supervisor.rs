@@ -28,6 +28,7 @@ fn test_config(port: u16) -> Option<EngineConfig> {
         host: "127.0.0.1".to_string(),
         port,
         autostart: true,
+        service_secret: None,
         startup_timeout: Duration::from_secs(90),
     })
 }
@@ -67,6 +68,7 @@ async fn missing_interpreter_fails_at_start() {
         host: "127.0.0.1".to_string(),
         port: 8124,
         autostart: true,
+        service_secret: None,
         startup_timeout: Duration::from_secs(2),
     };
 
@@ -83,6 +85,7 @@ async fn autostart_off_requires_a_running_engine() {
         host: "127.0.0.1".to_string(),
         port: 8125,
         autostart: false,
+        service_secret: None,
         startup_timeout: Duration::from_secs(2),
     };
 

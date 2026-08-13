@@ -12,16 +12,11 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("failed to connect to database / run migrations");
 
-    // Reconciles orphaned rows and starts the runners and the cycle driver. The
-    // two handles come back for the HTTP layer to share: cloning `web::Data`
-    // clones the Arc, not the driver, so a job enqueued on one worker is visible
-    // to a socket that lands on another.
-
-    // The Python engine runs training and inference. It is spawned here, as a
-    // child of the server, because it holds the GPU for as long as the server
-    // lives — the same reason the job queue is started here rather than per
-    // request. `start` returns only once it answers its health check, so a
-    // misconfigured engine fails the boot rather than every job an hour later.
+    // The Python engine runs training, inference, and everything they own. It is
+    // spawned here, as a child of the server, because it holds the GPU for as
+    // long as the server lives. `start` returns only once it answers its health
+    // check, so a misconfigured engine fails the boot rather than every request
+    // an hour later.
     //
     // Held to the end of `main`: dropping the handle kills the child, so it must
     // outlive the HTTP server rather than the setup block it was created in.
@@ -32,12 +27,7 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to start the python engine");
     println!("engine ready at {}", engine.base_url());
 
-    // After the engine, because every device job the runners claim calls into it.
-    let engine_client = match service_secret {
-        Some(secret) => engine::Client::new(engine.base_url()).with_secret(secret),
-        None => engine::Client::new(engine.base_url()),
-    };
-    let jobs = jobs::start(pool.clone(), engine_client.clone()).await;
+    let proxy = engine::Proxy::new(engine.base_url(), service_secret);
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -53,8 +43,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
-            .app_data(web::Data::new(jobs.queue.clone()))
-            .app_data(web::Data::new(engine_client.clone()))
+            .app_data(web::Data::new(proxy.clone()))
             .configure(api::configure)
     })
     .bind(("127.0.0.1", 8080))?
