@@ -1,0 +1,19 @@
+[project]
+name = "slate-engine"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+# Module names, not paths: a filename here ("main.py") segfaults coverage 7.15
+# on 3.14 rather than reporting a bad config.
+source = ["llm", "main"]
+omit = ["explore/*", "tests/*", "bench.py"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
