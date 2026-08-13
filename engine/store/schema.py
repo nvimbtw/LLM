@@ -152,6 +152,9 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
+    #: Read-only: what a reply is labelled with. Deleting a model nulls the FK,
+    #: and the turn keeps its role.
+    model: Mapped["Model | None"] = relationship(lazy="joined")
 
 
 class Benchmark(Base):

@@ -24,6 +24,7 @@ router = APIRouter(tags=["models"])
 class ModelEdit(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
     description: str | None = None
+    family: str | None = Field(default=None, max_length=120)
     published: bool | None = None
 
 
@@ -45,7 +46,7 @@ def get_model(model_id: uuid.UUID):
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
         return {
             **_model(model, storage.model_dir(str(model_id))),
-            "benchmarks": [_benchmark(b) for b in q.benchmarks_of(db, model_id)],
+            "benchmarks": [benchmark_row(b) for b in q.benchmarks_of(db, model_id)],
         }
 
 
@@ -78,7 +79,7 @@ def delete_model(model_id: uuid.UUID, weights: bool = True, _=Depends(auth.requi
 @router.get("/models/{model_id}/benchmarks")
 def list_benchmarks(model_id: uuid.UUID, limit: int = 50):
     with store.session() as db:
-        return {"benchmarks": [_benchmark(b) for b in q.benchmarks_of(db, model_id, limit)]}
+        return {"benchmarks": [benchmark_row(b) for b in q.benchmarks_of(db, model_id, limit)]}
 
 
 @router.get("/models/{model_id}/benchmarks/{suite}")
@@ -89,7 +90,7 @@ def latest_benchmark(model_id: uuid.UUID, suite: Suite, version: int = 1):
         found = q.latest_benchmark(db, model_id, suite, version)
         if found is None:
             raise HTTPException(status_code=404, detail=f"no {suite.value} score for {model_id}")
-        return _benchmark(found)
+        return benchmark_row(found)
 
 
 def _weight_dirs() -> list:
@@ -144,7 +145,7 @@ def _remove_weights(model_id: uuid.UUID) -> bool:
     return True
 
 
-def _benchmark(run: Benchmark) -> dict:
+def benchmark_row(run: Benchmark) -> dict:
     return {
         "benchmark_id": str(run.id),
         "model_id": str(run.model_id),

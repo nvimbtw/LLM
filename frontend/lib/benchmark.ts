@@ -1,7 +1,7 @@
 import { apiFetch } from "./api"
 import type { Tier } from "./jobs"
 
-// Wire types for the benchmark API (backend routes/benchmark.rs). The report is
+// Wire types for the benchmark API. The report is
 // the serialized `llm::eval::Report`; every metric there is an f64, and a metric
 // that could not be measured serializes as `null` rather than 0 — so every number
 // below is nullable and the UI renders "—" for a null instead of a confident zero.
@@ -371,21 +371,39 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
 export interface SuiteInfo {
   corpus_dir: string
   corpus_files: number
-  blimp_dir: string
-  blimp_files: number
   chat_dir: string
   // Held-out conversations, which the markup suite's position and structure stages
   // need. Written from the 15% eval share at the start of every benchmark, so this
   // reads 0 only before the first run on a fresh install.
   chat_files: number
-  // Pairs in the built-in marker suite. Templated in code, not a file count.
-  markup_pairs: number
+}
+
+/**
+ * The wire shape of a run. `think_budget` and `id_series` are absent: the budget
+ * sweep is parked with the data module that will rebuild the corpus it varies
+ * over, and null is already what the charts read as "no budget was forced".
+ */
+interface BenchmarkRow extends Omit<BenchmarkRun, "id_run" | "id_model"> {
+  benchmark_id: string
+  model_id: string
+}
+
+function fromRow(row: BenchmarkRow): BenchmarkRun {
+  const { benchmark_id, model_id, ...rest } = row
+  return {
+    ...rest,
+    id_run: benchmark_id,
+    id_model: model_id,
+    think_budget: null,
+    id_series: null,
+  }
 }
 
 export async function listRuns(suite: BenchmarkSuite): Promise<BenchmarkRun[]> {
-  const res = await apiFetch(`/benchmark/runs?suite=${suite}`)
+  const res = await apiFetch(`/benchmarks?suite=${suite}`)
   if (!res.ok) throw new Error("Failed to load benchmark history.")
-  return res.json()
+  const { benchmarks } = (await res.json()) as { benchmarks: BenchmarkRow[] }
+  return benchmarks.map(fromRow)
 }
 
 /**
@@ -404,25 +422,34 @@ export async function getModelRuns(
   idModel: string,
   suite: BenchmarkSuite = "language"
 ): Promise<ModelBenchmarks> {
-  const res = await apiFetch(`/benchmark/models/${idModel}/runs?suite=${suite}`)
+  const res = await apiFetch(`/models/${idModel}/benchmarks`)
   if (!res.ok) throw new Error("Failed to load this model's benchmarks.")
-  return res.json()
+  const { benchmarks } = (await res.json()) as { benchmarks: BenchmarkRow[] }
+  const runs = benchmarks.map(fromRow).filter((run) => run.suite === suite)
+  // The most recent run that produced a report — deliberately not the most
+  // recent run, which may be a failure with nothing in it to show.
+  const scored = runs.find((run) => run.status === "done" && run.score !== null)
+  return {
+    latest: scored ? await getRun(scored.id_run) : null,
+    runs,
+  }
 }
 
 export async function getRun(id: string): Promise<BenchmarkRunDetail> {
-  const res = await apiFetch(`/benchmark/runs/${id}`)
+  const res = await apiFetch(`/benchmarks/${id}`)
   if (!res.ok) throw new Error("Failed to load benchmark run.")
-  return res.json()
+  const row = (await res.json()) as BenchmarkRow & { report: AnyReport | null }
+  return { ...fromRow(row), report: row.report }
 }
 
 export async function getSuite(): Promise<SuiteInfo> {
-  const res = await apiFetch("/benchmark/suite")
+  const res = await apiFetch("/benchmarks/suite")
   if (!res.ok) throw new Error("Failed to load suite info.")
   return res.json()
 }
 
 export async function deleteRun(id: string): Promise<void> {
-  const res = await apiFetch(`/benchmark/runs/${id}`, { method: "DELETE" })
+  const res = await apiFetch(`/benchmarks/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete benchmark run.")
 }
 

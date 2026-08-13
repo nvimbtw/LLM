@@ -32,7 +32,7 @@ export interface ChatMessage {
 // two differ: the wire is snake_case and knows nothing about token counts, which are
 // tallied on this side.
 interface MessageWire {
-  id_message: string
+  message_id: string
   role: "user" | "assistant"
   content: string
   model_name: string | null
@@ -78,11 +78,13 @@ export function useChat(chatId: string) {
   const cancelRef = React.useRef<(() => void) | null>(null)
 
   const fetchMessages = React.useCallback(async () => {
-    const response = await apiFetch(`/chat/${chatId}`)
+    const response = await apiFetch(`/chats/${chatId}`)
     if (!response.ok) throw new Error("Unable to load this chat.")
-    const rows = (await response.json()) as MessageWire[]
+    const { messages: rows } = (await response.json()) as {
+      messages: MessageWire[]
+    }
     return rows.map<ChatMessage>((row) => ({
-      id: row.id_message,
+      id: row.message_id,
       role: row.role,
       content: row.content,
       // Normalized to undefined so the byline's presence check is a single
@@ -184,10 +186,7 @@ export function useChat(chatId: string) {
           budget,
           samplingRef.current,
           {
-            onQueued: ({ ahead }) => setQueuedAhead(ahead),
-            onToken: (value) => {
-              // The first token is proof the turn reached the GPU, whatever the
-              // queue said a moment ago.
+            onToken: (value: string) => {
               setQueuedAhead(0)
               appendToAssistant(value)
             },
@@ -213,7 +212,7 @@ export function useChat(chatId: string) {
               setQueuedAhead(null)
               resolve()
             },
-            onError: (message) => {
+            onError: (message: string) => {
               setError(message)
               setIsSending(false)
               setQueuedAhead(null)

@@ -43,6 +43,9 @@ class Ask(BaseModel):
     model_name: str
     text: str
     system: str | None = None
+    #: "low" | "med" | "high". Absent is not a fourth value — it renders no
+    #: marker, which is the prompt shape the model was trained under.
+    budget: str | None = None
     max_tokens: int = 256
     temperature: float = 0.8
     top_k: int = 40
@@ -207,6 +210,7 @@ def _prepare(
             model_name=body.model_name,
             turns=[*history, ChatTurn(role="user", text=body.text)],
             system=body.system,
+            budget=body.budget,
             max_tokens=body.max_tokens,
             temperature=body.temperature,
             top_k=body.top_k,
@@ -254,6 +258,7 @@ def _message(message: Message) -> dict:
         "content": message.content,
         "tokens": message.tokens,
         "model_id": str(message.model_id) if message.model_id else None,
+        "model_name": message.model.name if message.model else None,
         "feedback": message.feedback.value if message.feedback else None,
         "created_at": message.created_at.isoformat() if message.created_at else None,
     }

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod benchmarks;
 pub mod chats;
 pub mod datasets;
 pub mod health;
@@ -23,6 +24,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/chats").configure(chats::configure));
     cfg.service(web::scope("/messages").configure(chats::configure_messages));
     cfg.service(web::scope("/models").configure(models::configure));
+    cfg.service(web::scope("/benchmarks").configure(benchmarks::configure));
     cfg.service(web::scope("/runs").configure(runs::configure));
     cfg.service(web::scope("/usage").configure(usage::configure));
     cfg.service(web::scope("/ws").configure(stream::configure));

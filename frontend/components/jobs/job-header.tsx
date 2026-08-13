@@ -50,7 +50,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const retry = async () => {
     setBusy(true)
     try {
-      const next = await retryJob(job.id_job)
+      const next = await retryJob(job)
       // Straight to the new job: the point of re-running is to watch the new one,
       // and leaving you on the finished original makes you find it yourself.
       router.push(`/jobs/${next.id_job}`)

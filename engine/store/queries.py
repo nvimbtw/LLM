@@ -275,6 +275,28 @@ def benchmarks_of(db: Session, model_id: uuid.UUID, limit: int = 50) -> list[Ben
     )
 
 
+def benchmarks_in(db: Session, suite: Suite, limit: int = 200) -> list[Benchmark]:
+    """Every model's runs of one suite, newest first. Suites are never compared,
+    so a history is always of one of them."""
+    return list(
+        db.scalars(
+            select(Benchmark)
+            .where(Benchmark.suite == suite)
+            .order_by(Benchmark.created_at.desc())
+            .limit(limit)
+        )
+    )
+
+
+def delete_benchmark(db: Session, benchmark_id: uuid.UUID) -> bool:
+    found = db.get(Benchmark, benchmark_id)
+    if found is None:
+        return False
+    db.delete(found)
+    db.flush()
+    return True
+
+
 def latest_benchmark(
     db: Session, model_id: uuid.UUID, suite: Suite, version: int
 ) -> Benchmark | None:
