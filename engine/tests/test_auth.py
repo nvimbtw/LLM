@@ -55,6 +55,30 @@ async def test_an_unset_secret_leaves_the_engine_open(client, monkeypatch):
     assert (await client.get("/")).status_code == 200
 
 
+async def test_an_open_engine_still_reads_who_a_call_acts_for(client, monkeypatch):
+    """Without a secret the engine trusts the caller either way, and dropping
+    `act` would make every owner-scoped route unusable in development."""
+    import uuid
+
+    monkeypatch.delenv("ENGINE_SERVICE_SECRET", raising=False)
+    who = str(uuid.uuid4())
+
+    assert auth.require_service(f"Bearer {token(act=who)}") == who
+    assert auth.require_service(None) == auth.SYSTEM
+    assert auth.require_service("Bearer not-a-token") == auth.SYSTEM
+    assert auth.require_service("Basic whatever") == auth.SYSTEM
+
+
+async def test_an_owner_scoped_route_needs_someone_to_act_for(client, monkeypatch):
+    import uuid
+
+    monkeypatch.delenv("ENGINE_SERVICE_SECRET", raising=False)
+    acting = bearer(token(act=str(uuid.uuid4())))
+
+    assert (await client.get("/chats")).status_code == 403
+    assert (await client.get("/chats", headers=acting)).status_code == 200
+
+
 async def test_a_configured_secret_refuses_an_unsigned_request(client, enforced):
     response = await client.get("/")
     assert response.status_code == 401
