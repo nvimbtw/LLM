@@ -13,7 +13,6 @@ export type JobKind =
   | "train"
   | "benchmark"
   | "chat"
-  | "synth"
 
 /**
  * Which runner a job stands in front of. `device` is the GPU line — one job at a
@@ -321,80 +320,14 @@ export interface CatalogueReport {
   mean_score: number
 }
 
-/** Config for a synthetic SFT generation run. Mirrors the backend `SynthRequest`. */
-export interface SynthConfig {
-  /** An OpenAI-compatible API base, e.g. https://openrouter.ai/api/v1. */
-  base_url: string
-  /** The provider's model id — the one writing the conversations, not ours. */
-  model: string
-  /** How many valid conversations to add before stopping. */
-  count: number
-  /** Conversations per call. Small: a long batch arrives truncated. */
-  batch?: number
-  temperature?: number
-  max_tokens?: number
-  /** Thinking blocks shorter than this are rejected. */
-  min_think_words?: number
-  think_frac?: number
-  system_frac?: number
-  timeout_secs?: number
-  max_calls?: number
-  /**
-   * Our model, whose tokenizer and context window a conversation has to fit.
-   * Without it nothing checks length, which is how a corpus of conversations three
-   * times too long to train on gets written.
-   */
-  id_model?: string
-  /** Name of the server-side env var holding the key. Never the key itself. */
-  api_key_env?: string
-  exemplar_file?: string
-  out_file?: string
-  seed?: number
-}
 
-export function queueSynth(config: SynthConfig): Promise<Job> {
-  return enqueue("synth", config)
-}
 
-/** One model call in a generation run, as it completes. */
-export interface SynthCall {
-  call: number
-  kept: number
-  duplicates: number
-  /** [reason, count] for everything this call's output lost. */
-  rejected: [string, number][]
-  elapsed_ms: number
-  response_chars: number
-  total: number
-  target: number
-}
 
-/** One conversation that survived validation. */
-export interface SynthAccepted {
-  opener: string
-  reply: string
-  turns: number
-  think_words: number
-  /** Rendered length in real tokens, when a base model was named. */
-  tokens: number | null
-  user_chars: number
-  assistant_chars: number
-}
 
-/** What a generation run did, emitted once at the end. */
-export interface SynthReport {
-  added: number
-  calls: number
-  duplicates: number
-  with_thinking: number
-  rejected: [string, number][]
-  out_file: string
-  corpus_total: number
-}
 
 // ── teaching: generation from a local model ─────────────────────────────────
 
-/** The three thinking budgets. Mirrors the backend `synth::teach::Tier`. */
+/** The three thinking budgets. */
 export type Tier = "low" | "med" | "high"
 
 export const TIER_LABEL: Record<Tier, string> = {
@@ -580,7 +513,6 @@ export const KIND_LABEL: Record<JobKind, string> = {
   train: "Train",
   benchmark: "Benchmark",
   chat: "Chat",
-  synth: "Generate SFT data",
 }
 
 /**
@@ -598,7 +530,6 @@ export const KIND_CHIP: Record<JobKind, string> = {
   train: "text-kind-train bg-kind-train/14",
   benchmark: "text-kind-benchmark bg-kind-benchmark/14",
   chat: "text-kind-chat bg-kind-chat/14",
-  synth: "text-kind-synth bg-kind-synth/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
@@ -627,11 +558,6 @@ export function throbberMode(
       return "benchmarking"
     case "chat":
       return "generating"
-    // Auto-labelling is generation with a scorer attached, and generating is what
-    // it spends effectively all of its time doing.
-    case "synth":
-      return "generating"
-    // Teaching is the same generation on our own device.
   }
 }
 

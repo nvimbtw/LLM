@@ -15,10 +15,6 @@ pub enum JobKind {
     Train,
     Benchmark,
     Chat,
-    // Ask a cheap hosted model for synthetic SFT conversations, validate them, and
-    // append the survivors to the SFT corpus. The only kind that touches no local
-    // compute at all — see `lane`.
-    Synth,
 }
 
 // Which runner executes a kind of work.
@@ -53,7 +49,6 @@ impl JobKind {
     // wrong, putting a training run on the network runner).
     pub fn lane(self) -> JobLane {
         match self {
-            JobKind::Synth => JobLane::Network,
             JobKind::Train | JobKind::Benchmark | JobKind::Chat => JobLane::Device,
         }
     }

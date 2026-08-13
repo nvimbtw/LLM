@@ -8,7 +8,6 @@ engine = { path = "../engine" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 jobs = { path = "../jobs" }
-synth = { path = "../synth" }
 tokenize = { path = "../tokenize" }
 training = { path = "../training" }
 actix-multipart = "0.7"

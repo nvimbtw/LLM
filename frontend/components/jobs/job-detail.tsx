@@ -9,7 +9,6 @@ import { JobBenchmarkPanel } from "./job-benchmark-panel"
 import { JobChatPanel } from "./job-chat-panel"
 import { JobHeader } from "./job-header"
 import { JobQueuedPanel } from "./job-queued-panel"
-import { JobSynthPanel } from "./job-synth-panel"
 import { JobTrainPanel } from "./job-train-panel"
 
 /**
@@ -73,7 +72,6 @@ export function JobDetail({ idJob }: JobDetailProps) {
             {/* Only reachable for an older chat job whose config names no
                 conversation; anything current redirected above. */}
             {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
-            {job.kind === "synth" && <JobSynthPanel job={job} run={run} />}
           </>
         )}
       </div>

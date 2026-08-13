@@ -2,7 +2,7 @@
 
 import { Panel } from "@/components/ui/panel"
 import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
-import type { Job, SynthConfig, TeachConfig } from "@/lib/jobs"
+import type { Job } from "@/lib/jobs"
 import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
 
 /**
@@ -103,8 +103,6 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
         blocks: [],
       }
     }
-    case "synth":
-      return synth(job.config as SynthConfig | null)
     case "chat":
       return null
   }
@@ -169,57 +167,5 @@ function train(config: TrainConfig | null): Recap | null {
   }
 }
 
-function synth(config: SynthConfig | null): Recap | null {
-  if (!config) return null
 
-  const rows: [string, string][] = [
-    ["Writer", config.model],
-    ["Conversations", config.count.toLocaleString()],
-  ]
-  if (config.batch !== undefined) rows.push(["Per call", String(config.batch)])
-  if (config.temperature !== undefined)
-    rows.push(["Temperature", String(config.temperature)])
-  if (config.min_think_words !== undefined)
-    rows.push(["Min thinking", `${config.min_think_words} words`])
-  // Said either way: the absence of a target model is the thing that lets a
-  // corpus three times too long to train on get written.
-  rows.push(["Length-checked against", config.id_model ? "A model" : "Nothing"])
 
-  return { description: host(config.base_url), rows, blocks: [] }
-}
-
-function teach(config: TeachConfig | null): Recap | null {
-  if (!config) return null
-
-  const rows: [string, string][] = [
-    ["Teacher", config.teacher.model_file],
-    ["Triples", config.count.toLocaleString()],
-  ]
-  if (config.teacher.n_ctx !== undefined)
-    rows.push(["Teacher context", String(config.teacher.n_ctx)])
-  // 0 (and absent) means the run derives the boundaries from the student's
-  // context window, so there is no number to show until it has resolved them —
-  // it reports them on its first progress line.
-  if (config.low_max_tokens)
-    rows.push(["Short tier", `≤ ${config.low_max_tokens} tokens`])
-  if (config.med_max_tokens)
-    rows.push(["Medium tier", `≤ ${config.med_max_tokens} tokens`])
-  if (!config.low_max_tokens && !config.med_max_tokens)
-    rows.push(["Thinking tiers", "derived from the student’s context window"])
-  if (config.sample?.temperature !== undefined)
-    rows.push(["Temperature", String(config.sample.temperature)])
-  // Without a model there is no tokenizer to measure a thinking block with, so
-  // the tiers are whatever was asked for rather than what was written.
-  rows.push(["Tiers", config.id_model ? "Measured" : "As requested"])
-
-  return { description: "As queued", rows, blocks: [] }
-}
-
-/** `openrouter.ai` from a base URL — the provider, without the path noise. */
-function host(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
-}

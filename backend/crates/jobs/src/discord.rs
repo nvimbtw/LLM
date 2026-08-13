@@ -323,7 +323,6 @@ mod tests {
         // this filter exists to prevent.
         assert!(!should_notify(&job(JobKind::Chat, false)));
         assert!(!should_notify(&job(JobKind::Train, true)));
-        assert!(!should_notify(&job(JobKind::Synth, false)));
     }
 
     #[test]

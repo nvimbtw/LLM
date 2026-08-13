@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Gauge, ListOrdered, Repeat, Sparkles } from "lucide-react"
+import { Gauge, ListOrdered } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -28,7 +28,6 @@ const items = [
   { title: "Jobs", href: "/jobs", icon: ListOrdered },
   // The corpus, not the composer: this page is what you check before deciding to
   // generate, and generation is queued from the job menu like every other kind.
-  { title: "SFT corpus", href: "/synth", icon: Sparkles },
 ]
 
 export function NavAdmin() {

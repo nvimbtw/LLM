@@ -9,7 +9,6 @@ edition = "2021"
 [dependencies]
 engine = { path = "../engine" }
 db = { path = "../db" }
-synth = { path = "../synth" }
 tokenize = { path = "../tokenize" }
 training = { path = "../training" }
 chrono = { version = "0.4.45", features = ["serde"] }

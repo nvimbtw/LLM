@@ -37,7 +37,7 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
         <ConfigRecap job={job} config={config} />
         <Telemetry
-          status={runPhase(job, run)}
+          status={runPhase(job)}
           isSft={isSft}
           tokenize={run.tokenize}
           train={run.train}
@@ -62,7 +62,7 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
  * the translation is explicit rather than a shared enum that would have to mean
  * both. A queued job has no phase at all, which is what `null` renders as.
  */
-function runPhase(job: Job, run: ReturnType<typeof useJob>): RunPhase | null {
+function runPhase(job: Job): RunPhase | null {
   switch (job.status) {
     // Neither has begun, so neither has a phase. `waiting` also never reaches this
     // panel — the detail page renders the queued panel for it — but the switch is

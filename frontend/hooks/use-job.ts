@@ -9,9 +9,6 @@ import {
   type Calibration,
   type CatalogueReport,
   type Job,
-  type SynthAccepted,
-  type SynthCall,
-  type SynthReport,
   type TeachAccepted,
   type TeachCall,
   type TeachReport,
@@ -34,12 +31,8 @@ const MAX_DIAG_POINTS = 500
 // Generated replies kept in full for the catalogue feed. A screenful and a bit —
 // it is a live window, not a log.
 const MAX_VERDICT_FEED = 30
-// Generated conversations kept in full. Matches the backend's own snapshot window,
-// so a reattach and a live run show the same depth of feed.
-const MAX_SYNTH_FEED = 24
-// Triples kept in full. Fewer than the synth feed because each carries three
-// answers, and it matches the backend's own `TEACH_FEED` so a reattach and a live
-// run show the same depth.
+// Triples kept in full, matching the backend's own `TEACH_FEED` so a reattach and
+// a live run show the same depth of feed.
 const MAX_TEACH_FEED = 8
 
 function downsample<T>(arr: T[], max: number): T[] {
@@ -121,16 +114,8 @@ export function useJob(idJob: string) {
   // from), the recent conversations in full, and the report that lands at the end.
   // The calls are kept in full rather than downsampled — a run is tens of calls,
   // not thousands of steps.
-  const [synthCalls, setSynthCalls] = React.useState<SynthCall[]>([])
-  const [synthAccepted, setSynthAccepted] = React.useState<SynthAccepted[]>([])
-  const [synthAdded, setSynthAdded] = React.useState(0)
-  const [synth, setSynth] = React.useState<SynthReport | null>(null)
 
   // A local-teacher run. Same shape of accumulation as a generation run, kept in
-  // its own state rather than folded into it: the unit is a question with up to
-  // three answers, not a conversation, and the per-tier tally has no counterpart on
-  // the synth side.
-  //
   // Three counters because the run has three units, and holding only the first is
   // what let a "45 triples" headline sit beside tier bars summing to 75.
   const [teachCalls, setTeachCalls] = React.useState<TeachCall[]>([])
@@ -196,18 +181,8 @@ export function useJob(idJob: string) {
             downsample((snap.diag_series as DiagPoint[]) ?? [], MAX_DIAG_POINTS)
           )
           setLog((snap.log as string[]) ?? [])
-        } else if (Array.isArray(snap.calls)) {
-          // A generation snapshot: the whole accumulation, so a page attaching ten
-          // minutes in draws the run so far rather than starting from empty.
-          setSynthCalls(snap.calls as SynthCall[])
-          setSynthAccepted((snap.accepted as SynthAccepted[]) ?? [])
-          setSynthAdded(typeof snap.added === "number" ? snap.added : 0)
-          if (typeof snap.stage === "string") setStage(snap.stage)
-          if (typeof snap.fraction === "number") setFraction(snap.fraction)
         } else if (Array.isArray(snap.reports)) {
-          // A teaching snapshot. Told apart by `reports` rather than `calls` — the
-          // two accumulations are the same idea over different units, and a shared
-          // field name would make a teach snapshot parse as a synth one.
+          // A teaching snapshot, told apart by its `reports` accumulation.
           setTeachCalls(snap.reports as TeachCall[])
           setTeachAccepted((snap.accepted as TeachAccepted[]) ?? [])
           setTeachQuestions(
@@ -305,20 +280,6 @@ export function useJob(idJob: string) {
         break
       case "autolabel":
         setCatalogue(frame as unknown as CatalogueReport)
-        break
-      case "call": {
-        const call = frame as unknown as SynthCall
-        setSynthCalls((prev) => [...prev, call])
-        setSynthAdded(call.total)
-        break
-      }
-      case "accepted": {
-        const accepted = frame as unknown as SynthAccepted
-        setSynthAccepted((prev) => [accepted, ...prev].slice(0, MAX_SYNTH_FEED))
-        break
-      }
-      case "synth":
-        setSynth(frame as unknown as SynthReport)
         break
       case "teach_call": {
         const call = frame as unknown as TeachCall
@@ -445,11 +406,6 @@ export function useJob(idJob: string) {
     text,
     // gather
     sampleTick,
-    // synth
-    synthCalls,
-    synthAccepted,
-    synthAdded,
-    synth,
     // teach
     teachCalls,
     teachAccepted,

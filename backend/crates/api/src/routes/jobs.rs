@@ -240,10 +240,6 @@ async fn create_job(
         // A chat turn needs a persisted user message to reply to, which only the
         // chat socket can create. Accepting one here would queue a reply to
         // nothing.
-        JobKind::Synth => match prepare_synth(pool.get_ref(), config).await {
-            Ok(prepared) => vec![prepared],
-            Err(response) => return response,
-        },
         JobKind::Chat => {
             return HttpResponse::BadRequest().body("chat jobs are queued from the chat socket");
         }
@@ -711,90 +707,6 @@ async fn prepare_benchmark(
 
 
 
-// Validates a synthetic-generation request.
-//
-// Everything checkable without spending a model call is checked here: a run that
-// would write over the gold set, or ask a provider for zero conversations, or read
-// a tokenizer that does not exist, should be a 400 on submit rather than a failed
-// row after the first call comes back.
-async fn prepare_synth(pool: &PgPool, config: Value) -> Result<(String, Value), HttpResponse> {
-    let parsed: synth::SynthRequest = match serde_json::from_value(config) {
-        Ok(config) => config,
-        Err(e) => {
-            return Err(HttpResponse::BadRequest().body(format!("invalid generation config: {e}")));
-        }
-    };
-
-    if !parsed.base_url.starts_with("http://") && !parsed.base_url.starts_with("https://") {
-        return Err(HttpResponse::BadRequest()
-            .body("the API base must be an http(s) URL, e.g. https://openrouter.ai/api/v1"));
-    }
-    if parsed.model.trim().is_empty() {
-        return Err(HttpResponse::BadRequest().body("name the model to generate with"));
-    }
-    if parsed.count < 1 {
-        return Err(HttpResponse::BadRequest().body("count must be at least 1"));
-    }
-    if parsed.batch < 1 {
-        return Err(HttpResponse::BadRequest().body("batch must be at least 1"));
-    }
-    if !(parsed.temperature.is_finite() && parsed.temperature > 0.0) {
-        // Temperature 0 is argmax, and this is a diversity task: every call would
-        // return the same conversations, all but the first deduplicated away.
-        return Err(HttpResponse::BadRequest().body("temperature must be a positive number"));
-    }
-
-    // File *names*, never paths: a run is not a way to write anywhere on the disk
-    // from a browser form.
-    for name in [&parsed.out_file, &parsed.exemplar_file] {
-        if name.contains('/') || name.contains('\\') || !name.ends_with(".jsonl") {
-            return Err(HttpResponse::BadRequest()
-                .body("file names must be plain .jsonl names inside the SFT directory"));
-        }
-    }
-    // The gold set is hand-curated and irreplaceable; generated output goes beside
-    // it, never into it.
-    if parsed.out_file == parsed.exemplar_file {
-        return Err(HttpResponse::BadRequest()
-            .body("generated conversations cannot be written into the gold exemplar file"));
-    }
-    if !engine::paths::sft_dir().join(&parsed.exemplar_file).exists() {
-        return Err(HttpResponse::BadRequest().body(
-            "no gold conversations to imitate — generation copies the style of real \
-             ones, and with none to show it produces generic chat data",
-        ));
-    }
-
-    // The model whose window the conversations have to fit. Optional, but checked
-    // when present: a run configured against a deleted model would otherwise fail
-    // on its first accepted conversation, minutes in.
-    let mut label = format!("{} × {}", parsed.model, parsed.count);
-    if let Some(id_model) = parsed.id_model {
-        match db::model::find_by_id(pool, id_model).await {
-            Ok(Some(model)) => label = format!("{} → {}", parsed.model, model.name),
-            Ok(None) => return Err(HttpResponse::NotFound().body("model not found")),
-            Err(e) => {
-                eprintln!("synth model lookup db error: {}", e);
-                return Err(HttpResponse::InternalServerError().body("failed to queue job"));
-            }
-        }
-        let model_dir = engine::paths::data_root().join("artifacts/models").join(id_model.to_string());
-        if !model_dir.join("merges.bin").exists() {
-            return Err(HttpResponse::BadRequest().body(
-                "that model has no tokenizer on disk, so there is no way to measure \
-                 whether a conversation fits its context window",
-            ));
-        }
-    }
-
-    match serde_json::to_value(&parsed) {
-        Ok(value) => Ok((label, value)),
-        Err(e) => {
-            eprintln!("serialize synth config error: {}", e);
-            Err(HttpResponse::InternalServerError().body("failed to queue job"))
-        }
-    }
-}
 
 
 // Where to move a queued job: directly after `after`, or to the front of the

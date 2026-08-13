@@ -34,7 +34,6 @@ const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/benchmark$/, "Benchmark"],
   [/^\/models\/[^/]+$/, "Model"],
   [/^\/models$/, "Models"],
-  [/^\/synth$/, "SFT corpus"],
   [/^\/conversations$/, "Conversations"],
 ]
 

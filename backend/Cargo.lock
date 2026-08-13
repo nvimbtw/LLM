@@ -355,7 +355,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "synth",
  "tokenize",
  "tokio",
  "training",
@@ -1797,7 +1796,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "synth",
  "tokenize",
  "tokio",
  "training",
@@ -3226,19 +3224,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "synth"
-version = "0.1.0"
-dependencies = [
- "engine",
- "reqwest",
- "serde",
- "serde_json",
- "tokenize",
- "tokio",
- "uuid",
 ]
 
 [[package]]

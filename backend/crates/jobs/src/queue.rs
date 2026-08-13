@@ -18,14 +18,9 @@
 // in flight survives a restart, so there is nothing to persist about it; what
 // survives is the queue itself.
 //
-// **Why there are two lines rather than one.** Every kind above is FFI into CUDA,
-// so "one runner" and "one device" were the same statement. Synthetic data
-// generation is not: it waits on somebody else's HTTP endpoint for minutes and uses
-// no local compute at all. Sharing the device's line would mean a generation run
-// idles the GPU and blocks chat for as long as it lasts, which is strictly worse
-// than not having the feature. So a job declares a `JobLane`, each lane has its own
-// runner, and the two contend for nothing — `live` therefore holds up to one job
-// *per lane* rather than one job overall.
+// Every kind here is FFI into CUDA, so one runner and one device are the same
+// statement. The lane machinery outlives the only job that needed a second line
+// and goes when this table does.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,7 +43,6 @@ const PROMPT_OVERFETCH: i64 = 4;
 
 use db;
 use db::job::{JobKind, JobLane, JobStatus};
-use synth;
 use crate::train_worker::{self, TrainCtx, TrainPhase, TrainState};
 
 const BROADCAST_CAPACITY: usize = 256;
@@ -81,38 +75,7 @@ pub struct ProgressTick {
 pub enum Snapshot {
     Train(Arc<TrainCtx>),
     Simple(Arc<Mutex<SimpleState>>),
-    // A generation run accumulates two series and a feed, and a page that attaches
-    // ten minutes in should see the run so far rather than an empty chart — so its
-    // snapshot carries the whole accumulation, like training's does.
-    Synth(Arc<Mutex<SynthState>>),
-    // The local-teacher run. Its own shape rather than reusing `Synth`'s because
-    // the unit is a *question with up to three answers*, not a conversation, and the
-    // number that says whether the run is working is the per-tier split — a run can
-    // accept a thousand questions and put every answer in one bucket, which `Synth`'s
-    // counters have no field to show.
 }
-
-// Everything a synthetic-data run has produced so far.
-pub struct SynthState {
-    pub stage: String,
-    pub fraction: f64,
-    pub calls: Vec<synth::CallReport>,
-    // The most recent conversations, in full. A live window rather than a log: the
-    // text is what makes the feed worth watching and also what makes it heavy.
-    pub accepted: Vec<synth::Accepted>,
-    pub added: usize,
-    pub target: usize,
-    pub duplicates: usize,
-    pub with_thinking: usize,
-}
-
-// How many accepted conversations the snapshot keeps. A screenful and a bit.
-const SYNTH_FEED: usize = 24;
-
-
-// Triples carry three replies each, so the feed is heavier per entry than
-// `SYNTH_FEED`'s and holds fewer of them.
-const TEACH_FEED: usize = 8;
 
 pub struct SimpleState {
     pub stage: String,
@@ -143,22 +106,6 @@ impl Live {
                     "stage": st.stage,
                     "fraction": st.fraction,
                     "text": st.text,
-                })
-                .to_string()
-            }
-            Snapshot::Synth(state) => {
-                let st = lock(state);
-                serde_json::json!({
-                    "type": "snapshot",
-                    "status": "running",
-                    "stage": st.stage,
-                    "fraction": st.fraction,
-                    "calls": st.calls,
-                    "accepted": st.accepted,
-                    "added": st.added,
-                    "target": st.target,
-                    "duplicates": st.duplicates,
-                    "with_thinking": st.with_thinking,
                 })
                 .to_string()
             }
@@ -367,10 +314,6 @@ impl Queue {
             }
             JobKind::Chat => {
                 self.run_chat(&job, cancel.clone(), tx, progress_tx, progress_rx)
-                    .await
-            }
-            JobKind::Synth => {
-                self.run_synth(&job, cancel.clone(), tx, progress_tx, progress_rx)
                     .await
             }
         };
@@ -960,142 +903,6 @@ impl Queue {
         }
     }
 
-    // Asks a cheap hosted model for synthetic SFT conversations, validates them
-    // against the real tag vocabulary and the base model's context window, and
-    // appends the survivors to the SFT corpus. Produces no database record beyond
-    // its own row — its whole output is a JSONL file the next SFT run will read.
-    //
-    // The one kind with no worker thread. Every other job here is blocking CUDA and
-    // has to leave the async runtime to avoid stalling it; this is HTTP and parsing,
-    // so it runs as an ordinary future on the runner's own task. `spawn_worker`
-    // would have to block a whole OS thread on a network wait to achieve nothing.
-    async fn run_synth(
-        self: &Arc<Self>,
-        job: &db::job::Job,
-        cancel: Arc<AtomicBool>,
-        tx: broadcast::Sender<String>,
-        progress_tx: mpsc::UnboundedSender<ProgressTick>,
-        mut progress_rx: mpsc::UnboundedReceiver<ProgressTick>,
-    ) -> Done {
-        let request: synth::SynthRequest = match serde_json::from_value(job.config.clone()) {
-            Ok(request) => request,
-            Err(e) => return Done::failed(format!("stored generation config is unreadable: {e}")),
-        };
-
-        let state = Arc::new(Mutex::new(SynthState {
-            stage: "Starting".to_string(),
-            fraction: 0.0,
-            calls: Vec::new(),
-            accepted: Vec::new(),
-            added: 0,
-            target: request.count,
-            duplicates: 0,
-            with_thinking: 0,
-        }));
-        self.go_live(job.id_job, JobKind::Synth, Live {
-            id_job: job.id_job,
-            cancel: cancel.clone(),
-            tx: tx.clone(),
-            snapshot: Snapshot::Synth(state.clone()),
-        });
-
-        // One clone per callback: each is `move`d into its own closure and they all
-        // outlive this block.
-        let progress_state = state.clone();
-        let progress_frames = tx.clone();
-        let on_progress: synth::ProgressCallback = Box::new(move |stage, fraction| {
-            {
-                let mut st = lock(&progress_state);
-                st.stage = stage.to_string();
-                st.fraction = fraction;
-            }
-            let _ = progress_tx.send(ProgressTick {
-                fraction,
-                stage: stage.to_string(),
-            });
-            emit(&progress_frames, frame(
-                "progress",
-                serde_json::json!({ "stage": stage, "fraction": fraction }),
-            ));
-        });
-
-        // One frame per model call. This is the frame that makes a run diagnosable:
-        // a provider erroring, a model whose output is all rejected for one reason,
-        // and a model repeating itself are three different failures that a progress
-        // bar renders identically.
-        let call_state = state.clone();
-        let call_frames = tx.clone();
-        let on_call: synth::CallCallback = Box::new(move |report| {
-            {
-                let mut st = lock(&call_state);
-                st.calls.push(report.clone());
-                st.added = report.total;
-                st.duplicates += report.duplicates;
-            }
-            emit(&call_frames, frame("call", serde_json::json!(report)));
-        });
-
-        let accepted_state = state.clone();
-        let accepted_frames = tx.clone();
-        let on_accepted: synth::AcceptedCallback = Box::new(move |accepted| {
-            {
-                let mut st = lock(&accepted_state);
-                if accepted.think_words > 0 {
-                    st.with_thinking += 1;
-                }
-                st.accepted.insert(0, accepted.clone());
-                st.accepted.truncate(SYNTH_FEED);
-            }
-            emit(&accepted_frames, frame("accepted", serde_json::json!(accepted)));
-        });
-
-        // Progress is drained concurrently with the run rather than through
-        // `spawn_worker`, which only knows how to await a thread. Same throttle, same
-        // reason: the frames carry the truth, this is so a fresh page load has a
-        // sane bar before its socket attaches.
-        let run = synth::run(
-            &request,
-            &self.engine,
-            on_progress,
-            on_call,
-            on_accepted,
-            cancel.clone(),
-        );
-        tokio::pin!(run);
-        let mut last_write = Instant::now() - PROGRESS_WRITE_INTERVAL;
-        let outcome = loop {
-            tokio::select! {
-                biased;
-                result = &mut run => break result,
-                Some(tick) = progress_rx.recv() => {
-                    if last_write.elapsed() >= PROGRESS_WRITE_INTERVAL {
-                        last_write = Instant::now();
-                        if let Err(e) =
-                            db::job::set_progress(&self.pool, job.id_job, tick.fraction, &tick.stage).await
-                        {
-                            eprintln!("[queue] could not write progress for {}: {}", job.id_job, e);
-                        }
-                        self.notify_progress(job.id_job, tick.fraction, &tick.stage);
-                    }
-                }
-            }
-        };
-
-        let fraction = lock(&state).fraction;
-        match outcome {
-            Ok(Some(stats)) => {
-                emit(&tx, frame("synth", serde_json::json!(stats)));
-                Done::done()
-            }
-            // Cancelled runs keep what they wrote — the file is appended to as each
-            // conversation is accepted — so this is a partial success reported as a
-            // cancellation, not a loss.
-            Ok(None) => Done::cancelled(fraction),
-            Err(e) => Done::failed(e),
-        }
-    }
-
-
     // ── worker plumbing ─────────────────────────────────────────────────────
 
     // Runs `work` on its own OS thread and awaits the result, writing coarse
@@ -1250,7 +1057,6 @@ pub(crate) fn kind_name(kind: JobKind) -> &'static str {
         JobKind::Train => "train",
         JobKind::Benchmark => "benchmark",
         JobKind::Chat => "chat",
-        JobKind::Synth => "synth",
     }
 }
 

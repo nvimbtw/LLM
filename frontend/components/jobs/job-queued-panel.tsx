@@ -202,26 +202,6 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           blurb: section.blurb,
         })),
       }
-    case "synth":
-      return {
-        title: "What it will do",
-        steps: [
-          {
-            name: "Call the provider",
-            blurb:
-              "A few conversations per call, so a long batch doesn't arrive truncated.",
-          },
-          {
-            name: "Validate each one",
-            blurb:
-              "Duplicates, short thinking blocks and over-length conversations are dropped.",
-          },
-          {
-            name: "Append to the corpus",
-            blurb: "Accepted conversations appear here as they are written.",
-          },
-        ],
-      }
     case "chat":
       return {
         title: "What it will do",
