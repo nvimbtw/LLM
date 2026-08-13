@@ -65,11 +65,19 @@ pub struct TrainConfig {
     // the route boundary for SFT.
     #[serde(default)]
     pub base_model_id: Option<Uuid>,
-    // Which upload datasets (subfolders of uploads/) go into this run's corpus,
-    // each with how many of its .txt files to sample at random (0 => all of that
-    // dataset). Pretrain only — SFT ignores it. `#[serde(default)]` keeps
-    // pre-existing meta.json (written before this field, or from an SFT run)
-    // deserializing as an empty selection.
+    // Which datasets go into this run's corpus. The catalogue depends on `mode`:
+    // pretrain selects prose corpora, SFT selects conversation sets under the
+    // engine's sft/ — the field is shared because the engine's own `TrainConfig`
+    // and `SftConfig` share it, and a run is only ever one mode.
+    //
+    // For pretrain, `count` is how many of a dataset's .txt files to sample at
+    // random (0 => all of them). Neither mode sends the count to the engine yet,
+    // so it currently selects whole datasets either way.
+    //
+    // **Empty is "every set on disk", not "none"** — the engine resolves it that
+    // way, so a dataset added later joins the next run unasked. Send an explicit
+    // selection. `#[serde(default)]` keeps pre-existing meta.json (written before
+    // this field) deserializing as an empty selection.
     #[serde(default)]
     pub datasets: Vec<DatasetSelection>,
     // Curriculum stages: train the model on each stage's datasets in order, for

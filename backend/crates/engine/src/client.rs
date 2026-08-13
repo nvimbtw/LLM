@@ -97,6 +97,11 @@ pub struct SftRequest {
     pub warmup_steps: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strip_thinking: Option<bool>,
+    // Which SFT sets under the engine's sft/ to fine-tune on. Empty is not "none"
+    // — the engine reads it as "every set on disk", so a set appearing there
+    // later silently joins the next run. Send an explicit selection.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rebuild_dataset: Option<bool>,
 }
@@ -541,6 +546,16 @@ impl Client {
     /// scripts, not through the API.
     pub async fn datasets(&self) -> Result<Vec<DatasetInfo>> {
         let list: DatasetList = self.get("/datasets").await?;
+        Ok(list.datasets)
+    }
+
+    /// What SFT sets the engine has on disk, for a caller composing a fine-tune.
+    ///
+    /// A separate catalogue from `datasets` rather than a flag on it: these are
+    /// conversation sets under `sft/`, not prose corpora under the pretrain root,
+    /// and a run picks from exactly one of the two.
+    pub async fn sft_datasets(&self) -> Result<Vec<DatasetInfo>> {
+        let list: DatasetList = self.get("/sft/datasets").await?;
         Ok(list.datasets)
     }
 

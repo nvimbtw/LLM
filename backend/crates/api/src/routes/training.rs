@@ -26,6 +26,21 @@ async fn list_datasets(_admin: AdminUser, engine: web::Data<engine::Client>) -> 
     }
 }
 
+// The SFT conversation sets, for the same rail in fine-tune mode. Separate from
+// `/datasets` because they are a different catalogue on disk, and a run selects
+// from one or the other — never a mix.
+#[get("/sft/datasets")]
+async fn list_sft_datasets(_admin: AdminUser, engine: web::Data<engine::Client>) -> impl Responder {
+    match engine.sft_datasets().await {
+        Ok(list) => HttpResponse::Ok().json(list),
+        Err(e) => {
+            eprintln!("list sft datasets error: {}", e);
+            HttpResponse::InternalServerError().body("failed to list SFT datasets")
+        }
+    }
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(list_datasets);
+    cfg.service(list_sft_datasets);
 }

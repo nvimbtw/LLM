@@ -26,13 +26,34 @@ from llm.train.warm_start import untrained_marker_ids, warm_start_embeddings
 
 
 def _base_special_ids(base_model: str) -> list[int] | None:
-    """Which markers the base model's pretrain corpus contained, or None when
-    that was never recorded (a model trained before the field existed)."""
+    """Which markers the base model was trained on, or None when that was never
+    recorded (a model trained before the field existed).
+
+    Two meta.json shapes are in circulation and both are live, because two
+    writers produce them. A run driven straight through the engine keeps what
+    `run` wrote here: `{"config", "result"}`. A run driven by the backend queue
+    has its meta *rewritten* on the way out by `training::write_meta`, which
+    stores this whole result dict under the key `"dataset"` instead.
+
+    So the run result is `result` or `dataset`, and the corpus stats are the
+    `dataset` *inside* it either way. Reading only the first spelling made this
+    return None for every backend-launched run — `untrained_marker_ids` then saw
+    "unknown" and reset nothing, and the ~28 chat-scaffold markers the pretrain
+    never contained entered SFT at random init. That is exactly the failure
+    `llm/train/warm_start.py` exists to prevent, and it was silent: the only
+    sign was `warm_started: 0` on a base that had plainly never seen a chat
+    template.
+    """
     path = storage.meta_path(base_model)
     if not path.is_file():
         return None
     meta = json.loads(path.read_text(encoding="utf-8"))
-    dataset = meta.get("result", {}).get("dataset")
+    run = meta.get("result")
+    if not isinstance(run, dict):
+        run = meta.get("dataset")
+    if not isinstance(run, dict):
+        return None
+    dataset = run.get("dataset")
     if not isinstance(dataset, dict):
         return None
     return dataset.get("special_ids_seen")
@@ -105,7 +126,8 @@ def run(
     used = info.get("special_ids_seen")
     if used is None:
         used = sft_corpus.special_ids_in(corpus, marker_ids, eot_id)
-    to_reset = untrained_marker_ids(used, _base_special_ids(cfg.base_model))
+    base_seen = _base_special_ids(cfg.base_model)
+    to_reset = untrained_marker_ids(used, base_seen)
     reset = warm_start_embeddings(model, to_reset)
     print(
         f"[3/5] Warm-start: reset {reset} embedding row(s)"
@@ -161,6 +183,15 @@ def run(
             "reasoning": reasoning.value,
             "key": key,
             **(stats.__dict__ if stats else {"reused": True}),
+            # The union of this corpus and the base's, so the record composes
+            # down a pretrain -> SFT -> SFT chain. Recording only this run's
+            # corpus loses the base's history at every hop: a thinking fine-tune
+            # chained off a strip-thinking one would read <|thinking|> as never
+            # trained and reset a row the *pretrain* had trained, throwing the
+            # signal away. Written last so it wins over the `stats` copy above,
+            # and derived from `used` rather than `stats` so a reused build —
+            # which carries no stats at all — still records one.
+            "special_ids_seen": sorted(set(used) | set(base_seen or [])),
         },
         "trainable_tokens": int(mask.sum()),
         "total_tokens": len(corpus),

@@ -354,6 +354,10 @@ fn run_sft(ctx: Arc<TrainCtx>, config: TrainConfig) -> Outcome {
         epochs: Some(config.epochs),
         lr: Some(config.lr as f64),
         strip_thinking: Some(training::strip_thinking_for(config.mode, config.strip_thinking)),
+        // Names only, exactly as `run_pretrain` sends them — the engine's own
+        // selection type takes a bare name or a {name, count}, and neither mode
+        // plumbs the count through yet.
+        datasets: config.datasets.iter().map(|d| d.name.clone()).collect(),
         rebuild_dataset: Some(true),
         ..Default::default()
     };

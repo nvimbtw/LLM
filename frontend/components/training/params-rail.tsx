@@ -142,23 +142,31 @@ function Pow2Input({
   )
 }
 
-// The pretrain dataset picker: one checkbox row per uploads/ subfolder. Checking
-// a dataset adds it to the run; the count field then dials how many of its files
-// to sample (blank/0 = all), with the total shown as "/ <files>". Reads as an
-// extension of the spec-sheet rail — a hairline list, tabular figures, muted
-// labels — rather than a separate form.
+// The dataset picker: one checkbox row per selectable dataset. Checking one adds
+// it to the run; the count field then dials how many of its files to sample
+// (blank/0 = all), with the total shown as "/ <files>". Reads as an extension of
+// the spec-sheet rail — a hairline list, tabular figures, muted labels — rather
+// than a separate form.
+//
+// Serves both catalogues. A fine-tune passes the SFT conversation sets and
+// `showCounts={false}`: the backend sends names only, so a per-set count there
+// would be a control wired to nothing.
 function DatasetPicker({
   available,
   loading,
   value,
   disabled,
   onChange,
+  showCounts = true,
+  emptyHint,
 }: {
   available: DatasetInfo[]
   loading: boolean
   value: DatasetSelection[]
   disabled: boolean
   onChange: (next: DatasetSelection[]) => void
+  showCounts?: boolean
+  emptyHint?: React.ReactNode
 }) {
   const selected = new Map(value.map((d) => [d.name, d.count]))
 
@@ -197,11 +205,15 @@ function DatasetPicker({
         </p>
       ) : available.length === 0 ? (
         <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
-          No datasets found. Add a folder of .txt files under
-          <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
-            data/raw/uploads/
-          </code>
-          .
+          {emptyHint ?? (
+            <>
+              No datasets found. Add a folder of .txt files under
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
+                data/raw/uploads/
+              </code>
+              .
+            </>
+          )}
         </p>
       ) : (
         <ul className="divide-y rounded-lg border">
@@ -231,7 +243,7 @@ function DatasetPicker({
                 </label>
 
                 <span className="flex w-32 shrink-0 items-center justify-end gap-1.5 tabular-nums">
-                  {checked ? (
+                  {checked && showCounts ? (
                     <>
                       <Input
                         type="number"
@@ -609,8 +621,10 @@ export function ParamsRail({
   footer,
 }: ParamsRailProps) {
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
+  // A fine-tune picks from the SFT conversation sets, a pretrain from the prose
+  // corpora — two different folders on disk, so the catalogue follows the mode.
   const { datasets: availableDatasets, isLoading: datasetsLoading } =
-    useDatasets()
+    useDatasets(isFineTune(cfg.mode))
   // Only meaningful in preference mode, but hooks can't be conditional — and it
   // is one small count, read once per mount.
 
@@ -838,6 +852,37 @@ export function ParamsRail({
         )}
       </dl>
 
+      {isSft && (
+        <div className="space-y-3">
+          <DatasetPicker
+            available={availableDatasets}
+            loading={datasetsLoading}
+            value={cfg.datasets ?? []}
+            disabled={disabled}
+            showCounts={false}
+            emptyHint={
+              <>
+                No SFT sets found. Fetch conversations into
+                <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
+                  engine/data/sft/
+                </code>
+                first.
+              </>
+            }
+            onChange={(datasets) => onChange({ ...cfg, datasets })}
+          />
+          {(cfg.datasets?.length ?? 0) === 0 &&
+            availableDatasets.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Nothing selected trains on <em>every</em> set on disk, including
+                any added later. Pick the sets explicitly — a thinking set
+                folded into a no-think run is how reasoning traces get stripped
+                and trained as answer-only.
+              </p>
+            )}
+        </div>
+      )}
+
       {!isSft && (
         <div className="space-y-3">
           {/* Data-order controls: shuffle each epoch + curriculum staging. */}
@@ -953,8 +998,8 @@ export function ParamsRail({
               ? "Fine-tuning…"
               : "Training…"
             : isSft
-                  ? "Start fine-tune"
-                  : "Start training"}
+              ? "Start fine-tune"
+              : "Start training"}
         </Button>
       )}
     </>

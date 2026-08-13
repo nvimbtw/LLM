@@ -2,11 +2,7 @@
 
 import { Panel } from "@/components/ui/panel"
 import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
-import type {
-  Job,
-  SynthConfig,
-  TeachConfig,
-} from "@/lib/jobs"
+import type { Job, SynthConfig, TeachConfig } from "@/lib/jobs"
 import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
 
 /**
@@ -147,15 +143,22 @@ function train(config: TrainConfig | null): Recap | null {
     rows.push(["Beta", String(config.beta)])
   }
 
-  // Pretrain builds its corpus from the selected uploads; a fine-tune's data is
-  // the chat corpus or the rated catalogue, neither of which is a dataset pick.
-  const datasets = fineTune
+  // Pretrain builds its corpus from the selected uploads and SFT from the
+  // selected conversation sets — both are a dataset pick and both are recapped,
+  // because which sets went in is the thing that tells two runs from the same
+  // base apart. RAFT and KTO are not: their data is the model's own generations
+  // and the rated catalogue, neither of which is chosen here.
+  const picksDatasets = !fineTune || config.mode === "sft"
+  const datasets = !picksDatasets
     ? ""
     : config.curriculum.length > 0
       ? config.curriculum
           .map((stage, i) => stage.name ?? `Stage ${i + 1}`)
           .join(" → ")
-      : config.datasets.map((d) => d.name).join(", ")
+      : // Empty is not "none" — the engine resolves it to every set on disk, so
+        // say that rather than showing a blank where a selection should be.
+        config.datasets.map((d) => d.name).join(", ") ||
+        (config.mode === "sft" ? "Every set on disk" : "")
 
   return {
     description: fineTune ? "Inherited from the base" : "As queued",
