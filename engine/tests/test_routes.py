@@ -40,14 +40,18 @@ async def test_datasets_lists_the_input_tree(client):
     assert [d["name"] for d in body["datasets"]] == [TINY_DATASET]
 
 
-async def test_sft_datasets_is_empty_without_an_sft_tree(client):
-    assert (await client.get("/sft/datasets")).json() == {"datasets": []}
+async def test_sft_datasets_lists_the_sft_tree(client):
+    body = (await client.get("/sft/datasets")).json()
+    assert [d["name"] for d in body["datasets"]] == [TINY_DATASET]
 
 
 async def test_models_lists_weights_on_disk(client):
+    """A subset assertion on purpose: other tests train models into the same
+    tree, and the route's contract is "what is on disk", not "only this"."""
     body = (await client.get("/models")).json()
-    assert [m["name"] for m in body["models"]] == [TINY_MODEL]
-    assert body["models"][0]["has_weights"] is True
+    listed = {m["name"]: m for m in body["models"]}
+    assert TINY_MODEL in listed
+    assert listed[TINY_MODEL]["has_weights"] is True
 
 
 async def test_markers_exposes_the_reserved_block(client):
