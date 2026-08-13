@@ -6,13 +6,19 @@ or in `api/`.
 """
 
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.responses import StreamingResponse
 
+import store
 from api import auth, sse, ws
-from api.runs import REGISTRY, EngineBusy
+from api.handlers import HANDLERS
+from api.runner import Runner
+from api.runs import REGISTRY
+from store import queries as q
+from store.schema import RunKind
 from llm.config import (
     ChatConfig,
     CountRequest,
@@ -26,13 +32,30 @@ from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import train as train_pipeline
 
 
+RUNNER = Runner(REGISTRY, HANDLERS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Worker threads publish progress onto this loop; see Registry.bind_loop.
     REGISTRY.bind_loop(asyncio.get_running_loop())
+    store.configure()
+
+    # Runs still marked live belong to a process that is gone. Queued rows are
+    # deliberately untouched — draining them is the point of a durable queue.
+    with store.session() as db:
+        stranded = q.fail_orphaned(db)
+    if stranded:
+        print(f"engine: failed {stranded} run(s) stranded by a restart")
+
     if not auth.enforced():
         print("engine: ENGINE_SERVICE_SECRET unset — accepting unauthenticated callers")
-    yield
+
+    drain = asyncio.create_task(RUNNER.drain_forever())
+    try:
+        yield
+    finally:
+        drain.cancel()
 
 
 # Applied to the whole app rather than per route: a new endpoint is
@@ -62,111 +85,105 @@ def health():
 
 @app.post("/train", status_code=202)
 async def train(cfg: TrainConfig, wait: bool = False):
-    """Start a training run. Returns immediately with a run id.
+    """Queue a pretraining run.
 
-    `wait=true` blocks until the run finishes and returns its result instead —
-    for curl and tests, not for the job queue, which wants the event stream.
+    Queued rather than started: there is one device and one line, and a caller
+    that gets a run id back can follow it whether it starts now or in an hour.
     """
-    try:
-        run = REGISTRY.start(
-            "train",
-            cfg.model_dump(),
-            lambda on_progress, cancel: train_pipeline.run(cfg, on_progress, cancel),
-        )
-    except EngineBusy as e:
-        raise HTTPException(status_code=409, detail=str(e))
-
-    if wait:
-        await REGISTRY.wait(run)
-    return run.snapshot()
-
-
-@app.websocket("/train")
-async def train_socket(websocket: WebSocket):
-    """The same run as `POST /train`, start to finish over one socket.
-
-    Send `{"config": {...}}`; receive a `started` frame carrying the run id,
-    then every progress frame as it happens, then one of done/cancelled/error.
-    Send `{"type": "cancel"}` at any point to stop it.
-
-    It is the same registry either way, so a run started here is listed at
-    /runs and can still be followed or cancelled over HTTP.
-    """
-    await ws.serve_run(
-        websocket,
-        REGISTRY,
-        "train",
-        TrainConfig,
-        lambda cfg: lambda on_progress, cancel: train_pipeline.run(cfg, on_progress, cancel),
-    )
+    return await _queue(RunKind.train, cfg.model_name, cfg.model_dump(), wait)
 
 
 @app.post("/sft", status_code=202)
 async def sft(cfg: SftConfig, wait: bool = False):
-    """Fine-tune a pretrained model on chat conversations, with loss on the
-    assistant replies only. Same run semantics as /train."""
-    try:
-        run = REGISTRY.start(
-            "sft",
-            cfg.model_dump(),
-            lambda on_progress, cancel: sft_pipeline.run(cfg, on_progress, cancel),
-        )
-    except EngineBusy as e:
-        raise HTTPException(status_code=409, detail=str(e))
-
-    if wait:
-        await REGISTRY.wait(run)
-    return run.snapshot()
+    """Queue a fine-tune. The same kind of run as /train — what makes it a
+    fine-tune is naming a base model to start from."""
+    return await _queue(RunKind.train, cfg.model_name, cfg.model_dump(), wait)
 
 
 @app.post("/eval", status_code=202)
 async def evaluate(cfg: EvalConfig, wait: bool = False):
-    """Benchmark a model. Same run semantics as /train — it holds the device."""
-    try:
-        run = REGISTRY.start(
-            "eval",
-            cfg.model_dump(),
-            lambda on_progress, cancel: eval_pipeline.run(cfg, on_progress, cancel),
-        )
-    except EngineBusy as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    """Queue a benchmark."""
+    return await _queue(RunKind.benchmark, cfg.model_name, cfg.model_dump(), wait)
 
+
+async def _queue(kind: RunKind, label: str, config: dict, wait: bool) -> dict:
+    run_id = RUNNER.enqueue(kind, label=label, config=config)
     if wait:
-        await REGISTRY.wait(run)
-    return run.snapshot()
+        await RUNNER.wait(run_id)
+    return _run_snapshot(run_id)
 
 
 @app.get("/runs")
-def list_runs():
-    return REGISTRY.list()
+def list_runs(limit: int = 50, offset: int = 0):
+    """The live band and the history behind it.
+
+    Two lists rather than one: the band is short and complete, the history is
+    long and paged, and a client renders them differently.
+    """
+    with store.session() as db:
+        return {
+            "active": [_row(r) for r in q.active_runs(db)],
+            "history": [_row(r) for r in q.run_history(db, limit, offset)],
+        }
 
 
 @app.get("/runs/{run_id}")
-def get_run(run_id: str):
-    return _require(run_id).snapshot()
+def get_run(run_id: uuid.UUID):
+    return _run_snapshot(run_id)
 
 
 @app.get("/runs/{run_id}/events")
-async def run_events(run_id: str):
-    """Stream a run's progress as SSE, replaying what it has already emitted."""
-    run = _require(run_id)
+async def run_events(run_id: uuid.UUID):
+    """Stream a run's progress as SSE, replaying what it has already emitted.
+
+    A queued run has no frames yet and no live state; it gets the durable row
+    and nothing else until the runner reaches it.
+    """
+    live = REGISTRY.get(str(run_id))
+    if live is None:
+        _require_row(run_id)
+        return StreamingResponse(
+            sse.once("state", _run_snapshot(run_id)),
+            media_type=sse.MEDIA_TYPE,
+            headers=sse.HEADERS,
+        )
     return StreamingResponse(
-        sse.run_events(REGISTRY, run), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS
+        sse.run_events(REGISTRY, live), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS
     )
 
 
 @app.post("/runs/{run_id}/cancel")
-def cancel_run(run_id: str):
-    """Ask a run to stop at its next step boundary, where weights are consistent.
+def cancel_run(run_id: uuid.UUID):
+    """Ask a run to stop.
 
-    Returns immediately — the run is still 'running' until it reaches that
-    boundary, and the caller learns it stopped from the event stream.
+    A queued run stops at once. A running one stops at its next step boundary,
+    where the weights are consistent — so this returns while it is still
+    running, and the caller learns it stopped from the event stream.
     """
-    run = _require(run_id)
-    if run.is_terminal:
-        raise HTTPException(status_code=409, detail=f"run is already {run.status}")
-    run.cancel.set()
-    return {"run_id": run.id, "cancelling": True}
+    _require_row(run_id)
+    if not RUNNER.cancel(run_id):
+        raise HTTPException(status_code=409, detail="run is already finished")
+    return {"run_id": str(run_id), "cancelling": True}
+
+
+@app.patch("/runs/{run_id}")
+def reorder_run(run_id: uuid.UUID, after: uuid.UUID | None = None):
+    """Move a queued run within the line, to sit after another or at the front."""
+    with store.session() as db:
+        if not q.reorder(db, run_id, after):
+            raise HTTPException(status_code=409, detail="only a queued run can be reordered")
+    return _run_snapshot(run_id)
+
+
+@app.post("/runs/pause")
+def set_pause(paused: bool = True):
+    """Stop the runner picking up new work. Survives a restart, because the
+    point of pausing is to leave the machine alone."""
+    with store.session() as db:
+        q.set_paused(db, paused)
+    if not paused:
+        RUNNER.wake()
+    return {"paused": paused}
 
 
 @app.post("/chat")
@@ -261,8 +278,37 @@ def count_tokens(req: CountRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-def _require(run_id: str):
-    run = REGISTRY.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"no run {run_id}")
-    return run
+def _row(run: store.Run) -> dict:
+    """One run as the API reports it. The durable row is the whole answer for
+    everything except a run that is live right now."""
+    return {
+        "run_id": str(run.id),
+        "kind": run.kind.value,
+        "status": run.status.value,
+        "label": run.label,
+        "rank": run.rank,
+        "progress": run.progress,
+        "stage": run.stage,
+        "ref_id": str(run.ref_id) if run.ref_id else None,
+        "result": run.result,
+        "error": run.error,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
+def _require_row(run_id: uuid.UUID) -> dict:
+    with store.session() as db:
+        run = db.get(store.Run, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"no run {run_id}")
+        return _row(run)
+
+
+def _run_snapshot(run_id: uuid.UUID) -> dict:
+    """The row, plus how many frames the live run has emitted if it is live."""
+    snapshot = _require_row(run_id)
+    live = REGISTRY.get(str(run_id))
+    snapshot["frames"] = len(live.history) if live else 0
+    return snapshot

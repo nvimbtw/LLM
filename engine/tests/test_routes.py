@@ -16,17 +16,8 @@ UNKNOWN = "no-such-model"
 
 
 @pytest.fixture
-async def client(data_root):
-    import main
-    from api.runs import REGISTRY
-
-    # `main` binds this in an on_event("startup") hook, which ASGITransport
-    # never fires — worker threads publish progress onto the loop it names.
-    REGISTRY.bind_loop(asyncio.get_running_loop())
-
-    transport = ASGITransport(app=main.app)
-    async with AsyncClient(transport=transport, base_url="http://engine") as c:
-        yield c
+async def client(engine_client):
+    return engine_client
 
 
 async def test_health_reports_ok_and_no_active_run(client):
@@ -96,22 +87,31 @@ async def test_chat_stream_frames_concatenate_to_the_same_reply(client, recorded
     assert done[0]["data"]["text"] == recorded_trace["sampled"]["text"]
 
 
-async def test_runs_is_a_bare_list(client):
-    """Unlike /models and /datasets, this is not wrapped in a key."""
-    assert (await client.get("/runs")).json() == []
+async def test_runs_separates_the_live_band_from_the_history(client):
+    """Two lists because a client renders them differently: the band is short
+    and complete, the history is long and paged."""
+    assert (await client.get("/runs")).json() == {"active": [], "history": []}
 
 
-async def test_unknown_run_404s(client):
-    assert (await client.get("/runs/nope")).status_code == 404
-    assert (await client.post("/runs/nope/cancel")).status_code == 404
+async def test_an_absent_run_404s(client):
+    import uuid
+
+    absent = uuid.uuid4()
+    assert (await client.get(f"/runs/{absent}")).status_code == 404
+    assert (await client.post(f"/runs/{absent}/cancel")).status_code == 404
 
 
-async def test_train_runs_end_to_end_and_writes_a_model(client):
+async def test_a_malformed_run_id_is_rejected_before_the_lookup(client):
+    """The path parameter is a UUID, so this never reaches the database."""
+    assert (await client.get("/runs/nope")).status_code == 422
+
+
+async def test_train_runs_end_to_end_and_writes_a_model(client, trained_id):
     """The whole pipeline: sources, tokenizer, pack, loop, save."""
     response = await client.post(
         "/train?wait=true",
         json={
-            "model_name": "trained",
+            "model_name": trained_id,
             "datasets": [TINY_DATASET],
             "dimensions": 32,
             "heads": 4,
@@ -126,28 +126,31 @@ async def test_train_runs_end_to_end_and_writes_a_model(client):
     )
     assert response.status_code == 202
     snapshot = response.json()
-    assert snapshot["status"] == "completed", snapshot.get("error")
+    assert snapshot["status"] == "done", snapshot.get("error")
 
     listed = (await client.get("/models")).json()["models"]
-    assert "trained" in [m["name"] for m in listed]
+    assert trained_id in [m["name"] for m in listed]
 
 
-async def test_train_rejects_a_second_run_while_one_holds_the_device(client, monkeypatch):
-    """One GPU, one line — the invariant the whole queue design rests on."""
-    from api.runs import REGISTRY
+async def test_a_second_run_queues_rather_than_being_refused(client):
+    """One GPU, one line — but a caller that gets a run id back can follow it
+    whether it starts now or in an hour, so a busy device is not a 409.
 
-    started = REGISTRY.start("train", {}, lambda on_progress, cancel: _block(cancel))
-    try:
-        response = await client.post("/train", json={"model_name": "second"})
-        assert response.status_code == 409
-    finally:
-        started.cancel.set()
-        await REGISTRY.wait(started)
+    Paused so the assertion is about the queue rather than about training:
+    letting these execute would leave two worker threads running past the test.
+    """
+    import uuid
 
+    await client.post("/runs/pause?paused=true")
+    first = await client.post("/train", json={"model_name": str(uuid.uuid4())})
+    second = await client.post("/train", json={"model_name": str(uuid.uuid4())})
 
-def _block(cancel):
-    cancel.wait(timeout=5)
-    return {}
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert first.json()["status"] == "queued"
+    assert first.json()["run_id"] != second.json()["run_id"]
+
+    band = (await client.get("/runs")).json()["active"]
+    assert [r["run_id"] for r in band] == [first.json()["run_id"], second.json()["run_id"]]
 
 
 def _chat_body(model: str = TINY_MODEL) -> dict:

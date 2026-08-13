@@ -38,3 +38,9 @@ HEADERS = {
     "X-Accel-Buffering": "no",
 }
 MEDIA_TYPE = "text/event-stream"
+
+
+async def once(kind: str, payload: dict[str, Any]) -> AsyncIterator[str]:
+    """A single frame and then end of stream, for a run with no live state —
+    queued, or finished before anyone attached."""
+    yield token_frame(kind, payload)

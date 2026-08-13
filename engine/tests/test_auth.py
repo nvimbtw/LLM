@@ -19,15 +19,8 @@ def enforced(monkeypatch):
 
 
 @pytest.fixture
-async def client(data_root):
-    import main
-    from api.runs import REGISTRY
-
-    REGISTRY.bind_loop(asyncio.get_running_loop())
-    async with AsyncClient(
-        transport=ASGITransport(app=main.app), base_url="http://engine"
-    ) as c:
-        yield c
+async def client(engine_client):
+    return engine_client
 
 
 def token(
