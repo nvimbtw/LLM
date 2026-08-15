@@ -58,6 +58,15 @@ export interface TrainConfig {
   lr: number
   ff_multiplier: number
   max_vocab: number
+  // A vocabulary built by a `tokenize` job, for the run to train against. Absent
+  // (or empty) means the run learns one from its own datasets, which is what
+  // every run did before builds existed — and `max_vocab` is ignored whenever one
+  // is named, since a vocabulary's size belongs to the build.
+  //
+  // Pretrain only: a fine-tune loads the base model's own tokenizer, because
+  // weights meeting token ids they were never trained on produce confident
+  // nonsense.
+  tokenizer_id?: string
   // Which upload datasets (subfolders of uploads/) to train on, each with how
   // many of its files to sample (0 = all of that dataset). Pretrain only.
   datasets: DatasetSelection[]
@@ -167,6 +176,9 @@ export interface TrainStats {
   batch_avg: number
   batch_max: number
   eta_secs: number
+  // Wall-clock since the run's first step. The counterpart to `eta_secs`, and
+  // what a finished run has instead of one.
+  elapsed_secs: number
   epoch_done: boolean
   epoch_duration_secs: number
   checkpoint_path: string | null

@@ -127,6 +127,23 @@ def datasets() -> list[str]:
     return names_in(storage.input_dir(), PRETRAIN_PATTERN)
 
 
+def chat_sets_among(names) -> list[str]:
+    """Which of `names` are SFT sets rather than pretrain corpora.
+
+    For the error a pretrain raises when it finds nothing to read. The two roots
+    hold different things under the same kind of name, so a fine-tune that
+    reaches the pretrain path — by naming no base model, which is the only thing
+    that tells the two apart — asks for chat sets among the `.txt` corpora and
+    gets "no files found" for datasets that are plainly on disk. Saying *which*
+    root they are in turns that into an answer.
+
+    The pattern is spelled out rather than imported from `llm.corpus.sft`, which
+    imports this module.
+    """
+    wanted = {name for name, _ in (selection(item) for item in names)}
+    return sorted(wanted & set(names_in(storage.sft_dir(), "*.jsonl")))
+
+
 def catalogue(pattern: str = PRETRAIN_PATTERN) -> list[dict]:
     return catalogue_in(storage.input_dir(), pattern)
 

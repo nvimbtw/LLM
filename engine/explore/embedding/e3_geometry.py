@@ -48,7 +48,7 @@ def main():
     # The checkpoint to probe: argv[1], else the model the report describes.
     model_name = sys.argv[1] if len(sys.argv) > 1 else "diagfix"
     model, arch = trained_model(model_name)
-    tokens = frequent_tokens(pack.load_corpus(), 32)
+    tokens = frequent_tokens(pack.load_corpus(pack.latest_key()), 32)
     metrics = _embedding_metrics(model, tokens)
 
     with torch.no_grad():

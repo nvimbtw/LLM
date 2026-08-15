@@ -27,11 +27,12 @@ from store.schema import (
     RunKind,
     RunStatus,
     Suite,
+    Tokenizer,
 )
 
 __all__ = [
     "Base", "Benchmark", "BenchmarkStatus", "Chat", "Feedback", "Message", "Model",
-    "QueueState", "Role", "Run", "RunKind", "RunStatus", "Suite",
+    "QueueState", "Role", "Run", "RunKind", "RunStatus", "Suite", "Tokenizer",
     "configure", "session", "url",
 ]
 

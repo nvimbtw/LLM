@@ -4,10 +4,14 @@ Layout under `engine/data/` (mirrors backend/crates/storage):
 
     input/<dataset>/*.txt        source text, one subfolder per dataset
     sft/<set>/*.jsonl            chat conversations, one subfolder per set
-    datasets/                    corpus.bin + segments.json (training-ready)
+    datasets/pretrain/<key>/     one packed corpus per (vocabulary x selection)
     datasets/sft/<key>/          one built SFT dataset per selection (see below)
-    artifacts/tokenizer/         the trained tokenizer
-    artifacts/models/<name>/     weights, a copy of the tokenizer, meta.json
+    artifacts/tokenizers/<id>/   one built vocabulary, and what it was built from
+    artifacts/models/<id>/       weights, a copy of the tokenizer, meta.json
+
+    datasets/corpus.bin          the pre-keyed singletons, left where they are
+    datasets/segments.json       (see `legacy_pretrain_paths`)
+    artifacts/tokenizer/
 """
 
 import os
@@ -64,12 +68,35 @@ def datasets_dir() -> Path:
     return root() / "datasets"
 
 
-def corpus_path() -> Path:
-    return datasets_dir() / "corpus.bin"
+def pretrain_dataset_dir(key: str) -> Path:
+    """One packed pretrain corpus, keyed by the vocabulary and the selection that
+    produced it (see `llm.corpus.pack.corpus_key`).
+
+    Keyed for the reason the SFT build is, and one more: the same `corpus.bin`
+    bytes mean *different text* under a different vocabulary, so a corpus shared
+    between two tokenizers is not merely the wrong data, it is unreadable data
+    that loads without complaint.
+    """
+    return datasets_dir() / "pretrain" / key
 
 
-def segments_path() -> Path:
-    return datasets_dir() / "segments.json"
+def pretrain_corpus_path(key: str) -> Path:
+    return pretrain_dataset_dir(key) / "corpus.bin"
+
+
+def pretrain_segments_path(key: str) -> Path:
+    return pretrain_dataset_dir(key) / "segments.json"
+
+
+def legacy_pretrain_paths() -> list[Path]:
+    """The pre-keyed singleton corpus and the shared tokenizer beside it.
+
+    Left on disk rather than deleted: unlike the SFT singleton these are what
+    `explore/` and `bench.py` still read, and neither records which datasets or
+    which vocabulary produced it — so nothing here can be adopted into a key, and
+    nothing new reads them.
+    """
+    return [datasets_dir() / "corpus.bin", datasets_dir() / "segments.json", tokenizer_dir()]
 
 
 def sft_dataset_dir(key: str) -> Path:
@@ -110,12 +137,41 @@ def legacy_sft_paths() -> list[Path]:
 
 
 def tokenizer_dir() -> Path:
+    """The pre-keyed shared tokenizer, overwritten by every pretrain that ran
+    before vocabularies were built and named. Legacy — see
+    `legacy_pretrain_paths`."""
     return root() / "artifacts" / "tokenizer"
 
 
+def tokenizers_dir() -> Path:
+    return root() / "artifacts" / "tokenizers"
+
+
+def tokenizer_build_dir(tokenizer_id: str) -> Path:
+    """One built vocabulary. The id is the directory, so a name can change
+    without moving bytes — the same arrangement `model_dir` has."""
+    return tokenizers_dir() / tokenizer_id
+
+
+def tokenizer_meta_path(tokenizer_id: str) -> Path:
+    """What a vocabulary was built from, beside the vocabulary itself."""
+    return tokenizer_build_dir(tokenizer_id) / "build.json"
+
+
+def tokenizer_sample_dir(tokenizer_id: str) -> Path:
+    """The text a vocabulary's merges were actually fitted to.
+
+    A build learns from a bounded sample of the selection (`bpe.plan_sample`), so
+    "which corpora" no longer answers "which text". Kept inside the build so it
+    travels with it and `delete` takes it too — a few MB against a selection that
+    can run to tens of GB."""
+    return tokenizer_build_dir(tokenizer_id) / "sample"
+
+
 def tokenizer_file(directory: Path | None = None) -> Path:
-    """The tokenizer's single-file form. Defaults to the shared build; pass a
-    model dir for the copy saved beside that model's weights."""
+    """The tokenizer's single-file form. Pass the directory holding it — a build
+    or a model dir. The default is the legacy shared build, and only the tools
+    that predate named builds still take it."""
     return (directory or tokenizer_dir()) / "tokenizer.json"
 
 

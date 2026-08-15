@@ -37,6 +37,33 @@ def diagnose_every(total_reports: int) -> int:
 
 
 @dataclass
+class Tokenize:
+    """One phase-1 report: building the data a run trains on.
+
+    The field names are the frontend's `TokenizeStats`, for the same reason
+    `Progress`'s are its `TrainStats`. A field left `None` is one this phase does
+    not measure — a pretrain counts files and merges, a fine-tune counts
+    conversations — and it is dropped from the frame rather than sent as a zero,
+    so the panel shows "—" for what was never measured instead of a number that
+    reads as a real count of nothing.
+    """
+
+    # What the run is doing, as a fraction of phase 1, and whether it is over.
+    progress: float = 0.0
+    done: bool = False
+    # Pretrain: the BPE tokenizer and the packed corpus.
+    files: int | None = None
+    chars: int | None = None
+    vocab: int | None = None
+    merges: int | None = None
+    # Fine-tune: chat conversations rendered into a masked dataset.
+    conversations: int | None = None
+    total_tokens: int | None = None
+    trainable_tokens: int | None = None
+    skipped_too_long: int | None = None
+
+
+@dataclass
 class Progress:
     """One report frame.
 
@@ -87,11 +114,18 @@ class Progress:
         return self.step / self.total_steps if self.total_steps else 0.0
 
 
-ProgressCallback = Callable[[Progress], None]
+ProgressCallback = Callable[[Progress | Tokenize], None]
 
 
-def log_progress(progress: Progress) -> None:
+def log_progress(progress: Progress | Tokenize) -> None:
     """The default sink: one line per report."""
+    if isinstance(progress, Tokenize):
+        measured = {k: v for k, v in vars(progress).items() if v is not None}
+        measured.pop("progress")
+        measured.pop("done")
+        print("  " + ", ".join(f"{k} {v:,}" for k, v in measured.items()), flush=True)
+        return
+
     print(
         f"  step {progress.step}/{progress.total_steps} "
         f"(epoch {progress.epoch + 1}/{progress.total_epochs})  "

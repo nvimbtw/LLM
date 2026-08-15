@@ -82,10 +82,6 @@ export const batchRamp = {
   max: sequential(41, 70, 1),
 } as const
 
-// The vocab-growth line is a lone series — the site's curated `--chart-2` token
-// (referenced as a CSS var so it tracks the theme in light/dark).
-export const VOCAB_COLOR = "var(--chart-2)"
-
 // ── Diagnostics figures ─────────────────────────────────────────────────────
 // The per-layer diagnostics (grad norms, update:weight ratios, activation RMS)
 // are the same *magnitude-by-depth* idea as the loss overlay, so they reuse the

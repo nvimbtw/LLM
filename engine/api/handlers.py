@@ -9,9 +9,10 @@ a pipeline.
 import uuid
 
 import store
-from llm.config import EvalConfig, SftConfig, TrainConfig
+from llm.config import EvalConfig, SftConfig, TokenizerConfig, TrainConfig
 from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import sft as sft_pipeline
+from llm.orchestrate import tokenize as tokenize_pipeline
 from llm.orchestrate import train as train_pipeline
 from store import queries as q
 from store.schema import BenchmarkStatus, RunKind, Suite
@@ -31,7 +32,19 @@ def train(config: dict, progress, cancel) -> dict:
         cfg = TrainConfig(**config)
         result = train_pipeline.run(cfg, progress, cancel)
 
-    model_id = uuid.UUID(cfg.model_name)
+    # The id was minted when the run was queued; a row from before that carries
+    # the name someone typed, and `uuid.UUID` on it raises "badly formed
+    # hexadecimal UUID string" here — after the weights are already on disk.
+    # Saying so is all this can do: the directory is named for the id, so there
+    # is no id this row's weights could be registered under.
+    try:
+        model_id = uuid.UUID(cfg.model_name)
+    except ValueError:
+        raise ValueError(
+            f"model_name {cfg.model_name!r} is not a model id. This run was queued "
+            f"before ids were minted at enqueue — queue it again to register a model."
+        ) from None
+
     with store.session() as db:
         q.upsert_model(
             db,
@@ -41,7 +54,59 @@ def train(config: dict, progress, cancel) -> dict:
             context=result.get("ctx_window") or config.get("ctx_window"),
             family="sft" if fine_tune else "pretrain",
         )
+        if not fine_tune and not config.get("tokenizer_id"):
+            _record_derived_vocabulary(db, result)
     return {**result, "model_id": str(model_id)}
+
+
+def _record_derived_vocabulary(db, result: dict) -> None:
+    """Index the vocabulary a pretrain learned for itself.
+
+    It is a real build in a real directory that other runs will reuse, so it
+    belongs in the list rather than being an unnamed directory nothing accounts
+    for. Named after its id because that is the only thing about it that is
+    unique — two runs over the same corpora *are* this one build.
+    """
+    try:
+        tokenizer_id = uuid.UUID(result["tokenizer_id"])
+    except (KeyError, TypeError, ValueError):
+        return
+    q.upsert_tokenizer(
+        db,
+        tokenizer_id=tokenizer_id,
+        name=f"auto {str(tokenizer_id)[:8]}",
+        vocab_size=result.get("vocab"),
+        fingerprint=result.get("tokenizer_fingerprint"),
+        implicit=True,
+    )
+
+
+def tokenize(config: dict, progress, cancel) -> dict:
+    """Learn one reusable vocabulary and record it."""
+    cfg = TokenizerConfig(**config)
+    result = tokenize_pipeline.run(cfg, progress, cancel)
+
+    try:
+        tokenizer_id = uuid.UUID(cfg.tokenizer_id)
+    except ValueError:
+        raise ValueError(
+            f"tokenizer_id {cfg.tokenizer_id!r} is not an id. This run was queued before "
+            f"ids were minted at enqueue — queue it again to register a vocabulary."
+        ) from None
+
+    with store.session() as db:
+        q.upsert_tokenizer(
+            db,
+            tokenizer_id=tokenizer_id,
+            name=config.get(DISPLAY_NAME) or cfg.tokenizer_id,
+            vocab_size=result["vocab_size"],
+            merges=result["merges"],
+            max_vocab=result["max_vocab"],
+            fingerprint=result["fingerprint"],
+            datasets=result["datasets"],
+            implicit=False,
+        )
+    return result
 
 
 def benchmark(config: dict, progress, cancel) -> dict:
@@ -97,4 +162,5 @@ def _summarize(result: dict) -> dict:
 HANDLERS = {
     RunKind.train: train,
     RunKind.benchmark: benchmark,
+    RunKind.tokenize: tokenize,
 }

@@ -28,6 +28,12 @@ async fn sft(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>)
     answer(engine.post(&started_by(&admin), "/sft", body.into_inner()).await?)
 }
 
+/// A vocabulary, built once and named by the runs that train against it.
+#[post("/tokenize")]
+async fn tokenize(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
+    answer(engine.post(&started_by(&admin), "/tokenize", body.into_inner()).await?)
+}
+
 /// A sequence, each step running against the model the one before it produced.
 #[post("/chain")]
 async fn chain(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
@@ -75,6 +81,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // The literal segments come first, so "/pause" is not read as a run id.
     cfg.service(train);
     cfg.service(sft);
+    cfg.service(tokenize);
     cfg.service(benchmark);
     cfg.service(chain);
     cfg.service(pause);

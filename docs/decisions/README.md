@@ -16,6 +16,8 @@ re-broken — by someone doing the obvious thing.
 | 0007 | [The thinking budget](0007-the-thinking-budget.md) | `llm/chat/template.py` |
 | 0008 | [Two databases, one opaque owner](0008-two-databases-one-opaque-owner.md) | the seam between backend and engine |
 | 0009 | [A chat turn is not a queued run](0009-a-chat-turn-is-not-a-queued-run.md) | scheduling |
+| 0010 | [A corpus is a function of its vocabulary](0010-a-corpus-is-a-function-of-its-vocabulary.md) | `llm/corpus/`, `llm/orchestrate/train.py` |
+| 0011 | [A build may not scale with its corpus](0011-a-build-may-not-scale-with-its-corpus.md) | `llm/corpus/`, `llm/train/diagnostics.py` |
 
 0000 is the exception: it describes code that no longer exists. It is kept
 because the failures it records — a backward pass that never ran, a benchmark

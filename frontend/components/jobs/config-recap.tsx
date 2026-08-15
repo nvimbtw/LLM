@@ -3,6 +3,7 @@
 import { Panel } from "@/components/ui/panel"
 import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
 import type { Job } from "@/lib/jobs"
+import type { TokenizerBuild } from "@/lib/tokenizers"
 import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
 
 /**
@@ -73,6 +74,8 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
   switch (job.kind) {
     case "train":
       return train((override ?? job.config) as TrainConfig | null)
+    case "tokenize":
+      return tokenize(job.config as TokenizerBuild | null)
     case "benchmark": {
       // The assistant suite was missing here and fell through to the language
       // description, so a queued assistant run described itself as scoring grammar.
@@ -108,6 +111,22 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
   }
 }
 
+function tokenize(config: TokenizerBuild | null): Recap | null {
+  if (!config) return null
+  return {
+    description: "As queued",
+    rows: [["Max vocab", String(config.max_vocab)]],
+    // Empty is not "none": the engine resolves it to every corpus on disk, and a
+    // blank here would read as a build that learned from nothing.
+    blocks: [
+      [
+        "Corpora",
+        config.datasets.map((d) => d.name).join(", ") || "Every corpus on disk",
+      ],
+    ],
+  }
+}
+
 function train(config: TrainConfig | null): Recap | null {
   if (!config) return null
 
@@ -129,7 +148,13 @@ function train(config: TrainConfig | null): Recap | null {
     ["FF multiplier", `${config.ff_multiplier}×`],
   ]
   if (!fineTune) {
-    rows.push(["Max vocab", String(config.max_vocab)])
+    // Which vocabulary, before how large: a run that names one ignores
+    // `max_vocab` entirely, since the size belongs to the build.
+    rows.push([
+      "Tokenizer",
+      config.tokenizer_id ? "A built vocabulary" : "Learned with the run",
+    ])
+    if (!config.tokenizer_id) rows.push(["Max vocab", String(config.max_vocab)])
     rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
   }
   // SFT only: pretrain always strips, and RAFT/KTO have no thinking to strip, so
@@ -166,6 +191,3 @@ function train(config: TrainConfig | null): Recap | null {
       : [],
   }
 }
-
-
-

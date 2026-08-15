@@ -21,7 +21,7 @@ from llm.corpus import bpe, sft as sft_corpus, special
 from llm.model import checkpoint
 from llm.train import loop
 from llm.train.plan import DataPlan
-from llm.train.progress import ProgressCallback, log_progress
+from llm.train.progress import ProgressCallback, Tokenize, log_progress
 from llm.train.warm_start import untrained_marker_ids, warm_start_embeddings
 
 
@@ -97,6 +97,8 @@ def run(
     named = ", ".join(f"{name}[:{cap}]" if cap else name for name, cap in selection)
 
     sft_corpus.clear_legacy()
+    if on_progress is not None:
+        on_progress(Tokenize(progress=0.05))
     if cfg.rebuild_dataset or not sft_corpus.is_built(key, selection, reasoning):
         stats = sft_corpus.build(tokenizer, selection, reasoning)
         print(
@@ -111,6 +113,22 @@ def run(
 
     corpus, mask = sft_corpus.load(key)
     eot_id, documents, info = sft_corpus.load_segments(key)
+
+    if on_progress is not None:
+        # A reused dataset reports what the files on disk say — the counts the
+        # build would have returned are not recorded in the sidecar, and summing
+        # the mask to recover the trainable share means reading the whole corpus
+        # for one number, so it stays unmeasured rather than paid for.
+        on_progress(
+            Tokenize(
+                conversations=stats.conversations if stats else len(documents),
+                total_tokens=stats.total_tokens if stats else len(corpus),
+                trainable_tokens=stats.trainable_tokens if stats else None,
+                skipped_too_long=stats.skipped if stats else None,
+                progress=1.0,
+                done=True,
+            )
+        )
 
     # Markers this dataset uses that the base never saw, warm-started before the
     # first step — see llm/train/warm_start.py for why the caller decides this.
@@ -161,7 +179,17 @@ def run(
     )
 
     print(f"[4/5] Fine-tuning {cfg.epochs} epoch(s) at lr {cfg.lr:g}")
-    summary = loop.run(model, corpus, data_plan, train_cfg, device, on_progress, cancel, mask)
+    summary = loop.run(
+        model,
+        corpus,
+        data_plan,
+        train_cfg,
+        device,
+        on_progress,
+        cancel,
+        mask,
+        token_counts=info.get("token_counts"),
+    )
 
     print("[5/5] Saving")
     model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))

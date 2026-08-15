@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from llm import storage
-from llm.corpus import bpe, pack
+from llm.corpus import bpe, pack, vocab
 from llm.model.checkpoint import load as ckpt_load
 
 
@@ -77,9 +77,9 @@ def main():
     model_name = target_model()
     model, _ = ckpt_load(storage.weights_path(model_name), "cpu")
     model.eval()
-    tok = bpe.load()
-    corpus = pack.load_corpus()
-    _, docs, _ = pack.load_segments()
+    tok = vocab.for_corpus(pack.latest_key())
+    corpus = pack.load_corpus(pack.latest_key())
+    _, docs, _ = pack.load_segments(pack.latest_key())
 
     d = docs[0]
     window = torch.from_numpy(corpus[d.start : d.start + 64].astype("int64"))

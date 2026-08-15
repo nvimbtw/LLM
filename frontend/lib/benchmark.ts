@@ -258,7 +258,9 @@ export function isMarkupReport(report: AnyReport): report is MarkupReport {
   return report.suite === "markup"
 }
 
-export function isAssistantReport(report: AnyReport): report is AssistantReport {
+export function isAssistantReport(
+  report: AnyReport
+): report is AssistantReport {
   return report.suite === "assistant"
 }
 
@@ -617,4 +619,3 @@ export function formatDate(iso: string): string {
     minute: "2-digit",
   })
 }
-

@@ -15,7 +15,7 @@ import store
 from api import auth, sse
 from api.runner import RUNNER
 from api.runs import REGISTRY
-from llm.config import EvalConfig, SftConfig, TrainConfig
+from llm.config import EvalConfig, SftConfig, TokenizerConfig, TrainConfig
 from store import queries as q
 from store.schema import Run, RunKind
 
@@ -30,8 +30,9 @@ async def train(
     owner: str = Depends(auth.require_service),
 ):
     """Queue a pretraining run."""
-    config = {**cfg.model_dump(), "display_name": display_name or cfg.model_name}
-    return await _queue(RunKind.train, config["display_name"], config, wait, owner)
+    _require_vocabulary(cfg.tokenizer_id)
+    config = _identified(cfg.model_dump(), display_name)
+    return await _queue(RunKind.train, _train_label(config), config, wait, owner)
 
 
 @router.post("/sft", status_code=202)
@@ -43,8 +44,25 @@ async def sft(
 ):
     """Queue a fine-tune. The same kind of run as /train — what makes it a
     fine-tune is naming a base model to start from."""
-    config = {**cfg.model_dump(), "display_name": display_name or cfg.model_name}
-    return await _queue(RunKind.train, config["display_name"], config, wait, owner)
+    config = _identified(cfg.model_dump(), display_name)
+    return await _queue(RunKind.train, _train_label(config), config, wait, owner)
+
+
+@router.post("/tokenize", status_code=202)
+async def tokenize(
+    cfg: TokenizerConfig,
+    display_name: str | None = None,
+    wait: bool = False,
+    owner: str = Depends(auth.require_service),
+):
+    """Queue a vocabulary build: one reusable tokenizer, no packed corpus.
+
+    The corpus is packed by the run that trains on it, keyed by this vocabulary
+    and that run's own selection — so one build serves every run that names it,
+    whatever each of them trains on.
+    """
+    config = _identified(cfg.model_dump(), display_name, field="tokenizer_id")
+    return await _queue(RunKind.tokenize, _train_label(config, "tokenizer_id"), config, wait, owner)
 
 
 @router.post("/eval", status_code=202)
@@ -67,16 +85,28 @@ def queue_chain(steps: list[Step], owner: str = Depends(auth.require_service)):
     and a step naming its own model would be a second answer to the question the
     chain exists to leave open — so the first config names a model and the rest
     have theirs filled in when their predecessor lands.
+
+    Only the kinds that consume a model can be chained. A `tokenize` step would
+    be accepted and then leave the run after it with no `tokenizer_id`, because
+    promotion fills in a model — so it is refused rather than silently
+    pretraining against a vocabulary nobody chose.
     """
     if not steps:
         raise HTTPException(status_code=400, detail="a chain needs at least one step")
+    if any(step.kind is RunKind.tokenize for step in steps):
+        raise HTTPException(
+            status_code=400,
+            detail="a tokenize run cannot be chained — build the vocabulary first, then "
+            "name it on the runs that use it",
+        )
 
     queued, after = [], None
     for step in steps:
+        config = _identified(step.config) if step.kind is RunKind.train else step.config
         run_id = RUNNER.enqueue(
             step.kind,
-            label=_step_label(step),
-            config=step.config,
+            label=_step_label(step.kind, config),
+            config=config,
             owner_id=_owner_id(owner),
             depends_on=after,
         )
@@ -170,10 +200,63 @@ def set_pause(paused: bool = True):
     return {"paused": paused}
 
 
-def _step_label(step: "Step") -> str:
-    if step.kind is RunKind.benchmark:
-        return _label(str(step.config.get("model_name") or ""))
-    return str(step.config.get("display_name") or step.config.get("model_name") or "train")
+def _identified(config: dict, display_name: str | None = None, *, field: str = "model_name") -> dict:
+    """Give a run the id its artifact will live under, and keep the name a person
+    typed.
+
+    `model_name` *is* the model id — it names the directory under
+    `artifacts/models/` and the row keyed by it — while a composer sends what the
+    model should be *called*. So an id is minted here unless the caller already
+    named one, and the typed name travels as `display_name`. `tokenizer_id` is
+    the same arrangement one directory over.
+
+    Taking the typed name for an id is what failed at the very end of a run: the
+    weights were saved, registering them raised `badly formed hexadecimal UUID
+    string`, and a run that had finished (or been cancelled) was recorded as
+    failed with no usable model to show for it.
+    """
+    named = str(config.get(field) or "").strip()
+    try:
+        artifact_id = str(uuid.UUID(named))
+    except ValueError:
+        artifact_id = str(uuid.uuid4())
+
+    identified = {**config, field: artifact_id}
+    name = display_name or named
+    # Absent rather than empty: a step that was never named falls back to the id,
+    # and an empty string would take that fallback away from everyone downstream.
+    if name and name != artifact_id:
+        identified["display_name"] = name
+    return identified
+
+
+def _require_vocabulary(tokenizer_id: str | None) -> None:
+    """Refuse a run naming a vocabulary that does not exist.
+
+    Here rather than in the handler: a typo would otherwise sit in the queue and
+    fail hours later, at the front of the line, having waited for the device it
+    never needed.
+    """
+    if not tokenizer_id:
+        return
+    from llm.corpus import vocab
+
+    if vocab.info(tokenizer_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no tokenizer {tokenizer_id} — build one, or leave it unset to learn "
+            f"one from this run's own corpora",
+        )
+
+
+def _train_label(config: dict, field: str = "model_name") -> str:
+    return str(config.get("display_name") or config.get(field) or "train")
+
+
+def _step_label(kind: RunKind, config: dict) -> str:
+    if kind is RunKind.benchmark:
+        return _label(str(config.get("model_name") or ""))
+    return _train_label(config)
 
 
 def _label(model_name: str) -> str:

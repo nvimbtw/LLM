@@ -25,7 +25,7 @@ os.environ.setdefault("DATA_DIR", str(ENGINE_ROOT / "data"))
 
 import torch
 
-from llm.corpus import bpe, pack
+from llm.corpus import bpe, pack, vocab
 from llm.model.transformer import Transformer
 from llm.train.diagnostics import _entropy
 
@@ -36,7 +36,7 @@ def emit(name, data):
 
 
 def tokenizer():
-    return bpe.load()
+    return vocab.for_corpus(pack.latest_key())
 
 
 def _attention(model, ids):
@@ -79,7 +79,7 @@ def _describe(weights):
 
 def window_ids():
     tok = tokenizer()
-    corpus = pack.load_corpus()
+    corpus = pack.load_corpus(pack.latest_key())
     ids = corpus[2_800:2_800 + 256].tolist()
     # Clip at a document boundary roughly: fine for a probe.
     return ids

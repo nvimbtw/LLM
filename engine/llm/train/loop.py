@@ -132,9 +132,14 @@ def run(
     on_progress: ProgressCallback | None = None,
     cancel: Event | None = None,
     mask: np.ndarray | None = None,
+    token_counts: list[int] | None = None,
 ) -> dict:
     """Train `model` in place. Returns a summary; True in `cancelled` means the
-    run stopped at a step boundary with its weights intact."""
+    run stopped at a step boundary with its weights intact.
+
+    `token_counts` is the histogram the corpus build recorded, forwarded to the
+    diagnostics so they never have to derive it from the corpus.
+    """
     model.to(device)
     model.train()
 
@@ -192,7 +197,7 @@ def run(
             f"batches. Add data, or lower either setting."
         )
 
-    collector = Collector(model, corpus)
+    collector = _LazyCollector(model, corpus, token_counts)
 
     # Cadence follows the run's length, so a 200-step run and a 200k-step run
     # both draw a curve rather than a line or a flood.
@@ -254,7 +259,9 @@ def run(
                 checkpoint_path=checkpoint_path,
                 stage=stage_index,
                 stage_name=stage.name,
-                diag=collector.after_step(grad, step).as_dict() if (grad and not done) else None,
+                # `grad` is only ever set on a diagnosed step, which is also the
+                # only way the collector exists by now.
+                diag=collector().after_step(grad, step).as_dict() if (grad and not done) else None,
             )
         )
     storage.ensure_dir(storage.checkpoints_dir(cfg.model_name))
@@ -300,7 +307,7 @@ def run(
             measuring = on_progress is not None and (step + 1) % interval == 0
             # Diagnostics are sampled across the reports, not taken on each one.
             diagnosing = measuring and ((step + 1) // interval) % diag_interval == 0
-            context = collector if diagnosing else _nothing()
+            context = collector() if diagnosing else _nothing()
 
             with context:
                 forward = eager if diagnosing else fast
@@ -318,7 +325,7 @@ def run(
             # Between backward and step: the gradients still exist, and the
             # weights have not moved yet. Both halves of the update ratio need
             # this exact window.
-            grad = collector.before_step() if diagnosing else None
+            grad = collector().before_step() if diagnosing else None
 
             optimizer.step()
 
@@ -354,6 +361,31 @@ def run(
 def _nothing():
     """A no-op stand-in for the collector on unmeasured steps."""
     yield
+
+
+class _LazyCollector:
+    """The diagnostics collector, built on the step that first needs it.
+
+    Constructing one has to establish which tokens the embedding metrics track,
+    and on a corpus whose build did not record its histogram that means reading
+    the corpus. It used to happen at the top of every run, unconditionally:
+    measured at 64 s and 8.3 GB of the mapping made resident before the first
+    step — including on runs with `on_progress=None`, which never diagnose
+    anything and never read the result. `bench.py` pays that on every timing.
+
+    Diagnostics are sampled across the reports, so the first call comes at least
+    `interval * diag_interval` steps in, by which point the run is warm and the
+    cost is off the critical path either way.
+    """
+
+    def __init__(self, model: Transformer, corpus: np.ndarray, counts: list[int] | None):
+        self._args = (model, corpus, counts)
+        self._collector: Collector | None = None
+
+    def __call__(self) -> Collector:
+        if self._collector is None:
+            self._collector = Collector(*self._args)
+        return self._collector
 
 
 class _LossLog:

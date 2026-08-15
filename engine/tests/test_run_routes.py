@@ -48,6 +48,80 @@ async def test_a_sft_run_is_a_train_run_that_names_a_base(client):
         assert run.config["base_model"] == base
 
 
+async def test_a_typed_name_becomes_a_model_id_and_a_display_name(client):
+    """`model_name` is the directory the weights land in and the id the model row
+    is keyed by, but a composer sends what to call the model. Queueing the typed
+    name as if it were an id is what failed at the end of a run — after training,
+    on registration — and marked a finished run failed."""
+    response = await client.post("/train", json={"model_name": "my-model"})
+    assert response.status_code == 202
+
+    with store.session() as db:
+        config = db.get(store.Run, uuid.UUID(response.json()["run_id"])).config
+
+    uuid.UUID(config["model_name"])  # raises if it is not an id
+    assert config["display_name"] == "my-model"
+    assert response.json()["label"] == "my-model"
+
+
+async def test_a_chained_train_step_is_given_an_id_too(client):
+    steps = [{"kind": "train", "config": {"model_name": "chained"}}]
+    queued = (await client.post("/runs/chain", json=steps)).json()
+
+    with store.session() as db:
+        config = db.get(store.Run, uuid.UUID(queued[0]["run_id"])).config
+
+    uuid.UUID(config["model_name"])
+    assert config["display_name"] == "chained"
+
+
+async def test_an_id_a_caller_named_is_kept(client):
+    """Re-running against an existing model has to write that model's directory,
+    so an id that was asked for is never replaced with a fresh one."""
+    model_id = str(uuid.uuid4())
+    response = await client.post("/train", json={"model_name": model_id})
+
+    with store.session() as db:
+        config = db.get(store.Run, uuid.UUID(response.json()["run_id"])).config
+
+    assert config["model_name"] == model_id
+
+
+async def test_a_vocabulary_build_is_its_own_kind(client):
+    response = await client.post("/tokenize", json={"tokenizer_id": "my-vocab", "max_vocab": 512})
+
+    assert response.status_code == 202
+    assert response.json()["kind"] == "tokenize"
+    assert response.json()["label"] == "my-vocab"
+
+    with store.session() as db:
+        config = db.get(store.Run, uuid.UUID(response.json()["run_id"])).config
+    uuid.UUID(config["tokenizer_id"])  # raises if the typed name was taken for an id
+    assert config["display_name"] == "my-vocab"
+
+
+async def test_a_run_naming_a_vocabulary_that_does_not_exist_is_refused(client):
+    """At enqueue, not at claim time: a typo would otherwise wait its turn in the
+    queue and fail hours later, having held up the device it never needed."""
+    response = await client.post(
+        "/train", json={"model_name": "x", "tokenizer_id": str(uuid.uuid4())}
+    )
+
+    assert response.status_code == 400
+    assert "build one" in response.json()["detail"]
+
+
+async def test_a_tokenize_step_cannot_be_chained(client):
+    """Promotion hands a successor a *model*. A chained build would leave the run
+    after it pretraining against a vocabulary nobody chose."""
+    steps = [
+        {"kind": "tokenize", "config": {"tokenizer_id": "v"}},
+        {"kind": "train", "config": {"model_name": str(uuid.uuid4())}},
+    ]
+
+    assert (await client.post("/runs/chain", json=steps)).status_code == 400
+
+
 async def test_a_benchmark_is_its_own_kind(client):
     response = await client.post("/eval", json={"model_name": str(uuid.uuid4())})
     assert response.json()["kind"] == "benchmark"

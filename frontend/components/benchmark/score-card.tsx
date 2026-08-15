@@ -174,7 +174,9 @@ function MarkupScoreCard({ report }: { report: MarkupReport }) {
         label="Closes turn"
         value={formatPercent(structure?.close_rate ?? null)}
         hint={
-          structure ? `${structure.replies} replies generated` : "Not scored yet"
+          structure
+            ? `${structure.replies} replies generated`
+            : "Not scored yet"
         }
       />
     </Composite>

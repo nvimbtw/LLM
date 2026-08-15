@@ -49,7 +49,10 @@ export function MessageAside({ tone, children }: MessageAsideProps) {
   return (
     <div
       className={cn(
-        "relative my-4 overflow-hidden rounded-r-md border-l-2 py-3 pr-9 pl-4",
+        // Margin in `em` so a set-off block keeps its distance from the prose
+        // whatever size the surface set that prose at — the same rhythm every
+        // other block in a reply is now on (see BLOCK in rich-message.tsx).
+        "relative my-[1.5em] overflow-hidden rounded-r-md border-l-2 py-3 pr-9 pl-4",
         t.rail,
         t.wash,
         t.text
@@ -69,7 +72,9 @@ export function MessageAside({ tone, children }: MessageAsideProps) {
       >
         {tone === "quote" ? <QuoteMark /> : <WarnMark />}
       </span>
-      <div className="relative space-y-2">{children}</div>
+      {/* No spacing of its own: the paragraphs inside carry their own leading,
+          and a container gap on top of that spaced them twice. */}
+      <div className="relative">{children}</div>
     </div>
   )
 }

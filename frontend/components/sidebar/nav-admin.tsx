@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Gauge, ListOrdered } from "lucide-react"
+import { Gauge, ListOrdered, Type } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -24,6 +24,7 @@ import { KIND_LABEL } from "@/lib/jobs"
 // Throbber was dropped to keep this list to the things worth a permanent slot;
 // the page still exists at /throbber.
 const items = [
+  { title: "Tokenizers", href: "/tokenizers", icon: Type },
   { title: "Benchmark", href: "/benchmark", icon: Gauge },
   { title: "Jobs", href: "/jobs", icon: ListOrdered },
 ]

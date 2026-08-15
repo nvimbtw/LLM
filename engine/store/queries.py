@@ -5,6 +5,7 @@ from anywhere — the engine cannot resolve an owner, so forgetting to pass one
 has to be a type error rather than a silent full-table read.
 """
 
+import itertools
 import uuid
 from datetime import datetime, timezone
 
@@ -21,6 +22,7 @@ from store.schema import (
     Run,
     RunStatus,
     Suite,
+    Tokenizer,
 )
 
 #: How far apart two adjacent ranks must stay before the band is renumbered.
@@ -53,19 +55,55 @@ def find_model_by_name(db: Session, name: str) -> Model | None:
 def upsert_model(db: Session, *, model_id: uuid.UUID, name: str, **fields) -> Model:
     """Record a finished training run.
 
-    Keyed on the id, which is also the weights directory: retraining under the
-    same name writes the same directory and must update that row rather than
-    collide with its unique name.
+    Keyed on the id, which is also the weights directory: a run writes its own
+    directory and updates its own row, whatever it is called.
+
+    The name is *made* free rather than required to be. It is a label a person
+    types, `models.name` is unique, and ids are minted per queued run — so two
+    runs of the same composer are two models with one name, and queueing the same
+    fine-tune twice is the ordinary way to get there. The old behaviour raised
+    `UniqueViolation` from this insert, which is the worst possible moment for it:
+    the run is over, the weights are on disk, and the row that would let anyone
+    find them is the one thing that failed. A suffixed name costs nothing and is
+    visible; a lost model costs the whole run.
     """
     model = db.get(Model, model_id)
+    # Resolved before the row is added, not after: a query here would autoflush
+    # the pending insert and hit the very constraint this exists to avoid.
+    free = _free_model_name(db, name, model_id)
     if model is None:
-        model = Model(id=model_id, name=name)
+        model = Model(id=model_id, name=free)
         db.add(model)
-    model.name = name
+    model.name = free
     for key, value in fields.items():
         setattr(model, key, value)
     db.flush()
     return model
+
+
+#: How long a model's name may be — `Model.name` is `String(120)`, and a suffix
+#: has to fit inside that rather than push the row over it.
+NAME_LIMIT = 120
+
+
+def _free_model_name(db: Session, name: str, model_id: uuid.UUID) -> str:
+    """`name`, or the first `name (n)` no other model holds.
+
+    Only another *id* counts as a clash: a run re-registering its own row keeps
+    the name it already has rather than climbing a suffix every time it is
+    written.
+    """
+    taken = db.scalar(select(Model.id).where(Model.name == name))
+    if taken is None or taken == model_id:
+        return name
+
+    stem = name[: NAME_LIMIT - 6].rstrip()
+    for n in itertools.count(2):
+        candidate = f"{stem} ({n})"
+        holder = db.scalar(select(Model.id).where(Model.name == candidate))
+        if holder is None or holder == model_id:
+            return candidate
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def delete_model(db: Session, model_id: uuid.UUID) -> str | None:
@@ -75,6 +113,49 @@ def delete_model(db: Session, model_id: uuid.UUID) -> str | None:
         return None
     name = model.name
     db.delete(model)
+    db.flush()
+    return name
+
+
+# ── tokenizers ──────────────────────────────────────────────────────────────
+
+
+def list_tokenizers(db: Session, *, include_implicit: bool = True) -> list[Tokenizer]:
+    stmt = select(Tokenizer).order_by(Tokenizer.created_at.desc())
+    if not include_implicit:
+        stmt = stmt.where(Tokenizer.implicit.is_(False))
+    return list(db.scalars(stmt))
+
+
+def get_tokenizer(db: Session, tokenizer_id: uuid.UUID) -> Tokenizer | None:
+    return db.get(Tokenizer, tokenizer_id)
+
+
+def find_tokenizer_by_name(db: Session, name: str) -> Tokenizer | None:
+    return db.scalar(select(Tokenizer).where(Tokenizer.name == name))
+
+
+def upsert_tokenizer(db: Session, *, tokenizer_id: uuid.UUID, name: str, **fields) -> Tokenizer:
+    """Record a built vocabulary. Keyed on the id for the reason `upsert_model`
+    is: the id is the directory, so rebuilding writes the same bytes and must
+    update that row rather than collide with its unique name."""
+    tokenizer = db.get(Tokenizer, tokenizer_id)
+    if tokenizer is None:
+        tokenizer = Tokenizer(id=tokenizer_id, name=name)
+        db.add(tokenizer)
+    tokenizer.name = name
+    for key, value in fields.items():
+        setattr(tokenizer, key, value)
+    db.flush()
+    return tokenizer
+
+
+def delete_tokenizer(db: Session, tokenizer_id: uuid.UUID) -> str | None:
+    tokenizer = db.get(Tokenizer, tokenizer_id)
+    if tokenizer is None:
+        return None
+    name = tokenizer.name
+    db.delete(tokenizer)
     db.flush()
     return name
 

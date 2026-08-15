@@ -165,6 +165,27 @@ interface Step {
  */
 function whatHappens(job: Job): { title: string; steps: Step[] } {
   switch (job.kind) {
+    case "tokenize":
+      return {
+        title: "What it will do",
+        steps: [
+          {
+            name: "Collect the corpora",
+            blurb:
+              "Every .txt in the datasets you picked, capped where you capped them.",
+          },
+          {
+            name: "Learn the merges",
+            blurb:
+              "One pass of byte-level BPE. It cannot be interrupted part-way, so cancelling lands when it finishes.",
+          },
+          {
+            name: "Save the vocabulary",
+            blurb:
+              "Kept under its own id, so any number of runs can train against this one vocabulary.",
+          },
+        ],
+      }
     case "train":
       return {
         title: "What it will do",
@@ -172,7 +193,7 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           {
             name: "Build the tokenizer",
             blurb:
-              "A BPE train over the corpus, unless this is a fine-tune — those inherit the base model's.",
+              "A BPE train over the corpus — skipped when the run names a vocabulary already built, and always for a fine-tune, which inherits the base model's.",
           },
           {
             name: "Train",

@@ -39,6 +39,35 @@ def test_sft_mask_selects_a_strict_subset_of_the_corpus(tokenizer):
     assert 0 < stats.trainable_fraction < 1
 
 
+def test_rendering_a_batch_renders_each_conversation_the_same(tokenizer):
+    """The build hands every conversation's segments to the tokenizer in one call
+    to use all six cores. The batch is a scheduling detail — and it has to stay
+    one, because the dataset key says nothing about how the renderer ran: a batch
+    that tokenized differently would write a different corpus under the same key,
+    and the mask would move with it, silently training on the wrong positions.
+    """
+    from llm.chat import template
+
+    files = sft_corpus.conversation_files([TINY_DATASET])
+    conversations = [
+        (raw.get("system"), sft_corpus._turns(raw))
+        for raw in sft_corpus.read_conversations(files)
+    ]
+    conversations = [(system, turns) for system, turns in conversations if turns]
+    assert len(conversations) > 1
+
+    one_at_a_time = [
+        template.build_training_example(system, turns, tokenizer)
+        for system, turns in conversations
+    ]
+    batched = template.encode_examples(
+        [template.training_segments(system, turns) for system, turns in conversations],
+        tokenizer,
+    )
+
+    assert batched == one_at_a_time
+
+
 def test_sft_corpus_and_mask_are_aligned(tokenizer):
     selection = sft_corpus.resolve([TINY_DATASET])
     stats = sft_corpus.build(tokenizer, selection, Reasoning.KEEP)
@@ -83,6 +112,31 @@ def test_sft_reuses_the_base_tokenizer(sft_config):
 def test_sft_requires_an_existing_base(sft_config):
     with pytest.raises(FileNotFoundError, match="pretrain one first"):
         sft_pipeline.run(sft_config.model_copy(update={"base_model": "nope"}), on_progress=None)
+
+
+def test_a_pretrain_over_chat_sets_says_where_they_actually_live(tmp_path, monkeypatch):
+    """Naming `base_model` is the *only* thing that makes a run a fine-tune, so a
+    fine-tune that loses that field on the wire arrives as a pretrain over SFT set
+    names — and goes looking for chat sets among the `.txt` corpora.
+
+    That is how it reached a user: a fine-tune of two chat sets queued happily,
+    ran as a pretrain, and failed minutes later with "no .txt files" for datasets
+    that were plainly on disk. The message has to name the other root, because
+    the state it describes is not "missing data" but "wrong kind of run".
+    """
+    from llm.corpus import vocab
+
+    # Its own root: the shared fixture names its pretrain corpus and its SFT set
+    # the same thing, which is the one case where this confusion cannot arise.
+    root = tmp_path / "data"
+    (root / "input" / "Prose").mkdir(parents=True)
+    (root / "input" / "Prose" / "a.txt").write_text("the cat sat\n" * 20, encoding="utf-8")
+    (root / "sft" / "smoltalk").mkdir(parents=True)
+    (root / "sft" / "smoltalk" / "c.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("DATA_DIR", str(root))
+
+    with pytest.raises(FileNotFoundError, match=r"\['smoltalk'\] are SFT sets"):
+        vocab.build("unused", [("smoltalk", None)], 512)
 
 
 @pytest.mark.parametrize("suite", SUITES)

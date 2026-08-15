@@ -25,7 +25,7 @@ os.environ.setdefault("DATA_DIR", str(ENGINE_ROOT / "data"))
 
 import numpy as np
 
-from llm.corpus import bpe, pack, special
+from llm.corpus import bpe, pack, special, vocab
 
 
 def emit(name, data):
@@ -33,9 +33,9 @@ def emit(name, data):
 
 
 def main():
-    tok = bpe.load()
+    tok = vocab.for_corpus(pack.latest_key())
     n_vocab = bpe.vocab_size(tok)
-    corpus = pack.load_corpus()
+    corpus = pack.load_corpus(pack.latest_key())
 
     # 1 — special block: one id per marker, and ids are low.
     special_ids = {}

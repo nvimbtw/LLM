@@ -87,6 +87,13 @@ class TrainConfig(BaseModel):
     )
 
     # ── Tokenizer ───────────────────────────────────────────────────────────
+    tokenizer_id: str | None = Field(
+        default=None,
+        description="reuse a vocabulary built by a `tokenize` run; null learns one from "
+        "this run's own corpora, which is what every run used to do",
+    )
+    #: Ignored when `tokenizer_id` names a build — a vocabulary's size is a
+    #: property of the build, not of the run that consumes it.
     max_vocab: int = 8192
 
     # ── Optimization ────────────────────────────────────────────────────────
@@ -111,7 +118,9 @@ class TrainConfig(BaseModel):
     seed: int = 0
     rebuild_dataset: bool = Field(
         default=False,
-        description="re-tokenize even when a corpus is already on disk",
+        description="re-learn the vocabulary and re-pack the corpus even though a build "
+        "matching this request exists. An escape hatch for a corpus edited or corrupted "
+        "on disk — correctness is the key's job, not this flag's",
     )
 
     # ── Performance ─────────────────────────────────────────────────────────
@@ -215,6 +224,32 @@ class SftConfig(BaseModel):
     shuffle: bool = True
     seed: int = 0
     rebuild_dataset: bool = False
+
+    _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
+
+
+class TokenizerConfig(BaseModel):
+    """Learning one reusable vocabulary from a selection of corpora.
+
+    Its own kind of run rather than a step inside training: a vocabulary is the
+    slowest part of phase 1, it is shared by every run that names it, and what it
+    is a function of — which corpora, at what size — has nothing to do with an
+    architecture or a learning rate.
+    """
+
+    model_config = _ALLOW_MODEL_PREFIX
+
+    tokenizer_id: str = Field(description="names the directory under artifacts/tokenizers/")
+    max_vocab: int = 8192
+    datasets: list[DatasetSelection] = Field(
+        default_factory=list,
+        description="corpora to learn merges from; empty means all of them. Each entry is "
+        "a name or {name, count} to cap it to its first N files",
+    )
+    rebuild: bool = Field(
+        default=False,
+        description="re-learn even though a build matching this request exists",
+    )
 
     _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 

@@ -28,7 +28,7 @@ os.environ.setdefault("DATA_DIR", str(ENGINE_ROOT / "data"))
 import numpy as np
 
 from llm import storage
-from llm.corpus import bpe, pack
+from llm.corpus import bpe, pack, vocab
 from llm.eval.surface import words_in
 
 PROPER = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*")
@@ -58,9 +58,9 @@ def _name_like(found, freq):
 
 
 def main():
-    tok = bpe.load()
-    corpus = pack.load_corpus()
-    _, docs, _ = pack.load_segments()
+    tok = vocab.for_corpus(pack.latest_key())
+    corpus = pack.load_corpus(pack.latest_key())
+    _, docs, _ = pack.load_segments(pack.latest_key())
 
     freq = Counter()
     ents = Counter()

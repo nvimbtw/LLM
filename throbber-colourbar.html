@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The colour bar — four treatments</title>
+<style>
+  :root {
+    --bg: #f7f4e4; --fg: #545464; --card: #fdfbf1; --line: #d8cfa2;
+    --muted: #6f6d57; --accent: #4d699b; --spark: #c4622d;
+  }
+  html[data-mode="dark"] {
+    --bg: #181616; --fg: #c5c9c5; --card: #232221; --line: #393836;
+    --muted: #a6a69c; --accent: #8ba4b0; --spark: #c4622d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--fg);
+    margin: 0; padding: 0 1.25rem 6rem; line-height: 1.55;
+    transition: background .3s, color .3s;
+  }
+  main { max-width: 1060px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 2.4rem 0 .3rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.05rem; margin: 2.6rem 0 .5rem; padding-top: 1.3rem; border-top: 1px solid var(--line); }
+  p.sub { color: var(--muted); font-size: .92rem; margin: 0 0 1.8rem; max-width: 64ch; }
+  p { font-size: .92rem; max-width: 70ch; }
+  .bar { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: 1.2rem 0 2rem; }
+  button {
+    font: inherit; font-size: .8rem;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 5px;
+    padding: .3rem .7rem; cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .spacer { flex: 1 }
+
+  .stage { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  @media (max-width: 780px) { .stage { grid-template-columns: repeat(2, 1fr); } }
+  .cell { background: var(--card); padding: 1.9rem .9rem 1.3rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+  .cell .name { font-size: .72rem; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); font-family: ui-monospace, Consolas, monospace; text-align: center; }
+  .cell .note { font-size: .76rem; color: var(--muted); text-align: center; min-height: 6.5em; max-width: 25ch; }
+
+  table.sheet { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  table.sheet th { font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; text-align: center; padding: .5rem .3rem; font-family: ui-monospace, Consolas, monospace; }
+  table.sheet th.row { text-align: right; padding-right: .9rem; white-space: nowrap; }
+  table.sheet td { text-align: center; padding: .3rem; border-top: 1px solid var(--line); }
+  table.sheet td.desc { text-align: left; font-size: .8rem; color: var(--muted); padding-left: 1rem; max-width: 30ch; }
+  .inrow { display: flex; align-items: center; gap: 1.1rem; font-size: .9rem; margin: 1.4rem 0; padding: .9rem 1.1rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  footer { margin-top: 4rem; border-top: 1px solid var(--line); padding-top: 1rem; color: var(--muted); font-size: .8rem; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .86em; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>The colour bar, four ways</h1>
+<p class="sub">The states are re-tuned from scratch for this family. In every other candidate, motion tells the states apart and colour is a second signal on top; here the geometry barely moves, so the whole vocabulary has to be <em>how colour travels</em> — where it starts, how wide it is, which way it goes, and whether it is left behind.</p>
+
+<div class="bar" id="states"></div>
+<div class="stage" id="stage"></div>
+
+<div class="inrow">
+  <span id="inline-slot"></span>
+  <span>At <code>64px</code>, beside 14px text — the chat thread's status row, which is where this has to work hardest.</span>
+</div>
+
+<h2>Contact sheet</h2>
+<p>Every state at once, per treatment, with what each one is doing.</p>
+<table class="sheet" id="sheet"></table>
+
+<footer>Prototype only. Nothing in <code>frontend/</code> was changed.</footer>
+
+</main>
+
+<script>
+const TAU = Math.PI * 2
+const CANDIDATES = [
+  { id:"rule",   name:"Rules",         note:"Hairlines. The most minimal reading — a colour bar drawn with a pen rather than printed." },
+  { id:"patch",  name:"Patches",       note:"Solid swatches in a row. The literal press bar: this is what the thing actually looks like." },
+  { id:"grid",   name:"Swatch block",  note:"Four by four. Uses the square the mark actually occupies, and gives sixteen elements for colour to move through instead of seven." },
+  { id:"course", name:"Double course", note:"Two rows, offset half a patch. Strip-shaped without ever being a line that fills." },
+]
+const STATES = ["idle","loading","thinking","generating","tool","training","benchmarking","tokenizing"]
+const WHAT = {
+  idle:         "A held wash. Nothing travels.",
+  loading:      "A wide soft band drifting along, wrapping.",
+  thinking:     "Colour blooms from the middle outward and recedes — the slow breathe out.",
+  generating:   "A narrow band running fast, patches varying in size under it.",
+  tool:         "Every patch snaps to the second colour at once and falls back.",
+  training:     "The whole strip tints and breathes together. Nothing travels — bulk work.",
+  benchmarking: "One patch at a time takes the colour and keeps it, then the row resets.",
+  tokenizing:   "Each patch splits in two, and the split marches along the row.",
+}
+
+// The state vector, rebuilt for this family. `centre` and `hold` are new and are
+// what make eight states distinguishable without motion: where the colour starts,
+// and whether it is left behind.
+const P = {
+  idle:         {o:.42,weight:.85,breathe:0,   breatheRate:0,  wave:0,  waveRate:0, scan:.16,scanRate:.05,scanW:2.6,centre:1,hold:0,flash:0,flashRate:0, split:0,splitRate:0},
+  loading:      {o:.9, weight:1,  breathe:.02, breatheRate:.4, wave:.03,waveRate:.35,scan:.5,scanRate:.3, scanW:2.0,centre:0,hold:0,flash:0,flashRate:0, split:0,splitRate:0},
+  thinking:     {o:.85,weight:1,  breathe:.055,breatheRate:.19,wave:0,  waveRate:0, scan:1,  scanRate:.23,scanW:1.5,centre:1,hold:0,flash:0,flashRate:0, split:0,splitRate:0},
+  generating:   {o:1,  weight:1.05,breathe:.03,breatheRate:1.1,wave:.16,waveRate:1.7,scan:.95,scanRate:1.2,scanW:1.0,centre:0,hold:0,flash:0,flashRate:0,split:0,splitRate:0},
+  tool:         {o:1,  weight:1.12,breathe:.02,breatheRate:.8, wave:0,  waveRate:0, scan:0,  scanRate:0,  scanW:2, centre:0,hold:0,flash:1,flashRate:1.5,split:0,splitRate:0},
+  training:     {o:.95,weight:1,  breathe:.125,breatheRate:.62,wave:0,  waveRate:0, scan:.34,scanRate:.62,scanW:14,centre:0,hold:0,flash:0,flashRate:0, split:0,splitRate:0},
+  benchmarking: {o:1,  weight:1,  breathe:.015,breatheRate:.4, wave:0,  waveRate:0, scan:1,  scanRate:.2, scanW:.42,centre:0,hold:1,flash:0,flashRate:0, split:0,splitRate:0},
+  tokenizing:   {o:1,  weight:1,  breathe:.015,breatheRate:.35,wave:0,  waveRate:0, scan:.5, scanRate:.26,scanW:1.2,centre:0,hold:0,flash:0,flashRate:0, split:1,splitRate:.45},
+}
+const KEYS = Object.keys(P.idle)
+const BLEND_MS = 420
+const MAX_FRAME_S = 1/15
+
+const fract = x => x - Math.floor(x)
+const clamp = (x,a,b) => Math.min(Math.max(x,a),b)
+const smoothstep = (a,b,x) => { const u = clamp((x-a)/(b-a),0,1); return u*u*(3-2*u) }
+function mix(a,b,w){ const o={}; for(const k of KEYS) o[k]=a[k]+(b[k]-a[k])*w; return o }
+
+let ACCENT=[0,0,0], SPARK=[0,0,0]
+function readPalette(){
+  const cs = getComputedStyle(document.documentElement)
+  ACCENT = hex(cs.getPropertyValue("--accent").trim())
+  SPARK  = hex(cs.getPropertyValue("--spark").trim())
+}
+function hex(h){ const n=parseInt(h.slice(1),16); return [n>>16&255,n>>8&255,n&255] }
+function tint(t){
+  const r=Math.round(ACCENT[0]+(SPARK[0]-ACCENT[0])*t)
+  const g=Math.round(ACCENT[1]+(SPARK[1]-ACCENT[1])*t)
+  const b=Math.round(ACCENT[2]+(SPARK[2]-ACCENT[2])*t)
+  return `rgb(${r},${g},${b})`
+}
+
+/**
+ * How much second colour element `i` of `n` is showing.
+ *
+ * `pos` is the element's place along whatever axis the colour travels — the
+ * column for a row, the distance from the centre when `centre` is up. The two are
+ * blended rather than switched, so a state that is half "travelling" and half
+ * "radiating" is a real, drawable thing and the crossfade between them is smooth.
+ */
+function litness(L, i, n, ph, radial){
+  const pos = i*(1-L.centre) + radial*L.centre
+  const span = n-1
+  const w = Math.max(L.scanW,.001)
+  const head = fract(ph.scan)*(span+2*w)-w
+  const band = L.scan>0 ? L.scan*smoothstep(w,0,Math.abs(pos-head)) : 0
+  // `hold` is what separates "taking a reading" from "a light passing over": the
+  // colour stays behind the head and the row resets when the sweep wraps.
+  const kept = L.hold>0 ? L.hold*smoothstep(.5,-.2,pos-head) : 0
+  const flashAt = L.flash>0 ? L.flash*Math.pow(.5+.5*Math.cos(TAU*fract(ph.flash)),3) : 0
+  return Math.min(1, Math.max(band, kept) + flashAt)
+}
+
+const NS = "http://www.w3.org/2000/svg"
+function svg(tag, attrs){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e }
+
+// ── shared: a patch that can split in two ───────────────────────────────────
+//
+// Every filled treatment draws each patch as *two* rects that sit flush by
+// default and read as one. `split` opens a gap between them. Splitting a swatch
+// into two swatches is the whole tokenizing gesture, and it costs two width
+// writes rather than any new geometry.
+function makeSplitPatch(parent, w, h){
+  const a = svg("rect",{x:0,y:0,width:w/2,height:h,rx:.35})
+  const b = svg("rect",{x:0,y:0,width:w/2,height:h,rx:.35})
+  parent.appendChild(a); parent.appendChild(b)
+  return { a, b, place(cx, cy, sw, sh, gap){
+    const half = (sw-gap)/2
+    a.setAttribute("x",(cx-sw/2).toFixed(2)); a.setAttribute("width",Math.max(.01,half).toFixed(2))
+    b.setAttribute("x",(cx-sw/2+half+gap).toFixed(2)); b.setAttribute("width",Math.max(.01,half).toFixed(2))
+    a.setAttribute("y",(cy-sh/2).toFixed(2)); a.setAttribute("height",sh.toFixed(2))
+    b.setAttribute("y",(cy-sh/2).toFixed(2)); b.setAttribute("height",sh.toFixed(2))
+  }}
+}
+
+// ── A. rules ────────────────────────────────────────────────────────────────
+
+const RULE_N = 7
+function buildRule(px){
+  const root = svg("svg",{viewBox:"0 0 32 32",width:px,height:px})
+  root.style.overflow = "visible"
+  const g = svg("g",{}); root.appendChild(g)
+  const lines = []
+  for(let i=0;i<RULE_N;i++){
+    const x = 5 + i*(22/(RULE_N-1))
+    const l = svg("line",{x1:x,y1:9,x2:x,y2:23,"stroke-width":1.6,"stroke-linecap":"butt","vector-effect":"non-scaling-stroke"})
+    g.appendChild(l); lines.push(l)
+  }
+  return { el: root, draw(L, ph){
+    const breathe = 1 + L.breathe*Math.sin(TAU*ph.breath)
+    const mid = (RULE_N-1)/2
+    for(let i=0;i<RULE_N;i++){
+      const l = lines[i]
+      const radial = Math.abs(i-mid)*((RULE_N-1)/mid)/2
+      const lit = litness(L,i,RULE_N,ph,radial)
+      const wob = 1 - L.wave*2.2*Math.max(0,Math.sin(TAU*(ph.wave - i/RULE_N)))
+      const half = 7*breathe*clamp(wob,.3,1.1)
+      l.setAttribute("y1",(16-half).toFixed(2)); l.setAttribute("y2",(16+half).toFixed(2))
+      l.setAttribute("stroke",tint(lit))
+      l.setAttribute("opacity",(L.o*(.72+.28*lit)).toFixed(3))
+      l.setAttribute("stroke-width",((1.6+1.1*lit)*L.weight).toFixed(2))
+      if(L.split>.01){
+        l.setAttribute("stroke-dasharray",`${(half*.9).toFixed(2)} ${(1.5*L.split).toFixed(2)}`)
+        l.setAttribute("stroke-dashoffset",(-ph.split*5).toFixed(2))
+      } else l.removeAttribute("stroke-dasharray")
+    }
+  }}
+}
+
+// ── B. patches ──────────────────────────────────────────────────────────────
+
+const PATCH_N = 7
+function buildPatch(px){
+  const root = svg("svg",{viewBox:"0 0 32 32",width:px,height:px})
+  root.style.overflow = "visible"
+  const g = svg("g",{}); root.appendChild(g)
+  const cells = []
+  for(let i=0;i<PATCH_N;i++){
+    const grp = svg("g",{})
+    g.appendChild(grp)
+    cells.push({ grp, patch: makeSplitPatch(grp, 2.6, 14) })
+  }
+  return { el: root, draw(L, ph){
+    const breathe = 1 + L.breathe*Math.sin(TAU*ph.breath)
+    const pitch = 22/(PATCH_N-1)
+    const mid = (PATCH_N-1)/2
+    for(let i=0;i<PATCH_N;i++){
+      const c = cells[i]
+      const radial = Math.abs(i-mid)*((PATCH_N-1)/mid)/2
+      const lit = litness(L,i,PATCH_N,ph,radial)
+      const wob = 1 - L.wave*2.2*Math.max(0,Math.sin(TAU*(ph.wave - i/PATCH_N)))
+      c.patch.place(5+i*pitch, 16, pitch*.68*L.weight, 14*breathe*clamp(wob,.3,1.1), L.split*1.1)
+      c.grp.setAttribute("fill",tint(lit))
+      c.grp.setAttribute("opacity",(L.o*(.62+.38*lit)).toFixed(3))
+    }
+  }}
+}
+
+// ── C. swatch block ─────────────────────────────────────────────────────────
+//
+// The colour travels on a diagonal rather than by column, so the sweep is never
+// a vertical line crossing the block — which is the shape that reads as a
+// progress bar even when it is a grid.
+
+const GRID = 4
+function buildGrid(px){
+  const root = svg("svg",{viewBox:"0 0 32 32",width:px,height:px})
+  root.style.overflow = "visible"
+  const g = svg("g",{}); root.appendChild(g)
+  const cells = []
+  for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++){
+    const grp = svg("g",{}); g.appendChild(grp)
+    cells.push({ grp, r, c, patch: makeSplitPatch(grp, 4, 4) })
+  }
+  return { el: root, draw(L, ph){
+    const breathe = 1 + L.breathe*Math.sin(TAU*ph.breath)
+    const pitch = 6.2, org = 16 - pitch*(GRID-1)/2
+    const n = GRID*2 - 1
+    const mid = (GRID-1)/2
+    for(const cell of cells){
+      // Diagonal index, and radial distance from the block's centre.
+      const diag = cell.r + cell.c
+      const radial = Math.hypot(cell.r-mid, cell.c-mid)/Math.hypot(mid,mid)*(n-1)
+      const lit = litness(L,diag,n,ph,radial)
+      const wob = 1 - L.wave*2.2*Math.max(0,Math.sin(TAU*(ph.wave - diag/n)))
+      const size = 4.3*breathe*clamp(wob,.35,1.12)*L.weight
+      cell.patch.place(org+cell.c*pitch, org+cell.r*pitch, size, size, L.split*1.4)
+      cell.grp.setAttribute("fill",tint(lit))
+      cell.grp.setAttribute("opacity",(L.o*(.55+.45*lit)).toFixed(3))
+    }
+  }}
+}
+
+// ── D. double course ────────────────────────────────────────────────────────
+
+const COURSE_N = 6
+function buildCourse(px){
+  const root = svg("svg",{viewBox:"0 0 32 32",width:px,height:px})
+  root.style.overflow = "visible"
+  const g = svg("g",{}); root.appendChild(g)
+  const cells = []
+  for(let row=0;row<2;row++) for(let i=0;i<COURSE_N;i++){
+    const grp = svg("g",{}); g.appendChild(grp)
+    cells.push({ grp, row, i, patch: makeSplitPatch(grp, 3, 6) })
+  }
+  return { el: root, draw(L, ph){
+    const breathe = 1 + L.breathe*Math.sin(TAU*ph.breath)
+    const pitch = 22/(COURSE_N-1)
+    const n = COURSE_N + 1
+    const mid = (COURSE_N-1)/2
+    for(const cell of cells){
+      // The lower course is offset half a patch, so its colour arrives half a beat
+      // later — the two rows are the same sweep seen twice, which is what a real
+      // press bar's plates do.
+      const pos = cell.i + cell.row*.5
+      const radial = Math.abs(cell.i-mid)*((COURSE_N-1)/mid)/2 + cell.row*.5
+      const lit = litness(L,pos,n,ph,radial)
+      const wob = 1 - L.wave*2.2*Math.max(0,Math.sin(TAU*(ph.wave - pos/n)))
+      const h = 6*breathe*clamp(wob,.35,1.12)
+      cell.patch.place(
+        5 + cell.i*pitch + cell.row*pitch*.5,
+        16 + (cell.row ? 4 : -4),
+        pitch*.66*L.weight, h, L.split*1.2
+      )
+      cell.grp.setAttribute("fill",tint(lit))
+      cell.grp.setAttribute("opacity",(L.o*(.58+.42*lit)).toFixed(3))
+    }
+  }}
+}
+
+const BUILD = { rule: buildRule, patch: buildPatch, grid: buildGrid, course: buildCourse }
+
+// ── runtime ─────────────────────────────────────────────────────────────────
+
+let golden = 0
+function stagger(){ golden = fract(golden + .6180339887); return golden }
+
+const instances = []
+function makeInstance(candidate, px, state){
+  const built = BUILD[candidate](px)
+  const off = stagger()
+  const inst = {
+    built, state: state || "idle", prev: state || "idle", blendAt: -1e9,
+    ph: { breath: off*5, wave: off*7, scan: off, flash: off*2, split: off*4 },
+    fixed: !!state,
+  }
+  instances.push(inst)
+  return inst
+}
+
+let current = "thinking"
+function setState(s){
+  current = s
+  for(const b of document.querySelectorAll("#states button[data-state]")) b.setAttribute("aria-pressed", String(b.dataset.state === s))
+  const now = performance.now()
+  for(const inst of instances){
+    if(inst.fixed || inst.state === s) continue
+    inst.prev = inst.state; inst.state = s; inst.blendAt = now
+  }
+}
+
+let last = 0
+function frame(now){
+  const dt = Math.min(Math.max((now-(last||now))/1000,0), MAX_FRAME_S)
+  last = now
+  for(const inst of instances){
+    const blend = Math.min((now-inst.blendAt)/BLEND_MS,1)
+    const L = blend>=1 ? P[inst.state] : mix(P[inst.prev],P[inst.state],smoothstep(0,1,blend))
+    const ph = inst.ph
+    ph.breath+=L.breatheRate*dt; ph.wave+=L.waveRate*dt
+    ph.scan+=L.scanRate*dt; ph.flash+=L.flashRate*dt; ph.split+=L.splitRate*dt
+    inst.built.draw(L, ph)
+  }
+  requestAnimationFrame(frame)
+}
+
+// ── page ────────────────────────────────────────────────────────────────────
+
+const statesBar = document.getElementById("states")
+for(const s of STATES){
+  const b = document.createElement("button")
+  b.textContent = s; b.dataset.state = s
+  b.onclick = () => setState(s)
+  statesBar.appendChild(b)
+}
+statesBar.appendChild(Object.assign(document.createElement("span"),{className:"spacer"}))
+const themeBtn = document.createElement("button")
+themeBtn.textContent = "Dark"
+themeBtn.onclick = () => {
+  const dark = document.documentElement.getAttribute("data-mode") === "dark"
+  document.documentElement.setAttribute("data-mode", dark ? "light" : "dark")
+  themeBtn.textContent = dark ? "Dark" : "Light"
+  readPalette()
+}
+statesBar.appendChild(themeBtn)
+
+const stage = document.getElementById("stage")
+for(const c of CANDIDATES){
+  const cell = document.createElement("div"); cell.className = "cell"
+  cell.appendChild(makeInstance(c.id, 100, null).built.el)
+  const nm = document.createElement("div"); nm.className="name"; nm.textContent = c.name
+  const nt = document.createElement("div"); nt.className="note"; nt.textContent = c.note
+  cell.appendChild(nm); cell.appendChild(nt)
+  stage.appendChild(cell)
+}
+
+document.getElementById("inline-slot").appendChild(makeInstance("grid", 64, null).built.el)
+
+const sheet = document.getElementById("sheet")
+const head = document.createElement("tr")
+head.appendChild(document.createElement("th"))
+for(const c of CANDIDATES){ const th=document.createElement("th"); th.textContent=c.name; head.appendChild(th) }
+head.appendChild(document.createElement("th"))
+sheet.appendChild(head)
+for(const s of STATES){
+  const tr = document.createElement("tr")
+  const th = document.createElement("th"); th.className="row"; th.textContent = s; tr.appendChild(th)
+  for(const c of CANDIDATES){
+    const td = document.createElement("td")
+    td.appendChild(makeInstance(c.id, 54, s).built.el)
+    tr.appendChild(td)
+  }
+  const d = document.createElement("td"); d.className="desc"; d.textContent = WHAT[s]; tr.appendChild(d)
+  sheet.appendChild(tr)
+}
+
+readPalette()
+setState(current)
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

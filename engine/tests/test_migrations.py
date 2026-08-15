@@ -111,10 +111,18 @@ def test_the_schema_round_trips_through_postgres(scratch_database):
         q.set_feedback(db, reply.id, owner, Feedback.up)
         q.open_benchmark(db, model=model, suite=Suite.language, score=42.0)
         q.enqueue(db, kind=RunKind.train, label="r", config={"a": [1, 2]})
+        # The one statement that proves the `ALTER TYPE` ran: Postgres holds
+        # `run_kind` as a real enum, and a value the migration failed to add is
+        # invisible until something tries to store it.
+        q.enqueue(db, kind=RunKind.tokenize, label="v", config={})
+        q.upsert_tokenizer(
+            db, tokenizer_id=uuid.uuid4(), name="pg-vocab", datasets=[["A", None]]
+        )
 
     with store.session() as db:
         stored = q.find_model_by_name(db, "pg")
         assert stored.parameters == {"nested": {"ok": True}}
+        assert q.find_tokenizer_by_name(db, "pg-vocab").datasets == [["A", None]]
         assert q.messages_of(db, chat.id)[0].feedback is Feedback.up
         assert q.latest_benchmark(db, stored.id, Suite.language, 1).score == 42.0
 

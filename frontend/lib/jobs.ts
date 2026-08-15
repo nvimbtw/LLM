@@ -1,6 +1,7 @@
 import { apiFetch } from "./api"
 import type { BenchmarkSuite } from "./benchmark"
-import type { TrainConfig } from "./training"
+import type { TokenizerBuild } from "./tokenizers"
+import { isFineTune, type TrainConfig } from "./training"
 
 // The GPU queue. The engine calls these runs and so does the wire; the UI has
 // always called them jobs, and `fromRow` is where the two names meet.
@@ -9,7 +10,7 @@ import type { TrainConfig } from "./training"
 // order. `config` travels with each row, so a finished job can seed a new one
 // without a second request.
 
-export type JobKind = "train" | "benchmark" | "chat"
+export type JobKind = "train" | "benchmark" | "chat" | "tokenize"
 
 export type JobStatus =
   // Queued behind another job and not yet runnable: it consumes the model that job
@@ -210,13 +211,15 @@ export async function getJob(id: string): Promise<Job> {
  * one question the chain exists to leave open, and the engine answers it when the
  * predecessor lands.
  */
-export interface FollowUp {
-  kind: "train" | "benchmark"
-  config: unknown
-}
+export type FollowUp =
+  | { kind: "train"; config: TrainConfig }
+  | { kind: "benchmark"; config: unknown }
 
 async function post(path: string, body: unknown): Promise<Response> {
-  const res = await apiFetch(path, { method: "POST", body: JSON.stringify(body) })
+  const res = await apiFetch(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
   if (!res.ok) {
     // The failure carries the specific validation error — a bad hyperparameter, a
     // missing dataset, a model with no tokenizer — which is what the composer
@@ -226,16 +229,61 @@ async function post(path: string, body: unknown): Promise<Response> {
   return res
 }
 
+//: Where each kind is queued. `chat` is not here: a turn is answered on the
+//: socket that asked for it rather than put on the line — see frontend/CLAUDE.md.
+const QUEUE_PATH: Record<Exclude<JobKind, "chat">, string> = {
+  train: "/runs/train",
+  benchmark: "/runs/benchmark",
+  tokenize: "/runs/tokenize",
+}
+
+//: A fine-tune is the same *kind* of run as a pretrain — it produces a model and
+//: takes the same place in the queue — but it is a different request, because it
+//: takes its architecture from the base model instead of stating one.
+const FINE_TUNE_PATH = "/runs/sft"
+
+/**
+ * The engine's shape for a training run.
+ *
+ * One name is adapted here and nowhere else, in the manner of `id_job` and
+ * `id_run`: the composer's **`base_model_id`** is the engine's **`base_model`**.
+ * The engine decides what a run *is* by that one field — a config carrying it is
+ * a fine-tune, a config without it is a pretrain — so failing to translate it
+ * did not produce an error, it produced a **pretrain**: a fine-tune of two chat
+ * sets was run as a pretrain that went looking for `smoltalk` among the `.txt`
+ * corpora and failed minutes later, having queued perfectly happily.
+ *
+ * Everything else rides along untouched. The engine's `SftConfig` keeps the
+ * fields it knows and drops the pretrain-only ones (`dimensions`, `tokenizer_id`,
+ * `curriculum`, …), which is exactly right: a fine-tune that restated the
+ * architecture could disagree with the weights it starts from, and the weights
+ * would win, silently.
+ */
+function forEngine(config: TrainConfig): Record<string, unknown> {
+  if (!isFineTune(config.mode)) return { ...config }
+  const { base_model_id, ...rest } = config
+  return { ...rest, base_model: base_model_id }
+}
+
 async function queue(
-  kind: JobKind,
+  kind: Exclude<JobKind, "chat">,
   config: unknown,
-  steps: FollowUp[]
+  steps: FollowUp[],
+  path: string = QUEUE_PATH[kind]
 ): Promise<Job> {
   if (steps.length === 0) {
-    const path = kind === "benchmark" ? "/runs/benchmark" : "/runs/train"
     return fromRow(await (await post(path, config)).json())
   }
-  const chain = [{ kind, config }, ...steps]
+  // Chained steps are translated too. A follow-up deliberately names no base —
+  // the engine fills it in when its predecessor lands — so this maps an absent
+  // `base_model_id` to an absent `base_model`, which is the same statement in
+  // the engine's vocabulary rather than a missing field in it.
+  const chain = [
+    { kind, config },
+    ...steps.map((step) =>
+      step.kind === "train" ? { ...step, config: forEngine(step.config) } : step
+    ),
+  ]
   const queued: RunRow[] = await (await post("/runs/chain", chain)).json()
   return fromRow(queued[0])
 }
@@ -244,7 +292,16 @@ export function queueTraining(
   config: TrainConfig,
   steps: FollowUp[] = []
 ): Promise<Job> {
-  return queue("train", config, steps)
+  return queue(
+    "train",
+    forEngine(config),
+    steps,
+    isFineTune(config.mode) ? FINE_TUNE_PATH : QUEUE_PATH.train
+  )
+}
+
+export function queueTokenizer(config: TokenizerBuild): Promise<Job> {
+  return queue("tokenize", config, [])
 }
 
 export function queueBenchmark(
@@ -282,7 +339,8 @@ export async function cancelJob(id: string): Promise<void> {
  * the history as what happened.
  */
 export function retryJob(job: Job): Promise<Job> {
-  if (job.kind === "chat") throw new Error("A chat turn is re-asked, not re-run.")
+  if (job.kind === "chat")
+    throw new Error("A chat turn is re-asked, not re-run.")
   return queue(job.kind, job.config, [])
 }
 
@@ -303,6 +361,7 @@ export const KIND_LABEL: Record<JobKind, string> = {
   train: "Train",
   benchmark: "Benchmark",
   chat: "Chat",
+  tokenize: "Tokenizer",
 }
 
 /**
@@ -320,6 +379,7 @@ export const KIND_CHIP: Record<JobKind, string> = {
   train: "text-kind-train bg-kind-train/14",
   benchmark: "text-kind-benchmark bg-kind-benchmark/14",
   chat: "text-kind-chat bg-kind-chat/14",
+  tokenize: "text-kind-tokenize bg-kind-tokenize/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
@@ -339,7 +399,7 @@ export const STATUS_LABEL: Record<JobStatus, string> = {
  */
 export function throbberMode(
   job: Job
-): "idle" | "training" | "benchmarking" | "generating" {
+): "idle" | "training" | "benchmarking" | "generating" | "tokenizing" {
   if (!isRunning(job)) return "idle"
   switch (job.kind) {
     case "train":
@@ -348,6 +408,12 @@ export function throbberMode(
       return "benchmarking"
     case "chat":
       return "generating"
+    // Its own state now. It used to borrow training's, on the grounds that a
+    // fourth motion would be one nobody could tell apart — but the mark's
+    // vocabulary is colour rather than motion, and cutting each patch in two is
+    // a picture of what a vocabulary build actually does.
+    case "tokenize":
+      return "tokenizing"
   }
 }
 

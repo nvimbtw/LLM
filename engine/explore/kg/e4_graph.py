@@ -34,7 +34,7 @@ import torch.nn.functional as F
 import networkx as nx
 
 from llm import storage
-from llm.corpus import bpe, pack
+from llm.corpus import bpe, pack, vocab
 from llm.eval.surface import words_in
 from llm.model.checkpoint import load as ckpt_load
 
@@ -180,9 +180,9 @@ def pagerank_np(g, alpha=0.85, iters=200):
 
 def main():
     model, _ = trained_model("diagfix")
-    tok = bpe.load()
-    corpus = pack.load_corpus()
-    _, docs, _ = pack.load_segments()
+    tok = vocab.for_corpus(pack.latest_key())
+    corpus = pack.load_corpus(pack.latest_key())
+    _, docs, _ = pack.load_segments(pack.latest_key())
 
     per_doc = []
     raw_texts = []

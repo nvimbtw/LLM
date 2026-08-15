@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
+import type { BatchPoint, LossPoint } from "@/hooks/use-training"
 import { cancelJob, getJob, type Job } from "@/lib/jobs"
 import { attachJob, type Attachment } from "@/lib/jobs-socket"
 import type {
@@ -60,7 +60,6 @@ export function useJob(idJob: string) {
   const [tokenize, setTokenize] = React.useState<Partial<TokenizeStats>>({})
   const [train, setTrain] = React.useState<Partial<TrainStats>>({})
   const [loss, setLoss] = React.useState<LossPoint[]>([])
-  const [vocabSeries, setVocabSeries] = React.useState<VocabPoint[]>([])
   const [batchSeries, setBatchSeries] = React.useState<BatchPoint[]>([])
   const [diag, setDiag] = React.useState<DiagPoint[]>([])
   const [checkpoints, setCheckpoints] = React.useState<string[]>([])
@@ -104,12 +103,6 @@ export function useJob(idJob: string) {
               MAX_LOSS_POINTS
             )
           )
-          const tok = (snap.tokenize ?? {}) as Partial<TokenizeStats>
-          setVocabSeries(
-            tok.vocab != null
-              ? [{ merges: tok.merges ?? 0, vocab: tok.vocab }]
-              : []
-          )
           setBatchSeries(
             ((snap.batch_series as [number, number, number, number][]) ?? [])
               .map(([step, min, avg, max]) => ({ step, min, avg, max }))
@@ -127,11 +120,11 @@ export function useJob(idJob: string) {
         break
       }
       case "tokenize": {
-        const s = frame as unknown as TokenizeStats
-        setTokenize(s)
-        setVocabSeries((prev) =>
-          [...prev, { merges: s.merges, vocab: s.vocab }].slice(-400)
-        )
+        const s = frame as unknown as Partial<TokenizeStats>
+        // Merged, not replaced: a phase reports what it has just measured, and
+        // the frame that says the corpus is packed does not repeat the counts
+        // from the frame that collected the files.
+        setTokenize((prev) => ({ ...prev, ...s }))
         break
       }
       case "log":
@@ -267,7 +260,6 @@ export function useJob(idJob: string) {
     tokenize,
     train,
     loss,
-    vocabSeries,
     batchSeries,
     diag,
     checkpoints,

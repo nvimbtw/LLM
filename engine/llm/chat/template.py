@@ -222,29 +222,27 @@ def build_prompt(
     return bpe.encode(tokenizer, rendered)
 
 
-def build_training_example(
+def training_segments(
     system: str | None,
     turns: list[Turn],
-    tokenizer: Tokenizer,
     budget: ThinkBudget | None = None,
     reasoning: Reasoning = Reasoning.KEEP,
-) -> tuple[list[int], list[int]]:
-    """Render a full training example — the conversation *including* the
-    assistant replies — into token ids plus a parallel loss mask.
+) -> list[tuple[str, bool]]:
+    """The conversation as `(text, is_target)` pieces, before any encoding.
 
-    `mask[i] == 1` iff the token predicted from position `i` (that is, token
-    `i+1`) is part of an assistant reply: its content through the closing
-    `<|/assistant|>` marker, inclusive. Everything else — the system block, the
-    user turns, the opening `<|assistant|>` cue, and the final position (which
-    has no next token) — is 0.
+    Split out from `build_training_example` so a caller with thousands of
+    conversations can build every piece first and hand them to the tokenizer in
+    one batch — see `encode_examples`. Nothing here touches a tokenizer, which is
+    what makes that possible.
 
-    The conversation is encoded segment-by-segment rather than in one pass. The
-    pre-tokenizer only splits words on spaces, so a marker glues to the text next
-    to it inside one "word" (`<|assistant|>Hello` is a single word) and there is
-    no clean token boundary at a marker in a whole-string encoding. Splitting at
-    the marker boundaries makes the reply tokens stand alone — exactly how the
-    model sees them at generation time — and makes the mask exact. The cost is
-    that the concatenated tokenization can differ by ~1 token at each seam.
+    The conversation is *cut at the markers* rather than encoded in one pass, and
+    that is a correctness requirement, not a convenience. The pre-tokenizer only
+    splits words on spaces, so a marker glues to the text next to it inside one
+    "word" (`<|assistant|>Hello` is a single word) and there is no clean token
+    boundary at a marker in a whole-string encoding. Splitting at the marker
+    boundaries makes the reply tokens stand alone — exactly how the model sees
+    them at generation time — and makes the mask exact. The cost is that the
+    concatenated tokenization can differ by ~1 token at each seam.
     """
     segments: list[tuple[str, bool]] = []
 
@@ -276,10 +274,23 @@ def build_training_example(
         segments.append((body, True))
         segments.append((ASSISTANT_CLOSE, True))
 
+    return segments
+
+
+def assemble_example(
+    encoded: list[list[int]], flags: list[bool]
+) -> tuple[list[int], list[int]]:
+    """One conversation's ids and loss mask, from its already-encoded segments.
+
+    `mask[i] == 1` iff the token predicted from position `i` (that is, token
+    `i+1`) is part of an assistant reply: its content through the closing
+    `<|/assistant|>` marker, inclusive. Everything else — the system block, the
+    user turns, the opening `<|assistant|>` cue, and the final position (which
+    has no next token) — is 0.
+    """
     ids: list[int] = []
     target: list[bool] = []
-    for text, is_target in segments:
-        tokens = bpe.encode(tokenizer, text)
+    for tokens, is_target in zip(encoded, flags):
         target.extend([is_target] * len(tokens))
         ids.extend(tokens)
 
@@ -292,3 +303,53 @@ def build_training_example(
             mask[i] = 1
 
     return ids, mask
+
+
+def build_training_example(
+    system: str | None,
+    turns: list[Turn],
+    tokenizer: Tokenizer,
+    budget: ThinkBudget | None = None,
+    reasoning: Reasoning = Reasoning.KEEP,
+) -> tuple[list[int], list[int]]:
+    """Render a full training example — the conversation *including* the
+    assistant replies — into token ids plus a parallel loss mask.
+
+    One conversation at a time. `encode_examples` is the same thing for many, and
+    is what the dataset build uses; this stays for the callers that genuinely
+    have one (the benchmarks, and anything interactive).
+    """
+    segments = training_segments(system, turns, budget, reasoning)
+    return assemble_example(
+        [bpe.encode(tokenizer, text) for text, _ in segments],
+        [flag for _, flag in segments],
+    )
+
+
+def encode_examples(
+    batch: list[list[tuple[str, bool]]], tokenizer: Tokenizer
+) -> list[tuple[list[int], list[int]]]:
+    """`assemble_example` for several conversations, on every core.
+
+    Every segment of every conversation goes to the tokenizer in one call, and
+    the results are cut back apart in order. The library parallelizes a batch
+    across cores; encoding segment by segment used one of this machine's six, and
+    rendering the chat sets is minutes of a fine-tune during which the training
+    figures have nothing to show.
+
+    Identical output to calling `build_training_example` per conversation — the
+    batch is a scheduling detail, and each segment is still encoded on its own,
+    which is the property the mask depends on.
+    """
+    flat = [text for segments in batch for text, _ in segments]
+    encoded = bpe.encode_batch(tokenizer, flat)
+
+    examples = []
+    at = 0
+    for segments in batch:
+        take = len(segments)
+        examples.append(
+            assemble_example(encoded[at : at + take], [flag for _, flag in segments])
+        )
+        at += take
+    return examples

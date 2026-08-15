@@ -9,6 +9,7 @@ import { JobBenchmarkPanel } from "./job-benchmark-panel"
 import { JobChatPanel } from "./job-chat-panel"
 import { JobHeader } from "./job-header"
 import { JobQueuedPanel } from "./job-queued-panel"
+import { JobTokenizePanel } from "./job-tokenize-panel"
 import { JobTrainPanel } from "./job-train-panel"
 
 /**
@@ -66,6 +67,7 @@ export function JobDetail({ idJob }: JobDetailProps) {
         ) : (
           <>
             {job.kind === "train" && <JobTrainPanel job={job} run={run} />}
+            {job.kind === "tokenize" && <JobTokenizePanel run={run} />}
             {job.kind === "benchmark" && (
               <JobBenchmarkPanel job={job} run={run} />
             )}

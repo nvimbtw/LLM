@@ -39,8 +39,21 @@ def pipelines(monkeypatch):
         called["sft"] = cfg
         return {"ctx_window": 64}
 
+    def tokenize(cfg, on_progress, stop):
+        called["tokenize"] = cfg
+        return {
+            "tokenizer_id": cfg.tokenizer_id,
+            "vocab_size": 512,
+            "merges": 250,
+            "max_vocab": 512,
+            "files": 2,
+            "datasets": [["Tiny", None]],
+            "fingerprint": "abcdef0123456789",
+        }
+
     monkeypatch.setattr(handlers.train_pipeline, "run", train)
     monkeypatch.setattr(handlers.sft_pipeline, "run", sft)
+    monkeypatch.setattr(handlers.tokenize_pipeline, "run", tokenize)
     return called
 
 
@@ -184,6 +197,89 @@ def test_benchmarking_an_unknown_model_opens_no_row(store_session, progress, can
         assert q.benchmarks_of(db, model_id) == []
 
 
+def test_a_vocabulary_build_writes_a_tokenizer_row(store_session, pipelines, progress, cancel):
+    tokenizer_id = uuid.uuid4()
+    config = {"tokenizer_id": str(tokenizer_id), "display_name": "Shared 8k"}
+
+    result = handlers.tokenize(config, progress, cancel)
+
+    assert result["vocab_size"] == 512
+    with store.session() as db:
+        row = q.get_tokenizer(db, tokenizer_id)
+        assert row.name == "Shared 8k"
+        assert row.fingerprint == "abcdef0123456789"
+        assert row.implicit is False
+
+
+def test_rebuilding_a_vocabulary_updates_its_row(store_session, pipelines, progress, cancel):
+    tokenizer_id = uuid.uuid4()
+    handlers.tokenize({"tokenizer_id": str(tokenizer_id), "display_name": "One"}, progress, cancel)
+    handlers.tokenize({"tokenizer_id": str(tokenizer_id), "display_name": "Two"}, progress, cancel)
+
+    with store.session() as db:
+        assert q.get_tokenizer(db, tokenizer_id).name == "Two"
+        assert len(q.list_tokenizers(db)) == 1
+
+
+def test_a_pretrain_indexes_the_vocabulary_it_learned_for_itself(
+    store_session, pipelines, progress, cancel, monkeypatch
+):
+    """It is a real build other runs will reuse, so it belongs in the list —
+    marked apart from the ones built on purpose."""
+    derived = uuid.uuid4()
+
+    def train(cfg, on_progress, stop):
+        return {"ctx_window": 128, "tokenizer_id": str(derived), "vocab": 512}
+
+    monkeypatch.setattr(handlers.train_pipeline, "run", train)
+    handlers.train({"model_name": str(uuid.uuid4())}, progress, cancel)
+
+    with store.session() as db:
+        assert q.get_tokenizer(db, derived).implicit is True
+        assert q.list_tokenizers(db, include_implicit=False) == []
+
+
+def test_a_run_that_named_its_vocabulary_does_not_reindex_it(
+    store_session, pipelines, progress, cancel, monkeypatch
+):
+    """Naming a build consumes it. Only the vocabulary a run derived for itself
+    is this run's to record."""
+    named = uuid.uuid4()
+
+    def train(cfg, on_progress, stop):
+        return {"ctx_window": 128, "tokenizer_id": str(named), "vocab": 512}
+
+    monkeypatch.setattr(handlers.train_pipeline, "run", train)
+    handlers.train(
+        {"model_name": str(uuid.uuid4()), "tokenizer_id": str(named)}, progress, cancel
+    )
+
+    with store.session() as db:
+        assert q.get_tokenizer(db, named) is None
+
+
+def test_a_training_run_is_indexed_by_what_it_produced(
+    store_session, pipelines, progress, cancel, monkeypatch
+):
+    """Its result names the vocabulary it *consumed* as well as the model it
+    made. `ref_id` is the model — reading the tokenizer first would point every
+    training row at a vocabulary."""
+    from api.runner import _produced
+
+    consumed = uuid.uuid4()
+    monkeypatch.setattr(
+        handlers.train_pipeline,
+        "run",
+        lambda cfg, on_progress, stop: {"ctx_window": 128, "tokenizer_id": str(consumed)},
+    )
+    result = handlers.train(
+        {"model_name": str(uuid.uuid4()), "tokenizer_id": str(consumed)}, progress, cancel
+    )
+
+    assert result["tokenizer_id"] == str(consumed)
+    assert str(_produced(result)) == result["model_id"]
+
+
 def test_every_kind_the_queue_accepts_has_a_handler():
     """A run with no handler fails, so the two lists have to agree."""
-    assert set(handlers.HANDLERS) == {RunKind.train, RunKind.benchmark}
+    assert set(handlers.HANDLERS) == {RunKind.train, RunKind.benchmark, RunKind.tokenize}

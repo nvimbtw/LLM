@@ -9,6 +9,7 @@ import pytest
 import store
 from api.runner import Runner
 from api.runs import Registry
+from llm.train.progress import Progress, Tokenize
 from store import queries as q
 from store.schema import RunKind, RunStatus
 
@@ -181,6 +182,84 @@ async def test_coarse_progress_reaches_the_row(store_session, registry, ran):
         run = db.get(store.Run, run_id)
         assert run.stage == "working"
         assert run.progress == 1.0
+
+
+async def test_a_training_report_travels_as_itself(store_session, registry):
+    """The loop reports a `Progress`, not a dict, and every field of it has to
+    reach the chart — the frame name is `train` and the payload is the whole
+    dataclass. Publishing it as a generic `progress` frame is what once left a
+    running job with no statistics and no diagnostics at all."""
+
+    def trains(config, progress, cancel):
+        progress(
+            Progress(
+                step=3,
+                total_steps=10,
+                epoch=1,
+                total_epochs=2,
+                chunk=3,
+                total_chunks=5,
+                loss=1.5,
+                lr=1e-3,
+                elapsed_secs=2.0,
+                stage_name="warmup",
+                diag={"step": 3, "grad_global": 0.1},
+            )
+        )
+        return {}
+
+    runner = Runner(registry, {RunKind.train: trains})
+    run_id = runner.enqueue(RunKind.train, label="t", config={})
+
+    await drain(runner)
+
+    live = registry.get(str(run_id))
+    frame = next(e for e in live.history if e.kind == "train")
+    assert frame.data["loss"] == 1.5
+    assert frame.data["diag"] == {"step": 3, "grad_global": 0.1}
+    assert frame.data["fraction"] == 0.3
+
+    # The row's stage column is a label, so a curriculum run writes its name
+    # there rather than the index the charts group by.
+    with store.session() as db:
+        assert db.get(store.Run, run_id).stage == "warmup"
+
+
+async def test_a_phase_one_report_says_only_what_it_measured(store_session, registry):
+    """A pretrain counts files and merges, a fine-tune counts conversations. What
+    a phase did not measure is absent from the frame rather than zero, so the
+    panel shows "—" instead of a count of nothing."""
+
+    def builds(config, progress, cancel):
+        progress(Tokenize(files=3, vocab=8192, merges=7900, progress=0.6))
+        return {}
+
+    runner = Runner(registry, {RunKind.train: builds})
+    run_id = runner.enqueue(RunKind.train, label="t", config={})
+
+    await drain(runner)
+
+    live = registry.get(str(run_id))
+    frame = next(e for e in live.history if e.kind == "tokenize")
+    assert frame.data == {
+        "files": 3,
+        "vocab": 8192,
+        "merges": 7900,
+        "progress": 0.6,
+        "done": False,
+    }
+
+
+async def test_a_vocabulary_build_takes_its_turn_like_anything_else(store_session, registry, ran):
+    """It never touches the GPU, but it is minutes of CPU — one line means it
+    cannot start while the device is training."""
+    runner = Runner(registry, {RunKind.tokenize: handler_recording(ran)})
+    run_id = runner.enqueue(RunKind.tokenize, label="v", config={"tokenizer_id": "x"})
+
+    await drain(runner)
+
+    with store.session() as db:
+        assert db.get(store.Run, run_id).status is RunStatus.done
 
 
 async def test_the_queue_survives_a_restart(store_session, registry, ran):

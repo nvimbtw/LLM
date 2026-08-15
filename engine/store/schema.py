@@ -45,6 +45,10 @@ class RunKind(str, enum.Enum):
     train = "train"
     benchmark = "benchmark"
     chat = "chat"
+    #: Learning a vocabulary. The one kind that does not touch the GPU — it is a
+    #: run because it takes minutes and wants the queue's frames and cancel, and
+    #: because building one while the device trains would fight it for the CPU.
+    tokenize = "tokenize"
 
 
 class RunStatus(str, enum.Enum):
@@ -106,6 +110,34 @@ class Model(Base):
     benchmarks: Mapped[list["Benchmark"]] = relationship(
         back_populates="model", cascade="all, delete-orphan"
     )
+
+
+class Tokenizer(Base):
+    """A built vocabulary. The row is the index; the vocabulary is on disk under
+    `artifacts/tokenizers/<id>/`, which is why the id and not the name is stable.
+
+    No foreign key from `models`: a model carries its own copy of the vocabulary
+    it was trained with, and must survive the named build being deleted.
+    """
+
+    __tablename__ = "tokenizers"
+
+    id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    vocab_size: Mapped[int | None] = mapped_column(Integer)
+    merges: Mapped[int | None] = mapped_column(Integer)
+    max_vocab: Mapped[int | None] = mapped_column(Integer)
+    #: A digest of the saved vocabulary. What a packed corpus is keyed on, since
+    #: rebuilding under one id renumbers every token — so the id alone cannot
+    #: answer "is this the same vocabulary".
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+    #: The [[name, cap], …] it was built from, as resolved at build time.
+    datasets: Mapped[list | None] = mapped_column(Json)
+    #: Derived from a training run's own selection rather than asked for by name.
+    #: Listed apart from the built-on-purpose ones, which are what a composer offers.
+    implicit: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Chat(Base):

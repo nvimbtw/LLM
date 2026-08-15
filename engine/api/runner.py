@@ -12,14 +12,17 @@ rather than dropping it.
 
 import asyncio
 import threading
+import time
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import Any
 
 import store
 from api import chain
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
+from llm.train.progress import Progress, Tokenize
 from store import queries as q
 from store.schema import RunKind, RunStatus
 
@@ -192,10 +195,8 @@ class _ThrottledProgress:
         self._last_write = 0.0
 
     def __call__(self, payload: Any) -> None:
-        import time
-
-        frame = payload if isinstance(payload, dict) else {"message": str(payload)}
-        self._registry.publish(self._live, Event("progress", frame))
+        kind, frame = _frame(payload)
+        self._registry.publish(self._live, Event(kind, frame))
 
         now = time.monotonic()
         if now - self._last_write < PROGRESS_WRITE_SECS:
@@ -205,10 +206,54 @@ class _ThrottledProgress:
             run = db.get(store.Run, self._run_id)
             if run is None:
                 return
+            # Phase 1 has its own `progress`, deliberately not written here: the
+            # row's bar is how far the *run* is, and filling it while the dataset
+            # builds would send it back to zero the moment training began.
             if isinstance(frame.get("fraction"), (int, float)):
                 run.progress = float(frame["fraction"])
-            if isinstance(frame.get("stage"), str):
-                run.stage = frame["stage"]
+            label = _stage_label(kind, frame)
+            if label is not None:
+                run.stage = label
+
+
+def _stage_label(kind: str, frame: dict) -> str | None:
+    """What the board calls the phase this frame came from.
+
+    A training frame names its curriculum stage in `stage_name` — `stage` there
+    is the index the charts group by, and writing that would put a number in a
+    column rendered as a label. A run with no curriculum names no stage, and
+    "training" is what it is doing.
+    """
+    if kind == "train":
+        name = frame.get("stage_name")
+        return name if isinstance(name, str) else "training"
+    if kind == "tokenize":
+        return "tokenizing"
+    stage = frame.get("stage")
+    return stage if isinstance(stage, str) else None
+
+
+def _frame(payload: Any) -> tuple[str, dict]:
+    """One report as its consumer reads it.
+
+    A training report arrives as the `Progress` dataclass, and goes out under its
+    own name: its fields are the frontend's `TrainStats` verbatim, so it travels
+    from the loop to the chart untranslated. Folding it into the generic
+    `progress` frame is what left a run with no statistics and no diagnostics —
+    the payload became the dataclass's `repr` and every field arrived undefined.
+    A `Tokenize` is the same arrangement for the phase that builds the data.
+
+    Everything else already reports a plain dict — a stage line — and keeps
+    `progress`.
+    """
+    if isinstance(payload, Progress):
+        return "train", {**asdict(payload), "fraction": payload.fraction}
+    if isinstance(payload, Tokenize):
+        # A field this phase does not measure is absent, not zero — see `Tokenize`.
+        return "tokenize", {k: v for k, v in asdict(payload).items() if v is not None}
+    if isinstance(payload, dict):
+        return "progress", payload
+    return "log", {"line": str(payload)}
 
 
 #: One device, so one runner. Routes enqueue onto this; the lifespan drains it.
@@ -219,7 +264,10 @@ def _produced(result: dict | None) -> uuid.UUID | None:
     """What a finished run made, when it made something with its own row."""
     if not isinstance(result, dict):
         return None
-    for key in ("model_id", "benchmark_id", "message_id"):
+    # Ordered, not a set: a *training* result also carries the `tokenizer_id` it
+    # consumed, and `ref_id` is what a run produced. Reading that one first would
+    # point every training row at a vocabulary.
+    for key in ("model_id", "benchmark_id", "message_id", "tokenizer_id"):
         value = result.get(key)
         if value:
             try:

@@ -41,6 +41,31 @@ def test_retraining_the_same_id_updates_rather_than_collides(db, model):
     assert len(q.list_models(db, include_private=True)) == 1
 
 
+def test_a_second_model_may_be_given_a_name_that_is_taken(db, model):
+    """Ids are minted per queued run, so queueing the same fine-tune twice is two
+    models with one label — the ordinary way to retry a cancelled run.
+
+    Registration happens after the weights are on disk, so a clash there used to
+    raise `UniqueViolation` and lose the row for a run that had finished
+    training. The name gives way; the model does not."""
+    second = q.upsert_model(db, model_id=uuid.uuid4(), name="tiny-1", context=64)
+    third = q.upsert_model(db, model_id=uuid.uuid4(), name="tiny-1", context=64)
+
+    assert second.name == "tiny-1 (2)"
+    assert third.name == "tiny-1 (3)"
+    assert q.find_model_by_name(db, "tiny-1").id == model.id
+    assert len(q.list_models(db, include_private=True)) == 3
+
+
+def test_rewriting_a_model_keeps_the_name_it_was_given(db, model):
+    """Only *another* id counts as a clash. A row written twice — a run
+    re-reporting, a field corrected — must not climb a suffix each time."""
+    q.upsert_model(db, model_id=model.id, name="tiny-1", context=64)
+    q.upsert_model(db, model_id=model.id, name="tiny-1", context=32)
+
+    assert model.name == "tiny-1"
+
+
 def test_deleting_a_model_reports_the_name_it_had(db, model):
     assert q.delete_model(db, model.id) == "tiny-1"
     assert q.delete_model(db, model.id) is None

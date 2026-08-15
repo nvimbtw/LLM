@@ -50,11 +50,6 @@ export interface LossPoint {
   loss: number
 }
 
-export interface VocabPoint {
-  merges: number
-  vocab: number
-}
-
 // One report's intra-batch loss spread, plotted over the global step on the
 // rolling batch-spread chart.
 export interface BatchPoint {

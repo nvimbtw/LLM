@@ -92,8 +92,10 @@ def fixture(tokens: int, seed: int = 0) -> tuple[np.ndarray, list[DocSpan]]:
     harness still runs on a fresh checkout.
     """
     from llm import storage
+    from llm.corpus import pack as pack_mod
 
-    corpus_path = storage.corpus_path()
+    key = pack_mod.latest_key()
+    corpus_path = storage.pretrain_corpus_path(key) if key else storage.datasets_dir() / "none"
     if not corpus_path.is_file():
         rng = np.random.default_rng(seed)
         corpus = rng.integers(0, VOCAB, size=tokens, dtype=np.uint16)
@@ -105,7 +107,7 @@ def fixture(tokens: int, seed: int = 0) -> tuple[np.ndarray, list[DocSpan]]:
 
     raw = np.memmap(corpus_path, dtype=np.uint16, mode="r")
     corpus = np.array(raw[:tokens])
-    spans = json.loads(storage.segments_path().read_text())["documents"]
+    spans = json.loads(storage.pretrain_segments_path(key).read_text())["documents"]
     docs = [
         DocSpan(dataset=d["dataset"], start=d["start"], length=d["length"], stage=0)
         for d in spans

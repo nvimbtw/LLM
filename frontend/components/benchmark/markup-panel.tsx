@@ -86,7 +86,6 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
           )}
         </section>
       </div>
-
     </div>
   )
 }

@@ -23,7 +23,7 @@ FINAL = ("done", "error", "cancelled")
 class Event:
     """One thing worth telling a subscriber about."""
 
-    kind: str  # "progress" | "log" | "done" | "error" | "cancelled"
+    kind: str  # "train" | "progress" | "log" | "done" | "error" | "cancelled"
     data: dict[str, Any]
 
 

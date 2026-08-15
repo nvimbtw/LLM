@@ -30,6 +30,20 @@ ANISOTROPY_TOKENS = 32
 # a whole 390M-token corpus would need in one pass.
 _COUNT_BLOCK = 1 << 23
 
+# How much of a corpus the fallback histogram reads when the build did not record
+# one: this many evenly spaced blocks of `_COUNT_BLOCK` tokens.
+#
+# Blocks, not a stride. `corpus[::16]` looks like it reads a sixteenth and reads
+# all of it — tokens are 2 bytes and a page is 4096, so every 16th token still
+# touches every page, which is the entire cost being avoided. Contiguous blocks
+# spread across the file skip pages, and the mapping stays that size resident.
+#
+# Spread across the whole corpus rather than taken from the front, because
+# `corpus.bin` is laid out in dataset and stage order: measured on the 4.17B-token
+# build, the first 200M tokens contain only 16 of the true top 32 tokens, while
+# 32 blocks spread across the file reproduce all 32.
+_SAMPLE_BLOCKS = 32
+
 ACT_HIST_BINS = 24
 ACT_HIST_RANGE = 4.0
 
@@ -74,11 +88,8 @@ class Diagnostics:
         return dict(vars(self))
 
 
-def frequent_tokens(corpus: np.ndarray, count: int = ANISOTROPY_TOKENS) -> list[int]:
-    """The `count` most-frequent token ids, high to low, ties broken by id.
-
-    Computed once per run — the corpus is fixed — so the embedding metrics track
-    the same tokens for the whole of training.
+def histogram(corpus: np.ndarray, width: int) -> np.ndarray:
+    """How often each of the `width` token ids occurs in `corpus`.
 
     Counted with `bincount` over blocks rather than `Counter(corpus.tolist())`.
     `tolist()` boxes every token into a Python int — 36 bytes against the 2 it
@@ -86,21 +97,70 @@ def frequent_tokens(corpus: np.ndarray, count: int = ANISOTROPY_TOKENS) -> list[
     RAM (390M tokens wanted ~13 GiB) and the OOM killer arrives before the first
     training step. Blocking the bincount also bounds its internal intp cast,
     which would otherwise copy the whole corpus to int64.
+
+    `width` is the vocabulary, passed in rather than derived from `corpus.max()`.
+    That max is a second full pass over the mapping — the same 8.3 GB of page
+    faults again, for a number the caller already knows.
+    """
+    flat = corpus.reshape(-1)
+    counts = np.zeros(width, dtype=np.int64)
+    for start in range(0, flat.size, _COUNT_BLOCK):
+        block = flat[start : start + _COUNT_BLOCK]
+        counts += np.bincount(block, minlength=width)[:width]
+    return counts
+
+
+def sampled_histogram(corpus: np.ndarray, width: int) -> np.ndarray:
+    """`histogram` over `_SAMPLE_BLOCKS` blocks spread across the corpus.
+
+    The fallback for a corpus packed before the build recorded its own histogram.
+    It reads a bounded slice — 32 blocks is 512 MiB touched whatever the corpus
+    weighs — where the exact count reads all of it: measured at 64.1 s and 8.0 GB
+    resident on the 4.17B-token build, before the first training step, for 32
+    token ids.
+    """
+    flat = corpus.reshape(-1)
+    if flat.size <= _SAMPLE_BLOCKS * _COUNT_BLOCK:
+        return histogram(flat, width)
+
+    counts = np.zeros(width, dtype=np.int64)
+    # The last block ends at the corpus's end rather than starting there, so the
+    # tail is sampled like everything else instead of half a block of it.
+    stride = (flat.size - _COUNT_BLOCK) // (_SAMPLE_BLOCKS - 1)
+    for i in range(_SAMPLE_BLOCKS):
+        start = i * stride
+        counts += np.bincount(flat[start : start + _COUNT_BLOCK], minlength=width)[:width]
+    return counts
+
+
+def rank_tokens(counts, count: int = ANISOTROPY_TOKENS) -> list[int]:
+    """The `count` most-frequent token ids, high to low, ties broken by id.
+
+    At most one entry per token id survives — the vocabulary, not the corpus — so
+    the exact sort is cheap however long the corpus was.
+    """
+    counts = np.asarray(counts, dtype=np.int64)
+    present = np.flatnonzero(counts)
+    ranked = sorted(present.tolist(), key=lambda t: (-int(counts[t]), int(t)))
+    return ranked[:count]
+
+
+def frequent_tokens(
+    corpus: np.ndarray,
+    count: int = ANISOTROPY_TOKENS,
+    width: int | None = None,
+) -> list[int]:
+    """The most-frequent token ids, from a bounded sample of the corpus.
+
+    Kept for the ad-hoc tools under `explore/`, which have a corpus and no
+    sidecar. A training run does not call this: `pack` records the histogram
+    while the tokens are already passing through it, and `Collector` ranks that.
     """
     flat = corpus.reshape(-1)
     if flat.size == 0:
         return []
-
-    width = int(flat.max()) + 1
-    counts = np.zeros(width, dtype=np.int64)
-    for start in range(0, flat.size, _COUNT_BLOCK):
-        counts += np.bincount(flat[start : start + _COUNT_BLOCK], minlength=width)
-
-    # At most `width` entries survive (the vocabulary, not the corpus), so the
-    # exact ordering below is cheap: highest count first, ties broken by id.
-    present = np.flatnonzero(counts)
-    ranked = sorted(present.tolist(), key=lambda t: (-int(counts[t]), int(t)))
-    return ranked[:count]
+    width = width or int(flat.max()) + 1
+    return rank_tokens(sampled_histogram(flat, width), count)
 
 
 def snapshot_weights(model: Transformer) -> list[torch.Tensor]:
@@ -224,11 +284,21 @@ class Collector:
     Recording changes the attention path (an explicit softmax instead of the
     fused kernel) and holds activations alive, so it is scoped tightly: enabled
     immediately before the measured step and disabled straight after.
+
+    Constructing one is not free — the tracked tokens have to come from
+    somewhere — so `loop.run` builds it on the first measured step rather than at
+    the top of the run. See `_LazyCollector` there.
     """
 
-    def __init__(self, model: Transformer, corpus: np.ndarray):
+    def __init__(self, model: Transformer, corpus: np.ndarray, counts=None):
         self.model = model
-        self.tokens = frequent_tokens(corpus)
+        # `counts` is the histogram the build recorded beside the corpus. Absent
+        # only for a corpus packed before it was recorded, and then the corpus is
+        # sampled rather than read: this is the step that spent 64 s and pulled
+        # 8.3 GB resident before step 1 of every run.
+        self.tokens = (
+            rank_tokens(counts) if counts is not None else frequent_tokens(corpus, width=model.vocab)
+        )
         self.snapshot: list[torch.Tensor] | None = None
 
     def _set_recording(self, on: bool) -> None:

@@ -7,9 +7,12 @@ the assistant's replies. Its dataset is two aligned files, plus a sidecar:
     datasets/sft/<key>/mask.bin      one byte per token, 1 = train / 0 = ignore
     datasets/sft/<key>/segments.json document spans + what the build was made from
 
-The mask comes straight from `chat.template.build_training_example`, the single
-source of the format the model is prompted with — so what the model is trained
-on and what it is served cannot drift apart.
+The mask comes straight from `chat.template`, the single source of the format the
+model is prompted with — so what the model is trained on and what it is served
+cannot drift apart. The build renders a batch of conversations at a time
+(`encode_examples`) where a chat turn renders one (`build_training_example`);
+both go through the same segmenting and the same assembly, which is what keeps
+that guarantee true of the fast path as well.
 
 `<key>` is derived from the request: which sets were selected and whether
 reasoning was kept. Both change every token and every mask byte, so a build is
@@ -28,9 +31,10 @@ import numpy as np
 from tokenizers import Tokenizer
 
 from llm import storage
-from llm.chat.template import Reasoning, Role, ThinkBudget, Turn, build_training_example
+from llm.chat import template
+from llm.chat.template import Reasoning, Role, ThinkBudget, Turn
 from llm.corpus import bpe, sources, special
-from llm.corpus.pack import CORPUS_DTYPE, FLUSH_TOKENS, DocSpan
+from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS, DocSpan
 
 SFT_PATTERN = "*.jsonl"
 
@@ -202,25 +206,36 @@ def build(
 
     token_buffer: list[int] = []
     mask_buffer: list[int] = []
+    # The token histogram, accumulated on the way to disk exactly as `pack.pack`
+    # does it, and for the same reason: computing it later means reading the whole
+    # corpus back before the first training step.
+    vocab = bpe.vocab_size(tokenizer)
+    counts = np.zeros(vocab, dtype=np.int64)
 
     def flush() -> None:
         if token_buffer:
-            corpus_out.write(np.asarray(token_buffer, dtype=CORPUS_DTYPE).tobytes())
+            block = np.asarray(token_buffer, dtype=CORPUS_DTYPE)
+            counts[:] += np.bincount(block, minlength=vocab)[:vocab]
+            corpus_out.write(block.tobytes())
             mask_out.write(np.asarray(mask_buffer, dtype=np.uint8).tobytes())
             token_buffer.clear()
             mask_buffer.clear()
 
-    with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
-        for raw in read_conversations(files):
-            turns = _turns(raw)
-            if turns is None:
-                skipped += 1
-                continue
+    # Conversations are cut into segments first and encoded a batch at a time, so
+    # the tokenizer gets every core instead of one — see `template.encode_examples`.
+    # The batch is bounded by the characters it holds rather than by how many
+    # conversations it holds: a chat set is millions of short conversations, and a
+    # count would be a different amount of work in every set.
+    pending: list[list[tuple[str, bool]]] = []
+    pending_chars = 0
 
-            budget = ThinkBudget.parse(raw["budget"]) if raw.get("budget") else None
-            ids, example_mask = build_training_example(
-                raw.get("system"), turns, tokenizer, budget, reasoning
-            )
+    def drain() -> None:
+        """Encode the conversations held so far, in order, and append them."""
+        nonlocal pending_chars, skipped, total_tokens, trainable_tokens
+        if not pending:
+            return
+
+        for ids, example_mask in template.encode_examples(pending, tokenizer):
             if not ids:
                 skipped += 1
                 continue
@@ -240,6 +255,26 @@ def build(
             if len(token_buffer) >= FLUSH_TOKENS:
                 flush()
 
+        pending.clear()
+        pending_chars = 0
+
+    with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
+        for raw in read_conversations(files):
+            turns = _turns(raw)
+            if turns is None:
+                skipped += 1
+                continue
+
+            budget = ThinkBudget.parse(raw["budget"]) if raw.get("budget") else None
+            segments = template.training_segments(
+                raw.get("system"), turns, budget, reasoning
+            )
+            pending.append(segments)
+            pending_chars += sum(len(text) for text, _ in segments)
+            if pending_chars >= ENCODE_BATCH_CHARS:
+                drain()
+
+        drain()
         flush()
 
     if not documents:
@@ -264,6 +299,7 @@ def build(
                 "sets": [[name, cap] for name, cap in selection],
                 "reasoning": reasoning.value,
                 "special_ids_seen": sorted(seen),
+                "token_counts": counts.tolist(),
                 "documents": [asdict(d) for d in documents],
             },
             indent=2,
@@ -314,6 +350,9 @@ def load_segments(key: str) -> tuple[int, list[DocSpan], dict]:
         # Absent on a build made before it was recorded; None means "unknown", so
         # the caller scans rather than concluding the dataset uses no markers.
         "special_ids_seen": raw.get("special_ids_seen"),
+        # Per-token frequencies for the diagnostics, as `pack.load_segments`
+        # returns them. None on a build that predates them.
+        "token_counts": raw.get("token_counts"),
     }
     return raw["eot_id"], [DocSpan(**d) for d in raw["documents"]], info
 

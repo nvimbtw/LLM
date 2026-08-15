@@ -144,6 +144,12 @@ Everything that uses the GPU — training and benchmarks — is a run in the
 engine's queue. See `lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one
 socket per run, relaying the engine's own frames).
 
+A `tokenize` run is the exception that proves the line: it never touches the
+device. It is queued anyway because it is minutes of CPU that would fight a
+running train for it, and because the queue already has the frames, the cancel
+and the job page it wants. Composed at `/tokenizers`, beside the list of what has
+been built — a vocabulary is picked far more often than it is built.
+
 - **The board polls.** It moves when a run is queued, starts or ends — rare
   enough that a 3s refetch of `GET /runs` says the same thing a nudge would,
   without a second live connection to keep alive across sleeps and restarts.
@@ -173,19 +179,40 @@ socket per run, relaying the engine's own frames).
 
 ### Throbber or dot
 
-`components/ui/throbber.tsx` is a **figure**, not an icon: five irregular rings,
-nested, drawn as contours of one shared field so they deform in sympathy rather than
-independently. It is one fixed size everywhere — `THROBBER_PX` (64px), which also
-fixes the ring radii and their spacing — and callers cannot resize it: `className` is
-for margin, placement and colour only. That is deliberate. It used to be sized per
-call site, and the result was a different figure in every row, none of which looked
-like the same object.
+`components/ui/throbber.tsx` is a **figure**, not an icon: a **rail** — a resting
+track with a brighter segment moving on it. Every state is that same rail, and what
+tells them apart is where the segment is and how much of the rail it covers, with
+colour as the second signal. It is one fixed footprint everywhere, `THROBBER_W` ×
+`THROBBER_H` (84×22), and callers cannot resize it: `className` is for margin,
+placement and colour only. That is deliberate. It used to be sized per call site, and
+the result was a different figure in every row, none of which looked like the same
+object.
+
+Three rules govern changes to it:
+
+- **Geometry is built once at mount.** A frame writes two coordinates, two opacities
+  and (in one state) a dash — never path data. An earlier design rebuilt five
+  60-segment paths per frame, and the browser re-parsing those was the whole reason it
+  ran differently on different machines.
+- **The phase is integrated, never read off the clock.** Each frame adds `rate × dt`,
+  so a mode change alters the speed the figure is moving at and it carries straight
+  through. A state change can never jump it.
+- **A segment arrives from outside the rail and leaves outside it.** It travels past
+  both ends and the rail clips it, so a full-size pill slides in behind the track's
+  rounded end rather than growing out of it. Anything placed past the ends is hidden,
+  which is why the states may return `from`/`to` outside 0–1.
+- **A state is a function of its phase returning four numbers** (`Frame`), so any two
+  mix by weight — give one instance a changing `mode` and it morphs instead of
+  cutting. Mixing the *output* rather than a vector of shared parameters is what keeps
+  each state to three lines of arithmetic with a name. Add a state by adding a
+  function to `STATES` and a rate to `RATES`; don't add a field to `Frame` unless the
+  renderer genuinely cannot draw the state without it.
 
 So use it only where a figure belongs — somewhere the waiting *is* the subject, with
 room for it:
 
 - the chat thread (loading, and the thinking/generating status row),
-- the training hero corner (`Telemetry`),
+- the training hero corner (`TrainingHero`),
 - the queue's now-band,
 - the benchmark empty state.
 

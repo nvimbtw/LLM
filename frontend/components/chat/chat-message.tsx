@@ -8,7 +8,6 @@ import type { Feedback } from "@/lib/feedback"
 import { parseUserMarkdown } from "@/lib/user-parser"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { messageDomId } from "./message-refs"
 import { RichContent, RichMessage } from "./rich-message"
 
 export function ChatMessageBubble({
@@ -21,14 +20,6 @@ export function ChatMessageBubble({
   // Absent on a reply that can't be rated (no server id yet).
   onRate?: (feedback: Feedback) => void
 }) {
-  // The anchor a `<|reply|>` elsewhere in the thread scrolls to.
-  //
-  // It goes on the *bubble*, not the row that positions it: the arrival sweep
-  // draws on the anchored element's own border, and anchoring the full-width
-  // flex row would frame the empty half of the line along with the message.
-  // `scroll-mt` keeps it clear of the top edge when it is scrolled to.
-  const anchor = message.id ? messageDomId(message.id) : undefined
-
   // User messages use a markdown subset; assistant messages use the model's markup.
   if (message.role === "user") {
     const tree = parseUserMarkdown(message.content)
@@ -38,28 +29,42 @@ export function ChatMessageBubble({
             question and a five-line one get wildly different shapes, and the long
             one runs to a measure nobody wants to read right-aligned.
 
-            The bottom-right corner is tightened to a quarter of the others. That
+            A fill and no outline. It used to carry both — a 1px border *and* a
+            card ground — which is how the app draws an input or a panel, so a
+            question the reader typed came back to them looking like a control
+            they could edit. One quiet step off the paper is enough to say
+            "someone said this", and it is the only device the assistant side
+            doesn't also have.
+
+            The bottom-right corner is tightened to a fraction of the others. That
             asymmetry is the whole reason it reads as *said by someone* rather than
             as a rounded rectangle — a tail, without drawing a tail. */}
-        <div
-          id={anchor}
-          className="max-w-[min(52ch,85%)] min-w-0 scroll-mt-6 rounded-2xl rounded-br-md border border-border bg-card px-4 py-2.5 text-card-foreground"
-        >
-          <RichContent root={tree} className="text-[0.95rem] leading-relaxed" />
+        <div className="max-w-[min(52ch,85%)] min-w-0 rounded-2xl rounded-br-sm bg-secondary px-[1.05em] py-[0.7em] text-secondary-foreground">
+          <RichContent root={tree} className="text-[0.95rem] leading-[1.6]" />
         </div>
       </div>
     )
   }
 
   return (
-    <div id={anchor} className="w-full min-w-0 scroll-mt-6 rounded-lg">
-      {/* No bubble on the assistant side, and no measure cap: the reply is the
-          page, not a quote on it. It gets the larger size of the two — this is
-          the text that actually gets read. */}
+    <div className="w-full min-w-0">
+      {/* No bubble on the assistant side: the reply is the page, not a quote on
+          it. It gets the larger size of the two — this is the text that actually
+          gets read.
+
+          It does get a measure. The thread column is sized for the composer and
+          the user bubbles, and at 16px that left the reply running to roughly 75
+          characters a line — the outer edge of what stays readable, and past the
+          point where the eye reliably finds the start of the next line. 68ch is
+          the one declaration in this file that does the most for legibility.
+
+          Left-aligned rather than centred in the column: the replies then share
+          a left edge with the byline under them and the status row below the
+          thread, so the short ones don't wander. */}
       <RichMessage
         content={message.content}
         streaming={streaming}
-        className="text-base leading-relaxed"
+        className="max-w-[68ch] text-base leading-relaxed"
       />
       {/* Nothing under a reply that is still being written: the byline's figures
           aren't known yet, and a thumbs on half a reply would rate text the user

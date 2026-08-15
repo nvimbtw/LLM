@@ -31,7 +31,7 @@ os.environ.setdefault("DATA_DIR", str(ENGINE_ROOT / "data"))
 import torch
 
 from llm import storage
-from llm.corpus import bpe, pack
+from llm.corpus import bpe, pack, vocab
 from llm.model.checkpoint import load as ckpt_load
 from llm.train.diagnostics import _entropy
 
@@ -53,9 +53,9 @@ def set_recording(model, on):
 def main():
     model, _ = ckpt_load(storage.weights_path("diagfix"), "cpu")
     model.eval()
-    tok = bpe.load()
-    corpus = pack.load_corpus()
-    _, docs, _ = pack.load_segments()
+    tok = vocab.for_corpus(pack.latest_key())
+    corpus = pack.load_corpus(pack.latest_key())
+    _, docs, _ = pack.load_segments(pack.latest_key())
 
     d = docs[0]
     arr = corpus[d.start : d.start + 40].astype("int64")

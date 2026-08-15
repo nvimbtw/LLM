@@ -60,9 +60,7 @@ export function GenerationPanel({
               className="bg-background px-4 py-3 text-sm leading-relaxed"
             >
               <span className="text-muted-foreground">{sample.prompt}</span>
-              <span className="whitespace-pre-wrap">
-                {sample.text || " …"}
-              </span>
+              <span className="whitespace-pre-wrap">{sample.text || " …"}</span>
             </li>
           ))}
         </ul>

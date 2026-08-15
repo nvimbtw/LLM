@@ -21,6 +21,7 @@
   --color-kind-train: var(--kind-train);
   --color-kind-benchmark: var(--kind-benchmark);
   --color-kind-chat: var(--kind-chat);
+  --color-kind-tokenize: var(--kind-tokenize);
   --color-tier-low: var(--tier-low);
   --color-tier-med: var(--tier-med);
   --color-tier-high: var(--tier-high);
@@ -161,19 +162,41 @@
   --kind-train: #3f5f96;
   --kind-benchmark: #4e6733;
   --kind-chat: #655a80;
-  /* The colour the throbber's rings turn while it is thinking or running a tool —
-       the one place in the app a second hue is spent on a status mark. Its whole
-       job is to not be mistakable for `--primary` at a hairline width, which is why
-       it is a burnt orange and not the violet it used to be: violet is a *blue*, it
-       differed from the blue-grey primary mostly in saturation, and at a 1.35px
-       stroke that difference did not survive. Orange is the far side of the wheel
-       from it, and blue-versus-orange is also the one opposition that holds up
-       under deuteranopia — where violet-versus-blue is the textbook collision.
-       Its own token rather than a chart or kind slot: those mean something (a
-       series, a job kind), and borrowing one would tie the mark's colour to a
-       decision made about something else. Not exposed as a Tailwind utility — it is
-       read as a raw var by an SVG stroke, and nothing else should want it. */
-  --throbber-spark: #c4622d;
+  --kind-tokenize: #8a5a2b;
+  /* The colour the throbber's segment warms to as it works — the one place in the
+       app a second hue is spent on a status mark. Its own token rather than a
+       chart or kind slot: those mean something (a series, a job kind), and
+       borrowing one would tie the mark's colour to a decision made about
+       something else. Not exposed as a Tailwind utility — it is read as a raw var
+       by an SVG stroke, and nothing else should want it.
+
+       A teal, where this was a burnt orange (#c8791a) and a violet before that.
+       The orange was chosen for *hue opposition*: back then the mark was a solid
+       bar and hue alone had to carry the state, so the pair had to sit across the
+       wheel from each other. It does not any more — the throbber is a track with a
+       segment on it, and the state is told by where the segment is and how much of
+       the rail it covers. Hue is the second signal now, and it can be chosen to
+       look like the rest of the app rather than to fight the other half of itself.
+
+       What is not given up is the lightness gap, which is what was doing the real
+       work all along, and the swap costs nothing there: teal is ΔL* 22.4 from the
+       base against the orange's 24.9, and it holds *more* contrast on the paper
+       (3.34:1 against 3.06:1, over the 3:1 floor for a graphic). What it does give
+       up is the hue axis under deuteranopia — teal and the base blue are 40°
+       apart, not 167° — so the ΔL* above is now the only thing separating them for
+       those readers. Keep it above 20 if you touch either value. */
+  --throbber-spark: #14958a;
+  /* The mark's *resting* colour, and the pair's other half — the track, and the
+       segment before it warms.
+       It used to borrow `--primary` and that was the whole problem: the two
+       measured ΔL* 8.3 apart in OKLab, so they differed almost only in hue, and
+       hue alone is the weakest way to tell two things apart at a glance and no way
+       at all for some readers. The fix was a *deeper base*, which had room in the
+       direction a brighter spark did not.
+       #2f4f7a is the same blue five degrees off the primary's hue — so the mark
+       still reads as the app's colour — at L* 33 against the spark's 55.6.
+       7.54:1 on the paper. */
+  --throbber-base: #2f4f7a;
   /* 6px, down from 10. Editorial wants the corner acknowledged, not rounded —
        and the whole app inherits from this one number, so it is the cheapest
        single change to how rigid the page reads. */
@@ -244,11 +267,24 @@
   --kind-train: #8ba4b0;
   --kind-benchmark: #8fb08f;
   --kind-chat: #ada0ae;
+  --kind-tokenize: #c2a184;
   /* Lightened rather than flipped, like the kind chips above: it has to read out
-       of a near-black card at a hairline width. Dragon's surimi orange — warmer and
-       brighter than the light-mode step, because the mark is a thin line on
-       near-black rather than on paper. */
-  --throbber-spark: #ffa066;
+       of a near-black card. The light mode's teal taken up to a pale aqua —
+       L* 76.2 and 9.87:1 on the ground, where the surimi orange it replaces was
+       74.4 and 9.36:1. See the light-mode note for why the hue moved. */
+  --throbber-spark: #79cbb8;
+  /* Darkened rather than lightened, which is the opposite of what every other
+       token in this block does, and is the point.
+       This mode was the worse of the two and for the same reason as the light
+       one: borrowing `--primary` put the pair ΔL* 8.7 apart, so the bar was two
+       pale things on black that differed only in hue. There is no headroom above
+       the spark — it is already near white — so the separation has to come out of
+       the base. #5e7480 is the primary's own blue four degrees off, at L* 47.5:
+       ΔL* 28.7 against the aqua, which is *wider* than the orange managed (26.9),
+       and 3.83:1 on the background, above the 3:1 floor for a graphic. That gap is
+       now the only thing separating the pair for a deuteranopic reader, since the
+       two hues are no longer opposed — do not narrow it. */
+  --throbber-base: #5e7480;
   --sidebar: #12120f;
   --sidebar-foreground: #c5c9c5;
   --sidebar-primary: #8ba4b0;
@@ -282,87 +318,6 @@
 }
 .word-fade {
   animation: word-fade-in 0.4s ease both;
-}
-
-/* Following a `<|reply|>` reference: once you arrive, a band of the primary blue
-   travels around the target's border, top-left to bottom-right.
-
-   Drawn on a pseudo-element rather than as a box-shadow so it can be a *gradient*
-   that moves — a shadow can only pulse, which says "something happened here"
-   without saying which direction you came from. The two-layer mask is the
-   standard gradient-border trick: fill the whole box, then punch out everything
-   inside the 2px padding, leaving only the frame painted.
-
-   The band sits at the middle of a tile four times the element's size, so
-   sweeping background-position from 100% to 0% walks it from off the top-left
-   corner, across, to off the bottom-right.
-
-   Its width is the whole trick, and it is easy to get wrong: the stops are
-   fractions of the *tile*, so at 400% a band spanning 6% of the gradient covers
-   6 × 4 = 24% of the element. The first attempt spanned 24% of a 300% tile —
-   72% of the element — which meant nearly the entire frame sat inside the band
-   at once and the border appeared to light up all at the same time instead of
-   travelling. Keep the product under about a third. */
-@keyframes message-sweep {
-  from {
-    background-position: 100% 100%;
-  }
-  to {
-    background-position: 0% 0%;
-  }
-}
-.message-flash {
-  position: relative;
-}
-.message-flash::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  border-radius: inherit;
-  padding: 2px;
-  pointer-events: none;
-  background-image: linear-gradient(
-    135deg,
-    transparent 47%,
-    color-mix(in oklch, var(--ring) 40%, transparent) 48.8%,
-    var(--ring) 50%,
-    color-mix(in oklch, var(--ring) 40%, transparent) 51.2%,
-    transparent 53%
-  );
-  background-size: 400% 400%;
-  /* Longhands, never the `mask` shorthand. The minifier reorders declarations,
-     and it hoists `mask-composite` above a `mask` shorthand — which then resets
-     composite back to `add`, so nothing is punched out and the "border" paints as
-     a filled blue rectangle. Setting the parts individually leaves nothing that
-     can reset them. */
-  mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
-  mask-clip: content-box, border-box;
-  mask-composite: exclude;
-  -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
-  -webkit-mask-clip: content-box, border-box;
-  -webkit-mask-composite: xor;
-  /* Linear, not eased: this is a light passing over the frame, and a light that
-     decelerates halfway across reads as a glow turning on rather than travelling. */
-  animation: message-sweep 1.2s linear both;
-}
-/* Motion is the whole mechanism here, so with it suppressed the frame simply
-   holds for a moment instead — still answering "which message", without travel. */
-@keyframes message-hold {
-  0%,
-  60% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .message-flash::after {
-    background-image: none;
-    background-color: var(--ring);
-    animation: message-hold 0.9s ease-out both;
-  }
 }
 
 /* "Thinking…" — a soft highlight sweeping across the text. Seamless because the
