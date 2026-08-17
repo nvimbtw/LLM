@@ -7,62 +7,45 @@ import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import { cn } from "@/lib/utils"
 
 const MODES: { mode: ThrobberMode; description: string }[] = [
-  { mode: "idle", description: "A short segment resting at the centre." },
-  {
-    mode: "loading",
-    description: "A wide segment crossing the rail and wrapping.",
-  },
+  { mode: "idle", description: "Nothing grown — the root dot, breathing." },
+  { mode: "loading", description: "Three limbs, run out and cleared." },
   {
     mode: "thinking",
-    description: "Colour blooms out of the middle and draws back in.",
+    description: "A broad, shallow bush, grown and withdrawn.",
   },
   {
     mode: "generating",
-    description: "A short segment running the rail, fast and warm.",
+    description: "One long route, a different one every pass.",
   },
-  {
-    mode: "tool",
-    description: "The whole rail lights at once and falls back.",
-  },
-  {
-    mode: "training",
-    description: "The rail is held full, pulsing warm and cool as one.",
-  },
-  {
-    mode: "benchmarking",
-    description: "A fill advancing in discrete steps, then resetting.",
-  },
-  {
-    mode: "tokenizing",
-    description: "The fill is cut into pieces, and the cuts travel.",
-  },
+  { mode: "tool", description: "The whole net struck at once." },
+  { mode: "training", description: "The whole net held, breathing." },
+  { mode: "benchmarking", description: "Limbs arriving one at a time, kept." },
+  { mode: "tokenizing", description: "The grown tree, cut into travelling pieces." },
 ]
 
 export function ThrobberShowcase() {
-  // The morph is the whole point of the rewrite, so the page leads with a control
-  // that exercises it rather than only showing the states in isolation.
-  const [mode, setMode] = React.useState<ThrobberMode>("loading")
+  const [mode, setMode] = React.useState<ThrobberMode>("generating")
 
   return (
     <div className="flex flex-col gap-6">
       <Panel
         title="Morph"
-        description="Switch state — the segment changes pace, it never re-starts"
+        description="Switch state — the figure changes pace and regrows in the new character"
       >
-        <div className="flex justify-center py-2">
+        <div className="flex justify-center py-6">
           <Throbber mode={mode} />
         </div>
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {MODES.map(({ mode: option }) => (
             <button
               key={option}
               type="button"
               onClick={() => setMode(option)}
               className={cn(
-                "rounded-full border px-3 py-1 text-xs capitalize transition-colors",
+                "rounded-sm border px-3 py-1 text-xs capitalize transition-colors",
                 option === mode
                   ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border text-muted-foreground hover:text-foreground"
+                  : "border-border text-muted-foreground hover:border-input hover:text-foreground"
               )}
             >
               {option}
@@ -71,21 +54,31 @@ export function ThrobberShowcase() {
         </div>
       </Panel>
 
-      <div className="flex flex-col gap-px overflow-hidden rounded-lg border border-border bg-border/60">
-        {MODES.map(({ mode: option, description }) => (
-          <div key={option} className="bg-background px-5 py-4">
-            <div className="flex items-baseline justify-between gap-4">
-              <span className="text-sm font-medium capitalize">{option}</span>
-              <span className="text-xs text-muted-foreground">
-                {description}
-              </span>
-            </div>
-            <div className="mt-3 flex justify-center">
+      {/* Every state at once. A figure is not judged by how it looks while
+          loading — any of them look fine loading — but by whether eight states
+          are eight recognisably different pictures, which can only be seen with
+          them side by side. */}
+      <Panel
+        title="Every state"
+        description="Eight different pictures, not one picture at eight speeds"
+      >
+        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-md border border-border bg-border/60 sm:grid-cols-2">
+          {MODES.map(({ mode: option, description }) => (
+            <div
+              key={option}
+              className="flex items-center gap-4 bg-background px-5 py-4"
+            >
               <Throbber mode={option} />
+              <div className="min-w-0">
+                <p className="text-sm font-medium capitalize">{option}</p>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {description}
+                </p>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </Panel>
     </div>
   )
 }

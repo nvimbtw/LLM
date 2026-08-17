@@ -7,7 +7,7 @@ export default function ThrobberPage() {
     <PageShell width="reading">
       <PageHeader
         title="Throbber"
-        description="One pill, in a fixed footprint. Every state is that same bar with different numbers, so they morph rather than swap — and what tells them apart is how colour moves through it."
+        description="A tree grown on a hexagonal dot field, regrown from scratch on every pass, so the mark is never twice the same. What stays constant is the character of the growth — one long route, a shallow bush, the full net — and that is what tells the eight states apart."
       />
       <ThrobberShowcase />
     </PageShell>
