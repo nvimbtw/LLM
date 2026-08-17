@@ -11,12 +11,18 @@ const DOCS_ROOT = resolve(process.cwd(), "..", "docs")
 const REPO_ROOT = resolve(process.cwd(), "..")
 
 /**
- * Files outside `docs/` that the docs site still renders, mapped to their
- * slug. `AGENTS.md` is the repo's entry point and is linked from the docs, so
- * it would otherwise be a dead link on the site.
+ * Files outside `docs/` that the docs site still renders, mapped to their slug.
+ * The repo's two front doors: `README.md` for a person arriving at the project,
+ * `AGENTS.md` for anyone about to change it. Both are linked from the docs and
+ * would otherwise be dead links on the site — and rendering them here means
+ * their links are covered by the build-time check like everything else.
  */
-const EXTERNAL_PAGES: Record<string, string[]> = {
-  "AGENTS.md": ["agents"],
+const EXTERNAL_PAGES: Record<string, { slug: string[]; label: string }> = {
+  // Labelled by the file they are, not by their heading: the README's heading
+  // is the product's name, which in a sidebar reads as a section rather than as
+  // the document it is.
+  "README.md": { slug: ["readme"], label: "README" },
+  "AGENTS.md": { slug: ["agents"], label: "AGENTS.md" },
 }
 
 export interface DocPage {
@@ -65,7 +71,7 @@ function readTitle(file: string): string {
 /** `docs/backend/README.md` → `["backend"]`; `docs/README.md` → `[]`. */
 function slugForFile(file: string): string[] {
   const external = EXTERNAL_PAGES[relative(REPO_ROOT, file)]
-  if (external) return external
+  if (external) return external.slug
   const segments = relative(DOCS_ROOT, file).replace(MARKDOWN, "").split(sep)
   if (segments[segments.length - 1] === "README") segments.pop()
   return segments
@@ -158,7 +164,7 @@ export function navigation(): DocSection[] {
         ...loose.map((page) => ({
           // The tree root is the introduction to the tree, whatever its own
           // heading happens to say.
-          label: page.slug.length === 0 ? "Introduction" : page.title,
+          label: navLabel(page),
           slug: page.slug,
         })),
         ...entries(directories.filter((name) => !isModule(name))),
@@ -169,6 +175,17 @@ export function navigation(): DocSection[] {
       entries: entries(directories.filter(isModule)),
     },
   ]
+}
+
+/**
+ * The sidebar's name for a loose page. The tree root is the introduction to the
+ * tree whatever its own heading says, and the external pages are named for the
+ * file they are.
+ */
+function navLabel(page: DocPage): string {
+  if (page.slug.length === 0) return "Introduction"
+  const external = EXTERNAL_PAGES[relative(REPO_ROOT, page.file)]
+  return external ? external.label : page.title
 }
 
 function titleCase(name: string): string {
