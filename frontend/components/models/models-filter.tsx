@@ -112,7 +112,10 @@ function Chip({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium tracking-[0.06em] transition-colors",
+        // `rounded-sm`, not a capsule: `--radius` exists because this app
+        // acknowledges a corner rather than rounding it away, and a row of
+        // capsules is the one shape that opts out of that decision.
+        "flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium tracking-[0.06em] transition-colors",
         active
           ? "bg-foreground text-background"
           : "text-muted-foreground hover:bg-secondary hover:text-foreground"

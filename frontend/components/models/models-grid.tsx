@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
 import { useAuth } from "@/hooks/use-auth"
 import { deleteModel, useModels, type Model } from "@/hooks/use-models"
+import { LoadError } from "@/components/ui/error-state"
 import { formatCount } from "./format"
 import { ModelCard } from "./model-card"
 import { ModelsFilter, type Visibility } from "./models-filter"
@@ -137,9 +138,10 @@ export function ModelsGrid() {
 
   if (error) {
     return (
-      <p className="text-sm text-destructive">
-        Failed to load models. Please try again.
-      </p>
+      <LoadError
+        title="The models didn't load."
+        hint="Nothing has changed — this is a read."
+      />
     )
   }
 

@@ -120,17 +120,35 @@
   --secondary: #e9e2c4;
   --secondary-foreground: #545464;
   --muted: #ece6cc;
-  /* Was #83816f (3.56:1). These carry the eyebrow labels and hints — small,
-       often letterspaced — so they need to clear AA as *body* text, not as large
-       text. 4.75:1 on the paper, 5.06:1 on a card. */
-  --muted-foreground: #6f6d57;
+  /* Was #83816f (3.56:1), then #6f6d57. These carry the eyebrow labels and
+       hints — small, often letterspaced — so they need to clear AA as *body*
+       text, not as large text, and on **every** surface they land on rather than
+       only the paper. #6f6d57 cleared the paper at 4.75 but fell to 4.03 on
+       `--secondary` and 4.19 on `--muted`, which is where half the eyebrows in
+       the app actually sit. Three points of lightness down fixes both without
+       touching the hue: 4.54 on secondary, 4.72 on muted, 5.35 on paper. */
+  --muted-foreground: #676550;
   --accent: #e9e2c4;
   --accent-foreground: #545464;
-  --destructive: #c84053;
-  --border: #d8cfa2;
-  --input: #c6bb84;
+  /* 4.41:1 on the paper as #c84053 — under AA by a hair, and destructive text
+       is the one string in the app nobody can afford to misread. Half a point of
+       lightness buys 4.51. */
+  --destructive: #c63e52;
+  /* A hairline carries no information a sighted reader needs, so it has no WCAG
+       floor and is judged by eye against one number instead: it must survive a
+       bright, badly-calibrated screen, which is where 1.42:1 disappeared
+       outright. 1.81:1 is visible on a laptop at noon and still reads as a
+       hairline rather than a border. */
+  --border: #c1b88c;
+  /* Unlike the hairline above, this one *is* a WCAG object: the boundary of a
+       form control is what tells you where to click. 1.75:1 → 3.03:1. */
+  --input: #988d58;
   --ring: #4d699b;
-  --chart-1: #de9800;
+  /* Amber on warm paper is the hardest pair in the light theme, and #de9800
+       measured 2.21:1 — a line in it sank into the page. Darkened to the 3:1
+       floor for a graphical object. Dark mode's amber is untouched; it never had
+       the problem. */
+  --chart-1: #c37e00;
   --chart-2: #6f894e;
   --chart-3: #4d699b;
   --chart-4: #b35b79;
@@ -141,7 +159,10 @@
        the 8 floor) where this measures 29.4. Validated in both modes — see
        components/training/chart-theme.ts for the commands. */
   --chart-approved: #3f6bb8;
-  --chart-rejected: #de9800;
+  /* Darkened with `--chart-1` above and for the same reason (2.21:1 → 3.02:1 on
+       the paper). The pair's separation is what matters here and it survives
+       intact: ΔE 29.3 normal, 30.0 under deuteranopia, against the 8 floor. */
+  --chart-rejected: #c37e00;
   /* The three thinking budgets, in the teacher's figures. An ORDERED scale
        (short → medium → long), so a single-hue sequential ramp light→dark rather
        than three categorical hues — more thinking, more ink. The hue is the teach
@@ -207,7 +228,7 @@
   --sidebar-primary-foreground: #f7f4e4;
   --sidebar-accent: #e9e2c4;
   --sidebar-accent-foreground: #545464;
-  --sidebar-border: #d8cfa2;
+  --sidebar-border: #c1b88c;
   --sidebar-ring: #4d699b;
 }
 
@@ -237,9 +258,13 @@
   --accent-foreground: #c5c9c5;
   --destructive: #c4746e;
   /* Lifted clear of every surface above, so a hairline actually draws against a
-       panel and not just against the page. */
-  --border: #454140;
-  --input: #524d4a;
+       panel and not just against the page — and then lifted again: 1.79:1 on the
+       background and 1.58:1 on a card is a rule you lose to any glare in the
+       room. 2.16:1 / 1.90:1 is still a hairline, just one that survives being
+       read somewhere other than a dark office. */
+  --border: #514d4c;
+  /* The form-control boundary, held to the 3:1 WCAG asks of one. */
+  --input: #68625f;
   --ring: #8ba4b0;
   --chart-1: #c4b28a;
   --chart-2: #87a987;
@@ -291,7 +316,9 @@
   --sidebar-primary-foreground: #181616;
   --sidebar-accent: #2a2827;
   --sidebar-accent-foreground: #c5c9c5;
-  --sidebar-border: #33302e;
+  /* The sidebar sits a step darker than the page, so its border cannot borrow
+       the page's — against #12120f the old value measured 1.43:1. */
+  --sidebar-border: #494644;
   --sidebar-ring: #8ba4b0;
 }
 
@@ -399,4 +426,219 @@
   float: left;
   height: 0;
   pointer-events: none;
+}
+
+/* Documentation prose (`/docs`).
+   Hand-set rather than @tailwindcss/typography, for the same reason the type
+   scale above is not Tailwind's: the plugin ships its own scale, its own greys
+   and its own rhythm, and a page set in them reads like a different product
+   bolted to the side of this one. What follows is the app's own tokens applied
+   to the tags markdown emits — nothing here invents a value.
+
+   The measure is the point of the whole block. Body copy is capped at 68
+   characters and everything that must be wider (tables, code) is allowed to
+   break out of it, because a doc is read down a column, not across a monitor. */
+.doc-prose {
+  color: var(--foreground);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  letter-spacing: var(--text-base--letter-spacing);
+}
+.doc-prose > * {
+  max-width: 68ch;
+}
+/* Vertical rhythm: one rule, set on the flow, so a doc's spacing does not
+   depend on which tags happen to follow which. */
+.doc-prose > * + * {
+  margin-top: 1.1em;
+}
+
+/* Headings. The display serif is what makes this read as a document rather
+   than a dashboard; the space above a heading is nearly triple the space
+   below it, so a section visibly belongs to its own title. */
+.doc-prose :is(h2, h3, h4) {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--foreground);
+  scroll-margin-top: 5rem;
+}
+.doc-prose > h2 {
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl--line-height);
+  letter-spacing: var(--text-2xl--letter-spacing);
+}
+.doc-prose > h3 {
+  margin-top: 2.25rem;
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  letter-spacing: var(--text-lg--letter-spacing);
+}
+.doc-prose > h4 {
+  margin-top: 1.75rem;
+  font-size: var(--text-base);
+}
+.doc-prose :is(h2, h3, h4) + * {
+  margin-top: 0.6em;
+}
+/* The anchor mark: an octothorpe in the left margin, present only on hover of
+   the heading itself. Nothing visible until wanted, which is the house style. */
+.doc-prose :is(h2, h3, h4) > a.doc-anchor {
+  color: var(--muted-foreground);
+  opacity: 0;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  text-decoration: none;
+  margin-left: 0.4em;
+  transition: opacity 0.15s ease;
+}
+.doc-prose :is(h2, h3, h4):hover > a.doc-anchor,
+.doc-prose a.doc-anchor:focus-visible {
+  opacity: 1;
+}
+
+/* Links. Underlined — in a document, a link that announces itself only by hue
+   is a link some readers cannot see. */
+.doc-prose a:not(.doc-anchor) {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  text-decoration-color: color-mix(in oklab, var(--primary) 40%, transparent);
+  transition: text-decoration-color 0.15s ease;
+}
+.doc-prose a:not(.doc-anchor):hover {
+  text-decoration-color: var(--primary);
+}
+
+.doc-prose strong {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.doc-prose em {
+  font-style: italic;
+}
+
+/* Lists. The marker sits in the margin so the text edge stays flush with the
+   paragraphs above it — a ragged left edge is the fastest way to make a page
+   look unconsidered. */
+.doc-prose :is(ul, ol) {
+  padding-left: 1.4em;
+}
+.doc-prose ul {
+  list-style: disc;
+}
+.doc-prose ol {
+  list-style: decimal;
+}
+.doc-prose li::marker {
+  color: var(--muted-foreground);
+}
+.doc-prose li + li {
+  margin-top: 0.4em;
+}
+.doc-prose li > :is(ul, ol) {
+  margin-top: 0.4em;
+}
+.doc-prose li > p {
+  margin: 0;
+}
+.doc-prose li > p + p {
+  margin-top: 0.6em;
+}
+
+/* Code. Inline code borrows the composer's treatment (`.tiptap code`) so the
+   same string looks the same wherever the app prints it. */
+/* Tighter than the composer's `.tiptap code`, and deliberately so: docs set
+   code inside running sentences, where a 0.35em pad reads as a space before the
+   following comma. */
+.doc-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--chart-4);
+  background: color-mix(in oklab, var(--chart-4) 10%, transparent);
+  padding: 0.12em 0.26em;
+  margin: 0 -0.04em;
+  border-radius: var(--radius-sm);
+}
+.doc-prose pre {
+  max-width: 100%;
+  overflow-x: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+.doc-prose pre code {
+  color: var(--foreground);
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Tables. Ruled, not boxed: horizontal hairlines only, the header set as an
+   eyebrow. Allowed past the measure and scrollable, since a schema table is
+   wider than a line of prose has any business being. */
+.doc-prose .doc-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.doc-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.doc-prose thead th {
+  border-bottom: 1px solid var(--border);
+  padding: 0 1.25rem 0.55rem 0;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.doc-prose tbody td {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
+  padding: 0.6rem 1.25rem 0.6rem 0;
+  vertical-align: top;
+}
+.doc-prose tbody tr:last-child td {
+  border-bottom: none;
+}
+.doc-prose td > code {
+  white-space: nowrap;
+}
+
+/* An aside — the `> **Status:**` blocks the docs use for callouts. A rule in
+   the margin and a tint, no icon and no colour: it is an aside, not an alarm. */
+.doc-prose blockquote {
+  border-left: 2px solid var(--primary);
+  background: color-mix(in oklab, var(--primary) 6%, transparent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 0.85rem 1.1rem;
+  color: var(--muted-foreground);
+}
+.doc-prose blockquote > * + * {
+  margin-top: 0.6em;
+}
+.doc-prose blockquote strong {
+  color: var(--foreground);
+}
+
+.doc-prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin-top: 2.5rem;
+  margin-bottom: 2.5rem;
+}
+.doc-prose img {
+  max-width: 100%;
+  border-radius: var(--radius);
 }

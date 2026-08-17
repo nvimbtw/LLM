@@ -1,6 +1,7 @@
 "use client"
 
 import { Switch } from "@/components/ui/switch"
+import { FormError } from "@/components/ui/error-state"
 import { useJobsContext } from "./jobs-provider"
 import { AddJobMenu } from "./add-job-menu"
 import { ChainBand } from "./chain-band"
@@ -45,9 +46,9 @@ export function JobsView() {
   return (
     <div className="space-y-8">
       {error && (
-        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <FormError>
           {error}
-        </p>
+        </FormError>
       )}
 
       <section className="overflow-hidden rounded-lg border border-border bg-card">

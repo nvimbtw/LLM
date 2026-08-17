@@ -4,14 +4,23 @@ import { cn } from "@/lib/utils"
  * The two set-off blocks a reply can contain: a quotation and a warning.
  *
  * One component for both because they are the same object — a tinted panel with
- * a coloured left rail and an oversized mark bled into the right edge — differing
- * only in hue and glyph. Splitting them would mean two places to change when the
- * shape is adjusted, and they have already drifted once.
+ * a coloured left rail and a small mark in the margin — differing only in hue and
+ * glyph. Splitting them would mean two places to change when the shape is
+ * adjusted, and they have already drifted once.
  *
- * The mark is decorative: it is `aria-hidden`, clipped by the container, and set
- * low enough in opacity to sit under the text rather than beside it. It exists so
- * the block is identifiable at a glance while scrolling, before any of it is
- * read — which is the entire job of a pull-quote marker.
+ * The mark sits in the left gutter, aligned with the first line, rather than
+ * floating in the top-right corner where it used to. In the corner it read as
+ * decoration that had drifted there: nothing else in the app is pinned to a
+ * corner, the block needed a lopsided `pr-9` to keep text out from under it, and
+ * the eye met the tint, then the text, then a glyph somewhere off to the side.
+ * In the margin it is what it actually is — a marginal mark labelling the block,
+ * on the same axis as the rail, read before the first word rather than after the
+ * first line.
+ *
+ * It is `aria-hidden` (the block's meaning is carried by its content, not by a
+ * glyph), but it is not decorative in the design sense: hue alone is the weakest
+ * way to tell two things apart and no way at all for some readers, so the mark is
+ * what distinguishes a quote from a warning when the colours cannot.
  */
 export type AsideTone = "quote" | "warn"
 
@@ -52,21 +61,21 @@ export function MessageAside({ tone, children }: MessageAsideProps) {
         // Margin in `em` so a set-off block keeps its distance from the prose
         // whatever size the surface set that prose at — the same rhythm every
         // other block in a reply is now on (see BLOCK in rich-message.tsx).
-        "relative my-[1.5em] overflow-hidden rounded-r-md border-l-2 py-3 pr-9 pl-4",
+        // Symmetric padding now that nothing is pinned to the right edge; the
+        // left inset is deeper because the mark lives in it.
+        "relative my-[1.5em] overflow-hidden rounded-r-md border-l-2 py-3 pr-4 pl-10",
         t.rail,
         t.wash,
         t.text
       )}
     >
-      {/* Small, and pinned to the top-right corner. It was previously 56px, which
-          is display size — big enough to read as an illustration competing with
-          the text rather than as a marker labelling it. At 16px it does the same
-          job (tells you what kind of block this is at a glance) and stays out of
-          the way of the sentence it is sitting beside. */}
+      {/* In the gutter, and optically aligned with the first line rather than
+          with the box: `top-3` matches the block's own `py-3`, so the mark sits
+          on the first line's shoulder the way a marginal mark should. */}
       <span
         aria-hidden
         className={cn(
-          "pointer-events-none absolute top-2.5 right-2.5 select-none",
+          "pointer-events-none absolute top-3 left-3 select-none",
           t.mark
         )}
       >

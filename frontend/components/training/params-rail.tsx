@@ -5,6 +5,13 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
 import { Input } from "@/components/ui/input"
 import { PresetControls } from "@/components/training/preset-controls"
@@ -396,6 +403,12 @@ function Row({
 // for the rail and right-aligned with tabular figures.
 const fieldInputClass = "h-8 w-24 text-right tabular-nums"
 
+// "No tokenizer chosen" needs a value of its own: an empty string is how a
+// Select says *nothing is selected*, and this option is a real choice — the one
+// every run made before vocabulary builds existed. Mapped back to `undefined`
+// on the way out, which is what the config means by it.
+const LEARN_WITH_RUN = "learn-with-run"
+
 export interface ParamsRailProps {
   cfg: TrainConfig
   onChange: (cfg: TrainConfig) => void
@@ -599,8 +612,16 @@ export function ParamsRail({
               key={mode}
               type="button"
               size="sm"
-              variant={cfg.mode === mode ? "default" : "ghost"}
-              className="flex-1"
+              // The selected half is a surface step and a weight change, not a
+              // filled primary. Two choices sitting inside a bordered track are
+              // already legible as a pair; painting one of them in the accent
+              // made the quietest decision on the form its loudest mark, and it
+              // competed with the actual primary action at the bottom of it.
+              variant={cfg.mode === mode ? "secondary" : "ghost"}
+              className={cn(
+                "flex-1",
+                cfg.mode === mode ? "font-medium" : "text-muted-foreground"
+              )}
               disabled={disabled}
               onClick={() => setMode(mode)}
             >
@@ -628,47 +649,70 @@ export function ParamsRail({
       <dl>
         {isSft && !followUp && (
           <Row label="Base model">
-            <select
-              className="h-8 w-44 truncate rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
+            <Select
               value={baseModelId ?? ""}
-              onChange={(e) => setField("base_model_id", e.target.value)}
+              // The Select reports `string | null`; the field is a plain id.
+              onValueChange={(v) => setField("base_model_id", v ?? "")}
               disabled={disabled || modelsLoading || models.length === 0}
             >
-              {models.length === 0 && (
-                <option value="">
-                  {modelsLoading ? "Loading…" : "No models"}
-                </option>
-              )}
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger size="sm" className="h-8 w-44">
+                <SelectValue
+                  placeholder={modelsLoading ? "Loading…" : "No models"}
+                >
+                  {(value: string | null) =>
+                    models.find((m) => m.id === value)?.name ?? ""
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {models.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Row>
         )}
 
         {!isSft && (
           <Row label="Tokenizer">
-            <select
-              className="h-8 w-44 truncate rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
-              value={cfg.tokenizer_id ?? ""}
-              onChange={(e) =>
-                onChange({ ...cfg, tokenizer_id: e.target.value || undefined })
+            <Select
+              value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
+              onValueChange={(v) =>
+                onChange({
+                  ...cfg,
+                  tokenizer_id:
+                    !v || v === LEARN_WITH_RUN ? undefined : v,
+                })
               }
               disabled={disabled || tokenizersLoading}
             >
-              {/* A real option, not a placeholder: learning one with the run is
-                  what every run did before builds existed, and it stays the
-                  default. As a placeholder it would read as "not loaded yet". */}
-              <option value="">Learn one with the run</option>
-              {offerable.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                  {t.vocabSize ? ` · ${t.vocabSize.toLocaleString()}` : ""}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger size="sm" className="h-8 w-44">
+                <SelectValue>
+                  {(value: string | null) =>
+                    !value || value === LEARN_WITH_RUN
+                      ? "Learn one with the run"
+                      : (offerable.find((t) => t.id === value)?.name ?? value)
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {/* A real option, not a placeholder: learning one with the run
+                    is what every run did before builds existed, and it stays
+                    the default. As a placeholder it would read as "not loaded
+                    yet". */}
+                <SelectItem value={LEARN_WITH_RUN}>
+                  Learn one with the run
+                </SelectItem>
+                {offerable.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.name}
+                    {t.vocabSize ? ` · ${t.vocabSize.toLocaleString()}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Row>
         )}
 

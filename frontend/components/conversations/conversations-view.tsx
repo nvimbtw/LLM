@@ -5,6 +5,7 @@ import { MessageSquarePlus } from "lucide-react"
 import { ButtonLink } from "@/components/ui/button-link"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useChats } from "@/components/chat/chats-provider"
+import { LoadError } from "@/components/ui/error-state"
 import { ConversationItem } from "./conversation-item"
 
 // Compact token count: 812, 1.2k, 48k.
@@ -77,7 +78,7 @@ export function ConversationsView() {
     return (
       <div>
         <Masthead count={0} tokens={0} />
-        <p className="py-10 text-sm text-destructive">{error}</p>
+        <LoadError title={error} />
       </div>
     )
   }

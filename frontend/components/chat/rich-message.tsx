@@ -200,8 +200,11 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
       // Two words of code used to be the loudest thing in a reply — a hue that
       // means "series 4" in a chart meant "read me first" in a sentence. The face
       // change is what marks it as code; the wash only has to hold it together.
+      // Tight horizontal padding with a hair of negative margin: at 0.35em the
+      // tint reads as a space before a following comma or period, which in a
+      // sentence full of identifiers is most of them.
       return (
-        <code className="rounded-[3px] bg-foreground/[0.055] px-[0.35em] py-[0.1em] font-mono text-[0.875em] break-words">
+        <code className="mx-[-0.04em] rounded-[3px] bg-foreground/[0.055] px-[0.26em] py-[0.12em] font-mono text-[0.875em] break-words">
           {textContent(el)}
         </code>
       )

@@ -14,6 +14,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { FormError } from "@/components/ui/error-state"
 import {
   Card,
   CardContent,
@@ -48,7 +49,7 @@ export function DeleteAccount({ onDelete }: { onDelete: () => Promise<void> }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <FormError>{error}</FormError>}
         <AlertDialog>
           <AlertDialogTrigger
             render={

@@ -10,6 +10,7 @@ import { ChatComposer } from "./chat-composer"
 const STICK_TO_BOTTOM_THRESHOLD_PX = 120
 import { ChatMessageBubble } from "./chat-message"
 import { Throbber } from "@/components/ui/throbber"
+import { LoadError } from "@/components/ui/error-state"
 import { ThinkingLabel } from "./thinking-label"
 
 export function ChatThread({ chatId }: { chatId: string }) {
@@ -172,7 +173,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
             </div>
           )}
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <LoadError title={error} />}
         </div>
       </div>
 

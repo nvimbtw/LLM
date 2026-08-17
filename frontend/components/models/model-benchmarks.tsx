@@ -14,6 +14,7 @@ import {
   type LanguageReport,
 } from "@/lib/benchmark"
 import { cn } from "@/lib/utils"
+import { LoadError } from "@/components/ui/error-state"
 
 /**
  * How the model scored, under the specs that say what it is.
@@ -39,7 +40,7 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   if (error) {
     return (
       <Section>
-        <p className="px-5 py-6 text-sm text-destructive">{error}</p>
+        <LoadError title={error} className="m-5" />
       </Section>
     )
   }

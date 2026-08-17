@@ -5,6 +5,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { FigureSeed } from "@/components/ui/figure-seed"
 import { useSignup } from "@/hooks/use-signup"
+import { FormError } from "@/components/ui/error-state"
 import { AuthShell } from "./auth-shell"
 import { AuthField } from "./auth-field"
 
@@ -66,9 +67,9 @@ export function SignupForm() {
           onChange={(e) => setPassword(e.target.value)}
         />
         {error && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <FormError>
             {error}
-          </p>
+          </FormError>
         )}
         <Button type="submit" disabled={isSubmitting} className="h-10">
           {isSubmitting ? "Creating account…" : "Create account"}

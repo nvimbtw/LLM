@@ -5,6 +5,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { FigureLattice } from "@/components/ui/figure-lattice"
 import { useLogin } from "@/hooks/use-login"
+import { FormError } from "@/components/ui/error-state"
 import { AuthShell } from "./auth-shell"
 import { AuthField } from "./auth-field"
 
@@ -61,9 +62,9 @@ export function LoginForm() {
           onChange={(e) => setPassword(e.target.value)}
         />
         {error && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <FormError>
             {error}
-          </p>
+          </FormError>
         )}
         <Button type="submit" disabled={isSubmitting} className="h-10">
           {isSubmitting ? "Logging in…" : "Log in"}

@@ -687,7 +687,12 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                   onValueChange={(v) => setAttnLayer(Number(v))}
                 >
                   <SelectTrigger size="sm" className="h-7 w-28">
-                    <SelectValue />
+                    {/* A render function, not a bare `<SelectValue />`: Base UI
+                        prints the raw value, so the trigger read "0" while the
+                        list it opened read "Layer 0". */}
+                    <SelectValue>
+                      {(value: string | null) => `Layer ${value ?? 0}`}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {Array.from({ length: layerCount }, (_, i) => (

@@ -24,6 +24,7 @@ import { TokenizerComposer } from "@/components/tokenizers/tokenizer-composer"
 import { useJobs } from "@/hooks/use-jobs"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { jobHref, type Job } from "@/lib/jobs"
+import { LoadError } from "@/components/ui/error-state"
 import {
   deleteTokenizer,
   describeDatasets,
@@ -91,9 +92,11 @@ export function TokenizersView() {
       <div className="space-y-6">
         {building && <BuildingBand job={building} />}
         {error ? (
-          <p className="text-sm text-destructive">
-            Failed to load the vocabularies. Please try again.
-          </p>
+          <LoadError
+            title="The vocabularies didn't load."
+            hint="The engine may still be starting. Nothing has been lost — the vocabularies are on disk either way."
+            onRetry={refresh}
+          />
         ) : isLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -193,7 +196,7 @@ function Row({
         <p className="flex items-center gap-2 font-medium">
           <span className="truncate">{tokenizer.name}</span>
           {!tokenizer.hasVocab && (
-            <span className="shrink-0 rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
+            <span className="shrink-0 rounded-sm bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
               missing on disk
             </span>
           )}

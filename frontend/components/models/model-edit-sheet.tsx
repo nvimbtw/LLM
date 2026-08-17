@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/toast"
+import { FormError } from "@/components/ui/error-state"
 import {
   Sheet,
   SheetClose,
@@ -148,7 +149,7 @@ export function ModelEditSheet({
             />
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <FormError>{error}</FormError>}
         </div>
 
         <SheetFooter className="flex-row justify-end">
