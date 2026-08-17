@@ -1,4 +1,4 @@
-# CLAUDE.md
+# Backend — Rust API
 
 The Rust half: people, sessions, and the seam to the services behind it. It owns
 users and presets and nothing else — models, conversations, runs and scores live
@@ -130,4 +130,4 @@ Naming carries the meaning; comments carry only what naming cannot.
   glance — a trap that was walked into once (`canonicalize` and the venv), a
   status chosen deliberately (404 rather than 403 so existence is not leaked),
   an ordering that is load-bearing (`/me` registered before `/{id}`).
-- Long-form findings live in [`docs/decisions/`](../docs/decisions/), not here.
+- Long-form findings live in [`docs/decisions/`](../decisions/), not here.

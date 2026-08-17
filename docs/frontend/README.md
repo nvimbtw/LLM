@@ -1,7 +1,4 @@
-# CLAUDE.md
-
-> **Role:** See [`AGENTS.md`](../AGENTS.md) at the project root for the agent
-> role system. Unless told otherwise, you are the **Fixer**.
+# Frontend — Next.js UI
 
 Guidance for building and fixing the frontend half of the project.
 
@@ -54,6 +51,64 @@ frontend/
 └── next.config.ts
 ```
 
+## The docs site (`/docs`)
+
+The markdown in [`docs/`](../) is rendered by this module at
+[`app/docs/[[...slug]]/page.tsx`](../../frontend/app/docs) — public, outside the
+`(app)` group, so reading the docs needs no account and does not depend on the
+signed-in chrome.
+
+- [`lib/docs.ts`](../../frontend/lib/docs.ts) walks `../docs` and maps files to
+  routes: `docs/README.md` → `/docs`, `docs/backend/README.md` → `/docs/backend`,
+  `docs/backend/schema.md` → `/docs/backend/schema`. A directory with no
+  `README.md` gets a generated index of its children instead of a 404.
+- **Build time only.** `generateStaticParams` prerenders every page, so the
+  filesystem outside this module is never touched by a running server. The
+  consequence: a docs-only commit needs a frontend rebuild before it shows on
+  the deployed site, and any container build must include `../docs` in its
+  context.
+- **Relative links are rewritten** to routes, so the same markdown reads
+  correctly on the site and in an editor. A link that resolves to nothing
+  **fails the build** — deliberately; that is what keeps the docs from drifting
+  away from the tree they describe.
+- `AGENTS.md` at the repo root is rendered too, at `/docs/agents`, via
+  `EXTERNAL_PAGES` in `lib/docs.ts`. Add to that map to publish another file
+  from outside `docs/`.
+
+- **Prose styling is `.doc-prose` in [`app/globals.css`](../../frontend/app/globals.css)**,
+  hand-set against the app's own tokens rather than `@tailwindcss/typography` —
+  the plugin ships its own type scale and greys, and a page set in them reads
+  like a different product. Headings take the display serif, body copy is capped
+  at 68 characters, and tables and code are allowed to break that measure.
+- **HTML comments are stripped** before rendering. `<!-- TODO: … -->` is
+  invisible in every other markdown viewer and stays invisible here.
+
+Adding a doc requires no frontend change: write the markdown, and the page and
+its sidebar entry appear on the next build.
+
+## Colour
+
+The palette is Kanagawa (Dragon in dark, a warm-paper light mode) and the token
+values live in [`app/globals.css`](../../frontend/app/globals.css) with the
+reasoning for each non-obvious one written on the token itself. Read those
+comments before changing a value — several encode a measurement, not a taste.
+
+Every pair is checked by
+
+```sh
+cd frontend && node scripts/audit-contrast.mjs
+```
+
+which prints the contrast of every token against every surface it lands on, in
+both modes, against three floors: **4.5** for text (the app sets almost nothing
+at "large" sizes, and its eyebrows are small and letterspaced), **3.0** for
+graphical objects that carry meaning (chart marks, form-control boundaries), and
+**1.8** for hairlines, which carry none and only have to survive a bright screen.
+Exactly one row fails by design — `--tier-low`, for the reason written on it.
+
+If you change a token, run it, and keep the hue: the fixes it prompts should be
+lightness moves, which is what keeps the scheme recognisably Kanagawa.
+
 ## Conventions
 
 ### Components
@@ -67,6 +122,30 @@ frontend/
   ```
 - **Business components** live in `components/<domain>/` and compose UI primitives from `components/ui/`.
 - **Don't re-invent UI primitives**: Use the shadcn/ui components from `components/ui/` for buttons, inputs, dialogs, cards, etc. If you need a variant the existing component doesn't support, add a prop to it — don't hand-roll a replacement.
+
+### Failure states
+
+Two components in [`components/ui/error-state.tsx`](../../frontend/components/ui/error-state.tsx),
+split by who can act on the failure. Never hand-roll a third.
+
+- **`FormError`** — a submission was rejected. Sits against the control that
+  produced it, `role="alert"`, and is the one place red earns its keep.
+- **`LoadError`** — a section could not fetch what it needed. Not set in red
+  (the reader did not cause it), takes the footprint of the content it replaces
+  so a failed section does not collapse the page, and takes an `onRetry` when
+  the caller can refetch.
+
+### Selects
+
+Use `components/ui/select.tsx` — never a native `<select>`. Two things about
+the Base UI primitive underneath, both learned the hard way:
+
+- `<SelectValue />` on its own renders the **raw value**. Give it a render
+  function that maps the value to its label, or the trigger will read `0` while
+  the list it opens reads `Layer 0`.
+- An option meaning "nothing chosen" needs a sentinel value of its own; the
+  empty string is how a Select says *no selection*. Map it back at the edge
+  (see `LEARN_WITH_RUN` in `components/training/params-rail.tsx`).
 
 ### Hooks
 
@@ -179,34 +258,50 @@ been built — a vocabulary is picked far more often than it is built.
 
 ### Throbber or dot
 
-`components/ui/throbber.tsx` is a **figure**, not an icon: a **rail** — a resting
-track with a brighter segment moving on it. Every state is that same rail, and what
-tells them apart is where the segment is and how much of the rail it covers, with
-colour as the second signal. It is one fixed footprint everywhere, `THROBBER_W` ×
-`THROBBER_H` (84×22), and callers cannot resize it: `className` is for margin,
-placement and colour only. That is deliberate. It used to be sized per call site, and
-the result was a different figure in every row, none of which looked like the same
-object.
+`components/ui/throbber.tsx` is a **figure**, not an icon: a hexagonal field of
+nineteen dots with a **tree grown across it**. Ink leaves the centre, runs along
+lattice edges and branches; each dot it reaches lights and swells while the rest
+of the field goes on breathing. It is one fixed footprint everywhere,
+`THROBBER_W` × `THROBBER_H` (about 27×25), and callers cannot resize it:
+`className` is for margin, placement and colour only. That is deliberate — it
+used to be sized per call site, and the result was a different figure in every
+row, none of which looked like the same object.
 
-Three rules govern changes to it:
+**The tree is grown, not drawn.** A fresh one is grown by random walk at the
+start of every pass, so the mark is never the same twice. What is fixed is the
+*character* of the growth, and that is what carries the state — see `GROWTH`:
+`limbs` (directions leaving the root), `branch` (how far an inner dot splits)
+and `depth` (how far ink travels). One long wandering route is a token being
+sampled; a broad shallow bush is several paths held open; the full spanning net
+is every parameter moving at once.
 
-- **Geometry is built once at mount.** A frame writes two coordinates, two opacities
-  and (in one state) a dash — never path data. An earlier design rebuilt five
-  60-segment paths per frame, and the browser re-parsing those was the whole reason it
-  ran differently on different machines.
-- **The phase is integrated, never read off the clock.** Each frame adds `rate × dt`,
-  so a mode change alters the speed the figure is moving at and it carries straight
-  through. A state change can never jump it.
-- **A segment arrives from outside the rail and leaves outside it.** It travels past
-  both ends and the rail clips it, so a full-size pill slides in behind the track's
-  rounded end rather than growing out of it. Anything placed past the ends is hidden,
-  which is why the states may return `from`/`to` outside 0–1.
-- **A state is a function of its phase returning four numbers** (`Frame`), so any two
-  mix by weight — give one instance a changing `mode` and it morphs instead of
-  cutting. Mixing the *output* rather than a vector of shared parameters is what keeps
-  each state to three lines of arithmetic with a name. Add a state by adding a
-  function to `STATES` and a rate to `RATES`; don't add a field to `Frame` unless the
-  renderer genuinely cannot draw the state without it.
+Rules governing changes to it:
+
+- **Geometry is built once at mount.** Every lattice edge is rendered up front
+  and a tree is merely a choice of which are visible this pass, so a frame
+  writes opacities and one dash length and never path data. An earlier design
+  rebuilt paths per frame, and the browser re-parsing those was the whole reason
+  it ran differently on different machines.
+- **The phase is integrated, never read off the clock.** Each frame adds
+  `rate × dt`, and a mode change blends the *rate*, so the figure changes pace
+  rather than jumping.
+- **Growing allocates, so it happens on a pass boundary** — about once a second
+  — and never inside a frame. The PRNG is seeded per instance and per pass, so a
+  tree is re-growable rather than merely random.
+- **A state is three growth numbers plus an advance rule**, not a bespoke
+  animation. Add a state by adding entries to `GROWTH`, `RATES` and `TINT`, and
+  a branch to the advance `switch` in `draw` only if the new state genuinely
+  cannot be told by how its tree grows.
+- Unlike the rail it replaced, this figure **re-starts on purpose**: a state
+  change grows a new tree immediately rather than waiting out the pass in
+  progress, because repeated growth is its whole language.
+
+The `/throbber` page shows every state side by side. Earlier candidates — a
+rule, a stanza of set text, a comb of stems, arcs over a baseline, a folded
+line, a causal-mask triangle, orbiting rings, a square lattice of cells — are
+recorded with their reasons in the git history of `components/throbber/`; the
+short version is that a figure with no silhouette reads as a picture of an axis,
+and a figure with one parameter cannot tell eight states apart.
 
 So use it only where a figure belongs — somewhere the waiting *is* the subject, with
 room for it:

@@ -1,4 +1,43 @@
-# Backend rules (Rust) — full text
+# Coding conventions
+
+The standard every change in this repo is judged against. Ids (R1–R21) are
+stable and safe to cite in a commit or a review; numbering is not contiguous.
+
+Module-specific conventions — layering, stack, forbidden patterns — live in the
+module's own doc: [`backend/README.md`](backend/README.md),
+[`frontend/README.md`](frontend/README.md), [`engine/README.md`](engine/README.md).
+These rules layer on top of those.
+
+## Index
+
+| Id | Rule |
+|---|---|
+| R1 | Bounded function length (~60-line body; FFI judged by logical steps) |
+| R2 | Bounded loops — obvious, finite exit |
+| R3 | Handle every fallible `Result`/`Option`; no bare `unwrap` |
+| R4 | `unsafe` minimal and justified with a SAFETY comment |
+| R5 | Smallest scope for data; no wide reused `mut` |
+| R6 | No duplicated logic — factor shared blocks |
+| R7 | Zero warnings (fix or justified `#[allow]`) |
+| R8 | No magic numbers — named `const`s |
+| R9 | Doc comments state non-obvious contracts only, never restate names |
+| R10 | Validate at boundaries (lengths, shapes, ranges) |
+| R11 | No panics on external input — return `Result` |
+| R12 | Respect the layering (one-directional crates) |
+| R13 | Self-documenting naming/structure; comments say *why*, never *what* |
+| R14 | Server-first rendering; `'use client'` only when required |
+| R15 | Centralized API/WebSocket layer (`lib/api.ts`, socket helpers) |
+| R16 | UI primitives from `components/ui/`, no hand-rolled equivalents |
+| R17 | One component per file; named props interface |
+| R18 | Strict TypeScript, no `any` |
+| R20 | Cohesive modules and honest crate boundaries; no grab-bag `utils` |
+| R21 | Names don't stutter; every path segment adds meaning |
+
+R1–R13 and R20–R21 are Rust; R14–R18 are TypeScript/React. R13 and R20–R21 are
+about naming and structure and apply to the Python engine too.
+
+## Backend (Rust) — R1–R13, R20–R21
+
 
 ### R1 — Bounded function length
 A function should fit on one screen (~60 lines of body, excluding signature and
@@ -82,7 +121,7 @@ Parsing, IO, decoding, and request handling return `Result` and never `panic!`/
 *Violation:* `.try_into().unwrap()` on bytes read from a model file.
 
 ### R12 — Respect the layering
-Follow the strict layering in `backend/CLAUDE.md`: `routes/` is HTTP-only,
+Follow the strict layering in `docs/backend/README.md`: `routes/` is HTTP-only,
 `db/` is pure SQL returning `Result`, `crypto/` is self-contained, no db struct
 serialized straight to a client. The crate boundaries (`llm`, `tokenize`, …) are
 one-directional.
@@ -114,8 +153,8 @@ name).
 
 ### R19 — (folded into R13)
 R19 ("comments earn their place: why, never what") duplicated the comment half
-of R13 and has been merged into it. Existing artifacts citing `rule: R19` stay
-valid — judge them under R13. Do not file new findings as R19.
+of R13 and was merged into it. Older references to R19 mean R13. Do not cite
+R19 in new work.
 
 ### R20 — Cohesive modules and honest crate boundaries
 A module or crate holds **one coherent concern**, named for that concern, and code
@@ -141,3 +180,44 @@ one doesn't already carry. This applies to new and changed code, and existing
 stutters are fair game to file.
 *Violation:* `transformer::Transformer`; `workspace::Workspace`; a `mod tokenizer`
 whose only export is `struct Tokenizer`; a field named `config.config`.
+
+## Frontend (TypeScript / React) — R14–R18
+
+
+### R14 — Server-first rendering
+Pages and layouts are server components by default. Only add `'use client'` when
+browser APIs, React hooks (`useState`, `useEffect`, etc.), or DOM event handlers
+are required.
+*Violation:* a page that fetches static data at build time using `'use client'`
+with a `useEffect` instead of an `async` server component.
+
+### R15 — Centralized API and WebSocket layer
+HTTP calls use `lib/api.ts` helpers (`authHeaders`, configured fetch wrapper).
+WebSocket connections use the socket helpers in `lib/` (`chat-socket.ts`,
+`training-socket.ts`). Don't inline raw `fetch()` or `new WebSocket()` in
+components.
+*Violation:* a chat component calling `fetch("/api/...")` directly instead of
+going through `lib/api.ts`; a component creating its own WebSocket connection
+from scratch.
+
+### R16 — UI primitives from `components/ui/`
+Use the prebuilt shadcn/ui components in `components/ui/` for buttons, inputs,
+dialogs, cards, dropdowns, etc. Don't hand-roll equivalents with raw HTML and
+ad-hoc Tailwind classes.
+*Violation:* a `<button>` with custom Tailwind classes scattered across the
+codebase when `components/ui/button.tsx` already exists; a custom dialog built
+with `<div>` + state when `components/ui/alert-dialog.tsx` already exists.
+
+### R17 — One component per file, explicit props
+Each file exports one primary component. Props are defined as a dedicated
+TypeScript `interface` or `type` (named, not inlined in the function signature
+when more than 2–3 fields).
+*Violation:* a file exporting two unrelated components; props inlined as
+`(props: { a: string; b: number; c: boolean })` instead of a named interface.
+
+### R18 — Strict TypeScript, no `any`
+Every function and component is fully typed. `any` is forbidden unless a
+comment justifies why the type is genuinely unreachable (rare — almost always
+`unknown` + type guard is the right choice instead).
+*Violation:* a prop typed as `any`; a `@ts-ignore` without a comment explaining
+the limitation.
