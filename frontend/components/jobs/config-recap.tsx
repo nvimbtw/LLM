@@ -2,13 +2,8 @@
 
 import { Panel } from "@/components/ui/panel"
 import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
-import type {
-  AutolabelConfig,
-  GatherConfig,
-  Job,
-  SynthConfig,
-  TeachConfig,
-} from "@/lib/jobs"
+import type { Job } from "@/lib/jobs"
+import type { TokenizerBuild } from "@/lib/tokenizers"
 import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
 
 /**
@@ -79,6 +74,8 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
   switch (job.kind) {
     case "train":
       return train((override ?? job.config) as TrainConfig | null)
+    case "tokenize":
+      return tokenize(job.config as TokenizerBuild | null)
     case "benchmark": {
       // The assistant suite was missing here and fell through to the language
       // description, so a queued assistant run described itself as scoring grammar.
@@ -109,41 +106,24 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
         blocks: [],
       }
     }
-    case "autolabel": {
-      const config = job.config as AutolabelConfig | null
-      if (!config) return null
-      return {
-        description: "As queued",
-        rows: [
-          ["Model", job.label],
-          ["Prompts", String(config.max_prompts)],
-          ["Candidates each", String(config.candidates)],
-          ["Temperature", String(config.temperature)],
-        ],
-        blocks: [],
-      }
-    }
-    case "gather": {
-      const config = job.config as GatherConfig | null
-      if (!config) return null
-      return {
-        description: "As queued",
-        rows: [
-          ["Model", job.label],
-          ["Replies", String(config.batch ?? "—")],
-          ["Temperature", String(config.temperature ?? "—")],
-        ],
-        blocks: [],
-      }
-    }
-    case "synth":
-      return synth(job.config as SynthConfig | null)
-    case "teach":
-      return teach(job.config as TeachConfig | null)
-    // A chat turn's config is a prompt and a model, and the conversation shows
-    // both better than a table would.
     case "chat":
       return null
+  }
+}
+
+function tokenize(config: TokenizerBuild | null): Recap | null {
+  if (!config) return null
+  return {
+    description: "As queued",
+    rows: [["Max vocab", String(config.max_vocab)]],
+    // Empty is not "none": the engine resolves it to every corpus on disk, and a
+    // blank here would read as a build that learned from nothing.
+    blocks: [
+      [
+        "Corpora",
+        config.datasets.map((d) => d.name).join(", ") || "Every corpus on disk",
+      ],
+    ],
   }
 }
 
@@ -168,7 +148,13 @@ function train(config: TrainConfig | null): Recap | null {
     ["FF multiplier", `${config.ff_multiplier}×`],
   ]
   if (!fineTune) {
-    rows.push(["Max vocab", String(config.max_vocab)])
+    // Which vocabulary, before how large: a run that names one ignores
+    // `max_vocab` entirely, since the size belongs to the build.
+    rows.push([
+      "Tokenizer",
+      config.tokenizer_id ? "A built vocabulary" : "Learned with the run",
+    ])
+    if (!config.tokenizer_id) rows.push(["Max vocab", String(config.max_vocab)])
     rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
   }
   // SFT only: pretrain always strips, and RAFT/KTO have no thinking to strip, so
@@ -180,15 +166,22 @@ function train(config: TrainConfig | null): Recap | null {
     rows.push(["Beta", String(config.beta)])
   }
 
-  // Pretrain builds its corpus from the selected uploads; a fine-tune's data is
-  // the chat corpus or the rated catalogue, neither of which is a dataset pick.
-  const datasets = fineTune
+  // Pretrain builds its corpus from the selected uploads and SFT from the
+  // selected conversation sets — both are a dataset pick and both are recapped,
+  // because which sets went in is the thing that tells two runs from the same
+  // base apart. RAFT and KTO are not: their data is the model's own generations
+  // and the rated catalogue, neither of which is chosen here.
+  const picksDatasets = !fineTune || config.mode === "sft"
+  const datasets = !picksDatasets
     ? ""
     : config.curriculum.length > 0
       ? config.curriculum
           .map((stage, i) => stage.name ?? `Stage ${i + 1}`)
           .join(" → ")
-      : config.datasets.map((d) => d.name).join(", ")
+      : // Empty is not "none" — the engine resolves it to every set on disk, so
+        // say that rather than showing a blank where a selection should be.
+        config.datasets.map((d) => d.name).join(", ") ||
+        (config.mode === "sft" ? "Every set on disk" : "")
 
   return {
     description: fineTune ? "Inherited from the base" : "As queued",
@@ -196,60 +189,5 @@ function train(config: TrainConfig | null): Recap | null {
     blocks: datasets
       ? [[config.curriculum.length > 0 ? "Curriculum" : "Datasets", datasets]]
       : [],
-  }
-}
-
-function synth(config: SynthConfig | null): Recap | null {
-  if (!config) return null
-
-  const rows: [string, string][] = [
-    ["Writer", config.model],
-    ["Conversations", config.count.toLocaleString()],
-  ]
-  if (config.batch !== undefined) rows.push(["Per call", String(config.batch)])
-  if (config.temperature !== undefined)
-    rows.push(["Temperature", String(config.temperature)])
-  if (config.min_think_words !== undefined)
-    rows.push(["Min thinking", `${config.min_think_words} words`])
-  // Said either way: the absence of a target model is the thing that lets a
-  // corpus three times too long to train on get written.
-  rows.push(["Length-checked against", config.id_model ? "A model" : "Nothing"])
-
-  return { description: host(config.base_url), rows, blocks: [] }
-}
-
-function teach(config: TeachConfig | null): Recap | null {
-  if (!config) return null
-
-  const rows: [string, string][] = [
-    ["Teacher", config.teacher.model_file],
-    ["Triples", config.count.toLocaleString()],
-  ]
-  if (config.teacher.n_ctx !== undefined)
-    rows.push(["Teacher context", String(config.teacher.n_ctx)])
-  // 0 (and absent) means the run derives the boundaries from the student's
-  // context window, so there is no number to show until it has resolved them —
-  // it reports them on its first progress line.
-  if (config.low_max_tokens)
-    rows.push(["Short tier", `≤ ${config.low_max_tokens} tokens`])
-  if (config.med_max_tokens)
-    rows.push(["Medium tier", `≤ ${config.med_max_tokens} tokens`])
-  if (!config.low_max_tokens && !config.med_max_tokens)
-    rows.push(["Thinking tiers", "derived from the student’s context window"])
-  if (config.sample?.temperature !== undefined)
-    rows.push(["Temperature", String(config.sample.temperature)])
-  // Without a model there is no tokenizer to measure a thinking block with, so
-  // the tiers are whatever was asked for rather than what was written.
-  rows.push(["Tiers", config.id_model ? "Measured" : "As requested"])
-
-  return { description: "As queued", rows, blocks: [] }
-}
-
-/** `openrouter.ai` from a base URL — the provider, without the path noise. */
-function host(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
   }
 }

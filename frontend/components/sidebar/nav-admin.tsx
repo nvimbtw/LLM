@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Gauge, ListOrdered, Repeat, Sparkles } from "lucide-react"
+import { Gauge, ListOrdered, Type } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -21,18 +21,12 @@ import { KIND_LABEL } from "@/lib/jobs"
 // one of those now starts from Jobs. Two doors to the same queue is how a
 // benchmark used to be launchable into a running training job.
 //
-// Files and Throbber were dropped to keep this list to the things worth a
-// permanent slot. Both pages still exist at /files and /throbber.
+// Throbber was dropped to keep this list to the things worth a permanent slot;
+// the page still exists at /throbber.
 const items = [
+  { title: "Tokenizers", href: "/tokenizers", icon: Type },
   { title: "Benchmark", href: "/benchmark", icon: Gauge },
   { title: "Jobs", href: "/jobs", icon: ListOrdered },
-  // Cycles sit above Jobs conceptually — one cycle is a dozen jobs — but below it
-  // here, because the queue is what you check constantly and a cycle is what you
-  // check twice a day.
-  { title: "Cycles", href: "/cycles", icon: Repeat },
-  // The corpus, not the composer: this page is what you check before deciding to
-  // generate, and generation is queued from the job menu like every other kind.
-  { title: "SFT corpus", href: "/synth", icon: Sparkles },
 ]
 
 export function NavAdmin() {

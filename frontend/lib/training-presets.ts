@@ -13,7 +13,7 @@ export interface Preset {
 }
 
 export async function listPresets(): Promise<Preset[]> {
-  const res = await fetch(`${API_URL}/training/presets`, {
+  const res = await fetch(`${API_URL}/presets`, {
     headers: authHeaders(),
   })
   if (!res.ok) return []
@@ -24,7 +24,7 @@ export async function createPreset(
   name: string,
   config: TrainConfig
 ): Promise<Preset> {
-  const res = await fetch(`${API_URL}/training/presets`, {
+  const res = await fetch(`${API_URL}/presets`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ name, config }),
@@ -44,7 +44,7 @@ export async function updatePreset(
   id: string,
   patch: { name?: string; config?: TrainConfig }
 ): Promise<Preset> {
-  const res = await fetch(`${API_URL}/training/presets/${id}`, {
+  const res = await fetch(`${API_URL}/presets/${id}`, {
     method: "PUT",
     headers: authHeaders(),
     body: JSON.stringify(patch),
@@ -60,7 +60,7 @@ export async function updatePreset(
 }
 
 export async function deletePreset(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/training/presets/${id}`, {
+  const res = await fetch(`${API_URL}/presets/${id}`, {
     method: "DELETE",
     headers: authHeaders(),
   })
@@ -166,7 +166,7 @@ export async function loadModelConfig(
   modelId: string,
   modelName: string
 ): Promise<TrainConfig> {
-  const res = await fetch(`${API_URL}/model/${modelId}`, {
+  const res = await fetch(`${API_URL}/models/${modelId}`, {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error("Failed to load model config.")

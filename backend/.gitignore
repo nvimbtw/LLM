@@ -4,3 +4,8 @@
 /data/**/*
 !/data/**/
 !/data/**/.gitkeep
+
+# Secrets: DATABASE_URL, JWT_SECRET, SFT_API_KEY, DISCORD_WEBHOOK_URL. This file
+# was tracked until the webhook was added; it holds live credentials and should
+# never have been. Untracked with `git rm --cached backend/.env`.
+.env

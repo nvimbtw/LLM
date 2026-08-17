@@ -29,9 +29,25 @@ export function useTrainingPresets() {
     }
   }, [])
 
+  // Inlined rather than calling `refresh`, so no state is written synchronously
+  // from the effect body; `refresh` stays for the mutations that re-read the
+  // list. Same shape as `use-signals.ts`.
   React.useEffect(() => {
-    void refresh()
-  }, [refresh])
+    let active = true
+    listPresets()
+      .then((next) => {
+        if (active) setPresets(next)
+      })
+      .catch(() => {
+        // A failed list is non-fatal — the picker just shows empty.
+      })
+      .finally(() => {
+        if (active) setIsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   // Save the current config. If a preset with this name already exists, update it
   // in place (so "save over" is one action); otherwise create a new one.

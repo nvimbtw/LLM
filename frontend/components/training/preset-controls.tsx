@@ -21,6 +21,7 @@ import { useModels } from "@/hooks/use-models"
 import { useTrainingPresets } from "@/hooks/use-training-presets"
 import { loadModelConfig, toTrainConfig } from "@/lib/training-presets"
 import type { TrainConfig } from "@/lib/training"
+import { FormError } from "@/components/ui/error-state"
 
 // The preset controls that live at the top of the params rail: a picker to load a
 // saved preset or clone an existing model's config, and a save/delete affordance.
@@ -183,7 +184,7 @@ export function PresetControls({
         </div>
       )}
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <FormError className="text-xs">{error}</FormError>}
     </div>
   )
 }

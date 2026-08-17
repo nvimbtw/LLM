@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-This repo runs a multi-role agent workflow. Read [`AGENTS.md`](AGENTS.md) for
-the role/engine split; when driving the work loop, use the `orchestrator`
-skill. Outstanding work lives in `work/` (ISSUE/TODO/EPIC artifacts). Code
-conventions: `backend/CLAUDE.md` and `frontend/CLAUDE.md`.
+Read [`AGENTS.md`](AGENTS.md). It is the single entry point for every agent
+working in this repository — roles, rules, and the documentation you are
+required to read before touching a module.
+
+Nothing else lives in this file. Module documentation is in [`docs/`](docs/).

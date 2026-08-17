@@ -14,7 +14,6 @@ import {
 } from "@/lib/message-parser"
 import { useSettings } from "@/components/settings/settings-provider"
 import { MessageAside } from "./message-aside"
-import { MessageReplyRef } from "./message-reply-ref"
 import { ReasoningPanel } from "./reasoning-panel"
 
 export function RichMessage({
@@ -68,11 +67,23 @@ export function RichContent({
     showReasoning: settings.showReasoning,
   }
   return (
-    <div className={cn("space-y-3.5 break-words", className)}>
+    <div className={cn("break-words", className)}>
       {renderChildren(root, ctx)}
     </div>
   )
 }
+
+/**
+ * Vertical rhythm, carried by the blocks themselves.
+ *
+ * This used to be one `space-y-3.5` on the container, which set a heading, a
+ * paragraph and a list all the same distance apart — so nothing in a reply
+ * belonged to anything else, and the heading had to fight the uniform stack with
+ * a negative margin to say that it did. Each block now owns its own leading,
+ * measured in `em` so the rhythm scales with whatever size the caller set, and
+ * dropped to zero when the block opens the message.
+ */
+const BLOCK = "mt-[0.9em] first:mt-0"
 
 /**
  * What every node needs to know about the render as a whole. An object rather
@@ -133,15 +144,28 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
     // Sized in `em` so a heading stays proportional to whatever the surface set
     // its body at, and set in the display face — a reply with a title in it is
     // the one place in the app that reads like a page rather than a UI.
+    //
+    // The steps are wider than they were (1.5/1.25/1.08). Per the type scale in
+    // globals.css, a column whose largest text is half again its smallest reads
+    // as a form whatever face it is set in; the jump has to be visible for the
+    // heading to do any work. Tracking tightens as the size grows, for the same
+    // reason it does there — it is a function of size, not a house style.
     return (
       <Tag
         className={cn(
-          "font-display font-semibold tracking-tight",
-          // Extra space above, none below: a heading belongs to what follows it.
-          "mt-5 -mb-1 first:mt-0",
-          level === "1" && "text-[1.5em]",
-          level === "2" && "text-[1.25em]",
-          level !== "1" && level !== "2" && "text-[1.08em]"
+          "font-display font-semibold",
+          // Generous space above, and pulled *into* what follows: a heading
+          // belongs to the block under it, and the pair should read as one
+          // object. The bottom margin is negative because adjacent vertical
+          // margins collapse to the larger of the two — a small positive value
+          // here would simply lose to the following block's 0.9em and the
+          // heading would float equidistant between its neighbours, which is
+          // the exact failure this is meant to fix. -0.55em against that 0.9em
+          // leaves a real gap of about a third of a line.
+          "mt-[1.9em] mb-[-0.55em] first:mt-0",
+          level === "1" && "text-[1.75em] tracking-[-0.021em]",
+          level === "2" && "text-[1.35em] tracking-[-0.015em]",
+          level !== "1" && level !== "2" && "text-[1.12em] tracking-[-0.008em]"
         )}
       >
         {kids}
@@ -164,7 +188,7 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
       ) : null
     }
     case "paragraph":
-      return <p>{kids}</p>
+      return <p className={BLOCK}>{kids}</p>
     case "bold":
       return <strong className="font-semibold">{kids}</strong>
     case "italic":
@@ -172,8 +196,15 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
     case "inline":
       return <span className="font-medium text-foreground">{kids}</span>
     case "code inline":
+      // Set in the mono face against a barely-there wash, not in a chart accent.
+      // Two words of code used to be the loudest thing in a reply — a hue that
+      // means "series 4" in a chart meant "read me first" in a sentence. The face
+      // change is what marks it as code; the wash only has to hold it together.
+      // Tight horizontal padding with a hair of negative margin: at 0.35em the
+      // tint reads as a space before a following comma or period, which in a
+      // sentence full of identifiers is most of them.
       return (
-        <code className="rounded bg-chart-4/10 px-1.5 py-0.5 font-mono text-[0.85em] break-all text-chart-4">
+        <code className="mx-[-0.04em] rounded-[3px] bg-foreground/[0.055] px-[0.26em] py-[0.12em] font-mono text-[0.875em] break-words">
           {textContent(el)}
         </code>
       )
@@ -186,29 +217,50 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
       )
     case "ordered list":
       return (
-        <ol className="list-decimal space-y-1 pl-5 marker:text-muted-foreground">
+        <ol
+          className={cn(
+            BLOCK,
+            "list-decimal space-y-[0.35em] pl-[1.4em] marker:text-muted-foreground/70 marker:tabular-nums"
+          )}
+        >
           {kids}
         </ol>
       )
     case "list":
       return (
-        <ul className="list-disc space-y-1 pl-5 marker:text-muted-foreground">
+        <ul
+          className={cn(
+            BLOCK,
+            "list-disc space-y-[0.35em] pl-[1.4em] marker:text-muted-foreground/60"
+          )}
+        >
           {kids}
         </ul>
       )
     case "item":
-      return <li className="pl-1">{kids}</li>
+      // A sub-list is part of the item that introduces it, so it overrides the
+      // block leading it would otherwise inherit and hugs the line above.
+      return (
+        <li className="pl-[0.2em] [&>ol]:mt-[0.35em] [&>ul]:mt-[0.35em]">
+          {kids}
+        </li>
+      )
     case "divider":
-      return <hr className="border-border" />
+      // A rule is a paragraph break the reader can see, so it wants more air than
+      // any other block — it is separating two things, not introducing one.
+      return <hr className="my-[2.2em] border-border" />
     case "link":
       // Bare <|link|>dest<|/link|> carries no href attribute, so the visible
       // text is the destination. Legacy data with an explicit href still wins.
+      //
+      // No weight change: a bolder run mid-sentence is a second signal saying
+      // what the underline already says, and it breaks the colour of the line.
       return (
         <a
           href={el.attrs?.href ?? textContent(el)}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-medium break-all text-primary underline underline-offset-2 hover:text-primary/80"
+          className="break-words text-primary underline decoration-primary/30 underline-offset-[3px] transition-colors hover:decoration-primary"
         >
           {kids}
         </a>
@@ -221,12 +273,14 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
       )
     case "warn":
       return <MessageAside tone="warn">{kids}</MessageAside>
-    case "reply": {
-      // The id is the element's only content, so it is read as text rather than
-      // rendered — there is nothing here to mark up.
-      const id = textContent(el).trim()
-      return id ? <MessageReplyRef id={id} /> : null
-    }
+    case "reply":
+      // Dropped, not rendered. The reply-reference feature is gone; the marker
+      // keeps its reserved id — removing it from SPECIAL_TOKENS would shift every
+      // id after it — and `llm.chat.markup` already forbids the model from
+      // emitting one, so this only ever fires on a stored message from before.
+      // Its content is a message id, which is meaningless to a reader, so
+      // falling through to `default` would print an opaque string mid-reply.
+      return null
     default:
       // Unknown tag — render its contents so nothing is lost.
       return <>{kids}</>
@@ -250,24 +304,48 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     }
   }
 
+  // One surface and a hairline, where there used to be four devices for one
+  // affordance: a border, a tinted header bar, a language label that said "code"
+  // when it knew nothing, and a permanently-lit copy button. The label now
+  // appears only when a language is actually known, and both it and the button
+  // sit quietly over the code rather than in a strip above it.
+  //
+  // The button is dimmed rather than hidden. Hover is the obvious way to reveal
+  // it and the wrong one: on a touch screen there is no hover, and the copy
+  // affordance would simply not exist.
   return (
-    <div className="overflow-hidden rounded-lg border bg-muted/40">
-      <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-1.5">
-        <span className="font-mono text-xs text-muted-foreground">
-          {lang ?? "code"}
-        </span>
+    <div
+      className={cn(
+        BLOCK,
+        "group relative overflow-hidden rounded-md border border-border/70 bg-foreground/[0.035]"
+      )}
+    >
+      <pre className="overflow-x-auto py-3 pr-16 pl-3.5">
+        <code className="font-mono text-[0.85em] leading-relaxed text-foreground">
+          {code}
+        </code>
+      </pre>
+      {/* Opacity, not mount/unmount, so revealing the button never shifts the
+          label beside it. */}
+      <div className="pointer-events-none absolute top-2 right-2.5 flex items-center gap-2.5">
         <button
           type="button"
           onClick={copy}
-          className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          aria-label={copied ? "Copied" : "Copy code"}
+          className="pointer-events-auto text-muted-foreground opacity-45 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100"
         >
-          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-          {copied ? "Copied" : "Copy"}
+          {copied ? (
+            <Check className="size-3.5" />
+          ) : (
+            <Copy className="size-3.5" />
+          )}
         </button>
+        {lang && (
+          <span className="font-mono text-[0.7em] tracking-[0.1em] text-muted-foreground/70 uppercase">
+            {lang}
+          </span>
+        )}
       </div>
-      <pre className="overflow-x-auto p-3">
-        <code className="font-mono text-sm text-foreground">{code}</code>
-      </pre>
     </div>
   )
 }

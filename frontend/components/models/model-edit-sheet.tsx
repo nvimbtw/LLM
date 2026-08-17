@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/toast"
+import { FormError } from "@/components/ui/error-state"
 import {
   Sheet,
   SheetClose,
@@ -40,15 +41,24 @@ export function ModelEditSheet({
   const [isSaving, setIsSaving] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  // Reset the form to the model's current values each time the sheet opens.
-  React.useEffect(() => {
+  // Reset the form to the model's current values each time the sheet opens (and
+  // if it is re-pointed at a different model while open). Done during render
+  // rather than in an effect so the fields never paint one frame of the previous
+  // model's values. Closing sets the key to null, which is what makes the next
+  // open a change again even for the same model.
+  const resetKey = open
+    ? `${initialName}\u0000${initialDescription}\u0000${initialFamily}`
+    : null
+  const [resetFor, setResetFor] = React.useState(resetKey)
+  if (resetFor !== resetKey) {
+    setResetFor(resetKey)
     if (open) {
       setName(initialName)
       setDescription(initialDescription)
       setFamily(initialFamily)
       setError(null)
     }
-  }, [open, initialName, initialDescription, initialFamily])
+  }
 
   // The split, in one function: an empty field is a property of the form and
   // stays inline next to it, because you fix it here. A save that the server
@@ -139,7 +149,7 @@ export function ModelEditSheet({
             />
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <FormError>{error}</FormError>}
         </div>
 
         <SheetFooter className="flex-row justify-end">

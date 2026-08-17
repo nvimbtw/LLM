@@ -23,6 +23,7 @@ Usage:
     python3 scripts/migrate_sft_bare_tags.py --dir path/to/sft
 """
 
+import paths
 import argparse
 import glob
 import json
@@ -30,7 +31,7 @@ import os
 import re
 import sys
 
-DEFAULT_DIR = "/home/x_x/Programming/LLM/backend/data/raw/sft"
+DEFAULT_DIR = paths.sft_dir()
 
 # An opening codeblock tag with any attributes -> bare. `\|+>` also swallows the
 # occasional malformed `||>` seen in older data. Bare `<|codeblock|>` won't match

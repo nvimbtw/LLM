@@ -3,7 +3,8 @@ import { cn } from "@/lib/utils"
 /**
  * A small pulsing dot: "this is running", for the places the throbber won't fit.
  *
- * The throbber is a 120px figure. That is the right mark for a panel whose subject
+ * The throbber is a ~27px figure with a lot going on in it. That is the right
+ * mark for a panel whose subject
  * *is* the waiting — a chat thread with nothing in it yet, a benchmark's empty
  * state, the training hero — and the wrong one beside a line of text, inside a
  * button, or in a sidebar row. Those places need the fact of activity, not

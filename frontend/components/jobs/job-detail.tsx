@@ -6,13 +6,10 @@ import { useRouter } from "next/navigation"
 import { useJob } from "@/hooks/use-job"
 import { chatId } from "@/lib/jobs"
 import { JobBenchmarkPanel } from "./job-benchmark-panel"
-import { JobCataloguePanel } from "./job-catalogue-panel"
 import { JobChatPanel } from "./job-chat-panel"
-import { JobGatherPanel } from "./job-gather-panel"
 import { JobHeader } from "./job-header"
 import { JobQueuedPanel } from "./job-queued-panel"
-import { JobSynthPanel } from "./job-synth-panel"
-import { JobTeachPanel } from "./job-teach-panel"
+import { JobTokenizePanel } from "./job-tokenize-panel"
 import { JobTrainPanel } from "./job-train-panel"
 
 /**
@@ -63,23 +60,20 @@ export function JobDetail({ idJob }: JobDetailProps) {
           every kind would otherwise have to remember to add some. The header keeps
           its own `mb-8`, so it sits outside this. */}
       <div className="space-y-6">
-        {job.status === "queued" ? (
+        {/* Waiting shares this panel with queued: both are "hasn't started", and
+            the only difference — what it is waiting on — is one panel inside it. */}
+        {job.status === "queued" || job.status === "waiting" ? (
           <JobQueuedPanel job={job} />
         ) : (
           <>
             {job.kind === "train" && <JobTrainPanel job={job} run={run} />}
+            {job.kind === "tokenize" && <JobTokenizePanel run={run} />}
             {job.kind === "benchmark" && (
               <JobBenchmarkPanel job={job} run={run} />
             )}
             {/* Only reachable for an older chat job whose config names no
                 conversation; anything current redirected above. */}
             {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
-            {job.kind === "gather" && <JobGatherPanel job={job} run={run} />}
-            {job.kind === "autolabel" && (
-              <JobCataloguePanel job={job} run={run} />
-            )}
-            {job.kind === "synth" && <JobSynthPanel job={job} run={run} />}
-            {job.kind === "teach" && <JobTeachPanel job={job} run={run} />}
           </>
         )}
       </div>

@@ -1,6 +1,7 @@
 import { Panel } from "@/components/ui/panel"
 import {
-  type GenerationMetrics,
+  type Sample,
+  type SurfaceMetrics,
   formatNumber,
   formatPercent,
 } from "@/lib/benchmark"
@@ -12,54 +13,54 @@ import {
 // word forever scores well on real-word rate), and one glance at the text tells
 // you whether to believe them.
 export function GenerationPanel({
-  generation,
+  surface,
+  samples,
 }: {
-  generation: GenerationMetrics
+  surface: SurfaceMetrics
+  samples: Sample[]
 }) {
   return (
     <Panel
       title="Generation"
-      description={`${generation.samples.length} prompts · ${generation.words_scored} words`}
+      description={`${samples.length} prompts · ${surface.words} words`}
     >
       <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
           label="Real words"
-          value={formatPercent(generation.real_word_rate)}
-          hint={`vs ${generation.lexicon_size.toLocaleString("en-US")}-word lexicon`}
+          value={formatPercent(surface.real_word_rate)}
+          hint="occur in the corpus"
+        />
+        <Stat
+          label="Distinct-2"
+          value={formatPercent(surface.distinct_2)}
+          hint="unique bigrams"
         />
         <Stat
           label="Distinct-3"
-          value={formatPercent(generation.distinct_3)}
+          value={formatPercent(surface.distinct_3)}
           hint="unique trigrams"
         />
         <Stat
           label="Repetition"
-          value={formatPercent(generation.repeat_rate)}
-          hint="recurring 4-grams"
+          value={formatPercent(surface.repeat_3)}
+          hint="recurring trigrams"
         />
         <Stat
-          label="Sentence"
-          value={formatNumber(generation.mean_sentence_words, 1)}
+          label="Sample"
+          value={formatNumber(surface.mean_sample_words, 1)}
           hint="mean words"
-        />
-        <Stat
-          label="Markup"
-          value={formatPercent(generation.marker_validity)}
-          hint="balanced markers"
         />
       </dl>
 
-      {generation.samples.length > 0 && (
+      {samples.length > 0 && (
         <ul className="mt-6 flex flex-col gap-px overflow-hidden rounded-lg border border-border bg-border/60">
-          {generation.samples.map((sample, i) => (
+          {samples.map((sample, i) => (
             <li
               key={i}
               className="bg-background px-4 py-3 text-sm leading-relaxed"
             >
               <span className="text-muted-foreground">{sample.prompt}</span>
-              <span className="whitespace-pre-wrap">
-                {sample.completion || " …"}
-              </span>
+              <span className="whitespace-pre-wrap">{sample.text || " …"}</span>
             </li>
           ))}
         </ul>

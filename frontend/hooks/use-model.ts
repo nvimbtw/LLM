@@ -9,25 +9,25 @@ import {
   type Model,
   type RawModel,
   type RawModelConfig,
-  type RawModelDataset,
+  type RawModelResult,
 } from "./use-models"
 
-// The card-level Model plus the full training config/dataset and timestamps the
-// detail page surfaces.
+// The card-level Model plus the full training config, run summary and timestamps
+// the detail page surfaces.
 export interface ModelDetail extends Model {
   createdAt: string
   estimatedParams: number
   config: RawModelConfig | null
-  dataset: RawModelDataset | null
+  dataset: RawModelResult | null
 }
 
 function mapDetail(raw: RawModel): ModelDetail {
   return {
     ...mapModel(raw),
-    createdAt: raw.created_at,
+    createdAt: raw.created_at ?? "",
     estimatedParams: estimateParams(raw),
     config: raw.parameters?.config ?? null,
-    dataset: raw.parameters?.dataset ?? null,
+    dataset: raw.parameters?.result ?? null,
   }
 }
 
@@ -37,12 +37,22 @@ export function useModel(id: string) {
   const [notFound, setNotFound] = React.useState(false)
   const [error, setError] = React.useState<Error | null>(null)
 
-  React.useEffect(() => {
-    let active = true
+  // Reset during render rather than in the effect. Switching model ids has to
+  // clear the previous model's outcome *before* anything paints, or the page
+  // shows the last model's 404 (or its data) for one frame while the new fetch
+  // is in flight. React re-runs this render immediately and discards the
+  // in-progress output, so nothing downstream ever sees the mismatched pair.
+  const [loadedFor, setLoadedFor] = React.useState(id)
+  if (loadedFor !== id) {
+    setLoadedFor(id)
     setIsLoading(true)
     setNotFound(false)
     setError(null)
-    apiFetch(`/model/${id}`)
+  }
+
+  React.useEffect(() => {
+    let active = true
+    apiFetch(`/models/${id}`)
       .then(async (res) => {
         if (res.status === 404) {
           if (active) setNotFound(true)
@@ -71,9 +81,9 @@ export function useModel(id: string) {
   // Admin only. Sends the fields; the backend COALESCEs unchanged ones.
   const update = React.useCallback(
     async (name: string, description: string, family: string) => {
-      const res = await apiFetch(`/model/${id}`, {
-        method: "PUT",
-        body: JSON.stringify({ name, description, family }),
+      const res = await apiFetch(`/models/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ display_name: name, description, family }),
       })
       if (!res.ok) {
         const text = await res.text()
@@ -87,8 +97,8 @@ export function useModel(id: string) {
   // Admin only. Publish/unpublish toggle.
   const setPublished = React.useCallback(
     async (published: boolean) => {
-      const res = await apiFetch(`/model/${id}`, {
-        method: "PUT",
+      const res = await apiFetch(`/models/${id}`, {
+        method: "PATCH",
         body: JSON.stringify({ published }),
       })
       if (!res.ok) {
@@ -102,7 +112,7 @@ export function useModel(id: string) {
 
   // Admin only. Removes the registry row and the on-disk weights.
   const remove = React.useCallback(async () => {
-    const res = await apiFetch(`/model/${id}`, { method: "DELETE" })
+    const res = await apiFetch(`/models/${id}`, { method: "DELETE" })
     if (!res.ok) {
       const text = await res.text()
       throw new Error(text || "Unable to delete the model.")

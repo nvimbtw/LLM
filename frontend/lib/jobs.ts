@@ -1,35 +1,22 @@
 import { apiFetch } from "./api"
 import type { BenchmarkSuite } from "./benchmark"
-import type { TrainConfig } from "./training"
+import type { TokenizerBuild } from "./tokenizers"
+import { isFineTune, type TrainConfig } from "./training"
 
-// Wire types for the GPU queue (backend routes/jobs.rs).
+// The GPU queue. The engine calls these runs and so does the wire; the UI has
+// always called them jobs, and `fromRow` is where the two names meet.
 //
-// Everything that uses the device — a training run, a benchmark, a chat turn — is
-// a row in `jobs`, executed one at a time in queue order. The board is the whole
-// of what the /jobs page renders, and `config` travels with each row so a finished
-// job can seed a new one without a second request.
+// Everything that uses the device is a row, executed one at a time in queue
+// order. `config` travels with each row, so a finished job can seed a new one
+// without a second request.
 
-export type JobKind =
-  | "train"
-  | "benchmark"
-  | "chat"
-  | "autolabel"
-  | "gather"
-  | "synth"
-  // Generation from a local model on the GPU. The `synth` twin, and on the other
-  // lane for that reason: it loads a quantized teacher onto the device, so it
-  // stands in the same line as training and chat rather than beside them.
-  | "teach"
-
-/**
- * Which runner a job stands in front of. `device` is the GPU line — one job at a
- * time, and everything that touches the model is in it. `network` is its own line
- * for work that only waits on somebody else's API, so a generation run never
- * occupies the device it does not use.
- */
-export type JobLane = "device" | "network"
+export type JobKind = "train" | "benchmark" | "chat" | "tokenize"
 
 export type JobStatus =
+  // Queued behind another job and not yet runnable: it consumes the model that job
+  // will produce, and that model does not exist yet. It becomes `queued` on its own
+  // when the job named by `depends_on` finishes — see the backend's `jobs::chain`.
+  | "waiting"
   | "queued"
   | "running"
   // Cancel requested, worker not yet at a step boundary where it can stop. A real
@@ -42,7 +29,6 @@ export type JobStatus =
 export interface Job {
   id_job: string
   kind: JobKind
-  lane: JobLane
   status: JobStatus
   label: string
   // The job's own config: a TrainConfig, a { id_model }, or a chat request. Typed
@@ -52,13 +38,14 @@ export interface Job {
   stage: string | null
   // What the job produced: a model id, a benchmark run id, or a message id.
   ref_id: string | null
-  /**
-   * What the run produced, for a kind with no table of its own to read back from —
-   * a teaching run's stats, today. It is why a finished teaching run still draws its
-   * figures: the socket frame that carried them only reached whoever was watching
-   * live. Null for every other kind.
-   */
+  /** The run's own summary, for whatever has no table to read it back from. */
   result: unknown
+  /**
+   * The job this one runs after, for a `waiting` row. Null for every ordinary job.
+   * The board draws a chain from it: a follow-up is not "queued in position 4", it
+   * is "after that one", and a rank would be a lie about when it runs.
+   */
+  depends_on: string | null
   error: string | null
   created_at: string
   started_at: string | null
@@ -77,14 +64,23 @@ export interface JobBoard {
   paused: boolean
 }
 
-/** The wire shape of the board, before the history fields are camel-cased. */
+/** The wire shape of a row, and of the board it arrives in. */
+interface RunRow extends Omit<Job, "id_job"> {
+  run_id: string
+}
+
 interface BoardPayload {
-  active: Job[]
-  history: Job[]
+  active: RunRow[]
+  history: RunRow[]
   history_offset: number
   history_limit: number
   history_total: number
   paused: boolean
+}
+
+/** The engine's `run_id` is this side's `id_job`; nothing else differs. */
+function fromRow({ run_id, ...rest }: RunRow): Job {
+  return { id_job: run_id, ...rest }
 }
 
 export const TERMINAL: JobStatus[] = ["done", "cancelled", "failed"]
@@ -162,209 +158,13 @@ export function jobHref(job: Job): string {
   return chat ? `/chat/${chat}` : `/jobs/${job.id_job}`
 }
 
-// ── requests ────────────────────────────────────────────────────────────────
-
-/** How many finished jobs a history page holds. Mirrors the server's default. */
-export const HISTORY_PAGE_SIZE = 25
-
-export async function getBoard(offset = 0): Promise<JobBoard> {
-  const params = new URLSearchParams({
-    history_offset: String(Math.max(0, offset)),
-    history_limit: String(HISTORY_PAGE_SIZE),
-  })
-  const res = await apiFetch(`/jobs?${params}`)
-  if (!res.ok) throw new Error("Failed to load the queue.")
-  const payload: BoardPayload = await res.json()
-  return {
-    active: payload.active,
-    history: payload.history,
-    historyOffset: payload.history_offset,
-    historyLimit: payload.history_limit,
-    historyTotal: payload.history_total,
-    paused: payload.paused,
-  }
-}
-
-export async function getJob(id: string): Promise<Job> {
-  const res = await apiFetch(`/jobs/${id}`)
-  if (!res.ok) throw new Error("Failed to load the job.")
-  return res.json()
-}
-
-async function enqueue(kind: JobKind, config: unknown): Promise<Job> {
-  const res = await apiFetch("/jobs", {
-    method: "POST",
-    body: JSON.stringify({ kind, config }),
-  })
-  if (!res.ok) {
-    // A 400 here carries the specific validation failure (a bad hyperparameter, a
-    // missing dataset, a model with no tokenizer), which is exactly what the
-    // composer needs to show — so it is surfaced verbatim.
-    throw new Error((await res.text()) || "Failed to queue the job.")
-  }
-  return res.json()
-}
-
-export function queueTraining(config: TrainConfig): Promise<Job> {
-  return enqueue("train", config)
-}
-
 /**
- * Queues a benchmark, or a whole thinking-budget sweep.
+ * The three thinking budgets, as the SFT corpus tags them.
  *
- * With `splitThinking` the backend queues **three** jobs — one per budget, sharing an
- * `id_series` — and returns the first. The other two are on the board; the series id
- * is what ties them together on the chart. Refused by the server for the language
- * suite, whose stages render no chat prompt for a marker to attach to.
+ * Nothing queues a budget sweep any more — the split lives with the data module
+ * that will rebuild that corpus. What is left is reading: a stored benchmark run
+ * still says which budget it was scored under.
  */
-export function queueBenchmark(
-  modelId: string,
-  suite: BenchmarkSuite = "language",
-  splitThinking = false
-): Promise<Job> {
-  return enqueue("benchmark", {
-    id_model: modelId,
-    suite,
-    split_thinking: splitThinking,
-  })
-}
-
-/** Config for an auto-labelling run. Mirrors the backend `AutolabelRequest`. */
-export interface AutolabelConfig {
-  id_model: string
-  // Candidate replies generated per prompt. The best and worst become one
-  // thumbs-up and one thumbs-down example, so this must be at least 2.
-  candidates: number
-  max_prompts: number
-  // Above the chat default on purpose: candidates have to differ from each other
-  // for a best/worst split to mean anything.
-  temperature: number
-}
-
-export function queueAutolabel(config: AutolabelConfig): Promise<Job> {
-  return enqueue("autolabel", config)
-}
-
-/** Config for a signal-gathering run. Mirrors the backend `GatherRequest`. */
-export interface GatherConfig {
-  id_model: string
-  // Replies to generate for rating. Sized to be finishable in one sitting —
-  // rating is the scarce resource, not generation.
-  batch?: number
-  temperature?: number
-}
-
-export function queueGather(config: GatherConfig): Promise<Job> {
-  return enqueue("gather", config)
-}
-
-/**
- * What an auto-labelling run did. Mirrors the backend `AutolabelStats`.
- *
- * `calibration` is the part worth reading: it is the judge measured against the
- * replies *you* rated, before it was allowed to label anything. An `auc` of 0.5 is
- * a coin flip and the run refuses; 1.0 is perfect agreement with your thumbs.
- */
-export interface Calibration {
-  auc: number
-  threshold: number
-  separation: number
-  approved: number
-  rejected: number
-}
-
-/** One auto-labelled reply, as it is decided. */
-export interface Verdict {
-  prompt: string
-  response: string
-  good: boolean
-  score: number
-}
-
-export interface CatalogueReport {
-  prompts: number
-  calibration: Calibration
-  examples_written: number
-  approved: number
-  rejected: number
-  skipped_uncertain: number
-  mean_score: number
-}
-
-/** Config for a synthetic SFT generation run. Mirrors the backend `SynthRequest`. */
-export interface SynthConfig {
-  /** An OpenAI-compatible API base, e.g. https://openrouter.ai/api/v1. */
-  base_url: string
-  /** The provider's model id — the one writing the conversations, not ours. */
-  model: string
-  /** How many valid conversations to add before stopping. */
-  count: number
-  /** Conversations per call. Small: a long batch arrives truncated. */
-  batch?: number
-  temperature?: number
-  max_tokens?: number
-  /** Thinking blocks shorter than this are rejected. */
-  min_think_words?: number
-  think_frac?: number
-  system_frac?: number
-  timeout_secs?: number
-  max_calls?: number
-  /**
-   * Our model, whose tokenizer and context window a conversation has to fit.
-   * Without it nothing checks length, which is how a corpus of conversations three
-   * times too long to train on gets written.
-   */
-  id_model?: string
-  /** Name of the server-side env var holding the key. Never the key itself. */
-  api_key_env?: string
-  exemplar_file?: string
-  out_file?: string
-  seed?: number
-}
-
-export function queueSynth(config: SynthConfig): Promise<Job> {
-  return enqueue("synth", config)
-}
-
-/** One model call in a generation run, as it completes. */
-export interface SynthCall {
-  call: number
-  kept: number
-  duplicates: number
-  /** [reason, count] for everything this call's output lost. */
-  rejected: [string, number][]
-  elapsed_ms: number
-  response_chars: number
-  total: number
-  target: number
-}
-
-/** One conversation that survived validation. */
-export interface SynthAccepted {
-  opener: string
-  reply: string
-  turns: number
-  think_words: number
-  /** Rendered length in real tokens, when a base model was named. */
-  tokens: number | null
-  user_chars: number
-  assistant_chars: number
-}
-
-/** What a generation run did, emitted once at the end. */
-export interface SynthReport {
-  added: number
-  calls: number
-  duplicates: number
-  with_thinking: number
-  rejected: [string, number][]
-  out_file: string
-  corpus_total: number
-}
-
-// ── teaching: generation from a local model ─────────────────────────────────
-
-/** The three thinking budgets. Mirrors the backend `synth::teach::Tier`. */
 export type Tier = "low" | "med" | "high"
 
 export const TIER_LABEL: Record<Tier, string> = {
@@ -373,134 +173,143 @@ export const TIER_LABEL: Record<Tier, string> = {
   high: "Long",
 }
 
-/** Which GGUF to run, and how much of the device to give it. */
-export interface TeacherConfig {
-  /** A bare file name inside the teacher directory, never a path. */
-  model_file: string
-  /**
-   * Context window to allocate. The binding VRAM cost after the weights: the KV
-   * cache scales linearly with it, so this is a real allocation rather than a free
-   * upper bound.
-   */
-  n_ctx?: number
-  /** Layers to offload. Larger than any small model has, meaning "all of them". */
-  n_gpu_layers?: number
-  n_threads?: number
+// ── requests ────────────────────────────────────────────────────────────────
+
+/** How many finished jobs a history page holds. Mirrors the server's default. */
+export const HISTORY_PAGE_SIZE = 25
+
+export async function getBoard(offset = 0): Promise<JobBoard> {
+  const params = new URLSearchParams({
+    offset: String(Math.max(0, offset)),
+    limit: String(HISTORY_PAGE_SIZE),
+  })
+  const res = await apiFetch(`/runs?${params}`)
+  if (!res.ok) throw new Error("Failed to load the queue.")
+  const payload: BoardPayload = await res.json()
+  return {
+    active: payload.active.map(fromRow),
+    history: payload.history.map(fromRow),
+    historyOffset: payload.history_offset,
+    historyLimit: payload.history_limit,
+    historyTotal: payload.history_total,
+    paused: payload.paused,
+  }
 }
 
-/** How to sample. Mirrors the backend `teacher::SampleOpts`. */
-export interface SampleOpts {
-  temperature: number
-  top_p: number
-  min_p: number
-  top_k: number
-  max_tokens: number
-  seed: number
-  /**
-   * DRY repetition penalty. Not a flat repetition penalty on purpose: that pushes
-   * down every token already seen, which on our markup means fighting the closing
-   * tags. DRY penalizes repeated *sequences*, so it suppresses a second answer that
-   * merely rewords the first and leaves `<|/codeblock|>` alone.
-   */
-  dry_multiplier?: number
-  dry_base?: number
-  dry_allowed_length?: number
+export async function getJob(id: string): Promise<Job> {
+  const res = await apiFetch(`/runs/${id}`)
+  if (!res.ok) throw new Error("Failed to load the job.")
+  return fromRow(await res.json())
 }
 
-/** Config for a local-teacher run. Mirrors the backend `TeachRequest`. */
-export interface TeachConfig {
-  teacher: TeacherConfig
-  sample?: SampleOpts
-  /** Triples to accept before stopping. A triple is one question, three answers. */
-  count: number
-  /**
-   * Upper bound on thinking tokens for the short tier, and for the medium one.
-   * Anything above the second is long. Measured in *our* model's tokenizer, so
-   * these do nothing without `id_model`.
-   */
-  low_max_tokens?: number
-  med_max_tokens?: number
-  /** Our model, whose tokenizer measures the budget and whose window bounds it. */
-  id_model?: string
-  exemplar_file?: string
-  max_calls?: number
-  seed?: number
+/**
+ * A step to run *after* the one before it, against the model that one produces.
+ *
+ * A flat list, because "then, then, then" is what a person means by a chain. Only
+ * `train` and `benchmark` can follow: they are the two kinds that take their model
+ * from the run before them. A follow-up's config names **no** model — that is the
+ * one question the chain exists to leave open, and the engine answers it when the
+ * predecessor lands.
+ */
+export type FollowUp =
+  | { kind: "train"; config: TrainConfig }
+  | { kind: "benchmark"; config: unknown }
+
+async function post(path: string, body: unknown): Promise<Response> {
+  const res = await apiFetch(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    // The failure carries the specific validation error — a bad hyperparameter, a
+    // missing dataset, a model with no tokenizer — which is what the composer
+    // needs to show, so it is surfaced verbatim.
+    throw new Error((await res.text()) || "Failed to queue the job.")
+  }
+  return res
 }
 
-export function queueTeach(config: TeachConfig): Promise<Job> {
-  return enqueue("teach", config)
+//: Where each kind is queued. `chat` is not here: a turn is answered on the
+//: socket that asked for it rather than put on the line — see frontend/CLAUDE.md.
+const QUEUE_PATH: Record<Exclude<JobKind, "chat">, string> = {
+  train: "/runs/train",
+  benchmark: "/runs/benchmark",
+  tokenize: "/runs/tokenize",
 }
 
-/** One model call in a teaching run, as it completes. */
-export interface TeachCall {
-  call: number
-  /** Conversations this call wrote: 0 to 3, one per surviving answer. */
-  answers_kept: number
-  /** How many of the three tiers those answers covered. 3 is a real triple. */
-  tiers_covered: number
-  duplicates: number
-  rejected: [string, number][]
-  elapsed_ms: number
-  tokens_generated: number
-  /**
-   * Running totals in the three units the run has. `total_questions` is what
-   * `target` bounds; the tier bars add up to `total_answers`. Reporting only the
-   * first of these is what made "45 triples" sit beside bars summing to 75.
-   */
-  total_questions: number
-  total_answers: number
-  total_complete: number
-  /** Questions by tiers covered: `[one tier, two tiers, all three]`. */
-  total_by_tiers: number[]
-  target: number
+//: A fine-tune is the same *kind* of run as a pretrain — it produces a model and
+//: takes the same place in the queue — but it is a different request, because it
+//: takes its architecture from the base model instead of stating one.
+const FINE_TUNE_PATH = "/runs/sft"
+
+/**
+ * The engine's shape for a training run.
+ *
+ * One name is adapted here and nowhere else, in the manner of `id_job` and
+ * `id_run`: the composer's **`base_model_id`** is the engine's **`base_model`**.
+ * The engine decides what a run *is* by that one field — a config carrying it is
+ * a fine-tune, a config without it is a pretrain — so failing to translate it
+ * did not produce an error, it produced a **pretrain**: a fine-tune of two chat
+ * sets was run as a pretrain that went looking for `smoltalk` among the `.txt`
+ * corpora and failed minutes later, having queued perfectly happily.
+ *
+ * Everything else rides along untouched. The engine's `SftConfig` keeps the
+ * fields it knows and drops the pretrain-only ones (`dimensions`, `tokenizer_id`,
+ * `curriculum`, …), which is exactly right: a fine-tune that restated the
+ * architecture could disagree with the weights it starts from, and the weights
+ * would win, silently.
+ */
+function forEngine(config: TrainConfig): Record<string, unknown> {
+  if (!isFineTune(config.mode)) return { ...config }
+  const { base_model_id, ...rest } = config
+  return { ...rest, base_model: base_model_id }
 }
 
-/** One tier's answer within an accepted triple. */
-export interface AnsweredTier {
-  requested: Tier
-  /**
-   * Where it was actually filed. Assigned by measuring the thinking block, not by
-   * what the prompt asked for — a teacher told to write 40 words routinely writes
-   * 70, and the label has to describe the content to be trainable.
-   */
-  filed_as: Tier
-  think_tokens: number
-  reply_preview: string
+async function queue(
+  kind: Exclude<JobKind, "chat">,
+  config: unknown,
+  steps: FollowUp[],
+  path: string = QUEUE_PATH[kind]
+): Promise<Job> {
+  if (steps.length === 0) {
+    return fromRow(await (await post(path, config)).json())
+  }
+  // Chained steps are translated too. A follow-up deliberately names no base —
+  // the engine fills it in when its predecessor lands — so this maps an absent
+  // `base_model_id` to an absent `base_model`, which is the same statement in
+  // the engine's vocabulary rather than a missing field in it.
+  const chain = [
+    { kind, config },
+    ...steps.map((step) =>
+      step.kind === "train" ? { ...step, config: forEngine(step.config) } : step
+    ),
+  ]
+  const queued: RunRow[] = await (await post("/runs/chain", chain)).json()
+  return fromRow(queued[0])
 }
 
-/** One question and the answers that survived for it — up to three, often fewer. */
-export interface TeachAccepted {
-  group: string
-  opener: string
-  answers: AnsweredTier[]
+export function queueTraining(
+  config: TrainConfig,
+  steps: FollowUp[] = []
+): Promise<Job> {
+  return queue(
+    "train",
+    forEngine(config),
+    steps,
+    isFineTune(config.mode) ? FINE_TUNE_PATH : QUEUE_PATH.train
+  )
 }
 
-/** What a teaching run did, emitted once at the end. */
-export interface TeachReport {
-  /** Questions with at least one answer kept. What `count` bounds and stops on. */
-  questions: number
-  /** Questions whose answers covered all three tiers — actual triples. */
-  complete_triples: number
-  /** Conversations written; the sum of `per_tier`, in the bars' own unit. */
-  answers: number
-  /**
-   * Questions by how many distinct budgets they covered: `[one, two, all three]`.
-   * Sums to `questions`; its last entry is `complete_triples`. The *shape* is the
-   * diagnosis — a run that is mostly one-tier questions is failing differently from
-   * one that is mostly two-tier, and the second is a nudge away from working.
-   */
-  questions_by_tiers: number[]
-  calls: number
-  duplicates: number
-  rejected: [string, number][]
-  /** Answers filed per tier, `[tier, count]`. The headline number of a run. */
-  per_tier: [string, number][]
-  /** How often the measured tier disagreed with the requested one. */
-  relabelled: number
-  /** False when no model was named, so tiers are requested rather than measured. */
-  measured: boolean
-  /** False when the build could not offload — a correct run at ~1% the speed. */
-  gpu: boolean
+export function queueTokenizer(config: TokenizerBuild): Promise<Job> {
+  return queue("tokenize", config, [])
+}
+
+export function queueBenchmark(
+  modelId: string,
+  suite: BenchmarkSuite = "language",
+  steps: FollowUp[] = []
+): Promise<Job> {
+  return queue("benchmark", { model_name: modelId, suite }, steps)
 }
 
 /**
@@ -512,38 +321,37 @@ export async function reorderJob(
   id: string,
   afterId: string | null
 ): Promise<void> {
-  const res = await apiFetch(`/jobs/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ after: afterId }),
-  })
+  const query = afterId ? `?after=${afterId}` : ""
+  const res = await apiFetch(`/runs/${id}${query}`, { method: "PATCH" })
   if (!res.ok)
     throw new Error((await res.text()) || "Failed to reorder the job.")
 }
 
 export async function cancelJob(id: string): Promise<void> {
-  const res = await apiFetch(`/jobs/${id}/cancel`, { method: "POST" })
+  const res = await apiFetch(`/runs/${id}/cancel`, { method: "POST" })
   if (!res.ok)
     throw new Error((await res.text()) || "Failed to cancel the job.")
 }
 
-export async function retryJob(id: string): Promise<Job> {
-  const res = await apiFetch(`/jobs/${id}/retry`, { method: "POST" })
-  if (!res.ok)
-    throw new Error((await res.text()) || "Failed to re-run the job.")
-  return res.json()
+/**
+ * Runs a finished job again. Queued from its stored config rather than by a
+ * server-side clone, so a retry is an ordinary new run and the failed one stays in
+ * the history as what happened.
+ */
+export function retryJob(job: Job): Promise<Job> {
+  if (job.kind === "chat")
+    throw new Error("A chat turn is re-asked, not re-run.")
+  return queue(job.kind, job.config, [])
 }
 
 export async function deleteJob(id: string): Promise<void> {
-  const res = await apiFetch(`/jobs/${id}`, { method: "DELETE" })
+  const res = await apiFetch(`/runs/${id}`, { method: "DELETE" })
   if (!res.ok)
     throw new Error((await res.text()) || "Failed to delete the job.")
 }
 
 export async function setPaused(paused: boolean): Promise<void> {
-  const res = await apiFetch("/jobs/pause", {
-    method: "POST",
-    body: JSON.stringify({ paused }),
-  })
+  const res = await apiFetch(`/runs/pause?paused=${paused}`, { method: "POST" })
   if (!res.ok) throw new Error("Failed to update the queue.")
 }
 
@@ -553,10 +361,7 @@ export const KIND_LABEL: Record<JobKind, string> = {
   train: "Train",
   benchmark: "Benchmark",
   chat: "Chat",
-  autolabel: "Build catalogue",
-  gather: "Gather signals",
-  synth: "Generate SFT data",
-  teach: "Teach locally",
+  tokenize: "Tokenizer",
 }
 
 /**
@@ -574,13 +379,11 @@ export const KIND_CHIP: Record<JobKind, string> = {
   train: "text-kind-train bg-kind-train/14",
   benchmark: "text-kind-benchmark bg-kind-benchmark/14",
   chat: "text-kind-chat bg-kind-chat/14",
-  autolabel: "text-kind-autolabel bg-kind-autolabel/14",
-  gather: "text-kind-gather bg-kind-gather/14",
-  synth: "text-kind-synth bg-kind-synth/14",
-  teach: "text-kind-teach bg-kind-teach/14",
+  tokenize: "text-kind-tokenize bg-kind-tokenize/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
+  waiting: "Waiting",
   queued: "Queued",
   running: "Running",
   cancelling: "Stopping",
@@ -596,7 +399,7 @@ export const STATUS_LABEL: Record<JobStatus, string> = {
  */
 export function throbberMode(
   job: Job
-): "idle" | "training" | "benchmarking" | "generating" {
+): "idle" | "training" | "benchmarking" | "generating" | "tokenizing" {
   if (!isRunning(job)) return "idle"
   switch (job.kind) {
     case "train":
@@ -605,21 +408,12 @@ export function throbberMode(
       return "benchmarking"
     case "chat":
       return "generating"
-    // Auto-labelling is generation with a scorer attached, and generating is what
-    // it spends effectively all of its time doing.
-    case "autolabel":
-      return "generating"
-    // Gathering is generation with a person, rather than a rule, doing the
-    // judging — and generating is all the GPU is doing either way.
-    case "gather":
-      return "generating"
-    // Synthesis is generation too, just somebody else's model doing it. The
-    // throbber says what is happening, not which device it happens on.
-    case "synth":
-      return "generating"
-    // Teaching is the same generation on our own device.
-    case "teach":
-      return "generating"
+    // Its own state now. It used to borrow training's, on the grounds that a
+    // fourth motion would be one nobody could tell apart — but the mark's
+    // vocabulary is colour rather than motion, and cutting each patch in two is
+    // a picture of what a vocabulary build actually does.
+    case "tokenize":
+      return "tokenizing"
   }
 }
 

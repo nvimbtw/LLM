@@ -24,6 +24,7 @@ operation.
 against; passing a different one silently re-labels against the wrong scale.
 """
 
+import paths
 import argparse
 import collections
 import json

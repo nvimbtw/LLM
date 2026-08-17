@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markers as HTML — exploring the tag migration</title>
+<style>
+  :root {
+    --ink: #1a1d21;
+    --muted: #5b6470;
+    --line: #dde3ea;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --accent: #1f4fa3;
+    --good: #1c7c3c;
+    --warn: #9a5b00;
+    --bad: #a3302c;
+    --code-bg: #0f1728;
+    --code-ink: #dbe6f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0 1rem 6rem;
+    background: var(--bg);
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.7rem; margin: 2.2rem 0 .4rem; }
+  h2 { font-size: 1.25rem; margin: 2.8rem 0 .6rem; padding-top: 1.4rem; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.02rem; margin: 1.6rem 0 .4rem; }
+  .subtitle { color: var(--muted); margin: 0 0 1.6rem; font-size: .95rem; }
+  p, li { font-size: .95rem; }
+  code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: .86em;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: .05em .35em;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-size: .82rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; margin: 1rem 0; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: .05em .5em; border-radius: 999px; font-size: .78rem; font-weight: 600; white-space: nowrap; }
+  .pill.ok { background: #e3f2e8; color: var(--good); }
+  .pill.warn { background: #fdf0d8; color: var(--warn); }
+  .pill.no { background: #fbe4e3; color: var(--bad); }
+  .kicker { color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; }
+  .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1.1rem 1.3rem; margin: 1.5rem 0; }
+  .callout { border-left: 3px solid var(--warn); background: #fdf7ec; padding: .7rem 1rem; border-radius: 0 6px 6px 0; margin: 1rem 0; font-size: .92rem; }
+  .callout.good { border-color: var(--good); background: #f0f8f2; }
+  .callout.bad { border-color: var(--bad); background: #fcf1f0; }
+  .dim { color: var(--muted); font-size: .85rem; }
+  .tag { font-size: .8rem; color: var(--muted); }
+  footer { margin-top: 4rem; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  .src { font-size: .8rem; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+  .specimen { border: 1px solid var(--line); border-radius: 8px; padding: 1.4rem 1.6rem; margin: 1rem 0; background: #fdfbf1; color: #545464; }
+  .specimen h4 { font-size: 1.35rem; margin: 0 0 .6rem; letter-spacing: -.02em; color: #2f3140; font-weight: 600; }
+  .specimen p { margin: 0 0 .8rem; font-size: .95rem; line-height: 1.65; }
+  .specimen p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<main>
+
+<div class="kicker">Exploration · read-only pass over engine/, frontend/, scripts/, data · no code changed</div>
+<h1>Markers as HTML tags</h1>
+<p class="subtitle">What the four-part proposal actually costs, what it buys, where it breaks, and the one variant of it I would build instead.</p>
+
+<div class="summary">
+  <p style="margin-top:0"><strong>Short version.</strong> The instinct is right and the strongest argument for it is already written down in this repo, in a comment nobody wrote for this purpose. But <em>literal</em> HTML tags are the one spelling that cannot work here, for a reason that shows up as a hard number: <code>&lt;/a&gt;</code>, <code>&lt;p&gt;</code>, <code>&lt;code&gt;</code> and <code>&lt;li&gt;</code> already appear <strong>7,600 times in a 100&nbsp;MB sample of the pretrain corpus</strong>, and every one of them would silently become a reserved marker id.</p>
+  <p>What works is HTML <em>shape</em> without HTML <em>names</em>: <code>&lt;m-p&gt;…&lt;/m-p&gt;</code>. It is valid HTML5 (custom elements), it collides with nothing, it is styleable by element name — which means proposal&nbsp;4 disappears rather than getting built — and its closer is <code>&lt;/m-p&gt;</code>, which is precisely the spelling <code>scripts/generate_sft_llm.py:373</code> records teacher models reaching for no matter what the prompt says.</p>
+  <p style="margin-bottom:0">Proposal 3 as written (drop to the opener) conflicts with streaming and, if it is a step toward <code>innerHTML</code>, opens an XSS hole the current parser closes structurally. There is a version of it that is right; it belongs in the engine, over ids, not in the frontend, over text.</p>
+</div>
+
+<h2>1. The four proposals, scored</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Proposal</th><th>Verdict</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>1.</strong> Migrate special tokens to HTML tags</td>
+      <td><span class="pill warn">right idea, wrong spelling</span></td>
+      <td>The migration is far cheaper than it looks (§2) and buys a real thing (§3). Literal HTML names collide with the corpus (§4) and only cover 27 of 41 slots (§5).</td>
+    </tr>
+    <tr>
+      <td><strong>2.</strong> Rewrite the training data</td>
+      <td><span class="pill ok">cheap and precedented</span></td>
+      <td>One regex pass over 777&nbsp;MB of SFT JSONL plus the eval gold and one trace fixture. <code>scripts/migrate_sft_bare_tags.py</code> is the same job, already written, dry-run flag and all.</td>
+    </tr>
+    <tr>
+      <td><strong>3.</strong> Validate instead of parse; drop unclosed spans</td>
+      <td><span class="pill no">breaks streaming; unsafe if it means innerHTML</span></td>
+      <td>Validation <em>is</em> parsing. Mid-stream every open tag is unclosed, so "drop to the opener" deletes the reply as it arrives. And the grammar already guarantees well-formedness at serve time (§6).</td>
+    </tr>
+    <tr>
+      <td><strong>4.</strong> Append <code>class="model-*"</code></td>
+      <td><span class="pill warn">solves a problem you can delete instead</span></td>
+      <td>A per-node class only earns its keep if you are building HTML strings. Under the recommended spelling you style <code>m-h1 { }</code> directly and write no classes at all (§7).</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>2. The migration is much cheaper than it looks — and it does not invalidate a single trained model</h2>
+
+<p>This is the part I expected to be the blocker and it is not. Three findings.</p>
+
+<h3>Marker ids are positional, so a rename is a pure relabel</h3>
+
+<p><code>special.py:9-11</code> is explicit that order fixes each marker's id, and <code>SPECIAL_BLOCK = 64</code> pins the block size independently of how many markers are used. A tokenizer trained with <code>"&lt;m-p&gt;"</code> in slot 1 gives it the same id 1 that <code>"&lt;|par|&gt;"</code> had. <strong>An embedding row trained to mean "paragraph opens here" still means that.</strong> Renaming in place — never reordering — is a change of spelling only, and the weights are untouched by it.</p>
+
+<h3>Existing checkpoints keep working, because each one owns its tokenizer</h3>
+
+<p><code>storage.py:10</code> — <code>artifacts/models/&lt;id&gt;/</code> holds "weights, a copy of the tokenizer, meta.json". An already-trained model loads its own copy and keeps emitting the old spellings forever. Nothing on disk breaks.</p>
+
+<div class="callout">
+  <p style="margin:0"><strong>The one real wrinkle.</strong> That cuts both ways: an old model emits <code>&lt;|par|&gt;</code>, and a frontend parser rewritten for the new spelling renders it as visible garbage text. You need either a two-grammar parser (~15 lines: try the new tag shape, fall back to the old one) or an accepted break for pre-migration models. I would take the 15 lines — the model list is the project's history and a review that renders as raw markers is worse than useless.</p>
+</div>
+
+<h3>What does have to be rebuilt, and why it is hours not days</h3>
+
+<p><code>vocab.py:114</code> records <code>special_tokens_sha()</code> in every build, and <code>matches()</code> at <code>:193</code> compares against it, so changing the list fails closed into a tokenizer rebuild. The rebuild changes <code>tokenizer.json</code>, so <code>file_fingerprint</code> changes, so <code>corpus_key</code> changes, so <strong>every packed corpus re-packs.</strong> That cascade is the correct behaviour and it is the whole point of the keying — but note what it costs and what it does <em>not</em>:</p>
+
+<ul>
+  <li>The re-pack is CPU and disk, not quality. Ids come out the same for the same text.</li>
+  <li>The merge table does shift slightly. The BPE trainer is not given the corpus with markers excised — literal <code>&lt;|par|&gt;</code> bytes in the seeded conversations under <code>Synthetic/</code> contribute to merge learning today, and different literal bytes will contribute tomorrow. This is a handful of merges out of 8,192, not a different vocabulary.</li>
+  <li><code>engine/tests/fixtures/trace.json</code> must be re-recorded (<code>python -m tests.fixtures.record</code>), and per <code>CLAUDE.md</code> that diff is the evidence of what moved. Here it moves for a benign reason and the diff should be reviewed as such.</li>
+</ul>
+
+<h3>Code surface: 12 files</h3>
+
+<p>Grepping the whole repo for marker literals outside data returns exactly twelve files, which is a good sign about how well centralised this already is:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>File</th><th>What changes</th><th class="num">≈ lines</th></tr></thead>
+  <tbody>
+    <tr><td><code>engine/llm/corpus/special.py</code></td><td>the list, in place, order preserved</td><td class="num">45</td></tr>
+    <tr><td><code>engine/llm/chat/markup.py</code></td><td><code>PAIRS</code>, <code>STANDALONE</code></td><td class="num">20</td></tr>
+    <tr><td><code>engine/llm/chat/template.py</code></td><td>four scaffold constants</td><td class="num">6</td></tr>
+    <tr><td><code>engine/llm/eval/markup.py</code></td><td><code>SCAFFOLD_MARKERS</code></td><td class="num">4</td></tr>
+    <tr><td><code>engine/llm/eval/surface.py</code></td><td>the word-extraction comment and its filter</td><td class="num">5</td></tr>
+    <tr><td><code>frontend/lib/message-parser.ts</code></td><td><code>TAG_RE</code>, <code>TOKEN_NAME_MAP</code> mostly deleted, thinking regexes</td><td class="num">45</td></tr>
+    <tr><td><code>frontend/components/markup/markup-showcase.tsx</code></td><td>fixture conversation</td><td class="num">40</td></tr>
+    <tr><td><code>frontend/lib/grammar-glossary.ts</code></td><td>names</td><td class="num">20</td></tr>
+    <tr><td><code>scripts/</code> ×5 (<code>generate_sft_llm</code>, <code>generate_synthetic</code>, <code>chat_markup</code>, <code>write_gold_general</code>, <code>prepare_code</code>)</td><td>prompt vocabulary blocks; <code>repair_markup</code> can be <em>deleted</em> (§3)</td><td class="num">120</td></tr>
+    <tr><td><code>scripts/migrate_markup_to_tags.py</code> <span class="tag">new</span></td><td>the data pass, modelled on <code>migrate_sft_bare_tags.py</code></td><td class="num">90</td></tr>
+    <tr><td><code>docs/decisions/0003</code>, showcase copy</td><td>prose</td><td class="num">30</td></tr>
+    <tr><th colspan="2">Total</th><th class="num">≈ 425</th></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="dim">Plus a tokenizer rebuild and one corpus re-pack per active key. Against a 51&nbsp;GB <code>engine/data/input</code>, budget an evening, not a weekend.</p>
+
+<h2>3. The argument <em>for</em> this is already in the repo, written for another reason</h2>
+
+<p>This is the finding that changed my mind about the whole idea. From <code>scripts/generate_sft_llm.py:373-377</code>:</p>
+
+<pre><code># The closer this vocabulary uses is `&lt;|/par|&gt;`. Models reliably reach for the
+# XML-shaped `&lt;/|par|&gt;` instead — it is the form every other markup language uses,
+# and no amount of showing the right one in the prompt fully suppresses it. The
+# rewrite is unambiguous and lossless, so repairing beats discarding an otherwise
+# good conversation over a transposed slash.</code></pre>
+
+<p>There is a whole repair stage in the SFT generator because the marker grammar fights the teacher model's priors. And the prompt at <code>:281-282</code> spends two lines pleading:</p>
+
+<pre><code>Closing tags are spelled &lt;|/par|&gt; — the slash goes INSIDE, after the bar.
+&lt;/|par|&gt; is wrong.</code></pre>
+
+<div class="callout good">
+  <p style="margin:0"><strong>Move to an XML-shaped closer and this entire class of problem stops existing.</strong> <code>BAD_CLOSER_RE</code>, <code>repair_markup</code>, <code>repair_conversation</code> and two lines of prompt all get deleted. Teacher compliance on the markup vocabulary goes up for free, which means better SFT data, which is the actual bottleneck on a 30M-parameter model's reply quality. This is a larger win than the frontend cleanliness that motivated the proposal.</p>
+</div>
+
+<p>Everything below is about preserving <em>that</em> benefit while not paying for it with the corpus collision.</p>
+
+<h2>4. Why literal HTML names cannot be the spelling</h2>
+
+<p>HuggingFace <code>tokenizers</code> matches added tokens against raw text before pre-tokenization. It does not care whether a match "looks like" markup in context. So the moment <code>"&lt;p&gt;"</code> is a special token, <strong>every literal <code>&lt;p&gt;</code> anywhere in the pretrain corpus becomes marker id&nbsp;1</strong> — inside a code file, inside a StackExchange answer about HTML, inside a tutorial.</p>
+
+<p>I measured it. 200 files per dataset, counting only bare tags (<code>&lt;p&gt;</code>, <code>&lt;/a&gt;</code>, … — the attributed forms like <code>&lt;a href=…&gt;</code> would <em>not</em> match and are excluded):</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Dataset</th><th class="num">sample</th><th class="num">bare HTML tags</th><th class="num">per MB</th></tr></thead>
+  <tbody>
+    <tr><td>Code</td><td class="num">54 MB</td><td class="num">6,469</td><td class="num">120</td></tr>
+    <tr><td>StackExchange</td><td class="num">50 MB</td><td class="num">1,137</td><td class="num">23</td></tr>
+    <tr><td>FineWeb</td><td class="num">52 MB</td><td class="num">66</td><td class="num">1.3</td></tr>
+    <tr><td>WebText</td><td class="num">50 MB</td><td class="num">29</td><td class="num">0.6</td></tr>
+    <tr><td>Books</td><td class="num">118 MB</td><td class="num">0</td><td class="num">0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Ranked, over Code + StackExchange: <code>&lt;/a&gt;</code> 1,331 · <code>&lt;/p&gt;</code> 1,103 · <code>&lt;p&gt;</code> 931 · <code>&lt;/li&gt;</code> 593 · <code>&lt;/code&gt;</code> 517 · <code>&lt;li&gt;</code> 477 · <code>&lt;code&gt;</code> 450 · <code>&lt;/ul&gt;</code> 235 · <code>&lt;strong&gt;</code> 196 · <code>&lt;h1&gt;</code> 109. The four most common are exactly the four most load-bearing markers in the grammar.</p>
+
+<p>Three consequences, in order of how much they should worry you:</p>
+
+<ol>
+  <li><strong>Unbalanced markers land in the pretrain stream.</strong> Real-world HTML in a code file is fragmentary — a snippet showing <code>&lt;/div&gt;&lt;/p&gt;</code> with no opener. The model would be pretrained on thousands of structurally illegal marker sequences, which is the precise failure <code>docs/decisions/0003</code> and <code>llm/chat/markup.py</code> exist to stamp out. You would be teaching the disease and treating it at serving time.</li>
+  <li><strong>The model can never talk about HTML.</strong> "How do I write a heading in HTML?" has no representable answer: the reply cannot contain the characters <code>&lt;h1&gt;</code> as prose, because those characters <em>are</em> the heading marker. Given <code>Code</code> and <code>StackExchange</code> are two of nine pretrain datasets, this is a question the model will be asked.</li>
+  <li><strong>The eval numbers move for a fake reason.</strong> <code>eval/markup.py</code> scores <code>false_marker_rate</code> — how often the model wants a marker where prose belongs. Every HTML-shaped token absorbed from Code inflates that. The markup suite would report a regression caused by the rename.</li>
+</ol>
+
+<p class="dim">Stripping HTML out of the corpus at prepare time is the obvious counter, and I would not: it means re-preparing 51&nbsp;GB, and it deletes the content that teaches the model what HTML <em>is</em>.</p>
+
+<h2>5. Only 27 of 41 slots have an honest HTML name</h2>
+
+<p>The vocabulary splits cleanly into markup the frontend renders, and control the frontend never sees. <code>markup-showcase.tsx:22-24</code> already says so — the scaffold "delimits turns in the chat template and never reaches the renderer, so there is nothing to preview."</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th class="num">id</th><th>today</th><th>HTML analogue</th><th>recommended</th><th>note</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1/2</td><td><code>&lt;|par|&gt;</code></td><td><code>&lt;p&gt;</code></td><td><code>&lt;m-p&gt;</code></td><td></td></tr>
+    <tr><td class="num">3/4</td><td><code>&lt;|code|&gt;</code></td><td><code>&lt;code&gt;</code></td><td><code>&lt;m-code&gt;</code></td><td></td></tr>
+    <tr><td class="num">11/12</td><td><code>&lt;|title|&gt;</code></td><td><code>&lt;h1&gt;</code></td><td><code>&lt;m-h1&gt;</code></td><td>renders as <code>h2</code> today — a reply is not a page</td></tr>
+    <tr><td class="num">13/14</td><td><code>&lt;|heading|&gt;</code></td><td><code>&lt;h2&gt;</code></td><td><code>&lt;m-h2&gt;</code></td><td></td></tr>
+    <tr><td class="num">15/16</td><td><code>&lt;|subheading|&gt;</code></td><td><code>&lt;h3&gt;</code></td><td><code>&lt;m-h3&gt;</code></td><td></td></tr>
+    <tr><td class="num">17/18</td><td><code>&lt;|codeblock|&gt;</code></td><td><code>&lt;pre&gt;</code></td><td><code>&lt;m-pre&gt;</code></td><td>can't be <code>&lt;pre&gt;&lt;code&gt;</code> — that is two tokens</td></tr>
+    <tr><td class="num">19/20</td><td><code>&lt;|link|&gt;</code></td><td><code>&lt;a&gt;</code></td><td><code>&lt;m-a&gt;</code></td><td>still bare; <code>href</code> byte-shreds (see <code>migrate_sft_bare_tags.py</code>)</td></tr>
+    <tr><td class="num">21/22</td><td><code>&lt;|list|&gt;</code></td><td><code>&lt;ul&gt;</code></td><td><code>&lt;m-ul&gt;</code></td><td></td></tr>
+    <tr><td class="num">23/24</td><td><code>&lt;|item|&gt;</code></td><td><code>&lt;li&gt;</code></td><td><code>&lt;m-li&gt;</code></td><td></td></tr>
+    <tr><td class="num">25/26</td><td><code>&lt;|quote|&gt;</code></td><td><code>&lt;blockquote&gt;</code></td><td><code>&lt;m-quote&gt;</code></td><td></td></tr>
+    <tr><td class="num">27</td><td><code>&lt;|divider|&gt;</code></td><td><code>&lt;hr&gt;</code></td><td><code>&lt;m-hr&gt;</code></td><td>void, as today</td></tr>
+    <tr><td class="num">28/29</td><td><code>&lt;|italic|&gt;</code></td><td><code>&lt;em&gt;</code></td><td><code>&lt;m-em&gt;</code></td><td></td></tr>
+    <tr><td class="num">30/31</td><td><code>&lt;|bold|&gt;</code></td><td><code>&lt;strong&gt;</code></td><td><code>&lt;m-strong&gt;</code></td><td>note: <code>&lt;bold&gt;</code> in the proposal is not an HTML element</td></tr>
+    <tr><td class="num">34/35</td><td><code>&lt;|warn|&gt;</code></td><td><code>&lt;aside&gt;</code> <span class="pill warn">loose</span></td><td><code>&lt;m-warn&gt;</code></td><td>no HTML element means "warning"</td></tr>
+    <tr><td colspan="5" style="background:var(--panel)"><strong>No honest HTML analogue — keep as control markers</strong></td></tr>
+    <tr><td class="num">0</td><td><code>&lt;|endoftext|&gt;</code></td><td colspan="3" class="dim">a corpus separator, not markup</td></tr>
+    <tr><td class="num">5–10</td><td><code>&lt;|user|&gt;</code> <code>&lt;|assistant|&gt;</code> <code>&lt;|system|&gt;</code></td><td colspan="3" class="dim">turn scaffold — and see §6, making these HTML-shaped is actively dangerous</td></tr>
+    <tr><td class="num">32/33</td><td><code>&lt;|thinking|&gt;</code></td><td colspan="3" class="dim">never rendered as itself; the UI shows a status label</td></tr>
+    <tr><td class="num">36/37</td><td><code>&lt;|reply|&gt;</code></td><td colspan="3" class="dim">content is a message id, not prose</td></tr>
+    <tr><td class="num">38–40</td><td><code>&lt;|think:low|&gt;</code>…</td><td colspan="3" class="dim">unpaired, input-only, never emitted</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>A free win while the block is open:</strong> the frontend renderer already handles <code>"ordered list"</code> (<code>rich-message.tsx:187</code>) because <code>user-parser.ts</code> produces it from <code>1.</code> — but the model has no token for it and can never emit one. Twenty-three reserved slots are free. Adding <code>&lt;m-ol&gt;</code>/<code>&lt;/m-ol&gt;</code> in this migration costs two slots and closes a gap that has been open the whole time.</p>
+
+<h2>6. Proposal 3: validate rather than parse</h2>
+
+<p>Three separate problems live inside this one, and they want different answers.</p>
+
+<h3>Validation is parsing</h3>
+
+<p>To know that a tag is unclosed you must track a stack of open tags — which is <code>parseMessage</code>. <code>message-parser.ts</code> is 167 lines including comments and thinking-block handling; the tree walk itself is about 40. There is no cheaper artifact to produce than the tree it already produces.</p>
+
+<h3>"Drop to the opener" deletes the reply while it streams</h3>
+
+<p>During streaming, every block the model is currently inside is unclosed <em>by definition</em>. A rule that drops back to the opener would make each paragraph vanish the instant it began and reappear only at <code>&lt;/m-p&gt;</code> — the opposite of the word-by-word fade in <code>rich-message.tsx:95</code>. Any drop rule has to be gated on the message being complete, and the current renderer already does the right thing by treating a trailing open element as open.</p>
+
+<h3>And the case is nearly empty anyway</h3>
+
+<p><code>llm/chat/markup.py</code> masks illegal markers during decoding, and <code>closers()</code> at <code>:222</code> exists precisely so that a reply truncated by the token cap still drains its stack — "so a truncated reply is still well-formed markup rather than a half-open block the frontend has to guess at". <strong>Served replies are already guaranteed balanced.</strong> Unbalanced markup reaches the frontend only from pre-grammar stored messages and from unconstrained eval generation. That is worth handling defensively; it is not worth redesigning the renderer around.</p>
+
+<div class="callout bad">
+  <p style="margin:0 0 .5rem"><strong>If "validate, don't parse" is a step toward <code>innerHTML</code>, stop.</strong> Today an element exists only when a <em>reserved token id</em> was emitted — the model physically cannot produce an element the renderer did not sanction, so injection is structurally impossible. Setting <code>innerHTML</code> from model text moves the boundary to string matching, and the model can emit any bytes it likes as prose, including <code>&lt;img src=x onerror=…&gt;</code> learned from the Code corpus. React's escaping is what stands between you and that right now.</p>
+  <p style="margin:0">Worse, the same text path carries <em>user</em> turns: <code>template.py:132</code> interpolates user text into the prompt with no escaping, so a user who types the scaffold spelling gets it tokenized as the real marker. That hole exists today with <code>&lt;|/user|&gt;</code>, which nobody types by accident. <strong>Rename the scaffold to <code>&lt;/user&gt;</code> and it becomes something people paste by accident</strong> — which is the second reason the scaffold markers should keep their current spelling.</p>
+</div>
+
+<h3>What I would do instead</h3>
+
+<p>Keep the tree. Move the <em>validation</em> to where the ids live:</p>
+
+<ul>
+  <li><strong>Engine, at generation end.</strong> <code>ids_are_balanced(ids, rules)</code> already exists in <code>eval/markup.py:43</code> and works over ids — no scanning, no ambiguity, no decoder round-trip. Run it on the final reply and record the boolean on the message. It costs one pass over a few hundred ints and gives you a real per-message quality signal in the store.</li>
+  <li><strong>Frontend, on complete messages only.</strong> ~10 lines in <code>parseMessage</code>: mark elements the stack never closed, and let <code>rich-message.tsx</code> decide — drop, or render with a muted edge. Rendering it visibly is more useful than dropping it during SFT iteration, and it is one prop either way.</li>
+</ul>
+
+<h2>7. Proposal 4, and the design opening it creates</h2>
+
+<h3>The classes cancel themselves out</h3>
+
+<p><code>class="model-h1"</code> is only necessary if you are handing a browser a string. Custom element names are selectable directly, so under the recommended spelling the stylesheet is:</p>
+
+<pre><code>.reply m-h1 { … }
+.reply m-p  { … }</code></pre>
+
+<p>…and no class is ever appended. If you go the other way and keep mapping to semantic elements in React — which you should, for accessibility, since a screen reader knows what <code>&lt;strong&gt;</code> means and knows nothing about <code>&lt;m-strong&gt;</code> — then a scoped <code>.reply strong { }</code> does the same job. Either way proposal 4 is work you can decline.</p>
+
+<div class="callout">
+  <p style="margin:0">Be aware of what does <em>not</em> get simpler: the mapping table survives every version of this. Today it maps token name → node type. Tomorrow it maps tag → semantic element (for a11y) or tag → styles. <code>TOKEN_NAME_MAP</code> shrinks from six entries to zero, which is real; the renderer's <code>switch</code> at <code>rich-message.tsx:152</code> does not go away, because <code>code block</code> needs a copy button and <code>reply</code> needs id resolution. The cleanliness win here is genuine but smaller than it looks from the outside.</p>
+</div>
+
+<h3>The reply surface, editorially</h3>
+
+<p>The type scale in <code>globals.css:61-98</code> already commits to the position — "a page whose largest text is 1.5× its smallest looks like a form no matter what face it is set in" — but the reply renderer does not use it. It sizes in <code>em</code> off the caller (<code>1.5em</code>, <code>1.25em</code>, <code>1.08em</code>) and reaches for shadcn tokens that belong to the app chrome. That is why replies read as UI rather than as reading. Four concrete moves, in the order I would make them:</p>
+
+<ol>
+  <li><strong>Give the reply a measure.</strong> Nothing in <code>RichContent</code> constrains line length. <code>max-width: 68ch</code> on the block is the single largest legibility gain available and costs one declaration.</li>
+  <li><strong>Let the vertical rhythm come from the elements, not from <code>space-y-3.5</code>.</strong> A uniform gap between every child is why a heading, a list and a paragraph currently sit at equal distance. The renderer half-knows this — the heading already carries <code>mt-5 -mb-1</code> with the comment "a heading belongs to what follows it" — but it is fighting the parent's uniform stack to say it.</li>
+  <li><strong>Retire the colour on inline code.</strong> <code>bg-chart-4/10 … text-chart-4</code> at <code>rich-message.tsx:176</code> pulls a chart accent into prose; two words of code in a paragraph become the loudest thing on screen. Editorial minimalism here is a face change and a hairline, not a hue.</li>
+  <li><strong>Let the code block lose its chrome.</strong> Border + tinted header bar + language label + copy button is four devices for one affordance. The label matters only when a language is known; the copy button can appear on hover.</li>
+</ol>
+
+<p>Sketched against the warm-paper palette (<code>#f7f4e4</code> / <code>#545464</code>), the target is roughly:</p>
+
+<div class="specimen">
+  <h4>Special tokens in the tokenizer</h4>
+  <p>Each protected marker owns a single reserved id, so the assistant marker is one embedding rather than a byte triple the model has to reassemble. That is the whole reason they are worth reserving.</p>
+  <p>Measure, a real scale, and one weight of emphasis. Nothing here is a new component — it is the same four elements the renderer already emits, set for reading instead of for a panel.</p>
+</div>
+
+<p class="dim">This part is independent of proposals 1–3 and could ship first. It is the fastest visible improvement in the whole document and it needs no retraining at all.</p>
+
+<h2>8. Recommendation</h2>
+
+<div class="summary">
+  <p style="margin-top:0"><strong>Do the migration, with <code>&lt;m-*&gt;</code> spellings, and keep the scaffold as it is.</strong></p>
+  <ol style="margin-bottom:0">
+    <li><strong>Markup markers → custom elements</strong>, renamed in place so ids are preserved: <code>&lt;m-p&gt;</code>, <code>&lt;m-h1&gt;</code>, <code>&lt;m-strong&gt;</code>, <code>&lt;m-pre&gt;</code>, … Valid HTML5, zero corpus collision, and the closer is the XML-shaped <code>&lt;/m-p&gt;</code> that teacher models want to write anyway.</li>
+    <li><strong>Scaffold and control keep <code>&lt;|…|&gt;</code></strong> — <code>&lt;|user|&gt;</code>, <code>&lt;|assistant|&gt;</code>, <code>&lt;|thinking|&gt;</code>, <code>&lt;|think:med|&gt;</code>, <code>&lt;|endoftext|&gt;</code>. They are not markup, they have no HTML name, and a spelling nobody types by accident is a feature at the prompt boundary.</li>
+    <li><strong>Add <code>&lt;m-ol&gt;</code></strong> in a reserved slot while the block is open.</li>
+    <li><strong>Delete <code>repair_markup</code></strong> and the two lines of prompt that fight it. Measure teacher compliance before and after — I expect this to be the biggest single win.</li>
+    <li><strong>Validate over ids in the engine</strong>, record the boolean, and keep the frontend tree. Handle unclosed spans only on complete messages.</li>
+    <li><strong>Skip the classes.</strong> Style by element name or by scoped selector.</li>
+    <li><strong>Ship §7 first</strong>, on its own, before any of the above.</li>
+  </ol>
+</div>
+
+<p><strong>What I would want to see before committing:</strong> one dry run of the data migration reporting how many assistant turns change and how many contain marker text that <em>should not</em> be rewritten; and a re-recorded <code>trace.json</code> whose diff is confined to token ids at marker positions. If either surprises you, that is the signal to stop.</p>
+
+<h2>9. Honest counter-argument</h2>
+
+<p>The case for changing nothing: the current markers are collision-proof by construction, the grammar constraint already guarantees well-formed output, and <code>message-parser.ts</code> is 167 lines that work. The migration costs a tokenizer rebuild, a full re-pack, a re-recorded trace, and a compatibility branch for every existing model — to make the frontend about 60 lines simpler.</p>
+
+<p>On the frontend-cleanliness argument alone, that trade is not obviously worth it. The reason I still recommend it is §3: the teacher-compliance win is a data-quality improvement at the stage where this project is actually bottlenecked, and it is the one benefit that cannot be had any other way.</p>
+
+<footer>
+  <p>Read for this pass: <span class="src">engine/llm/corpus/{special,vocab,pack,bpe}.py · engine/llm/chat/{markup,template}.py · engine/llm/eval/markup.py · engine/llm/storage.py · frontend/lib/{message-parser,user-parser}.ts · frontend/components/chat/rich-message.tsx · frontend/components/markup/markup-showcase.tsx · frontend/app/globals.css · scripts/{generate_sft_llm,migrate_sft_bare_tags}.py</span></p>
+  <p>Tag-collision counts measured over 200 files per dataset under <span class="src">engine/data/input/</span>, bare tags only. Marker counts from <span class="src">backend/data/raw/sft/smoltalk-000.jsonl</span> (25 of the SFT files carry markup; 777 MB total).</p>
+  <p>Nothing was changed. This is an exploration for a decision.</p>
+</footer>
+
+</main>
+</body>
+</html>

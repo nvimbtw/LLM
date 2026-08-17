@@ -7,6 +7,7 @@ import { useChats } from "@/components/chat/chats-provider"
 import { useAuth } from "@/hooks/use-auth"
 import { useProfile } from "@/hooks/use-profile"
 import { useUsage } from "@/hooks/use-usage"
+import { LoadError } from "@/components/ui/error-state"
 import { ChangePasswordForm } from "./change-password-form"
 import { DeleteAccount } from "./delete-account"
 
@@ -36,9 +37,7 @@ export function ProfileView() {
 
   if (error || !user) {
     return (
-      <p className="text-sm text-destructive">
-        {error ?? "Unable to load your profile."}
-      </p>
+      <LoadError title={error ?? "Your profile didn't load."} />
     )
   }
 

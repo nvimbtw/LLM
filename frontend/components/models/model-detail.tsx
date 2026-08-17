@@ -24,6 +24,7 @@ import { toast } from "@/components/ui/toast"
 import { useAuth } from "@/hooks/use-auth"
 import { useModel } from "@/hooks/use-model"
 import { useModels } from "@/hooks/use-models"
+import { LoadError } from "@/components/ui/error-state"
 import { ModelBenchmarks } from "./model-benchmarks"
 import { ModelSizeMeter } from "./model-glyph"
 import { ModelEditSheet } from "./model-edit-sheet"
@@ -209,9 +210,7 @@ export function ModelDetail({ modelId }: { modelId: string }) {
     return (
       <>
         <BackLink />
-        <p className="text-sm text-destructive">
-          Failed to load this model. Please try again.
-        </p>
+        <LoadError title="This model didn't load." />
       </>
     )
   }

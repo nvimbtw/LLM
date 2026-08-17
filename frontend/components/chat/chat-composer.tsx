@@ -60,10 +60,19 @@ export function ChatComposer({
   const [isCommand, setIsCommand] = React.useState(false)
   const { settings, setSetting, setCommandOpen } = useSettings()
 
+  // Three latest-value boxes for Tiptap's `handleKeyDown`, which is configured
+  // once and would otherwise hold the first render's closures forever. They are
+  // written from effects, not during render: a render can be thrown away or
+  // replayed, and a ref written during one is a mutation that escapes it.
+  // Reading them post-commit is safe here because `handleKeyDown` only ever runs
+  // from a real keystroke.
   const onSendRef = React.useRef(onSend)
-  onSendRef.current = onSend
   const submitRef = React.useRef<() => void>(() => {})
   const editorRef = React.useRef<ReturnType<typeof useEditor>>(null)
+
+  React.useEffect(() => {
+    onSendRef.current = onSend
+  })
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -112,7 +121,10 @@ export function ChatComposer({
       setIsCommand(matchStandaloneCommand(editor.getText()) !== null)
     },
   })
-  editorRef.current = editor
+
+  React.useEffect(() => {
+    editorRef.current = editor
+  })
 
   const submit = React.useCallback(() => {
     if (!editor || editor.isEmpty || disabled) return
@@ -139,7 +151,10 @@ export function ChatComposer({
     setIsEmpty(true)
     onSendRef.current(markdown, model, budget)
   }, [editor, disabled, model, budget, settings, setSetting, setCommandOpen])
-  submitRef.current = submit
+
+  React.useEffect(() => {
+    submitRef.current = submit
+  })
 
   React.useEffect(() => {
     editor?.setEditable(!disabled)

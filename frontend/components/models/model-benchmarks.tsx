@@ -11,9 +11,10 @@ import {
   formatPercent,
   isLanguageReport,
   type BenchmarkRun,
-  type BenchmarkReport,
+  type LanguageReport,
 } from "@/lib/benchmark"
 import { cn } from "@/lib/utils"
+import { LoadError } from "@/components/ui/error-state"
 
 /**
  * How the model scored, under the specs that say what it is.
@@ -39,7 +40,7 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   if (error) {
     return (
       <Section>
-        <p className="px-5 py-6 text-sm text-destructive">{error}</p>
+        <LoadError title={error} className="m-5" />
       </Section>
     )
   }
@@ -104,21 +105,21 @@ function Section({
 // The composite beside the three stage headlines — the same divided-ledger figure
 // the hero strip and /benchmark's score card both use, so a score reads the same
 // wherever it is met.
-function Headlines({ report }: { report: BenchmarkReport }) {
-  const { corpus, grammar, generation } = report
+function Headlines({ report }: { report: LanguageReport }) {
+  const { corpus, surface, score } = report
 
   return (
     <dl className="grid grid-cols-2 gap-px bg-border/60 sm:grid-cols-4">
       <Figure
         label="Eval score"
-        value={formatNumber(report.score, 1)}
+        value={formatNumber(score.score, 1)}
         hint="out of 100"
         lead
       />
       <Figure
-        label="Grammar"
-        value={formatPercent(grammar.accuracy)}
-        hint={`${grammar.pairs} pairs · 50% is chance`}
+        label="Floor progress"
+        value={formatPercent(corpus?.floor_progress ?? null)}
+        hint={corpus ? "of the n-gram floor" : "No reference corpus"}
       />
       <Figure
         label="Bits / byte"
@@ -131,10 +132,10 @@ function Headlines({ report }: { report: BenchmarkReport }) {
       />
       <Figure
         label="Real words"
-        value={formatPercent(generation.real_word_rate)}
+        value={formatPercent(surface?.real_word_rate ?? null)}
         hint={
-          generation.words_scored > 0
-            ? `${generation.words_scored} words generated`
+          surface && surface.words > 0
+            ? `${surface.words} words generated`
             : "Nothing generated"
         }
       />

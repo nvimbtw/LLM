@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { Check } from "lucide-react"
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 
 import {
@@ -9,25 +10,17 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-import { Progress } from "@/components/ui/progress"
-import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
 import {
   axisProps,
   batchRamp,
   gridProps,
   lossEpochColor,
   lossStageColor,
-  VOCAB_COLOR,
   yAxisProps,
 } from "@/components/training/chart-theme"
-import {
-  Figure,
-  FigurePlaceholder,
-  StatRun,
-  type Stat,
-} from "@/components/training/stat-run"
+import { Figure, FigurePlaceholder } from "@/components/training/stat-run"
 import { cn } from "@/lib/utils"
-import type { BatchPoint, LossPoint, VocabPoint } from "@/hooks/use-training"
+import type { BatchPoint, LossPoint } from "@/hooks/use-training"
 import type {
   CurriculumStage,
   RunPhase,
@@ -35,22 +28,9 @@ import type {
   TrainStats,
 } from "@/lib/training"
 
-function compact(n: number | undefined): string {
+function compact(n: number | undefined | null): string {
   if (n == null) return "—"
   return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
-}
-
-function formatEta(secs: number | undefined): string {
-  if (secs == null || !Number.isFinite(secs)) return "—"
-  const s = Math.max(0, Math.round(secs))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
-}
-
-function loss4(v: number | undefined): string {
-  return v != null && Number.isFinite(v) ? v.toFixed(4) : "—"
 }
 
 const epochKey = (epoch: number) => `e${epoch}`
@@ -61,114 +41,125 @@ const batchChartConfig = {
   min: { label: "Min", color: batchRamp.min },
 } satisfies ChartConfig
 
-const vocabChartConfig = {
-  vocab: { label: "Vocab size", color: VOCAB_COLOR },
-} satisfies ChartConfig
+// One line of the phase-1 figure: what the build step produced, once it has.
+function BuildStep({
+  label,
+  value,
+  state,
+}: {
+  label: string
+  value: string
+  state: "done" | "active" | "todo"
+}) {
+  return (
+    <li className="flex items-baseline justify-between gap-4 border-b border-border/40 py-2.5 last:border-b-0">
+      <span className="flex min-w-0 items-center gap-2">
+        <span
+          aria-hidden
+          className={cn(
+            "flex size-4 shrink-0 items-center justify-center rounded-full",
+            state === "done" && "bg-chart-2/20 text-chart-2",
+            state === "active" &&
+              "animate-pulse bg-primary/30 ring-1 ring-primary/50",
+            state === "todo" && "bg-muted"
+          )}
+        >
+          {state === "done" && <Check className="size-2.5" />}
+        </span>
+        <span
+          className={cn(
+            "truncate text-sm",
+            state === "todo" ? "text-muted-foreground" : "text-foreground"
+          )}
+        >
+          {label}
+        </span>
+      </span>
+      <span className="shrink-0 text-sm text-muted-foreground tabular-nums">
+        {value}
+      </span>
+    </li>
+  )
+}
 
-// The curriculum figure for the hero: which stage we're on plus a segmented
-// progress bar — one segment per stage, sized by its epoch weight, filled by that
-// stage's own progress. Completed stages read full, the current one fills live,
-// upcoming ones sit empty; it doubles as a preview during tokenization (all empty)
-// and reads "all full" once the run is done. Progress is derived from the global
-// epoch position (monotonic across stages), so it stays smooth even though each
-// stage reports its own chunk counts.
-function CurriculumProgress({
-  stages,
-  train,
+/**
+ * Phase 1, as the steps it actually consists of.
+ *
+ * This slot used to plot vocabulary against merges, which is a straight line by
+ * construction — the vocabulary grows by exactly one entry per merge learned —
+ * drawn from the one sample the tokenizer can report, since the library it wraps
+ * has no callback to sample during training. A checklist says what that chart
+ * was pretending to: which step the build is on, and what each one produced.
+ */
+function PhaseOneFigure({
+  isSft,
+  tokenize,
   done,
 }: {
-  stages: CurriculumStage[]
-  train: Partial<TrainStats>
+  isSft: boolean
+  tokenize: Partial<TokenizeStats>
   done: boolean
 }) {
-  const weights = stages.map((s) => Math.max(1, s.epochs))
-  const starts: number[] = []
-  let acc = 0
-  for (const w of weights) {
-    starts.push(acc)
-    acc += w
-  }
-  const totalEpochs = acc
+  // A step is done once its own count has arrived, and active once the step
+  // before it is done — the build reports each measurement as it lands, so
+  // "what has not reported yet" is what is happening now.
+  const state = (
+    measured: boolean,
+    previous: boolean
+  ): "done" | "active" | "todo" =>
+    measured ? "done" : previous ? "active" : "todo"
 
-  // Continuous position in epoch-units: completed global epochs plus the fraction
-  // of the current epoch done (its chunk / the stage's chunk count). Pinned to the
-  // end once the run finishes so every segment reads full.
-  const chunkFrac =
-    train.total_chunks && train.total_chunks > 0
-      ? Math.min(1, (train.chunk ?? 0) / train.total_chunks)
-      : 0
-  const epochPos = done
-    ? totalEpochs
-    : Math.max(0, (train.epoch ?? 0) - 1 + chunkFrac)
-
-  // The authoritative current stage comes from the backend frame; fall back to the
-  // epoch position (e.g. during tokenization, before the first train frame).
-  const currentStage =
-    train.stage != null
-      ? train.stage
-      : Math.min(
-          stages.length - 1,
-          starts.findIndex(
-            (start, i) => epochPos >= start && epochPos < start + weights[i]
-          )
-        )
-  const activeIdx = currentStage < 0 ? 0 : currentStage
-  const activeName =
-    stages[activeIdx]?.name?.trim() ||
-    train.stage_name?.trim() ||
-    `Stage ${activeIdx + 1}`
+  const steps = isSft
+    ? [
+        {
+          label: "Conversations rendered",
+          value: compact(tokenize.conversations ?? tokenize.examples),
+          state: state(tokenize.conversations != null, true),
+        },
+        {
+          label: "Tokens written",
+          value: compact(tokenize.total_tokens),
+          state: state(
+            tokenize.total_tokens != null,
+            tokenize.conversations != null
+          ),
+        },
+        {
+          label: "Trainable (assistant replies)",
+          value: compact(tokenize.trainable_tokens),
+          state: state(tokenize.trainable_tokens != null, done),
+        },
+      ]
+    : [
+        {
+          label: "Source files collected",
+          value: compact(tokenize.files),
+          state: state(tokenize.files != null, true),
+        },
+        {
+          label: "Tokenizer trained",
+          value:
+            tokenize.vocab != null
+              ? `${compact(tokenize.vocab)} vocab · ${compact(tokenize.merges)} merges`
+              : "—",
+          state: state(tokenize.vocab != null, tokenize.files != null),
+        },
+        {
+          label: "Corpus packed",
+          value:
+            tokenize.total_tokens != null
+              ? `${compact(tokenize.total_tokens)} tokens`
+              : "—",
+          state: state(tokenize.total_tokens != null, tokenize.vocab != null),
+        },
+      ]
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-xs font-medium text-muted-foreground">
-          Curriculum
-        </span>
-        <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
-          Stage {activeIdx + 1} / {stages.length}
-          <span className="mx-1.5 text-muted-foreground">·</span>
-          <span className="text-foreground">{activeName}</span>
-        </span>
-      </div>
-
-      <div className="flex items-stretch gap-1">
-        {stages.map((stage, i) => {
-          const frac = Math.min(
-            1,
-            Math.max(0, (epochPos - starts[i]) / weights[i])
-          )
-          const isActive = i === activeIdx && !done
-          return (
-            <div
-              key={i}
-              className="flex flex-col gap-1"
-              style={{ flexGrow: weights[i], flexBasis: 0, minWidth: 0 }}
-              title={`${stage.name?.trim() || `Stage ${i + 1}`} — ${stage.epochs} epoch${stage.epochs === 1 ? "" : "s"}`}
-            >
-              <div
-                className={cn(
-                  "h-2 overflow-hidden rounded-full bg-primary/15",
-                  isActive && "ring-1 ring-primary/40"
-                )}
-              >
-                <div
-                  className="h-full rounded-full bg-primary transition-[width] duration-300"
-                  style={{ width: `${frac * 100}%` }}
-                />
-              </div>
-              <span
-                className={cn(
-                  "truncate text-xs tabular-nums",
-                  isActive ? "text-foreground" : "text-muted-foreground"
-                )}
-              >
-                {stage.name?.trim() || `Stage ${i + 1}`}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
+    <ul className="rounded-md border border-dashed px-4 py-1">
+      {steps.map((s) => (
+        <BuildStep key={s.label} {...s} />
+      ))}
+    </ul>
   )
 }
 
@@ -178,89 +169,32 @@ export interface TelemetryProps {
   tokenize: Partial<TokenizeStats>
   train: Partial<TrainStats>
   loss: LossPoint[]
-  vocabSeries: VocabPoint[]
   batchSeries: BatchPoint[]
-  // The run's curriculum stages (empty for a plain single-pass run), for the hero's
-  // stage indicator + segmented curriculum progress bar.
+  // The run's curriculum stages (empty for a plain single-pass run), for the
+  // per-stage colouring of the loss overlay and its legend.
   curriculum: CurriculumStage[]
 }
 
 /**
- * Which mark the hero corner shows for a run's phase.
+ * The run's figures: the loss overlay, and the intra-batch spread beneath it.
  *
- * Deliberately not one throbber mode per `RunPhase`: the mark says what the GPU is
- * doing, and phase 1 (building a dataset) is not training however the run labels
- * it. A finished run keeps the mark rather than dropping it, at rest — an empty
- * corner where something was reads as a component that failed to render.
+ * The numbers, the phase and the progress live in `TrainingHero` above these —
+ * this is only the plotting. Each figure reserves its height and shows a
+ * placeholder before its data exists, so a figure filling in never moves the one
+ * below it.
  */
-function phaseMode(status: RunPhase | null): ThrobberMode {
-  switch (status) {
-    case "tokenizing":
-      return "loading"
-    case "training":
-      return "training"
-    default:
-      return "idle"
-  }
-}
-
-// The main column's live telemetry: a stat run pinned at the top, a thin progress
-// rule, the hero figure (loss once training, else the phase-1 figure), and the
-// secondary spread figure. Every region keeps its slot and fills in — figures
-// reserve their height and show a placeholder before data, so nothing pops.
 export function Telemetry({
   status,
   isSft,
   tokenize,
   train,
   loss,
-  vocabSeries,
   batchSeries,
   curriculum,
 }: TelemetryProps) {
-  const tokenizing = status === "tokenizing"
   // The training figure is the hero from the moment training starts through done.
   const trainPhase = status != null && status !== "tokenizing"
-  // Show the curriculum figure only for a real staged run (>1 stage), whenever a
-  // run is staged/active — it previews during tokenization and fills in training.
   const showCurriculum = status != null && (curriculum?.length ?? 0) > 1
-
-  // ── stat run (phase- and mode-aware) ──────────────────────────────────────
-  const stats: Stat[] = trainPhase
-    ? [
-        {
-          label: "Epoch",
-          value: `${train.epoch ?? 0} / ${train.total_epochs ?? 0}`,
-        },
-        { label: "Loss", value: loss4(train.loss) },
-        { label: "Avg loss", value: loss4(train.avg_loss) },
-        { label: "ETA", value: formatEta(train.eta_secs) },
-      ]
-    : isSft
-      ? [
-          {
-            label: "Conversations",
-            // KTO names the same count `examples`; both are "how many of the
-            // things this mode trains on did phase 1 find".
-            value: compact(tokenize.conversations ?? tokenize.examples),
-          },
-          { label: "Total tokens", value: compact(tokenize.total_tokens) },
-          { label: "Trainable", value: compact(tokenize.trainable_tokens) },
-        ]
-      : [
-          { label: "Files", value: compact(tokenize.files) },
-          { label: "Characters", value: compact(tokenize.chars) },
-          { label: "Vocab size", value: compact(tokenize.vocab) },
-          { label: "Merges", value: compact(tokenize.merges) },
-        ]
-
-  // ── progress ───────────────────────────────────────────────────────────────
-  const totalSteps =
-    (train.total_epochs ?? 0) * (train.total_chunks ?? 0) || undefined
-  const trainPct = totalSteps
-    ? Math.min(100, Math.round(((train.step ?? 0) / totalSteps) * 100))
-    : 0
-  const pct = trainPhase ? trainPct : Math.round((tokenize.progress ?? 0) * 100)
 
   // ── loss overlay: pivot flat points into per-chunk rows, one column/epoch ──
   const epochs = React.useMemo(() => {
@@ -335,38 +269,7 @@ export function Telemetry({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-6">
-        <div className="min-w-0 flex-1">
-          <StatRun stats={stats} />
-        </div>
-        {/* The site's own mark, where a mini copy of the embedding globe used to
-            sit. The globe is a *figure* — it shows the token cloud's principal
-            axes — and up here, at 96px with no axes or caption, it read as
-            decoration while the real one (with its explanation) sits in the
-            diagnostics panel below. The throbber says the one thing this corner
-            should: which phase the run is in, and that it is still moving. */}
-        <Throbber
-          mode={phaseMode(status)}
-          className="hidden self-start sm:block"
-        />
-      </div>
-
-      <div className="space-y-1.5">
-        <Progress value={pct} />
-        <div className="text-right text-xs text-muted-foreground tabular-nums">
-          {pct}%
-        </div>
-      </div>
-
-      {showCurriculum && (
-        <CurriculumProgress
-          stages={curriculum}
-          train={train}
-          done={status === "done"}
-        />
-      )}
-
-      {/* Hero figure — the loss overlay once training, else the phase-1 figure. */}
+      {/* Hero figure — the loss overlay once training, else the phase-1 build. */}
       {trainPhase ? (
         <Figure
           caption={
@@ -417,7 +320,7 @@ export function Telemetry({
           {loss.length > 1 ? (
             <ChartContainer
               config={lossChartConfig}
-              className="aspect-auto h-64 w-full"
+              className="aspect-auto h-80 w-full"
             >
               <LineChart data={rows} margin={{ left: 4, right: 4, top: 4 }}>
                 <CartesianGrid {...gridProps} />
@@ -465,43 +368,14 @@ export function Telemetry({
           caption={
             isSft
               ? "Dataset build — rendering chat conversations into the masked SFT dataset"
-              : "Vocabulary growth (x = merges learned)"
+              : "Dataset build — tokenizer, then the packed corpus"
           }
         >
-          {!isSft && vocabSeries.length > 1 ? (
-            <ChartContainer
-              config={vocabChartConfig}
-              className="aspect-auto h-64 w-full"
-            >
-              <LineChart
-                data={vocabSeries}
-                margin={{ left: 4, right: 4, top: 4 }}
-              >
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="merges" {...axisProps} />
-                <ChartTooltip
-                  cursor={false}
-                  content={<ChartTooltipContent />}
-                />
-                <Line
-                  dataKey="vocab"
-                  type="linear"
-                  stroke="var(--color-vocab)"
-                  strokeWidth={1.5}
-                  dot={false}
-                  isAnimationActive={false}
-                />
-              </LineChart>
-            </ChartContainer>
-          ) : (
-            <FigurePlaceholder>
-              {isSft
-                ? tokenizing
-                  ? "Building the masked SFT dataset…"
-                  : "Dataset built."
-                : "Building the BPE tokenizer…"}
-            </FigurePlaceholder>
-          )}
+          <PhaseOneFigure
+            isSft={isSft}
+            tokenize={tokenize}
+            done={tokenize.done === true}
+          />
         </Figure>
       )}
 
@@ -509,12 +383,12 @@ export function Telemetry({
       {trainPhase && (
         <Figure
           caption={`Intra-batch spread (last ${Math.max(batchSeries.length, 0)} reports) — highest, average and lowest chunk loss per window`}
-          minHeight="12rem"
+          minHeight="14rem"
         >
           {batchSeries.length > 1 ? (
             <ChartContainer
               config={batchChartConfig}
-              className="aspect-auto h-48 w-full"
+              className="aspect-auto h-56 w-full"
             >
               <LineChart
                 data={batchSeries}
@@ -549,7 +423,7 @@ export function Telemetry({
               </LineChart>
             </ChartContainer>
           ) : (
-            <FigurePlaceholder className="h-48">
+            <FigurePlaceholder className="h-56">
               Waiting for batch reports…
             </FigurePlaceholder>
           )}

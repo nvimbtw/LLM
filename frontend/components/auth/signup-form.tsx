@@ -3,8 +3,10 @@
 import Link from "next/link"
 
 import { Button } from "@/components/ui/button"
+import { FigureSeed } from "@/components/ui/figure-seed"
 import { useSignup } from "@/hooks/use-signup"
-import { AuthCard } from "./auth-card"
+import { FormError } from "@/components/ui/error-state"
+import { AuthShell } from "./auth-shell"
 import { AuthField } from "./auth-field"
 
 export function SignupForm() {
@@ -19,11 +21,14 @@ export function SignupForm() {
   } = useSignup()
 
   return (
-    <AuthCard
-      title="Create your account"
-      description="Sign up to start chatting."
+    <AuthShell
+      eyebrow="Create account"
+      title="Start a workspace"
+      description="One account gets you the chat, the model catalogue and your own conversation history."
+      figure={<FigureSeed />}
+      figureCaption="Begin with one model and a blank corpus. Everything after that is a run you queued."
       footer={
-        <span>
+        <>
           Already have an account?{" "}
           <Link
             href="/login"
@@ -31,17 +36,23 @@ export function SignupForm() {
           >
             Log in
           </Link>
-        </span>
+        </>
       }
     >
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      <form onSubmit={onSubmit} className="flex flex-col gap-5">
+        {/* Labelled "Username", not "Name", because `use-signup.ts` posts this
+            value as `username` and it is what the login screen will ask for. It
+            used to say Name with an "Ada Lovelace" placeholder, which taught
+            people to create an account they then could not log into. */}
         <AuthField
-          id="name"
-          label="Name"
+          id="username"
+          label="Username"
           type="text"
-          autoComplete="name"
-          placeholder="Ada Lovelace"
+          autoComplete="username"
+          placeholder="adalovelace"
+          hint="This is what you'll log in with."
           required
+          autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
@@ -55,11 +66,15 @@ export function SignupForm() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Creating account…" : "Sign up"}
+        {error && (
+          <FormError>
+            {error}
+          </FormError>
+        )}
+        <Button type="submit" disabled={isSubmitting} className="h-10">
+          {isSubmitting ? "Creating account…" : "Create account"}
         </Button>
       </form>
-    </AuthCard>
+    </AuthShell>
   )
 }

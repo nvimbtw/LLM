@@ -1,8 +1,10 @@
 "use client"
 
 import { Switch } from "@/components/ui/switch"
+import { FormError } from "@/components/ui/error-state"
 import { useJobsContext } from "./jobs-provider"
 import { AddJobMenu } from "./add-job-menu"
+import { ChainBand } from "./chain-band"
 import { HistoryPager } from "./history-pager"
 import { JobHistory } from "./job-history"
 import { NowBand } from "./now-band"
@@ -22,9 +24,10 @@ import { QueueBand } from "./queue-band"
  */
 export function JobsView() {
   const {
+    board,
     running,
-    runningNetwork,
     queued,
+    waiting,
     history,
     historyTotal,
     historyPage,
@@ -43,9 +46,9 @@ export function JobsView() {
   return (
     <div className="space-y-8">
       {error && (
-        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <FormError>
           {error}
-        </p>
+        </FormError>
       )}
 
       <section className="overflow-hidden rounded-lg border border-border bg-card">
@@ -53,11 +56,7 @@ export function JobsView() {
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
             <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
-              {summarize(
-                queued.length,
-                running !== null || runningNetwork !== null,
-                paused
-              )}
+              {summarize(queued.length, running !== null, paused)}
             </p>
           </div>
 
@@ -77,12 +76,6 @@ export function JobsView() {
         </header>
 
         <NowBand job={running} paused={paused} onCancel={cancel} />
-        {/* The network lane gets its own band rather than a slot in the same one:
-            it is a second thing happening at the same time, and folding it into
-            "what is running" would imply the two are taking turns. */}
-        {runningNetwork && (
-          <NowBand job={runningNetwork} paused={paused} onCancel={cancel} />
-        )}
         <QueueBand
           jobs={queued}
           paused={paused}
@@ -90,12 +83,23 @@ export function JobsView() {
           onCancel={cancel}
           onDelete={remove}
         />
+        {/* Below the line, because these are not in it: a follow-up starts when the
+            job it names finishes, not when its turn comes. */}
+        <ChainBand
+          jobs={waiting}
+          all={[...board.active, ...board.history]}
+          onCancel={cancel}
+          onDelete={remove}
+        />
 
-        {!isLoading && !running && !runningNetwork && queued.length === 0 && (
-          <p className="px-5 py-8 text-center text-sm text-muted-foreground">
-            Nothing queued. Add a job to put the GPU to work.
-          </p>
-        )}
+        {!isLoading &&
+          !running &&
+          queued.length === 0 &&
+          waiting.length === 0 && (
+            <p className="px-5 py-8 text-center text-sm text-muted-foreground">
+              Nothing queued. Add a job to put the GPU to work.
+            </p>
+          )}
       </section>
 
       <section className="overflow-hidden rounded-lg border border-border bg-card">

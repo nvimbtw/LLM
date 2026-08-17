@@ -4,7 +4,8 @@ import * as React from "react"
 
 import type { ThinkBudget } from "./budget-selector"
 
-import { SESSION_CHANGED_EVENT, apiFetch, getToken } from "@/lib/api"
+import { apiFetch, getToken } from "@/lib/api"
+import { useAuth } from "@/hooks/use-auth"
 
 export interface ChatSummary {
   id: string
@@ -42,7 +43,7 @@ interface ChatsContextValue {
 const ChatsContext = React.createContext<ChatsContextValue | null>(null)
 
 interface RawChat {
-  id_chat: string | number
+  chat_id: string
   title: string
   created_at: string
   tokens?: number
@@ -50,14 +51,31 @@ interface RawChat {
 
 function mapChat(raw: RawChat): ChatSummary {
   return {
-    id: String(raw.id_chat),
+    id: raw.chat_id,
     title: raw.title,
     createdAt: raw.created_at,
     tokens: raw.tokens ?? 0,
   }
 }
 
+const NO_CHATS: ChatSummary[] = []
+
+/** How long a title taken from the opening message may be. */
+const TITLE_MAX = 60
+
+/**
+ * The sidebar label for a new chat, from the message that starts it.
+ *
+ * Named here rather than server-side because this is the only place that knows
+ * what the person typed before there is a chat to store it in.
+ */
+function title(message: string): string {
+  const line = message.trim().split("\n")[0] || "New chat"
+  return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
+}
+
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth()
   const [conversations, setConversations] = React.useState<ChatSummary[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -67,15 +85,12 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     // pages (/login, /signup) too. Skip the fetch when there's no token: an
     // unauthenticated /chat call 401s, which would redirect to /login and,
     // once the token is cleared, spin in an endless reload loop.
-    if (!getToken()) {
-      setIsLoading(false)
-      return
-    }
+    if (!getToken()) return
     try {
-      const response = await apiFetch(`/chat`)
+      const response = await apiFetch(`/chats`)
       if (!response.ok) throw new Error("Unable to load your chats.")
-      const data: RawChat[] = await response.json()
-      setConversations(data.map(mapChat))
+      const data = (await response.json()) as { chats: RawChat[] }
+      setConversations(data.chats.map(mapChat))
       setError(null)
     } catch (err) {
       setError(
@@ -86,22 +101,41 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // This provider mounts in the root layout — before login — so the mount-time
-  // fetch can run unauthenticated and go stale. Refetch when the session
-  // changes (login), and drop the list when it's cleared (logout).
+  // The session drives the load. `useAuth` reads it as an external store now, so
+  // logging in re-runs this effect and logging out re-renders with an empty list
+  // *derived* below — which is why this hook no longer keeps its own
+  // `SESSION_CHANGED_EVENT` listener, and no longer has to remember to clear
+  // state on the way out.
+  //
+  // The fetch is inlined rather than calling `refresh`, so no state is written
+  // synchronously from the effect body; `refresh` stays for the mutations, which
+  // only run authenticated. Same shape as `use-signals.ts`.
   React.useEffect(() => {
-    refresh()
-    const onSessionChanged = () => {
-      if (getToken()) {
-        refresh()
-      } else {
-        setConversations([])
-      }
+    if (!isAuthenticated) return
+    let active = true
+    apiFetch(`/chats`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load your chats.")
+        return (await response.json()) as { chats: RawChat[] }
+      })
+      .then((data) => {
+        if (!active) return
+        setConversations(data.chats.map(mapChat))
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (!active) return
+        setError(
+          err instanceof Error ? err.message : "Unable to load your chats."
+        )
+      })
+      .finally(() => {
+        if (active) setIsLoading(false)
+      })
+    return () => {
+      active = false
     }
-    window.addEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
-    return () =>
-      window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged)
-  }, [refresh])
+  }, [isAuthenticated])
 
   // Pending first messages, keyed by the new chat id. A ref (not state) so the
   // value is written synchronously before navigation and read once on the chat
@@ -122,15 +156,15 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
       modelId: string,
       budget: ThinkBudget
     ): Promise<string> => {
-      const response = await apiFetch(`/chat`, {
+      const response = await apiFetch(`/chats`, {
         method: "POST",
-        body: JSON.stringify({ content: message }),
+        body: JSON.stringify({ title: title(message) }),
       })
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || "Unable to start a chat.")
       }
-      const id = String((await response.json()).id_chat)
+      const id = String((await response.json()).chat_id)
       pendingRef.current.set(id, { content: message, modelId, budget })
       // Surface the new chat in the sidebar; no need to block navigation on it.
       refresh()
@@ -141,8 +175,8 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
 
   const renameChat = React.useCallback(
     async (id: string, title: string) => {
-      const response = await apiFetch(`/chat/${id}`, {
-        method: "PUT",
+      const response = await apiFetch(`/chats/${id}`, {
+        method: "PATCH",
         body: JSON.stringify({ title }),
       })
       if (!response.ok) {
@@ -156,7 +190,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
 
   const deleteChat = React.useCallback(
     async (id: string) => {
-      const response = await apiFetch(`/chat/${id}`, { method: "DELETE" })
+      const response = await apiFetch(`/chats/${id}`, { method: "DELETE" })
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || "Unable to delete the chat.")
@@ -167,8 +201,11 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   )
 
   const value: ChatsContextValue = {
-    conversations,
-    isLoading,
+    // Logged out is derived, not stored: the previous session's titles are still
+    // sitting in `conversations` until the next load replaces them, and a
+    // sidebar that keeps showing them after a logout is the bug this prevents.
+    conversations: isAuthenticated ? conversations : NO_CHATS,
+    isLoading: isAuthenticated && isLoading,
     error,
     refresh,
     createChat,

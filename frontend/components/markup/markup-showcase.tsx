@@ -3,10 +3,6 @@
 import * as React from "react"
 
 import { ChatMessageBubble } from "@/components/chat/chat-message"
-import {
-  MessageRefsProvider,
-  buildMessageRefs,
-} from "@/components/chat/message-refs"
 import { Button } from "@/components/ui/button"
 import type { ChatMessage } from "@/hooks/use-chat"
 
@@ -14,10 +10,10 @@ import type { ChatMessage } from "@/hooks/use-chat"
  * Every renderable special token, in one conversation.
  *
  * One thread rather than four labelled specimens, because half of what needs
- * looking at only exists *between* messages: whether a reply reference resolves,
- * whether following it scrolls somewhere sensible, how a quote block sits under
- * the paragraph that introduced it, whether the rhythm of a real exchange holds
- * up when replies are long. A gallery of isolated fragments shows none of that.
+ * looking at only exists *between* messages: how a quote block sits under the
+ * paragraph that introduced it, how a reasoning panel reads beside the answer it
+ * belongs to, whether the rhythm of a real exchange holds up when replies are
+ * long. A gallery of isolated fragments shows none of that.
  *
  * The rest of `SPECIAL_TOKENS` is frame rather than content — `<|user|>`,
  * `<|assistant|>`, `<|system|>` and `<|endoftext|>` delimit turns in the chat
@@ -119,9 +115,8 @@ const CONVERSATION: Turn[] = [
   {
     id: "m6",
     role: "assistant",
-    covers: ["reply", "warn"],
+    covers: ["warn"],
     content:
-      "<|reply|>m5<|/reply|>" +
       "<|par|>Expected, yes — and worth guarding against.<|/par|>" +
       "<|warn|>A <|code|>min_gain<|/code|> of zero means any score above the previous best " +
       "counts as an improvement, including noise. The loop will keep going until it hits " +
@@ -157,26 +152,6 @@ const CONVERSATION: Turn[] = [
       "concrete. Yes.<|/thinking|>" +
       "<|par|>The ones before it are 3, 7 and 31 — that is 2^2−1, 2^3−1 and 2^5−1.<|/par|>",
   },
-  {
-    id: "m9",
-    role: "user",
-    content: "One more: can you point back at something you said earlier?",
-    covers: [],
-  },
-  {
-    id: "m10",
-    role: "assistant",
-    covers: ["reply"],
-    content:
-      "<|reply|>m4<|/reply|>" +
-      "<|par|>That one was mine rather than yours, so the header says so. Clicking it " +
-      "scrolls up to the message and flashes it — which is the part worth trying, since a " +
-      "reference you cannot follow is only half a reference.<|/par|>" +
-      "<|reply|>m-deleted<|/reply|>" +
-      "<|par|>And this one points at a message that is not in the thread. It still renders: " +
-      "a reference that vanished silently would leave the paragraph under it reading as a " +
-      "non-sequitur.<|/par|>",
-  },
 ]
 
 // Turns carry `covers`; the legend is derived so it cannot fall out of step with
@@ -184,11 +159,10 @@ const CONVERSATION: Turn[] = [
 const COVERED = Array.from(new Set(CONVERSATION.flatMap((t) => t.covers)))
 
 // Rendered but not emitted by any model yet.
-const UNSHIPPED = new Set(["quote", "warn", "reply"])
+const UNSHIPPED = new Set(["quote", "warn"])
 
 export function MarkupShowcase() {
   const [showSource, setShowSource] = React.useState(false)
-  const lookup = React.useMemo(() => buildMessageRefs(CONVERSATION), [])
 
   return (
     <div className="space-y-6">
@@ -199,7 +173,7 @@ export function MarkupShowcase() {
               key={token}
               className={
                 UNSHIPPED.has(token)
-                  ? "rounded-sm bg-kind-gather/14 px-1.5 py-0.5 font-mono text-xs text-kind-gather"
+                  ? "bg-kind-gather/14 text-kind-gather rounded-sm px-1.5 py-0.5 font-mono text-xs"
                   : "rounded-sm bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
               }
               title={
@@ -221,38 +195,34 @@ export function MarkupShowcase() {
         </Button>
       </div>
 
-      {/* Scoped to this thread, exactly as a real conversation scopes its own —
-          a reference can only point at a message in the thread it lives in. */}
-      <MessageRefsProvider lookup={lookup}>
-        <div className="rounded-lg border border-border bg-card px-5 py-8 sm:px-8">
-          {/* gap-7 matches the real thread, so the rhythm previewed here is the
-              rhythm you get in a conversation. */}
-          <div className="flex flex-col gap-7">
-            {CONVERSATION.map((turn) => (
-              <div key={turn.id} className="flex flex-col gap-2">
-                <ChatMessageBubble
-                  message={
-                    {
-                      // No byline: these were never persisted, and a fixture
-                      // claiming a model and a token count would be a lie.
-                      id: turn.id,
-                      role: turn.role,
-                      content: turn.content,
-                    } as ChatMessage
-                  }
-                />
-                {showSource && (
-                  <pre className="overflow-x-auto rounded-md border border-border bg-muted px-3 py-2">
-                    <code className="font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
-                      {turn.content}
-                    </code>
-                  </pre>
-                )}
-              </div>
-            ))}
-          </div>
+      <div className="rounded-lg border border-border bg-card px-5 py-8 sm:px-8">
+        {/* gap-7 matches the real thread, so the rhythm previewed here is the
+            rhythm you get in a conversation. */}
+        <div className="flex flex-col gap-7">
+          {CONVERSATION.map((turn) => (
+            <div key={turn.id} className="flex flex-col gap-2">
+              <ChatMessageBubble
+                message={
+                  {
+                    // No byline: these were never persisted, and a fixture
+                    // claiming a model and a token count would be a lie.
+                    id: turn.id,
+                    role: turn.role,
+                    content: turn.content,
+                  } as ChatMessage
+                }
+              />
+              {showSource && (
+                <pre className="overflow-x-auto rounded-md border border-border bg-muted px-3 py-2">
+                  <code className="font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
+                    {turn.content}
+                  </code>
+                </pre>
+              )}
+            </div>
+          ))}
         </div>
-      </MessageRefsProvider>
+      </div>
     </div>
   )
 }

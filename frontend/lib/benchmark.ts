@@ -1,7 +1,7 @@
 import { apiFetch } from "./api"
 import type { Tier } from "./jobs"
 
-// Wire types for the benchmark API (backend routes/benchmark.rs). The report is
+// Wire types for the benchmark API. The report is
 // the serialized `llm::eval::Report`; every metric there is an f64, and a metric
 // that could not be measured serializes as `null` rather than 0 — so every number
 // below is nullable and the UI renders "—" for a null instead of a confident zero.
@@ -73,13 +73,58 @@ export const BENCHMARK_SUITES: {
   },
 ]
 
-export interface ModelInfo {
-  dimensions: number
+/**
+ * Which model a report describes.
+ *
+ * `id` is the weights directory and what an API call names it by; `name` is
+ * what a person calls it, filled in by the engine's handler because the
+ * pipeline that measured the model has never heard of the row.
+ */
+export interface ReportModel {
+  id: string
+  name: string | null
   layers: number
+  dimensions: number
   heads: number
   context: number
   vocab: number
   parameters: number
+}
+
+/**
+ * Every suite's score, with the components that produced it.
+ *
+ * `score` is the 0–100 composite; the rest are the 0–1 components behind it,
+ * and a component that could not be measured is `null` rather than 0 — its
+ * weight redistributes across the ones that ran. `version` is what makes two
+ * scores comparable: a scoring change moves the number without the model
+ * having changed, so runs of different versions must not share a trend line.
+ */
+interface ScoreBase {
+  version: number
+  score: number | null
+  score_stderr: number | null
+}
+
+export interface LanguageScore extends ScoreBase {
+  language: number | null
+  /** Null throughout: the minimal-pair suite is not ported yet. */
+  grammar: number | null
+  words: number | null
+  /** Zeroes the score for a model whose samples are too repetitive to read. */
+  variety_gate: number | null
+}
+
+export interface MarkupScore extends ScoreBase {
+  pairs: number | null
+  positions: number | null
+  structure: number | null
+  restraint: number | null
+  pair_count: number
+}
+
+export interface AssistantScore extends ScoreBase {
+  replies: number | null
 }
 
 export interface CorpusMetrics {
@@ -87,220 +132,140 @@ export interface CorpusMetrics {
   bits_per_token: number | null
   perplexity: number | null
   tokens_scored: number
-  bytes_scored: number
   baseline_bits_per_byte: number | null
-  // Fraction of the n-gram floor's bits the model removes. Stays 0 for a model
-  // that has not beaten the floor, which at this scale is all of them — it is a
-  // verdict, not a scale. `floor_progress` is the one that moves.
+  /** Fraction of the n-gram floor's bits removed. A verdict, not a scale. */
   advantage: number | null
-  // How far the model has come from predicting nothing (0) to matching the n-gram
-  // floor (1). This is the corpus term the composite score reads.
+  /** Nothing predicted (0) to matching the floor (1). The scored component. */
   floor_progress: number | null
-  files: number
 }
 
-export interface ParadigmResult {
-  name: string
-  description: string
-  accuracy: number | null
-  pairs: number
-}
-
-export interface GrammarMetrics {
-  accuracy: number | null
-  pairs: number
-  paradigms: ParadigmResult[]
-}
-
-export interface GenerationSample {
-  prompt: string
-  completion: string
-}
-
-export interface GenerationMetrics {
+export interface SurfaceMetrics {
+  words: number
   real_word_rate: number | null
   distinct_1: number | null
   distinct_2: number | null
   distinct_3: number | null
-  repeat_rate: number | null
-  mean_sentence_words: number | null
-  marker_validity: number | null
-  words_scored: number
-  lexicon_size: number
-  samples: GenerationSample[]
+  repeat_3: number | null
+  mean_sample_words: number | null
 }
 
-// Bits per assistant-reply token over held-out conversations, scored through the
-// SFT loss mask. Kept out of the composite score: a base model has never seen the
-// chat scaffold, so this is read as a paired comparison between a base model and
-// its fine-tune, not as a number to rank every run by.
-export interface ChatMetrics {
-  bits_per_token: number | null
-  logprob: number | null
-  conversations: number
-  tokens_scored: number
+export interface Sample {
+  prompt: string
+  text: string
+}
+
+/** One sublayer silenced, and what the model lost by it. */
+export interface AblationUnit {
+  unit: string
+  kind: "attention" | "ffn"
+  layer: number
+  cross_entropy: number
+  ce_delta: number
+  kl_per_query: number
+  top1_agreement: number
 }
 
 /**
- * The score with its parts shown.
+ * What each sublayer contributes, from silencing them one at a time.
  *
- * `score_stderr` is one standard error of the score as an estimate of the model's
- * ability, from the finite pair and word samples. It is the number to compare a
- * run-to-run delta against: a change smaller than this is the benchmark's sampling
- * noise, not the model.
+ * `learned_nats` is how far below a uniform guess the intact model sits. Near
+ * zero means the table is measuring noise.
  */
-export interface ScoreBreakdown {
-  version: number
-  language: number | null
-  grammar: number | null
-  words: number | null
-  variety_gate: number | null
-  score: number | null
-  score_stderr: number | null
+export interface AblationReport {
+  layers: number
+  window_tokens: number
+  intact_ce: number
+  chance_ce: number
+  learned_nats: number
+  units: AblationUnit[]
 }
 
-export interface BenchmarkReport {
-  score: number | null
-  breakdown: ScoreBreakdown
-  model: ModelInfo
-  corpus: CorpusMetrics | null
-  grammar: GrammarMetrics
-  generation: GenerationMetrics
-  // Agreement with the replies you rated good and bad. Reported, never scored.
-  preference: PreferenceMetrics | null
-  duration_secs: number
-  // Tokens the model forwarded to produce this report — the run's cost in the unit
-  // the model works in. Lifted onto the run row as `eval_tokens`, which is what the
-  // charts read; here it is the report's own copy.
-  tokens_used: number
-}
-
-// Thumbs collected in the chat UI, scored. Absent until some have been given.
-export interface PreferenceMetrics {
-  approved_logprob: number | null
-  rejected_logprob: number | null
-  margin: number | null
-  approved: number
-  rejected: number
-  paired_accuracy: number | null
-  pairs: number
-}
-
-// ── the markup report ───────────────────────────────────────────────────────
-
-export interface MarkupParadigmResult {
-  name: string
-  description: string
-  accuracy: number | null
-  pairs: number
-}
-
-export interface MarkupPairMetrics {
-  accuracy: number | null
-  pairs: number
-  paradigms: MarkupParadigmResult[]
-}
-
-export interface MarkupPositionMetrics {
+export interface PositionMetrics {
   marker_top1: number | null
   marker_restricted_top1: number | null
   marker_mean_rank: number | null
   marker_logprob: number | null
   marker_positions: number
+  /** How often a marker was wanted where the reference has prose. */
   false_marker_rate: number | null
   prose_positions: number
   conversations: number
 }
 
-export interface MarkupStructureMetrics {
+export interface StructureMetrics {
   close_rate: number | null
   balance_rate: number | null
   marker_density: number | null
-  reference_marker_density: number | null
   scaffold_leak_rate: number | null
   replies: number
   tokens_generated: number
-  samples: GenerationSample[]
-}
-
-export interface MarkupMetrics {
-  pairs: MarkupPairMetrics
-  // Both null until the held-out chat set exists. The pair stage still scores.
-  positions: MarkupPositionMetrics | null
-  structure: MarkupStructureMetrics | null
-}
-
-export interface MarkupBreakdown {
-  version: number
-  pairs: number | null
-  positions: number | null
-  structure: number | null
-  restraint: number | null
-  score: number | null
-  score_stderr: number | null
-}
-
-export interface MarkupReport {
-  score: number | null
-  breakdown: MarkupBreakdown
-  model: ModelInfo
-  markup: MarkupMetrics
-  chat: ChatMetrics | null
-  duration_secs: number
-  tokens_used: number
-}
-
-// ── the assistant report ────────────────────────────────────────────────────
-
-export interface AssistantBreakdown {
-  version: number
-  replies: number | null
-  score: number | null
-  score_stderr: number | null
 }
 
 /**
- * Bits per assistant-reply token over the held-out conversations, mapped to 0–100.
+ * Bits per assistant-reply *byte* over held-out conversations, through the same
+ * loss mask SFT trains on.
  *
- * **The score inverts the measurement.** Bits per token is a *cost* — lower is
- * better — while every suite reports higher-is-better, so `chat.bits_per_token`
- * falling is `score` rising. Read the score for direction and the bits for
- * magnitude; showing the raw bits without saying which way is up is how a
- * 3.6875 → 3.8796 regression once got read as progress.
+ * `bits_per_byte` is the scored figure. `bits_per_token` is reported alongside
+ * but only comparable between models sharing a tokenizer — the BPE fix moved
+ * the vocabulary from 2.13 to 3.79 bytes per token and every per-token figure
+ * on record moved ~74% with it, on unchanged weights.
  */
-export interface AssistantReport {
-  score: number | null
-  breakdown: AssistantBreakdown
-  model: ModelInfo
-  chat: ChatMetrics | null
-  duration_secs: number
-  tokens_used: number
+export interface ChatMetrics {
+  bits_per_byte: number | null
+  bits_per_byte_stderr: number | null
+  bits_per_token: number | null
+  logprob: number | null
+  bytes_scored: number
+  tokens_scored: number
+  conversations: number
 }
 
-/** A run's report is one of three, told apart by the run's `suite`. */
-export type AnyReport = BenchmarkReport | MarkupReport | AssistantReport
+interface ReportBase {
+  model: ReportModel
+  total_secs: number
+}
+
+export interface LanguageReport extends ReportBase {
+  suite: "language"
+  score: LanguageScore
+  corpus: CorpusMetrics | null
+  surface: SurfaceMetrics | null
+  ablation: AblationReport | null
+  samples: Sample[]
+  /** True when the run stopped at a stage boundary; later stages are absent. */
+  cancelled: boolean
+}
+
+export interface MarkupReport extends ReportBase {
+  suite: "markup"
+  score: MarkupScore
+  positions: PositionMetrics | null
+  structure: StructureMetrics | null
+  conversations: number
+}
+
+export interface AssistantReport extends ReportBase {
+  suite: "assistant"
+  score: AssistantScore
+  chat: ChatMetrics | null
+  conversations: number
+}
+
+/** A run's report is one of three, told apart by the `suite` it carries. */
+export type AnyReport = LanguageReport | MarkupReport | AssistantReport
 
 export function isMarkupReport(report: AnyReport): report is MarkupReport {
-  return "markup" in report
+  return report.suite === "markup"
 }
 
-// Discriminated on the one field only this report has. `chat` will not do — the
-// markup report carries one too.
 export function isAssistantReport(
   report: AnyReport
 ): report is AssistantReport {
-  return "breakdown" in report && "replies" in report.breakdown
+  return report.suite === "assistant"
 }
 
-/**
- * Positive rather than `!isMarkupReport(...)`.
- *
- * With two suites, "not markup" was a sound way to reach the language report. With
- * three it silently includes the assistant one, which has none of the fields the
- * language panels read — so the narrowing has to name what it wants.
- */
-export function isLanguageReport(report: AnyReport): report is BenchmarkReport {
-  return "grammar" in report
+export function isLanguageReport(report: AnyReport): report is LanguageReport {
+  return report.suite === "language"
 }
 
 export interface BenchmarkRun {
@@ -360,21 +325,39 @@ export interface BenchmarkRunDetail extends BenchmarkRun {
 export interface SuiteInfo {
   corpus_dir: string
   corpus_files: number
-  blimp_dir: string
-  blimp_files: number
   chat_dir: string
   // Held-out conversations, which the markup suite's position and structure stages
   // need. Written from the 15% eval share at the start of every benchmark, so this
   // reads 0 only before the first run on a fresh install.
   chat_files: number
-  // Pairs in the built-in marker suite. Templated in code, not a file count.
-  markup_pairs: number
+}
+
+/**
+ * The wire shape of a run. `think_budget` and `id_series` are absent: the budget
+ * sweep is parked with the data module that will rebuild the corpus it varies
+ * over, and null is already what the charts read as "no budget was forced".
+ */
+interface BenchmarkRow extends Omit<BenchmarkRun, "id_run" | "id_model"> {
+  benchmark_id: string
+  model_id: string
+}
+
+function fromRow(row: BenchmarkRow): BenchmarkRun {
+  const { benchmark_id, model_id, ...rest } = row
+  return {
+    ...rest,
+    id_run: benchmark_id,
+    id_model: model_id,
+    think_budget: null,
+    id_series: null,
+  }
 }
 
 export async function listRuns(suite: BenchmarkSuite): Promise<BenchmarkRun[]> {
-  const res = await apiFetch(`/benchmark/runs?suite=${suite}`)
+  const res = await apiFetch(`/benchmarks?suite=${suite}`)
   if (!res.ok) throw new Error("Failed to load benchmark history.")
-  return res.json()
+  const { benchmarks } = (await res.json()) as { benchmarks: BenchmarkRow[] }
+  return benchmarks.map(fromRow)
 }
 
 /**
@@ -393,39 +376,47 @@ export async function getModelRuns(
   idModel: string,
   suite: BenchmarkSuite = "language"
 ): Promise<ModelBenchmarks> {
-  const res = await apiFetch(`/benchmark/models/${idModel}/runs?suite=${suite}`)
+  const res = await apiFetch(`/models/${idModel}/benchmarks`)
   if (!res.ok) throw new Error("Failed to load this model's benchmarks.")
-  return res.json()
+  const { benchmarks } = (await res.json()) as { benchmarks: BenchmarkRow[] }
+  const runs = benchmarks.map(fromRow).filter((run) => run.suite === suite)
+  // The most recent run that produced a report — deliberately not the most
+  // recent run, which may be a failure with nothing in it to show.
+  const scored = runs.find((run) => run.status === "done" && run.score !== null)
+  return {
+    latest: scored ? await getRun(scored.id_run) : null,
+    runs,
+  }
 }
 
 export async function getRun(id: string): Promise<BenchmarkRunDetail> {
-  const res = await apiFetch(`/benchmark/runs/${id}`)
+  const res = await apiFetch(`/benchmarks/${id}`)
   if (!res.ok) throw new Error("Failed to load benchmark run.")
-  return res.json()
+  const row = (await res.json()) as BenchmarkRow & { report: AnyReport | null }
+  return { ...fromRow(row), report: row.report }
 }
 
 export async function getSuite(): Promise<SuiteInfo> {
-  const res = await apiFetch("/benchmark/suite")
+  const res = await apiFetch("/benchmarks/suite")
   if (!res.ok) throw new Error("Failed to load suite info.")
   return res.json()
 }
 
 export async function deleteRun(id: string): Promise<void> {
-  const res = await apiFetch(`/benchmark/runs/${id}`, { method: "DELETE" })
+  const res = await apiFetch(`/benchmarks/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error("Failed to delete benchmark run.")
 }
 
 // ── the suite, as a running order ───────────────────────────────────────────
 
 /**
- * The five sections a run scores, in the order it scores them, with the share of
- * the composite each one carries. Mirrors the weights in `crates/llm/src/eval/mod.rs`
- * — if those move, these have to move with them.
+ * The stages a run scores, in order, with the share of the composite each
+ * carries. Mirrors the weights in `engine/llm/eval/score.py` and `markup.py` —
+ * if those move, these have to move with them.
  *
  * This exists so a benchmark that has not finished still has something true to
- * show. A percentage alone says how far along it is; the running order says what
- * it is doing and what is still to come, which is the difference between a
- * progress bar and knowing whether the number you are waiting for is close.
+ * show. A percentage says how far along it is; the running order says what it is
+ * doing and what is still to come.
  */
 export interface BenchmarkSection {
   name: string
@@ -435,38 +426,35 @@ export interface BenchmarkSection {
   blurb: string
 }
 
+// Grammar's 0.40 is listed because the score still reserves it; the minimal-pair
+// suite is not ported, so its weight redistributes across the stages that ran.
 const LANGUAGE_SECTIONS: BenchmarkSection[] = [
   {
     name: "Held-out text",
-    weight: 0.36,
-    blurb: "Perplexity on text the model never trained on.",
+    weight: 0.45,
+    blurb: "Compression of text the model never trained on.",
   },
   {
     name: "Grammar",
     weight: 0.4,
-    blurb: "Minimal pairs: does it prefer the well-formed sentence?",
+    blurb: "Minimal pairs — not ported yet, so its weight redistributes.",
   },
   {
     name: "Generation",
-    weight: 0.13,
-    blurb: "Twelve prompts continued, scored on surface quality.",
-  },
-  {
-    name: "Preference",
-    weight: 0.11,
-    blurb: "Agreement with the replies you rated good and bad.",
+    weight: 0.15,
+    blurb: "Fixed prompts continued, scored on surface quality.",
   },
 ]
 
 const MARKUP_SECTIONS: BenchmarkSection[] = [
   {
     name: "Marker pairs",
-    weight: 0.55,
-    blurb: "Forced choice: does it prefer well-formed markup?",
+    weight: 0.4,
+    blurb: "Forced choice — not ported yet, so its weight redistributes.",
   },
   {
     name: "Marker positions",
-    weight: 0.2,
+    weight: 0.3,
     blurb: "At each marker in a held-out reply, would it emit that one?",
   },
   {
@@ -475,9 +463,9 @@ const MARKUP_SECTIONS: BenchmarkSection[] = [
     blurb: "Generated replies: do they close and nest correctly?",
   },
   {
-    name: "Reply bits",
-    weight: 0.05,
-    blurb: "Bits per assistant token, reported but not scored.",
+    name: "Restraint",
+    weight: 0.1,
+    blurb: "Markers where the reference has ordinary prose.",
   },
 ]
 
@@ -630,10 +618,4 @@ export function formatDate(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   })
-}
-
-/** Turns `subject_verb_agreement` into `Subject verb agreement`. */
-export function humanizeParadigm(name: string): string {
-  const spaced = name.replace(/_/g, " ")
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }

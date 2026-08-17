@@ -20,6 +20,7 @@ import {
   type Job,
 } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
+import { FormError } from "@/components/ui/error-state"
 
 /**
  * A job's masthead: what it is, where it stands, and the three things you can do
@@ -50,7 +51,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const retry = async () => {
     setBusy(true)
     try {
-      const next = await retryJob(job.id_job)
+      const next = await retryJob(job)
       // Straight to the new job: the point of re-running is to watch the new one,
       // and leaving you on the finished original makes you find it yourself.
       router.push(`/jobs/${next.id_job}`)
@@ -118,9 +119,9 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
           </p>
 
           {job.error && (
-            <p className="mt-3 max-w-prose rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            <FormError className="mt-3 max-w-prose">
               {job.error}
-            </p>
+            </FormError>
           )}
         </div>
 

@@ -3,29 +3,41 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 // A single figure in the stat run: a big tabular value over a muted label. No
-// box, no fill — the hairline rules between items (owned by StatRun) do the
-// separating, so the numbers read like a figure's data line, not a grid of cards.
+// box, no fill of its own — the hairline rules between cells do the separating,
+// so the numbers read like a figure's data line, not a grid of cards.
 export interface Stat {
   label: string
   value: string
 }
 
-// A horizontal run of stats separated by thin vertical hairline rules. Wraps on
-// narrow screens (each item keeps its left rule). Pin it at the top of the main
-// column so the headline numbers are legible at a glance without scrolling.
+// The headline figures, as a divided strip: two columns on a phone, four across
+// from `sm` up.
+//
+// A fixed grid rather than a wrapping row. Wrapping is what made this ragged —
+// the items are different widths, so a row that broke left a short last item and
+// a dangling rule where the new row started, and the break moved as the numbers
+// changed. A grid keeps the columns still, and the rules can then be drawn only
+// where two cells actually meet: never down a row's first cell, never above the
+// first row.
 export function StatRun({ stats }: { stats: Stat[] }) {
   return (
-    <dl className="flex flex-wrap gap-y-3">
-      {stats.map((s) => (
+    <dl className="grid grid-cols-2 sm:grid-cols-4">
+      {stats.map((s, i) => (
         <div
           key={s.label}
-          className="flex min-w-[7rem] flex-col gap-0.5 border-l pr-6 pl-4 first:border-l-0 first:pl-0"
+          className={cn(
+            "flex min-w-0 flex-col gap-1 px-5 py-4",
+            i % 2 === 1 && "border-l border-border",
+            i >= 2 && "border-t border-border",
+            "sm:border-t-0",
+            i % 4 === 0 ? "sm:border-l-0" : "sm:border-l sm:border-border"
+          )}
         >
-          <dt className="text-xs text-muted-foreground">{s.label}</dt>
+          <dt className="truncate text-xs text-muted-foreground">{s.label}</dt>
           {/* The display face, not the UI one: these are the figures the page
               exists to show, and Fraunces' numerals are where the editorial
               character actually lands. Tabular so columns of them still align. */}
-          <dd className="font-display text-2xl font-semibold tabular-nums">
+          <dd className="truncate font-display text-2xl font-semibold tabular-nums">
             {s.value}
           </dd>
         </div>
@@ -41,7 +53,7 @@ export function StatRun({ stats }: { stats: Stat[] }) {
 export function Figure({
   caption,
   aside,
-  minHeight = "16rem",
+  minHeight = "20rem",
   children,
 }: {
   caption: React.ReactNode

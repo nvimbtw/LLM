@@ -5,19 +5,25 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
 import { Input } from "@/components/ui/input"
-import { SignalGate } from "@/components/training/signal-gate"
 import { PresetControls } from "@/components/training/preset-controls"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
 import { useDatasets } from "@/hooks/use-datasets"
+import { useTokenizers } from "@/hooks/use-tokenizers"
 import { useModels } from "@/hooks/use-models"
-import { useSignals } from "@/hooks/use-signals"
 import { cn } from "@/lib/utils"
 import { isFineTune } from "@/lib/training"
 import type {
   CurriculumStage,
   DatasetInfo,
-  DatasetSelection,
   TrainConfig,
   TrainMode,
 } from "@/lib/training"
@@ -36,6 +42,15 @@ type Field = {
   pow2?: boolean
   maxExp?: number
 }
+
+// Every field the rail edits as text. Everything else goes through `Number()`,
+// so a string field missing from here arrives at the engine as 0 — silently, and
+// only for the one field somebody forgot.
+const STRING_FIELDS = new Set<keyof TrainConfig>([
+  "model_name",
+  "base_model_id",
+  "tokenizer_id",
+])
 
 const ARCH_FIELDS: Field[] = [
   { key: "dimensions", label: "Dimensions", pow2: true },
@@ -92,179 +107,6 @@ function defaultLrFor(mode: TrainMode): number {
 
 function isPowerOfTwo(n: number) {
   return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0
-}
-
-// Exponent bounds: 2^0 (1) up through 2^13 (8192) is the default ceiling; fields
-// that go larger (vocab) pass their own `maxExp`.
-const EXP_MIN = 0
-const EXP_MAX = 13
-
-// A power-of-two field, edited as its exponent: the input holds `k` and the value
-// sent upstream is 2^k. This is what makes cycling work — the native ±1 step (from
-// the spinner buttons, the wheel, or ↑/↓) moves the exponent by one, which
-// doubles/halves the value (… 16 · 32 · 64 …) instead of walking 65 · 66 · 67. A
-// muted "= 64" shows the resolved value so the exponent is never cryptic.
-function Pow2Input({
-  value,
-  disabled,
-  maxExp = EXP_MAX,
-  onChange,
-}: {
-  value: number
-  disabled: boolean
-  maxExp?: number
-  onChange: (n: number) => void
-}) {
-  const exp = Math.max(0, Math.round(Math.log2(value > 0 ? value : 1)))
-  const resolved = 2 ** Math.min(maxExp, Math.max(EXP_MIN, exp))
-
-  const setExp = (raw: number) => {
-    if (!Number.isFinite(raw)) return
-    const k = Math.min(maxExp, Math.max(EXP_MIN, Math.round(raw)))
-    onChange(2 ** k)
-  }
-
-  return (
-    <span className="flex items-center justify-end gap-1.5">
-      <span className="text-xs text-muted-foreground tabular-nums">
-        = {resolved}
-      </span>
-      <span className="text-sm text-muted-foreground select-none">2^</span>
-      <Input
-        type="number"
-        step={1}
-        min={EXP_MIN}
-        max={maxExp}
-        value={String(exp)}
-        disabled={disabled}
-        onChange={(e) => setExp(Number(e.target.value))}
-        className="h-8 w-16 text-right tabular-nums"
-      />
-    </span>
-  )
-}
-
-// The pretrain dataset picker: one checkbox row per uploads/ subfolder. Checking
-// a dataset adds it to the run; the count field then dials how many of its files
-// to sample (blank/0 = all), with the total shown as "/ <files>". Reads as an
-// extension of the spec-sheet rail — a hairline list, tabular figures, muted
-// labels — rather than a separate form.
-function DatasetPicker({
-  available,
-  loading,
-  value,
-  disabled,
-  onChange,
-}: {
-  available: DatasetInfo[]
-  loading: boolean
-  value: DatasetSelection[]
-  disabled: boolean
-  onChange: (next: DatasetSelection[]) => void
-}) {
-  const selected = new Map(value.map((d) => [d.name, d.count]))
-
-  const toggle = (name: string, on: boolean) => {
-    if (on) onChange([...value, { name, count: 0 }])
-    else onChange(value.filter((d) => d.name !== name))
-  }
-
-  const setCount = (name: string, count: number, max: number) => {
-    const clamped = Number.isFinite(count)
-      ? Math.min(max, Math.max(0, Math.floor(count)))
-      : 0
-    onChange(value.map((d) => (d.name === name ? { ...d, count: clamped } : d)))
-  }
-
-  const totalFiles = value.reduce((sum, d) => {
-    const info = available.find((a) => a.name === d.name)
-    if (!info) return sum
-    return sum + (d.count > 0 ? Math.min(d.count, info.files) : info.files)
-  }, 0)
-
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Datasets</span>
-        {value.length > 0 && (
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {totalFiles.toLocaleString()} files
-          </span>
-        )}
-      </div>
-
-      {loading ? (
-        <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
-          Loading datasets…
-        </p>
-      ) : available.length === 0 ? (
-        <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
-          No datasets found. Add a folder of .txt files under
-          <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
-            data/raw/uploads/
-          </code>
-          .
-        </p>
-      ) : (
-        <ul className="divide-y rounded-lg border">
-          {available.map((d) => {
-            const checked = selected.has(d.name)
-            const count = selected.get(d.name) ?? 0
-            const rowId = `dataset-${d.name}`
-            return (
-              <li
-                key={d.name}
-                className="flex items-center justify-between gap-3 px-2.5 py-2"
-              >
-                <label
-                  htmlFor={rowId}
-                  className={cn(
-                    "flex min-w-0 items-center gap-2",
-                    !disabled && "cursor-pointer"
-                  )}
-                >
-                  <Checkbox
-                    id={rowId}
-                    checked={checked}
-                    disabled={disabled}
-                    onCheckedChange={(on) => toggle(d.name, on)}
-                  />
-                  <span className="truncate text-sm">{d.name}</span>
-                </label>
-
-                <span className="flex w-32 shrink-0 items-center justify-end gap-1.5 tabular-nums">
-                  {checked ? (
-                    <>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={d.files}
-                        step={1}
-                        value={count === 0 ? "" : String(count)}
-                        placeholder="all"
-                        disabled={disabled}
-                        onChange={(e) =>
-                          setCount(d.name, Number(e.target.value), d.files)
-                        }
-                        className="h-8 w-16 text-right tabular-nums"
-                      />
-                      <span className="w-12 text-xs text-muted-foreground">
-                        / {d.files.toLocaleString()}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="pr-1 text-xs text-muted-foreground">
-                      {d.files.toLocaleString()} files
-                    </span>
-                  )}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </div>
-  )
 }
 
 // The curriculum builder: an ordered list of stages, each its own dataset
@@ -458,11 +300,14 @@ function validateName(name: string): string[] {
 
 // Mirrors the backend's validate_config / validate_sft so the user sees the
 // constraints before submitting. Returns a list of human-readable problems.
-function validate(cfg: TrainConfig): string[] {
+function validate(cfg: TrainConfig, inheritsBase = false): string[] {
   const errs = validateName(cfg.model_name)
 
   if (isFineTune(cfg.mode)) {
-    if (!cfg.base_model_id) errs.push("Select a base model to fine-tune.")
+    // A follow-up has no base to select: it fine-tunes whatever the job before it
+    // produces, which is exactly why it is a follow-up.
+    if (!cfg.base_model_id && !inheritsBase)
+      errs.push("Select a base model to fine-tune.")
     if (
       cfg.mode === "kto" &&
       !(Number.isFinite(cfg.beta) && (cfg.beta ?? 0) > 0)
@@ -558,6 +403,12 @@ function Row({
 // for the rail and right-aligned with tabular figures.
 const fieldInputClass = "h-8 w-24 text-right tabular-nums"
 
+// "No tokenizer chosen" needs a value of its own: an empty string is how a
+// Select says *nothing is selected*, and this option is a real choice — the one
+// every run made before vocabulary builds existed. Mapped back to `undefined`
+// on the way out, which is what the config means by it.
+const LEARN_WITH_RUN = "learn-with-run"
+
 export interface ParamsRailProps {
   cfg: TrainConfig
   onChange: (cfg: TrainConfig) => void
@@ -566,6 +417,32 @@ export interface ParamsRailProps {
   // Advances when a new model is registered, so the base-model picker refetches
   // and the just-trained model is selectable without a reload.
   modelsRefreshKey?: unknown
+  /**
+   * Render as a *step* inside another composer rather than as a composer of its
+   * own: a run queued to follow another one, which starts when that one lands.
+   *
+   * Three things follow from that and all three are the same fact. It emits no
+   * `<form>` and no submit button, because it sits inside somebody else's form and
+   * nested forms are not a thing. It shows no base-model picker, because the base
+   * is whatever the job before it produces — that is what makes it a follow-up.
+   * And it shows no presets, since a preset carries a base model and an
+   * architecture, neither of which this step gets to choose.
+   */
+  followUp?: boolean
+  /**
+   * Rendered inside the form, immediately above the submit button.
+   *
+   * The one thing that has to sit there is the follow-up list: it is part of what
+   * the button submits, so putting it after the button — which is where a sibling
+   * of this component lands — would read as a control for something else.
+   */
+  footer?: React.ReactNode
+  /**
+   * Validation problems, reported upward. A follow-up has no submit button of its
+   * own, so the composer it sits in is what has to refuse to submit — this is how
+   * it finds out. Only called in `followUp` mode.
+   */
+  onValidity?: (errors: string[]) => void
 }
 
 // The left-rail params panel: the run's identity + knobs as a hairline definition
@@ -577,20 +454,25 @@ export function ParamsRail({
   disabled,
   onStart,
   modelsRefreshKey,
+  followUp = false,
+  onValidity,
+  footer,
 }: ParamsRailProps) {
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
+  // A fine-tune picks from the SFT conversation sets, a pretrain from the prose
+  // corpora — two different folders on disk, so the catalogue follows the mode.
   const { datasets: availableDatasets, isLoading: datasetsLoading } =
-    useDatasets()
+    useDatasets(isFineTune(cfg.mode))
+  const { tokenizers, isLoading: tokenizersLoading } = useTokenizers()
+  // A vocabulary whose directory has gone cannot be trained against, and one a
+  // run derived for itself was never a choice — it is listed on the tokenizers
+  // page, not offered here.
+  const offerable = tokenizers.filter((t) => t.hasVocab && !t.implicit)
   // Only meaningful in preference mode, but hooks can't be conditional — and it
   // is one small count, read once per mount.
-  const { status: signals } = useSignals(modelsRefreshKey)
 
   const setField = (key: keyof TrainConfig, value: string) => {
-    onChange({
-      ...cfg,
-      [key]:
-        key === "model_name" || key === "base_model_id" ? value : Number(value),
-    })
+    onChange({ ...cfg, [key]: STRING_FIELDS.has(key) ? value : Number(value) })
   }
 
   // Switching mode nudges the learning rate to that mode's sane default — but only
@@ -625,7 +507,14 @@ export function ParamsRail({
       ]
     : isSft
       ? RUN_FIELDS
-      : [...ARCH_FIELDS, ...runFields]
+      : // A named vocabulary carries its own size, so the field would be a control
+        // wired to nothing — the engine ignores `max_vocab` whenever one is named.
+        [
+          ...ARCH_FIELDS.filter(
+            (f) => !(f.key === "max_vocab" && cfg.tokenizer_id)
+          ),
+          ...runFields,
+        ]
 
   // Toggle curriculum mode: turning it on seeds a first stage from the current
   // flat selection (so nothing is lost); turning it off clears the stages and
@@ -648,11 +537,23 @@ export function ParamsRail({
   // The base id is derived: if the user hasn't explicitly picked one, default to
   // the first available model, keeping the select controlled and the submit correct.
   const baseModelId = cfg.base_model_id || models[0]?.id
-  const effectiveCfg: TrainConfig = isSft
-    ? { ...cfg, base_model_id: baseModelId }
-    : cfg
+  const effectiveCfg: TrainConfig = followUp
+    ? // Stripped rather than left alone: the server refuses a follow-up that names
+      // its own base, so a stale id carried in from `?from=` would be a 400 rather
+      // than a field nobody can see.
+      { ...cfg, base_model_id: undefined }
+    : isSft
+      ? { ...cfg, base_model_id: baseModelId }
+      : cfg
 
-  const errors = validate(effectiveCfg)
+  const errors = validate(effectiveCfg, followUp)
+  // Reported to the composer this step sits in, which owns the submit button.
+  // Keyed on the joined text so an unchanged list doesn't re-notify every render.
+  const errorKey = errors.join("\n")
+  React.useEffect(() => {
+    if (followUp) onValidity?.(errorKey ? errorKey.split("\n") : [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followUp, errorKey])
   const headDim =
     cfg.heads > 0 && cfg.dimensions % cfg.heads === 0
       ? cfg.dimensions / cfg.heads
@@ -665,14 +566,21 @@ export function ParamsRail({
     onStart(effectiveCfg)
   }
 
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <PresetControls
-        currentConfig={effectiveCfg}
-        disabled={disabled}
-        onLoad={onChange}
-        modelsRefreshKey={modelsRefreshKey}
-      />
+  // Held as a value rather than returned directly, because a follow-up is a step
+  // inside somebody else's form and so emits neither a form of its own (nested
+  // forms are not valid) nor a submit button (the composer it sits in owns the one
+  // submit). Everything between the two is identical, which is why this is a prop
+  // rather than a second rail.
+  const body = (
+    <>
+      {!followUp && (
+        <PresetControls
+          currentConfig={effectiveCfg}
+          disabled={disabled}
+          onLoad={onChange}
+          modelsRefreshKey={modelsRefreshKey}
+        />
+      )}
 
       {/* Mode toggle — two, not four.
           Self-train (RAFT) and preference (KTO) are stages of a cycle, not runs a
@@ -704,8 +612,16 @@ export function ParamsRail({
               key={mode}
               type="button"
               size="sm"
-              variant={cfg.mode === mode ? "default" : "ghost"}
-              className="flex-1"
+              // The selected half is a surface step and a weight change, not a
+              // filled primary. Two choices sitting inside a bordered track are
+              // already legible as a pair; painting one of them in the accent
+              // made the quietest decision on the form its loudest mark, and it
+              // competed with the actual primary action at the bottom of it.
+              variant={cfg.mode === mode ? "secondary" : "ghost"}
+              className={cn(
+                "flex-1",
+                cfg.mode === mode ? "font-medium" : "text-muted-foreground"
+              )}
               disabled={disabled}
               onClick={() => setMode(mode)}
             >
@@ -731,25 +647,80 @@ export function ParamsRail({
       </div>
 
       <dl>
-        {isSft && (
+        {isSft && !followUp && (
           <Row label="Base model">
-            <select
-              className="h-8 w-44 truncate rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
+            <Select
               value={baseModelId ?? ""}
-              onChange={(e) => setField("base_model_id", e.target.value)}
+              // The Select reports `string | null`; the field is a plain id.
+              onValueChange={(v) => setField("base_model_id", v ?? "")}
               disabled={disabled || modelsLoading || models.length === 0}
             >
-              {models.length === 0 && (
-                <option value="">
-                  {modelsLoading ? "Loading…" : "No models"}
-                </option>
-              )}
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger size="sm" className="h-8 w-44">
+                <SelectValue
+                  placeholder={modelsLoading ? "Loading…" : "No models"}
+                >
+                  {(value: string | null) =>
+                    models.find((m) => m.id === value)?.name ?? ""
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {models.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Row>
+        )}
+
+        {!isSft && (
+          <Row label="Tokenizer">
+            <Select
+              value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
+              onValueChange={(v) =>
+                onChange({
+                  ...cfg,
+                  tokenizer_id:
+                    !v || v === LEARN_WITH_RUN ? undefined : v,
+                })
+              }
+              disabled={disabled || tokenizersLoading}
+            >
+              <SelectTrigger size="sm" className="h-8 w-44">
+                <SelectValue>
+                  {(value: string | null) =>
+                    !value || value === LEARN_WITH_RUN
+                      ? "Learn one with the run"
+                      : (offerable.find((t) => t.id === value)?.name ?? value)
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {/* A real option, not a placeholder: learning one with the run
+                    is what every run did before builds existed, and it stays
+                    the default. As a placeholder it would read as "not loaded
+                    yet". */}
+                <SelectItem value={LEARN_WITH_RUN}>
+                  Learn one with the run
+                </SelectItem>
+                {offerable.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.name}
+                    {t.vocabSize ? ` · ${t.vocabSize.toLocaleString()}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Row>
+        )}
+
+        {isSft && !followUp && (
+          <Row label="Tokenizer">
+            <span className="text-sm text-muted-foreground">
+              Inherited from the base model
+            </span>
           </Row>
         )}
 
@@ -789,6 +760,37 @@ export function ParamsRail({
           )
         )}
       </dl>
+
+      {isSft && (
+        <div className="space-y-3">
+          <DatasetPicker
+            available={availableDatasets}
+            loading={datasetsLoading}
+            value={cfg.datasets ?? []}
+            disabled={disabled}
+            showCounts={false}
+            emptyHint={
+              <>
+                No SFT sets found. Fetch conversations into
+                <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
+                  engine/data/sft/
+                </code>
+                first.
+              </>
+            }
+            onChange={(datasets) => onChange({ ...cfg, datasets })}
+          />
+          {(cfg.datasets?.length ?? 0) === 0 &&
+            availableDatasets.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Nothing selected trains on <em>every</em> set on disk, including
+                any added later. Pick the sets explicitly — a thinking set
+                folded into a no-think run is how reasoning traces get stripped
+                and trained as answer-only.
+              </p>
+            )}
+        </div>
+      )}
 
       {!isSft && (
         <div className="space-y-3">
@@ -844,15 +846,6 @@ export function ParamsRail({
         </div>
       )}
 
-      {(isKto || isRaft) && (
-        <SignalGate
-          status={signals}
-          modelId={baseModelId}
-          mode={isRaft ? "raft" : "kto"}
-          disabled={disabled}
-        />
-      )}
-
       {isSft ? (
         <p className="text-xs text-muted-foreground">
           Architecture (dimensions, context, heads, layers) is inherited from
@@ -901,34 +894,31 @@ export function ParamsRail({
         </ul>
       )}
 
-      <Button
-        type="submit"
-        // A preference run with too little rated data is refused at enqueue, so
-        // the button matches that rather than letting the form post into a 400.
-        // `signals === null` (still loading, or the count failed) leaves it
-        // enabled: the server is the authority, and disabling on a failed read
-        // would strand the run behind a fetch that may never succeed.
-        disabled={
-          disabled ||
-          errors.length > 0 ||
-          (isKto && signals?.ready === false) ||
-          (isRaft && signals?.raft_ready === false)
-        }
-        className="w-full"
-      >
-        {disabled
-          ? isSft
-            ? "Fine-tuning…"
-            : "Training…"
-          : (isKto && signals?.ready === false) ||
-              (isRaft && signals?.raft_ready === false)
-            ? "Not enough signals yet"
-            : isRaft
-              ? "Start self-train"
-              : isSft
-                ? "Start fine-tune"
-                : "Start training"}
-      </Button>
+      {footer}
+
+      {!followUp && (
+        <Button
+          type="submit"
+          disabled={disabled || errors.length > 0}
+          className="w-full"
+        >
+          {disabled
+            ? isSft
+              ? "Fine-tuning…"
+              : "Training…"
+            : isSft
+              ? "Start fine-tune"
+              : "Start training"}
+        </Button>
+      )}
+    </>
+  )
+
+  return followUp ? (
+    <div className="space-y-4">{body}</div>
+  ) : (
+    <form onSubmit={submit} className="space-y-4">
+      {body}
     </form>
   )
 }

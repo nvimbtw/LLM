@@ -14,7 +14,6 @@ import {
   type Job,
   type JobBoard,
 } from "@/lib/jobs"
-import { watchBoard } from "@/lib/jobs-socket"
 
 const EMPTY: JobBoard = {
   active: [],
@@ -25,13 +24,17 @@ const EMPTY: JobBoard = {
   paused: false,
 }
 
+//: How often the board resyncs. A queue moves when a job is queued, starts or
+//: ends — rare enough that a poll says the same thing a nudge would, and there is
+//: no second live connection to keep alive across sleeps, restarts and blips.
+const POLL_MS = 3000
+
 /**
  * Owns the queue board and keeps it live.
  *
- * The socket carries nudges rather than rows, so every change funnels through one
- * refetch of `GET /jobs`. That costs a round trip per change — which is rare, the
- * board only moves when a job is queued, starts, or ends — and buys a single
- * description of a job instead of a REST shape and a socket shape drifting apart.
+ * Every change funnels through one refetch of `GET /runs`, so there is a single
+ * description of a job rather than a REST shape and a socket shape that drift
+ * apart.
  */
 export function useJobs(enabled = true) {
   const [board, setBoard] = React.useState<JobBoard>(EMPTY)
@@ -79,32 +82,22 @@ export function useJobs(enabled = true) {
     }
   }, [])
 
-  // Advances the running job's progress in place. Only the two fields the event
-  // carries are touched, so a refetch racing this can't be undone by it.
-  const patchProgress = React.useCallback(
-    (idJob: string, progress: number, stage: string | null) => {
-      setBoard((prev) => {
-        const index = prev.active.findIndex((job) => job.id_job === idJob)
-        if (index === -1) return prev
-        const active = [...prev.active]
-        active[index] = { ...active[index], progress, stage }
-        return { ...prev, active }
-      })
-    },
-    []
-  )
-
   React.useEffect(() => {
     // The queue is admin-only, so a non-admin session must not fetch it or open
     // a socket for it — both would just collect 403s for the whole session.
-    if (!enabled) {
-      setIsLoading(false)
-      return
-    }
-    void refresh()
-    const stop = watchBoard({ onChanged: refresh, onProgress: patchProgress })
-    return stop
-  }, [enabled, refresh, patchProgress])
+    // Nothing is cleared here: a disabled board reports itself as loaded and
+    // empty below, derived rather than written, so this stays a plain guard.
+    if (!enabled) return
+    // Deferred by a microtask instead of called straight from the effect body.
+    // Unlike the other hooks this one cannot inline its fetch — `refresh` owns
+    // the generation guard and the "the page you were on no longer exists" hop,
+    // and a second copy of that would be a second thing to keep correct. Its
+    // state writes are already after an `await`; the deferral only makes that
+    // legible to the compiler's effect analysis. Timing is otherwise unchanged.
+    void Promise.resolve().then(refresh)
+    const timer = setInterval(refresh, POLL_MS)
+    return () => clearInterval(timer)
+  }, [enabled, refresh])
 
   // Every mutation refetches rather than patching local state: the server decides
   // ordering and status, and a queued job the runner claimed mid-request would
@@ -140,7 +133,7 @@ export function useJobs(enabled = true) {
     [act]
   )
   const retry = React.useCallback(
-    (id: string) => act(() => retryJob(id), "Re-queued."),
+    (job: Job) => act(() => retryJob(job), "Re-queued."),
     [act]
   )
 
@@ -173,29 +166,31 @@ export function useJobs(enabled = true) {
 
   const historyPages = lastPage(board.historyTotal) + 1
 
-  // One running job *per lane*, not one overall: the two runners proceed
-  // independently, so a generation run and a training run are both "now", and
-  // picking the first of them would leave the other showing nowhere on the page.
+  // One device, one line, so one job is running.
   const isLive = (job: Job) =>
     job.status === "running" || job.status === "cancelling"
-  const running: Job | null =
-    board.active.find((j) => isLive(j) && j.lane === "device") ?? null
-  const runningNetwork: Job | null =
-    board.active.find((j) => isLive(j) && j.lane === "network") ?? null
+  const running: Job | null = board.active.find(isLive) ?? null
   const queued = board.active.filter((j) => j.status === "queued")
+  // Kept apart from `queued` because they are not in the line: a waiting job runs
+  // when the job it follows finishes, which no queue position can express. The band
+  // draws them as a chain under the queue instead of as numbered positions.
+  const waiting = board.active.filter((j) => j.status === "waiting")
 
   return {
     board,
     running,
-    runningNetwork,
     queued,
+    waiting,
     history: board.history,
     historyTotal: board.historyTotal,
     historyPage,
     historyPages,
     goToHistoryPage,
     paused: board.paused,
-    isLoading,
+    // A disabled board never loads, so it is never loading. Derived rather than
+    // written from the effect, which is also what keeps a non-admin session out
+    // of a permanent spinner.
+    isLoading: enabled && isLoading,
     error,
     refresh,
     cancel,

@@ -33,6 +33,10 @@ export function SettingsDialog() {
   }, [commandOpen])
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Guarded because `key` is not always a string despite its type: autofill
+      // and password managers dispatch synthetic keydowns without it. See the
+      // same guard in `theme-provider.tsx`.
+      if (typeof e.key !== "string") return
       if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         setCommandOpen(!openRef.current)
@@ -151,7 +155,7 @@ function SettingRow({ setting }: { setting: SettingDef }) {
             </span>
             {/* The number belongs beside the label, not under the thumb: a
                 value that moves with the drag is unreadable while dragging. */}
-            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+            <span className="font-mono text-xs text-muted-foreground tabular-nums">
               {current.toFixed(setting.precision)}
             </span>
           </div>

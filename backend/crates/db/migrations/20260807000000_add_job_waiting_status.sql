@@ -1,0 +1,21 @@
+-- A seventh job status: `waiting`.
+--
+-- A waiting row is a job that has been fully authored but cannot run yet, because
+-- it consumes a model another job has not produced. It is not queued — `claim_next`
+-- filters on `status = 'queued'` and never sees it — and it holds no meaningful
+-- rank until the job it follows lands, at which point `job::promote` fills in the
+-- model and moves it into the line.
+--
+-- It is a status rather than a `blocked` boolean beside `queued` because every
+-- existing query in this schema discriminates on `status` alone. A queued-but-not-
+-- really row would have been invisible to that discrimination: `claim_next` would
+-- have taken it, and every board query would have had to learn a second column to
+-- stay correct.
+--
+-- ALTER TYPE ... ADD VALUE cannot run inside a transaction block on older
+-- PostgreSQL, and sqlx wraps each migration in one. IF NOT EXISTS makes this
+-- re-runnable; on PG 12+ the in-transaction restriction is lifted for a type that
+-- was not created in the same transaction, which is the case here. The new value is
+-- deliberately not *used* below — that stays forbidden until this transaction
+-- commits, so the column that stores the dependency is a separate file.
+ALTER TYPE job_status ADD VALUE IF NOT EXISTS 'waiting';

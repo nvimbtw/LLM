@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Populate the benchmark's reference corpus at backend/data/eval/corpus/.
+Populate the benchmark's reference corpus at engine/data/eval/corpus/.
 
 The benchmark's primary number is held-out bits-per-byte: how well the model
 predicts English it was never trained on. That only means anything if the text
 really is held out, so this writes to `data/eval/`, which is deliberately outside
-`data/raw/uploads/` — anything under uploads is selectable as training data in the
+`engine/data/input/` — anything under input is selectable as training data in the
 UI, and a held-out set that can be accidentally trained on is not a held-out set.
 
 By default it pulls the TinyStories **train** split, because
@@ -24,13 +24,14 @@ Usage:
     python3 prepare_eval_corpus.py --source wikipedia
 """
 
+import paths
 import argparse
 import glob
 import os
 
 from huggingface_hub import hf_hub_download
 
-OUT_DIR = "/home/x_x/Programming/LLM/backend/data/eval/corpus"
+OUT_DIR = paths.eval_corpus_dir()
 EOT = "<|endoftext|>"
 
 # Held-out sources. TinyStories train is the default because the uploads dir is

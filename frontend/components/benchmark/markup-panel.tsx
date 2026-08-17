@@ -3,7 +3,6 @@ import {
   NO_VALUE,
   formatNumber,
   formatPercent,
-  humanizeParadigm,
 } from "@/lib/benchmark"
 
 /**
@@ -15,41 +14,10 @@ import {
  * they are laid out legibly and left alone until use says otherwise.
  */
 export function MarkupPanel({ report }: { report: MarkupReport }) {
-  const { pairs, positions, structure } = report.markup
+  const { positions, structure } = report
 
   return (
     <div className="flex flex-col gap-6">
-      <section className="rounded-lg border border-border bg-background px-6 py-5">
-        <h2 className="text-sm font-medium">Marker pairs</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Forced choice between two strings with identical prose and the same
-          number of markers. 50% is chance.
-        </p>
-        <dl className="mt-5 divide-y divide-border/60">
-          {pairs.paradigms.map((paradigm) => (
-            <div
-              key={paradigm.name}
-              className="flex items-baseline justify-between gap-4 py-2.5"
-            >
-              <dt className="min-w-0">
-                <span className="block text-sm">
-                  {humanizeParadigm(paradigm.name)}
-                </span>
-                <span className="block text-xs text-muted-foreground">
-                  {paradigm.description}
-                </span>
-              </dt>
-              <dd className="shrink-0 text-sm tabular-nums">
-                {formatPercent(paradigm.accuracy)}
-                <span className="ml-2 text-xs text-muted-foreground">
-                  {paradigm.pairs}
-                </span>
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-
       <div className="grid gap-6 xl:grid-cols-2">
         <section className="rounded-lg border border-border bg-background px-6 py-5">
           <h2 className="text-sm font-medium">Marker placement</h2>
@@ -110,10 +78,7 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
               <Row
                 label="Markers per 100 tokens"
                 value={formatNumber(structure.marker_density, 2)}
-                hint={`Held-out replies use ${formatNumber(
-                  structure.reference_marker_density,
-                  2
-                )}`}
+                hint={`over ${structure.tokens_generated} tokens generated`}
               />
             </dl>
           ) : (
@@ -121,35 +86,6 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
           )}
         </section>
       </div>
-
-      {structure && structure.samples.length > 0 && (
-        <section className="rounded-lg border border-border bg-background px-6 py-5">
-          <h2 className="text-sm font-medium">What it wrote</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            So the numbers above can be checked against the replies they
-            describe.
-          </p>
-          <ul className="mt-5 space-y-4">
-            {structure.samples.map((sample, i) => (
-              <li key={i} className="border-l-2 border-border pl-4">
-                <p className="text-xs text-muted-foreground">{sample.prompt}</p>
-                <p className="mt-1 font-mono text-xs whitespace-pre-wrap">
-                  {sample.completion || NO_VALUE}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {report.chat && (
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {formatNumber(report.chat.bits_per_token, 3)} bits per assistant token
-          over {report.chat.tokens_scored} tokens in {report.chat.conversations}{" "}
-          held-out conversations. Reported, not scored — a base model has never
-          seen the chat scaffold.
-        </p>
-      )}
     </div>
   )
 }

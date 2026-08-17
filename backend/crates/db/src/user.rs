@@ -1,13 +1,7 @@
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, sqlx::Type, Serialize, Deserialize)]
-#[sqlx(type_name = "access_level", rename_all = "lowercase")]
-pub enum AccessLevel {
-    User,
-    Admin,
-}
+pub use auth::AccessLevel;
 
 pub struct User {
     pub id_user: Uuid,
@@ -58,8 +52,7 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::E
     .await
 }
 
-// `username`/`password_hash` are optional so a PUT can update either field
-// independently; COALESCE keeps the existing column value when an arg is NULL.
+/// COALESCE keeps the existing value, so an omitted field is left alone.
 pub async fn update(
     pool: &PgPool,
     id: Uuid,
@@ -81,8 +74,7 @@ pub async fn update(
     .await
 }
 
-// Returns whether a row was actually deleted, so the route layer can map a
-// missing user to 404 rather than treating a no-op delete as success.
+/// True when a row was actually removed, so a no-op delete is not a success.
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM users WHERE id_user = $1", id)
         .execute(pool)

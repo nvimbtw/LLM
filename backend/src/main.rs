@@ -12,11 +12,17 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("failed to connect to database / run migrations");
 
-    // Reconciles orphaned rows and starts the runners and the cycle driver. The
-    // two handles come back for the HTTP layer to share: cloning `web::Data`
-    // clones the Arc, not the driver, so a job enqueued on one worker is visible
-    // to a socket that lands on another.
-    let jobs = jobs::start(pool.clone()).await;
+    // Spawned here, as a child of the server, because it holds the GPU for as
+    // long as the server lives — and held to the end of `main`, because dropping
+    // the handle kills it.
+    let engine_config = engine::EngineConfig::from_env();
+    let service_secret = engine_config.service_secret.clone();
+    let engine = engine::Engine::start(engine_config)
+        .await
+        .expect("failed to start the python engine");
+    println!("engine ready at {}", engine.base_url());
+
+    let proxy = engine::Proxy::new(engine.base_url(), engine::AUDIENCE, service_secret);
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -32,11 +38,15 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
-            .app_data(web::Data::new(jobs.queue.clone()))
-            .app_data(web::Data::new(jobs.cycles.clone()))
+            .app_data(web::Data::new(proxy.clone()))
             .configure(api::configure)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
-    .await
+    .await?;
+
+    // Explicit, so a graceful shutdown also stops the engine rather than leaving
+    // it holding the port the next boot needs.
+    engine.shutdown();
+    Ok(())
 }

@@ -7,14 +7,15 @@
 //   <|codeblock|>...code...<|/codeblock|>
 //   <|divider|>
 //
-// Three of them are rendered here but not yet emitted by any model — the parser
+// Two of them are rendered here but not yet emitted by any model — the parser
 // and the renderer come first so there is something to generate SFT *against*:
 //   <|quote|>Quoted text<|/quote|>
 //   <|warn|>Something the reader should not miss<|/warn|>
-//   <|reply|>message-id<|/reply|>
-// `reply` names an earlier message in the same conversation; resolving the id is
-// the renderer's job (components/chat/message-refs.tsx), not the parser's, which
-// only has to hand over the id as text.
+//
+// `<|reply|>` is still parsed, because stored messages may contain one, but the
+// renderer drops it: the reply-reference feature is gone. The marker keeps its
+// reserved id on the engine side — the ids are positional — and the grammar in
+// llm/chat/markup.py already forbids the model from emitting it.
 //
 // Those token names are mapped here onto the render vocabulary shared with the
 // user-input parser (lib/user-parser.ts) and the renderer (rich-message.tsx) —

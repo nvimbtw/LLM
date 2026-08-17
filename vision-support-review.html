@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision support — review of the exploration report, and the data question</title>
+<style>
+  :root {
+    --ink: #1a1d21;
+    --muted: #5b6470;
+    --line: #dde3ea;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --accent: #1f4fa3;
+    --good: #1c7c3c;
+    --warn: #9a5b00;
+    --bad: #a3302c;
+    --code-bg: #0f1728;
+    --code-ink: #dbe6f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0 1rem 6rem;
+    background: var(--bg);
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.7rem; margin: 2.2rem 0 .4rem; }
+  h2 { font-size: 1.25rem; margin: 2.8rem 0 .6rem; padding-top: 1.4rem; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.02rem; margin: 1.6rem 0 .4rem; }
+  .subtitle { color: var(--muted); margin: 0 0 1.6rem; font-size: .95rem; }
+  p, li { font-size: .95rem; }
+  code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: .86em;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: .05em .35em;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-size: .82rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; margin: 1rem 0; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: .05em .5em; border-radius: 999px; font-size: .78rem; font-weight: 600; white-space: nowrap; }
+  .pill.ok { background: #e3f2e8; color: var(--good); }
+  .pill.warn { background: #fdf0d8; color: var(--warn); }
+  .pill.no { background: #fbe4e3; color: var(--bad); }
+  .kicker { color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; }
+  .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1.1rem 1.3rem; margin: 1.5rem 0; }
+  .callout { border-left: 3px solid var(--warn); background: #fdf7ec; padding: .7rem 1rem; border-radius: 0 6px 6px 0; margin: 1rem 0; font-size: .92rem; }
+  .callout.good { border-color: var(--good); background: #f0f8f2; }
+  .callout.bad { border-color: var(--bad); background: #fcf1f0; }
+  .dim { color: var(--muted); font-size: .85rem; }
+  .tag { font-size: .8rem; color: var(--muted); }
+  footer { margin-top: 4rem; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  .src { font-size: .8rem; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+<main>
+
+<div class="kicker">Review · read-only pass over engine/ · no code changed</div>
+<h1>Is it really that simple? — reviewing the vision report, and choosing the data</h1>
+<p class="subtitle">Every claim in <code>vision-support-report.html</code> checked against the files it cites, plus a survey of what Hugging Face actually has for the SFT stage at this model's scale.</p>
+
+<div class="summary">
+<strong>Short answer: the trunk half is right, the training half is not.</strong> The report's read of <code>transformer.py</code>, <code>checkpoint.py</code> and <code>special.py</code> is accurate, and its central claim — that the decoder, the KV cache, the sampler and the markup grammar are genuinely untouched — holds up. But it costed the training path at 40–60 lines while never opening <code>train/plan.py</code>, and that is where the actual work is: <strong>there is no per-example batching in this repo at all</strong>. The corpus is one flat <code>uint16</code> stream sliced into arbitrary <code>[batch, ctx_window]</code> windows, so there is nothing to hang an image on. Its ~400-line estimate is roughly half the real number.<br><br>
+Two of the three "load-bearing edits" in its §7 sketch <strong>do not run as written</strong>, and its recommended tokenizer change forces a full re-pack of every corpus for no reason — there is a free way to do the same thing. Both are fixed below.
+</div>
+
+<h2>1. Verdict on each claim</h2>
+<p>Checked against <code>engine/llm/model/transformer.py</code>, <code>model/checkpoint.py</code>, <code>config.py</code>, <code>corpus/special.py</code>, <code>corpus/vocab.py</code>, <code>corpus/pack.py</code>, <code>corpus/sft.py</code>, <code>chat/template.py</code>, <code>orchestrate/chat.py</code>, <code>train/loop.py</code>, <code>train/plan.py</code>, <code>requirements.txt</code>.</p>
+<div class="scroll">
+<table>
+  <tr><th>Claim in the report</th><th>Verdict</th><th>Evidence</th></tr>
+  <tr>
+    <td>41 special slots used, 23 reserved and free</td>
+    <td><span class="pill ok">correct</span></td>
+    <td><code>special.py</code> — the list holds exactly 41 entries against <code>SPECIAL_BLOCK = 64</code></td>
+  </tr>
+  <tr>
+    <td>Context window guarded by an explicit raise; RoPE tables precomputed to <code>ctx_window</code></td>
+    <td><span class="pill ok">correct</span></td>
+    <td><code>transformer.py:271</code> raises; <code>:244</code> builds <code>[ctx_window, head_dim/2]</code> buffers</td>
+  </tr>
+  <tr>
+    <td>KV cache and the decode loop are untouched</td>
+    <td><span class="pill ok">correct</span></td>
+    <td><code>transformer.py:127</code> concatenation; <code>is_causal = seq &gt; 1</code> at <code>:140</code>. Images ride in the prefix pass</td>
+  </tr>
+  <tr>
+    <td>Sampler, markup grammar, diagnostics untouched</td>
+    <td><span class="pill ok">correct</span></td>
+    <td><code>sample.pick</code> takes a logit row; <code>OpenBlocks</code> masks token ids; <code>Collector</code> reads trunk modules</td>
+  </tr>
+  <tr>
+    <td>Checkpoint is v1, strict load, version mismatch raises</td>
+    <td><span class="pill ok">correct</span></td>
+    <td><code>checkpoint.py:52</code></td>
+  </tr>
+  <tr>
+    <td>No torchvision / Pillow / timm in the repo</td>
+    <td><span class="pill ok">correct</span></td>
+    <td><code>requirements.txt</code>. Note it <em>does</em> already carry <code>huggingface_hub</code> and <code>pyarrow</code> (via <code>tokenizers</code>) — relevant to §4</td>
+  </tr>
+  <tr>
+    <td><strong>"The loss and masking logic itself is untouched"</strong></td>
+    <td><span class="pill no">false</span></td>
+    <td>Under the report's own concat-at-front design, logits become <code>[b, n_img+seq, V]</code> while targets stay <code>[b, seq]</code>. <code>_loss</code> (<code>loop.py:412</code>) reshapes both flat and multiplies — a shape error on the first step</td>
+  </tr>
+  <tr>
+    <td><strong>The §7 <code>forward</code> sketch</strong></td>
+    <td><span class="pill no">does not run</span></td>
+    <td><code>seq</code>, the ctx guard, and the <code>cos</code>/<code>sin</code> slices are all computed from <code>idx.shape[1]</code> <em>before</em> the concat. RoPE tables come back the wrong length, and the window guard never sees the image tokens it exists to catch</td>
+  </tr>
+  <tr>
+    <td><strong>Training loop: 40–60 LOC</strong></td>
+    <td><span class="pill no">off by ~5&times;</span></td>
+    <td>See §2. There is no per-example batch to attach an image to</td>
+  </tr>
+  <tr>
+    <td><strong>Adding <code>&lt;|image|&gt;</code> "forces a rebuild"</strong></td>
+    <td><span class="pill warn">understated, and avoidable</span></td>
+    <td>See §3. It cascades into re-packing every corpus — and there is a zero-cost alternative</td>
+  </tr>
+  <tr>
+    <td>Checkpoint needs <code>CHECKPOINT_VERSION → 2</code></td>
+    <td><span class="pill warn">unnecessary</span></td>
+    <td><code>checkpoint.py:20–22</code> documents the exact opposite precedent: <code>rope_base</code> was added <em>without</em> a bump because the constructor defaults it. A <code>vision: VisionConfig | None = None</code> parameter is the same case. Bumping would make every existing model raise until a fallback is written — a self-inflicted problem</td>
+  </tr>
+  <tr>
+    <td>Encoder must be covered by the "20&times; tokens/param" rule (~+220M tokens)</td>
+    <td><span class="pill warn">overreach</span></td>
+    <td>Chinchilla is a scaling law for autoregressive text LMs. It says nothing about a ViT trained on image–caption pairs; the number is invented</td>
+  </tr>
+  <tr>
+    <td>"10–13 model-side touch points" is the end-to-end cost</td>
+    <td><span class="pill warn">framing</span></td>
+    <td>Fairly scoped out, but then: no image storage exists anywhere in <code>storage.py</code>, the Rust <code>runs.rs</code> contract carries no image field, and the frontend has no upload. Those are real and unlisted</td>
+  </tr>
+</table>
+</div>
+
+<h2>2. The real problem: there is no such thing as a training example here</h2>
+<p>This is the finding that changes the estimate. The report treats the training change as "batches gain an image tensor; collate onto device." That assumes a batch row is one conversation. It is not.</p>
+<p>The corpus is a single flat <code>uint16</code> array (<code>pack.py</code>, <code>CORPUS_DTYPE</code>). <code>EpochStream</code> shuffles <em>documents</em> and rejoins them with an <code>&lt;|endoftext|&gt;</code> separator, addressing the result lazily. <code>iter_batches</code> then cuts that stream into <code>batch_size &times; ctx_window</code> contiguous windows:</p>
+<pre><code># train/plan.py — the batching contract, in full
+windows = (len(stream) - 1) // ctx_window
+span    = batch_size * ctx_window
+stream.gather(offset, offset + span + 1, tokens, weights)
+yield (tokens[:span].reshape(batch_size, ctx_window),
+       tokens[1:].reshape(batch_size, ctx_window),
+       weights[:span].reshape(batch_size, ctx_window))</code></pre>
+<p>A single row of a batch can hold the tail of conversation A, a separator, the whole of B, and the head of C. Document boundaries and window boundaries are unrelated by design — that design is <em>load-bearing</em> (the comment in <code>EpochStream</code> records that materializing an epoch OOM-killed the engine on the 390M-token corpus, so this is not casually replaceable).</p>
+<p>So "attach an image to the batch" has no meaning. What you actually need is a mapping from <em>global token offset</em> → image, resolved per window at gather time, then scattered into the right <code>(row, column)</code> of the embedding tensor. That is a new sidecar format, a change to <code>pack</code>/<code>sft</code> to emit it, a change to <code>EpochStream.gather</code> to carry it through the shuffle permutation (the same way <code>mask</code> already is), and a change to <code>iter_batches</code>' yield signature that every caller must absorb.</p>
+
+<div class="callout good">
+<strong>The fix that makes this tractable — and it also repairs the loss and the RoPE bugs.</strong> Do not concatenate image embeddings at the front. Reserve <em>N placeholder tokens</em> in the corpus itself and <strong>substitute</strong> the vision embeddings into those positions:
+<pre style="margin:.6rem 0 0"><code>x = self.embedding(idx)                        # [b, seq, d] — seq unchanged
+if images is not None:
+    vis = self.vision(images)                  # [n_images, n_patches, d]
+    x = x.masked_scatter(slots.unsqueeze(-1), vis)   # slots: [b, seq] bool
+# seq, the ctx guard, the RoPE slice, the caches, and _loss are all untouched —
+# genuinely this time, because the sequence length never changed.</code></pre>
+This is what LLaVA actually does, it is strictly less invasive than the report's version, and it turns three of the report's claimed-but-false "untouched" items into true ones.
+</div>
+
+<h3>Revised cost</h3>
+<div class="scroll">
+<table>
+  <tr><th>Area</th><th>Report</th><th>Reviewed</th><th>Why</th></tr>
+  <tr><td><code>model/vision.py</code> (new)</td><td class="num">150–300</td><td class="num">150–250</td><td>Fair. Reusing <code>Block</code> is the right call and genuinely works</td></tr>
+  <tr><td><code>model/transformer.py</code></td><td class="num">30–50</td><td class="num">15–25</td><td><em>Cheaper</em> under masked-scatter than under concat</td></tr>
+  <tr><td><code>model/checkpoint.py</code></td><td class="num">20–30</td><td class="num">2</td><td>One field in <code>_ARCH_FIELDS</code>. No version bump</td></tr>
+  <tr><td><code>config.py</code></td><td class="num">30–40</td><td class="num">30–40</td><td>Fair</td></tr>
+  <tr><td>Tokenizer marker</td><td class="num">2–5</td><td class="num">2</td><td>Fair <em>if</em> §3 is followed; otherwise hours of recompute</td></tr>
+  <tr><td>Serving (<code>template</code>, <code>chat</code>)</td><td class="num">50–80</td><td class="num">60–100</td><td>Plus image decode, plus the <code>ChatConfig</code>/API shape</td></tr>
+  <tr><td><strong>Data + batching path</strong> <span class="tag">(pack, sft, plan, loop, a sidecar format)</span></td><td class="num">40–60</td><td class="num"><strong>250–400</strong></td><td><strong>The actual project.</strong> Not costed by the report</td></tr>
+  <tr><td>Image storage + ingest</td><td class="num">—</td><td class="num">80–150</td><td>No image directory, no fetch path, no decode cache exists</td></tr>
+  <tr><td>Tests</td><td class="num">150–250</td><td class="num">200–300</td><td>Plus the dataflow trace, which is a pinned contract and will move</td></tr>
+  <tr><td><strong>Total</strong></td><td class="num"><strong>~350–550</strong></td><td class="num"><strong>~800–1,300</strong></td><td>Engine only. Rust + frontend on top</td></tr>
+</table>
+</div>
+<p class="dim">Both estimates exclude the Rust backend and the frontend, as the report scoped.</p>
+
+<h2>3. The tokenizer trap the report walked past</h2>
+<p>Its plan says to add <code>&lt;|image|&gt;</code> to <code>SPECIAL_TOKENS</code>, taking a free reserved slot, and notes that "the special-block <code>sha</code> changes, which invalidates existing tokenizer builds and packed corpora." That is true, and much more expensive than it sounds. Follow the chain:</p>
+<pre><code>special.token_list()  changes
+  → vocab.special_tokens_sha()  changes                      (vocab.py:230)
+  → vocab.matches() returns False for every built vocabulary (vocab.py:193)
+  → the tokenizer is re-learned
+  → vocab.file_fingerprint() changes
+  → the corpus key changes                                   (pack.py, "keyed on the vocabulary")
+  → every packed corpus is re-packed from raw text</code></pre>
+<p>On a FineWeb-scale corpus that is hours of BPE training and packing, triggered by a one-line edit, to gain a token that is only ever a placeholder.</p>
+<div class="callout good">
+<strong>Do this instead, for free.</strong> <code>token_list()</code> already emits <code>&lt;|reserved_41|&gt;</code>…<code>&lt;|reserved_63|&gt;</code>, and every vocabulary ever built in this repo has already trained them as protected single tokens. Alias one:
+<pre style="margin:.6rem 0 0"><code># special.py
+IMAGE_SLOT = "&lt;|reserved_41|&gt;"   # the image placeholder, occupying a reserved
+                                 # slot by name so `token_list()` is unchanged
+                                 # and no vocabulary or corpus is invalidated.</code></pre>
+The sha does not move, nothing rebuilds, and the marker can be promoted to a real spelling later at exactly the moment a rebuild is happening anyway. The reserved block was designed for precisely this and the report used it for the id but paid for it anyway.
+</div>
+
+<h2>4. What Hugging Face actually has, at this model's scale</h2>
+<p>Sizes and schemas below are read from the HF dataset-viewer API, not from memory. The constraint that decides everything: a <strong>16–30M-parameter trunk, an 8,192-token vocabulary, and a 512-token window</strong>. Long-form description sets are actively wrong here — a 200-token caption plus 64 image tokens is the entire context.</p>
+<div class="scroll">
+<table>
+  <tr><th>Dataset</th><th class="num">Rows</th><th class="num">Size</th><th>Schema</th><th>Fit</th></tr>
+  <tr>
+    <td><code>jxie/flickr8k</code></td>
+    <td class="num">8,000<br><span class="tag">6k/1k/1k</span></td>
+    <td class="num">1.1 GB</td>
+    <td><code>image</code>, <code>caption_0…caption_4</code> — images embedded in the parquet, no URL rot</td>
+    <td><span class="pill ok">best first real set</span></td>
+  </tr>
+  <tr>
+    <td><code>HuggingFaceM4/the_cauldron</code><br><span class="tag">config <code>clevr</code></span></td>
+    <td class="num">70,000</td>
+    <td class="num">13.3 GB</td>
+    <td><code>images: Sequence[Image]</code>, <code>texts: [{user, assistant, source}]</code></td>
+    <td><span class="pill ok">best capability signal</span></td>
+  </tr>
+  <tr>
+    <td><code>nlphuji/flickr30k</code></td>
+    <td class="num">31,014</td>
+    <td class="num">4.3 GB</td>
+    <td><code>image</code>, <code>caption</code> (array of 5), <code>split</code> (Karpathy), <code>img_id</code></td>
+    <td><span class="pill warn">the step up</span></td>
+  </tr>
+  <tr>
+    <td><code>jxie/coco_captions</code></td>
+    <td class="num">566,747<br><span class="tag">train</span></td>
+    <td class="num">20.9 GB dl<br>87.4 GB on disk</td>
+    <td><code>image</code>, <code>caption</code>, <code>filename</code>, <code>cocoid</code></td>
+    <td><span class="pill no">too big for this budget</span></td>
+  </tr>
+  <tr>
+    <td><code>google-research-datasets/conceptual_captions</code></td>
+    <td class="num">3.3M</td>
+    <td class="num">URLs only</td>
+    <td>Image <em>URLs</em> — you download 3.3M images yourself, into link rot</td>
+    <td><span class="pill no">avoid</span></td>
+  </tr>
+</table>
+</div>
+
+<h3>The recommendation, in three stages</h3>
+<p><strong>Stage 0 — generate shapes locally. No download.</strong> Thirty lines of Pillow: coloured circles/squares/triangles on a plain field, with templated captions ("a red circle above a blue square"). This is the one I would actually start with, and it is not a toy step — it is the only configuration where a <em>from-scratch</em> 6M-parameter encoder can genuinely solve the task, so it gives an unambiguous pass/fail on whether the plumbing works before a single gigabyte is fetched. Captions land at 10–20 tokens, which fits the current 512 window with room to spare.</p>
+<p><strong>Stage 1 — <code>jxie/flickr8k</code> for captioning.</strong> 40,000 image–caption pairs from 8,000 images, 1.1 GB, images embedded as bytes so there is nothing to crawl. Captions average ~12 tokens. It converts to this repo's SFT JSONL (<code>{"turns":[{"role","text"}]}</code>) with a trivial script, one row per caption. Check the Flickr8k academic-use terms before anything leaves the machine — the HF metadata states no license.</p>
+<p><strong>Stage 2 — <code>the_cauldron</code> / <code>clevr</code> for the real evaluation.</strong> Two reasons it is the pick. First, its schema is <em>already</em> a user/assistant conversation list, so it maps onto <code>sft.py</code>'s format almost without conversion. Second and more important: CLEVR asks compositional questions about counting, attributes and spatial relations over synthetic rendered scenes. The visual domain is closed enough for a small encoder to learn, and — unlike captioning — <strong>a model that ignores the pixels cannot fake it</strong>.</p>
+
+<div class="callout bad">
+<strong>The experiment neither report proposes, and the one that decides whether any of this worked.</strong> At 30M parameters on short captions, the model will learn the <em>caption prior</em> — "a man in a red shirt is …" — and produce fluent, plausible, image-independent output. Loss will fall. Samples will look like it sees. It will not.<br><br>
+So run a <strong>text-only control</strong>: the identical SFT, with the image tensors zeroed. If the two runs converge to the same loss, the vision stack contributed nothing and the whole feature is decoration. This costs one extra run and is the only honest evidence available. It also fits this repo's existing habit — <code>strip_thinking</code> exists precisely so a control can be built against the same conversations, and <code>test_dataflow_trace.py</code> exists precisely to make behavioural claims falsifiable.
+</div>
+
+<h3>Dependencies</h3>
+<p><code>huggingface_hub==1.27.0</code> and <code>pyarrow==25.0.0</code> are <em>already</em> in <code>requirements.txt</code>, pulled in by <code>tokenizers</code> — so fetching parquet shards needs no new dependency. Against the report's recommendation, I would take <strong>Pillow alone, not torchvision</strong>: HF's <code>Image</code> feature stores encoded bytes so Pillow is required regardless, resize-and-normalize is ~15 lines, and torchvision pins hard against a specific torch build for two functions you would write anyway. One new line in <code>requirements.txt</code>, not a framework.</p>
+
+<h2>5. Bottom line</h2>
+<p><strong>The report is worth keeping.</strong> Its architectural instinct is right, its read of the trunk is accurate, and its central observation — that this codebase's reserved token slots, existing mask machinery, causal attention and concatenating KV cache leave it unusually ready for a vision path — survives review. The decoder really is untouched.</p>
+<p><strong>But do not build from its plan as written.</strong> Three concrete corrections: swap concat-at-front for masked-scatter into placeholder positions (which repairs the loss, the RoPE slice and the context guard all at once); alias a reserved marker instead of editing <code>SPECIAL_TOKENS</code> (which avoids re-packing every corpus); and budget the data and batching path honestly, because <code>train/plan.py</code> has no concept of an example and that — not <code>vision.py</code> — is the work. Realistic engine-side cost is <strong>800–1,300 lines</strong>, not 350–550, before the Rust and frontend seams.</p>
+<p>On data: <strong>shapes → flickr8k → CLEVR</strong>, with a zeroed-image control run at every stage. The context window has to reach 1024 before an image and a conversation coexist, and on that point the report is exactly right that this is a bigger-context project wearing small-code clothes.</p>
+
+<footer>
+Review of <code>vision-support-report.html</code> · verified against engine/llm/{model,corpus,chat,train,orchestrate}/ and requirements.txt · dataset figures from the Hugging Face dataset-viewer API, August 2026 · no files modified.
+</footer>
+
+</main>
+</body>
+</html>

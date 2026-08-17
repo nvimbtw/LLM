@@ -33,6 +33,10 @@ export function getAccessLevel(): AccessLevel | null {
 
 export function setAccessLevel(level: AccessLevel) {
   localStorage.setItem(ACCESS_LEVEL_KEY, level)
+  // Broadcast like `setToken` does: `useAuth` reads the level as an external
+  // store, so a write that stays silent leaves `isAdmin` stale until something
+  // else happens to fire the event.
+  emitSessionChanged()
 }
 
 /** Clears all stored session state (token + access level). */

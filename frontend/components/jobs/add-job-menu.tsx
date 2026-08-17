@@ -1,15 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import {
-  Dumbbell,
-  Gauge,
-  GraduationCap,
-  MessageSquare,
-  Plus,
-  Sparkles,
-  ThumbsUp,
-} from "lucide-react"
+import { Dumbbell, Gauge, MessageSquare, Plus, Type } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -31,10 +23,11 @@ import {
  */
 const OPTIONS = [
   { label: "Train a model", href: "/jobs/new/train", icon: Dumbbell },
+  // A vocabulary build is a queued job like the rest, so it belongs on the one
+  // menu every door to the queue goes through. Its composer lives beside the
+  // list of what has been built, which is where you would be choosing anyway.
+  { label: "Build a tokenizer", href: "/tokenizers", icon: Type },
   { label: "Benchmark a model", href: "/jobs/new/benchmark", icon: Gauge },
-  { label: "Auto-label replies", href: "/jobs/new/autolabel", icon: ThumbsUp },
-  { label: "Generate SFT data", href: "/jobs/new/synth", icon: Sparkles },
-  { label: "Teach locally", href: "/jobs/new/teach", icon: GraduationCap },
   { label: "Chat", href: "/chat", icon: MessageSquare },
 ]
 
