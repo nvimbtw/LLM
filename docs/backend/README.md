@@ -131,21 +131,32 @@ handed; a `Provider` only turns a query into `Hit`s.
 
 ```sh
 cd deploy/searxng
-SEARXNG_SECRET=$(openssl rand -hex 32) docker compose up -d
+./run.sh                                          # or: docker compose up -d
 curl 'http://localhost:8080/search?q=test&format=json'   # must not be 403
 ```
 
+`run.sh` is the same container as one `docker run`, for a machine without the
+compose plugin — it is a separate package on most distributions. It waits for
+the JSON API to answer and says what to check if it does not. Prepend `sudo` if
+your user is not in the `docker` group; being in that group is root-equivalent,
+so which of the two you pick is a decision about the machine.
+
 Then `SEARCH_URL=http://localhost:8080` in `backend/.env`.
 
-Two settings in `deploy/searxng/settings.yml` are load-bearing and both fail the
-same way — a bare `403` that says nothing about its cause. `search.formats` must
-include `json`, which is **not** a default; and `server.limiter` must be off,
-because it works by profiling requests as browser-like and an API client is
-exactly what it then blocks. `searxng.rs::refusal` names both in the message, so
-a 403 in a chat reply tells you which file to open.
+Two settings in `deploy/searxng/config/settings.yml` are load-bearing and both
+fail the same way — a bare `403` that says nothing about its cause.
+`search.formats` must include `json`, which is **not** a default; and
+`server.limiter` must be off, because it works by profiling requests as
+browser-like and an API client is exactly what it then blocks.
+`searxng.rs::refusal` names both in the message, so a 403 in a chat reply tells
+you which file to open.
 
-The compose file binds to `127.0.0.1` only. An instance with its limiter off is
-one that will happily be scraped by anyone who can reach it.
+Two details the image dictates. The **whole config directory** is mounted
+writable, because the container runs as its own user and takes ownership of it
+on start (`FORCE_OWNERSHIP`) — mounting `settings.yml` alone and read-only is
+the obvious thing to try and fails on exactly that. And the port binds to
+`127.0.0.1` only: an instance with its limiter off will be scraped by anyone who
+can reach it.
 
 **Brave (hosted).** `SEARCH_API_KEY`. $5/month of free credits at $5 per 1,000
 requests, and signing up requires a card even for those.

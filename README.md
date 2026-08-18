@@ -90,8 +90,7 @@ cd engine && DATA_DIR=./data .venv/bin/uvicorn main:app --port 8001 --reload
 executes. Self-hosted, so it needs no key and no account:
 
 ```sh
-cd deploy/searxng
-SEARXNG_SECRET=$(openssl rand -hex 32) docker compose up -d
+cd deploy/searxng && ./run.sh        # or: docker compose up -d
 ```
 
 Then `SEARCH_URL=http://localhost:8080` in `backend/.env`. Leave it unset and
