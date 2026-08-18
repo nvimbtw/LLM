@@ -642,3 +642,33 @@
   max-width: 100%;
   border-radius: var(--radius);
 }
+
+/**
+ * A scrollbar that does not shout.
+ *
+ * For panes that scroll inside a card — the settings modal's bands — where the
+ * platform's default bar, with its track and its end arrows, is a piece of OS
+ * chrome sitting on top of an otherwise hairline-ruled design. The bar is kept
+ * rather than hidden: the pane genuinely scrolls, and removing the one mark that
+ * says so is a worse trade than styling it.
+ */
+.quiet-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.quiet-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.quiet-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.quiet-scrollbar::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+}
+.quiet-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}

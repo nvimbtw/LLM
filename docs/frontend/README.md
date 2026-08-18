@@ -218,6 +218,24 @@ how random you want decoding to be is a standing preference, not a property of
 one question. Each is omitted individually when unset or non-finite, and the
 engine then falls back to its own defaults.
 
+### Settings
+
+`lib/settings.ts` is the single source of truth. One entry in `SETTINGS` (plus a
+field on the `Settings` type) gives you a control in the ⌘K modal and, for a
+toggle, a slash command — nothing else needs touching.
+
+- An entry names a **`group`**, and `GROUPS` declares the bands in the order they
+  appear. That is the only placement decision adding a setting requires.
+- **A blurb belongs to a group, not a row.** `GROUPS` carries the optional
+  sentence — which is how the three decoding knobs say the one thing worth
+  saying about them, that they compose in order. Three rows each explaining
+  themselves in two lines is what made the modal read as documentation with
+  controls embedded in it.
+- Theme is deliberately **not** a `SETTINGS` entry: next-themes owns and
+  persists it (the no-flash script reads it before React exists), so declaring
+  it here would give the app two answers to what the theme is. It gets a
+  hand-written row in the `appearance` band that reads and writes the real one.
+
 ### Slash commands & fuzzy finder
 
 Typing a leading `/` in the composer brings up the floating fuzzy finder popover
