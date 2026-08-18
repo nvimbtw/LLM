@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 import store
-from api import auth
+from api import auth, logs
 from api.routes import ROUTERS
 from api.runner import RUNNER
 from api.runs import REGISTRY
@@ -58,6 +58,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+logs.quieten()
 
 for router in ROUTERS:
     app.include_router(router)
