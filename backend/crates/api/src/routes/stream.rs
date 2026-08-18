@@ -7,9 +7,10 @@ use actix_web::{HttpRequest, HttpResponse, get, web};
 use engine::{Frame, Proxy};
 use futures_util::{Stream, StreamExt};
 use serde_json::{Value, json};
+use tools::Registry;
 use uuid::Uuid;
 
-use crate::ws;
+use crate::{turn, ws};
 use auth::AccessLevel;
 use auth::token::Claims;
 
@@ -38,6 +39,7 @@ async fn chat_socket(
     body: web::Payload,
     chat_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
+    registry: web::Data<Registry>,
     secret: web::Data<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, stream) = actix_ws::handle(&req, body)?;
@@ -45,6 +47,7 @@ async fn chat_socket(
         session,
         stream,
         engine.get_ref().clone(),
+        registry.get_ref().clone(),
         chat_id.into_inner(),
         secret.get_ref().clone(),
     ));
@@ -83,22 +86,19 @@ async fn chat_session(
     mut session: actix_ws::Session,
     mut stream: actix_ws::MessageStream,
     engine: Proxy,
+    registry: Registry,
     chat_id: Uuid,
     secret: String,
 ) {
     let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
     let caller = auth::Caller::User(claims.sub);
 
-    // One connection for the question and the reply it streams back.
+    // One connection for the question and the reply it streams back — which may
+    // take several rounds through the engine if the reply calls a tool.
     let Some(ask) = next_json(&mut stream).await else { return };
 
     let path = format!("/chats/{chat_id}/messages/stream");
-    match engine.stream(&caller, &path, ask).await {
-        Ok(frames) => relay(&mut session, frames).await,
-        Err(e) => {
-            let _ = session.text(ws::error_frame(&e.to_string())).await;
-        }
-    }
+    turn::run(&mut session, &engine, &registry, &caller, &path, ask).await;
     let _ = session.close(None).await;
 }
 

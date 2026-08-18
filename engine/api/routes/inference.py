@@ -48,7 +48,7 @@ async def chat_stream(cfg: ChatConfig):
             if summary is not None:
                 yield sse.token_frame("done", summary)
                 return
-            yield sse.token_frame("token", piece)
+            yield sse.token_frame(*piece)
 
     return StreamingResponse(frames(), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS)
 

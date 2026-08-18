@@ -112,7 +112,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 # ---------------------------------------------------------------------------
 # Markup vocabulary (must stay in sync with frontend/lib/message-parser.ts and
-# SPECIAL_TOKENS in backend/src/tokenize/src/pretokenize.rs)
+# SPECIAL_TOKENS in engine/llm/corpus/special.py)
 # ---------------------------------------------------------------------------
 
 # Paired tags allowed in assistant replies. `title` is deliberately left out:

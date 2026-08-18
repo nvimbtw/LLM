@@ -73,10 +73,12 @@ def test_stream_matches_trace(recorded):
     stream = chat_pipeline.stream(cfg)
     while True:
         try:
-            pieces.append(next(stream)["token"])
+            kind, data = next(stream)
         except StopIteration as done:
             summary = done.value
             break
+        if kind == "token":
+            pieces.append(data["token"])
 
     assert summary["text"] == recorded["sampled"]["text"]
     assert "".join(pieces) == recorded["sampled"]["text"]

@@ -24,6 +24,12 @@ async fn main() -> std::io::Result<()> {
 
     let proxy = engine::Proxy::new(engine.base_url(), engine::AUDIENCE, service_secret);
 
+    let registry = tools::Registry::from_env();
+    match registry.origins() {
+        [] => println!("no tools configured — replies that call one get a caveat back"),
+        origins => println!("tools ready: {}", origins.join(", ")),
+    }
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("http://localhost:3000")
@@ -39,6 +45,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
             .app_data(web::Data::new(proxy.clone()))
+            .app_data(web::Data::new(registry.clone()))
             .configure(api::configure)
     })
     .bind(("127.0.0.1", 8080))?

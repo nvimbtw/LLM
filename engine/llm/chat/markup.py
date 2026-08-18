@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import torch
 from tokenizers import Tokenizer
 
+from llm.chat import tools
 from llm.corpus import special
 
 # How deep blocks may nest before further openers are refused.
@@ -32,9 +33,11 @@ from llm.corpus import special
 # descending, and the drain at the end would be longer than the reply.
 MAX_DEPTH = 6
 
-# The pairs the model is allowed to use. Anything in SPECIAL_TOKENS not named
-# here and not standalone is forbidden, so adding a marker fails closed: the
-# model cannot emit it until this table says how it nests.
+# The document-markup pairs the model is allowed to use. Anything in
+# SPECIAL_TOKENS not named here, not standalone and not a tool in `chat.tools`
+# is forbidden, so adding a marker fails closed: the model cannot emit it until
+# one of those tables says how it nests. `<|tool-result|>` is deliberately in
+# none of them — the model reads results, it does not write them.
 PAIRS: list[tuple[str, str]] = [
     ("<|par|>", "<|/par|>"),
     ("<|code|>", "<|/code|>"),
@@ -55,6 +58,24 @@ PAIRS: list[tuple[str, str]] = [
 STANDALONE = ["<|divider|>"]
 
 
+def _resolvable_tools(tokenizer: Tokenizer) -> list[tuple[tools.Tool, int, int]]:
+    """Each tool this vocabulary can spell, with its opener and closer ids.
+
+    A tool whose markers are absent is dropped rather than raised on, which is
+    the one place tools differ from document markup. A model trained before a
+    tool existed carries a tokenizer that predates it; that model cannot call
+    the tool, but it can still serve — whereas a missing `<|par|>` means a
+    vocabulary that was never built for this repo at all.
+    """
+    resolved = []
+    for tool in tools.TOOLS:
+        open_id = tokenizer.token_to_id(tool.open)
+        close_id = tokenizer.token_to_id(tool.close)
+        if open_id is not None and close_id is not None:
+            resolved.append((tool, open_id, close_id))
+    return resolved
+
+
 @dataclass(frozen=True)
 class Rules:
     """The marker classification, derived once from the tokenizer's vocabulary."""
@@ -69,6 +90,17 @@ class Rules:
     requires_parent: dict[int, int]
     # An open block admitting only one kind of opener directly inside it.
     only_child: dict[int, int]
+    # Blocks whose content is not markup — a tool call's argument is a query
+    # string — so no opener is legal inside them.
+    leaf: frozenset[int]
+    # Openers legal only outside every block. The mirror of `requires_parent`:
+    # that one demands a specific parent, this one demands none.
+    top_level: frozenset[int]
+    # Opener and closer id -> the tool whose call they bracket. The generation
+    # loop needs both: the opener to start the span, the closer to end it and
+    # name what was called.
+    tool_open_for: dict[int, str]
+    tool_close_for: dict[int, str]
     marker_ids: tuple[int, ...]
     end_of_assistant: int
     end_of_text: int
@@ -93,15 +125,23 @@ class Rules:
             closer_for[open_id] = close_id
             opener_for[close_id] = open_id
 
+        callable_tools = _resolvable_tools(tokenizer)
+        for _, open_id, close_id in callable_tools:
+            closer_for[open_id] = close_id
+            opener_for[close_id] = open_id
+
         named = set(closer_for) | set(closer_for.values())
         named |= {marker_id(m) for m in STANDALONE}
 
         end_of_assistant = marker_id("<|/assistant|>")
         end_of_text = marker_id(special.END_OF_TEXT)
 
+        # Both spellings of every slot — see `special.block_names`. A vocabulary
+        # older than a marker still calls that slot `<|reserved_N|>`, and it has
+        # to stay inside the masked range either way.
         marker_ids = sorted(
             tokenizer.token_to_id(name)
-            for name in special.token_list()
+            for name in special.block_names()
             if tokenizer.token_to_id(name) is not None
         )
 
@@ -114,12 +154,17 @@ class Rules:
             if tid not in named and tid not in (end_of_assistant, end_of_text)
         )
 
+        tool_openers = frozenset(open_id for _, open_id, _ in callable_tools)
         return cls(
             closer_for=closer_for,
             opener_for=opener_for,
             forbidden=forbidden,
             requires_parent={marker_id("<|item|>"): marker_id("<|list|>")},
             only_child={marker_id("<|list|>"): marker_id("<|item|>")},
+            leaf=tool_openers,
+            top_level=tool_openers,
+            tool_open_for={open_id: tool.name for tool, open_id, _ in callable_tools},
+            tool_close_for={close: tool.name for tool, _, close in callable_tools},
             marker_ids=tuple(marker_ids),
             end_of_assistant=end_of_assistant,
             end_of_text=end_of_text,
@@ -172,6 +217,15 @@ class OpenBlocks:
             return False
 
         parent = self.stack[-1] if self.stack else None
+
+        # A tool call is a statement the turn makes, not a phrase inside one:
+        # nested in a <|par|> it would read as prose, and in a <|codeblock|> as
+        # a sample. Either way the backend would still execute it.
+        if token_id in self.rules.top_level and parent is not None:
+            return False
+
+        if parent is not None and parent in self.rules.leaf:
+            return False
 
         # <|item|> outside a list, or anything but <|item|> directly inside one.
         # Enforced from both sides so neither has to trust the other.

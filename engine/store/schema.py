@@ -83,6 +83,10 @@ class BenchmarkStatus(str, enum.Enum):
 class Role(str, enum.Enum):
     user = "user"
     assistant = "assistant"
+    #: A tool's answer to a call the previous assistant message made. Stored as
+    #: a message so the history a later turn is built from is whole — the model
+    #: has to see what it was told, not just that it asked.
+    tool = "tool"
 
 
 class Feedback(str, enum.Enum):

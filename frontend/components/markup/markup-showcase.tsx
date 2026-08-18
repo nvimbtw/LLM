@@ -5,6 +5,7 @@ import * as React from "react"
 import { ChatMessageBubble } from "@/components/chat/chat-message"
 import { Button } from "@/components/ui/button"
 import type { ChatMessage } from "@/hooks/use-chat"
+import type { ToolAnswer } from "@/components/chat/trace"
 
 /**
  * Every renderable special token, in one conversation.
@@ -24,7 +25,7 @@ import type { ChatMessage } from "@/hooks/use-chat"
  * one changes.
  *
  * Vocabulary source of truth: `SPECIAL_TOKENS` in
- * `backend/src/tokenize/src/pretokenize.rs`.
+ * `engine/llm/corpus/special.py`.
  */
 
 interface Turn {
@@ -33,7 +34,18 @@ interface Turn {
   content: string
   /** Feeds the token legend above the thread, so it cannot drift from the fixtures. */
   covers: string[]
+  /**
+   * The working of a turn that called a tool — its first round's reply — plus
+   * what each call came back with. Set together or not at all: `working` is what
+   * makes the trace appear, and answers with nothing to hang on would vanish.
+   */
+  working?: string
+  toolAnswers?: ToolAnswer[]
+  elapsedSecs?: number
 }
+
+/** The two markers a tool call is spelled with, for the legend. */
+const TOOL_TOKENS = ["web-search", "tool-result"]
 
 const CONVERSATION: Turn[] = [
   {
@@ -69,7 +81,7 @@ const CONVERSATION: Turn[] = [
       "disambiguate.<|/par|>" +
       "<|subheading|>Layout<|/subheading|>" +
       "<|par|>The vocabulary is laid out as raw bytes, then the special block, then BPE " +
-      "merges above it. See <|link|>backend/src/tokenize/src/pretokenize.rs<|/link|> for the " +
+      "merges above it. See <|link|>engine/llm/corpus/special.py<|/link|> for the " +
       "table itself.<|/par|>" +
       "<|divider|>" +
       "<|par|>There are 36 of them at present.<|/par|>",
@@ -152,6 +164,85 @@ const CONVERSATION: Turn[] = [
       "concrete. Yes.<|/thinking|>" +
       "<|par|>The ones before it are 3, 7 and 31 — that is 2^2−1, 2^3−1 and 2^5−1.<|/par|>",
   },
+  {
+    id: "m9",
+    role: "user",
+    content: "Which is taller, Elbrus or Denali?",
+    covers: [],
+  },
+  {
+    id: "m10",
+    role: "assistant",
+    covers: TOOL_TOKENS,
+    // Two calls, so the trace shows the tick repeating down the rail and the
+    // header counting them. The reasoning and the prose either side of the
+    // calls are what prove the steps stay in the order they happened.
+    working:
+      "<|thinking|>I have rough figures for both but not confidently enough to " +
+      "compare them, and the answer is the comparison rather than either " +
+      "number. Worth checking both.<|/thinking|>" +
+      "<|par|>Let me look up both figures.<|/par|>" +
+      "<|web-search|>height of mount elbrus<|/web-search|>" +
+      "<|par|>And the other one.<|/par|>" +
+      "<|web-search|>height of denali<|/web-search|>",
+    toolAnswers: [
+      {
+        tool: "web-search",
+        argument: "height of mount elbrus",
+        body:
+          "<|list|>" +
+          "<|item|>Mount Elbrus — 5,642 m, the highest peak in the Caucasus and in Europe.<|/item|>" +
+          "<|item|>Elbrus (Wikipedia) — a dormant volcano with twin summits, the western at 5,642 m.<|/item|>" +
+          "<|item|>Climbing Elbrus — the standard south route is a two-day ascent from Azau.<|/item|>" +
+          "<|/list|>",
+      },
+      {
+        tool: "web-search",
+        argument: "height of denali",
+        body:
+          "<|list|>" +
+          "<|item|>Denali — 6,190 m (20,310 ft), the highest peak in North America.<|/item|>" +
+          "<|item|>Denali (Wikipedia) — remeasured by GPS in 2015 from the earlier 6,194 m.<|/item|>" +
+          "<|/list|>",
+      },
+    ],
+    elapsedSecs: 17,
+    content:
+      "<|par|>Denali, by a clear margin — <|bold|>6,190 m<|/bold|> against Elbrus's " +
+      "<|bold|>5,642 m<|/bold|>.<|/par|>" +
+      "<|par|>They are the high points of different continents, though, so they are " +
+      "rarely ranked against each other: Elbrus is Europe's, Denali is North " +
+      "America's.<|/par|>",
+  },
+  {
+    id: "m11",
+    role: "user",
+    content: "What did my neighbour have for breakfast?",
+    covers: [],
+  },
+  {
+    id: "m12",
+    role: "assistant",
+    covers: ["warn"],
+    // The failure path: one call, nothing useful behind it. A tool that comes
+    // back empty renders its caveat as the single result, and the reply says so
+    // rather than inventing an answer.
+    working:
+      "<|par|>I can try, though I doubt this is something the web knows.<|/par|>" +
+      "<|web-search|>what did my neighbour have for breakfast<|/web-search|>",
+    toolAnswers: [
+      {
+        tool: "web-search",
+        argument: "what did my neighbour have for breakfast",
+        body: "<|warn|>The search came back with nothing.<|/warn|>",
+      },
+    ],
+    elapsedSecs: 6,
+    content:
+      "<|par|>Nothing came back, which is the honest answer here — that is not " +
+      "something anyone has written down. If you tell me what they said, I can " +
+      "help with whatever you were going to do with it.<|/par|>",
+  },
 ]
 
 // Turns carry `covers`; the legend is derived so it cannot fall out of step with
@@ -160,6 +251,27 @@ const COVERED = Array.from(new Set(CONVERSATION.flatMap((t) => t.covers)))
 
 // Rendered but not emitted by any model yet.
 const UNSHIPPED = new Set(["quote", "warn"])
+
+/**
+ * What "Show markup" prints for a turn.
+ *
+ * A turn that called a tool was never one string on the wire: it is the round
+ * that asked, each result as its own message, and the round that answered.
+ * Showing only `content` would print the answer and hide everything the trace
+ * above it was built from — which is the half this page exists to expose.
+ */
+function sourceOf(turn: Turn): string {
+  if (turn.working === undefined) return turn.content
+  const rounds = [
+    turn.working,
+    ...(turn.toolAnswers ?? []).map(
+      (a) =>
+        `<|tool-result|><|${a.tool}|>${a.argument}<|/${a.tool}|>${a.body}<|/tool-result|>`
+    ),
+    turn.content,
+  ]
+  return rounds.join("\n\n")
+}
 
 export function MarkupShowcase() {
   const [showSource, setShowSource] = React.useState(false)
@@ -209,13 +321,16 @@ export function MarkupShowcase() {
                     id: turn.id,
                     role: turn.role,
                     content: turn.content,
+                    working: turn.working,
+                    toolAnswers: turn.toolAnswers,
+                    elapsedSecs: turn.elapsedSecs,
                   } as ChatMessage
                 }
               />
               {showSource && (
                 <pre className="overflow-x-auto rounded-md border border-border bg-muted px-3 py-2">
                   <code className="font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
-                    {turn.content}
+                    {sourceOf(turn)}
                   </code>
                 </pre>
               )}

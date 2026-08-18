@@ -4,6 +4,8 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import { streamChat, type SamplingSettings } from "@/lib/chat-socket"
+import { parseMessage, textContent, toolOf } from "@/lib/message-parser"
+import type { ToolAnswer } from "@/components/chat/trace"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
 import { useSettings } from "@/components/settings/settings-provider"
@@ -11,7 +13,18 @@ import type { ThinkBudget } from "@/components/chat/budget-selector"
 
 export interface ChatMessage {
   role: "user" | "assistant"
+  /** The answer. For a turn that used a tool, the *last* round's reply. */
   content: string
+  /**
+   * The working that preceded the answer — the first round's reply, holding its
+   * reasoning and the calls it made. Absent on a turn that never called
+   * anything, whose reasoning is inside `content` as it always was.
+   */
+  working?: string
+  /** What each call in `working` came back with, in the order they closed. */
+  toolAnswers?: ToolAnswer[]
+  /** Seconds the whole turn took, summed across its rounds. */
+  elapsedSecs?: number
   // Server id. Absent on a reply that is still streaming and on the optimistic
   // user message, which is exactly why rating is gated on it: a reply with no id
   // yet has no row to attach a verdict to.
@@ -33,10 +46,86 @@ export interface ChatMessage {
 // tallied on this side.
 interface MessageWire {
   message_id: string
-  role: "user" | "assistant"
+  // `tool` is a stored row like any other — see `groupTurns`, which folds it
+  // back into the assistant turn it belongs to.
+  role: "user" | "assistant" | "tool"
   content: string
   model_name: string | null
   feedback: Feedback | null
+}
+
+/**
+ * The persisted rows of one turn, folded into the single message it was.
+ *
+ * A reply that calls a tool is stored as `assistant → tool → assistant`: the
+ * round that asked, what came back, and the round that answered. That is the
+ * right shape for the *model*, whose next prompt has to contain all three, and
+ * the wrong shape for a reader, who asked one question and got one answer. So
+ * the last assistant round is the message and everything before it is its
+ * working.
+ *
+ * Rows arrive in creation order, which is the order this depends on.
+ */
+function groupTurns(rows: MessageWire[]): ChatMessage[] {
+  const grouped: ChatMessage[] = []
+
+  for (const row of rows) {
+    const previous = grouped[grouped.length - 1]
+
+    if (row.role === "tool") {
+      // A tool row with no assistant before it cannot be placed. It should not
+      // exist; dropping it is better than inventing a turn to hang it on.
+      if (previous?.role !== "assistant") continue
+      previous.working ??= previous.content
+      previous.toolAnswers = [...(previous.toolAnswers ?? []), parseToolRow(row.content)]
+      previous.content = ""
+      continue
+    }
+
+    // The round after a tool result continues the turn rather than starting one.
+    if (row.role === "assistant" && previous?.toolAnswers && !previous.content) {
+      previous.content = row.content
+      previous.id = row.message_id
+      previous.modelName = row.model_name ?? undefined
+      previous.feedback = row.feedback ?? undefined
+      continue
+    }
+
+    grouped.push({
+      id: row.message_id,
+      role: row.role,
+      content: row.content,
+      // Normalized to undefined so the byline's presence check is a single
+      // truthiness test rather than having to know about null as well.
+      modelName: row.model_name ?? undefined,
+      feedback: row.feedback ?? undefined,
+    })
+  }
+
+  return grouped
+}
+
+/**
+ * A stored tool row back into the call it answered and the answer.
+ *
+ * The row opens by repeating the call — `<|web-search|>query<|/web-search|>`
+ * then the result — which is what tells the model which of its calls it is
+ * being handed (see `engine/llm/chat/tools.py`). Reading it back here is the
+ * same fact used the other way round.
+ */
+function parseToolRow(content: string): ToolAnswer {
+  for (const node of parseMessage(content).children) {
+    const tool = toolOf(node)
+    if (!tool) continue
+    const at = content.indexOf(`<|/${tool}|>`)
+    return {
+      tool,
+      argument: textContent(node).trim(),
+      body: at === -1 ? content : content.slice(at + `<|/${tool}|>`.length),
+    }
+  }
+  // A row that names no call is still something the model was told.
+  return { tool: "", argument: "", body: content }
 }
 
 export function useChat(chatId: string) {
@@ -83,15 +172,7 @@ export function useChat(chatId: string) {
     const { messages: rows } = (await response.json()) as {
       messages: MessageWire[]
     }
-    return rows.map<ChatMessage>((row) => ({
-      id: row.message_id,
-      role: row.role,
-      content: row.content,
-      // Normalized to undefined so the byline's presence check is a single
-      // truthiness test rather than having to know about null as well.
-      modelName: row.model_name ?? undefined,
-      feedback: row.feedback ?? undefined,
-    }))
+    return groupTurns(rows)
   }, [chatId])
 
   // Flips true once the initial DB load settles. The pending-first-message send
@@ -177,6 +258,65 @@ export function useChat(chatId: string) {
           return next
         })
 
+      /**
+       * The first call of the turn retires what has streamed so far into the
+       * trace, and everything after it is the answer.
+       *
+       * Done on the *call* rather than on the round boundary because the call is
+       * the first moment we know this turn has a working phase at all. Until
+       * then a reply is just a reply, and the common case never grows a trace.
+       */
+      const beginWorking = () =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === "assistant" && last.working === undefined) {
+            next[next.length - 1] = { ...last, working: last.content, content: "" }
+          }
+          return next
+        })
+
+      const recordAnswer = (answer: ToolAnswer) =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === "assistant") {
+            next[next.length - 1] = {
+              ...last,
+              toolAnswers: [...(last.toolAnswers ?? []), answer],
+            }
+          }
+          return next
+        })
+
+      /**
+       * Tokens arriving after the first call belong to the answer; the ones
+       * before it have already been moved into `working`, and the markup of the
+       * call itself has to keep landing there so the trace can see it.
+       */
+      const appendToWorking = (value: string) =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === "assistant" && last.working !== undefined) {
+            totalTokens += 1
+            const sep = last.working ? " " : ""
+            next[next.length - 1] = {
+              ...last,
+              working: last.working + sep + value,
+              tokenCount: totalTokens,
+            }
+          }
+          return next
+        })
+
+      // Which half of the turn tokens are currently filling. `working` latches
+      // on the first call; `answering` flips once the first result lands, which
+      // is when the round that called is over.
+      let working = false
+      let answering = false
+      let elapsedSecs = 0
+
       return new Promise<void>((resolve) => {
         cancelRef.current = streamChat(
           chatId,
@@ -188,9 +328,28 @@ export function useChat(chatId: string) {
           {
             onToken: (value: string) => {
               setQueuedAhead(0)
-              appendToAssistant(value)
+              if (working && !answering) appendToWorking(value)
+              else appendToAssistant(value)
             },
-            onDone: async () => {
+            onToolCall: () => {
+              // The markup spelling the call has already streamed into the
+              // reply, so there is nothing to add — this only marks where the
+              // working phase begins.
+              working = true
+              beginWorking()
+            },
+            onToolResult: (result) => {
+              answering = true
+              recordAnswer(result)
+            },
+            onDone: async (info) => {
+              // A turn's elapsed time is the sum of the rounds it took, not the
+              // last one's — the whole of it is what the reader waited.
+              elapsedSecs += info.elapsedSecs ?? 0
+              // One `done` per round. Only the last is the turn, and refetching
+              // on an earlier one would replace a reply still being written
+              // with the half of it the engine has stored so far.
+              if (!info.final) return
               // Replace the streamed approximation with the authoritative,
               // intact content saved on the server, but keep the token counts
               // we tallied — the server doesn't send them back.
@@ -202,6 +361,9 @@ export function useChat(chatId: string) {
                     ...fresh[lastIdx],
                     tokenCount: totalTokens,
                     thinkingTokenCount: thinkingTokens,
+                    // Also not persisted: the stored rows carry per-round
+                    // usage, but nothing records what the turn as a whole took.
+                    elapsedSecs: elapsedSecs || undefined,
                   }
                 }
                 setMessages(fresh)

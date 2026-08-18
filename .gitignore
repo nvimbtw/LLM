@@ -33,3 +33,6 @@ engine/data/
 /continuous-thinking-evaluation.html
 /mcp-evaluation.html
 *.bak
+
+# SearXNG writes its cache here, and takes ownership of config/ on start.
+deploy/searxng/data/

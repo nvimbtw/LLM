@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 import store
 from api import auth, sse
+from llm.chat import tools
 from llm.config import ChatConfig, ChatTurn
 from llm.orchestrate import chat as chat_pipeline
 from store import queries as q
@@ -36,12 +37,31 @@ class Rating(BaseModel):
     feedback: Feedback | None = None
 
 
+class ToolResult(BaseModel):
+    """What a tool the last reply called came back with.
+
+    `body` is already in the marker vocabulary — the caller that ran the tool
+    knows the shape of its answer, and this side only decides where the block
+    sits in the conversation.
+    """
+
+    tool: str
+    argument: str
+    body: str
+
+
 class Ask(BaseModel):
     """A turn to answer. The history comes from the stored messages, so a client
-    that lost its copy of the conversation still gets a coherent reply."""
+    that lost its copy of the conversation still gets a coherent reply.
+
+    Exactly one of `text` and `tool_result` says what the new turn is: a person
+    asking, or a tool answering a call the last reply made. Both is a caller
+    that has lost track of which; neither is nothing to answer.
+    """
 
     model_name: str
-    text: str
+    text: str | None = None
+    tool_result: ToolResult | None = None
     system: str | None = None
     #: "low" | "med" | "high". Absent is not a fourth value — it renders no
     #: marker, which is the prompt shape the model was trained under.
@@ -155,7 +175,7 @@ async def ask_streaming(
                     )
                     yield sse.token_frame("done", {**_message(stored), "usage": _usage(reply)})
                 return
-            yield sse.token_frame("token", piece)
+            yield sse.token_frame(*piece)
 
     return StreamingResponse(frames(), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS)
 
@@ -184,16 +204,38 @@ def forget_owner(owner_id: uuid.UUID, caller: str = Depends(auth.require_service
         return {"owner_id": str(owner_id), "chats_deleted": q.delete_chats_of(db, owner_id)}
 
 
+def _new_turn(body: Ask) -> tuple[Role, str]:
+    """The turn this request adds: a person asking, or a tool answering.
+
+    The "exactly one" rule lives here rather than in a validator so it sits
+    beside the branch that depends on it.
+    """
+    if (body.text is None) == (body.tool_result is None):
+        raise HTTPException(
+            status_code=400, detail="exactly one of text and tool_result is required"
+        )
+    if body.text is not None:
+        return Role.user, body.text
+
+    result = body.tool_result
+    tool = tools.by_name(result.tool)
+    if tool is None:
+        raise HTTPException(status_code=400, detail=f"unknown tool {result.tool!r}")
+    return Role.tool, tools.render_result(tool, result.argument, result.body)
+
+
 def _prepare(
     chat_id: uuid.UUID, owner: uuid.UUID, body: Ask
 ) -> tuple[ChatConfig, uuid.UUID | None]:
-    """Store the question and build the config that answers it.
+    """Store the new turn and build the config that answers it.
 
-    Counting the question first also proves the model is loadable, so an unknown
-    one is a 404 rather than a chat left holding a question nothing answered.
+    Counting it first also proves the model is loadable, so an unknown one is a
+    404 rather than a chat left holding a question nothing answered.
     """
+    role, content = _new_turn(body)
+
     try:
-        asked = chat_pipeline.count_tokens(body.model_name, body.text)["tokens"]
+        asked = chat_pipeline.count_tokens(body.model_name, content)["tokens"]
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -203,12 +245,12 @@ def _prepare(
         history = [
             ChatTurn(role=m.role.value, text=m.content) for m in q.messages_of(db, chat_id)
         ]
-        q.add_message(db, chat_id=chat_id, role=Role.user, content=body.text, tokens=asked)
+        q.add_message(db, chat_id=chat_id, role=role, content=content, tokens=asked)
 
     return (
         ChatConfig(
             model_name=body.model_name,
-            turns=[*history, ChatTurn(role="user", text=body.text)],
+            turns=[*history, ChatTurn(role=role.value, text=content)],
             system=body.system,
             budget=body.budget,
             max_tokens=body.max_tokens,
@@ -268,6 +310,10 @@ def _usage(reply: dict) -> dict:
     return {
         "prompt_tokens": reply["prompt_tokens"],
         "generated_tokens": reply["generated_tokens"],
+        # Repeated on the terminal frame so a caller that came in over a
+        # non-streaming request, or reattached late, still learns what the reply
+        # asked for. The streaming caller has already seen each as it closed.
+        "tool_calls": reply["tool_calls"],
         "stopped": reply["stopped"],
         "elapsed_secs": reply["elapsed_secs"],
     }

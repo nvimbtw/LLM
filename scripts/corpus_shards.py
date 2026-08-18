@@ -56,8 +56,10 @@ EOT = "<|endoftext|>"
 # Anything matching the tokenizer's marker grammar, so scraped text that happens
 # to contain `<|endoftext|>` cannot inject a spurious document boundary. The
 # zero-width break keeps the words readable while stopping the tokenizer's
-# special-token matching. Includes `:` so `<|think:low|>` is caught too.
-MARKER = re.compile(r"<\|(/?[a-zA-Z0-9:]+)\|>")
+# special-token matching. Includes `:` so `<|think:low|>` is caught, and `-` so
+# `<|web-search|>` and `<|tool-result|>` are — a marker spelling that this
+# pattern does not cover is one scraped text can inject verbatim.
+MARKER = re.compile(r"<\|(/?[a-zA-Z0-9:-]+)\|>")
 
 
 def neutralize(text: str) -> str:

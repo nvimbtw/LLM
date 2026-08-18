@@ -9,6 +9,15 @@ an optional system block once at the front, alternating user/assistant turns,
 always ending on an *open* `<|assistant|>` for the model to continue. Generation
 stops when it emits `<|/assistant|>`.
 
+A tool's answer is a third kind of turn, sitting between the assistant turn that
+called for it and the one that uses it — the same *outside every turn* position
+the system block occupies at the front::
+
+    …<|assistant|>A1<|/assistant|><|tool-result|>R<|/tool-result|><|assistant|>
+
+It is scaffold in both directions: never a training target, and forbidden to the
+model by the grammar in `chat.markup`. See `chat.tools` for how R is laid out.
+
 Inference builds prompts through here, and SFT loss-masking renders the exact
 same shape, so the format the model is *trained* on and the format it is
 *prompted* with cannot silently drift apart.
@@ -21,6 +30,7 @@ from enum import Enum
 
 from tokenizers import Tokenizer
 
+from llm.chat.tools import TOOL_RESULT_CLOSE, TOOL_RESULT_OPEN
 from llm.corpus import bpe
 
 # The trailing marker every prompt ends on; the model generates from right here.
@@ -33,6 +43,10 @@ THINKING_CLOSE = "<|/thinking|>"
 class Role(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
+    #: A tool's answer, handed back between the assistant turn that asked for it
+    #: and the one that uses it. Scaffold the model reads and never writes, so a
+    #: turn with this role is never a training target — see `training_segments`.
+    TOOL = "tool"
 
 
 class ThinkBudget(str, Enum):
@@ -120,6 +134,14 @@ def strip_thinking(text: str) -> str:
     return "".join(out).strip()
 
 
+def _tool_block(turn: Turn) -> str:
+    """A tool's answer. Its text is the already-rendered inner content — the
+    call it answers plus the answer — which `chat.tools.render_result` builds
+    for both this path and the SFT data, so the two cannot lay it out
+    differently."""
+    return f"{TOOL_RESULT_OPEN}{turn.text.strip()}{TOOL_RESULT_CLOSE}"
+
+
 def _format_turn(turn: Turn) -> str:
     """A *history* turn, as `build_prompt` renders it.
 
@@ -127,9 +149,16 @@ def _format_turn(turn: Turn) -> str:
     a history turn has had its reasoning stripped, so marking it would claim a
     thinking block that is not there. Only the trailing open `<|assistant|>` —
     the one about to be generated — is marked.
+
+    An assistant turn keeps its tool calls. `strip_thinking` takes the reasoning
+    and nothing else, because the tool result that follows names the call it
+    answers, and a result answering a call no longer in the prompt is a
+    non-sequitur.
     """
     if turn.role is Role.USER:
         return f"<|user|>{turn.text.strip()}<|/user|>"
+    if turn.role is Role.TOOL:
+        return _tool_block(turn)
     return f"{ASSISTANT_OPEN}{strip_thinking(turn.text)}{ASSISTANT_CLOSE}"
 
 
@@ -158,6 +187,10 @@ def render_conversation(
     for turn in turns:
         if turn.role is Role.USER:
             out.append(f"<|user|>{turn.text.strip()}<|/user|>")
+            continue
+
+        if turn.role is Role.TOOL:
+            out.append(_tool_block(turn))
             continue
 
         # Kept, the marker describes real content — and this is the path that
@@ -252,6 +285,13 @@ def training_segments(
     for turn in turns:
         if turn.role is Role.USER:
             segments.append((f"<|user|>{turn.text.strip()}<|/user|>", False))
+            continue
+
+        # Untrained for the same reason the budget marker is: a tool result is
+        # something the caller hands the model, not something the model decides.
+        # Training it would teach the model to invent search results.
+        if turn.role is Role.TOOL:
+            segments.append((_tool_block(turn), False))
             continue
 
         # The opening marker is the cue the model conditions on (not a target);

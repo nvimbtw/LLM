@@ -136,13 +136,13 @@ def _turns(raw: dict) -> list[Turn] | None:
     """Parse a conversation's turns, or None if it is not trainable.
 
     A conversation must end on an assistant reply — that reply is the entire
-    training signal, and one ending on a user turn contributes a mask of all
-    zeros while still costing context.
+    training signal, and one ending on a user turn or a tool result contributes
+    a mask of all zeros while still costing context.
     """
     turns: list[Turn] = []
     for turn in raw.get("turns", []):
         role = turn.get("role", "").lower()
-        if role not in ("user", "assistant"):
+        if role not in ("user", "assistant", "tool"):
             return None
         turns.append(Turn(role=Role(role), text=turn.get("text", "")))
 
@@ -283,7 +283,8 @@ def build(
         named = ", ".join(name for name, _ in selection) or "(none on disk)"
         raise ValueError(
             f"No conversations found in {storage.sft_dir()} for sets [{named}] — SFT "
-            f"needs .jsonl files of {{system?, turns: [{{role, text}}], budget?}}"
+            f"needs .jsonl files of {{system?, turns: [{{role, text}}], budget?}} "
+            f"with role one of user, assistant, tool"
         )
 
     corpus_partial.replace(corpus_final)

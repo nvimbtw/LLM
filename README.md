@@ -65,6 +65,7 @@ cargo run
 | `ENGINE_SERVICE_SECRET` | Authenticates the backend→engine hop. Unset leaves the engine open, and it says so at startup. |
 | `ENGINE_AUTOSTART=false` | Don't spawn the engine; attach to one already running. |
 | `DATA_DIR` | The corpus tree the engine owns. |
+| `SEARCH_URL` | A SearXNG instance for the `web-search` tool. Optional — unset, no tool is registered and chat works exactly as before. |
 
 **The frontend:**
 
@@ -77,13 +78,27 @@ bun run dev
 That is the whole sequence — `cargo run` spawns the engine as a child process
 and health-checks it before reporting ready, so you do not normally start it
 yourself. The UI is on **:3000**, the backend on **:8080**, the engine on
-**:8001**.
+**:8001**, and the optional search instance below on **:8888**.
 
 To run the engine standalone instead, set `ENGINE_AUTOSTART=false` and:
 
 ```sh
 cd engine && DATA_DIR=./data .venv/bin/uvicorn main:app --port 8001 --reload
 ```
+
+**Web search (optional).** Replies can call `<|web-search|>`, which the backend
+executes. Self-hosted, so it needs no key and no account:
+
+```sh
+cd deploy/searxng && ./run.sh        # or: docker compose up -d
+```
+
+Then `SEARCH_URL=http://localhost:8888` in `backend/.env`. Leave it unset and
+the tool simply is not registered — see
+[`docs/backend/README.md`](docs/backend/README.md) for the two SearXNG settings
+that must be right, and
+[`docs/decisions/tool-calls.md`](docs/decisions/tool-calls.md) for why a turn
+that calls one runs twice.
 
 ### Tests
 
