@@ -1,0 +1,48 @@
+# SearXNG, configured for one consumer: the backend's `web-search` tool.
+#
+# `use_default_settings` means this file is a patch over the image's own
+# settings rather than a replacement — only what differs is written here, so an
+# image upgrade brings new defaults with it instead of being pinned to whatever
+# was current the day this was copied.
+
+use_default_settings: true
+
+server:
+  # Generated per deployment. The compose file passes one in through
+  # SEARXNG_SECRET; this value is only the fallback for running the image by
+  # hand, and it is not a secret in any sense that matters — nothing here is
+  # reachable from outside the host.
+  secret_key: "change-me-this-instance-is-local-only"
+
+  # Off, and this is the second of the two settings that must be right.
+  #
+  # The limiter exists to stop a *public* instance being scraped, and it works
+  # by profiling requests as browser-like. An API client is not browser-like by
+  # design, so with the limiter on the tool's own requests are exactly what it
+  # blocks — as a 403 that looks identical to the one below.
+  limiter: false
+
+  # No browser is ever pointed at this, so there are no images to proxy.
+  image_proxy: false
+
+search:
+  # The setting everything hinges on. JSON is **not** in the default formats,
+  # and asking for a format that is not listed returns 403 rather than an error
+  # naming the cause — which is why `searxng.rs::refusal` spells both of these
+  # out in the message the reader gets.
+  formats:
+    - html
+    - json
+
+  # A search the model has to wait on is a search the person is waiting on.
+  # The whole tool budget is TOOL_TIMEOUT_SECS (10 by default), and an engine
+  # slower than this is one whose results would arrive after the turn gave up.
+  timeout: 4.0
+
+  autocomplete: ""
+  safe_search: 0
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0
+  pool_connections: 32

@@ -1,0 +1,36 @@
+# A SearXNG instance for the backend's `web-search` tool.
+#
+#   cd deploy/searxng && docker compose up -d
+#   curl 'http://localhost:8080/search?q=test&format=json'   # must not be 403
+#
+# Then point the backend at it — `SEARCH_URL=http://localhost:8080` in
+# backend/.env — and restart it. See docs/backend/README.md.
+
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: slate-searxng
+    restart: unless-stopped
+    ports:
+      # Bound to the loopback interface, not 0.0.0.0. A SearXNG with its
+      # limiter off (which is what makes it usable as an API — see
+      # settings.yml) is one that will happily be scraped by anyone who can
+      # reach it, so nothing outside this machine should be able to.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      # Override per deployment: `SEARXNG_SECRET=$(openssl rand -hex 32) docker compose up -d`
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-change-me-this-instance-is-local-only}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"

@@ -25,9 +25,9 @@ async fn main() -> std::io::Result<()> {
     let proxy = engine::Proxy::new(engine.base_url(), engine::AUDIENCE, service_secret);
 
     let registry = tools::Registry::from_env();
-    match registry.names().as_slice() {
+    match registry.origins() {
         [] => println!("no tools configured — replies that call one get a caveat back"),
-        names => println!("tools ready: {}", names.join(", ")),
+        origins => println!("tools ready: {}", origins.join(", ")),
     }
 
     HttpServer::new(move || {

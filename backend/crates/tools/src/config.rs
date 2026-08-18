@@ -13,7 +13,13 @@ const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Unset means web search is not registered at all — see `Registry::from_env`.
+    /// A self-hosted SearXNG instance, e.g. `http://localhost:8080`.
+    ///
+    /// Takes precedence over `search_api_key` when both are set: naming an
+    /// instance is a deliberate act, where a key can easily be left over in an
+    /// environment from something else.
+    pub search_url: Option<String>,
+    /// Brave Search. Used only when no instance is named.
     pub search_api_key: Option<String>,
     pub search_results: usize,
     pub timeout: Duration,
@@ -22,6 +28,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            search_url: None,
             search_api_key: None,
             search_results: DEFAULT_RESULTS,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
@@ -30,16 +37,22 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Neither search field set means web search is not registered at all — see
+    /// `Registry::with_config`.
     pub fn from_env() -> Config {
-        let defaults = Config::default();
         Config {
-            search_api_key: std::env::var("SEARCH_API_KEY").ok().filter(|s| !s.trim().is_empty()),
-            search_results: parse_env("SEARCH_RESULTS").unwrap_or(defaults.search_results),
+            search_url: env_string("SEARCH_URL"),
+            search_api_key: env_string("SEARCH_API_KEY"),
+            search_results: parse_env("SEARCH_RESULTS").unwrap_or(DEFAULT_RESULTS),
             timeout: parse_env("TOOL_TIMEOUT_SECS")
                 .map(Duration::from_secs)
-                .unwrap_or(defaults.timeout),
+                .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
         }
     }
+}
+
+fn env_string(key: &str) -> Option<String> {
+    std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 fn parse_env<T: std::str::FromStr>(key: &str) -> Option<T> {

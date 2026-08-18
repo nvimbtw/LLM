@@ -11,7 +11,7 @@
 pub mod config;
 pub mod error;
 pub mod markup;
-mod web_search;
+mod search;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 pub use config::Config;
+pub use search::WebSearch;
 pub use error::{Result, ToolError};
 
 #[async_trait]
@@ -38,11 +39,13 @@ pub trait Tool: Send + Sync {
 #[derive(Clone)]
 pub struct Registry {
     tools: HashMap<&'static str, Arc<dyn Tool>>,
+    origins: Vec<String>,
 }
 
 impl Registry {
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Registry {
         Registry {
+            origins: tools.iter().map(|tool| tool.name().to_string()).collect(),
             tools: tools.into_iter().map(|tool| (tool.name(), tool)).collect(),
         }
     }
@@ -58,16 +61,25 @@ impl Registry {
 
     pub fn with_config(config: &Config) -> Registry {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        if let Some(search) = web_search::BraveSearch::new(config) {
+        let mut origins = Vec::new();
+        if let Some(search) = WebSearch::from_config(config) {
+            origins.push(format!("{} ({})", search.name(), search.origin()));
             tools.push(Arc::new(search));
         }
-        Registry::new(tools)
+        Registry { tools: tools.iter().map(|t| (t.name(), t.clone())).collect(), origins }
     }
 
     pub fn names(&self) -> Vec<&'static str> {
         let mut names: Vec<_> = self.tools.keys().copied().collect();
         names.sort_unstable();
         names
+    }
+
+    /// Each tool and where its answers come from, for the line at startup. A
+    /// registry that merely names `web-search` does not say whether that is a
+    /// third party or a box in the next room, which is the thing worth seeing.
+    pub fn origins(&self) -> &[String] {
+        &self.origins
     }
 
     pub async fn run(&self, name: &str, argument: &str) -> Result<String> {
