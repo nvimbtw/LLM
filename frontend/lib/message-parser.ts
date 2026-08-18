@@ -1,7 +1,7 @@
 // Parses the model's custom markup into a small tree the UI can render.
 //
 // The model emits the backend tokenizer's protected vocabulary (SPECIAL_TOKENS
-// in backend/src/tokenize/src/pretokenize.rs), which is terse and space-free:
+// in engine/llm/corpus/special.py), which is terse and space-free:
 //   <|title|>Title<|/title|>
 //   <|par|>Text with <|bold|>bold<|/bold|> and <|code|>String<|/code|>.<|/par|>
 //   <|codeblock|>...code...<|/codeblock|>
@@ -37,6 +37,19 @@ const TOKEN_NAME_MAP: Record<string, string> = {
   codeblock: "code block",
 }
 
+/**
+ * Tool-call markers, which are deliberately *not* in TOKEN_NAME_MAP: a tool's
+ * marker stem is its name on the wire (`<|web-search|>` is the tool
+ * `web-search`), so renaming it here would put a second spelling in play. One
+ * entry per tool in `engine/llm/chat/tools.py`.
+ */
+const TOOL_NAMES = new Set(["web-search"])
+
+/** The tool this node is a call to, or null if it is not one. */
+export function toolOf(node: MNode): string | null {
+  return !isText(node) && TOOL_NAMES.has(node.type) ? node.type : null
+}
+
 function mapTokenName(name: string): string {
   return TOKEN_NAME_MAP[name] ?? name
 }
@@ -60,9 +73,10 @@ export function isText(node: MNode): node is MText {
 
 const VOID_TAGS = new Set(["divider"])
 
-// Thinking blocks: `<|thinking|>...reasoning...<|/thinking|>`. The content is
-// never shown — the UI displays a themed status label while the model is in a
-// thinking block — so we only need to strip these out of the rendered message.
+// Thinking blocks: `<|thinking|>...reasoning...<|/thinking|>`. The content *is*
+// shown, in the trace beside the answer (components/chat/trace.tsx); these
+// helpers are for the callers that need the answer without it — the status row
+// deciding whether the model is mid-thought, and the thread's live counts.
 const THINKING_RE = /<\|thinking\|>[^]*?<\|\/thinking\|>/g // a complete block
 const THINKING_TAIL_RE = /<\|thinking\|>[^]*$/ // an unclosed, still-streaming one
 

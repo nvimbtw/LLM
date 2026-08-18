@@ -36,16 +36,26 @@ export default function MarkupPage() {
               vocabulary has not been extended for them.
             </p>
             <p>
+              The last two turns are <span className="italic">traces</span> — a
+              reply that called <code className="text-xs">web-search</code> and
+              came back for a second round with what it found. The whole working
+              phase folds into one panel above the answer, tool calls ticked off
+              the same rail the reasoning runs against, and{" "}
+              <span className="font-medium text-foreground">Show markup</span>{" "}
+              prints all three rounds a turn like that actually was. The second
+              of them is the failure path: a search that found nothing.
+            </p>
+            <p>
               Thinking blocks follow the{" "}
               <span className="font-medium text-foreground">
                 Show reasoning
               </span>{" "}
               setting (⌘K), so toggle it to see both states. The vocabulary
               itself lives in{" "}
-              <code className="text-xs">
-                backend/src/tokenize/src/pretokenize.rs
-              </code>
-              ; if a token is added there and not here, this page is stale.
+              <code className="text-xs">engine/llm/corpus/special.py</code>, and
+              the tools in{" "}
+              <code className="text-xs">engine/llm/chat/tools.py</code>; if a
+              token is added there and not here, this page is stale.
             </p>
             <p className="text-xs">
               Sibling dev page:{" "}

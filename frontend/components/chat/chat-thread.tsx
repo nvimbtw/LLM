@@ -13,6 +13,7 @@ import { ChatMessageBubble } from "./chat-message"
 import { Throbber } from "@/components/ui/throbber"
 import { LoadError } from "@/components/ui/error-state"
 import { ThinkingLabel } from "./thinking-label"
+import { isCalling } from "./trace"
 
 export function ChatThread({ chatId }: { chatId: string }) {
   const {
@@ -57,10 +58,18 @@ export function ChatThread({ chatId }: { chatId: string }) {
   // all (the initial wait). Otherwise it's actively producing the answer, so
   // show "Generating…". Tracking the live block state — rather than latching on
   // "the answer has started" — means mid-reply reasoning is reflected too.
+  //
+  // A call in flight outranks both. It is the one phase where the wait is not
+  // the model's at all — nothing is being generated while a search runs — so
+  // saying "Generating…" over it would be a plain lie.
+  const searching =
+    streaming && isCalling(lastMessage.working, lastMessage.toolAnswers ?? [])
   const inThinking = streaming && isInThinkingBlock(lastMessage.content)
   const showThinking =
-    streaming && (inThinking || !hasVisibleContent(lastMessage.content))
-  const showGenerating = streaming && !showThinking
+    streaming &&
+    !searching &&
+    (inThinking || !hasVisibleContent(lastMessage.content))
+  const showGenerating = streaming && !searching && !showThinking
 
   // Whichever count belongs to the state on show, so the leader rule's right-hand
   // figure tracks the phase without the row having to branch.
@@ -145,7 +154,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
 
           {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}
-          {(showThinking || showGenerating || showIdle || waiting) && (
+          {(showThinking || showGenerating || searching || showIdle || waiting) && (
             // Mark, label, then the token count pushed to the right edge. One
             // Throbber instance rather than one per state — that's what lets
             // thinking → generating → idle morph instead of swapping, since the
@@ -159,13 +168,20 @@ export function ChatThread({ chatId }: { chatId: string }) {
                 mode={
                   waiting
                     ? "loading"
-                    : showThinking
-                      ? "thinking"
-                      : showGenerating
-                        ? "generating"
-                        : "idle"
+                    : searching
+                      ? "tool"
+                      : showThinking
+                        ? "thinking"
+                        : showGenerating
+                          ? "generating"
+                          : "idle"
                 }
               />
+              {/* A fixed word rather than the rotating ThinkingLabel: that one
+                  guesses at what a model might be doing, and here we know. */}
+              {searching && (
+                <span className="text-shimmer font-medium">Searching…</span>
+              )}
               {waiting && (
                 <span className="text-muted-foreground">
                   Queued — {queuedAhead} {queuedAhead === 1 ? "job" : "jobs"}{" "}

@@ -78,6 +78,68 @@ async def test_a_turn_stores_the_question_and_the_reply(acting, recorded_trace):
     assert stored[1]["content"] == response.json()["content"]
 
 
+async def test_a_tool_result_is_a_turn_of_its_own(acting):
+    """The second pass of a tool round: the backend hands back what the tool
+    said, and the conversation grows a `tool` message the next prompt renders."""
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={"model_name": TINY_MODEL, "text": "where did the cat sit?", "max_tokens": 4},
+    )
+
+    answered = await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "max_tokens": 4,
+            "tool_result": {
+                "tool": "web-search",
+                "argument": "where the cat sat",
+                "body": "<|par|>on the mat<|/par|>",
+            },
+        },
+    )
+    assert answered.status_code == 201
+
+    stored = (await acting.get(f"/chats/{chat_id}")).json()["messages"]
+    assert [m["role"] for m in stored] == ["user", "assistant", "tool", "assistant"]
+    assert stored[2]["content"] == (
+        "<|web-search|>where the cat sat<|/web-search|><|par|>on the mat<|/par|>"
+    )
+
+
+async def test_a_turn_is_either_asked_or_answered_but_not_both(acting):
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    result = {"tool": "web-search", "argument": "x", "body": "<|par|>y<|/par|>"}
+
+    for body in (
+        {"model_name": TINY_MODEL},
+        {"model_name": TINY_MODEL, "text": "hello", "tool_result": result},
+    ):
+        response = await acting.post(f"/chats/{chat_id}/messages", json=body)
+        assert response.status_code == 400
+        assert "exactly one" in response.json()["detail"]
+
+
+async def test_an_unknown_tool_is_refused_rather_than_stored(acting):
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    response = await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "tool_result": {"tool": "telepathy", "argument": "x", "body": "y"},
+        },
+    )
+    assert response.status_code == 400
+    assert (await acting.get(f"/chats/{chat_id}")).json()["messages"] == []
+
+
 async def test_a_chats_token_count_is_the_sum_of_its_turns(acting):
     chat_id = await new_chat(acting)
     with store.session() as db:

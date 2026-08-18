@@ -9,6 +9,7 @@ import { parseUserMarkdown } from "@/lib/user-parser"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { RichContent, RichMessage } from "./rich-message"
+import { Trace } from "./trace"
 
 export function ChatMessageBubble({
   message,
@@ -61,6 +62,22 @@ export function ChatMessageBubble({
           Left-aligned rather than centred in the column: the replies then share
           a left edge with the byline under them and the status row below the
           thread, so the short ones don't wander. */}
+      {/* A turn that reached for a tool ran as more than one generation, and
+          the whole of the first plus what came back is its working. It sits
+          above the answer at the same measure, so the two share a left edge and
+          the trace reads as a note in the margin of the reply rather than as a
+          second reply. A turn that called nothing has no `working` and renders
+          exactly as it always did — its reasoning stays inline, in the place the
+          model actually stopped to think. */}
+      {message.working !== undefined && (
+        <Trace
+          working={message.working}
+          answers={message.toolAnswers ?? []}
+          elapsedSecs={message.elapsedSecs}
+          streaming={streaming}
+          className="max-w-[68ch] text-base leading-relaxed"
+        />
+      )}
       <RichMessage
         content={message.content}
         streaming={streaming}

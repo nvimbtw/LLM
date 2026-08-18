@@ -61,6 +61,7 @@ macro_rules! service {
                     engine::AUDIENCE,
                     Some(SERVICE_SECRET.to_string()),
                 )))
+                .app_data(web::Data::new(tools::Registry::new(vec![])))
                 .configure(api::configure),
         )
         .await

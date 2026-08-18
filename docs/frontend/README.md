@@ -193,7 +193,9 @@ server → { type: "ready" }
 client → { model_name, text, system?, budget?,
            temperature?, top_k?, top_p? }
 server → { type: "token", token }             (repeated)
-server → { type: "done", message_id, content, tokens, usage }
+server → { type: "tool_call", tool, argument } (the reply asked for something)
+server → { type: "done", message_id, content, tokens, usage, final }
+server → { type: "tool_result", tool, argument, body }
 server → { type: "error", error }
 ```
 
@@ -201,6 +203,34 @@ The chat exists before the socket opens — its id is in the URL — so there is
 "which conversation is this" frame and no id to wait for coming back. The reply
 is written when the last token lands, so closing the tab loses it rather than
 storing half of one.
+
+**A turn that calls a tool runs more than one round**, so `token` and `done` can
+each arrive twice — the reply that called, then the reply that answers with what
+came back. `final` on a `done` is the one that ends the turn; the client closes
+the socket on that and not on the first, which would cut the turn off before the
+answer it went to fetch. Absent is treated as final.
+
+The two tool frames bracket the wait: `tool_call` the moment the marker closes
+(so a search can be shown as started while the rest of the reply is still
+streaming), `tool_result` once the backend has run it. `body` is in the marker
+vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
+
+### The trace
+
+A turn's working — the first round's reply plus what each call came back with —
+renders as one panel above the answer (`components/chat/trace.tsx`), not as the
+three messages it is stored as. `hooks/use-chat.ts::groupTurns` does the folding:
+`assistant → tool → assistant` is the right shape for the *model*, whose next
+prompt has to contain all three, and the wrong shape for a reader who asked one
+question.
+
+The panel's rail is its timeline. Reasoning is prose against it, a tool call is a
+tick off it (`components/chat/trace-step.tsx`), and the whole thing is
+achromatic except a step in flight — that tick warms to `--throbber-spark`, the
+token the status row's throbber is using at the same moment. A turn that called
+nothing has no trace and renders exactly as it always did, reasoning inline.
+
+`/markup` carries two fixture traces, including the failure path.
 
 `budget` is the composer's thinking-budget dropdown
 (`components/chat/budget-selector.tsx`) — `"low" | "med" | "high"`, matching the

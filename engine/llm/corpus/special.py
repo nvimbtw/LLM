@@ -57,6 +57,18 @@ SPECIAL_TOKENS: list[str] = [
     "<|think:low|>",
     "<|think:med|>",
     "<|think:high|>",
+    # Where a tool's answer is handed back, between the assistant turn that
+    # asked and the one that uses it. Input-only: it is absent from
+    # `markup.PAIRS`, so the grammar forbids the model from emitting one and
+    # claiming to have been told something it was not.
+    "<|tool-result|>",
+    "<|/tool-result|>",
+    # One pair per tool, the marker stem being the tool's name on the wire. A
+    # dedicated marker rather than a generic `<|tool|>name:argument|>`: the
+    # grammar can then police *which* tool was called, and a model this size
+    # gets one embedding row per tool instead of having to spell its name.
+    "<|web-search|>",
+    "<|/web-search|>",
 ]
 
 # The document separator, baked between documents in the packed corpus.
@@ -74,11 +86,28 @@ SPECIAL_BLOCK = 64
 assert len(SPECIAL_TOKENS) <= SPECIAL_BLOCK, "more markers than reserved slots"
 
 
+def placeholder(index: int) -> str:
+    return f"<|reserved_{index}|>"
+
+
+def block_names() -> list[str]:
+    """Every name a slot in the reserved block might be carrying: the markers as
+    they are spelled now, plus the placeholder spelling of every slot.
+
+    Both, because a vocabulary trained before a marker was named still holds
+    `<|reserved_N|>` in that slot. Anything asking "which ids are markers?" has
+    to recognize either spelling — miss the placeholders and those slots fall
+    out of the range the grammar masks, which lets a model emit a placeholder as
+    though it were ordinary text.
+    """
+    return SPECIAL_TOKENS + [placeholder(i) for i in range(SPECIAL_BLOCK)]
+
+
 def token_list() -> list[str]:
     """Every special token, padded with placeholders to exactly SPECIAL_BLOCK.
 
     This is what the tokenizer trains against, so the block is reserved whether
     or not the markers are used yet.
     """
-    reserved = [f"<|reserved_{i}|>" for i in range(len(SPECIAL_TOKENS), SPECIAL_BLOCK)]
+    reserved = [placeholder(i) for i in range(len(SPECIAL_TOKENS), SPECIAL_BLOCK)]
     return SPECIAL_TOKENS + reserved
