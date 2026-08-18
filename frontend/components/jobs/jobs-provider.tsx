@@ -11,7 +11,7 @@ import { KIND_LABEL, getJob, type Job } from "@/lib/jobs"
 /**
  * One subscription to the queue for the whole app.
  *
- * The sidebar shows the queue on every page, and /jobs shows it in full — two
+ * The sidebar shows the queue on every page, and /admin shows it in full — two
  * `useJobs()` calls would mean two sockets and two refetches per change, for the
  * life of the session. Hoisting it here is the same move `ChatsProvider` makes for
  * the conversation list, and for the same reason.
@@ -35,7 +35,7 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
  *
  * Watched here because this is the one place subscribed to the board on every
  * page — a training run that finishes while you are reading the corpus is exactly
- * the case worth announcing, and a /jobs-only watcher would miss it.
+ * the case worth announcing, and an /admin-only watcher would miss it.
  *
  * A transition is detected rather than a status: the board carries only one page
  * of history, so "is finished" would be true for a whole page forever, and only

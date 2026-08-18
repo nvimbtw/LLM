@@ -1,15 +1,12 @@
-import { JobsView } from "@/components/jobs/jobs-view"
-import { PageHeader } from "@/components/ui/page-header"
-import { PageShell } from "@/components/ui/page-shell"
+import { redirect } from "next/navigation"
 
+/**
+ * The queue moved to /admin, where it is the hero of the panel.
+ *
+ * Kept as a redirect rather than deleted: `/jobs` is where every job detail page
+ * lives (`/jobs/{id}`) and where every composer submits from, so the bare path is
+ * a URL people have typed and bookmarked. It costs one file to keep those working.
+ */
 export default function JobsPage() {
-  return (
-    <PageShell>
-      <PageHeader
-        title="Jobs"
-        description="One GPU, one line. Training runs, benchmarks and chat turns queue here and execute in order — and the queue survives a restart, so what you leave waiting is still waiting."
-      />
-      <JobsView />
-    </PageShell>
-  )
+  redirect("/admin")
 }

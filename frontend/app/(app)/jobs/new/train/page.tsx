@@ -9,7 +9,7 @@ export default function NewTrainJobPage() {
   return (
     <PageShell width="reading">
       <PageHeader
-        back={{ href: "/jobs", label: "Queue" }}
+        back={{ href: "/admin", label: "Admin" }}
         title="Train a model"
         description={
           <>

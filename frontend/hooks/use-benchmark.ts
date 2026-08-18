@@ -16,7 +16,7 @@ import {
 
 // Poll interval while a run is in flight. This page is history: it only needs to
 // notice a run *finishing* so it can select the fresh report. Live progress is on
-// /jobs, which is pushed rather than polled — so a couple of seconds is plenty,
+// /admin, which is pushed rather than polled — so a couple of seconds is plenty,
 // and polling stops entirely once nothing is running.
 const POLL_MS = 2000
 

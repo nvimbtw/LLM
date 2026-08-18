@@ -35,7 +35,7 @@ export interface JobHeaderProps {
 
 export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const router = useRouter()
-  const parent = useParentTrail({ href: "/jobs", label: "Queue" })
+  const parent = useParentTrail({ href: "/admin", label: "Admin" })
   const [busy, setBusy] = React.useState(false)
 
   const [now, setNow] = React.useState(() => Date.now())
