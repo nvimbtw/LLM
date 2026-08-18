@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils"
+import { cn, quantize } from "@/lib/utils"
 
 /**
  * A sentence, tokenized, with a few of the long-range links drawn in.
@@ -30,7 +30,10 @@ const tickX = (i: number) => TICK_X0 + i * TICK_GAP
 // which is what a real distribution of token lengths looks like.
 const TICK_HEIGHT = Array.from({ length: TICKS }, (_, i) => {
   const wave = Math.sin(i * 1.7 + 0.6) * 0.6 + Math.cos(i * 0.53) * 0.4
-  return 7 + 21 * (0.5 + 0.5 * wave)
+  // Quantised because this becomes a coordinate attribute: `Math.sin`/`Math.cos`
+  // are implementation-defined to the last bit, and Node and the browser
+  // disagreeing there is a hydration mismatch on a figure nobody touched.
+  return quantize(7 + 21 * (0.5 + 0.5 * wave))
 })
 
 // The ticks drawn in the accent colour — the "attended" ones, i.e. the endpoints
