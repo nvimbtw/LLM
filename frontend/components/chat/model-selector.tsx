@@ -6,10 +6,10 @@ import { Check, ChevronDown } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { InputGroupButton } from "@/components/ui/input-group"
@@ -59,55 +59,48 @@ export function ModelSelector({
           </InputGroupButton>
         }
       />
-      {/* Two levels: families up top, hover one to reveal its models. Kept spare
-          — hairline dividers between families, a muted count on the right, the
-          active family and model marked but never shouted. */}
-      <DropdownMenuContent side="top" align="start" className="min-w-52 p-1">
-        {groups.map(([family, familyModels]) => {
-          const activeFamily = familyModels.some((m) => m.id === value)
-          return (
-            <DropdownMenuSub key={family}>
-              <DropdownMenuSubTrigger
-                className={cn(
-                  "gap-6 py-1.5",
-                  activeFamily ? "text-foreground" : "text-muted-foreground"
-                )}
-              >
-                <span className="font-medium tracking-tight">{family}</span>
-                <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                  {familyModels.length}
-                </span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="min-w-56">
-                {familyModels.map((model) => {
-                  const isActive = model.id === value
-                  return (
-                    <DropdownMenuItem
-                      key={model.id}
-                      onClick={() => onValueChange(model.id)}
-                      className="gap-6 py-1.5"
-                    >
-                      <span className="flex items-center gap-2">
-                        <Check
-                          className={cn(
-                            "size-3.5 text-primary transition-opacity",
-                            isActive ? "opacity-100" : "opacity-0"
-                          )}
-                        />
-                        <span className={cn(isActive && "font-medium")}>
-                          {model.name}
-                        </span>
-                      </span>
-                      <span className="ml-auto text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
-                        {model.tier}
-                      </span>
-                    </DropdownMenuItem>
-                  )
-                })}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          )
-        })}
+      {/* One flat, scrollable list rather than a family → model flyout — a
+          second panel hovering off the first is chrome the choice doesn't
+          need. Families are hairline-divided section labels, not their own
+          row, so there's nothing here to open except the menu itself. */}
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        className="max-h-72 min-w-56 overflow-y-auto p-1"
+      >
+        {groups.map(([family, familyModels], i) => (
+          <React.Fragment key={family}>
+            {i > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-[11px] font-medium tracking-[0.1em] text-muted-foreground/80 uppercase">
+                {family}
+              </DropdownMenuLabel>
+              {familyModels.map((model) => {
+                const isActive = model.id === value
+                return (
+                  <DropdownMenuItem
+                    key={model.id}
+                    onClick={() => onValueChange(model.id)}
+                    className="gap-3 py-1.5"
+                  >
+                    <Check
+                      className={cn(
+                        "size-3.5 text-primary transition-opacity",
+                        isActive ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    <span className={cn(isActive && "font-medium")}>
+                      {model.name}
+                    </span>
+                    <span className="ml-auto text-[11px] font-medium tracking-[0.1em] text-muted-foreground/70 uppercase">
+                      {model.tier}
+                    </span>
+                  </DropdownMenuItem>
+                )
+              })}
+            </DropdownMenuGroup>
+          </React.Fragment>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )

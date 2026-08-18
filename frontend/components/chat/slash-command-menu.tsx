@@ -8,7 +8,6 @@ import {
   getCommandSuggestions,
   type CommandContext,
   type SlashCommandDef,
-  type SuggestionResult,
 } from "@/lib/commands"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -119,36 +118,51 @@ export function SlashCommandMenu({
   // Freeze the last real result so a close (composer clears, command runs,
   // "/" gets backspaced away) fades the content that was there rather than
   // going blank a frame before the panel itself finishes animating out.
-  const lastResult = React.useRef<SuggestionResult | null>(null)
-  if (liveResult) lastResult.current = liveResult
-  const result = open ? liveResult : lastResult.current
+  // Adjusted during render rather than in an Effect — the React-recommended
+  // way to derive state from a prop, and it keeps this in sync a render
+  // earlier than an Effect would.
+  const [frozenResult, setFrozenResult] = React.useState(liveResult)
+  if (liveResult && liveResult !== frozenResult) setFrozenResult(liveResult)
+  const result = liveResult ?? frozenResult
 
   const [mounted, setMounted] = React.useState(shouldShow)
   const [visible, setVisible] = React.useState(false)
+  const [prevShouldShow, setPrevShouldShow] = React.useState(shouldShow)
 
-  React.useEffect(() => {
-    if (shouldShow) {
-      setMounted(true)
-      // Mount in the hidden pose first, then flip to visible so the browser
-      // has something to transition from instead of snapping straight to
-      // open. A single rAF isn't enough here: it fires *before* the browser
-      // paints, so if we flip to visible inside it, the hidden pose never
-      // actually gets painted and there's nothing to transition from — the
-      // two state changes land in the same frame. Nesting a second rAF
-      // forces a real paint of the hidden pose in between.
-      let inner = 0
-      const outer = requestAnimationFrame(() => {
-        inner = requestAnimationFrame(() => setVisible(true))
-      })
-      return () => {
-        cancelAnimationFrame(outer)
-        cancelAnimationFrame(inner)
-      }
-    }
+  // Also a render-time adjustment: mounting (and dropping back to the hidden
+  // pose to transition from) has to be visible in the very render that
+  // follows `shouldShow` flipping, not a render later via an Effect, or the
+  // browser would have nothing painted to transition from.
+  if (shouldShow !== prevShouldShow) {
+    setPrevShouldShow(shouldShow)
     setVisible(false)
+    if (shouldShow) setMounted(true)
+  }
+
+  // Once mounted in the hidden pose, flip to visible so the browser has
+  // something to transition from instead of snapping straight to open. A
+  // single rAF isn't enough: it fires *before* the browser paints, so
+  // flipping inside it would land in the same frame as the hidden pose above
+  // and there'd be nothing to transition from. Nesting a second rAF forces a
+  // real paint in between.
+  React.useEffect(() => {
+    if (!shouldShow || visible) return
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setVisible(true))
+    })
+    return () => {
+      cancelAnimationFrame(outer)
+      cancelAnimationFrame(inner)
+    }
+  }, [shouldShow, visible])
+
+  // Unmount once the exit transition has had time to finish.
+  React.useEffect(() => {
+    if (shouldShow || !mounted) return
     const timer = setTimeout(() => setMounted(false), TRANSITION_MS)
     return () => clearTimeout(timer)
-  }, [shouldShow])
+  }, [shouldShow, mounted])
 
   const listRef = React.useRef<HTMLDivElement>(null)
 

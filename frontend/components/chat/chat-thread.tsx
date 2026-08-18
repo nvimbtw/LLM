@@ -5,6 +5,7 @@ import * as React from "react"
 import { hasVisibleContent, isInThinkingBlock } from "@/lib/message-parser"
 import { useChat } from "@/hooks/use-chat"
 import { ChatComposer } from "./chat-composer"
+import { useChats } from "./chats-provider"
 
 /** How close (px) to the bottom the user must be for auto-scroll to engage. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 120
@@ -24,6 +25,8 @@ export function ChatThread({ chatId }: { chatId: string }) {
     cancel,
     rateMessage,
   } = useChat(chatId)
+  const { conversations, renameChat } = useChats()
+  const chatSummary = conversations.find((c) => c.id === chatId)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   // Whether to keep the thread pinned to the bottom. Driven by the user's own
   // wheel/touch gestures (see trackStickIntent) so our programmatic scrolls
@@ -33,6 +36,15 @@ export function ChatThread({ chatId }: { chatId: string }) {
   const lastHeightRef = React.useRef(0)
 
   const lastMessage = messages[messages.length - 1]
+
+  // The sidebar's count is the last *persisted* total — it doesn't move until
+  // this turn is saved server-side, so a turn in flight is added on top from
+  // what's been tallied client-side as it streams (see use-chat.ts). Neither
+  // half is server-verified against the tokenizer, so this is an estimate for
+  // the composer's status row, not an accounting figure.
+  const contextTokensUsed =
+    (chatSummary?.tokens ?? 0) + (isSending ? (lastMessage?.tokenCount ?? 0) : 0)
+
   const showIdle = !isLoading && !isSending && lastMessage?.role === "assistant"
   // Waiting in line is not the same as generating: no tokens are coming yet, and
   // the reason is the queue rather than a slow model. It gets its own state so the
@@ -182,6 +194,9 @@ export function ChatThread({ chatId }: { chatId: string }) {
           onSend={sendMessage}
           disabled={isSending}
           onCancel={cancel}
+          title={chatSummary?.title ?? "New chat"}
+          onRenameTitle={(next) => void renameChat(chatId, next)}
+          contextTokensUsed={contextTokensUsed}
         />
       </div>
     </div>
