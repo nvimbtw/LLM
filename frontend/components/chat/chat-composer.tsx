@@ -354,18 +354,24 @@ export function ChatComposer({
       handleKeyDown: (_view, event) => {
         // Handle fuzzy menu navigation when active
         if (isSlashActiveRef.current && suggestionsCountRef.current > 0) {
+          // Inverted against the index, because the menu is painted bottom-up:
+          // index 0 is the best match and it sits at the *bottom* of the list,
+          // nearest the line you are typing on. So walking the highlight
+          // downward walks toward index 0. Flipping it here rather than
+          // reversing the data keeps `selectedIndex` meaning "nth best"
+          // everywhere else — Tab autocomplete and Enter both read it.
           if (event.key === "ArrowDown") {
-            event.preventDefault()
-            setSelectedIndex((prev) => (prev + 1) % suggestionsCountRef.current)
-            return true
-          }
-          if (event.key === "ArrowUp") {
             event.preventDefault()
             setSelectedIndex(
               (prev) =>
                 (prev - 1 + suggestionsCountRef.current) %
                 suggestionsCountRef.current
             )
+            return true
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault()
+            setSelectedIndex((prev) => (prev + 1) % suggestionsCountRef.current)
             return true
           }
           if (event.key === "Tab") {
@@ -559,15 +565,17 @@ export function ChatComposer({
     <div className="flex flex-col gap-1.5">
       <div
         className={cn(
-          "relative rounded-[0.875rem] border border-input shadow-sm transition-colors",
-          // Not quite opaque, over a blur. The composer sits above the thread
+          "relative overflow-hidden rounded-[0.875rem] border border-input shadow-sm transition-colors",
+          // Frosted, not merely translucent. The composer sits above the thread
           // (see the sticky wrapper in chat-thread.tsx), so scrolling back
-          // through a conversation moves text behind it — and a solid card
+          // through a conversation moves text behind it, and a solid card
           // clipping that text at a hard edge is the thing this avoids. The blur
-          // is what keeps it from being *legible* through the card: a second
-          // readable column of words under the one you are typing is worse than
-          // either a solid card or a clear one.
-          "bg-background/75 backdrop-blur-md",
+          // is what keeps what passes behind from being *readable*: a second
+          // column of words under the one you are typing is worse than either a
+          // solid card or a clear one. The saturate is the rest of the effect —
+          // blurring alone greys out what it averages, and real frosted glass
+          // keeps the colour of what is behind it.
+          "bg-background/75 backdrop-blur-2xl backdrop-saturate-150",
           "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
           disabled && "opacity-70"
         )}
@@ -576,9 +584,12 @@ export function ChatComposer({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {/* Floating Slash Command Fuzzy Finder — always mounted so it can play
-            its own exit animation; it renders nothing once `open` has been
-            false long enough to finish that. */}
+        {/* The fuzzy finder is the top half of this card rather than a panel
+            floating over it — one outline around both, with a rule where they
+            meet. Always mounted so it can play its own exit animation; it
+            collapses to nothing once `open` has been false long enough. The
+            `overflow-hidden` above is what keeps its top corners on the card's
+            radius. */}
         <SlashCommandMenu
           open={isSlashActive}
           input={editorText}

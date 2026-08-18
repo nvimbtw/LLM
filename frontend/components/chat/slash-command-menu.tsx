@@ -58,7 +58,7 @@ function HighlightMatched({
       )
     }
     nodes.push(
-      <span key={`match-${i}`} className="font-semibold text-sidebar-primary">
+      <span key={`match-${i}`} className="font-semibold text-primary">
         {text.slice(start, end)}
       </span>
     )
@@ -72,30 +72,56 @@ function HighlightMatched({
   return <span className={className}>{nodes}</span>
 }
 
-// The panel slides up from behind the composer and fades in; closing plays
-// the same motion in reverse. `visible` toggles between the two poses —
-// transform/opacity only, so it stays cheap — and the surrounding mount
-// lifecycle (below) is what actually delays unmount long enough to see it.
-function panelClass(visible: boolean) {
-  return cn(
-    "absolute bottom-full left-0 right-0 z-50 mb-2 overflow-hidden rounded-lg border border-sidebar-border bg-sidebar text-sidebar-foreground shadow-md",
-    "origin-bottom transition-[opacity,transform] duration-150 ease-out",
-    visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1.5"
+// The menu is the upper half of the composer's card, not a panel floating above
+// it: one outline around both, with a rule where they meet.
+//
+// That is why nothing here draws a border, a radius, a shadow or a surface. The
+// card owns all four, and this only contributes the rule along its own bottom
+// edge. It also settles the blur: joined, there is a single `backdrop-filter` on
+// the card, and a single backdrop root. As a separate floating panel this needed
+// its own blur, and a nested one samples only what its ancestor's root already
+// painted — which, for a panel sitting outside the card's box, was nothing at
+// all, so it rendered as plain transparency with the page crisply readable
+// through it.
+//
+// Opening animates `grid-template-rows` from 0fr to 1fr with the content in an
+// `overflow-hidden` track, which is the one way to transition to a height nobody
+// has measured. The card is bottom-anchored (sticky in chat-thread.tsx), so the
+// growth pushes its top edge up the page rather than shoving the editor down
+// under the reader's cursor.
+function Panel({
+  visible,
+  children,
+}: {
+  visible: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      className={cn(
+        "grid transition-[grid-template-rows,opacity] duration-150 ease-out",
+        visible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+      )}
+    >
+      <div className="overflow-hidden">
+        <div className="border-b border-border">{children}</div>
+      </div>
+    </div>
   )
 }
 
 const HINT_CLASS =
-  "font-mono text-[11px] tracking-normal lowercase text-sidebar-foreground/50"
+  "font-mono text-[11px] tracking-normal lowercase text-muted-foreground"
 
 // Row styling shared by every option list: a hairline accent rule on the left
 // that grows in on hover/active, rather than a filled highlight.
 function rowClass(isActive: boolean) {
   return cn(
     "relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-    "before:absolute before:left-1 before:top-1/2 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-sidebar-primary before:transition-all before:content-['']",
+    "before:absolute before:left-1 before:top-1/2 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-['']",
     isActive
-      ? "bg-sidebar-accent text-sidebar-accent-foreground before:h-3.5"
-      : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:before:h-2"
+      ? "bg-accent text-accent-foreground before:h-3.5"
+      : "text-foreground hover:bg-accent/60 hover:before:h-2"
   )
 }
 
@@ -178,6 +204,18 @@ export function SlashCommandMenu({
   if (!mounted || !result) return null
 
   // -------------------------------------------------------------------------
+  // Every list here paints bottom-up (`flex-col-reverse`), so index 0 — the best
+  // match, and the one Enter and Tab act on — is the row closest to the line you
+  // are typing on. The menu grows upward out of the composer, so ranking upward
+  // is the direction that puts the answer where the eye already is; a best match
+  // at the far top of a six-row list is the furthest thing from the cursor.
+  //
+  // Reversed in paint rather than in the data: `selectedIndex` still means "nth
+  // best" for the composer's Tab/Enter handling, and only the arrow keys have to
+  // know about the flip (see chat-composer.tsx).
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
   // Stage 1: Searching for commands — a bare "/" shows nothing (commands.ts
   // returns null for an empty query), so by the time this renders the user
   // has already typed something and every row here is a real match. No
@@ -189,17 +227,17 @@ export function SlashCommandMenu({
 
     if (suggestions.length === 0) {
       return (
-        <div className={panelClass(visible)}>
-          <div className="px-3.5 py-2.5 text-xs text-sidebar-foreground/60">
-            No command matching <span className="font-mono text-sidebar-foreground">“/{query}”</span>
+        <Panel visible={visible}>
+          <div className="px-3.5 py-2.5 text-xs text-muted-foreground">
+            No command matching <span className="font-mono text-foreground">“/{query}”</span>
           </div>
-        </div>
+        </Panel>
       )
     }
 
     return (
-      <div className={panelClass(visible)}>
-        <div ref={listRef} className="p-1 space-y-0.5">
+      <Panel visible={visible}>
+        <div ref={listRef} className="flex flex-col-reverse gap-0.5 p-1">
           {suggestions.map(({ command, currentDisplay }, idx) => {
             const isActive = idx === selectedIndex
             const Icon = command.icon
@@ -213,14 +251,14 @@ export function SlashCommandMenu({
                 className={rowClass(isActive)}
               >
                 <span className="flex items-center gap-2">
-                  <Icon className="size-3.5 shrink-0 text-sidebar-foreground/50" />
-                  <span className="font-mono font-medium text-sidebar-primary">
+                  <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="font-mono font-medium text-primary">
                     /<HighlightMatched text={command.name} query={query} />
                   </span>
                 </span>
 
                 {currentDisplay && (
-                  <span className="shrink-0 font-mono text-[11px] text-sidebar-foreground/50 tabular-nums">
+                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
                     {currentDisplay}
                   </span>
                 )}
@@ -228,7 +266,7 @@ export function SlashCommandMenu({
             )
           })}
         </div>
-      </div>
+      </Panel>
     )
   }
 
@@ -238,11 +276,11 @@ export function SlashCommandMenu({
   const { command, argQuery, data } = result
 
   return (
-    <div className={panelClass(visible)}>
+    <Panel visible={visible}>
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-sidebar-border px-3 py-1.5 text-[10px] font-medium tracking-[0.14em] text-sidebar-foreground/50 uppercase">
+      <div className="flex items-center justify-between border-b border-border px-3.5 py-1.5 text-[10px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
         <div className="flex items-center gap-1.5">
-          <span className="font-mono font-medium text-sidebar-primary">/{command.name}</span>
+          <span className="font-mono font-medium text-primary">/{command.name}</span>
           <span>·</span>
           <span>{command.label}</span>
         </div>
@@ -252,10 +290,10 @@ export function SlashCommandMenu({
       <div ref={listRef} className="max-h-64 overflow-y-auto p-1">
         {/* Model Options */}
         {data.type === "model" && (
-          <div className="space-y-0.5">
+          <div className="flex flex-col-reverse gap-0.5">
             {data.options.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-sidebar-foreground/60">
-                No model matching <span className="font-mono text-sidebar-foreground">“{argQuery}”</span>
+              <div className="px-3.5 py-2.5 text-xs text-muted-foreground">
+                No model matching <span className="font-mono text-foreground">“{argQuery}”</span>
               </div>
             ) : (
               data.options.map(({ model, isCurrent }, idx) => {
@@ -271,19 +309,19 @@ export function SlashCommandMenu({
                     <span className="flex items-center gap-2">
                       <Check
                         className={cn(
-                          "size-3.5 text-sidebar-primary transition-opacity",
+                          "size-3.5 text-primary transition-opacity",
                           isCurrent ? "opacity-100" : "opacity-0"
                         )}
                       />
-                      <span className={cn(isCurrent ? "font-medium text-sidebar-primary" : "text-sidebar-foreground")}>
+                      <span className={cn(isCurrent ? "font-medium text-primary" : "text-foreground")}>
                         <HighlightMatched text={model.name} query={argQuery} />
                       </span>
                       {model.family && (
-                        <span className="text-sidebar-foreground/50">({model.family})</span>
+                        <span className="text-muted-foreground">({model.family})</span>
                       )}
                     </span>
                     {model.tier && (
-                      <span className="ml-auto font-mono text-[10px] font-medium tracking-[0.12em] text-sidebar-foreground/50 uppercase">
+                      <span className="ml-auto font-mono text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
                         {model.tier}
                       </span>
                     )}
@@ -296,7 +334,7 @@ export function SlashCommandMenu({
 
         {/* Budget Options */}
         {data.type === "budget" && (
-          <div className="space-y-0.5">
+          <div className="flex flex-col-reverse gap-0.5">
             {data.options.map((opt, idx) => {
               const isActive = idx === selectedIndex
               return (
@@ -310,15 +348,15 @@ export function SlashCommandMenu({
                   <span className="flex items-center gap-2">
                     <Check
                       className={cn(
-                        "size-3.5 text-sidebar-primary transition-opacity",
+                        "size-3.5 text-primary transition-opacity",
                         opt.isCurrent ? "opacity-100" : "opacity-0"
                       )}
                     />
-                    <span className={cn("font-medium", opt.isCurrent && "text-sidebar-primary")}>
+                    <span className={cn("font-medium", opt.isCurrent && "text-primary")}>
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto text-sidebar-foreground/50 text-[11px]">{opt.hint}</span>
+                  <span className="ml-auto text-muted-foreground text-[11px]">{opt.hint}</span>
                 </button>
               )
             })}
@@ -327,7 +365,7 @@ export function SlashCommandMenu({
 
         {/* Toggle Options */}
         {data.type === "toggle" && (
-          <div className="space-y-0.5">
+          <div className="flex flex-col-reverse gap-0.5">
             {data.options.map((opt, idx) => {
               const isActive = idx === selectedIndex
               return (
@@ -341,15 +379,15 @@ export function SlashCommandMenu({
                   <span className="flex items-center gap-2">
                     <Check
                       className={cn(
-                        "size-3.5 text-sidebar-primary transition-opacity",
+                        "size-3.5 text-primary transition-opacity",
                         opt.isCurrent ? "opacity-100" : "opacity-0"
                       )}
                     />
-                    <span className={cn(opt.isCurrent && "font-medium text-sidebar-primary")}>
+                    <span className={cn(opt.isCurrent && "font-medium text-primary")}>
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto font-mono text-sidebar-foreground/50 text-[11px]">
+                  <span className="ml-auto font-mono text-muted-foreground text-[11px]">
                     {opt.value}
                   </span>
                 </button>
@@ -360,7 +398,7 @@ export function SlashCommandMenu({
 
         {/* Theme Options */}
         {data.type === "theme" && (
-          <div className="space-y-0.5">
+          <div className="flex flex-col-reverse gap-0.5">
             {data.options.map((opt, idx) => {
               const isActive = idx === selectedIndex
               const Icon =
@@ -381,16 +419,16 @@ export function SlashCommandMenu({
                   <span className="flex items-center gap-2">
                     <Check
                       className={cn(
-                        "size-3.5 text-sidebar-primary transition-opacity",
+                        "size-3.5 text-primary transition-opacity",
                         opt.isCurrent ? "opacity-100" : "opacity-0"
                       )}
                     />
-                    <Icon className="size-3.5 text-sidebar-foreground/50" />
-                    <span className={cn(opt.isCurrent && "font-medium text-sidebar-primary")}>
+                    <Icon className="size-3.5 text-muted-foreground" />
+                    <span className={cn(opt.isCurrent && "font-medium text-primary")}>
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto text-sidebar-foreground/50 text-[11px]">
+                  <span className="ml-auto text-muted-foreground text-[11px]">
                     {opt.description}
                   </span>
                 </button>
@@ -402,17 +440,17 @@ export function SlashCommandMenu({
         {/* Number Range & Presets */}
         {data.type === "number" && (
           <div className="flex flex-col gap-2 p-2.5">
-            <div className="flex items-baseline justify-between text-xs text-sidebar-foreground/60">
+            <div className="flex items-baseline justify-between text-xs text-muted-foreground">
               <span>
                 Range:{" "}
-                <span className="font-mono text-sidebar-foreground">
+                <span className="font-mono text-foreground">
                   {data.info.min.toFixed(data.info.precision)} –{" "}
                   {data.info.max.toFixed(data.info.precision)}
                 </span>
               </span>
               <span>
                 Current:{" "}
-                <span className="font-mono font-medium text-sidebar-primary tabular-nums">
+                <span className="font-mono font-medium text-primary tabular-nums">
                   {data.info.current.toFixed(data.info.precision)}
                 </span>
               </span>
@@ -420,10 +458,10 @@ export function SlashCommandMenu({
 
             {data.info.presets.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="text-[10px] font-medium tracking-[0.12em] text-sidebar-foreground/50 uppercase">
+                <span className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
                   Presets:
                 </span>
-                <div className="inline-flex gap-0.5 rounded border border-sidebar-border p-0.5">
+                <div className="inline-flex gap-0.5 rounded-md border border-border p-0.5">
                   {data.info.presets.map((preset, idx) => {
                     const isPresetActive =
                       data.info.current === preset.value || idx === selectedIndex
@@ -441,7 +479,7 @@ export function SlashCommandMenu({
                         }
                         className={cn(
                           "font-mono text-xs h-6 px-2",
-                          isPresetActive && "text-sidebar-primary font-medium"
+                          isPresetActive && "text-primary font-medium"
                         )}
                       >
                         {preset.label}
@@ -458,7 +496,7 @@ export function SlashCommandMenu({
         {data.type === "text" && (
           <div className="flex flex-col gap-2 p-2.5">
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-sidebar-foreground/60">Current steering prompt:</span>
+              <span className="text-muted-foreground">Current steering prompt:</span>
               {data.info.current && (
                 <button
                   type="button"
@@ -470,7 +508,7 @@ export function SlashCommandMenu({
               )}
             </div>
 
-            <div className="rounded border border-sidebar-border bg-sidebar-accent/30 p-2 text-xs text-sidebar-foreground/90 font-mono">
+            <div className="rounded-md border border-border bg-accent/30 p-2 font-mono text-xs text-foreground">
               {data.info.current
                 ? `“${data.info.current}”`
                 : "No system prompt configured."}
@@ -478,10 +516,10 @@ export function SlashCommandMenu({
 
             {data.info.templates.length > 0 && (
               <div className="space-y-0.5 pt-0.5">
-                <span className="text-[10px] font-medium tracking-[0.12em] text-sidebar-foreground/50 uppercase">
+                <span className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
                   Templates:
                 </span>
-                <div className="space-y-0.5">
+                <div className="flex flex-col-reverse gap-0.5">
                   {data.info.templates.map((tpl, idx) => {
                     const isActive = idx === selectedIndex
                     return (
@@ -491,14 +529,14 @@ export function SlashCommandMenu({
                         data-active={isActive}
                         onClick={() => onSelectOption(tpl.value, true)}
                         className={cn(
-                          "flex w-full items-baseline justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
+                          "flex w-full items-baseline justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
                           isActive
-                            ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                            : "text-sidebar-foreground hover:bg-sidebar-accent/50"
+                            ? "bg-accent text-accent-foreground font-medium"
+                            : "text-foreground hover:bg-accent/50"
                         )}
                       >
-                        <span className="font-medium text-sidebar-primary shrink-0">{tpl.label}</span>
-                        <span className="truncate text-sidebar-foreground/50 text-[11px]">
+                        <span className="font-medium text-primary shrink-0">{tpl.label}</span>
+                        <span className="truncate text-muted-foreground text-[11px]">
                           {tpl.value}
                         </span>
                       </button>
@@ -512,20 +550,20 @@ export function SlashCommandMenu({
 
         {/* Action summary */}
         {data.type === "action" && (
-          <div className="flex items-center justify-between p-2.5 text-xs text-sidebar-foreground/60">
+          <div className="flex items-center justify-between p-2.5 text-xs text-muted-foreground">
             <span>{data.description}</span>
             <Button
               type="button"
               size="xs"
               variant="secondary"
               onClick={() => onSelectOption("", true)}
-              className="text-sidebar-primary font-medium"
+              className="text-primary font-medium"
             >
               Run
             </Button>
           </div>
         )}
       </div>
-    </div>
+    </Panel>
   )
 }
