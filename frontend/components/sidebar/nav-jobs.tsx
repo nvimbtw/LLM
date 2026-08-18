@@ -16,17 +16,18 @@ import { useAuth } from "@/hooks/use-auth"
 import { KIND_LABEL, isRunning, jobHref, type Job } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
-// Keep the sidebar list short — the rest are one click away on /jobs. Same limit
+// Keep the sidebar list short — the rest are one click away on /admin. Same limit
 // and same reasoning as the recent-conversations list above it.
 const LIMIT = 5
 
 /**
  * What the GPU is working on, wherever you are.
  *
- * Deliberately *not* a second entry called "Active Jobs" sitting beside the "Jobs"
- * link — two rows that name the same destination read as two destinations. It is a
+ * Deliberately *not* a second entry called "Active Jobs" sitting beside the Admin
+ * row — two rows that name the same destination read as two destinations. It is a
  * labelled group in its own right, exactly like Conversations, so the label
- * describes a list rather than competing with a nav item.
+ * describes a list rather than competing with a nav item. That the Admin row now
+ * lives in the footer helps: the group and the door are no longer adjacent.
  *
  * The group has no collapse toggle, unlike Conversations. It only exists while
  * there is work, and a collapsed-but-active queue would hide the one thing it was
@@ -39,7 +40,7 @@ export function NavJobs() {
 
   if (!isAdmin) return null
 
-  // Running first, then the line behind it — the same order as the /jobs ledger,
+  // Running first, then the line behind it — the same order as the /admin ledger,
   // so the sidebar is a short window onto that page rather than its own view.
   const active = [...(running ? [running] : []), ...queued]
   if (active.length === 0) return null
@@ -69,7 +70,7 @@ export function NavJobs() {
           {overflow > 0 && (
             <SidebarMenuItem>
               <SidebarMenuButton
-                render={<Link href="/jobs" />}
+                render={<Link href="/admin" />}
                 className="h-7 pl-3.5 text-xs text-sidebar-foreground/75"
               >
                 {overflow} more in the queue

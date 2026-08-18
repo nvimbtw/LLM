@@ -30,7 +30,7 @@ export function withParent(href: string, parent: string): string {
 const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/cycles\/[^/]+$/, "Cycle"],
   [/^\/cycles$/, "Cycles"],
-  [/^\/jobs$/, "Queue"],
+  [/^\/admin$/, "Admin"],
   [/^\/benchmark$/, "Benchmark"],
   [/^\/models\/[^/]+$/, "Model"],
   [/^\/models$/, "Models"],

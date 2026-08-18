@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils"
+import { cn, quantize } from "@/lib/utils"
 
 /**
  * A rule across the page, opened at the centre.
@@ -29,7 +29,7 @@ const SEGMENT_SPAN = (MID_X - GAP) / SEGMENTS
 const RULE = Array.from({ length: SEGMENTS }, (_, i) => ({
   inner: GAP + i * SEGMENT_SPAN,
   outer: GAP + (i + 1) * SEGMENT_SPAN,
-  opacity: 0.3 * (1 - i / SEGMENTS) ** 1.3,
+  opacity: quantize(0.3 * (1 - i / SEGMENTS) ** 1.3),
 }))
 
 export interface FigureHorizonProps {
@@ -61,7 +61,7 @@ export function FigureHorizon({ className }: FigureHorizonProps) {
           <path
             key={r}
             d={`M ${MID_X - r} ${MID_Y} A ${r} ${r} 0 0 1 ${MID_X + r} ${MID_Y}`}
-            strokeOpacity={0.26 * (1 - i / RINGS.length) ** 0.9}
+            strokeOpacity={quantize(0.26 * (1 - i / RINGS.length) ** 0.9)}
           />
         ))}
       </g>

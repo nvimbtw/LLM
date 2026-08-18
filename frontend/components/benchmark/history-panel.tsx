@@ -182,7 +182,7 @@ function HistoryRow({
 
       <td className="py-3 pr-3 text-right">
         {run.status === "running" ? (
-          // Live progress belongs to the job producing this run, and /jobs is
+          // Live progress belongs to the job producing this run, and /admin is
           // where it is shown; repeating it here would mean polling for a number
           // that is already being pushed somewhere better.
           <span className="text-xs text-muted-foreground">…</span>

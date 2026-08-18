@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils"
+import { cn, quantize } from "@/lib/utils"
 
 /**
  * One filled node on an empty lattice, and what grows out of it.
@@ -80,7 +80,9 @@ const MAX_DEPTH = Math.max(...DEPTH.values())
 
 // 1 at the origin, easing to ~0.2 at the frontier. Not linear: the first step
 // out should still look decisively lit, and only the last two should trail off.
-const reach = (d: number) => 1 - 0.8 * (d / MAX_DEPTH) ** 1.4
+// Quantised: this lands in a `strokeOpacity`/`fillOpacity` attribute, and a
+// fractional `**` can differ in the last bit between Node and the browser.
+const reach = (d: number) => quantize(1 - 0.8 * (d / MAX_DEPTH) ** 1.4)
 
 // Every cell in the lattice, tagged with its depth if the tree reached it.
 const CELLS = Array.from({ length: COLS * ROWS }, (_, i) => {

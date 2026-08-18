@@ -31,11 +31,10 @@ export function NavProfile() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <SidebarMenuButton
-          size="lg"
-          tooltip="Profile"
-          render={<Link href="/profile" />}
-        >
+        {/* Default size, not `lg`. The footer is three rows — Admin, Settings,
+            Profile — and a 48px row under two 32px ones read as a different kind
+            of control rather than the emphasis it was meant to be. */}
+        <SidebarMenuButton tooltip="Profile" render={<Link href="/profile" />}>
           <User />
           {isLoading ? (
             <Skeleton className="h-4 w-24" />

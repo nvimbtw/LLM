@@ -17,21 +17,22 @@ Guidance for building and fixing the frontend half of the project.
 ```
 frontend/
 ├── app/             App Router pages and layouts (server components by default)
-│   ├── layout.tsx   Root layout: ThemeProvider → Sidebar layout
-│   ├── page.tsx     Home page (redirects to /chat)
-│   ├── chat/[id]/
-│   ├── conversations/
-│   ├── login/
-│   ├── signup/
-│   ├── models/
-│   ├── training/
-│   ├── usage/
-│   └── profile/
+│   ├── layout.tsx   Root layout: ThemeProvider → providers
+│   ├── (app)/       The signed-in frame: sidebar, header, scroll container
+│   │   ├── admin/       the admin panel — the queue, and the way to the rest
+│   │   ├── chat/[id]/ · conversations/ · models/ · usage/ · profile/
+│   │   ├── jobs/        [id] and new/{train,benchmark}; the bare path redirects
+│   │   ├── benchmark/ · tokenizers/
+│   │   └── markup/ · throbber/   fixture pages, no data behind them
+│   ├── (auth)/      login, signup — outside the signed-in chrome
+│   └── docs/        the markdown in docs/, rendered
 ├── components/
 │   ├── ui/          shadcn/ui primitives (button, input, card, sidebar, etc.)
+│   ├── admin/
 │   ├── auth/
 │   ├── chat/
 │   ├── conversations/
+│   ├── jobs/
 │   ├── models/
 │   ├── profile/
 │   ├── sidebar/
@@ -238,6 +239,28 @@ Typing a leading `/` in the composer brings up the floating fuzzy finder popover
   `Enter` execution / selection, and `Esc` dismissal. Standalone commands execute
   locally with toast feedback and are never dispatched over the chat socket.
 
+### The admin panel
+
+Everything behind the admin flag is reached through **one row** in the sidebar
+footer, beside Settings — not a labelled nav group. The row is a mode of the app
+you have access to, which is what the footer holds; the content above it is the
+subject you are reading.
+
+- `/admin` is the panel: `JobsView` as the hero, `AdminDirectory` below it.
+  **Add an admin destination to the directory, not to the sidebar** — a
+  directory has room for a sentence saying what a page is, and a nav row does
+  not. The two bands are what puts work on the GPU (`WORKBENCH`) and what only
+  renders a fixture (`INTERFACE`).
+- **`NavJobs` stays in the sidebar content** and is not navigation: it is the
+  ambient "the GPU is busy" signal, a window onto the panel rather than a way
+  in. `NavAdmin`'s `QueueTell` is the same fact when the sidebar is collapsed to
+  icons and that group is hidden.
+- Admin-ness is a client fact (`useAuth().isAdmin`, read from the stored access
+  level), so these are hidden rather than guarded. **The endpoints are the
+  boundary** — the engine's queue routes are admin-only, and `JobsProvider` is
+  gated on the same flag so a normal session does not spend its life collecting
+  403s.
+
 ### The jobs queue
 
 Everything that uses the GPU — training and benchmarks — is a run in the
@@ -250,6 +273,9 @@ running train for it, and because the queue already has the frames, the cancel
 and the job page it wants. Composed at `/tokenizers`, beside the list of what has
 been built — a vocabulary is picked far more often than it is built.
 
+- **The board lives at `/admin`**, as the hero of the panel — `JobsView` is
+  mounted there, and `/jobs` is a redirect kept only so bookmarked URLs work.
+  `/jobs/{id}` and `/jobs/new/*` are unchanged.
 - **The board polls.** It moves when a run is queued, starts or ends — rare
   enough that a 3s refetch of `GET /runs` says the same thing a nudge would,
   without a second live connection to keep alive across sleeps and restarts.

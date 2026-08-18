@@ -57,12 +57,10 @@ function formatRelative(iso: string): string {
   })
 }
 
-// Compact token count: 812, 1.2k, 48k.
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n)
-  const k = n / 1000
-  return `${k >= 10 ? Math.round(k) : k.toFixed(1)}k`
-}
+// Token counts are deliberately not here. They are a property worth comparing
+// across a whole archive, which is what /conversations is for; in a five-row
+// recency list they were a second column nobody scans, and carrying them cost
+// every row a caption line and half again its height.
 
 export function NavConversations() {
   const { conversations, isLoading } = useChats()
@@ -164,9 +162,9 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
         isActive={isActive}
         render={<Link href={`/chat/${chat.id}`} />}
         className={cn(
-          // Two-line "index entry": title over a muted timestamp, with a left
+          // One line, the same 32px as every other row in the sidebar, with a left
           // marginalia rule that grows on hover and turns to the accent when active.
-          "relative h-auto flex-col items-start gap-0.5 py-1.5 pl-3.5",
+          "relative pl-3.5",
           "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-px before:-translate-y-1/2",
           "before:rounded-full before:bg-sidebar-foreground/30 before:transition-all before:content-['']",
           "hover:before:h-4",
@@ -174,14 +172,14 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
             "before:h-4 before:w-0.5 before:bg-primary hover:before:bg-primary"
         )}
       >
-        <span className="w-full truncate text-sm leading-tight">
-          {chat.title}
-        </span>
-        <span className="flex w-full items-center justify-between gap-2 text-xs font-medium tracking-[0.1em] text-muted-foreground uppercase tabular-nums">
-          <span>{formatRelative(chat.createdAt)}</span>
-          {chat.tokens > 0 && (
-            <span className="shrink-0">{formatTokens(chat.tokens)} tok</span>
-          )}
+        <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+        {/* The age, set as a quiet trailing figure rather than a caption line of
+            its own — it is what orders the list, so it earns the corner, but it is
+            not a second thing to read. It fades as the row is hovered because the
+            ⋯ action lands in exactly this spot: one corner, one meaning at a time,
+            and no reserved gutter sitting empty the rest of the time. */}
+        <span className="shrink-0 text-xs text-sidebar-foreground/45 tabular-nums transition-opacity group-focus-within/menu-item:opacity-0 group-hover/menu-item:opacity-0">
+          {formatRelative(chat.createdAt)}
         </span>
       </SidebarMenuButton>
 
