@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Gauge, ListOrdered, Type } from "lucide-react"
+import { Gauge, ListOrdered, Type, Brain, Loader, MessageSquareCode } from "lucide-react"
 
 import {
   SidebarGroup,
@@ -17,16 +17,13 @@ import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useAuth } from "@/hooks/use-auth"
 import { KIND_LABEL } from "@/lib/jobs"
 
-// Train is not here on purpose: it is a way of putting work on the GPU, and every
-// one of those now starts from Jobs. Two doors to the same queue is how a
-// benchmark used to be launchable into a running training job.
-//
-// Throbber was dropped to keep this list to the things worth a permanent slot;
-// the page still exists at /throbber.
 const items = [
-  { title: "Tokenizers", href: "/tokenizers", icon: Type },
+  { title: "Tokenize", href: "/tokenizers", icon: Type },
+  { title: "Train", href: "/jobs/new/train", icon: Brain },
   { title: "Benchmark", href: "/benchmark", icon: Gauge },
   { title: "Jobs", href: "/jobs", icon: ListOrdered },
+  { title: "Throbber", href: "/throbber", icon: Loader },
+  { title: "Markup", href: "/markup", icon: MessageSquareCode },
 ]
 
 export function NavAdmin() {
