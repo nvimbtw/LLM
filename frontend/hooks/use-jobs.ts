@@ -95,8 +95,39 @@ export function useJobs(enabled = true) {
     // state writes are already after an `await`; the deferral only makes that
     // legible to the compiler's effect analysis. Timing is otherwise unchanged.
     void Promise.resolve().then(refresh)
-    const timer = setInterval(refresh, POLL_MS)
-    return () => clearInterval(timer)
+
+    // A hidden tab is nobody watching a queue. Left running, the poll is a
+    // request every few seconds for the life of a backgrounded session, about a
+    // board no one can see — and the board it would have drawn is a board that no
+    // longer exists by the time anyone looks. So the interval only runs while the
+    // page is visible, and coming back refetches at once rather than showing
+    // whatever was on screen when the tab went away for up to another POLL_MS.
+    let timer: ReturnType<typeof setInterval> | undefined
+
+    const start = () => {
+      if (timer === undefined) timer = setInterval(refresh, POLL_MS)
+    }
+    const stop = () => {
+      if (timer !== undefined) clearInterval(timer)
+      timer = undefined
+    }
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop()
+        return
+      }
+      void refresh()
+      start()
+    }
+
+    // The first fetch above is unconditional — a board that mounts in a
+    // background tab still has to finish loading, or it comes back to a spinner.
+    if (!document.hidden) start()
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility)
+      stop()
+    }
   }, [enabled, refresh])
 
   // Every mutation refetches rather than patching local state: the server decides

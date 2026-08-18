@@ -21,7 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Throbber } from "@/components/ui/throbber"
 import { toast } from "@/components/ui/toast"
 import { TokenizerComposer } from "@/components/tokenizers/tokenizer-composer"
-import { useJobs } from "@/hooks/use-jobs"
+import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { jobHref, type Job } from "@/lib/jobs"
 import { LoadError } from "@/components/ui/error-state"
@@ -58,7 +58,11 @@ export function TokenizersView() {
   // there. This is for coming back: a vocabulary takes minutes, and a page that
   // lists what has been built should say when one is being built right now
   // instead of showing a stale list and no reason for it.
-  const { running } = useJobs()
+  //
+  // Read from the app-wide subscription rather than a `useJobs()` of its own: a
+  // second instance is a second poll of `GET /runs` for as long as this page is
+  // open, saying the same thing as the one the provider already runs.
+  const { running } = useJobsContext()
   const building = running?.kind === "tokenize" ? running : null
 
   const named = tokenizers.filter((t) => !t.implicit)
