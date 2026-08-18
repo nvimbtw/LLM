@@ -190,8 +190,8 @@ mod tests {
 
     #[test]
     fn a_trailing_slash_on_the_configured_url_does_not_double_up() {
-        let instance = SearxNG::new("http://localhost:8080/", &Config::default())
+        let instance = SearxNG::new("http://localhost:8888/", &Config::default())
             .expect("a client builds");
-        assert_eq!(instance.base_url, "http://localhost:8080");
+        assert_eq!(instance.base_url, "http://localhost:8888");
     }
 }

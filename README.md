@@ -78,7 +78,7 @@ bun run dev
 That is the whole sequence — `cargo run` spawns the engine as a child process
 and health-checks it before reporting ready, so you do not normally start it
 yourself. The UI is on **:3000**, the backend on **:8080**, the engine on
-**:8001**.
+**:8001**, and the optional search instance below on **:8888**.
 
 To run the engine standalone instead, set `ENGINE_AUTOSTART=false` and:
 
@@ -93,7 +93,7 @@ executes. Self-hosted, so it needs no key and no account:
 cd deploy/searxng && ./run.sh        # or: docker compose up -d
 ```
 
-Then `SEARCH_URL=http://localhost:8080` in `backend/.env`. Leave it unset and
+Then `SEARCH_URL=http://localhost:8888` in `backend/.env`. Leave it unset and
 the tool simply is not registered — see
 [`docs/backend/README.md`](docs/backend/README.md) for the two SearXNG settings
 that must be right, and

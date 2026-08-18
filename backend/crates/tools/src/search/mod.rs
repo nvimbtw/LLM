@@ -209,12 +209,12 @@ mod tests {
     #[test]
     fn a_named_instance_wins_over_a_key_left_in_the_environment() {
         let both = Config {
-            search_url: Some("http://localhost:8080".to_string()),
+            search_url: Some("http://localhost:8888".to_string()),
             search_api_key: Some("stale".to_string()),
             ..Config::default()
         };
         let search = WebSearch::from_config(&both).expect("configured");
-        assert!(search.origin().contains("localhost:8080"));
+        assert!(search.origin().contains("localhost:8888"));
     }
 
     #[test]

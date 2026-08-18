@@ -13,7 +13,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// A self-hosted SearXNG instance, e.g. `http://localhost:8080`.
+    /// A self-hosted SearXNG instance, e.g. `http://localhost:8888`.
     ///
     /// Takes precedence over `search_api_key` when both are set: naming an
     /// instance is a deliberate act, where a key can easily be left over in an

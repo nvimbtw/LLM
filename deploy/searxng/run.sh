@@ -14,7 +14,9 @@ set -euo pipefail
 
 NAME=slate-searxng
 IMAGE=docker.io/searxng/searxng:latest
-PORT=8080
+# 8888 because this project already holds 8080 (the backend), 8001 (the engine)
+# and 3000 (the UI) — see the port map in the root README.
+PORT="${SEARXNG_PORT:-8888}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "${1:-start}" in
@@ -40,6 +42,15 @@ SEARXNG_SECRET="${SEARXNG_SECRET:-$(openssl rand -hex 32)}"
 mkdir -p "$HERE/config" "$HERE/data"
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+# Checked here because Docker reports it as a wall of endpoint-programming text
+# that never names the port's actual occupant — and on this project the likely
+# occupant is one of our own services.
+if command -v ss >/dev/null && ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; then
+    echo "Port $PORT is already in use. Set SEARXNG_PORT to something else:" >&2
+    echo "  SEARXNG_PORT=8889 $0" >&2
+    exit 1
+fi
 
 # Flags mirror docker-compose.yml; keep the two in step. Loopback-only because
 # an instance with its limiter off will be scraped by anyone who can reach it.

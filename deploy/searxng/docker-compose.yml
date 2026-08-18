@@ -2,13 +2,13 @@
 #
 #   cd deploy/searxng
 #   SEARXNG_SECRET=$(openssl rand -hex 32) docker compose up -d
-#   curl 'http://localhost:8080/search?q=test&format=json'   # must not be 403
+#   curl 'http://localhost:8888/search?q=test&format=json'   # must not be 403
 #
 # No compose plugin? It is a separate package on most distributions
 # (`pacman -S docker-compose`, `apt install docker-compose-plugin`). Or skip it
 # — `run.sh` beside this file is the same container as one `docker run`.
 #
-# Then point the backend at it: `SEARCH_URL=http://localhost:8080` in
+# Then point the backend at it: `SEARCH_URL=http://localhost:8888` in
 # backend/.env. See docs/backend/README.md.
 
 services:
@@ -17,11 +17,14 @@ services:
     container_name: slate-searxng
     restart: unless-stopped
     ports:
+      # 8888 because this project already holds 8080 (the backend), 8001 (the
+      # engine) and 3000 (the UI) — see the port map in the root README.
+      #
       # Bound to the loopback interface, not 0.0.0.0. A SearXNG with its
       # limiter off (which is what makes it usable as an API — see
       # config/settings.yml) is one that will happily be scraped by anyone who
       # can reach it, so nothing outside this machine should be able to.
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
     volumes:
       # The whole directory, writable, which is what the image expects: it runs
       # as its own user and takes ownership of the config on start
@@ -30,7 +33,7 @@ services:
       - ./config:/etc/searxng:rw
       - ./data:/var/cache/searxng:rw
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8888}/
       # Override per deployment. This fallback is not a secret in any sense
       # that matters — nothing here is reachable from outside the host.
       - SEARXNG_SECRET=${SEARXNG_SECRET:-change-me-this-instance-is-local-only}
