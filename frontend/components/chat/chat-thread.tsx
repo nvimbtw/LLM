@@ -187,17 +187,24 @@ export function ChatThread({ chatId }: { chatId: string }) {
 
           {error && <LoadError title={error} />}
         </div>
-      </div>
 
-      <div className="mx-auto w-full max-w-2xl px-4 pb-4">
-        <ChatComposer
-          onSend={sendMessage}
-          disabled={isSending}
-          onCancel={cancel}
-          title={chatSummary?.title ?? "New chat"}
-          onRenameTitle={(next) => void renameChat(chatId, next)}
-          contextTokensUsed={contextTokensUsed}
-        />
+        {/* Sticky, and *inside* the scroller rather than a sibling below it, so
+            the thread passes behind the composer as you scroll back through it
+            instead of being clipped at a hard edge. Sticky rather than absolute
+            on purpose: the composer still takes real space at the end of the
+            flow, so the last reply clears it at the bottom of the thread without
+            anyone maintaining a padding constant against a box whose height
+            changes with attachments and wrapped lines. */}
+        <div className="sticky bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pb-4">
+          <ChatComposer
+            onSend={sendMessage}
+            disabled={isSending}
+            onCancel={cancel}
+            title={chatSummary?.title ?? "New chat"}
+            onRenameTitle={(next) => void renameChat(chatId, next)}
+            contextTokensUsed={contextTokensUsed}
+          />
+        </div>
       </div>
     </div>
   )

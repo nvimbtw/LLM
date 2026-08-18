@@ -560,6 +560,14 @@ export function ChatComposer({
       <div
         className={cn(
           "relative rounded-[0.875rem] border border-input shadow-sm transition-colors",
+          // Not quite opaque, over a blur. The composer sits above the thread
+          // (see the sticky wrapper in chat-thread.tsx), so scrolling back
+          // through a conversation moves text behind it — and a solid card
+          // clipping that text at a hard edge is the thing this avoids. The blur
+          // is what keeps it from being *legible* through the card: a second
+          // readable column of words under the one you are typing is worse than
+          // either a solid card or a clear one.
+          "bg-background/75 backdrop-blur-md",
           "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
           disabled && "opacity-70"
         )}
@@ -629,6 +637,11 @@ export function ChatComposer({
           onRenameTitle={onRenameTitle}
           contextTokensUsed={contextTokensUsed}
           contextWindow={contextWindow}
+          // The same not-quite-opaque surface as the card above it: the footer
+          // is outside the card's outline but on the same floating plane, and a
+          // clear strip under a translucent card would put sharp thread text
+          // directly beneath blurred thread text.
+          className="rounded-lg bg-background/75 py-1 backdrop-blur-md"
         />
       )}
     </div>
