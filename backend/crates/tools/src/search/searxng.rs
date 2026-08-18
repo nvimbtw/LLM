@@ -87,7 +87,10 @@ fn hits(found: Response) -> Vec<Hit> {
         .answers
         .into_iter()
         .map(|a| Hit { title: String::new(), snippet: a.text() })
-        .chain(found.results.into_iter().map(|r| Hit { title: r.title, snippet: r.content }))
+        .chain(found.results.into_iter().map(|r| Hit {
+            title: r.title.unwrap_or_default(),
+            snippet: r.content.unwrap_or_default(),
+        }))
         .collect()
 }
 
@@ -99,12 +102,19 @@ struct Response {
     answers: Vec<Answer>,
 }
 
+/// A merged result. Twenty-odd other fields come back per row and are ignored.
+///
+/// `Option` rather than `#[serde(default)] String`, because these arrive as an
+/// explicit `null` and not as an absent key — an image or video result carries
+/// no `content`, and the default only covers the missing case. Getting this
+/// wrong is a decode error that takes down the whole search on a query that
+/// happens to match one picture.
 #[derive(Deserialize)]
 struct Row {
     #[serde(default)]
-    title: String,
+    title: Option<String>,
     #[serde(default)]
-    content: String,
+    content: Option<String>,
 }
 
 /// SearXNG changed `answers` from a list of strings to a list of objects. Both
@@ -167,6 +177,16 @@ mod tests {
     #[test]
     fn a_response_with_neither_key_is_empty_rather_than_a_decode_error() {
         assert!(parse(r#"{"query":"x","number_of_results":0}"#).is_empty());
+    }
+
+    #[test]
+    fn a_result_with_no_content_is_read_rather_than_failing_the_whole_page() {
+        // How an image or video result arrives: an explicit null, not an
+        // absent key. One of these used to take down every result beside it.
+        let found = parse(r#"{"results":[{"title":"Elbrus","content":null,"img_src":"x"}]}"#);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "Elbrus");
+        assert_eq!(found[0].snippet, "");
     }
 
     #[test]

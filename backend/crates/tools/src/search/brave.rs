@@ -49,7 +49,10 @@ impl Provider for Brave {
             .web
             .results
             .into_iter()
-            .map(|r| Hit { title: r.title, snippet: r.description })
+            .map(|r| Hit {
+                title: r.title.unwrap_or_default(),
+                snippet: r.description.unwrap_or_default(),
+            })
             .collect())
     }
 }
@@ -68,10 +71,13 @@ struct Web {
     results: Vec<Row>,
 }
 
+/// `Option` rather than `#[serde(default)] String` for the reason spelled out in
+/// `searxng::Row`: a field that arrives as an explicit `null` is a decode error
+/// against a plain `String`, and the default only covers an absent key.
 #[derive(Deserialize)]
 struct Row {
     #[serde(default)]
-    title: String,
+    title: Option<String>,
     #[serde(default)]
-    description: String,
+    description: Option<String>,
 }
