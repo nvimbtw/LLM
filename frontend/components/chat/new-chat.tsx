@@ -31,7 +31,12 @@ export function NewChat() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4">
+    // pb-12 biases the centered group upward by half its value (24px) — this
+    // sits inside <main>, which itself starts 48px down from the true page
+    // top (the h-12 header in (app)/layout.tsx), so centering on <main>'s own
+    // box alone lands 24px low. The padding cancels exactly that, so the
+    // group centers on the page, not just on the box it happens to be in.
+    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4 pb-12">
       {/* Only the empty state gets a figure. A conversation with messages in it
           has a subject already, and `chat-thread.tsx` stays as it was. */}
       <FigureHorizon className="max-w-md" />
@@ -39,7 +44,12 @@ export function NewChat() {
         What can I help with?
       </h1>
       <div className="mt-8 w-full">
-        <ChatComposer onSend={handleSend} disabled={isSending} />
+        <ChatComposer
+          onSend={handleSend}
+          disabled={isSending}
+          title="New chat"
+          contextTokensUsed={0}
+        />
         {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
       </div>
     </div>

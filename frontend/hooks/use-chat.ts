@@ -40,7 +40,7 @@ interface MessageWire {
 }
 
 export function useChat(chatId: string) {
-  const { takePendingMessage } = useChats()
+  const { takePendingMessage, refresh: refreshChats } = useChats()
   const { settings } = useSettings()
   // Read the system prompt at send time via a ref, so changing it (or any other
   // setting) doesn't churn sendMessage's identity and re-fire the send effects.
@@ -208,6 +208,19 @@ export function useChat(chatId: string) {
               } catch {
                 // Keep the approximation if the refetch fails.
               }
+              // The sidebar's per-chat token total (and the composer status
+              // row's fallback to it once streaming stops, see chat-thread.tsx)
+              // both read the conversations list, which otherwise only
+              // refreshes on create/rename/delete. Without this, a finished
+              // turn's tokens never land there — the sidebar count goes
+              // stale, and the composer's "used" figure visibly drops back to
+              // that stale count the moment `isSending` flips false, since
+              // the live tally it was showing during streaming is gone but
+              // the persisted total hasn't caught up yet. Awaited so both
+              // land in the same render as `isSending` going false, rather
+              // than one frame after — that's the difference between a
+              // number that settles and one that visibly dips first.
+              await refreshChats()
               setIsSending(false)
               setQueuedAhead(null)
               resolve()
@@ -222,7 +235,7 @@ export function useChat(chatId: string) {
         )
       })
     },
-    [chatId, fetchMessages]
+    [chatId, fetchMessages, refreshChats]
   )
 
   // A chat just created from the home screen hands its first message off here;

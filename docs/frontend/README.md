@@ -217,6 +217,27 @@ how random you want decoding to be is a standing preference, not a property of
 one question. Each is omitted individually when unset or non-finite, and the
 engine then falls back to its own defaults.
 
+### Slash commands & fuzzy finder
+
+Typing a leading `/` in the composer brings up the floating fuzzy finder popover
+(`components/chat/slash-command-menu.tsx`, driven by `lib/commands.ts`).
+
+- **Stage 1 (Command Discovery)**: Fuzzy-matches command names, aliases, and
+  descriptions (e.g. `/model`, `/thinking`, `/show-thinking`, `/temperature`,
+  `/top-k`, `/top-p`, `/system-prompt`, `/notify`, `/theme`, `/settings`,
+  `/help`, `/clear`).
+- **Stage 2 (Argument Selection & Range Guides)**:
+  - `/model <name>`: Fuzzy-filters and selects available models.
+  - `/thinking <budget>`: Sets the thinking budget (`auto | low | med | high`).
+  - `/show-thinking` / `/notify`: Toggles reasoning visibility and notifications.
+  - `/temperature`, `/top-k`, `/top-p`: Displays allowed ranges, current values,
+    and clickable preset buttons.
+  - `/system-prompt <text>`: Previews current prompt and offers templates or `clear`.
+  - `/theme <light | dark | system>`: Switches visual theme.
+- **Keyboard navigation**: Seamless `↑` / `↓` navigation, `Tab` autocomplete,
+  `Enter` execution / selection, and `Esc` dismissal. Standalone commands execute
+  locally with toast feedback and are never dispatched over the chat socket.
+
 ### The jobs queue
 
 Everything that uses the GPU — training and benchmarks — is a run in the

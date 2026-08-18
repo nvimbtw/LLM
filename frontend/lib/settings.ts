@@ -39,28 +39,30 @@ interface BaseSetting {
   key: keyof Settings
   label: string
   description: string
+  command?: string
 }
 
 /** An on/off setting. Rendered as a Switch, and exposed as a slash command. */
 export interface ToggleSetting extends BaseSetting {
   kind: "toggle"
   default: boolean
-  /** The slash-command word, e.g. "thinking" → `/thinking on|off`. */
+  /** The slash-command word, e.g. "show-thinking" → `/show-thinking on|off`. */
   command: string
 }
 
-/** A free-text setting. Rendered as an input/textarea; no slash command. */
+/** A free-text setting. Rendered as an input/textarea and `/system-prompt <text>`. */
 export interface TextSetting extends BaseSetting {
   kind: "text"
   default: string
   placeholder?: string
   multiline?: boolean
   maxLength?: number
+  command?: string
 }
 
 /**
  * A bounded numeric setting. Rendered as a slider with its value beside the
- * label; no slash command, since "/temperature 0.85" is worse than a drag.
+ * label and exposed as `/command <number>`.
  *
  * `min`/`max` mirror the range `routes/chat.rs::resolve_sampling` enforces — the
  * backend rejects rather than clamps, so a control that could produce a value it
@@ -74,6 +76,7 @@ export interface NumberSetting extends BaseSetting {
   step: number
   /** Decimals to show beside the label. Integers pass 0. */
   precision: number
+  command?: string
 }
 
 export type SettingDef = ToggleSetting | TextSetting | NumberSetting
@@ -87,7 +90,7 @@ export const SETTINGS: SettingDef[] = [
     description:
       "Reveal the model’s full reasoning above the reply as it thinks. The “Thinking…” animation shows either way.",
     default: false,
-    command: "thinking",
+    command: "show-thinking",
   },
   {
     kind: "toggle",
@@ -107,6 +110,7 @@ export const SETTINGS: SettingDef[] = [
     placeholder: "You are a helpful assistant. Answer concisely.",
     multiline: true,
     maxLength: 2000,
+    command: "system-prompt",
   },
   {
     kind: "number",
@@ -119,6 +123,7 @@ export const SETTINGS: SettingDef[] = [
     max: 2,
     step: 0.01,
     precision: 2,
+    command: "temperature",
   },
   {
     kind: "number",
@@ -131,6 +136,7 @@ export const SETTINGS: SettingDef[] = [
     max: 200,
     step: 1,
     precision: 0,
+    command: "top-k",
   },
   {
     kind: "number",
@@ -143,14 +149,13 @@ export const SETTINGS: SettingDef[] = [
     max: 1,
     step: 0.01,
     precision: 2,
+    command: "top-p",
   },
 ]
 
-export const DEFAULT_SETTINGS: Settings = SETTINGS.reduce((acc, s) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(acc as any)[s.key] = s.default
-  return acc
-}, {} as Settings)
+export const DEFAULT_SETTINGS: Settings = Object.fromEntries(
+  SETTINGS.map((s) => [s.key, s.default])
+) as unknown as Settings
 
 export const TOGGLE_SETTINGS = SETTINGS.filter(
   (s): s is ToggleSetting => s.kind === "toggle"
