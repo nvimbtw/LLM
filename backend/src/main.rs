@@ -12,17 +12,38 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("failed to connect to database / run migrations");
 
-    // Spawned here, as a child of the server, because it holds the GPU for as
-    // long as the server lives — and held to the end of `main`, because dropping
-    // the handle kills it.
-    let engine_config = engine::EngineConfig::from_env();
-    let service_secret = engine_config.service_secret.clone();
-    let engine = engine::Engine::start(engine_config)
+    // Spawned here, as children of the server, because the engine holds the GPU
+    // for as long as the server lives — and held to the end of `main`, because
+    // dropping a handle kills the process it supervises.
+    let engine_config = engine::config();
+    let engine_secret = engine_config.service_secret.clone();
+    let engine = service::Supervisor::start(engine_config)
         .await
         .expect("failed to start the python engine");
     println!("engine ready at {}", engine.base_url());
 
-    let proxy = engine::Proxy::new(engine.base_url(), engine::AUDIENCE, service_secret);
+    let data_config = data_engine::config();
+    let data_secret = data_config.service_secret.clone();
+    let data = service::Supervisor::start(data_config)
+        .await
+        .expect("failed to start the data engine");
+    println!("data engine ready at {}", data.base_url());
+
+    let proxy = engine::Proxy::new(engine.base_url(), engine_secret);
+    let data_proxy = data_engine::Proxy::new(data.base_url(), data_secret);
+
+    // The reverse hop: the engine asks for the documents a run has reached the
+    // point of needing. Said out loud for the reason the services say it — an
+    // unauthenticated seam should be a thing you were told about, not a thing
+    // you discover.
+    let inbound = service::InboundSecret::from_env();
+    match inbound.enforced() {
+        true => println!("inbound service calls authenticated"),
+        false => println!(
+            "inbound service calls are UNAUTHENTICATED — set BACKEND_SERVICE_SECRET \
+             here and in the engine to close /internal"
+        ),
+    }
 
     let registry = tools::Registry::from_env();
     match registry.origins() {
@@ -45,6 +66,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(jwt_secret.clone()))
             .app_data(web::Data::new(proxy.clone()))
+            .app_data(web::Data::new(data_proxy.clone()))
+            .app_data(web::Data::new(inbound.clone()))
             .app_data(web::Data::new(registry.clone()))
             .configure(api::configure)
     })
@@ -52,8 +75,9 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await?;
 
-    // Explicit, so a graceful shutdown also stops the engine rather than leaving
-    // it holding the port the next boot needs.
+    // Explicit, so a graceful shutdown also stops the services rather than
+    // leaving them holding the ports the next boot needs.
     engine.shutdown();
+    data.shutdown();
     Ok(())
 }

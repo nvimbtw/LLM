@@ -52,7 +52,7 @@ SCRATCH = Path(os.environ.get("BENCH_SCRATCH", "/tmp/llm-bench"))
 import torch  # noqa: E402
 
 from llm.config import TrainConfig  # noqa: E402
-from llm.corpus.pack import DocSpan  # noqa: E402
+from llm.corpus.spans import DocSpan  # noqa: E402
 from llm.model import checkpoint  # noqa: E402
 from llm.model.transformer import Transformer  # noqa: E402
 from llm.train import loop, plan as plan_mod  # noqa: E402
@@ -107,11 +107,11 @@ def fixture(tokens: int, seed: int = 0) -> tuple[np.ndarray, list[DocSpan]]:
 
     raw = np.memmap(corpus_path, dtype=np.uint16, mode="r")
     corpus = np.array(raw[:tokens])
-    spans = json.loads(storage.pretrain_segments_path(key).read_text())["documents"]
+    _, spans, _ = pack_mod.load_segments(key)
     docs = [
-        DocSpan(dataset=d["dataset"], start=d["start"], length=d["length"], stage=0)
+        DocSpan(dataset=d.dataset, start=d.start, length=d.length, stage=0)
         for d in spans
-        if d["start"] + d["length"] <= len(corpus)
+        if d.start + d.length <= len(corpus)
     ]
     return corpus, docs
 

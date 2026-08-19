@@ -11,7 +11,7 @@ from llm.config import EvalConfig, SftConfig
 from llm.corpus import sft as sft_corpus
 from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import sft as sft_pipeline
-from tests.fixtures.tiny_env import TINY_DATASET, TINY_MODEL
+from tests.fixtures.tiny_env import TINY_CHAT_ID, TINY_DATASET_ID, TINY_MODEL
 
 SUITES = ["language", "markup", "assistant"]
 
@@ -21,17 +21,17 @@ def sft_config():
     return SftConfig(
         model_name="tuned",
         base_model=TINY_MODEL,
-        sft_datasets=[TINY_DATASET],
+        datasets=[TINY_CHAT_ID],
         epochs=1,
         batch_size=2,
         lr=0.0005,
     )
 
 
-def test_sft_mask_selects_a_strict_subset_of_the_corpus(tokenizer):
+def test_sft_mask_selects_a_strict_subset_of_the_corpus(tokenizer, data_client):
     """Loss is computed on assistant replies only — never the whole window."""
-    selection = sft_corpus.resolve([TINY_DATASET])
-    stats = sft_corpus.build(tokenizer, selection, Reasoning.KEEP)
+    selection = sft_corpus.resolve(data_client, [TINY_CHAT_ID])
+    stats = sft_corpus.build(data_client, tokenizer, selection, Reasoning.KEEP)
 
     assert stats.conversations > 0
     assert stats.total_tokens > 0
@@ -39,7 +39,7 @@ def test_sft_mask_selects_a_strict_subset_of_the_corpus(tokenizer):
     assert 0 < stats.trainable_fraction < 1
 
 
-def test_rendering_a_batch_renders_each_conversation_the_same(tokenizer):
+def test_rendering_a_batch_renders_each_conversation_the_same(tokenizer, data_client):
     """The build hands every conversation's segments to the tokenizer in one call
     to use all six cores. The batch is a scheduling detail — and it has to stay
     one, because the dataset key says nothing about how the renderer ran: a batch
@@ -48,10 +48,10 @@ def test_rendering_a_batch_renders_each_conversation_the_same(tokenizer):
     """
     from llm.chat import template
 
-    files = sft_corpus.conversation_files([TINY_DATASET])
+    selection = sft_corpus.resolve(data_client, [TINY_CHAT_ID])
     conversations = [
         (raw.get("system"), sft_corpus._turns(raw))
-        for raw in sft_corpus.read_conversations(files)
+        for raw in sft_corpus.read_conversations(data_client, selection)
     ]
     conversations = [(system, turns) for system, turns in conversations if turns]
     assert len(conversations) > 1
@@ -68,9 +68,9 @@ def test_rendering_a_batch_renders_each_conversation_the_same(tokenizer):
     assert batched == one_at_a_time
 
 
-def test_sft_corpus_and_mask_are_aligned(tokenizer):
-    selection = sft_corpus.resolve([TINY_DATASET])
-    stats = sft_corpus.build(tokenizer, selection, Reasoning.KEEP)
+def test_sft_corpus_and_mask_are_aligned(tokenizer, data_client):
+    selection = sft_corpus.resolve(data_client, [TINY_CHAT_ID])
+    stats = sft_corpus.build(data_client, tokenizer, selection, Reasoning.KEEP)
     corpus, mask = sft_corpus.load(sft_corpus.dataset_key(selection, Reasoning.KEEP))
 
     assert len(corpus) == len(mask)
@@ -114,29 +114,22 @@ def test_sft_requires_an_existing_base(sft_config):
         sft_pipeline.run(sft_config.model_copy(update={"base_model": "nope"}), on_progress=None)
 
 
-def test_a_pretrain_over_chat_sets_says_where_they_actually_live(tmp_path, monkeypatch):
+def test_a_pretrain_over_a_chat_dataset_says_what_kind_of_run_it_should_be(data_client):
     """Naming `base_model` is the *only* thing that makes a run a fine-tune, so a
-    fine-tune that loses that field on the wire arrives as a pretrain over SFT set
-    names — and goes looking for chat sets among the `.txt` corpora.
+    fine-tune that loses that field on the wire arrives as a pretrain over a chat
+    dataset — and goes looking for prose in conversations.
 
     That is how it reached a user: a fine-tune of two chat sets queued happily,
-    ran as a pretrain, and failed minutes later with "no .txt files" for datasets
-    that were plainly on disk. The message has to name the other root, because
-    the state it describes is not "missing data" but "wrong kind of run".
+    ran as a pretrain, and failed minutes later. The message has to name the
+    remedy, because the state it describes is not "missing data" but "wrong kind
+    of run".
     """
     from llm.corpus import vocab
 
-    # Its own root: the shared fixture names its pretrain corpus and its SFT set
-    # the same thing, which is the one case where this confusion cannot arise.
-    root = tmp_path / "data"
-    (root / "input" / "Prose").mkdir(parents=True)
-    (root / "input" / "Prose" / "a.txt").write_text("the cat sat\n" * 20, encoding="utf-8")
-    (root / "sft" / "smoltalk").mkdir(parents=True)
-    (root / "sft" / "smoltalk" / "c.jsonl").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setenv("DATA_DIR", str(root))
+    selection = vocab.resolve(data_client, [TINY_CHAT_ID])
 
-    with pytest.raises(FileNotFoundError, match=r"\['smoltalk'\] are SFT sets"):
-        vocab.build("unused", [("smoltalk", None)], 512)
+    with pytest.raises(ValueError, match="fine-tune"):
+        vocab.build(data_client, "unused", selection, 512)
 
 
 @pytest.mark.parametrize("suite", SUITES)

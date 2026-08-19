@@ -10,7 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tests.fixtures import trace_spec
-from tests.fixtures.tiny_env import TINY_DATASET, TINY_MODEL
+from tests.fixtures.tiny_env import TINY_DATASET_ID, TINY_MODEL
 
 UNKNOWN = "no-such-model"
 
@@ -24,16 +24,6 @@ async def test_health_reports_ok_and_no_active_run(client):
     response = await client.get("/")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "active_run": None}
-
-
-async def test_datasets_lists_the_input_tree(client):
-    body = (await client.get("/datasets")).json()
-    assert [d["name"] for d in body["datasets"]] == [TINY_DATASET]
-
-
-async def test_sft_datasets_lists_the_sft_tree(client):
-    body = (await client.get("/sft/datasets")).json()
-    assert [d["name"] for d in body["datasets"]] == [TINY_DATASET]
 
 
 async def test_models_lists_weights_on_disk(client):
@@ -115,7 +105,7 @@ async def test_train_runs_end_to_end_and_writes_a_model(client, trained_id):
         "/train?wait=true",
         json={
             "model_name": trained_id,
-            "datasets": [TINY_DATASET],
+            "datasets": [TINY_DATASET_ID],
             "dimensions": 32,
             "heads": 4,
             "layers": 2,

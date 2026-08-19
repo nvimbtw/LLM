@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+data-engine = { path = "../data-engine" }
 engine = { path = "../engine" }
+service = { path = "../service" }
 auth = { path = "../auth" }
 db = { path = "../db" }
 tools = { path = "../tools" }

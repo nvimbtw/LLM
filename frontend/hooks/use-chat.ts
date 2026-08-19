@@ -77,13 +77,20 @@ function groupTurns(rows: MessageWire[]): ChatMessage[] {
       // exist; dropping it is better than inventing a turn to hang it on.
       if (previous?.role !== "assistant") continue
       previous.working ??= previous.content
-      previous.toolAnswers = [...(previous.toolAnswers ?? []), parseToolRow(row.content)]
+      previous.toolAnswers = [
+        ...(previous.toolAnswers ?? []),
+        parseToolRow(row.content),
+      ]
       previous.content = ""
       continue
     }
 
     // The round after a tool result continues the turn rather than starting one.
-    if (row.role === "assistant" && previous?.toolAnswers && !previous.content) {
+    if (
+      row.role === "assistant" &&
+      previous?.toolAnswers &&
+      !previous.content
+    ) {
       previous.content = row.content
       previous.id = row.message_id
       previous.modelName = row.model_name ?? undefined
@@ -271,7 +278,11 @@ export function useChat(chatId: string) {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === "assistant" && last.working === undefined) {
-            next[next.length - 1] = { ...last, working: last.content, content: "" }
+            next[next.length - 1] = {
+              ...last,
+              working: last.content,
+              content: "",
+            }
           }
           return next
         })

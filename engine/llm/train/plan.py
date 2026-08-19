@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from llm.corpus.pack import DocSpan
+from llm.corpus.spans import DocSpan, Spans
 
 
 @dataclass
@@ -20,19 +20,25 @@ class Stage:
 
     name: str | None
     epochs: int
-    documents: list[DocSpan]
+    documents: Spans
+
+    def __post_init__(self):
+        self.documents = Spans.coerce(self.documents)
 
 
 @dataclass
 class DataPlan:
     """How to order and segment the corpus for a run."""
 
-    documents: list[DocSpan]
+    documents: Spans
     eot_id: int
     shuffle: bool
     seed: int
     # Ordered curriculum. Empty means a single implicit stage over `documents`.
     stages: list[Stage] = field(default_factory=list)
+
+    def __post_init__(self):
+        self.documents = Spans.coerce(self.documents)
 
     def ordered_stages(self, default_epochs: int) -> list[Stage]:
         """The stages to train, or the one implicit stage a flat run describes."""
@@ -45,7 +51,7 @@ class DataPlan:
         """The fallback when no segments sidecar exists: one document covering
         everything, in fixed order."""
         return cls(
-            documents=[DocSpan(dataset="corpus", start=0, length=corpus_len)],
+            documents=Spans.of([DocSpan(dataset="corpus", start=0, length=corpus_len)]),
             eot_id=0,
             shuffle=False,
             seed=0,
@@ -64,8 +70,14 @@ class EpochStream:
 
     Nothing needs the whole thing at once. A batch is a contiguous span of the
     epoch, so this keeps the shuffled order as two small index arrays and copies
-    out spans on demand. Documents here average ~40k tokens against a 4k-token
-    batch, so a span usually touches one document and never many.
+    out spans on demand.
+
+    The order is taken as a permutation of the span table rather than by
+    shuffling a list of documents, which is the same order — `permutation(n)`
+    draws exactly what `shuffle` applies — for none of the per-epoch copy. That
+    matters now the table is a document apiece rather than a shard apiece: the
+    list this used to build was the largest thing a run allocated after the
+    corpus itself.
 
     Reshuffled per epoch off `seed + epoch`, so a run is reproducible while no
     two epochs see the same order. `mask` (SFT) is reordered by the same
@@ -79,11 +91,9 @@ class EpochStream:
         plan: DataPlan,
         epoch: int,
         mask: np.ndarray | None = None,
-        documents: list[DocSpan] | None = None,
+        documents: Spans | None = None,
     ):
-        documents = list(plan.documents if documents is None else documents)
-        if plan.shuffle:
-            np.random.default_rng(plan.seed + epoch).shuffle(documents)
+        documents = Spans.coerce(plan.documents if documents is None else documents)
 
         self.corpus = corpus
         self.mask = mask
@@ -93,8 +103,14 @@ class EpochStream:
         self.gap = 1 if documents else 0
 
         if documents:
-            self.starts = np.fromiter((d.start for d in documents), np.int64, len(documents))
-            self.lengths = np.fromiter((d.length for d in documents), np.int64, len(documents))
+            starts, lengths = documents.starts, documents.lengths
+            if plan.shuffle:
+                order = np.random.default_rng(plan.seed + epoch).permutation(len(documents))
+                starts, lengths = starts[order], lengths[order]
+            # Copied out of the (possibly mapped) table: `gather` indexes these
+            # once per batch, and a fancy-indexed view would be re-read each time.
+            self.starts = np.ascontiguousarray(starts, np.int64)
+            self.lengths = np.ascontiguousarray(lengths, np.int64)
         else:
             self.starts = np.zeros(1, np.int64)
             self.lengths = np.array([len(corpus)], np.int64)

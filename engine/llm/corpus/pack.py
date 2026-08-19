@@ -4,8 +4,10 @@ Two artifacts, mirroring the Rust `build_dataset`:
 
     corpus.bin     flat little-endian uint16 token ids, documents separated by
                    a single <|endoftext|>
-    segments.json  where each document starts and how long it is, tagged with
-                   the dataset it came from
+    spans.npy      where each document starts and how long it is, tagged with
+                   the dataset it came from — see `llm.corpus.spans`
+    segments.json  what the build was made from, and the name table the spans
+                   index into
 
 The sidecar is what makes per-epoch shuffling possible: the corpus is one flat
 stream, and without recorded boundaries there is no way to reorder documents
@@ -20,14 +22,14 @@ import hashlib
 import json
 import re
 import shutil
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 import numpy as np
 from tokenizers import Tokenizer
 
 from llm import storage
-from llm.corpus import bpe, sources, special
-from llm.corpus.sources import SourceFile
+from llm.corpus import bpe, remote, spans as spans_mod, special
+from llm.corpus.spans import SpanBuilder, Spans
 
 # uint16 halves the corpus on disk and in memory versus uint32, and caps the
 # vocabulary at 65536 — far above anything this project trains.
@@ -68,25 +70,29 @@ KEY_FINGERPRINT_CHARS = 8
 KEY_DIGEST_CHARS = 10
 
 #: One curriculum stage as the corpus knows it: what it was called, and which
-#: datasets (with their caps) it drew from. Epochs are absent on purpose — see
-#: `corpus_key`.
-StageSelection = tuple[str | None, list[tuple[str, int | None]]]
+#: datasets it drew from, each resolved against the data engine. Epochs are
+#: absent on purpose — see `corpus_key`.
+StageSelection = tuple[str | None, list[remote.Selected]]
 
 
-@dataclass
-class DocSpan:
-    """A contiguous span of the flat corpus forming one document. `start`/`len`
-    are exclusive of the <|endoftext|> separators baked between documents."""
+@dataclass(frozen=True)
+class SourceDoc:
+    """One document on its way into the corpus, tagged with the dataset it came
+    from so a span can record which dataset it belongs to.
+
+    Text, not a path. The engine owns no corpora — this arrives a page at a time
+    from the data engine, through the backend, and is dropped as soon as it has
+    been encoded.
+    """
 
     dataset: str
-    start: int
-    length: int
+    text: str
     stage: int = 0
 
 
 @dataclass
 class PackStats:
-    files: int
+    datasets: int
     chars: int
     vocab_size: int
     corpus_len: int
@@ -101,20 +107,16 @@ class PackStats:
     special_ids_seen: list[int] = field(default_factory=list)
 
 
-def resolve(stages) -> list[StageSelection]:
+def resolve(client, stages) -> list[StageSelection]:
     """What an ordered curriculum selects right now, stage by stage.
 
-    A stage naming no datasets means "every corpus under input/", which is a
-    different corpus once another is fetched — so it is expanded here, before the
-    key, exactly as `vocab.resolve` and `sft.resolve` do. Duck-typed through
-    `sources.selection`, so this module still imports nothing from `llm.config`.
+    Resolved against the data engine before anything is keyed, exactly as the
+    directory expansion it replaces was: a dataset that has been pulled again
+    since the last build is a different corpus under the same id, and a key that
+    could not see that would reuse the smaller one and report success.
     """
     return [
-        (
-            getattr(stage, "name", None),
-            [sources.selection(item) for item in getattr(stage, "datasets", None) or []]
-            or [(name, None) for name in sources.datasets()],
-        )
+        (getattr(stage, "name", None), remote.resolve(client, getattr(stage, "datasets", None)))
         for stage in stages
     ]
 
@@ -129,21 +131,29 @@ def corpus_key(fingerprint: str, stages: list[StageSelection]) -> str:
     changes a single token, and including them would re-pack a byte-identical
     corpus because someone renamed a stage. Both are still recorded in the
     sidecar, and `train` takes both from the request rather than from there.
+
+    A dataset's *name* is absent from the digest for the same reason, but it is
+    still in the slug, and the slug is part of the path — so renaming a dataset
+    in the data engine does re-pack, even though the identity is unchanged. That
+    is the price of a directory listing a person can read, paid knowingly: a
+    rename is rare, and the alternative is a tree of bare digests.
     """
     payload = json.dumps(
         {
             "tokenizer": fingerprint,
-            "stages": [[[name, cap] for name, cap in datasets] for _, datasets in stages],
+            "stages": [
+                [selected.identity() for selected in datasets] for _, datasets in stages
+            ],
         }
     )
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:KEY_DIGEST_CHARS]
-    names = [name for _, datasets in stages for name, _ in datasets][:KEY_SLUG_DATASETS]
+    names = [s.name for _, datasets in stages for s in datasets][:KEY_SLUG_DATASETS]
     slug = "-".join(re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") for name in names)
     return f"{slug or 'empty'}-{fingerprint[:KEY_FINGERPRINT_CHARS]}-{digest}"
 
 
 def pack(
-    files: list[SourceFile],
+    documents_in,
     tok: Tokenizer,
     *,
     key: str,
@@ -151,7 +161,12 @@ def pack(
     tokenizer_id: str | None = None,
     fingerprint: str = "",
 ) -> PackStats:
-    """Encode every file into one flat corpus, recording document boundaries."""
+    """Encode every document into one flat corpus, recording its boundaries.
+
+    `documents_in` is an iterable of `SourceDoc`, consumed once and never held:
+    it is a paged read from the data engine, and materializing it would be the
+    engine keeping a copy of a corpus it does not own.
+    """
     vocab = bpe.vocab_size(tok)
     if vocab > np.iinfo(CORPUS_DTYPE).max + 1:
         raise ValueError(
@@ -167,7 +182,7 @@ def pack(
         if tok.token_to_id(name) is not None
     }
 
-    documents: list[DocSpan] = []
+    documents = SpanBuilder()
     seen: set[int] = set()
     chars = 0
     corpus_len = 0
@@ -197,8 +212,10 @@ def pack(
             out.write(block.tobytes())
             buffer.clear()
 
+    seen_datasets: set[str] = set()
+
     with partial.open("wb") as out:
-        batch: list[SourceFile] = []
+        batch: list[SourceDoc] = []
         texts: list[str] = []
         pending = 0
 
@@ -213,12 +230,10 @@ def pack(
                     continue
 
                 documents.append(
-                    DocSpan(
-                        dataset=source.dataset,
-                        start=corpus_len,
-                        length=len(ids),
-                        stage=source.stage,
-                    )
+                    source.dataset,
+                    start=corpus_len,
+                    length=len(ids),
+                    stage=source.stage,
                 )
                 buffer.extend(ids)
                 buffer.append(eot_id)
@@ -232,12 +247,15 @@ def pack(
             texts.clear()
             pending = 0
 
-        for source in files:
-            text = source.path.read_text(encoding="utf-8", errors="replace")
-            chars += len(text)
+        for source in documents_in:
+            chars += len(source.text)
+            seen_datasets.add(source.dataset)
             batch.append(source)
-            texts.append(text)
-            pending += len(text)
+            texts.append(source.text)
+            pending += len(source.text)
+            # One batch is one page: the documents are encoded and released
+            # before the next page is asked for, so peak memory is a page and
+            # not a corpus.
             if pending >= ENCODE_BATCH_CHARS:
                 drain()
 
@@ -245,6 +263,9 @@ def pack(
         flush()
 
     partial.replace(corpus)
+
+    spans = documents.build()
+    spans.save(storage.pretrain_spans_path(key))
 
     # The selection and the vocabulary are written beside the documents so a
     # packed corpus says what it is. `is_built` compares against this rather than
@@ -259,7 +280,10 @@ def pack(
                 "stages": stages or [],
                 "special_ids_seen": sorted(seen),
                 "token_counts": counts.tolist(),
-                "documents": [asdict(d) for d in documents],
+                # The rows themselves are in spans.npy; what stays here is the
+                # count a person reads and the name table those rows index into.
+                "documents": len(spans),
+                "datasets": spans.names,
             },
             indent=2,
         ),
@@ -267,11 +291,11 @@ def pack(
     )
 
     return PackStats(
-        files=len(files),
+        datasets=len(seen_datasets),
         chars=chars,
         vocab_size=vocab,
         corpus_len=corpus_len,
-        documents=len(documents),
+        documents=len(spans),
         special_ids_seen=sorted(seen),
     )
 
@@ -288,16 +312,16 @@ def load_corpus(key: str) -> np.ndarray:
     return np.memmap(path, dtype=CORPUS_DTYPE, mode="r")
 
 
-def load_segments(key: str) -> tuple[int, list[DocSpan], dict]:
+def load_segments(key: str) -> tuple[int, Spans, dict]:
     """Document boundaries plus what the build was made from.
 
     Returns the same `(eot_id, documents, info)` shape `sft.load_segments` does,
     so the two sidecars are read the same way. A missing sidecar is an empty
-    document list — the caller falls back to one whole-corpus document.
+    table — the caller falls back to one whole-corpus document.
     """
     path = storage.pretrain_segments_path(key)
     if not path.is_file():
-        return 0, [], {}
+        return 0, Spans.empty(), {}
     raw = json.loads(path.read_text(encoding="utf-8"))
     info = {
         "stages": raw.get("stages", []),
@@ -311,7 +335,11 @@ def load_segments(key: str) -> tuple[int, list[DocSpan], dict]:
         # build that predates them, and then the corpus is sampled instead.
         "token_counts": raw.get("token_counts"),
     }
-    return raw["eot_id"], [DocSpan(**d) for d in raw["documents"]], info
+    return (
+        raw["eot_id"],
+        spans_mod.from_sidecar(storage.pretrain_spans_path(key), raw),
+        info,
+    )
 
 
 def is_built(key: str, stages: list[StageSelection], fingerprint: str) -> bool:
@@ -333,11 +361,10 @@ def is_built(key: str, stages: list[StageSelection], fingerprint: str) -> bool:
     _, _, info = load_segments(key)
     if not info or info.get("tokenizer_fingerprint") != fingerprint:
         return False
-    recorded = [
-        [(name, cap) for name, cap in stage.get("datasets", [])]
-        for stage in info.get("stages", [])
+    recorded = [stage.get("datasets", []) for stage in info.get("stages", [])]
+    return recorded == [
+        [selected.record() for selected in datasets] for _, datasets in stages
     ]
-    return recorded == [list(datasets) for _, datasets in stages]
 
 
 def builds() -> list[dict]:

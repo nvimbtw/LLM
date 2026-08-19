@@ -15,32 +15,61 @@ _ALLOW_MODEL_PREFIX = ConfigDict(protected_namespaces=())
 
 
 class DatasetSelection(BaseModel):
-    """A dataset to train on, optionally capped to its first `count` files.
+    """A dataset to train on, optionally capped to its first `count` documents.
 
-    The cap is what keeps a run's size under control when one folder dwarfs the
-    rest: FineWeb averages ~70k tokens per file and holds 99% of the corpus here,
-    so `{"name": "FineWeb", "count": 500}` is the difference between a 56M-token
-    run and a 390M-token one.
+    The dataset is one the **data engine** owns, named by its id: the engine
+    stores no corpora of its own, and a name is something a person can change
+    without changing a single token.
 
-    Files are ordered by name and the first `count` taken, so a capped run is
-    reproducible and a re-pack selects the same text. `None` or `0` means all of
-    them.
+    The cap is what keeps a run's size under control when one dataset dwarfs the
+    rest — FineWeb holds 99% of the text in a typical selection here, so
+    `{"id": ..., "count": 50000}` is the difference between a run that finishes
+    tonight and one that does not.
 
-    A bare string parses as an uncapped selection, so `["FineWeb"]` and
-    `[{"name": "FineWeb"}]` are the same request.
+    Documents are ordered by `ordinal` and the first `count` taken, so a capped
+    run is reproducible and a re-pack selects the same text. `None` or `0` means
+    the whole dataset. It used to mean "the first N *files*", which was
+    reproducible only by accident of how a directory listing sorted.
+
+    A bare string parses as an uncapped selection, so `["<id>"]` and
+    `[{"id": "<id>"}]` are the same request.
     """
 
-    name: str
+    id: str = Field(description="the data engine's id for the dataset")
+    name: str = Field(
+        default="",
+        description="what to call it, for readability; the data engine's own name wins",
+    )
     count: int | None = Field(
-        default=None, ge=0, description="take only the first N files; 0 or null means all"
+        default=None,
+        ge=0,
+        description="take only the first N documents; 0 or null means all of them",
     )
 
 
 def _as_selections(value):
-    """Accept `["Name"]`, `[{"name": ..., "count": ...}]`, or a mix of both."""
+    """Accept `["<id>"]`, `[{"id": ..., "count": ...}]`, or a mix of both.
+
+    A selection naming only `name` is a request written before datasets moved out
+    of the engine. It is refused rather than looked up: there is no directory
+    left to look in, and two datasets may share a name.
+    """
     if not isinstance(value, list):
         return value
-    return [{"name": item} if isinstance(item, str) else item for item in value]
+
+    selections = []
+    for item in value:
+        if isinstance(item, str):
+            selections.append({"id": item})
+        elif isinstance(item, dict) and "id" not in item and "name" in item:
+            raise ValueError(
+                f"dataset {item['name']!r} is selected by name. Datasets live in the "
+                f"data engine now and are selected by id — re-queue this run from the "
+                f"dataset list"
+            )
+        else:
+            selections.append(item)
+    return selections
 
 
 class CurriculumStage(BaseModel):
@@ -107,8 +136,8 @@ class TrainConfig(BaseModel):
     # ── Data ────────────────────────────────────────────────────────────────
     datasets: list[DatasetSelection] = Field(
         default_factory=list,
-        description="dataset folders to train on; empty means all of them. Each entry is "
-        "a name or {name, count} to cap it to its first N files",
+        description="datasets to train on, by data-engine id. Each entry is an id or "
+        "{id, count} to cap it to its first N documents. A run must name at least one",
     )
     curriculum: list[CurriculumStage] = Field(
         default_factory=list,
@@ -208,8 +237,8 @@ class SftConfig(BaseModel):
     # would collapse them into a single set of weights.
     datasets: list[DatasetSelection] = Field(
         default_factory=list,
-        description="SFT set folders to fine-tune on; empty means all of them. Each entry "
-        "is a name or {name, count} to cap it to its first N files",
+        description="chat datasets to fine-tune on, by data-engine id. Each entry is an "
+        "id or {id, count} to cap it to its first N conversations",
     )
 
     # Drop the <|thinking|> blocks from the chat data this run trains on,
@@ -243,8 +272,8 @@ class TokenizerConfig(BaseModel):
     max_vocab: int = 8192
     datasets: list[DatasetSelection] = Field(
         default_factory=list,
-        description="corpora to learn merges from; empty means all of them. Each entry is "
-        "a name or {name, count} to cap it to its first N files",
+        description="datasets to learn merges from, by data-engine id. Each entry is an "
+        "id or {id, count} to cap it to its first N documents",
     )
     rebuild: bool = Field(
         default=False,

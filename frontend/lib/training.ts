@@ -1,4 +1,3 @@
-import { API_URL, authHeaders } from "./api"
 
 // The shape of a training run: its config, and the frames it reports while it
 // executes.
@@ -27,17 +26,25 @@ export function isFineTune(mode: TrainMode): boolean {
 }
 
 // One picked dataset: the name of an uploads/ subfolder and how many of its .txt
-// files to sample at random (0 = all of that dataset).
+// documents to take (0 = all of that dataset).
+//
+// `id` is the data engine's — the engine stores no corpora and selects by id,
+// because a name is something a person can change without changing a token.
+// `name` rides along so a stored config still reads as something when the
+// dataset list is not to hand; the data engine's own name wins at run time.
 export interface DatasetSelection {
-  name: string
+  id: string
+  name?: string
   count: number
 }
 
-// A selectable dataset returned by GET /training/datasets: an uploads/ subfolder
-// and its total .txt count (the cap the picker shows as "n / files").
+// A selectable dataset, as the picker needs it. Narrowed from the data engine's
+// `Dataset` (see `lib/data.ts`) so the rail depends on the three fields it
+// actually renders rather than on the whole row.
 export interface DatasetInfo {
+  id: string
   name: string
-  files: number
+  documents: number
 }
 
 // One curriculum stage: a set of datasets trained for a fixed number of epochs
@@ -67,8 +74,8 @@ export interface TrainConfig {
   // weights meeting token ids they were never trained on produce confident
   // nonsense.
   tokenizer_id?: string
-  // Which upload datasets (subfolders of uploads/) to train on, each with how
-  // many of its files to sample (0 = all of that dataset). Pretrain only.
+  // Which data-engine datasets to train on, each with how many of its documents
+  // to take (0 = all of that dataset). Pretrain only.
   datasets: DatasetSelection[]
   // Ordered curriculum stages (pretrain only). When non-empty, the run trains
   // each stage's datasets for its own epoch count instead of the flat `datasets`
@@ -204,23 +211,4 @@ export interface TrainingSnapshot {
   // cancelled, or failed runs.
   id_model?: string | null
   model_name?: string | null
-}
-
-export async function listDatasets(): Promise<DatasetInfo[]> {
-  const res = await fetch(`${API_URL}/datasets`, {
-    headers: authHeaders(),
-  })
-  if (!res.ok) return []
-  return ((await res.json()) as { datasets: DatasetInfo[] }).datasets
-}
-
-// The conversation sets a fine-tune picks from. A separate catalogue from
-// `listDatasets` because they are different folders on disk — a run selects
-// prose corpora or SFT sets, never a mix of the two.
-export async function listSftDatasets(): Promise<DatasetInfo[]> {
-  const res = await fetch(`${API_URL}/sft/datasets`, {
-    headers: authHeaders(),
-  })
-  if (!res.ok) return []
-  return ((await res.json()) as { datasets: DatasetInfo[] }).datasets
 }

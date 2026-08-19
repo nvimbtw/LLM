@@ -10,9 +10,17 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from tests.fixtures import fake_backend
+
 FIXTURES = Path(__file__).resolve().parent
 TINY_MODEL = "tiny"
 TINY_DATASET = "Tiny"
+TINY_CHAT = "TinyChat"
+
+#: What a run names. The engine stores no corpora, so the fixture text lives in
+#: a stand-in data engine and a selection is an id — see `fake_backend`.
+TINY_DATASET_ID = fake_backend.TINY_DATASET_ID
+TINY_CHAT_ID = fake_backend.TINY_CHAT_ID
 
 # Repetitive enough for BPE to find merges in a corpus this small.
 SOURCE_TEXT = (
@@ -32,17 +40,6 @@ def install(root: Path) -> Path:
     model_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(FIXTURES / TINY_MODEL, model_dir)
 
-    # Real data on disk, so every pipeline runs end to end rather than being
-    # stubbed at its boundary.
-    dataset = root / "input" / TINY_DATASET
-    dataset.mkdir(parents=True, exist_ok=True)
-    (dataset / "a.txt").write_text(SOURCE_TEXT, encoding="utf-8")
-    (dataset / "b.txt").write_text(SOURCE_TEXT, encoding="utf-8")
-
-    sft = root / "sft" / TINY_DATASET
-    sft.mkdir(parents=True, exist_ok=True)
-    (sft / "convos.jsonl").write_text(_conversations(24), encoding="utf-8")
-
     # Held out from training on purpose: scoring a model on its own corpus
     # measures memorization. Different sentences, same vocabulary.
     corpus = root / "eval" / "corpus"
@@ -60,17 +57,43 @@ def _conversations(count: int) -> str:
 
     lines = []
     for i in range(count):
-        lines.append(
-            json.dumps(
-                {
-                    "turns": [
-                        {"role": "user", "text": f"where did the cat sit, take {i}?"},
-                        {"role": "assistant", "text": "the cat sat on the mat."},
-                    ]
-                }
-            )
-        )
+        lines.append(json.dumps({"turns": _turns(i)}))
     return "\n".join(lines) + "\n"
+
+
+def _turns(i: int) -> list[dict]:
+    return [
+        {"role": "user", "text": f"where did the cat sit, take {i}?"},
+        {"role": "assistant", "text": "the cat sat on the mat."},
+    ]
+
+
+def datasets() -> list[fake_backend.Dataset]:
+    """The fixture text as the data engine would hold it.
+
+    Two documents of `SOURCE_TEXT` rather than one of twice the length: that is
+    what the two `.txt` files were, so a corpus packed from this is
+    byte-identical to one packed before the text moved.
+    """
+    return [
+        fake_backend.Dataset(
+            TINY_DATASET_ID,
+            TINY_DATASET,
+            "pretrain",
+            fake_backend.text_documents([SOURCE_TEXT, SOURCE_TEXT]),
+        ),
+        fake_backend.Dataset(
+            TINY_CHAT_ID,
+            TINY_CHAT,
+            "chat",
+            fake_backend.chat_documents(
+                [
+                    [{"role": t["role"], "content": t["text"]} for t in _turns(i)]
+                    for i in range(24)
+                ]
+            ),
+        ),
+    ]
 
 
 @contextmanager
@@ -93,3 +116,31 @@ def data_root(root: Path | None = None):
             os.environ["DATA_DIR"] = previous
         if created is not None:
             created.cleanup()
+
+
+def selected(
+    dataset_id: str,
+    cap: int | None = None,
+    *,
+    name: str | None = None,
+    documents: int = 2,
+    size: int = 1000,
+    updated_at: str = "2026-08-19T00:00:00+00:00",
+):
+    """A resolved selection, for a test asserting on keys rather than on text.
+
+    The resolution itself goes through the stand-in backend; this is for the
+    cases where what is under test is what a key is a function of, and standing
+    a server up to learn a document count would only obscure that.
+    """
+    from llm.corpus.remote import Selected
+
+    return Selected(
+        id=dataset_id,
+        name=name if name is not None else dataset_id,
+        kind="pretrain",
+        cap=cap,
+        documents=documents,
+        bytes=size,
+        updated_at=updated_at,
+    )

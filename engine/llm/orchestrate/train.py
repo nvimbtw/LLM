@@ -1,7 +1,7 @@
 """The training pipeline.
 
     1. resolve the vocabulary          \
-    2. collect source files             > skipped when the build already matches
+    2. resolve the datasets             > skipped when the build already matches
     3. pack the corpus                 /
     4. build the model
     5. run the training loop
@@ -20,14 +20,13 @@ exist anywhere", which is why a run could train on data nobody asked for.
 
 import json
 import time
-from collections import Counter
 from threading import Event
 
 from tokenizers import Tokenizer
 
 from llm import storage
 from llm.config import TrainConfig
-from llm.corpus import bpe, pack, sources, vocab
+from llm.corpus import bpe, pack, remote, vocab
 from llm.model import checkpoint
 from llm.model.transformer import Transformer
 from llm.train import loop
@@ -37,6 +36,7 @@ from llm.train.progress import ProgressCallback, Tokenize, log_progress
 
 def build_dataset(
     cfg: TrainConfig,
+    client,
     tokenizer: Tokenizer,
     *,
     key: str,
@@ -61,33 +61,28 @@ def build_dataset(
             on_progress(Tokenize(**fields))
 
     stages = cfg.stages()
-    files = sources.collect_stages(stages)
-    if not files:
-        chat = sources.chat_sets_among(cfg.datasets)
+    expected = sum(selected.taken for _, datasets in selection for selected in datasets)
+    if not expected:
         raise ValueError(
-            f"No .txt files found under {storage.input_dir()}"
-            + (f" for datasets {cfg.datasets}" if cfg.datasets else "")
-            # The same misroute `vocab._sft_hint` explains, reached instead of it
-            # whenever the run named a vocabulary and so never built one.
-            + (
-                f" — but {chat} are SFT sets. A run trains on those only as a "
-                f"fine-tune, and a fine-tune is a run that names `base_model`."
-                if chat
-                else ""
-            )
+            f"Nothing to pack: {_named(selection)} hold no documents between them. "
+            f"A chat dataset holds conversations rather than prose — fine-tune on "
+            f"those instead, which is a run that names `base_model`."
         )
     merges = bpe.merge_count(tokenizer)
-    report(files=len(files), vocab=bpe.vocab_size(tokenizer), merges=merges, progress=0.6)
+    report(documents=expected, vocab=bpe.vocab_size(tokenizer), merges=merges, progress=0.6)
 
     # Per-dataset counts, because a cap that silently failed to apply is otherwise
     # invisible until the run's wall-clock comes in several times over.
-    per_dataset = Counter(f.dataset for f in files)
-    breakdown = ", ".join(f"{name} {n:,}" for name, n in sorted(per_dataset.items()))
-    print(f"[2/6] Collected {len(files):,} file(s) from {len(per_dataset)} dataset(s): {breakdown}")
+    breakdown = ", ".join(
+        f"{selected.name} {selected.taken:,}"
+        for _, datasets in selection
+        for selected in datasets
+    )
+    print(f"[2/6] Reading {expected:,} document(s): {breakdown}")
 
     print(f"[3/6] Packing corpus into {key}")
     stats = pack.pack(
-        files,
+        _documents(client, selection),
         tokenizer,
         key=key,
         # The *resolved* selection, not the request: a stage asking for "all"
@@ -95,7 +90,11 @@ def build_dataset(
         # compare an expanded request against an unexpanded record and rebuild
         # every time.
         stages=[
-            {"name": st.name, "epochs": st.epochs, "datasets": [[n, c] for n, c in datasets]}
+            {
+                "name": st.name,
+                "epochs": st.epochs,
+                "datasets": [selected.record() for selected in datasets],
+            }
             for st, (_, datasets) in zip(stages, selection)
         ],
         tokenizer_id=tokenizer_id,
@@ -106,7 +105,7 @@ def build_dataset(
         f"vocab {stats.vocab_size:,}"
     )
     report(
-        files=stats.files,
+        documents=stats.documents,
         chars=stats.chars,
         vocab=stats.vocab_size,
         merges=merges,
@@ -117,8 +116,30 @@ def build_dataset(
     return stats
 
 
+def _documents(client, selection: list[pack.StageSelection]):
+    """Every document of every stage, in order, tagged with its stage.
+
+    A generator handed straight to the packer: one page is in memory at a time,
+    and a dataset named by two stages is read twice on purpose — that is what
+    "train on it again later" means, and the spans keep the two apart.
+    """
+    for index, (_, datasets) in enumerate(selection):
+        for selected in datasets:
+            for row in client.documents(selected.id, cap=selected.cap):
+                text = remote.text_of(row)
+                if text:
+                    yield pack.SourceDoc(dataset=selected.name, text=text, stage=index)
+
+
+def _named(selection: list[pack.StageSelection]) -> str:
+    return ", ".join(
+        str(selected) for _, datasets in selection for selected in datasets
+    ) or "(nothing)"
+
+
 def _vocabulary(
     cfg: TrainConfig,
+    client,
     selection: list[pack.StageSelection],
     on_progress: ProgressCallback | None,
 ) -> str:
@@ -142,17 +163,17 @@ def _vocabulary(
     # One entry per distinct selection across the curriculum, in first-seen order:
     # a corpus trained on twice is one body of text to learn merges from, and
     # counting it twice would shift the vocabulary for no reason a person asked for.
-    flat = list(dict.fromkeys(pair for _, datasets in selection for pair in datasets))
+    flat = list(dict.fromkeys(selected for _, datasets in selection for selected in datasets))
     tokenizer_id = vocab.auto_id(flat, cfg.max_vocab)
     if not cfg.rebuild_dataset and vocab.matches(tokenizer_id, flat, cfg.max_vocab):
         print(f"[1/6] Reusing the vocabulary already learned from these corpora ({tokenizer_id})")
         return tokenizer_id
 
     print(f"[1/6] Learning a vocabulary (max_vocab {cfg.max_vocab})")
-    stats = vocab.build(tokenizer_id, flat, cfg.max_vocab, on_progress)
+    stats = vocab.build(client, tokenizer_id, flat, cfg.max_vocab, on_progress)
     print(
         f"      {stats.vocab_size:,} tokens from {stats.sampled_bytes / 1e6:.1f} MB "
-        f"sampled across {stats.sampled_files:,} of {stats.files:,} file(s)"
+        f"drawn across {stats.sampled_chunks:,} point(s) in {len(flat)} dataset(s)"
     )
     return tokenizer_id
 
@@ -161,12 +182,20 @@ def run(
     cfg: TrainConfig,
     on_progress: ProgressCallback | None = log_progress,
     cancel: Event | None = None,
+    owner: str | None = None,
 ) -> dict:
     """The whole pipeline. Returns a summary of the run."""
     started = time.time()
 
-    selection = pack.resolve(cfg.stages())
-    tokenizer_id = _vocabulary(cfg, selection, on_progress)
+    # Held open across phase 1 and closed before training starts: the documents
+    # are read while the corpus is packed and never afterwards.
+    with remote.Client(owner) as client:
+        selection = pack.resolve(client, cfg.stages())
+        tokenizer_id = _vocabulary(cfg, client, selection, on_progress)
+        return _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started)
+
+
+def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -> dict:
     tokenizer = vocab.load(tokenizer_id)
     fingerprint = vocab.fingerprint(tokenizer_id)
 
@@ -174,6 +203,7 @@ def run(
     if cfg.rebuild_dataset or not pack.is_built(key, selection, fingerprint):
         dataset = build_dataset(
             cfg,
+            client,
             tokenizer,
             key=key,
             selection=selection,
@@ -227,7 +257,7 @@ def run(
                     if i < len(requested)
                     else meta.get("epochs", cfg.epochs)
                 ),
-                documents=[d for d in documents if d.stage == i],
+                documents=documents.in_stage(i),
             )
             for i, meta in enumerate(stage_meta)
         ]

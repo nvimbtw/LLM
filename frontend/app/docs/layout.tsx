@@ -1,6 +1,10 @@
 import Link from "next/link"
 import { ArrowUpRight } from "lucide-react"
-import { DocNav, type NavLink, type NavSection } from "@/components/docs/doc-nav"
+import {
+  DocNav,
+  type NavLink,
+  type NavSection,
+} from "@/components/docs/doc-nav"
 import { navigation, type NavEntry } from "@/lib/docs"
 
 const routeFor = (slug: string[]) => ["/docs", ...slug].join("/")
@@ -21,7 +25,10 @@ export default function DocsLayout({
 
   const sections: NavSection[] = navigation()
     .filter((section) => section.entries.length > 0)
-    .map((section) => ({ title: section.title, links: section.entries.map(toLink) }))
+    .map((section) => ({
+      title: section.title,
+      links: section.entries.map(toLink),
+    }))
 
   return (
     <div className="min-h-svh">

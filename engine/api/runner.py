@@ -26,9 +26,11 @@ from llm.train.progress import Progress, Tokenize
 from store import queries as q
 from store.schema import RunKind, RunStatus
 
-#: Given a config, report progress and check for cancellation, return a result.
-#: The same two seams the pipelines already take.
-Handler = Callable[[dict, Callable[[Any], None], threading.Event], dict]
+#: Given a config, report progress, check for cancellation and say who the run
+#: is for, return a result. The first two are the seams the pipelines already
+#: take; the owner is there because phase 1 reads its documents through the
+#: backend, which scopes them to a person.
+Handler = Callable[[dict, Callable[[Any], None], threading.Event, str | None], dict]
 
 #: How often the drain loop looks for work when nothing woke it. Everything
 #: that enqueues also wakes it, so this only covers a missed notification.
@@ -117,17 +119,20 @@ class Runner:
 
     async def _drain_once(self) -> None:
         while (claimed := self._claim()) is not None:
-            run_id, kind, config = claimed
-            await self._execute(run_id, kind, config)
+            run_id, kind, config, owner = claimed
+            await self._execute(run_id, kind, config, owner)
 
-    def _claim(self) -> tuple[uuid.UUID, RunKind, dict] | None:
+    def _claim(self) -> tuple[uuid.UUID, RunKind, dict, str | None] | None:
         with store.session() as db:
             run = q.claim_next(db)
             if run is None:
                 return None
-            return run.id, run.kind, dict(run.config or {})
+            owner = str(run.owner_id) if run.owner_id else None
+            return run.id, run.kind, dict(run.config or {}), owner
 
-    async def _execute(self, run_id: uuid.UUID, kind: RunKind, config: dict) -> None:
+    async def _execute(
+        self, run_id: uuid.UUID, kind: RunKind, config: dict, owner: str | None = None
+    ) -> None:
         handler = self._handlers.get(kind)
         if handler is None:
             self._finish(run_id, RunStatus.failed, error=f"no handler for {kind.value}")
@@ -138,7 +143,7 @@ class Runner:
         progress = _ThrottledProgress(self._registry, live, run_id)
 
         try:
-            result = await asyncio.to_thread(handler, config, progress, live.cancel)
+            result = await asyncio.to_thread(handler, config, progress, live.cancel, owner)
         except Exception as e:
             self._registry.finish(live, "failed", error=f"{type(e).__name__}: {e}")
             self._finish(run_id, RunStatus.failed, error=f"{type(e).__name__}: {e}")

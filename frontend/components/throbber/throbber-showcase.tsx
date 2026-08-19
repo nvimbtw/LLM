@@ -20,7 +20,10 @@ const MODES: { mode: ThrobberMode; description: string }[] = [
   { mode: "tool", description: "The whole net struck at once." },
   { mode: "training", description: "The whole net held, breathing." },
   { mode: "benchmarking", description: "Limbs arriving one at a time, kept." },
-  { mode: "tokenizing", description: "The grown tree, cut into travelling pieces." },
+  {
+    mode: "tokenizing",
+    description: "The grown tree, cut into travelling pieces.",
+  },
 ]
 
 export function ThrobberShowcase() {

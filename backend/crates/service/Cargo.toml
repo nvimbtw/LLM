@@ -1,0 +1,25 @@
+[package]
+name = "service"
+version = "0.1.0"
+edition = "2021"
+
+# Owns a Python service process: spawning it, keeping it alive, and talking to it
+# over HTTP. Names none of them — a service is a `Config` with an audience and an
+# environment prefix, and the crates above supply both. Depends on nothing else
+# in the workspace but `auth`, because it is a boundary to a foreign process, not
+# a consumer of this project's domain types.
+[dependencies]
+auth = { path = "../auth" }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "time", "rt", "sync", "macros", "io-util"] }
+
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde_json = "1"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

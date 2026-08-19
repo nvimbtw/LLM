@@ -11,8 +11,10 @@ edition = "2024"
 members = [
     "crates/api",
     "crates/auth",
+    "crates/data-engine",
     "crates/db",
     "crates/engine",
+    "crates/service",
     "crates/tools",
 ]
 
@@ -23,8 +25,10 @@ members = [
 # starts growing again, logic has leaked back into `main.rs`.
 [dependencies]
 api = { path = "crates/api" }
+data-engine = { path = "crates/data-engine" }
 db = { path = "crates/db" }
 engine = { path = "crates/engine" }
+service = { path = "crates/service" }
 tools = { path = "crates/tools" }
 actix-cors = "0.7.1"
 actix-web = "4"

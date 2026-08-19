@@ -118,7 +118,7 @@ const HINT_CLASS =
 function rowClass(isActive: boolean) {
   return cn(
     "relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-    "before:absolute before:left-1 before:top-1/2 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-['']",
+    "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-['']",
     isActive
       ? "bg-accent text-accent-foreground before:h-3.5"
       : "text-foreground hover:bg-accent/60 hover:before:h-2"
@@ -229,7 +229,8 @@ export function SlashCommandMenu({
       return (
         <Panel visible={visible}>
           <div className="px-3.5 py-2.5 text-xs text-muted-foreground">
-            No command matching <span className="font-mono text-foreground">“/{query}”</span>
+            No command matching{" "}
+            <span className="font-mono text-foreground">“/{query}”</span>
           </div>
         </Panel>
       )
@@ -280,7 +281,9 @@ export function SlashCommandMenu({
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-3.5 py-1.5 text-[10px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
         <div className="flex items-center gap-1.5">
-          <span className="font-mono font-medium text-primary">/{command.name}</span>
+          <span className="font-mono font-medium text-primary">
+            /{command.name}
+          </span>
           <span>·</span>
           <span>{command.label}</span>
         </div>
@@ -293,7 +296,8 @@ export function SlashCommandMenu({
           <div className="flex flex-col-reverse gap-0.5">
             {data.options.length === 0 ? (
               <div className="px-3.5 py-2.5 text-xs text-muted-foreground">
-                No model matching <span className="font-mono text-foreground">“{argQuery}”</span>
+                No model matching{" "}
+                <span className="font-mono text-foreground">“{argQuery}”</span>
               </div>
             ) : (
               data.options.map(({ model, isCurrent }, idx) => {
@@ -313,11 +317,19 @@ export function SlashCommandMenu({
                           isCurrent ? "opacity-100" : "opacity-0"
                         )}
                       />
-                      <span className={cn(isCurrent ? "font-medium text-primary" : "text-foreground")}>
+                      <span
+                        className={cn(
+                          isCurrent
+                            ? "font-medium text-primary"
+                            : "text-foreground"
+                        )}
+                      >
                         <HighlightMatched text={model.name} query={argQuery} />
                       </span>
                       {model.family && (
-                        <span className="text-muted-foreground">({model.family})</span>
+                        <span className="text-muted-foreground">
+                          ({model.family})
+                        </span>
                       )}
                     </span>
                     {model.tier && (
@@ -352,11 +364,18 @@ export function SlashCommandMenu({
                         opt.isCurrent ? "opacity-100" : "opacity-0"
                       )}
                     />
-                    <span className={cn("font-medium", opt.isCurrent && "text-primary")}>
+                    <span
+                      className={cn(
+                        "font-medium",
+                        opt.isCurrent && "text-primary"
+                      )}
+                    >
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto text-muted-foreground text-[11px]">{opt.hint}</span>
+                  <span className="ml-auto text-[11px] text-muted-foreground">
+                    {opt.hint}
+                  </span>
                 </button>
               )
             })}
@@ -383,11 +402,15 @@ export function SlashCommandMenu({
                         opt.isCurrent ? "opacity-100" : "opacity-0"
                       )}
                     />
-                    <span className={cn(opt.isCurrent && "font-medium text-primary")}>
+                    <span
+                      className={cn(
+                        opt.isCurrent && "font-medium text-primary"
+                      )}
+                    >
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto font-mono text-muted-foreground text-[11px]">
+                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">
                     {opt.value}
                   </span>
                 </button>
@@ -424,11 +447,15 @@ export function SlashCommandMenu({
                       )}
                     />
                     <Icon className="size-3.5 text-muted-foreground" />
-                    <span className={cn(opt.isCurrent && "font-medium text-primary")}>
+                    <span
+                      className={cn(
+                        opt.isCurrent && "font-medium text-primary"
+                      )}
+                    >
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto text-muted-foreground text-[11px]">
+                  <span className="ml-auto text-[11px] text-muted-foreground">
                     {opt.description}
                   </span>
                 </button>
@@ -464,7 +491,8 @@ export function SlashCommandMenu({
                 <div className="inline-flex gap-0.5 rounded-md border border-border p-0.5">
                   {data.info.presets.map((preset, idx) => {
                     const isPresetActive =
-                      data.info.current === preset.value || idx === selectedIndex
+                      data.info.current === preset.value ||
+                      idx === selectedIndex
                     return (
                       <Button
                         key={preset.label}
@@ -478,8 +506,8 @@ export function SlashCommandMenu({
                           )
                         }
                         className={cn(
-                          "font-mono text-xs h-6 px-2",
-                          isPresetActive && "text-primary font-medium"
+                          "h-6 px-2 font-mono text-xs",
+                          isPresetActive && "font-medium text-primary"
                         )}
                       >
                         {preset.label}
@@ -496,7 +524,9 @@ export function SlashCommandMenu({
         {data.type === "text" && (
           <div className="flex flex-col gap-2 p-2.5">
             <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">Current steering prompt:</span>
+              <span className="text-muted-foreground">
+                Current steering prompt:
+              </span>
               {data.info.current && (
                 <button
                   type="button"
@@ -531,12 +561,14 @@ export function SlashCommandMenu({
                         className={cn(
                           "flex w-full items-baseline justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
                           isActive
-                            ? "bg-accent text-accent-foreground font-medium"
+                            ? "bg-accent font-medium text-accent-foreground"
                             : "text-foreground hover:bg-accent/50"
                         )}
                       >
-                        <span className="font-medium text-primary shrink-0">{tpl.label}</span>
-                        <span className="truncate text-muted-foreground text-[11px]">
+                        <span className="shrink-0 font-medium text-primary">
+                          {tpl.label}
+                        </span>
+                        <span className="truncate text-[11px] text-muted-foreground">
                           {tpl.value}
                         </span>
                       </button>
@@ -557,7 +589,7 @@ export function SlashCommandMenu({
               size="xs"
               variant="secondary"
               onClick={() => onSelectOption("", true)}
-              className="text-primary font-medium"
+              className="font-medium text-primary"
             >
               Run
             </Button>

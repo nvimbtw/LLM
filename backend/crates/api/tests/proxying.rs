@@ -58,7 +58,6 @@ macro_rules! service {
                 .app_data(web::Data::new(JWT_SECRET.to_string()))
                 .app_data(web::Data::new(Proxy::new(
                     $url,
-                    engine::AUDIENCE,
                     Some(SERVICE_SECRET.to_string()),
                 )))
                 .app_data(web::Data::new(tools::Registry::new(vec![])))

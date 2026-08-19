@@ -8,6 +8,7 @@ and the spec for what goes in one.
 | Directory | Module | Code |
 | --- | --- | --- |
 | [`engine/`](engine/) | Training, inference, evaluation and the data they own | `engine/` |
+| [`data-engine/`](data-engine/) | Acquiring datasets and cleaning them, before they are training data | `data-engine/` |
 | [`backend/`](backend/) | People, sessions, the seam to the engine | `backend/` |
 | [`frontend/`](frontend/) | Chat, job board, model and benchmark views | `frontend/` |
 | [`decisions/`](decisions/) | Decision records — findings that cost real time | — |

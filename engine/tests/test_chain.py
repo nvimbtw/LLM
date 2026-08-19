@@ -21,7 +21,7 @@ async def registry():
 
 
 def produces(model_id):
-    def handler(config, progress, cancel):
+    def handler(config, progress, cancel, owner=None):
         return {"model_id": str(model_id)}
 
     return handler
@@ -53,7 +53,7 @@ async def test_a_benchmark_follow_up_scores_what_the_run_before_it_made(
     produced = uuid.uuid4()
     scored = []
 
-    def benchmark(config, progress, cancel):
+    def benchmark(config, progress, cancel, owner=None):
         scored.append(config["model_name"])
         return {}
 
@@ -71,7 +71,7 @@ async def test_a_benchmark_follow_up_scores_what_the_run_before_it_made(
 async def test_a_follow_up_of_a_run_that_made_nothing_fails(store_session, registry):
     """It was written against a model that is never going to exist."""
 
-    def explode(config, progress, cancel):
+    def explode(config, progress, cancel, owner=None):
         raise RuntimeError("kaboom")
 
     runner = Runner(registry, {RunKind.train: explode})

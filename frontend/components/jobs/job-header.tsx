@@ -119,9 +119,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
           </p>
 
           {job.error && (
-            <FormError className="mt-3 max-w-prose">
-              {job.error}
-            </FormError>
+            <FormError className="mt-3 max-w-prose">{job.error}</FormError>
           )}
         </div>
 

@@ -155,7 +155,9 @@ function CurriculumBuilder({
 
   // One-line summary of a collapsed stage: its datasets and epoch count.
   const summary = (stage: CurriculumStage) => {
-    const names = stage.datasets.map((d) => d.name)
+    // A selection saved before the dataset list loaded carries only an id; show
+    // the head of it rather than the word "undefined".
+    const names = stage.datasets.map((d) => d.name || d.id.slice(0, 8))
     const datasets = names.length > 0 ? names.join(", ") : "no datasets"
     return `${datasets} · ${stage.epochs} ep`
   }
@@ -682,8 +684,7 @@ export function ParamsRail({
               onValueChange={(v) =>
                 onChange({
                   ...cfg,
-                  tokenizer_id:
-                    !v || v === LEARN_WITH_RUN ? undefined : v,
+                  tokenizer_id: !v || v === LEARN_WITH_RUN ? undefined : v,
                 })
               }
               disabled={disabled || tokenizersLoading}
@@ -768,25 +769,17 @@ export function ParamsRail({
             loading={datasetsLoading}
             value={cfg.datasets ?? []}
             disabled={disabled}
-            showCounts={false}
             emptyHint={
-              <>
-                No SFT sets found. Fetch conversations into
-                <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
-                  engine/data/sft/
-                </code>
-                first.
-              </>
+              <>No conversation datasets yet. Pull one from the Data view first.</>
             }
             onChange={(datasets) => onChange({ ...cfg, datasets })}
           />
           {(cfg.datasets?.length ?? 0) === 0 &&
             availableDatasets.length > 0 && (
               <p className="text-xs text-muted-foreground">
-                Nothing selected trains on <em>every</em> set on disk, including
-                any added later. Pick the sets explicitly — a thinking set
-                folded into a no-think run is how reasoning traces get stripped
-                and trained as answer-only.
+                Pick at least one — a run names what it trains on. Pick it
+                deliberately, too: a thinking set folded into a no-think run is
+                how reasoning traces get stripped and trained as answer-only.
               </p>
             )}
         </div>

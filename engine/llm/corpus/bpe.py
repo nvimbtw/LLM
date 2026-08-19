@@ -58,9 +58,9 @@ SAMPLE_BYTES = 64 << 20
 # bytes/token.
 MIN_DATASET_SHARE = 0.05
 
-# How much to read from each file the sample touches. Small, because coverage per
-# byte is the point: at 64 KiB a 6 MiB share spans ~96 files spread across the
-# dataset instead of ~24.
+# How much to read at each point the sample touches. Small, because coverage per
+# byte is the point: at 64 KiB a 6 MiB share is drawn from ~96 places spread
+# across the dataset instead of ~24.
 SAMPLE_TAKE_BYTES = 64 << 10
 
 
@@ -87,40 +87,11 @@ def train(files: list[Path], max_vocab: int, out_dir: Path | None = None) -> Tok
     return load(out_dir)
 
 
-def plan_sample(files, budget: int = SAMPLE_BYTES) -> list[tuple[Path, int]]:
-    """`(path, bytes)` pairs to learn merges from, spread across the selection.
+def shares(sizes: dict[str, int], budget: int) -> list[tuple[str, int]]:
+    """Each dataset's slice of the sample budget, in the order given.
 
-    `files` is anything with `.path` and `.dataset` — duck-typed, so this module
-    still imports nothing from `sources`.
-
-    Three rules, all of them from ADR 0004:
-
-    * Each dataset gets `MIN_DATASET_SHARE` of the budget, and the remainder is
-      split in proportion to how much text it actually holds. A dataset smaller
-      than its share hands the difference back to the others.
-    * Within a dataset the sample is *strided* across its files, never taken from
-      the front. A sharded corpus is ordered, so the first N shards are one
-      region of it and not a sample of it — the same mistake the Rust engine made
-      when a `div_ceil(1)` collapsed its stride and FineWeb was read from 50 of
-      its 5,498 shards.
-    * Files are truncated to a byte count rather than taken whole, so one 28 MB
-      book cannot eat a 2 MB share and re-skew the composition the shares exist
-      to control.
-    """
-    by_dataset: dict[str, list[tuple[Path, int]]] = {}
-    for source in files:
-        by_dataset.setdefault(source.dataset, []).append(
-            (source.path, source.path.stat().st_size)
-        )
-
-    drawn: list[tuple[Path, int]] = []
-    for name, share in _shares({n: sum(s for _, s in f) for n, f in by_dataset.items()}, budget):
-        drawn.extend(_draw(by_dataset[name], share))
-    return drawn
-
-
-def _shares(sizes: dict[str, int], budget: int) -> list[tuple[str, int]]:
-    """Each dataset's slice of the budget, in the order given.
+    Half of ADR 0004; `remote.sample` is the other half, drawing a slice strided
+    across the dataset it belongs to.
 
     Solved by water-filling: a dataset that holds less text than its share takes
     only what it has, and what it could not use is redistributed among the rest.
@@ -149,64 +120,30 @@ def _shares(sizes: dict[str, int], budget: int) -> list[tuple[str, int]]:
     return [(name, int(settled.get(name, 0))) for name in sizes]
 
 
-def _draw(files: list[tuple[Path, int]], share: int) -> list[tuple[Path, int]]:
-    """`share` bytes of one dataset, spread across its files.
+def write_chunks(chunks, out_dir: Path) -> list[Path]:
+    """Materialize drawn text as files the trainer can be pointed at.
 
-    The walk is a stride and then the gaps between it: the first pass touches
-    files evenly spaced across the whole range, and only if the share is still
-    unfilled — because the files are smaller than `SAMPLE_TAKE_BYTES`, which is
-    how TinyStories reads — does it come back for the ones in between. Either
-    way the sample spans the dataset rather than its first megabytes.
-    """
-    if share <= 0 or not files:
-        return []
+    One file per chunk, because the trainer parallelizes its counting over the
+    files it is given and this machine has six cores to give it. The text
+    arrives already sliced — a chunk is one stop of the stride — so there is
+    nothing to truncate here.
 
-    # `SAMPLE_TAKE_BYTES` is a floor on how much to read once a file is opened,
-    # not a ceiling: a dataset held in a few large files would otherwise cap at
-    # that much per file and hand back most of a share it can easily fill.
-    take_each = max(SAMPLE_TAKE_BYTES, -(-share // len(files)))
-    wanted = max(1, min(len(files), int(share // take_each)))
-    stride = max(1, len(files) // wanted)
-
-    drawn: list[tuple[Path, int]] = []
-    spent = 0
-    for offset in range(stride):
-        for i in range(offset, len(files), stride):
-            if spent >= share:
-                return drawn
-            path, size = files[i]
-            take = min(take_each, share - spent, size)
-            if take > 0:
-                drawn.append((path, take))
-                spent += take
-    return drawn
-
-
-def write_sample(drawn: list[tuple[Path, int]], out_dir: Path) -> list[Path]:
-    """Materialize a sample plan as files the trainer can be pointed at.
-
-    One file per source file rather than one big concatenation: the trainer
-    parallelizes its counting over the files it is given, and this machine has
-    six cores to give it.
-
-    Each slice is cut back to its last newline. A byte-level BPE pretokenizer
-    splits on whitespace, so a cut mid-word would invent a pretoken that does not
-    occur in the text and spend merges on it.
+    Bounded by whoever drew the chunks (`bpe.SAMPLE_BYTES`), which is why a
+    vocabulary build is the one place text still touches this disk: 64 MiB of
+    sample against holding it as Python strings and giving up the cores.
     """
     storage.ensure_dir(out_dir)
     written = []
-    for index, (path, take) in enumerate(drawn):
-        raw = path.open("rb").read(take)
-        cut = raw.rfind(b"\n")
-        if cut > 0:
-            raw = raw[: cut + 1]
-        # A slice can land inside a multi-byte character at either end; replacing
-        # is right here, where the text is only ever counted, and it is what
-        # `pack` does when it reads the same files for real.
-        out = out_dir / f"{index:06d}-{path.stem}.txt"
-        out.write_text(raw.decode("utf-8", errors="replace"), encoding="utf-8")
+    for index, (dataset, text) in enumerate(chunks):
+        out = out_dir / f"{index:06d}-{_slug(dataset)}.txt"
+        out.write_text(text, encoding="utf-8")
         written.append(out)
     return written
+
+
+def _slug(name: str) -> str:
+    keep = "".join(c if c.isalnum() or c in "-_" else "-" for c in name)
+    return keep.strip("-")[:40] or "dataset"
 
 
 def load(directory: Path | None = None) -> Tokenizer:

@@ -35,6 +35,8 @@ const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/models\/[^/]+$/, "Model"],
   [/^\/models$/, "Models"],
   [/^\/conversations$/, "Conversations"],
+  [/^\/data\/[^/]+$/, "Dataset"],
+  [/^\/data$/, "Data"],
 ]
 
 export function useParentTrail(fallback: ParentTrail): ParentTrail {

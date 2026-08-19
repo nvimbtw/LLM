@@ -66,11 +66,7 @@ export function SignupForm() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-        {error && (
-          <FormError>
-            {error}
-          </FormError>
-        )}
+        {error && <FormError>{error}</FormError>}
         <Button type="submit" disabled={isSubmitting} className="h-10">
           {isSubmitting ? "Creating account…" : "Create account"}
         </Button>

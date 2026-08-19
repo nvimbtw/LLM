@@ -103,7 +103,11 @@ const place = (q: number, r: number): Cell => ({
 const FIELD: Cell[] = (() => {
   const out: Cell[] = []
   for (let q = -RING; q <= RING; q++) {
-    for (let r = Math.max(-RING, -RING - q); r <= Math.min(RING, RING - q); r++) {
+    for (
+      let r = Math.max(-RING, -RING - q);
+      r <= Math.min(RING, RING - q);
+      r++
+    ) {
       out.push(place(q, r))
     }
   }
@@ -363,7 +367,11 @@ export function Throbber({
     let frame = 0
 
     const tick = (now: number) => {
-      const dt = clamp((now - (lastFrame.current || now)) / 1000, 0, MAX_FRAME_S)
+      const dt = clamp(
+        (now - (lastFrame.current || now)) / 1000,
+        0,
+        MAX_FRAME_S
+      )
       lastFrame.current = now
 
       // Reduced motion slows the mark rather than stopping it. Stopping is the
@@ -413,7 +421,10 @@ export function Throbber({
       // only place it is written down. `className` is still honoured for
       // everything a caller legitimately controls: margin, placement, colour.
       style={{ width: THROBBER_W, height: THROBBER_H }}
-      className={cn("inline-flex shrink-0 items-center justify-center", className)}
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center",
+        className
+      )}
     >
       <svg
         viewBox={`0 0 ${THROBBER_W} ${THROBBER_H}`}
@@ -532,7 +543,8 @@ function draw(
     const el = dots[i]
     if (!el) continue
     const depth = tree.dotDepth[i]
-    let lit = depth >= 0 && reach >= depth ? clamp(reach - depth + 1, 0, 1) * body : 0
+    let lit =
+      depth >= 0 && reach >= depth ? clamp(reach - depth + 1, 0, 1) * body : 0
     if (mode === "idle" && i === ROOT) {
       lit = 0.55 + 0.45 * (0.5 - 0.5 * Math.cos(TAU * local))
     }

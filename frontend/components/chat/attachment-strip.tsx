@@ -51,7 +51,9 @@ export function AttachmentStrip({
             <div className="flex h-14 max-w-40 items-center gap-2 px-2.5">
               <FileIcon className="size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0">
-                <div className="truncate text-xs font-medium">{a.file.name}</div>
+                <div className="truncate text-xs font-medium">
+                  {a.file.name}
+                </div>
                 <div className="text-[10px] text-muted-foreground">
                   {formatSize(a.file.size)}
                 </div>

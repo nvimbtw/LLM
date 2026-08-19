@@ -1,8 +1,9 @@
 pub mod auth;
 pub mod benchmarks;
 pub mod chats;
-pub mod datasets;
+pub mod data;
 pub mod health;
+pub mod internal;
 pub mod models;
 pub mod preset;
 pub mod runs;
@@ -30,5 +31,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/tokenizers").configure(tokenizers::configure));
     cfg.service(web::scope("/usage").configure(usage::configure));
     cfg.service(web::scope("/ws").configure(stream::configure));
-    cfg.configure(datasets::configure);
+
+    // Owned by the data engine: what a corpus was before it was training data.
+    cfg.service(web::scope("/data").configure(data::configure));
+
+    // Not for a browser: the engine reading the data engine's documents, the one
+    // hop that runs toward the backend rather than away from it.
+    cfg.service(web::scope("/internal").configure(internal::configure));
 }

@@ -2,6 +2,7 @@ import Link from "next/link"
 import {
   ArrowRight,
   Brain,
+  Database,
   Gauge,
   Loader,
   MessageSquareCode,
@@ -30,6 +31,13 @@ interface Destination {
 }
 
 const WORKBENCH: Destination[] = [
+  {
+    title: "Data",
+    href: "/data",
+    icon: Database,
+    blurb:
+      "Pull a dataset from Hugging Face, read what actually arrived, and clean it — watching each step on a handful of documents first.",
+  },
   {
     title: "Tokenizers",
     href: "/tokenizers",
@@ -85,7 +93,11 @@ export function AdminDirectory() {
       <Band label="Workbench" destinations={WORKBENCH} />
       {/* Nothing here touches the GPU or the database — they render fixtures. The
           rule says so without a paragraph explaining it. */}
-      <Band label="Interface" destinations={INTERFACE} className="border-t border-border/60" />
+      <Band
+        label="Interface"
+        destinations={INTERFACE}
+        className="border-t border-border/60"
+      />
     </section>
   )
 }
@@ -114,9 +126,7 @@ function Band({
               href={destination.href}
               className="group flex items-start gap-3 px-5 py-3 transition-colors hover:bg-accent/40"
             >
-              <destination.icon
-                className="mt-0.5 size-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground"
-              />
+              <destination.icon className="mt-0.5 size-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" />
               <div className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">
                   {destination.title}

@@ -5,18 +5,18 @@
 //! and the status too: a 404 flattened into a 502 tells a client nothing.
 
 use actix_web::{HttpRequest, HttpResponse, ResponseError, http::StatusCode};
-use engine::EngineError;
+use service::Error as Upstreamed;
 use serde_json::{Value, json};
 
-use crate::extractors::AuthUser;
+use crate::extractors::{AdminUser, AuthUser};
 
 pub type Answer = Result<HttpResponse, Upstream>;
 
 #[derive(Debug)]
-pub struct Upstream(EngineError);
+pub struct Upstream(Upstreamed);
 
-impl From<EngineError> for Upstream {
-    fn from(e: EngineError) -> Upstream {
+impl From<Upstreamed> for Upstream {
+    fn from(e: Upstreamed) -> Upstream {
         Upstream(e)
     }
 }
@@ -32,8 +32,8 @@ impl ResponseError for Upstream {
         match &self.0 {
             // Not reaching the service is this server's problem, not the
             // client's to interpret.
-            EngineError::Transport(_) | EngineError::Decode(_) => StatusCode::BAD_GATEWAY,
-            EngineError::Status { code, .. } => {
+            Upstreamed::Transport(_) | Upstreamed::Decode(_) => StatusCode::BAD_GATEWAY,
+            Upstreamed::Status { code, .. } => {
                 StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY)
             }
         }
@@ -49,7 +49,18 @@ pub fn answer(value: Value) -> Answer {
 }
 
 pub fn caller(user: &AuthUser) -> auth::Caller {
-    auth::Caller::User(user.claims.sub)
+    acting(&user.claims)
+}
+
+/// The same, for a route an ordinary user may not reach at all. The service
+/// still scopes by the person, not by their access level — being an admin is
+/// what got them through the door, not who they are once inside.
+pub fn admin_caller(user: &AdminUser) -> auth::Caller {
+    acting(&user.claims)
+}
+
+fn acting(claims: &auth::token::Claims) -> auth::Caller {
+    auth::Caller::User(claims.sub)
 }
 
 /// `path` with the caller's query string appended untouched. Paging and flags
@@ -67,31 +78,31 @@ mod tests {
     use super::*;
     use actix_web::test::TestRequest;
 
-    fn status_of(e: EngineError) -> u16 {
+    fn status_of(e: Upstreamed) -> u16 {
         Upstream::from(e).status_code().as_u16()
     }
 
     #[test]
     fn a_services_refusal_reaches_the_client_as_itself() {
         for code in [400, 401, 403, 404, 409, 422] {
-            assert_eq!(status_of(EngineError::Status { code, detail: "x".into() }), code);
+            assert_eq!(status_of(Upstreamed::Status { code, detail: "x".into() }), code);
         }
     }
 
     #[test]
     fn a_service_this_side_cannot_reach_is_this_sides_problem() {
-        assert_eq!(status_of(EngineError::Transport("refused".into())), 502);
-        assert_eq!(status_of(EngineError::Decode("garbage".into())), 502);
+        assert_eq!(status_of(Upstreamed::Transport("refused".into())), 502);
+        assert_eq!(status_of(Upstreamed::Decode("garbage".into())), 502);
     }
 
     #[test]
     fn a_status_no_http_client_could_mean_falls_back_rather_than_panicking() {
-        assert_eq!(status_of(EngineError::Status { code: 9999, detail: "?".into() }), 502);
+        assert_eq!(status_of(Upstreamed::Status { code: 9999, detail: "?".into() }), 502);
     }
 
     #[test]
     fn the_body_says_what_failed() {
-        let error = Upstream::from(EngineError::Status { code: 404, detail: "no run 7".into() });
+        let error = Upstream::from(Upstreamed::Status { code: 404, detail: "no run 7".into() });
         assert!(error.to_string().contains("no run 7"));
     }
 

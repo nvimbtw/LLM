@@ -11,6 +11,14 @@ Models, conversations, runs and scores. The backend owns users and presets and
 nothing else; requests flow frontend → backend → engine and back the same way.
 See [`../decisions/`](../decisions/) for the two-database split.
 
+What it does **not** own, and this is the boundary that moved most recently:
+**the text it trains on**. Corpora are the data engine's, and a run reads them a
+page at a time through the backend — see
+[`../decisions/datasets-out-of-the-engine.md`](../decisions/datasets-out-of-the-engine.md).
+What is left under `engine/data/` is derived (packed corpora, vocabularies,
+weights) plus `eval/`, which is held out from training and is therefore not
+training data. A run keeps no copy of what it read.
+
 It owns the **vocabulary** as well, which is the ownership boundary that catches
 people out: the marker table, the chat template, and the grammar the model
 decodes under are all here, and the other two modules read them rather than
@@ -18,7 +26,7 @@ restating them. A tool's *name* is decided here (it is a marker stem); a tool's
 *behaviour* is the backend's.
 
 <!-- TODO: the rest of the ownership boundary — what the engine will never ask
-     the backend for, and vice versa. -->
+     the backend for, beyond datasets, and vice versa. -->
 
 ## Tech stack
 
@@ -38,6 +46,84 @@ storage · corpus  ->  model  ->  train  ->  orchestrate  ->  main.py
 table. It is imported by both the training path and the serving path, which is
 the point — the format the model is trained on and the format it is prompted
 with cannot drift apart if there is only one of them.
+
+`llm/storage.py` is the authoritative map of the data tree; its module docstring
+is kept true and nothing else states a path.
+
+### Where the text comes from
+
+`llm/corpus/remote.py` is the client side of the one hop that runs toward the
+backend. The engine owns no corpora: what a run trains on is a dataset in the
+*data* engine's database, and the two Python services never speak, so a run asks
+the backend and the backend re-mints toward the other service carrying the same
+acting caller. The seam itself is documented in
+[`../backend/README.md`](../backend/README.md).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BACKEND_URL` | `http://127.0.0.1:8080` | |
+| `BACKEND_SERVICE_SECRET` | unset | Shared with the backend. Unset signs the token anyway, because `act` still has to travel |
+
+Three properties, and each of them is a decision rather than an implementation
+detail:
+
+- **Nothing is written down.** A page is fetched, encoded and dropped. A cache or
+  a staging directory would be the engine owning a corpus again.
+- **Pages, not the export stream.** The data engine can serve a whole dataset as
+  one NDJSON response; a connection dropped forty minutes into a pack would then
+  cost the whole pack, where a page costs one retry.
+- **A page is sized in bytes.** `limit` counts documents and a thousand books is
+  not a thousand snippets, so the last page's measured weight sets the next
+  one's limit. The data engine's own ceiling of 200 rows is what binds for small
+  documents; the byte target is what binds for large ones.
+
+All three build paths read through it: the pretrain pack, the vocabulary's
+strided sample, and the SFT render. Nothing in `llm/` opens a corpus file any
+more.
+
+**A selection is a dataset id, not a name.** `{"id": ..., "count": N}` caps to
+the first N *documents* by `ordinal` — where it used to mean the first N files
+sorted by name, which was reproducible only by accident of how a listing sorted.
+A name is carried for readability and for the span tag; the data engine's own
+name wins.
+
+**There is no "everything".** An empty selection used to mean every corpus under
+`input/`, which is reasonable for a directory one person curated. A shared
+database anyone can pull into is not that, and a run that silently widened to
+whatever was added last week would key apart every time somebody else worked. A
+run names its datasets or it is refused.
+
+**A corpus key includes what answered, not only what was asked.** A dataset
+pulled again holds more documents under the same id, so the key carries the
+document count and `updated_at` alongside the id and the cap. Without them a run
+reuses a corpus packed from less data and reports success. A dataset's *name* is
+deliberately not in the digest — but it is in the readable slug, and the slug is
+part of the path, so a rename does re-pack. That is the price of a directory
+listing a person can read, paid knowingly.
+
+**A conversation arrives as `[{role, content}]`** and is rendered from
+`{system?, turns: [{role, text}]}`. `sft._conversation` bridges the two, and the
+part that matters is that a **system message is not a turn**: left in the list it
+reaches `_turns` as an unknown role and drops the whole conversation — every
+conversation, for a dataset that has them.
+
+### What a packed corpus is made of
+
+A build directory holds the tokens (`corpus.bin`, plus `mask.bin` for SFT), the
+**document table** (`spans.npy`), and a sidecar (`segments.json`) recording what
+the build was made from. The three are keyed together — see `corpus_key` and
+`dataset_key` for what a key is a function of.
+
+The table is separate from the sidecar, and columnar, because it is the one part
+that scales with the *number* of documents rather than with their size: 22 bytes
+a row against 145 for an object, and no JSON encoding of the whole table held in
+memory to write it. That is affordable at one span per shard and is not at one
+span per document, which is the granularity a corpus fetched from the data
+engine has. `llm/corpus/spans.py` carries the measurements.
+
+A build packed before the table moved out of `segments.json` carries its rows
+inline there. Those are read, not invalidated — a repacked corpus is hours of
+work, and `spans.from_sidecar` takes either shape.
 
 ## Schema
 
