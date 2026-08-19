@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -12,376 +11,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { CurriculumBuilder } from "@/components/training/curriculum-builder"
 import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
+import {
+  KTO_DEFAULT_BETA,
+  LEARN_WITH_RUN,
+  MODE_DEFAULT_LRS,
+  STRING_FIELDS,
+  defaultLrFor,
+  derived,
+  fieldsFor,
+  validate,
+} from "@/components/training/run-config"
 import { Input } from "@/components/ui/input"
 import { PresetControls } from "@/components/training/preset-controls"
-import { DEFAULT_CONFIG } from "@/hooks/use-training"
 import { useDatasets } from "@/hooks/use-datasets"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { useModels } from "@/hooks/use-models"
 import { cn } from "@/lib/utils"
 import { isFineTune } from "@/lib/training"
-import type {
-  CurriculumStage,
-  DatasetInfo,
-  TrainConfig,
-  TrainMode,
-} from "@/lib/training"
-
-// Numeric fields split by which mode they apply to. Architecture + dataset knobs
-// only make sense for a fresh pretrain; a fine-tune inherits the base model's
-// architecture, so in SFT mode only the run knobs (epochs, learning rate) show.
-// `pow2` fields only accept powers of two, so scrolling / arrowing them cycles
-// through 16 · 32 · 64 · 128 … rather than stepping by one (see Pow2Input).
-// `maxExp` overrides the default exponent ceiling for fields that legitimately go
-// larger (e.g. vocab).
-type Field = {
-  key: keyof TrainConfig
-  label: string
-  step?: number
-  pow2?: boolean
-  maxExp?: number
-}
-
-// Every field the rail edits as text. Everything else goes through `Number()`,
-// so a string field missing from here arrives at the engine as 0 — silently, and
-// only for the one field somebody forgot.
-const STRING_FIELDS = new Set<keyof TrainConfig>([
-  "model_name",
-  "base_model_id",
-  "tokenizer_id",
-])
-
-const ARCH_FIELDS: Field[] = [
-  { key: "dimensions", label: "Dimensions", pow2: true },
-  { key: "ctx_window", label: "Context window", pow2: true },
-  { key: "heads", label: "Heads", pow2: true },
-  { key: "layers", label: "Layers" },
-  { key: "ff_multiplier", label: "FF multiplier" },
-  // Vocab can be far larger than a model dimension — GPT-2 is ~50k (2^16). Allow
-  // up to 2^20 (~1M).
-  { key: "max_vocab", label: "Max vocab", pow2: true, maxExp: 20 },
-]
-
-const RUN_FIELDS: Field[] = [
-  { key: "epochs", label: "Epochs" },
-  { key: "lr", label: "Learning rate", step: 0.001 },
-]
-
-// SFT wants a much lower learning rate than a from-scratch run — the base model
-// is already near a good minimum, so a large step would wash out what it learned.
-// Now that the pretrain default is 1e-4 (ISSUE-0052/0058 lifted the LR cap), SFT
-// sits an order of magnitude below it at 1e-5.
-const SFT_DEFAULT_LR = 0.00001
-
-// KTO sits lower still. Its gradient is the cross-entropy one scaled by a factor
-// that can exceed 1 on a confidently-wrong example, and it is deliberately allowed
-// to push probability *down* — an over-large step there degrades the model far
-// faster than an over-large SFT step, which can only ever pull it toward real text.
-const KTO_DEFAULT_LR = 0.000005
-
-// RAFT is ordinary SFT under the hood — same loss, same masking — so it wants the
-// SFT learning rate, not KTO's much lower one. Named separately because reading
-// `SFT_DEFAULT_LR` under a RAFT branch invites someone to "fix" it to the KTO
-// value. These two are only reached now when the form is seeded from a cycle's
-// job; the cycle's own runs use `raft_lr` / `kto_lr` from its config instead.
-const RAFT_DEFAULT_LR = SFT_DEFAULT_LR
-
-// The KL anchor's default. See llm::kto::KtoParams::beta.
-const KTO_DEFAULT_BETA = 0.1
-
-// Every learning rate the mode toggle sets on the user's behalf, so switching modes
-// can tell "still on a default" from "the user chose this".
-const MODE_DEFAULT_LRS: number[] = [
-  DEFAULT_CONFIG.lr,
-  SFT_DEFAULT_LR,
-  KTO_DEFAULT_LR,
-]
-
-function defaultLrFor(mode: TrainMode): number {
-  if (mode === "sft") return SFT_DEFAULT_LR
-  if (mode === "raft") return RAFT_DEFAULT_LR
-  if (mode === "kto") return KTO_DEFAULT_LR
-  return DEFAULT_CONFIG.lr
-}
-
-function isPowerOfTwo(n: number) {
-  return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0
-}
-
-// The curriculum builder: an ordered list of stages, each its own dataset
-// selection + epoch count, trained in sequence. Reuses DatasetPicker per stage so
-// a stage reads exactly like the flat picker. Stages can be reordered (the order
-// IS the curriculum) and removed; "Add stage" appends an empty one.
-function CurriculumBuilder({
-  available,
-  loading,
-  value,
-  disabled,
-  onChange,
-}: {
-  available: DatasetInfo[]
-  loading: boolean
-  value: CurriculumStage[]
-  disabled: boolean
-  onChange: (next: CurriculumStage[]) => void
-}) {
-  // Collapsed stages, tracked by index — a purely visual state so the rail can be
-  // kept compact. A freshly-added stage starts expanded so it can be configured.
-  const [collapsed, setCollapsed] = React.useState<Set<number>>(new Set())
-
-  const toggleCollapsed = (i: number) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(i)) next.delete(i)
-      else next.add(i)
-      return next
-    })
-
-  const update = (i: number, patch: Partial<CurriculumStage>) =>
-    onChange(value.map((s, idx) => (idx === i ? { ...s, ...patch } : s)))
-
-  const remove = (i: number) => onChange(value.filter((_, idx) => idx !== i))
-
-  const move = (i: number, dir: -1 | 1) => {
-    const j = i + dir
-    if (j < 0 || j >= value.length) return
-    const next = [...value]
-    ;[next[i], next[j]] = [next[j], next[i]]
-    onChange(next)
-  }
-
-  const add = () => onChange([...value, { datasets: [], epochs: 1 }])
-
-  // One-line summary of a collapsed stage: its datasets and epoch count.
-  const summary = (stage: CurriculumStage) => {
-    // A selection saved before the dataset list loaded carries only an id; show
-    // the head of it rather than the word "undefined".
-    const names = stage.datasets.map((d) => d.name || d.id.slice(0, 8))
-    const datasets = names.length > 0 ? names.join(", ") : "no datasets"
-    return `${datasets} · ${stage.epochs} ep`
-  }
-
-  return (
-    <div className="space-y-3">
-      <span className="text-xs text-muted-foreground">Curriculum stages</span>
-
-      {value.map((stage, i) => {
-        const isCollapsed = collapsed.has(i)
-        const title = stage.name?.trim() || `Stage ${i + 1}`
-        return (
-          <div key={i} className="rounded-lg border">
-            {/* Header: click the title to collapse/expand; reorder + remove stay
-                on the right. Kept compact so a long curriculum doesn't dominate. */}
-            <div className="flex items-center justify-between gap-2 p-2.5">
-              <button
-                type="button"
-                onClick={() => toggleCollapsed(i)}
-                aria-expanded={!isCollapsed}
-                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-              >
-                {isCollapsed ? (
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-                )}
-                <span className="min-w-0 truncate">
-                  <span className="text-xs font-medium tabular-nums">
-                    {i + 1}.
-                  </span>{" "}
-                  <span className="text-sm">{title}</span>
-                  {isCollapsed && (
-                    <span className="ml-1.5 truncate text-xs text-muted-foreground">
-                      {summary(stage)}
-                    </span>
-                  )}
-                </span>
-              </button>
-              <div className="flex shrink-0 items-center gap-0.5">
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="size-7"
-                  disabled={disabled || i === 0}
-                  onClick={() => move(i, -1)}
-                  aria-label="Move stage up"
-                >
-                  <ChevronUp className="size-4" />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="size-7"
-                  disabled={disabled || i === value.length - 1}
-                  onClick={() => move(i, 1)}
-                  aria-label="Move stage down"
-                >
-                  <ChevronDown className="size-4" />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="size-7 text-muted-foreground hover:text-destructive"
-                  disabled={disabled}
-                  onClick={() => remove(i)}
-                  aria-label="Remove stage"
-                >
-                  <X className="size-4" />
-                </Button>
-              </div>
-            </div>
-
-            {!isCollapsed && (
-              <div className="space-y-2.5 border-t p-2.5">
-                <Input
-                  value={stage.name ?? ""}
-                  onChange={(e) =>
-                    update(i, { name: e.target.value || undefined })
-                  }
-                  placeholder={`Stage ${i + 1} label (optional)`}
-                  disabled={disabled}
-                  className="h-8 text-sm"
-                />
-
-                <DatasetPicker
-                  available={available}
-                  loading={loading}
-                  value={stage.datasets}
-                  disabled={disabled}
-                  onChange={(datasets) => update(i, { datasets })}
-                />
-
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm text-muted-foreground">Epochs</span>
-                  <Input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={String(stage.epochs)}
-                    onChange={(e) =>
-                      update(i, { epochs: Number(e.target.value) })
-                    }
-                    disabled={disabled}
-                    className="h-8 w-24 text-right tabular-nums"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        )
-      })}
-
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="w-full"
-        disabled={disabled}
-        onClick={add}
-      >
-        <Plus className="size-4" /> Add stage
-      </Button>
-    </div>
-  )
-}
-
-// Name is a display label only (weights live under the model's UUID), so spaces
-// and dots like "Opal 1.1" are allowed — just no surrounding whitespace or
-// control characters. Shared by both modes.
-function validateName(name: string): string[] {
-  if (!name.trim()) return ["Model name is required."]
-  if (name !== name.trim())
-    return ["Model name may not have leading or trailing whitespace."]
-  if (/[\x00-\x1f\x7f]/.test(name))
-    return ["Model name may not contain control characters."]
-  return []
-}
-
-// Mirrors the backend's validate_config / validate_sft so the user sees the
-// constraints before submitting. Returns a list of human-readable problems.
-function validate(cfg: TrainConfig, inheritsBase = false): string[] {
-  const errs = validateName(cfg.model_name)
-
-  if (isFineTune(cfg.mode)) {
-    // A follow-up has no base to select: it fine-tunes whatever the job before it
-    // produces, which is exactly why it is a follow-up.
-    if (!cfg.base_model_id && !inheritsBase)
-      errs.push("Select a base model to fine-tune.")
-    if (
-      cfg.mode === "kto" &&
-      !(Number.isFinite(cfg.beta) && (cfg.beta ?? 0) > 0)
-    ) {
-      errs.push("Beta must be a positive number.")
-    }
-    if (!Number.isFinite(cfg.epochs) || cfg.epochs <= 0)
-      errs.push("Epochs must be positive.")
-    if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
-      errs.push("Learning rate must be positive.")
-    return errs
-  }
-
-  const positives: [keyof TrainConfig, string][] = [
-    ["dimensions", "Dimensions"],
-    ["ctx_window", "Context window"],
-    ["heads", "Heads"],
-    ["layers", "Layers"],
-    ["epochs", "Epochs"],
-    ["ff_multiplier", "FF multiplier"],
-  ]
-  for (const [k, label] of positives) {
-    const v = cfg[k] as number
-    if (!Number.isFinite(v) || v <= 0) errs.push(`${label} must be positive.`)
-  }
-
-  if (!isPowerOfTwo(cfg.dimensions))
-    errs.push("Dimensions must be a power of two (16, 32, 64, 128…).")
-  if (!isPowerOfTwo(cfg.ctx_window))
-    errs.push("Context window must be a power of two (16, 32, 64, 128…).")
-  if (
-    Number.isFinite(cfg.dimensions) &&
-    cfg.heads > 0 &&
-    cfg.dimensions % cfg.heads !== 0
-  )
-    errs.push(
-      `Heads must divide dimensions evenly. ${cfg.dimensions} ÷ ${cfg.heads} isn't whole.`
-    )
-  if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
-    errs.push("Learning rate must be positive.")
-  if (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
-    errs.push("Max vocab must be at least 256.")
-
-  // Curriculum runs supply their datasets per stage; a plain run uses the flat
-  // selection. Validate whichever is active (mirrors the backend).
-  const curriculum = cfg.curriculum ?? []
-  if (curriculum.length > 0) {
-    curriculum.forEach((stage, i) => {
-      const ds = stage.datasets ?? []
-      if (!Number.isFinite(stage.epochs) || stage.epochs <= 0)
-        errs.push(`Stage ${i + 1}: epochs must be positive.`)
-      if (ds.length === 0)
-        errs.push(`Stage ${i + 1}: select at least one dataset.`)
-      if (ds.some((d) => !Number.isInteger(d.count) || d.count < 0))
-        errs.push(
-          `Stage ${i + 1}: each dataset count must be 0 (all) or positive.`
-        )
-    })
-  } else {
-    // Defensive: a config from a stale source (e.g. a preset saved before this
-    // field existed) may lack `datasets`; treat missing as an empty selection so
-    // it surfaces as a normal validation error rather than a crash.
-    const selected = cfg.datasets ?? []
-    if (selected.length === 0)
-      errs.push("Select at least one dataset to train on.")
-    if (selected.some((d) => !Number.isInteger(d.count) || d.count < 0))
-      errs.push(
-        "Each dataset count must be 0 (all) or a positive whole number."
-      )
-  }
-  return errs
-}
+import type { TrainConfig, TrainMode } from "@/lib/training"
 
 // One definition-list row: a muted label on the left, an edit-in-place value
 // right-aligned in tabular-nums. Borderless until focused, so at a glance the
@@ -404,12 +53,6 @@ function Row({
 // Proper input chrome (border, radius, padding from the base Input), just sized
 // for the rail and right-aligned with tabular figures.
 const fieldInputClass = "h-8 w-24 text-right tabular-nums"
-
-// "No tokenizer chosen" needs a value of its own: an empty string is how a
-// Select says *nothing is selected*, and this option is a real choice — the one
-// every run made before vocabulary builds existed. Mapped back to `undefined`
-// on the way out, which is what the config means by it.
-const LEARN_WITH_RUN = "learn-with-run"
 
 export interface ParamsRailProps {
   cfg: TrainConfig
@@ -498,25 +141,8 @@ export function ParamsRail({
   // there would be a control that does nothing.
   const isPlainSft = cfg.mode === "sft"
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
-  // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
-  const runFields = curriculumOn
-    ? RUN_FIELDS.filter((f) => f.key !== "epochs")
-    : RUN_FIELDS
-  const numFields = isKto
-    ? [
-        ...RUN_FIELDS,
-        { key: "beta" as const, label: "Beta (KL anchor)", step: 0.05 },
-      ]
-    : isSft
-      ? RUN_FIELDS
-      : // A named vocabulary carries its own size, so the field would be a control
-        // wired to nothing — the engine ignores `max_vocab` whenever one is named.
-        [
-          ...ARCH_FIELDS.filter(
-            (f) => !(f.key === "max_vocab" && cfg.tokenizer_id)
-          ),
-          ...runFields,
-        ]
+  const { arch, run } = fieldsFor(cfg)
+  const numFields = [...arch, ...run]
 
   // Toggle curriculum mode: turning it on seeds a first stage from the current
   // flat selection (so nothing is lost); turning it off clears the stages and
@@ -556,11 +182,7 @@ export function ParamsRail({
     if (followUp) onValidity?.(errorKey ? errorKey.split("\n") : [])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followUp, errorKey])
-  const headDim =
-    cfg.heads > 0 && cfg.dimensions % cfg.heads === 0
-      ? cfg.dimensions / cfg.heads
-      : null
-  const dFf = cfg.dimensions * cfg.ff_multiplier
+  const { headDim, dFf } = derived(cfg)
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
