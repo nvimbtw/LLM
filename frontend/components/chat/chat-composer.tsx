@@ -3,7 +3,8 @@
 import * as React from "react"
 import { ArrowUp, Paperclip, Square } from "lucide-react"
 import { EditorContent, useEditor } from "@tiptap/react"
-import { Extension } from "@tiptap/core"
+import { Extension, type Editor } from "@tiptap/core"
+import type { ResolvedPos } from "@tiptap/pm/model"
 import StarterKit from "@tiptap/starter-kit"
 import Placeholder from "@tiptap/extension-placeholder"
 import { useTheme } from "next-themes"
@@ -28,17 +29,109 @@ import { AttachMenu } from "./attach-menu"
 import { AttachmentStrip, type PendingAttachment } from "./attachment-strip"
 import { ComposerFooter } from "./composer-footer"
 
-// Tab / Shift+Tab indent / outdent list items. Enter and Shift+Enter are
-// handled in editorProps.handleKeyDown so they run before StarterKit's own
-// keymaps (otherwise hardBreak's Shift+Enter wins and inserts a <br> instead
-// of splitting into a new block, which stops `- ` from starting a list).
+// One level of indentation inside a code block. Two spaces, matching the
+// nesting width `docToMarkdown` uses for lists, so everything the composer
+// indents is indented by the same amount.
+const CODE_INDENT = "  "
+
+// Tab inside a code block indents, rather than doing nothing at all.
+// `sinkListItem` fails outside a list and the `|| true` below swallows the key
+// to keep Tab from tabbing focus out of the composer — so without this branch a
+// fenced block is the one place where Tab is eaten and you have to type spaces
+// by hand.
+//
+// Whole lines, not the cursor: a Tab with something selected indents every line
+// the selection touches, which is what the key means in an editor and the only
+// way to shift a block of code that's already written.
+function indentCode(editor: Editor, outdent: boolean): boolean {
+  const { state } = editor
+  const { from, to, empty } = state.selection
+
+  // Which side of the selection actually sits in the block matters: dragging
+  // upward from the last line lands the *start* of the range on the position
+  // just before the block, where the enclosing node is the document and every
+  // offset below would be measured against the wrong text.
+  const $from = state.doc.resolve(from)
+  const $to = state.doc.resolve(to)
+  const $in = codeBlockDepth($from) !== null ? $from : $to
+  const depth = codeBlockDepth($in)
+  if (depth === null) return false
+
+  const start = $in.start(depth)
+  const end = $in.end(depth)
+  const text = $in.node(depth).textContent
+
+  // Nothing selected: Tab is an insert at the cursor, like any editor.
+  if (empty && !outdent) {
+    editor.view.dispatch(state.tr.insertText(CODE_INDENT, from))
+    return true
+  }
+
+  // Clamped to the block, so a selection running past either edge indents the
+  // code it covers rather than reaching for lines that aren't there.
+  const selFrom = Math.max(from, start)
+  const selTo = Math.min(to, end)
+
+  // The document position of the first character of every line the selection
+  // touches, collected up front and applied back-to-front — an edit only ever
+  // shifts positions after it, so working downward leaves the ones still to do
+  // untouched and no position mapping is needed.
+  const lineStarts: number[] = []
+  for (let offset = 0; ; ) {
+    const nl = text.indexOf("\n", offset)
+    const lineEnd = nl === -1 ? text.length : nl
+    if (start + lineEnd >= selFrom && start + offset <= selTo) {
+      lineStarts.push(start + offset)
+    }
+    if (nl === -1) break
+    offset = nl + 1
+  }
+
+  const tr = state.tr
+  for (const pos of lineStarts.reverse()) {
+    if (!outdent) {
+      tr.insertText(CODE_INDENT, pos)
+      continue
+    }
+    // Take back one indent's worth: a tab, or up to CODE_INDENT spaces. Lines
+    // shallower than a full indent lose whatever they have rather than nothing.
+    const lead = text.slice(pos - start).match(/^(\t| {1,2})/)
+    if (lead) tr.delete(pos, pos + lead[1].length)
+  }
+
+  if (tr.docChanged) editor.view.dispatch(tr)
+  return true
+}
+
+// The depth at which this position sits inside a code block, or null if it
+// isn't in one. `editor.isActive("codeBlock")` is the usual test and the wrong
+// one here — it answers for the selection as a whole, including ranges that
+// merely touch the block from outside.
+function codeBlockDepth($pos: ResolvedPos): number | null {
+  for (let d = $pos.depth; d > 0; d--) {
+    if ($pos.node(d).type.name === "codeBlock") return d
+  }
+  return null
+}
+
+// Tab / Shift+Tab indent / outdent list items, or code inside a fenced block.
+// Enter and Shift+Enter are handled in editorProps.handleKeyDown so they run
+// before StarterKit's own keymaps (otherwise hardBreak's Shift+Enter wins and
+// inserts a <br> instead of splitting into a new block, which stops `- ` from
+// starting a list).
 const ComposerKeys = Extension.create({
   name: "composerKeys",
   priority: 1000,
   addKeyboardShortcuts() {
     return {
-      Tab: () => this.editor.commands.sinkListItem("listItem") || true,
-      "Shift-Tab": () => this.editor.commands.liftListItem("listItem") || true,
+      Tab: () =>
+        indentCode(this.editor, false) ||
+        this.editor.commands.sinkListItem("listItem") ||
+        true,
+      "Shift-Tab": () =>
+        indentCode(this.editor, true) ||
+        this.editor.commands.liftListItem("listItem") ||
+        true,
     }
   },
 })

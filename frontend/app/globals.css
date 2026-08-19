@@ -399,25 +399,43 @@
 .tiptap li > p {
   margin: 0;
 }
+/* Code, matching what the message renderer does with the same string (see the
+   `code inline` and `CodeBlock` cases in rich-message.tsx) — you are looking at
+   the thing you are about to send, so it should not change appearance the
+   moment you send it.
+
+   Set in the mono face against a wash of the foreground, not in a chart accent.
+   `--chart-4` is a clear pink on the light ground but a desaturated mauve on the
+   dark one, where it lands at 6.2:1 against a body text sitting at 10.8:1 — code
+   came out dimmer than the prose around it, reading as de-emphasis rather than
+   as a highlight. Deriving the wash from `--foreground` instead means the
+   contrast follows the theme in both directions, and the face change is what
+   marks it as code. */
 .tiptap code {
   font-family: var(--font-mono);
-  color: var(--chart-4);
-  background: color-mix(in oklab, var(--chart-4) 10%, transparent);
-  padding: 0.1em 0.35em;
-  border-radius: 0.25rem;
-  font-size: 0.85em;
+  background: color-mix(in oklab, var(--foreground) 5.5%, transparent);
+  padding: 0.12em 0.26em;
+  margin: 0 -0.04em;
+  border-radius: var(--radius-sm);
+  font-size: 0.875em;
 }
 .tiptap pre {
-  background: var(--muted);
-  border-radius: 0.5rem;
-  padding: 0.75rem;
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: color-mix(in oklab, var(--foreground) 3.5%, transparent);
+  color: var(--foreground);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.875rem;
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 0.85em;
+  line-height: 1.625;
 }
+/* The wash is for a few words inside a sentence; a block already has its own
+   surface, and stacking the two only darkens the whole slab. */
 .tiptap pre code {
   background: none;
   padding: 0;
+  margin: 0;
   font-size: inherit;
 }
 .tiptap p.is-editor-empty:first-child::before {
@@ -549,16 +567,16 @@
   margin-top: 0.6em;
 }
 
-/* Code. Inline code borrows the composer's treatment (`.tiptap code`) so the
-   same string looks the same wherever the app prints it. */
-/* Tighter than the composer's `.tiptap code`, and deliberately so: docs set
-   code inside running sentences, where a 0.35em pad reads as a space before the
-   following comma. */
+/* Code. Inline code is the same wash as the composer and the message renderer
+   (`.tiptap code`, and the `code inline` case in rich-message.tsx) so the same
+   string looks the same wherever the app prints it — see the note there for why
+   it is a foreground wash rather than a chart accent. The block below is the one
+   place that departs: a doc page is read as a document, so its code sits on the
+   card surface the rest of the page is built from. */
 .doc-prose code {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  color: var(--chart-4);
-  background: color-mix(in oklab, var(--chart-4) 10%, transparent);
+  background: color-mix(in oklab, var(--foreground) 5.5%, transparent);
   padding: 0.12em 0.26em;
   margin: 0 -0.04em;
   border-radius: var(--radius-sm);
