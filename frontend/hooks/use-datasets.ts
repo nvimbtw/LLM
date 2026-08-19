@@ -2,13 +2,18 @@
 
 import * as React from "react"
 
-import { listDatasets, listSftDatasets, type DatasetInfo } from "@/lib/training"
+import { listDatasets } from "@/lib/data"
+import type { DatasetInfo } from "@/lib/training"
 
 // Loads the selectable datasets for the params rail's checkbox picker: the
-// pretrain corpora (subfolders of uploads/, each with its .txt count), or the
-// SFT conversation sets when the run is a fine-tune. Fetched on mount and
-// whenever the mode flips; either set only changes when files are added on
-// disk, so no live refresh is needed.
+// prose corpora, or the conversation sets when the run is a fine-tune.
+//
+// One catalogue, filtered by kind. Both used to be folders under the engine's
+// data root and were two different routes; they are now rows in the data
+// engine's database, told apart by the column that already tells them apart.
+// A dataset that is still pulling is left out — a run that selected one would
+// pack whatever had landed by the time it reached the front of the queue, and
+// key that as though it were the whole thing.
 //
 // One hook rather than two because the rail renders one picker and only its
 // source changes — two hooks would mean both fetching on every render of a page
@@ -16,9 +21,8 @@ import { listDatasets, listSftDatasets, type DatasetInfo } from "@/lib/training"
 export function useDatasets(sft = false) {
   // The mode each result belongs to is stored *with* it, so "still loading" and
   // "showing the other mode's list" are the same question and are answered by
-  // comparison rather than by a second state the effect has to reset. The two
-  // catalogues share no names, so serving a stale one across a mode flip would
-  // offer prose corpora to a fine-tune.
+  // comparison rather than by a second state the effect has to reset. Serving a
+  // stale list across a mode flip would offer prose corpora to a fine-tune.
   const [loaded, setLoaded] = React.useState<{
     sft: boolean
     datasets: DatasetInfo[]
@@ -26,10 +30,14 @@ export function useDatasets(sft = false) {
 
   React.useEffect(() => {
     let active = true
-    const load = sft ? listSftDatasets : listDatasets
-    load()
+    listDatasets()
+      .then((rows) =>
+        rows
+          .filter((d) => d.kind === (sft ? "sft" : "pretrain") && d.status === "ready")
+          .map((d) => ({ id: d.id, name: d.name, documents: d.document_count }))
+      )
       // A rejected fetch still settles, or the picker would sit on "Loading…"
-      // forever; the empty list renders the "nothing on disk" hint instead.
+      // forever; the empty list renders the "nothing pulled yet" hint instead.
       .catch(() => [] as DatasetInfo[])
       .then((datasets) => {
         if (active) setLoaded({ sft, datasets })

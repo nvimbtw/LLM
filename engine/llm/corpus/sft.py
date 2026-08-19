@@ -5,7 +5,8 @@ the assistant's replies. Its dataset is two aligned files, plus a sidecar:
 
     datasets/sft/<key>/corpus.bin    flat uint16 token ids, same format as corpus.bin
     datasets/sft/<key>/mask.bin      one byte per token, 1 = train / 0 = ignore
-    datasets/sft/<key>/segments.json document spans + what the build was made from
+    datasets/sft/<key>/spans.npy     conversation boundaries (`llm.corpus.spans`)
+    datasets/sft/<key>/segments.json what the build was made from
 
 The mask comes straight from `chat.template`, the single source of the format the
 model is prompted with — so what the model is trained on and what it is served
@@ -24,8 +25,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field
 
 import numpy as np
 from tokenizers import Tokenizer
@@ -33,10 +33,9 @@ from tokenizers import Tokenizer
 from llm import storage
 from llm.chat import template
 from llm.chat.template import Reasoning, Role, ThinkBudget, Turn
-from llm.corpus import bpe, sources, special
-from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS, DocSpan
-
-SFT_PATTERN = "*.jsonl"
+from llm.corpus import bpe, remote, spans as spans_mod, special
+from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS
+from llm.corpus.spans import SpanBuilder, Spans
 
 # How much of the selection survives into the directory name before the hash
 # takes over. Purely for a human reading `ls datasets/sft/`; the digest is what
@@ -63,34 +62,16 @@ class SftStats:
         return self.trainable_tokens / self.total_tokens if self.total_tokens else 0.0
 
 
-def sets() -> list[str]:
-    """Every selectable SFT set on disk, sorted."""
-    return sources.names_in(storage.sft_dir(), SFT_PATTERN)
+def resolve(client, selections) -> list[remote.Selected]:
+    """What a request resolves to right now, against the data engine.
 
-
-def catalogue() -> list[dict]:
-    """What SFT data is on disk, for a caller composing a fine-tune."""
-    return sources.catalogue_in(storage.sft_dir(), SFT_PATTERN)
-
-
-def conversation_files(names=None) -> list[Path]:
-    """The JSONL files for the named sets, or every set when `names` is empty."""
-    return [f.path for f in sources.collect_in(storage.sft_dir(), names, SFT_PATTERN)]
-
-
-def resolve(names=None) -> list[tuple[str, int | None]]:
-    """The concrete `(name, cap)` selection a request resolves to right now.
-
-    An empty request means "every set on disk", which is a *different* corpus
-    once another set is fetched. Expanding it here, before the key is derived,
-    is what stops a run reusing a build that predates the data it asked for.
+    Resolved before the key is derived, which is what stops a run reusing a
+    build that predates the data it asked for.
     """
-    if names:
-        return [sources.selection(item) for item in names]
-    return [(name, None) for name in sets()]
+    return remote.resolve(client, selections)
 
 
-def dataset_key(selection: list[tuple[str, int | None]], reasoning: Reasoning) -> str:
+def dataset_key(selection: list[remote.Selected], reasoning: Reasoning) -> str:
     """A stable directory name for the dataset this request builds.
 
     Order is preserved rather than sorted: the sets are concatenated in the
@@ -99,37 +80,64 @@ def dataset_key(selection: list[tuple[str, int | None]], reasoning: Reasoning) -
     is the cheap mistake here, reusing the wrong corpus is the expensive one.
     """
     payload = json.dumps(
-        {"sets": [[name, cap] for name, cap in selection], "reasoning": reasoning.value}
+        {
+            "sets": [selected.identity() for selected in selection],
+            "reasoning": reasoning.value,
+        }
     )
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:KEY_DIGEST_CHARS]
     slug = "-".join(
-        re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-        for name, _ in selection[:KEY_SLUG_SETS]
+        re.sub(r"[^a-z0-9]+", "-", selected.name.lower()).strip("-")
+        for selected in selection[:KEY_SLUG_SETS]
     )
     return f"{slug or 'empty'}-{reasoning.value}-{digest}"
 
 
-def read_conversations(files: list[Path]) -> Iterator[dict]:
-    """Every conversation across the given JSONL files, one at a time.
+def read_conversations(client, selection: list[remote.Selected]) -> Iterator[dict]:
+    """Every conversation in the selection, one at a time, in the order named.
 
-    A malformed line is skipped rather than fatal: these files are generated in
-    bulk, and one bad row should not cost the whole fine-tune.
+    Yields rather than returning a list, and reads a page at a time, because a
+    chat dataset runs to hundreds of thousands of conversations: holding them as
+    parsed dicts costs several times what they weigh on the wire, on top of the
+    corpus being built from them.
 
-    Yields rather than returning a list, and reads line by line rather than
-    `read_text().splitlines()`, because the SFT set runs to hundreds of megabytes
-    of JSONL: materializing it as parsed dicts costs several times its size on
-    disk, on top of the corpus being built from it.
+    A document that carries no messages is skipped rather than fatal — a mixed
+    dataset should cost the rows that are wrong, not the fine-tune.
     """
-    for path in files:
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    for selected in selection:
+        for row in client.documents(selected.id, cap=selected.cap):
+            messages = remote.messages_of(row)
+            if messages:
+                yield _conversation(messages)
+
+
+def _conversation(messages: list) -> dict:
+    """The data engine's `[{role, content}]` as the shape this module renders.
+
+    Two things the wire format does not say and the template needs. A **system
+    message is not a turn**: the template puts that block outside the
+    conversation entirely, and left in the list it would arrive at `_turns` as an
+    unknown role and drop the whole conversation — every conversation, for a
+    dataset that has them. And `content` is called `text` here.
+
+    Roles arrive as the source wrote them (`human`, `gpt`); mapping those is the
+    data engine's `normalise-roles` processor, deliberately, so that it is
+    visible in a dataset's provenance that it happened. An unmapped role still
+    reaches `_turns` and is refused there.
+    """
+    system: str | None = None
+    turns = []
+    for message in messages:
+        role = str(message.get("role") or "").lower()
+        text = message.get("content")
+        if text is None:
+            text = message.get("text") or ""
+        if role == "system":
+            system = text if system is None else f"{system}\n{text}"
+            continue
+        turns.append({"role": role, "text": text})
+
+    return {"system": system, "turns": turns}
 
 
 def _turns(raw: dict) -> list[Turn] | None:
@@ -167,13 +175,13 @@ def clear_legacy() -> int:
 
 
 def build(
+    client,
     tokenizer: Tokenizer,
-    selection: list[tuple[str, int | None]],
+    selection: list[remote.Selected],
     reasoning: Reasoning = Reasoning.KEEP,
 ) -> SftStats:
     """Render every conversation in `selection` into the aligned corpus/mask pair."""
     key = dataset_key(selection, reasoning)
-    files = conversation_files([{"name": name, "count": cap} for name, cap in selection])
 
     eot_id = bpe.token_id(tokenizer, special.END_OF_TEXT)
 
@@ -187,7 +195,7 @@ def build(
     }
     seen: set[int] = set()
 
-    documents: list[DocSpan] = []
+    documents = SpanBuilder()
     skipped = 0
     total_tokens = 0
     trainable_tokens = 0
@@ -240,7 +248,7 @@ def build(
                 skipped += 1
                 continue
 
-            documents.append(DocSpan(dataset="sft", start=total_tokens, length=len(ids)))
+            documents.append("sft", start=total_tokens, length=len(ids))
             token_buffer.extend(ids)
             mask_buffer.extend(example_mask)
             # The separator is scaffold between conversations, never a target: the
@@ -259,7 +267,7 @@ def build(
         pending_chars = 0
 
     with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
-        for raw in read_conversations(files):
+        for raw in read_conversations(client, selection):
             turns = _turns(raw)
             if turns is None:
                 skipped += 1
@@ -280,15 +288,19 @@ def build(
     if not documents:
         corpus_partial.unlink(missing_ok=True)
         mask_partial.unlink(missing_ok=True)
-        named = ", ".join(name for name, _ in selection) or "(none on disk)"
+        named = ", ".join(str(selected) for selected in selection) or "(nothing)"
         raise ValueError(
-            f"No conversations found in {storage.sft_dir()} for sets [{named}] — SFT "
-            f"needs .jsonl files of {{system?, turns: [{{role, text}}], budget?}} "
-            f"with role one of user, assistant, tool"
+            f"No trainable conversations in [{named}] — SFT needs documents whose "
+            f"messages are [{{role, content}}] ending on an assistant reply, with role "
+            f"one of user, assistant, tool. Roles as the source wrote them (human, gpt) "
+            f"are the data engine's `normalise-roles` processor's job"
         )
 
     corpus_partial.replace(corpus_final)
     mask_partial.replace(mask_final)
+
+    spans = documents.build()
+    spans.save(storage.sft_spans_path(key))
 
     # The selection is written beside the documents so a built dataset says what
     # it is. `is_built` compares against this rather than trusting the directory
@@ -297,11 +309,14 @@ def build(
         json.dumps(
             {
                 "eot_id": eot_id,
-                "sets": [[name, cap] for name, cap in selection],
+                "sets": [selected.record() for selected in selection],
                 "reasoning": reasoning.value,
                 "special_ids_seen": sorted(seen),
                 "token_counts": counts.tolist(),
-                "documents": [asdict(d) for d in documents],
+                # The rows are in spans.npy — `pack.pack` writes its table the
+                # same way, and `spans.from_sidecar` reads either shape.
+                "documents": len(spans),
+                "datasets": spans.names,
             },
             indent=2,
         ),
@@ -309,7 +324,7 @@ def build(
     )
 
     return SftStats(
-        conversations=len(documents),
+        conversations=len(spans),
         total_tokens=total_tokens,
         trainable_tokens=trainable_tokens,
         skipped=skipped,
@@ -339,11 +354,11 @@ def load(key: str) -> tuple[np.ndarray, np.ndarray]:
     return corpus, mask
 
 
-def load_segments(key: str) -> tuple[int, list[DocSpan], dict]:
+def load_segments(key: str) -> tuple[int, Spans, dict]:
     """Document boundaries plus what the build was made from."""
     path = storage.sft_segments_path(key)
     if not path.is_file():
-        return 0, [], {}
+        return 0, Spans.empty(), {}
     raw = json.loads(path.read_text(encoding="utf-8"))
     info = {
         "sets": raw.get("sets", []),
@@ -355,7 +370,7 @@ def load_segments(key: str) -> tuple[int, list[DocSpan], dict]:
         # returns them. None on a build that predates them.
         "token_counts": raw.get("token_counts"),
     }
-    return raw["eot_id"], [DocSpan(**d) for d in raw["documents"]], info
+    return raw["eot_id"], spans_mod.from_sidecar(storage.sft_spans_path(key), raw), info
 
 
 # How many tokens to test at a time when a dataset has to be scanned. 8M tokens
@@ -393,7 +408,7 @@ def special_ids_in(corpus: np.ndarray, marker_ids: set[int], separator_id: int) 
     return sorted(found)
 
 
-def is_built(key: str, selection: list[tuple[str, int | None]], reasoning: Reasoning) -> bool:
+def is_built(key: str, selection: list[remote.Selected], reasoning: Reasoning) -> bool:
     """Whether a dataset on disk was built from *this* request.
 
     Existence is not enough. The old check asked only whether two files were
@@ -405,5 +420,7 @@ def is_built(key: str, selection: list[tuple[str, int | None]], reasoning: Reaso
     _, _, info = load_segments(key)
     if not info:
         return False
-    recorded = [(name, cap) for name, cap in info.get("sets", [])]
-    return recorded == list(selection) and info.get("reasoning") == reasoning.value
+    recorded = info.get("sets", [])
+    return recorded == [selected.record() for selected in selection] and (
+        info.get("reasoning") == reasoning.value
+    )

@@ -22,15 +22,21 @@ from store.schema import BenchmarkStatus, RunKind, Suite
 DISPLAY_NAME = "display_name"
 
 
-def train(config: dict, progress, cancel) -> dict:
-    """Pretrain, or fine-tune when the config names a base to start from."""
+def train(config: dict, progress, cancel, owner: str | None = None) -> dict:
+    """Pretrain, or fine-tune when the config names a base to start from.
+
+    `owner` is who the run was queued for. It travels this far because the text
+    is fetched from the data engine while the corpus is packed, and the backend
+    scopes that read to the person — a run reads exactly the datasets whoever
+    queued it could have read.
+    """
     fine_tune = bool(config.get("base_model"))
     if fine_tune:
         cfg = SftConfig(**config)
-        result = sft_pipeline.run(cfg, progress, cancel)
+        result = sft_pipeline.run(cfg, progress, cancel, owner)
     else:
         cfg = TrainConfig(**config)
-        result = train_pipeline.run(cfg, progress, cancel)
+        result = train_pipeline.run(cfg, progress, cancel, owner)
 
     # The id was minted when the run was queued; a row from before that carries
     # the name someone typed, and `uuid.UUID` on it raises "badly formed
@@ -81,10 +87,10 @@ def _record_derived_vocabulary(db, result: dict) -> None:
     )
 
 
-def tokenize(config: dict, progress, cancel) -> dict:
+def tokenize(config: dict, progress, cancel, owner: str | None = None) -> dict:
     """Learn one reusable vocabulary and record it."""
     cfg = TokenizerConfig(**config)
-    result = tokenize_pipeline.run(cfg, progress, cancel)
+    result = tokenize_pipeline.run(cfg, progress, cancel, owner)
 
     try:
         tokenizer_id = uuid.UUID(cfg.tokenizer_id)
@@ -109,7 +115,7 @@ def tokenize(config: dict, progress, cancel) -> dict:
     return result
 
 
-def benchmark(config: dict, progress, cancel) -> dict:
+def benchmark(config: dict, progress, cancel, owner: str | None = None) -> dict:
     """Score one model on one suite.
 
     The row opens here rather than at enqueue: a benchmark row means a

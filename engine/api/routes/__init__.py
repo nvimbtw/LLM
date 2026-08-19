@@ -2,7 +2,6 @@
 
 from api.routes import (
     benchmarks,
-    catalogue,
     chats,
     inference,
     models,
@@ -18,7 +17,6 @@ ROUTERS = [
     tokenizers.router,
     benchmarks.router,
     inference.router,
-    catalogue.router,
     usage.router,
 ]
 

@@ -418,12 +418,14 @@ dependencies = [
  "auth",
  "awc",
  "chrono",
+ "data-engine",
  "db",
  "engine",
  "futures-util",
  "jsonwebtoken",
  "serde",
  "serde_json",
+ "service",
  "sqlx",
  "tokio",
  "tools",
@@ -553,9 +555,11 @@ dependencies = [
  "actix-cors",
  "actix-web",
  "api",
+ "data-engine",
  "db",
  "dotenvy",
  "engine",
+ "service",
  "tools",
 ]
 
@@ -963,6 +967,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "data-engine"
+version = "0.1.0"
+dependencies = [
+ "service",
+]
+
+[[package]]
 name = "db"
 version = "0.1.0"
 dependencies = [
@@ -1154,13 +1165,7 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
- "auth",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
+ "service",
 ]
 
 [[package]]
@@ -2913,6 +2918,19 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "service"
+version = "0.1.0"
+dependencies = [
+ "auth",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

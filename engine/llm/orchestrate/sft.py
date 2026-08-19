@@ -17,7 +17,7 @@ from threading import Event
 from llm import storage
 from llm.chat.template import Reasoning
 from llm.config import SftConfig, TrainConfig
-from llm.corpus import bpe, sft as sft_corpus, special
+from llm.corpus import bpe, remote, sft as sft_corpus, special
 from llm.model import checkpoint
 from llm.train import loop
 from llm.train.plan import DataPlan
@@ -63,9 +63,16 @@ def run(
     cfg: SftConfig,
     on_progress: ProgressCallback | None = log_progress,
     cancel: Event | None = None,
+    owner: str | None = None,
 ) -> dict:
     started = time.time()
+    # Open across the build and closed before training: the conversations are
+    # read while the dataset is rendered and never afterwards.
+    with remote.Client(owner) as client:
+        return _finetune(cfg, client, on_progress, cancel, started)
 
+
+def _finetune(cfg, client, on_progress, cancel, started) -> dict:
     weights = storage.weights_path(cfg.base_model)
     if not weights.is_file():
         raise FileNotFoundError(
@@ -85,22 +92,17 @@ def run(
     tokenizer = bpe.load(storage.model_dir(cfg.base_model))
 
     reasoning = Reasoning.STRIP if cfg.strip_thinking else Reasoning.KEEP
-    # Resolved before the key is derived, so "every set on disk" keys as the sets
-    # that are actually there — a run asking for all of them after a new set was
-    # fetched must not reuse a build that predates it.
-    selection = sft_corpus.resolve(cfg.datasets)
-    if not selection:
-        raise FileNotFoundError(
-            f"No SFT sets under {storage.sft_dir()} — fetch conversations first"
-        )
+    # Resolved before the key is derived, so a dataset pulled again since the last
+    # build keys apart from the smaller one it replaced.
+    selection = sft_corpus.resolve(client, cfg.datasets)
     key = sft_corpus.dataset_key(selection, reasoning)
-    named = ", ".join(f"{name}[:{cap}]" if cap else name for name, cap in selection)
+    named = ", ".join(str(selected) for selected in selection)
 
     sft_corpus.clear_legacy()
     if on_progress is not None:
         on_progress(Tokenize(progress=0.05))
     if cfg.rebuild_dataset or not sft_corpus.is_built(key, selection, reasoning):
-        stats = sft_corpus.build(tokenizer, selection, reasoning)
+        stats = sft_corpus.build(client, tokenizer, selection, reasoning)
         print(
             f"[2/5] {named} ({reasoning.value}) -> {stats.conversations:,} conversations, "
             f"{stats.total_tokens:,} tokens, {stats.trainable_tokens:,} trainable "
@@ -207,7 +209,7 @@ def run(
         # What this model was actually fine-tuned on, which is the only durable
         # way to tell two runs from the same base model apart afterwards.
         "dataset": {
-            "sets": [{"name": name, "count": cap} for name, cap in selection],
+            "sets": [one.record() for one in selection],
             "reasoning": reasoning.value,
             "key": key,
             **(stats.__dict__ if stats else {"reused": True}),

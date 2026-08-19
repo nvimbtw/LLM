@@ -36,9 +36,7 @@ export function ProfileView() {
   }
 
   if (error || !user) {
-    return (
-      <LoadError title={error ?? "Your profile didn't load."} />
-    )
+    return <LoadError title={error ?? "Your profile didn't load."} />
   }
 
   return (

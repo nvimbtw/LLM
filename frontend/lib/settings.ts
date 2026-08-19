@@ -159,7 +159,8 @@ export const SETTINGS: SettingDef[] = [
     key: "topK",
     group: "decoding",
     label: "Top-k",
-    description: "A hard cap on how many of the highest-scoring tokens survive.",
+    description:
+      "A hard cap on how many of the highest-scoring tokens survive.",
     default: 40,
     min: 1,
     max: 200,

@@ -112,19 +112,27 @@ export function ComposerFooter({
           onClick={() => setEditing(true)}
           className="group/title flex min-w-0 items-center gap-1.5 text-left"
         >
-          <span className="truncate font-medium text-foreground/80">{title}</span>
+          <span className="truncate font-medium text-foreground/80">
+            {title}
+          </span>
           <Pencil className="size-3 shrink-0 opacity-0 transition-opacity group-hover/title:opacity-100" />
         </button>
       )}
 
       {percentUsed !== null && tone && (
         <span
-          className={cn("flex shrink-0 items-center gap-1.5 tabular-nums", tone.text)}
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 tabular-nums",
+            tone.text
+          )}
           title={`~${contextTokensUsed.toLocaleString("en-US")} of ${contextWindow!.toLocaleString("en-US")} tokens used (estimated)`}
         >
           <span className="h-1 w-8 overflow-hidden rounded-full bg-muted-foreground/20">
             <span
-              className={cn("block h-full rounded-full transition-colors", tone.bar)}
+              className={cn(
+                "block h-full rounded-full transition-colors",
+                tone.bar
+              )}
               style={{ width: `${Math.round(percentUsed * 100)}%` }}
             />
           </span>

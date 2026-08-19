@@ -1,0 +1,8 @@
+{
+  "_comment": "A shared vector for the backend<->data-engine token seam. The secret is a test constant, not a credential. Both languages must accept this token and read the same acting caller from it.",
+  "secret": "test-only-not-a-real-secret",
+  "audience": "data-engine",
+  "issuer": "backend",
+  "expected_act": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJiYWNrZW5kIiwiYXVkIjoiZGF0YS1lbmdpbmUiLCJhY3QiOiIzZjI1MDRlMC00Zjg5LTExZDMtOWEwYy0wMzA1ZTgyYzMzMDEiLCJzY29wZSI6WyJkYXRhc2V0czpyZWFkIiwiZGF0YXNldHM6d3JpdGUiXSwianRpIjoiMWYwYzJmN2EtNmQzZS00YTUxLTlmMmItN2M4ZTVkNGExYjYwIiwiZXhwIjo0MTAyNDQ0ODAwfQ.5LSvszV0M3fbm1POfWLQsqWQavmqHtv0MbMF3VoDHNg"
+}

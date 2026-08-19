@@ -44,7 +44,8 @@ export function ChatThread({ chatId }: { chatId: string }) {
   // half is server-verified against the tokenizer, so this is an estimate for
   // the composer's status row, not an accounting figure.
   const contextTokensUsed =
-    (chatSummary?.tokens ?? 0) + (isSending ? (lastMessage?.tokenCount ?? 0) : 0)
+    (chatSummary?.tokens ?? 0) +
+    (isSending ? (lastMessage?.tokenCount ?? 0) : 0)
 
   const showIdle = !isLoading && !isSending && lastMessage?.role === "assistant"
   // Waiting in line is not the same as generating: no tokens are coming yet, and
@@ -154,7 +155,11 @@ export function ChatThread({ chatId }: { chatId: string }) {
 
           {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}
-          {(showThinking || showGenerating || searching || showIdle || waiting) && (
+          {(showThinking ||
+            showGenerating ||
+            searching ||
+            showIdle ||
+            waiting) && (
             // Mark, label, then the token count pushed to the right edge. One
             // Throbber instance rather than one per state — that's what lets
             // thinking → generating → idle morph instead of swapping, since the

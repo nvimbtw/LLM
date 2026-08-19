@@ -62,7 +62,10 @@ export function AttachMenu({
           }
         />
         <DropdownMenuContent side="top" align="start" className="min-w-44 p-1">
-          <DropdownMenuItem onClick={() => openPicker("image/*")} className="gap-2">
+          <DropdownMenuItem
+            onClick={() => openPicker("image/*")}
+            className="gap-2"
+          >
             <ImagePlus className="text-muted-foreground" />
             Photos
           </DropdownMenuItem>

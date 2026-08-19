@@ -26,7 +26,11 @@ function Heading({ level, children }: { level: 2 | 3; children: ReactNode }) {
   return (
     <Tag id={id}>
       {children}
-      <a href={`#${id}`} className="doc-anchor" aria-label="Link to this section">
+      <a
+        href={`#${id}`}
+        className="doc-anchor"
+        aria-label="Link to this section"
+      >
         #
       </a>
     </Tag>
@@ -77,4 +81,3 @@ export function DocMarkdown({ page, source }: DocMarkdownProps) {
     </Markdown>
   )
 }
-

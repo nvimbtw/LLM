@@ -1,0 +1,10 @@
+[package]
+name = "data-engine"
+version = "0.1.0"
+edition = "2021"
+
+# Names the data engine and nothing else: its audience and where it lives. It
+# owns no tree on disk — its datasets live in its own database — so unlike the
+# LLM engine it hands the child no extra environment.
+[dependencies]
+service = { path = "../service" }

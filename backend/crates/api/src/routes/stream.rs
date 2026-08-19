@@ -33,6 +33,51 @@ async fn run_socket(
     Ok(response)
 }
 
+#[get("/data/runs/{run_id}")]
+async fn data_run_socket(
+    req: HttpRequest,
+    body: web::Payload,
+    run_id: web::Path<Uuid>,
+    data: web::Data<data_engine::Proxy>,
+    secret: web::Data<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let (response, session, stream) = actix_ws::handle(&req, body)?;
+    actix_web::rt::spawn(data_run_session(
+        session,
+        stream,
+        data.get_ref().clone(),
+        run_id.into_inner(),
+        secret.get_ref().clone(),
+    ));
+    Ok(response)
+}
+
+/// A pull or a processing pass, frame by frame.
+///
+/// Deliberately not `run_session` with a second proxy type: that one also wires
+/// up cancellation, and a data run is cancelled through a plain POST that any
+/// admin already has. Sharing the body would mean threading a "can this be
+/// cancelled over the socket" flag through it to save six lines.
+async fn data_run_session(
+    mut session: actix_ws::Session,
+    mut stream: actix_ws::MessageStream,
+    data: data_engine::Proxy,
+    run_id: Uuid,
+    secret: String,
+) {
+    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
+    let caller = auth::Caller::User(claims.sub);
+
+    match data.events(&caller, &format!("/runs/{run_id}/events")).await {
+        Ok(frames) => relay(&mut session, frames).await,
+        Err(e) => {
+            let _ = session.text(ws::error_frame(&e.to_string())).await;
+        }
+    }
+
+    let _ = session.close(None).await;
+}
+
 #[get("/chats/{chat_id}")]
 async fn chat_socket(
     req: HttpRequest,
@@ -193,6 +238,9 @@ fn merge(target: &mut Value, source: Value) {
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    // Before `/runs/{run_id}`, which would otherwise try to read "data" as a
+    // run id and fail the path extractor.
+    cfg.service(data_run_socket);
     cfg.service(run_socket);
     cfg.service(chat_socket);
 }

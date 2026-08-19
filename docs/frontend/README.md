@@ -32,6 +32,7 @@ frontend/
 │   ├── auth/
 │   ├── chat/
 │   ├── conversations/
+│   ├── data/        the Hub, the datasets stored, the cleaning workbench
 │   ├── jobs/
 │   ├── models/
 │   ├── profile/
@@ -44,6 +45,9 @@ frontend/
 │   ├── chat-socket.ts   one socket per chat, streaming a reply
 │   ├── jobs.ts          the queue: types and REST
 │   ├── jobs-socket.ts   one socket per run, relaying its frames
+│   ├── data.ts          the data engine: datasets, processors, previews
+│   │                    — and the training rail's dataset list, since a run
+│   │                    selects from here by id
 │   ├── benchmark.ts     scores and the reports behind them
 │   ├── message-parser.ts
 │   ├── user-parser.ts
@@ -299,6 +303,16 @@ subject you are reading.
   directory has room for a sentence saying what a page is, and a nav row does
   not. The two bands are what puts work on the GPU (`WORKBENCH`) and what only
   renders a fixture (`INTERFACE`).
+- **`/data` is a `WORKBENCH` destination**, not a second nav row. It reads the
+  data engine through `lib/data.ts`; the cleaning workbench previews a pipeline
+  over the first few documents on a debounce, which is why the sample is always
+  taken by ordinal — a moving sample would compare two different texts as the
+  user tunes a parameter. The pipeline is a **horizontal rail** above the
+  before/after and the open step's parameters sit under it: the steps are an
+  order, and a column that wraps reads as a second pipeline. The before/after
+  is a split diff (`lib/diff.ts` — an LCS over lines, no dependency), with
+  untouched stretches folded away so what a step did is not buried in what it
+  left alone.
 - **`NavJobs` stays in the sidebar content** and is not navigation: it is the
   ambient "the GPU is busy" signal, a window onto the panel rather than a way
   in. `NavAdmin`'s `QueueTell` is the same fact when the sidebar is collapsed to

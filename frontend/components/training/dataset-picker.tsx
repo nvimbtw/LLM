@@ -60,21 +60,20 @@ export function Pow2Input({
 }
 
 // The dataset picker: one checkbox row per selectable dataset. Checking one adds
-// it to the run; the count field then dials how many of its files to sample
-// (blank/0 = all), with the total shown as "/ <files>". Reads as an extension of
-// the spec-sheet rail — a hairline list, tabular figures, muted labels — rather
-// than a separate form.
+// it to the run; the count field then dials how many of its documents to take
+// (blank/0 = all), with the total shown as "/ <documents>". Reads as an
+// extension of the spec-sheet rail — a hairline list, tabular figures, muted
+// labels — rather than a separate form.
 //
-// Serves both catalogues. A fine-tune passes the SFT conversation sets and
-// `showCounts={false}`: the backend sends names only, so a per-set count there
-// would be a control wired to nothing.
+// Serves both kinds. A selection carries the dataset's id: the engine selects
+// by id because a name is something a person can rename in the data view
+// without meaning to change what a run trains on.
 export function DatasetPicker({
   available,
   loading,
   value,
   disabled,
   onChange,
-  showCounts = true,
   emptyHint,
 }: {
   available: DatasetInfo[]
@@ -82,27 +81,28 @@ export function DatasetPicker({
   value: DatasetSelection[]
   disabled: boolean
   onChange: (next: DatasetSelection[]) => void
-  showCounts?: boolean
   emptyHint?: React.ReactNode
 }) {
-  const selected = new Map(value.map((d) => [d.name, d.count]))
+  const selected = new Map(value.map((d) => [d.id, d.count]))
 
-  const toggle = (name: string, on: boolean) => {
-    if (on) onChange([...value, { name, count: 0 }])
-    else onChange(value.filter((d) => d.name !== name))
+  const toggle = (dataset: DatasetInfo, on: boolean) => {
+    // The name is stored alongside the id so a saved preset still reads as
+    // something; the run resolves the id and takes the current name from there.
+    if (on) onChange([...value, { id: dataset.id, name: dataset.name, count: 0 }])
+    else onChange(value.filter((d) => d.id !== dataset.id))
   }
 
-  const setCount = (name: string, count: number, max: number) => {
+  const setCount = (id: string, count: number, max: number) => {
     const clamped = Number.isFinite(count)
       ? Math.min(max, Math.max(0, Math.floor(count)))
       : 0
-    onChange(value.map((d) => (d.name === name ? { ...d, count: clamped } : d)))
+    onChange(value.map((d) => (d.id === id ? { ...d, count: clamped } : d)))
   }
 
-  const totalFiles = value.reduce((sum, d) => {
-    const info = available.find((a) => a.name === d.name)
+  const totalDocuments = value.reduce((sum, d) => {
+    const info = available.find((a) => a.id === d.id)
     if (!info) return sum
-    return sum + (d.count > 0 ? Math.min(d.count, info.files) : info.files)
+    return sum + (d.count > 0 ? Math.min(d.count, info.documents) : info.documents)
   }, 0)
 
   return (
@@ -111,7 +111,7 @@ export function DatasetPicker({
         <span className="text-xs text-muted-foreground">Datasets</span>
         {value.length > 0 && (
           <span className="text-xs text-muted-foreground tabular-nums">
-            {totalFiles.toLocaleString()} files
+            {totalDocuments.toLocaleString()} documents
           </span>
         )}
       </div>
@@ -122,25 +122,17 @@ export function DatasetPicker({
         </p>
       ) : available.length === 0 ? (
         <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
-          {emptyHint ?? (
-            <>
-              No datasets found. Add a folder of .txt files under
-              <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono">
-                data/raw/uploads/
-              </code>
-              .
-            </>
-          )}
+          {emptyHint ?? <>No datasets yet. Pull one from the Data view first.</>}
         </p>
       ) : (
         <ul className="divide-y rounded-lg border">
           {available.map((d) => {
-            const checked = selected.has(d.name)
-            const count = selected.get(d.name) ?? 0
-            const rowId = `dataset-${d.name}`
+            const checked = selected.has(d.id)
+            const count = selected.get(d.id) ?? 0
+            const rowId = `dataset-${d.id}`
             return (
               <li
-                key={d.name}
+                key={d.id}
                 className="flex items-center justify-between gap-3 px-2.5 py-2"
               >
                 <label
@@ -154,34 +146,34 @@ export function DatasetPicker({
                     id={rowId}
                     checked={checked}
                     disabled={disabled}
-                    onCheckedChange={(on) => toggle(d.name, on)}
+                    onCheckedChange={(on) => toggle(d, Boolean(on))}
                   />
                   <span className="truncate text-sm">{d.name}</span>
                 </label>
 
                 <span className="flex w-32 shrink-0 items-center justify-end gap-1.5 tabular-nums">
-                  {checked && showCounts ? (
+                  {checked ? (
                     <>
                       <Input
                         type="number"
                         min={0}
-                        max={d.files}
+                        max={d.documents}
                         step={1}
                         value={count === 0 ? "" : String(count)}
                         placeholder="all"
                         disabled={disabled}
                         onChange={(e) =>
-                          setCount(d.name, Number(e.target.value), d.files)
+                          setCount(d.id, Number(e.target.value), d.documents)
                         }
                         className="h-8 w-16 text-right tabular-nums"
                       />
-                      <span className="w-12 text-xs text-muted-foreground">
-                        / {d.files.toLocaleString()}
+                      <span className="w-14 text-xs text-muted-foreground">
+                        / {d.documents.toLocaleString()}
                       </span>
                     </>
                   ) : (
                     <span className="pr-1 text-xs text-muted-foreground">
-                      {d.files.toLocaleString()} files
+                      {d.documents.toLocaleString()} docs
                     </span>
                   )}
                 </span>

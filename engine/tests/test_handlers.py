@@ -31,15 +31,15 @@ def pipelines(monkeypatch):
     """Stand in for the pipelines, recording the config each was called with."""
     called = {}
 
-    def train(cfg, on_progress, stop):
+    def train(cfg, on_progress, stop, owner=None):
         called["train"] = cfg
         return {"ctx_window": 128, "vocab_size": 320, "loss_series": [1.0, 0.5]}
 
-    def sft(cfg, on_progress, stop):
+    def sft(cfg, on_progress, stop, owner=None):
         called["sft"] = cfg
         return {"ctx_window": 64}
 
-    def tokenize(cfg, on_progress, stop):
+    def tokenize(cfg, on_progress, stop, owner=None):
         called["tokenize"] = cfg
         return {
             "tokenizer_id": cfg.tokenizer_id,
@@ -118,7 +118,7 @@ def test_a_benchmark_opens_a_row_when_it_reaches_the_device(
     monkeypatch.setattr(
         handlers.eval_pipeline,
         "run",
-        lambda cfg, on_progress, stop: {
+        lambda cfg, on_progress, stop, owner=None: {
             "model": {"id": cfg.model_name, "name": None, "layers": 2},
             "score": {"score": 62.5, "version": 3},
             "tokens_used": 900,
@@ -151,7 +151,7 @@ def test_a_report_learns_the_name_the_pipeline_could_not_know(
     monkeypatch.setattr(
         handlers.eval_pipeline,
         "run",
-        lambda cfg, on_progress, stop: {
+        lambda cfg, on_progress, stop, owner=None: {
             "model": {"id": cfg.model_name, "name": None},
             "score": {"score": 1.0},
         },
@@ -228,7 +228,7 @@ def test_a_pretrain_indexes_the_vocabulary_it_learned_for_itself(
     marked apart from the ones built on purpose."""
     derived = uuid.uuid4()
 
-    def train(cfg, on_progress, stop):
+    def train(cfg, on_progress, stop, owner=None):
         return {"ctx_window": 128, "tokenizer_id": str(derived), "vocab": 512}
 
     monkeypatch.setattr(handlers.train_pipeline, "run", train)
@@ -246,7 +246,7 @@ def test_a_run_that_named_its_vocabulary_does_not_reindex_it(
     is this run's to record."""
     named = uuid.uuid4()
 
-    def train(cfg, on_progress, stop):
+    def train(cfg, on_progress, stop, owner=None):
         return {"ctx_window": 128, "tokenizer_id": str(named), "vocab": 512}
 
     monkeypatch.setattr(handlers.train_pipeline, "run", train)
@@ -270,7 +270,7 @@ def test_a_training_run_is_indexed_by_what_it_produced(
     monkeypatch.setattr(
         handlers.train_pipeline,
         "run",
-        lambda cfg, on_progress, stop: {"ctx_window": 128, "tokenizer_id": str(consumed)},
+        lambda cfg, on_progress, stop, owner=None: {"ctx_window": 128, "tokenizer_id": str(consumed)},
     )
     result = handlers.train(
         {"model_name": str(uuid.uuid4()), "tokenizer_id": str(consumed)}, progress, cancel

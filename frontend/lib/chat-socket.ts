@@ -165,7 +165,9 @@ export function streamChat(
         const info = {
           messageId: msg.message_id == null ? null : String(msg.message_id),
           elapsedSecs:
-            typeof msg.usage?.elapsed_secs === "number" ? msg.usage.elapsed_secs : null,
+            typeof msg.usage?.elapsed_secs === "number"
+              ? msg.usage.elapsed_secs
+              : null,
         }
         if (msg.final === false) {
           handlers.onDone({ ...info, final: false })

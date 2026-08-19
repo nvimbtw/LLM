@@ -75,21 +75,32 @@ function num(v: unknown, fallback: number): number {
 }
 
 // Coerce a stored blob's dataset selection into a clean DatasetSelection[],
-// dropping any entry that isn't a named object and clamping its count to a
-// non-negative integer (0 = all). Missing/garbage yields an empty selection.
+// dropping any entry that isn't an object naming a dataset id and clamping its
+// count to a non-negative integer (0 = all). Missing/garbage yields an empty
+// selection.
+//
+// An entry with only a `name` is a preset saved before datasets moved to the
+// data engine. It is dropped rather than carried: there is no directory left to
+// look the name up in, and a run would be refused for it anyway — better an
+// empty picker the user refills than a request that fails at the queue.
 function datasets(v: unknown): DatasetSelection[] {
   if (!Array.isArray(v)) return []
   const out: DatasetSelection[] = []
   for (const item of v) {
     if (!item || typeof item !== "object") continue
+    const id = (item as { id?: unknown }).id
+    if (typeof id !== "string" || !id.trim()) continue
     const name = (item as { name?: unknown }).name
-    if (typeof name !== "string" || !name.trim()) continue
     const rawCount = (item as { count?: unknown }).count
     const count =
       typeof rawCount === "number" && Number.isFinite(rawCount) && rawCount > 0
         ? Math.floor(rawCount)
         : 0
-    out.push({ name, count })
+    out.push({
+      id,
+      ...(typeof name === "string" && name.trim() ? { name } : {}),
+      count,
+    })
   }
   return out
 }

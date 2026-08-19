@@ -71,7 +71,6 @@ fn server(url: String, registry: Registry) -> actix_test::TestServer {
             .app_data(web::Data::new(JWT_SECRET.to_string()))
             .app_data(web::Data::new(Proxy::new(
                 url.clone(),
-                engine::AUDIENCE,
                 Some(SERVICE_SECRET.to_string()),
             )))
             .app_data(web::Data::new(registry.clone()))

@@ -8,20 +8,28 @@ An LLM trained, served and inspected end to end: a PyTorch engine, a Rust API
 in front of it, a Next.js UI in front of that.
 
 ```
-engine/     training, inference, evaluation, and the data they own — PyTorch, FastAPI.
-backend/    people, sessions, and the seam to the engine — Rust, Actix, sqlx.
-frontend/   chat, the job board, model and benchmark views — Next.js.
+engine/       training, inference, evaluation — PyTorch, FastAPI.
+data-engine/  acquiring datasets and cleaning them — FastAPI, huggingface_hub.
+backend/      people, sessions, and the seam to the services — Rust, Actix, sqlx.
+frontend/     chat, the job board, model, data and benchmark views — Next.js.
 ```
 
 Each module owns a database. The engine owns models, conversations, runs and
-scores; the backend owns users and presets; a request flows frontend → backend
-→ engine and back the same way.
+scores; the data engine owns datasets and the documents in them — including the
+text every model is trained on; the backend owns users and presets. A request
+flows frontend → backend → a service and back the same way.
+
+**The two Python services never speak to each other.** Everything either knows
+about the other arrives through the Rust backend. That is why the engine, which
+trains on data it does not own, reads it *through* the backend: the one hop in
+this system that runs toward the backend rather than away from it. See
+[`docs/decisions/datasets-out-of-the-engine.md`](docs/decisions/datasets-out-of-the-engine.md).
 
 ## Where everything is
 
 | | |
 | --- | --- |
-| [`docs/engine/`](docs/engine/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
+| [`docs/engine/`](docs/engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
 | [`docs/conventions.md`](docs/conventions.md) | The coding rules (R1–R21) every change is judged against. |
 | [`docs/decisions/`](docs/decisions/) | Decision records — what was weighed and rejected, dated, once. |
 | [`docs/README.md`](docs/README.md) | The spec for the docs themselves: shape of a module directory, what belongs in one. |
@@ -90,26 +98,32 @@ the shared map. Keeping them true is cheaper than everyone guessing.
 # Running it
 
 ```sh
-cd engine  && .venv/bin/uvicorn main:app --port 8001    # or let the backend spawn it
-cd backend && cargo run                                  # needs DATABASE_URL, JWT_SECRET
-cd frontend && bun run dev
+cd engine      && .venv/bin/uvicorn main:app --port 8001   # or let the backend spawn it
+cd data-engine && .venv/bin/uvicorn main:app --port 8002   # or let the backend spawn it
+cd backend     && cargo run                                 # needs DATABASE_URL, JWT_SECRET
+cd frontend    && bun run dev
 ```
 
-The backend spawns the engine as a child unless `ENGINE_AUTOSTART=false`, and
-health-checks it before reporting ready. Set `ENGINE_SERVICE_SECRET` on both
-sides to authenticate the hop; unset leaves the engine open and it says so at
-startup.
+The backend spawns both Python services as children unless `ENGINE_AUTOSTART` /
+`DATA_ENGINE_AUTOSTART` is false, and health-checks each before reporting ready.
+Set `ENGINE_SERVICE_SECRET` and `DATA_ENGINE_SERVICE_SECRET` on both sides to
+authenticate the hops; unset leaves a service open and it says so at startup. A
+token is addressed to one service by name and is refused by the other.
+`BACKEND_SERVICE_SECRET` guards the one hop that runs the other way — the engine
+reading, through the backend, datasets the data engine owns — and behaves the
+same way when unset.
 
-The engine needs its own database (`ENGINE_DATABASE_URL`, default
-`postgresql+psycopg://localhost/slate_engine`) migrated with `alembic upgrade
-head`.
+Each Python service needs its own database, migrated with `alembic upgrade head`:
+`ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_engine`) and
+`DATA_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_data`).
 
 # Tests
 
 ```sh
-cd engine   && .venv/bin/python -m pytest tests/    # incl. the dataflow trace
-cd backend  && cargo test --workspace               # needs DATABASE_URL
-cd frontend && bun run typecheck && bun run lint
+cd engine      && .venv/bin/python -m pytest tests/   # incl. the dataflow trace
+cd data-engine && .venv/bin/python -m pytest tests/   # incl. the migration drift check
+cd backend     && cargo test --workspace              # needs DATABASE_URL
+cd frontend    && bun run typecheck && bun run lint
 ```
 
 `engine/tests/test_dataflow_trace.py` is the contract that keeps the engine

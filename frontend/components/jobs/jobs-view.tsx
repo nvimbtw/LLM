@@ -45,11 +45,7 @@ export function JobsView() {
 
   return (
     <div className="space-y-8">
-      {error && (
-        <FormError>
-          {error}
-        </FormError>
-      )}
+      {error && <FormError>{error}</FormError>}
 
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <header className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border px-5 py-4">

@@ -71,13 +71,18 @@ export function Trace({
   streaming = false,
   className,
 }: TraceProps) {
-  const steps = React.useMemo(() => stepsOf(working, answers), [working, answers])
+  const steps = React.useMemo(
+    () => stepsOf(working, answers),
+    [working, answers]
+  )
   const words = React.useMemo(() => countWords(working), [working])
   const calls = steps.filter((s) => s.kind === "tool").length
 
   // Only the initial value depends on the content — once the reader has opened
   // or closed it, a trace that keeps growing must not yank itself shut again.
-  const [open, setOpen] = React.useState(() => calls === 0 && words <= LONG_TRACE_WORDS)
+  const [open, setOpen] = React.useState(
+    () => calls === 0 && words <= LONG_TRACE_WORDS
+  )
   const expanded = streaming || open
 
   if (steps.length === 0) return null
@@ -154,7 +159,8 @@ function Summary({
 }) {
   const label = calls === 0 ? "Reasoning" : "Worked"
   const parts: string[] = []
-  if (calls > 0 && elapsedSecs != null) parts.push(`${Math.round(elapsedSecs)}s`)
+  if (calls > 0 && elapsedSecs != null)
+    parts.push(`${Math.round(elapsedSecs)}s`)
   if (calls > 0) parts.push(calls === 1 ? "1 search" : `${calls} searches`)
   if (calls === 0) parts.push(`${words.toLocaleString()} words`)
 
@@ -219,9 +225,14 @@ type Step =
  * the trace's own live tick uses — two answers to that question would show as
  * one warm mark beside a throbber claiming the model was still writing.
  */
-export function isCalling(working: string | undefined, answers: ToolAnswer[]): boolean {
+export function isCalling(
+  working: string | undefined,
+  answers: ToolAnswer[]
+): boolean {
   if (working === undefined) return false
-  return stepsOf(working, answers).some((s) => s.kind === "tool" && s.body === null)
+  return stepsOf(working, answers).some(
+    (s) => s.kind === "tool" && s.body === null
+  )
 }
 
 function stepsOf(working: string, answers: ToolAnswer[]): Step[] {
@@ -263,7 +274,8 @@ function plainText(node: MNode): string {
   if (isText(node)) return node.value
   // Blocks are separated so two paragraphs do not run into one another as a
   // single unbroken line.
-  const separator = node.type === "paragraph" || node.type === "thinking" ? "\n\n" : ""
+  const separator =
+    node.type === "paragraph" || node.type === "thinking" ? "\n\n" : ""
   return separator + node.children.map(plainText).join("") + separator
 }
 

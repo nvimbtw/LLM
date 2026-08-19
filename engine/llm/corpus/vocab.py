@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from tokenizers import Tokenizer
 
 from llm import storage
-from llm.corpus import bpe, sources, special
+from llm.corpus import bpe, remote, special
 from llm.train.progress import ProgressCallback, Tokenize
 
 #: Namespace for `auto_id`. Fixed forever: changing it re-keys every vocabulary
@@ -33,34 +33,32 @@ AUTO_NAMESPACE = uuid.UUID("6f9b1f2e-3c4d-5a6b-8c7d-9e0f1a2b3c4d")
 #: so it has to survive being read by a person in a directory listing.
 FINGERPRINT_CHARS = 16
 
-Selection = list[tuple[str, int | None]]
+#: A request resolved against the data engine — what everything here keys,
+#: records and reads. See `remote.Selected`.
+Selection = list[remote.Selected]
 
 
 @dataclass
 class VocabStats:
     """What a build produced. `fingerprint` is what a packed corpus is keyed on."""
 
-    files: int
+    datasets: Selection
     vocab_size: int
     merges: int
-    datasets: Selection
     fingerprint: str
     # How much of that selection the merges were actually fitted to.
-    sampled_files: int = 0
+    sampled_chunks: int = 0
     sampled_bytes: int = 0
 
 
-def resolve(names=None) -> Selection:
-    """The `(name, cap)` pairs a request resolves to right now.
+def resolve(client, selections) -> Selection:
+    """What a request resolves to right now, against the data engine.
 
-    An empty request means "every corpus under input/", which is a *different*
-    vocabulary once another corpus is fetched. Expanding it here, before anything
-    is keyed, is what stops a run reusing a build that predates the data it asked
-    for — the same step `sft.resolve` exists for.
+    Resolved before anything is keyed, which is what stops a run reusing a build
+    that predates the data it asked for: a dataset pulled again since the last
+    build holds more documents under the same id.
     """
-    if names:
-        return [sources.selection(item) for item in names]
-    return [(name, None) for name in sources.datasets()]
+    return remote.resolve(client, selections)
 
 
 def auto_id(selection: Selection, max_vocab: int) -> str:
@@ -75,6 +73,7 @@ def auto_id(selection: Selection, max_vocab: int) -> str:
 
 
 def build(
+    client,
     tokenizer_id: str,
     selection: Selection,
     max_vocab: int,
@@ -84,37 +83,60 @@ def build(
     """Learn a vocabulary from the selected corpora and record what it came from.
 
     The merges are learned from a bounded sample of the selection, not from all
-    of it — see `bpe.plan_sample`. The selection still decides *what* is sampled,
-    so the vocabulary is still a function of the corpora asked for.
+    of it: `bpe.shares` splits the budget across the datasets and `remote.sample`
+    draws each share strided across its dataset. The selection still decides
+    *what* is sampled, so the vocabulary is still a function of the datasets
+    asked for.
     """
-    files = sources.collect([{"name": name, "count": cap} for name, cap in selection])
-    if not files:
-        raise FileNotFoundError(
-            f"No .txt files under {storage.input_dir()} for {[n for n, _ in selection]}"
-            + _sft_hint(selection)
+    prose = [selected for selected in selection if selected.taken > 0]
+    if not prose:
+        raise ValueError(
+            f"Nothing to learn merges from: {_named(selection)} "
+            f"{'hold no documents' if selection else 'is an empty selection'}"
         )
+
     if on_progress is not None:
-        on_progress(Tokenize(files=len(files), progress=0.05))
+        on_progress(Tokenize(documents=sum(s.taken for s in prose), progress=0.05))
 
     directory = storage.ensure_dir(storage.tokenizer_build_dir(tokenizer_id))
-    drawn = bpe.plan_sample(files, sample_bytes)
-    sampled_bytes = sum(take for _, take in drawn)
 
-    # The sample is written under the build's own directory rather than /tmp:
-    # it is a few MB, it says exactly what the merges were fitted to, and a
-    # tokenizer that looks wrong is otherwise unanswerable after the fact.
+    # Each dataset's slice of the budget, then that slice drawn strided across
+    # the dataset — the two halves of ADR 0004, unchanged by the move. What used
+    # to be file sizes on disk is the dataset's own recorded `byte_size`, scaled
+    # to the capped part of it.
+    budgets = bpe.shares({s.id: _selected_bytes(s) for s in prose}, sample_bytes)
+    by_id = {s.id: s for s in prose}
+    drawn = (
+        chunk
+        for dataset_id, share in budgets
+        for chunk in remote.sample(
+            client, by_id[dataset_id], share, take_each=bpe.SAMPLE_TAKE_BYTES
+        )
+    )
+
+    # The sample is written under the build's own directory rather than held in
+    # memory: it is bounded at `sample_bytes`, the trainer counts across cores
+    # over the files it is given, and a tokenizer that looks wrong is otherwise
+    # unanswerable after the fact. It is the one place text still touches this
+    # disk, and it is a build artifact rather than a corpus.
     sample_dir = storage.tokenizer_sample_dir(tokenizer_id)
     shutil.rmtree(sample_dir, ignore_errors=True)
-    tokenizer = bpe.train(bpe.write_sample(drawn, sample_dir), max_vocab, out_dir=directory)
+    written = bpe.write_chunks(drawn, sample_dir)
+    if not written:
+        raise ValueError(
+            f"Nothing to learn merges from: {_named(selection)} returned no prose. "
+            f"A chat dataset holds conversations, and a vocabulary is learned from "
+            f"text — fine-tune on those instead"
+        )
+    tokenizer = bpe.train(written, max_vocab, out_dir=directory)
 
     stats = VocabStats(
-        files=len(files),
+        datasets=list(selection),
         vocab_size=bpe.vocab_size(tokenizer),
         merges=bpe.merge_count(tokenizer),
-        datasets=list(selection),
         fingerprint=file_fingerprint(storage.tokenizer_file(directory)),
-        sampled_files=len(drawn),
-        sampled_bytes=sampled_bytes,
+        sampled_chunks=len(written),
+        sampled_bytes=sum(path.stat().st_size for path in written),
     )
 
     # Written after the vocabulary lands, so a directory with no sidecar is an
@@ -126,14 +148,13 @@ def build(
                 "max_vocab": max_vocab,
                 "vocab_size": stats.vocab_size,
                 "merges": stats.merges,
-                "files": stats.files,
                 # What the merges were fitted to, as opposed to what was
                 # selected. `matches` compares the budget, so raising it rebuilds
                 # rather than silently reusing merges learned from less text.
                 "sample_bytes": sample_bytes,
-                "sampled_files": stats.sampled_files,
+                "sampled_chunks": stats.sampled_chunks,
                 "sampled_bytes": stats.sampled_bytes,
-                "datasets": [[name, cap] for name, cap in selection],
+                "datasets": [selected.record() for selected in selection],
                 # The reserved block this was trained against. A later change to
                 # `special.token_list()` is then visible on an old vocabulary,
                 # rather than being discovered as garbage marker ids.
@@ -149,7 +170,6 @@ def build(
     if on_progress is not None:
         on_progress(
             Tokenize(
-                files=stats.files,
                 vocab=stats.vocab_size,
                 merges=stats.merges,
                 progress=1.0,
@@ -159,24 +179,22 @@ def build(
     return stats
 
 
-def _sft_hint(selection) -> str:
-    """The rest of the sentence, when the corpora asked for are chat sets.
+def _selected_bytes(selected) -> int:
+    """How much text a selection actually offers, capped part included.
 
-    A run is a fine-tune if and only if it names a base model, so a fine-tune
-    that loses that one field on the wire arrives here as a *pretrain* over SFT
-    set names — which is a vocabulary build over `.txt` files that do not exist.
-    The bare "no files found" is true and says nothing; naming the other root and
-    what it means is the whole difference between a puzzle and a fix.
+    The dataset records its whole size; a cap takes a prefix of its documents,
+    so the share it should get is scaled by the same fraction. Without this a
+    capped dataset would claim its full weight in the split and take a share it
+    cannot fill, shrinking the sample by the difference — the failure `shares`
+    already water-fills against, arriving one level earlier.
     """
-    chat = sources.chat_sets_among(name for name, _ in selection)
-    if not chat:
-        return ""
-    return (
-        f" — but {chat} are SFT sets, under {storage.sft_dir()}. A run trains on those "
-        f"only as a fine-tune, which is a run that names the model it starts from: "
-        f"queue it at /sft with `base_model` set. Without that field a run is a "
-        f"pretrain, and a pretrain learns its vocabulary from the .txt corpora."
-    )
+    if not selected.cap or selected.cap >= selected.documents or not selected.documents:
+        return selected.bytes
+    return int(selected.bytes * selected.taken / selected.documents)
+
+
+def _named(selection) -> str:
+    return ", ".join(str(selected) for selected in selection) or "(nothing)"
 
 
 def load(tokenizer_id: str) -> Tokenizer:
@@ -237,9 +255,9 @@ def matches(
     recorded = info(tokenizer_id)
     if recorded is None:
         return False
-    on_disk = [(name, cap) for name, cap in recorded.get("datasets", [])]
+    on_disk = recorded.get("datasets", [])
     return (
-        on_disk == list(selection)
+        on_disk == [selected.record() for selected in selection]
         and recorded.get("max_vocab") == max_vocab
         and recorded.get("special_tokens_sha") == special_tokens_sha()
         # A build made before the budget existed learned from everything
@@ -287,7 +305,7 @@ def special_tokens_sha() -> str:
 def _payload(selection: Selection, max_vocab: int) -> str:
     return json.dumps(
         {
-            "datasets": [[name, cap] for name, cap in selection],
+            "datasets": [selected.identity() for selected in selection],
             "max_vocab": max_vocab,
             "specials": special_tokens_sha(),
         }

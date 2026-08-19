@@ -30,7 +30,7 @@ def ran():
 
 
 def handler_recording(ran, result=None):
-    def handler(config, progress, cancel):
+    def handler(config, progress, cancel, owner=None):
         ran.append(config)
         progress({"fraction": 0.5, "stage": "working"})
         return result or {"ok": True}
@@ -69,7 +69,7 @@ async def test_runs_execute_in_queue_order(store_session, registry, ran):
 
 
 async def test_a_failing_handler_fails_only_its_own_run(store_session, registry, ran):
-    def explode(config, progress, cancel):
+    def explode(config, progress, cancel, owner=None):
         raise RuntimeError("kaboom")
 
     runner = Runner(registry, {RunKind.train: explode, RunKind.benchmark: handler_recording(ran)})
@@ -114,7 +114,7 @@ async def test_cancelling_a_running_run_is_cooperative(store_session, registry):
     entered = threading.Event()
     saw_cancel = threading.Event()
 
-    def slow(config, progress, cancel):
+    def slow(config, progress, cancel, owner=None):
         entered.set()
         if cancel.wait(timeout=5):
             saw_cancel.set()
@@ -159,7 +159,7 @@ async def test_a_paused_queue_holds_the_line(store_session, registry, ran):
 async def test_what_a_run_produced_is_recorded_on_its_row(store_session, registry):
     produced = uuid.uuid4()
 
-    def trains(config, progress, cancel):
+    def trains(config, progress, cancel, owner=None):
         return {"model_id": str(produced)}
 
     runner = Runner(registry, {RunKind.train: trains})
@@ -190,7 +190,7 @@ async def test_a_training_report_travels_as_itself(store_session, registry):
     dataclass. Publishing it as a generic `progress` frame is what once left a
     running job with no statistics and no diagnostics at all."""
 
-    def trains(config, progress, cancel):
+    def trains(config, progress, cancel, owner=None):
         progress(
             Progress(
                 step=3,
@@ -230,7 +230,7 @@ async def test_a_phase_one_report_says_only_what_it_measured(store_session, regi
     a phase did not measure is absent from the frame rather than zero, so the
     panel shows "—" instead of a count of nothing."""
 
-    def builds(config, progress, cancel):
+    def builds(config, progress, cancel, owner=None):
         progress(Tokenize(files=3, vocab=8192, merges=7900, progress=0.6))
         return {}
 

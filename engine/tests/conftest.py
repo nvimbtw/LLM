@@ -16,6 +16,32 @@ def data_root(tmp_path_factory):
         yield root
 
 
+@pytest.fixture(scope="session", autouse=True)
+def backend():
+    """Point BACKEND_URL at a stand-in serving the fixture datasets.
+
+    Autouse and session-scoped for the same reason `data_root` is: every build
+    path reads its text through this, and a test that ran before it was set
+    would reach for whatever is listening on port 8080 — which, on the machine
+    this is developed on, is a real backend holding real data.
+    """
+    import os
+
+    from tests.fixtures.fake_backend import FakeBackend
+
+    server = FakeBackend(tiny_env.datasets())
+    previous = os.environ.get("BACKEND_URL")
+    os.environ["BACKEND_URL"] = server.url
+    try:
+        yield server
+    finally:
+        if previous is None:
+            os.environ.pop("BACKEND_URL", None)
+        else:
+            os.environ["BACKEND_URL"] = previous
+        server.close()
+
+
 @pytest.fixture(autouse=True)
 def _clear_model_cache():
     """`orchestrate.chat` memoizes one model per process, keyed by name alone —
@@ -119,3 +145,43 @@ def trained_id() -> str:
     import uuid
 
     return str(uuid.uuid4())
+
+
+@pytest.fixture
+def data_client(backend):
+    """A client of the stand-in backend, acting for nobody in particular."""
+    from llm.corpus import remote
+
+    with remote.Client(None) as caller:
+        yield caller
+
+
+@pytest.fixture
+def packed(data_root, data_client):
+    """The fixture corpus, packed the way a run packs it.
+
+    Shared because three files want a real packed corpus and building one is the
+    slowest thing in the suite.
+    """
+    from llm.corpus import pack, remote, vocab
+    from tests.fixtures.tiny_env import TINY_DATASET_ID
+
+    selection = vocab.resolve(data_client, [TINY_DATASET_ID])
+    tokenizer_id = vocab.auto_id(selection, 512)
+    vocab.build(data_client, tokenizer_id, selection, 512)
+    fingerprint = vocab.fingerprint(tokenizer_id)
+    key = pack.corpus_key(fingerprint, [(None, selection)])
+
+    stats = pack.pack(
+        (
+            pack.SourceDoc(dataset=one.name, text=remote.text_of(row))
+            for one in selection
+            for row in data_client.documents(one.id, cap=one.cap)
+        ),
+        vocab.load(tokenizer_id),
+        key=key,
+        stages=[{"name": None, "epochs": 1, "datasets": [s.record() for s in selection]}],
+        tokenizer_id=tokenizer_id,
+        fingerprint=fingerprint,
+    )
+    return key, stats

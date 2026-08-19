@@ -11,17 +11,17 @@ import pytest
 
 from llm import storage
 from llm.config import CurriculumStage, TrainConfig
-from llm.corpus import pack, vocab
+from llm.corpus import pack, remote, vocab
 from llm.orchestrate import train as train_pipeline
-from tests.fixtures.tiny_env import TINY_DATASET
+from tests.fixtures.tiny_env import TINY_DATASET, TINY_DATASET_ID, selected
 
 
 @pytest.fixture
-def built(data_root):
+def built(data_root, data_client):
     """A vocabulary learned from the fixture corpus."""
-    selection = [(TINY_DATASET, None)]
+    selection = vocab.resolve(data_client, [TINY_DATASET_ID])
     tokenizer_id = vocab.auto_id(selection, 512)
-    vocab.build(tokenizer_id, selection, 512)
+    vocab.build(data_client, tokenizer_id, selection, 512)
     return tokenizer_id
 
 
@@ -36,20 +36,24 @@ def test_an_unnamed_build_is_keyed_by_its_inputs(data_root):
     """Two identical runs must share a vocabulary. A fresh id per run would
     re-learn the merges and re-pack the corpus every time, which is the cost
     skipping tokenization existed to avoid."""
-    first = vocab.auto_id([(TINY_DATASET, None)], 512)
-    again = vocab.auto_id([(TINY_DATASET, None)], 512)
-    capped = vocab.auto_id([(TINY_DATASET, 1)], 512)
-    larger = vocab.auto_id([(TINY_DATASET, None)], 1024)
+    first = vocab.auto_id([selected(TINY_DATASET_ID)], 512)
+    again = vocab.auto_id([selected(TINY_DATASET_ID)], 512)
+    capped = vocab.auto_id([selected(TINY_DATASET_ID, 1)], 512)
+    larger = vocab.auto_id([selected(TINY_DATASET_ID)], 1024)
+    # A dataset pulled again holds more documents under the same id, and a
+    # vocabulary learned from the smaller one is not the one this asks for.
+    grown = vocab.auto_id([selected(TINY_DATASET_ID, documents=99)], 512)
 
     assert first == again
     assert first != capped
     assert first != larger
+    assert first != grown
 
 
 def test_a_build_records_what_it_was_made_from(built):
     recorded = vocab.info(built)
 
-    assert recorded["datasets"] == [[TINY_DATASET, None]]
+    assert recorded["datasets"] == [selected(TINY_DATASET_ID, name=TINY_DATASET).record()]
     assert recorded["max_vocab"] == 512
     assert recorded["vocab_size"] > 0
     assert recorded["merges"] > 0
@@ -57,9 +61,11 @@ def test_a_build_records_what_it_was_made_from(built):
 
 
 def test_a_build_is_reused_only_for_the_request_it_was_built_for(built):
-    assert vocab.matches(built, [(TINY_DATASET, None)], 512)
-    assert not vocab.matches(built, [(TINY_DATASET, 1)], 512)
-    assert not vocab.matches(built, [(TINY_DATASET, None)], 1024)
+    made_from = [selected(TINY_DATASET_ID, name=TINY_DATASET)]
+
+    assert vocab.matches(built, made_from, 512)
+    assert not vocab.matches(built, [selected(TINY_DATASET_ID, 1, name=TINY_DATASET)], 512)
+    assert not vocab.matches(built, made_from, 1024)
 
 
 def test_a_vocabulary_with_no_sidecar_is_not_a_build(built):
@@ -67,7 +73,7 @@ def test_a_vocabulary_with_no_sidecar_is_not_a_build(built):
     storage.tokenizer_meta_path(built).unlink()
 
     assert vocab.info(built) is None
-    assert not vocab.matches(built, [(TINY_DATASET, None)], 512)
+    assert not vocab.matches(built, [selected(TINY_DATASET_ID, name=TINY_DATASET)], 512)
 
 
 # ── the corpus ──────────────────────────────────────────────────────────────
@@ -76,62 +82,93 @@ def test_a_vocabulary_with_no_sidecar_is_not_a_build(built):
 def test_a_corpus_is_keyed_by_the_vocabulary_as_well_as_the_text():
     """The same bytes decode to different text under a different vocabulary, so
     two vocabularies can never share a packed corpus."""
-    one = stages([(TINY_DATASET, None)])
+    one = stages([selected(TINY_DATASET_ID)])
 
     assert pack.corpus_key("aaaaaaaaaaaa", one) != pack.corpus_key("bbbbbbbbbbbb", one)
 
 
 def test_a_corpus_key_follows_the_selection_and_its_order():
     fingerprint = "aaaaaaaaaaaa"
-    both = stages([("A", None), ("B", None)])
+    both = stages([selected("A"), selected("B")])
 
     assert pack.corpus_key(fingerprint, both) == pack.corpus_key(fingerprint, both)
     assert pack.corpus_key(fingerprint, both) != pack.corpus_key(
-        fingerprint, stages([("B", None), ("A", None)])
+        fingerprint, stages([selected("B"), selected("A")])
     )
     assert pack.corpus_key(fingerprint, both) != pack.corpus_key(
-        fingerprint, stages([("A", 1), ("B", None)])
+        fingerprint, stages([selected("A", 1), selected("B")])
     )
     # Two stages over the same corpora is a curriculum, not the flat run.
     assert pack.corpus_key(fingerprint, both) != pack.corpus_key(
-        fingerprint, stages([("A", None)], [("B", None)])
+        fingerprint, stages([selected("A")], [selected("B")])
+    )
+    # A re-pulled dataset holds more documents under the same id: every token
+    # after the first new one differs, so it must key apart.
+    assert pack.corpus_key(fingerprint, both) != pack.corpus_key(
+        fingerprint, stages([selected("A", documents=99), selected("B")])
     )
 
 
-def test_epochs_and_stage_names_do_not_key_a_corpus_apart(data_root):
+def test_a_rename_changes_the_path_but_not_the_identity():
+    """The digest is what a corpus *is*; the slug in front of it is for reading a
+    directory listing. A renamed dataset therefore re-packs — knowingly, and it
+    is the only thing a rename costs."""
+    fingerprint = "aaaaaaaaaaaa"
+    before = pack.corpus_key(fingerprint, stages([selected("A")]))
+    after = pack.corpus_key(fingerprint, stages([selected("A", name="renamed")]))
+
+    assert before != after
+    assert before.rsplit("-", 1)[-1] == after.rsplit("-", 1)[-1]
+
+
+def test_epochs_and_stage_names_do_not_key_a_corpus_apart(data_root, data_client):
     """Neither changes a token. Re-packing a byte-identical corpus because a
     stage was renamed is the mistake the key exists to avoid."""
-    flat = TrainConfig(model_name="x", datasets=[TINY_DATASET], epochs=1)
+    flat = TrainConfig(model_name="x", datasets=[TINY_DATASET_ID], epochs=1)
     longer = TrainConfig(
         model_name="x",
-        curriculum=[CurriculumStage(name="renamed", datasets=[TINY_DATASET], epochs=9)],
+        curriculum=[CurriculumStage(name="renamed", datasets=[TINY_DATASET_ID], epochs=9)],
     )
 
-    assert pack.corpus_key("aaaaaaaaaaaa", pack.resolve(flat.stages())) == pack.corpus_key(
-        "aaaaaaaaaaaa", pack.resolve(longer.stages())
-    )
+    assert pack.corpus_key(
+        "aaaaaaaaaaaa", pack.resolve(data_client, flat.stages())
+    ) == pack.corpus_key("aaaaaaaaaaaa", pack.resolve(data_client, longer.stages()))
 
 
-def test_an_empty_selection_resolves_before_it_is_keyed(data_root):
-    """"All the corpora" is a different corpus once another is fetched, so it is
-    expanded at build time rather than stored as a wildcard."""
-    resolved = pack.resolve(TrainConfig(model_name="x").stages())
+def test_a_selection_resolves_against_the_data_engine_before_it_is_keyed(data_root, data_client):
+    """A request names ids and caps; what it *is* — how many documents, as of
+    when — is what the key needs, and only the data engine can say."""
+    resolved = pack.resolve(data_client, TrainConfig(model_name="x", datasets=[TINY_DATASET_ID]).stages())
 
-    assert resolved == [(None, [(TINY_DATASET, None)])]
+    assert len(resolved) == 1
+    stage_name, datasets = resolved[0]
+    assert stage_name is None
+    assert [(s.id, s.name, s.cap, s.documents) for s in datasets] == [
+        (TINY_DATASET_ID, TINY_DATASET, None, 2)
+    ]
 
 
-def test_a_packed_corpus_is_reused_only_for_its_own_request(built, data_root):
-    from llm.corpus import sources
+def test_a_run_that_names_no_datasets_is_refused(data_root, data_client):
+    """There is no "everything" any more. A directory a person curated could
+    mean all of it; a shared database anyone can pull into cannot."""
+    with pytest.raises(ValueError, match="must name the datasets"):
+        pack.resolve(data_client, TrainConfig(model_name="x").stages())
 
-    selection = stages([(TINY_DATASET, None)])
+
+def test_a_packed_corpus_is_reused_only_for_its_own_request(built, data_root, data_client):
+    one = vocab.resolve(data_client, [TINY_DATASET_ID])
+    selection = stages(one)
     fingerprint = vocab.fingerprint(built)
     key = pack.corpus_key(fingerprint, selection)
 
     pack.pack(
-        sources.collect([TINY_DATASET]),
+        (
+            pack.SourceDoc(dataset=TINY_DATASET, text=remote.text_of(row))
+            for row in data_client.documents(TINY_DATASET_ID)
+        ),
         vocab.load(built),
         key=key,
-        stages=[{"name": None, "epochs": 1, "datasets": [[TINY_DATASET, None]]}],
+        stages=[{"name": None, "epochs": 1, "datasets": [s.record() for s in one]}],
         tokenizer_id=built,
         fingerprint=fingerprint,
     )
@@ -140,7 +177,7 @@ def test_a_packed_corpus_is_reused_only_for_its_own_request(built, data_root):
     # A different vocabulary, or a different selection, is a different corpus —
     # even though the files under `key` are exactly where they were.
     assert not pack.is_built(key, selection, "0000000000000000")
-    assert not pack.is_built(key, stages([(TINY_DATASET, 1)]), fingerprint)
+    assert not pack.is_built(key, stages([selected(TINY_DATASET_ID, 1)]), fingerprint)
     assert not pack.is_built("never-packed", selection, fingerprint)
 
 
@@ -153,7 +190,7 @@ def test_a_tokenize_run_leaves_a_vocabulary_a_training_run_can_name(data_root, t
 
     tokenizer_id = str(uuid.uuid4())
     result = tokenize_pipeline.run(
-        TokenizerConfig(tokenizer_id=tokenizer_id, max_vocab=512, datasets=[TINY_DATASET]),
+        TokenizerConfig(tokenizer_id=tokenizer_id, max_vocab=512, datasets=[TINY_DATASET_ID]),
         on_progress=None,
     )
 
@@ -164,7 +201,7 @@ def test_a_tokenize_run_leaves_a_vocabulary_a_training_run_can_name(data_root, t
         TrainConfig(
             model_name=trained_id,
             tokenizer_id=tokenizer_id,
-            datasets=[TINY_DATASET],
+            datasets=[TINY_DATASET_ID],
             dimensions=16,
             heads=2,
             layers=1,
@@ -187,7 +224,12 @@ def test_a_tokenize_run_leaves_a_vocabulary_a_training_run_can_name(data_root, t
 def test_a_run_naming_a_vocabulary_that_was_never_built_says_so(data_root, trained_id):
     with pytest.raises(FileNotFoundError, match="No built vocabulary"):
         train_pipeline.run(
-            TrainConfig(model_name=trained_id, tokenizer_id="not-a-build"), on_progress=None
+            TrainConfig(
+                model_name=trained_id,
+                tokenizer_id="not-a-build",
+                datasets=[TINY_DATASET_ID],
+            ),
+            on_progress=None,
         )
 
 
@@ -202,7 +244,7 @@ def test_a_reused_corpus_still_reports_which_markers_it_contained(data_root, tra
 
     cfg = TrainConfig(
         model_name=trained_id,
-        datasets=[TINY_DATASET],
+        datasets=[TINY_DATASET_ID],
         max_vocab=512,
         dimensions=16,
         heads=2,

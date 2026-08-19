@@ -3,22 +3,7 @@ name = "engine"
 version = "0.1.0"
 edition = "2021"
 
-# Owns the Python engine process: spawning it, keeping it alive, and talking to
-# it over HTTP and a socket. Depends on nothing else in the workspace — it is a boundary to a
-# foreign process, not a consumer of this project's domain types, and keeping it
-# leaf-level means the crates that will call it can sit anywhere above it.
+# Names the LLM engine and nothing else: its audience, where it lives, and the
+# data root it owns. Everything that talks to a Python service is in `service`.
 [dependencies]
-auth = { path = "../auth" }
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["process", "time", "rt", "sync", "macros", "io-util"] }
-
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-
-[dev-dependencies]
-tokio = { version = "1", features = ["full"] }
-uuid = { version = "1", features = ["v4"] }
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-serde_json = "1"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+service = { path = "../service" }

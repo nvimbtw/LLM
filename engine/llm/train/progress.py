@@ -52,6 +52,11 @@ class Tokenize:
     progress: float = 0.0
     done: bool = False
     # Pretrain: the BPE tokenizer and the packed corpus.
+    #
+    # `documents` rather than `files`: the text arrives from the data engine a
+    # page at a time and there are no files to count. `files` is kept for a run
+    # queued before that, whose frames the panel still has to render.
+    documents: int | None = None
     files: int | None = None
     chars: int | None = None
     vocab: int | None = None

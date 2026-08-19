@@ -91,7 +91,8 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
     name: "temperature",
     aliases: ["temp", "t"],
     label: "Temperature",
-    description: "Decoding randomness (0.01 – 2.00). Near 0 is greedy, > 1 wanders",
+    description:
+      "Decoding randomness (0.01 – 2.00). Near 0 is greedy, > 1 wanders",
     argsHint: "<0.01 – 2.00>",
     kind: "number",
     settingKey: "temperature",
@@ -179,9 +180,7 @@ export const COMMAND_NAMES = SLASH_COMMANDS.map((c) => c.name)
 
 export function findCommand(nameOrAlias: string): SlashCommandDef | undefined {
   const norm = nameOrAlias.toLowerCase().trim().replace(/^\//, "")
-  return SLASH_COMMANDS.find(
-    (c) => c.name === norm || c.aliases.includes(norm)
-  )
+  return SLASH_COMMANDS.find((c) => c.name === norm || c.aliases.includes(norm))
 }
 
 export function matchStandaloneCommand(text: string): SlashCommandDef | null {
@@ -296,15 +295,31 @@ export interface TextPromptInfo {
 export type ArgumentSuggestions =
   | { type: "model"; options: ModelOption[] }
   | { type: "budget"; options: BudgetOption[] }
-  | { type: "toggle"; options: { value: string; label: string; isCurrent: boolean }[] }
-  | { type: "theme"; options: { value: string; label: string; description: string; isCurrent: boolean }[] }
+  | {
+      type: "toggle"
+      options: { value: string; label: string; isCurrent: boolean }[]
+    }
+  | {
+      type: "theme"
+      options: {
+        value: string
+        label: string
+        description: string
+        isCurrent: boolean
+      }[]
+    }
   | { type: "number"; info: NumberRangeInfo }
   | { type: "text"; info: TextPromptInfo }
   | { type: "action"; description: string }
 
 export type SuggestionResult =
   | { mode: "command"; query: string; suggestions: CommandSuggestion[] }
-  | { mode: "argument"; command: SlashCommandDef; argQuery: string; data: ArgumentSuggestions }
+  | {
+      mode: "argument"
+      command: SlashCommandDef
+      argQuery: string
+      data: ArgumentSuggestions
+    }
 
 const BUDGETS: { value: ThinkBudget; label: string; hint: string }[] = [
   { value: "auto", label: "Auto", hint: "Let the model decide" },
@@ -333,9 +348,19 @@ const NUMBER_PRESETS: Record<string, { label: string; value: number }[]> = {
 }
 
 const SYSTEM_TEMPLATES = [
-  { label: "Concise Assistant", value: "You are a helpful, concise assistant." },
-  { label: "Code Specialist", value: "You are an expert software engineer. Provide clean, well-tested code." },
-  { label: "Deep Reasoning", value: "Think through problems step-by-step before answering." },
+  {
+    label: "Concise Assistant",
+    value: "You are a helpful, concise assistant.",
+  },
+  {
+    label: "Code Specialist",
+    value:
+      "You are an expert software engineer. Provide clean, well-tested code.",
+  },
+  {
+    label: "Deep Reasoning",
+    value: "Think through problems step-by-step before answering.",
+  },
 ]
 
 export function getCommandSuggestions(
@@ -393,7 +418,8 @@ export function getCommandSuggestions(
           const val = ctx.settings[cmd.settingKey]
           if (typeof val === "boolean") currentDisplay = val ? "On" : "Off"
           else if (typeof val === "number") currentDisplay = val.toString()
-          else if (typeof val === "string" && val) currentDisplay = `"${val.slice(0, 16)}…"`
+          else if (typeof val === "string" && val)
+            currentDisplay = `"${val.slice(0, 16)}…"`
         }
 
         suggestions.push({
@@ -484,10 +510,30 @@ export function getCommandSuggestions(
     case "theme": {
       const currentTheme = ctx.theme || "system"
       const opts = [
-        { value: "light", label: "Light", description: "Warm paper", isCurrent: currentTheme === "light" },
-        { value: "dark", label: "Dark", description: "Kanagawa Dragon", isCurrent: currentTheme === "dark" },
-        { value: "system", label: "System", description: "Follow system preference", isCurrent: currentTheme === "system" },
-      ].filter((o) => !argQuery || o.value.includes(argQuery.toLowerCase()) || o.label.toLowerCase().includes(argQuery.toLowerCase()))
+        {
+          value: "light",
+          label: "Light",
+          description: "Warm paper",
+          isCurrent: currentTheme === "light",
+        },
+        {
+          value: "dark",
+          label: "Dark",
+          description: "Kanagawa Dragon",
+          isCurrent: currentTheme === "dark",
+        },
+        {
+          value: "system",
+          label: "System",
+          description: "Follow system preference",
+          isCurrent: currentTheme === "system",
+        },
+      ].filter(
+        (o) =>
+          !argQuery ||
+          o.value.includes(argQuery.toLowerCase()) ||
+          o.label.toLowerCase().includes(argQuery.toLowerCase())
+      )
       return {
         mode: "argument",
         command,
@@ -497,7 +543,9 @@ export function getCommandSuggestions(
     }
 
     case "number": {
-      const settingDef = SETTINGS.find((s) => s.key === command.settingKey) as NumberSetting | undefined
+      const settingDef = SETTINGS.find((s) => s.key === command.settingKey) as
+        | NumberSetting
+        | undefined
       if (!settingDef) return null
       const current = ctx.settings[command.settingKey!] as number
       return {
@@ -520,7 +568,9 @@ export function getCommandSuggestions(
     }
 
     case "text": {
-      const settingDef = SETTINGS.find((s) => s.key === command.settingKey) as TextSetting | undefined
+      const settingDef = SETTINGS.find((s) => s.key === command.settingKey) as
+        | TextSetting
+        | undefined
       const current = (ctx.settings[command.settingKey!] as string) || ""
       return {
         mode: "argument",
@@ -565,14 +615,18 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
   const command = findCommand(name)
 
   if (!command) {
-    toast.error("Unknown command", `“/${name}” isn't a command. Type / for suggestions.`)
+    toast.error(
+      "Unknown command",
+      `“/${name}” isn't a command. Type / for suggestions.`
+    )
     return true
   }
 
   switch (command.kind) {
     case "model": {
       if (!arg) {
-        const current = ctx.models?.find((m) => m.id === ctx.model)?.name ?? ctx.model
+        const current =
+          ctx.models?.find((m) => m.id === ctx.model)?.name ?? ctx.model
         toast({
           title: "Current Model",
           description: current ? `Selected: ${current}` : "No model selected.",
@@ -582,13 +636,17 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
 
       const models = ctx.models ?? []
       const exact = models.find(
-        (m) => m.id.toLowerCase() === arg.toLowerCase() || m.name.toLowerCase() === arg.toLowerCase()
-      )
-      const target = exact || models.find(
         (m) =>
-          m.id.toLowerCase().includes(arg.toLowerCase()) ||
-          m.name.toLowerCase().includes(arg.toLowerCase())
+          m.id.toLowerCase() === arg.toLowerCase() ||
+          m.name.toLowerCase() === arg.toLowerCase()
       )
+      const target =
+        exact ||
+        models.find(
+          (m) =>
+            m.id.toLowerCase().includes(arg.toLowerCase()) ||
+            m.name.toLowerCase().includes(arg.toLowerCase())
+        )
 
       if (target) {
         ctx.setModel?.(target.id)
@@ -608,8 +666,10 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
       let budget: ThinkBudget | null = null
       if (val === "auto" || val === "none" || val === "default") budget = "auto"
       else if (val === "low" || val === "min" || val === "short") budget = "low"
-      else if (val === "med" || val === "medium" || val === "mid") budget = "med"
-      else if (val === "high" || val === "max" || val === "long") budget = "high"
+      else if (val === "med" || val === "medium" || val === "mid")
+        budget = "med"
+      else if (val === "high" || val === "max" || val === "long")
+        budget = "high"
       else if (!val) {
         // Cycle budget
         const curr = ctx.budget || "auto"
@@ -645,7 +705,10 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
       else if (ON.has(argLower)) next = true
       else if (OFF.has(argLower)) next = false
       else {
-        toast.error(`/${command.name}`, `Use "on", "off", or nothing to toggle.`)
+        toast.error(
+          `/${command.name}`,
+          `Use "on", "off", or nothing to toggle.`
+        )
         return true
       }
       ctx.setSetting(command.settingKey, next)
@@ -659,7 +722,9 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
 
     case "number": {
       if (!command.settingKey) return true
-      const settingDef = SETTINGS.find((s) => s.key === command.settingKey) as NumberSetting | undefined
+      const settingDef = SETTINGS.find((s) => s.key === command.settingKey) as
+        | NumberSetting
+        | undefined
       if (!settingDef) return true
 
       if (!arg) {
@@ -692,7 +757,12 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
     case "text": {
       if (!command.settingKey) return true
       const lower = arg.toLowerCase()
-      if (lower === "clear" || lower === "reset" || lower === "none" || lower === '""') {
+      if (
+        lower === "clear" ||
+        lower === "reset" ||
+        lower === "none" ||
+        lower === '""'
+      ) {
         ctx.setSetting(command.settingKey, "")
         toast({
           title: "System Prompt",
@@ -706,7 +776,9 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
         const current = ctx.settings[command.settingKey] as string
         toast({
           title: "System Prompt",
-          description: current ? `Current: “${current}”` : "Currently unset. Provide a prompt to set it.",
+          description: current
+            ? `Current: “${current}”`
+            : "Currently unset. Provide a prompt to set it.",
         })
         return true
       }

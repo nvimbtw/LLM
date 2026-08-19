@@ -264,7 +264,17 @@ export function ChatComposer({
       setTheme,
       clearComposer,
     }),
-    [settings, setSetting, setCommandOpen, model, models, budget, theme, setTheme, clearComposer]
+    [
+      settings,
+      setSetting,
+      setCommandOpen,
+      model,
+      models,
+      budget,
+      theme,
+      setTheme,
+      clearComposer,
+    ]
   )
 
   const commandContextRef = React.useRef(commandContext)
@@ -303,28 +313,25 @@ export function ChatComposer({
     return 1
   }, [suggestionsResult])
 
-  const handleSelectCommand = React.useCallback(
-    (cmd: SlashCommandDef) => {
-      const ed = editorRef.current
-      if (!ed) return
+  const handleSelectCommand = React.useCallback((cmd: SlashCommandDef) => {
+    const ed = editorRef.current
+    if (!ed) return
 
-      if (cmd.kind === "action") {
-        runSlashCommand(`/${cmd.name}`, commandContextRef.current)
-        ed.commands.clearContent()
-        setIsEmpty(true)
-        setIsCommand(false)
-        setEditorText("")
-        setMenuDismissed(false)
-        return
-      }
+    if (cmd.kind === "action") {
+      runSlashCommand(`/${cmd.name}`, commandContextRef.current)
+      ed.commands.clearContent()
+      setIsEmpty(true)
+      setIsCommand(false)
+      setEditorText("")
+      setMenuDismissed(false)
+      return
+    }
 
-      ed.commands.setContent(`/${cmd.name} `)
-      ed.commands.focus("end")
-      setEditorText(`/${cmd.name} `)
-      setSelectedIndex(0)
-    },
-    []
-  )
+    ed.commands.setContent(`/${cmd.name} `)
+    ed.commands.focus("end")
+    setEditorText(`/${cmd.name} `)
+    setSelectedIndex(0)
+  }, [])
 
   const handleSelectOption = React.useCallback(
     (optionValue: string, executeImmediately = true) => {
@@ -701,7 +708,10 @@ export function ChatComposer({
           </div>
         )}
 
-        <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
+        <AttachmentStrip
+          attachments={attachments}
+          onRemove={removeAttachment}
+        />
 
         {/* A recognised command colours the line blue (primary),
             signalling it'll run as a command rather than be sent to the model. */}
@@ -751,4 +761,3 @@ export function ChatComposer({
     </div>
   )
 }
-

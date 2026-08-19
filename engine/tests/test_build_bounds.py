@@ -10,131 +10,64 @@ faults on a 12 GB machine.
 These are the assertions that keep those three bounded.
 """
 
-from pathlib import Path
-
 import numpy as np
-import pytest
 
-from llm.corpus import bpe, pack, sources, vocab
+from llm.corpus import bpe, pack, vocab
 from llm.train import diagnostics
-from tests.fixtures.tiny_env import TINY_DATASET
-
-
-class Source:
-    """The duck `plan_sample` types: a path and the dataset it came from."""
-
-    def __init__(self, path: Path, dataset: str):
-        self.path = path
-        self.dataset = dataset
-
-
-@pytest.fixture
-def spread(tmp_path) -> list[Source]:
-    """Three datasets of very different shapes, as the real input tree has:
-    a dominant sharded corpus, a mid-sized one, and one tiny folder."""
-    files = []
-    for name, shards, size in (("Big", 400, 40_000), ("Mid", 40, 20_000), ("Tiny", 2, 500)):
-        folder = tmp_path / name
-        folder.mkdir()
-        for i in range(shards):
-            path = folder / f"{i:04d}.txt"
-            # Distinct per shard, so a sample can be traced back to where it came
-            # from — which is the whole point of the stride.
-            path.write_text(f"shard {name} {i}\n" * (size // 16), encoding="utf-8")
-            files.append(Source(path, name))
-    return files
+from tests.fixtures.tiny_env import TINY_DATASET_ID
 
 
 # ── the tokenizer's sample ──────────────────────────────────────────────────
 
 
-def test_the_sample_is_bounded_by_the_budget_not_by_the_selection(spread):
+def test_every_selected_dataset_reaches_the_sample():
+    """Without a floor the dominant corpus takes nearly all of the budget, and
+    the merges are fitted to one distribution while the corpus has another. ADR
+    0004 measured an equal split giving FineWeb 27.9% of the sample while it was
+    98.4% of the tokens actually encoded."""
+    sizes = {"Big": 16_000_000, "Mid": 800_000, "Tiny": 1_000}
+
+    split = dict(bpe.shares(sizes, 1 << 20))
+
+    assert set(split) == set(sizes)
+    # Proportionality survives the floor: the dominant corpus still leads.
+    assert split["Big"] > split["Mid"] > split["Tiny"]
+    assert all(share > 0 for share in split.values())
+
+
+def test_the_sample_is_bounded_by_the_budget_not_by_the_selection():
     """The ceiling that was missing. The trainer holds a count per distinct
     pretoken, so its peak follows the variety of what it is shown — and it was
     shown everything selected."""
-    selected = sum(f.path.stat().st_size for f in spread)
+    sizes = {"Big": 16_000_000, "Mid": 800_000, "Tiny": 1_000}
     budget = 1 << 16
 
-    drawn = bpe.plan_sample(spread, budget)
+    split = dict(bpe.shares(sizes, budget))
 
-    assert selected > 4 * budget, "fixture too small to constrain anything"
-    assert sum(take for _, take in drawn) <= budget
-
-
-def test_every_selected_dataset_reaches_the_sample(spread):
-    """Without a floor the dominant corpus takes nearly all of it, and the merges
-    are fitted to one distribution while the corpus has another."""
-    drawn = bpe.plan_sample(spread, 1 << 18)
-
-    per = {}
-    for path, take in drawn:
-        per[path.parent.name] = per.get(path.parent.name, 0) + take
-
-    assert set(per) == {"Big", "Mid", "Tiny"}
-    # Proportionality survives the floor: the dominant corpus still leads.
-    assert per["Big"] > per["Mid"] > per["Tiny"]
+    assert sum(sizes.values()) > 4 * budget, "fixture too small to constrain anything"
+    assert sum(split.values()) <= budget
 
 
-def test_a_dataset_is_sampled_across_its_whole_range(spread):
-    """ADR 0004's guard, ported. A sharded corpus is ordered, so its first N
-    shards are one region of it and not a sample of it — the Rust engine read
-    FineWeb from 50 of its 5,498 shards for exactly this reason, and the
-    diagnostics histogram showed the same trap here: the first 200M tokens of the
-    packed corpus contain 16 of its true top 32 tokens."""
-    drawn = bpe.plan_sample(spread, 1 << 18)
+def test_a_dataset_smaller_than_its_share_hands_the_difference_back():
+    """Water-filling. Without it, selecting one 400 KB corpus alongside a large
+    one silently shrinks the whole sample by the difference."""
+    budget = 1 << 20
+    sizes = {"Big": 16_000_000, "Small": 4_000}
 
-    indices = sorted(int(path.stem) for path, _ in drawn if path.parent.name == "Big")
+    split = dict(bpe.shares(sizes, budget))
 
-    assert len(indices) > 1
-    # Every quarter of the dataset is represented — the property that fails when
-    # a sample is taken from the front, however much of it is taken.
-    for quarter in range(4):
-        lo, hi = quarter * 100, (quarter + 1) * 100
-        assert any(lo <= i < hi for i in indices), f"nothing drawn from shards {lo}-{hi}"
+    assert split["Small"] == 4_000
+    assert split["Big"] >= budget - 4_000 - 1
 
 
-def test_a_single_large_file_cannot_eat_its_dataset_s_share(tmp_path):
-    """`input/Books` holds a 28 MB file. Taken whole against a 2 MB share it
-    would be 14x the budget for that dataset and re-skew the composition the
-    shares exist to control."""
-    folder = tmp_path / "Books"
-    folder.mkdir()
-    big = folder / "one.txt"
-    big.write_text("a line of a book\n" * 60_000, encoding="utf-8")
-
-    drawn = bpe.plan_sample([Source(big, "Books")], 1 << 14)
-
-    assert sum(take for _, take in drawn) <= 1 << 14
-    assert big.stat().st_size > 4 * (1 << 14)
-
-
-def test_the_sample_is_the_same_one_every_time(spread):
-    """A vocabulary is reused across runs and a corpus is keyed on it. A sample
-    that drifted would re-learn the merges and re-pack the corpus."""
-    assert bpe.plan_sample(spread, 1 << 17) == bpe.plan_sample(spread, 1 << 17)
-
-
-def test_a_written_sample_is_cut_at_a_line_boundary(tmp_path):
-    """A byte-level BPE pretokenizer splits on whitespace, so a cut mid-word
-    invents a pretoken the text does not contain and spends merges on it."""
-    source = tmp_path / "src.txt"
-    source.write_text("alpha beta gamma\n" * 100, encoding="utf-8")
-
-    written = bpe.write_sample([(source, 100)], tmp_path / "out")
-    text = written[0].read_text(encoding="utf-8")
-
-    assert text.endswith("\n")
-    assert all(line == "alpha beta gamma" for line in text.splitlines())
-
-
-def test_a_build_records_what_its_merges_were_fitted_to(data_root):
+def test_a_build_records_what_its_merges_were_fitted_to(data_root, data_client):
     """"Which corpora" stopped answering "which text" the moment a budget
     existed, and a vocabulary that looks wrong is otherwise unanswerable after
     the fact."""
-    selection = [(TINY_DATASET, None)]
+    selection = vocab.resolve(data_client, [TINY_DATASET_ID])
     tokenizer_id = vocab.auto_id(selection, 512)
 
-    stats = vocab.build(tokenizer_id, selection, 512)
+    stats = vocab.build(data_client, tokenizer_id, selection, 512)
     recorded = vocab.info(tokenizer_id)
 
     assert stats.sampled_bytes > 0
@@ -144,12 +77,12 @@ def test_a_build_records_what_its_merges_were_fitted_to(data_root):
     assert list(storage_sample_files(tokenizer_id))
 
 
-def test_a_build_made_under_a_different_budget_is_not_reused(data_root):
+def test_a_build_made_under_a_different_budget_is_not_reused(data_root, data_client):
     """Raising the budget is a request for merges fitted to more text. Reusing
     the old ones would answer a question nobody asked."""
-    selection = [(TINY_DATASET, None)]
+    selection = vocab.resolve(data_client, [TINY_DATASET_ID])
     tokenizer_id = vocab.auto_id(selection, 512)
-    vocab.build(tokenizer_id, selection, 512)
+    vocab.build(data_client, tokenizer_id, selection, 512)
 
     assert vocab.matches(tokenizer_id, selection, 512)
     assert not vocab.matches(tokenizer_id, selection, 512, sample_bytes=1 << 10)
@@ -162,27 +95,6 @@ def storage_sample_files(tokenizer_id: str):
 
 
 # ── the packed corpus ───────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def packed(data_root):
-    """The fixture corpus, packed the way a run packs it."""
-    selection = [(TINY_DATASET, None)]
-    tokenizer_id = vocab.auto_id(selection, 512)
-    vocab.build(tokenizer_id, selection, 512)
-    tokenizer = vocab.load(tokenizer_id)
-    fingerprint = vocab.fingerprint(tokenizer_id)
-    key = pack.corpus_key(fingerprint, [(None, selection)])
-
-    stats = pack.pack(
-        sources.collect([TINY_DATASET]),
-        tokenizer,
-        key=key,
-        stages=[{"name": None, "epochs": 1, "datasets": [[TINY_DATASET, None]]}],
-        tokenizer_id=tokenizer_id,
-        fingerprint=fingerprint,
-    )
-    return key, stats
 
 
 def test_a_pack_records_the_histogram_it_already_had(packed):
@@ -259,7 +171,7 @@ def test_the_collector_is_not_built_until_something_diagnoses(data_root, monkeyp
     """It was constructed at the top of every run, including runs that never emit
     a frame — `bench.py` paid the full corpus scan on every timing it took."""
     from llm.config import TrainConfig
-    from llm.corpus.pack import DocSpan
+    from llm.corpus.spans import DocSpan
     from llm.model.transformer import Transformer
     from llm.train import loop
     from llm.train.plan import DataPlan

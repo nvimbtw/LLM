@@ -127,7 +127,8 @@ export function findPage(slug: string[]): DocPage | undefined {
  */
 export function navigation(): DocSection[] {
   const pages = allPages()
-  const at = (path: string) => pages.find((page) => page.slug.join("/") === path)
+  const at = (path: string) =>
+    pages.find((page) => page.slug.join("/") === path)
 
   // Files sitting directly in `docs/`, plus the external ones. Directory pages
   // land here too by path — they are listed as entries below instead.
@@ -137,7 +138,7 @@ export function navigation(): DocSection[] {
   })
 
   const directories = listDirectories(DOCS_ROOT).map((dir) =>
-    relative(DOCS_ROOT, dir),
+    relative(DOCS_ROOT, dir)
   )
 
   const entryForDirectory = (name: string): NavEntry | undefined => {
@@ -191,7 +192,7 @@ function navLabel(page: DocPage): string {
 function titleCase(name: string): string {
   return name.replace(
     /(^|-)([a-z])/g,
-    (_, separator, letter) => (separator ? " " : "") + letter.toUpperCase(),
+    (_, separator, letter) => (separator ? " " : "") + letter.toUpperCase()
   )
 }
 
@@ -211,7 +212,7 @@ export function read(page: DocPage): string {
   // A directory with no README: list what is in it rather than 404.
   const children = listMarkdown(page.file).map(toPage)
   const lines = children.map(
-    (child) => `- [${child.title}](${child.slug[child.slug.length - 1]}.md)`,
+    (child) => `- [${child.title}](${child.slug[child.slug.length - 1]}.md)`
   )
   return [
     `# ${page.title}`,
@@ -243,7 +244,7 @@ export function resolveLink(from: DocPage, href: string): string | null {
   throw new Error(
     `Dead link in ${relative(REPO_ROOT, from.file)}: "${href}" resolves to ` +
       `${relative(REPO_ROOT, target)}, which does not exist. Fix the link or ` +
-      `add the file — docs links are checked at build time.`,
+      `add the file — docs links are checked at build time.`
   )
 }
 

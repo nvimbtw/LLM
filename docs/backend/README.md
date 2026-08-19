@@ -25,14 +25,20 @@ backend/
 └── crates/
     ├── auth/          argon2 hashing, the token cipher, JWT issue/verify
     ├── db/            users and presets — sqlx + migrations/      → auth
-    ├── engine/        the engine subprocess, and the proxy to it  → auth
+    ├── service/       spawning a Python service, and the hops both ways → auth
+    ├── engine/        names the LLM engine: audience, port, DATA_DIR → service
+    ├── data-engine/   names the data engine                          → service
     ├── tools/         what a model can reach for, and the answer  → (nothing)
-    └── api/           routes + extractors + sockets        → engine, tools, db, auth
+    └── api/           routes + extractors + sockets   → service, engine, data-engine, tools, db, auth
 ```
 
 `tools` is a leaf like `auth`: it knows about the outside world and about the
 marker vocabulary, and nothing about this project's users, sessions or the engine
 process.
+
+`service` names no service. `engine` and `data-engine` are ~40 lines each — an
+audience, a set of defaults, and a `Proxy` newtype — and do **not** depend on
+each other: the two Python processes are siblings that never speak.
 
 The database holds three tables: `users`, `training_presets`, and sqlx's own
 migration ledger. Everything else moved to the engine.
@@ -67,15 +73,54 @@ The one thing this side decides is **who is asking**: `upstream::caller` turns
 the verified user token into the `act` claim of a short-lived service token, and
 the service scopes by that. A user token is never forwarded.
 
+## The hop that runs the other way
+
+`api/routes/internal.rs`, behind the `ServiceCaller` extractor, is the one place
+a **service** is the caller. The LLM engine reads documents there that the data
+engine owns — it cannot ask the data engine itself, because the two Python
+services never speak, and it cannot be handed them in advance, because a queued
+run needs them at a moment nothing on this side knows ahead of time.
+
+Three things make that safe to have, each enforced somewhere different:
+
+- **The audience claim, in the new direction.** An inbound token says
+  `aud: backend`, so a token this server minted *for* a service cannot be
+  replayed at it. `contracts/backend-token.json` is the shared vector — minted by
+  PyJWT, verified by `jsonwebtoken`, the only token in this project that Python
+  signs and Rust checks.
+- **The issuer list, named at the call site.** `InboundSecret::caller` takes the
+  issuers it will accept, and the extractor passes `engine::AUDIENCE` alone. The
+  data engine holds a valid secret and still cannot read through the backend,
+  because it has no business asking.
+- **`act` survives the hop.** The caller the engine names is re-minted into the
+  token going out to the data engine, so a run reads exactly the datasets the
+  person who queued it could have read. `crates/service` names no service, so
+  the crate that knows both is `api` and only `api`.
+
+The routes are reads only. A run consumes datasets; creating, cleaning and
+deleting them stay a person's, under `/data`.
+
+`BACKEND_SERVICE_SECRET` unset leaves `/internal` open and the server says so at
+startup — the same bargain each Python service strikes with its own secret unset,
+and the same trust boundary, since this server binds loopback only.
+
 ## Adding a service
 
-`Proxy` names no service. A second one is:
+`service` names no service, and `crates/data-engine` is the worked example. A
+third one is:
 
-1. a crate beside `engine/` owning its process and its `AUDIENCE`,
-2. a `Proxy` built with that audience in `main.rs`, registered as `app_data`,
+1. a crate beside `engine/` and `data-engine/` naming its `AUDIENCE`, its
+   `Defaults` (env prefix, directory, port), and a `Proxy` newtype,
+2. a `Supervisor::start` and a `Proxy` in `main.rs`, registered as `app_data`,
 3. route files above it, mounted in `routes/mod.rs`.
 
-Nothing in `api` or `auth` changes.
+Nothing in `service`, `api` or `auth` changes.
+
+**The newtype is not ceremony.** Actix keys `app_data` by type, so two bare
+`service::Proxy` values silently overwrite each other and every route reaches
+whichever was registered last — a failure that compiles and passes most tests.
+`crates/api/tests/two_services.rs` is what notices. See
+[`../decisions/a-crate-per-service.md`](../decisions/a-crate-per-service.md).
 
 ## Tool calls
 
@@ -195,9 +240,10 @@ with its size in tokens.
 
 ## The Python engine
 
-`crates/engine` is the only crate that knows the engine is a subprocess: it
-spawns it as a child of the Actix server, health-checks it before the server
-reports ready, restarts it if it dies, and kills it on shutdown.
+`crates/service` is the only crate that knows a service is a subprocess: it
+spawns one as a child of the Actix server, health-checks it before the server
+reports ready, restarts it if it dies, and kills it on shutdown. Both Python
+services are started this way.
 
 Configured by environment, because these are properties of the machine:
 
@@ -210,6 +256,31 @@ Configured by environment, because these are properties of the machine:
 | `ENGINE_AUTOSTART` | `true` | Off = "an engine is already running, do not spawn" |
 | `ENGINE_STARTUP_TIMEOUT_SECS` | `60` | Importing torch is slow on a cold cache |
 | `ENGINE_SERVICE_SECRET` | unset | Shared with the engine; unset leaves both open |
+
+The data engine takes the same set under `DATA_ENGINE_*`, read by the same
+`service::Config::from_env`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATA_ENGINE_DIR` | `../data-engine` | |
+| `DATA_ENGINE_PYTHON` | `$DATA_ENGINE_DIR/.venv/bin/python` | |
+| `DATA_ENGINE_HOST` | `127.0.0.1` | |
+| `DATA_ENGINE_PORT` | `8002` | 8001 is the LLM engine's |
+| `DATA_ENGINE_AUTOSTART` | `true` | |
+| `DATA_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | |
+| `DATA_ENGINE_SERVICE_SECRET` | unset | |
+
+One variable belongs to neither service, because it guards the direction that
+runs toward this server:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BACKEND_SERVICE_SECRET` | unset | Shared with the engine, which signs `aud: backend` tokens with it. Unset leaves `/internal` open |
+
+It has no `DATA_DIR`: its datasets are rows in `slate_data`, not a tree. That
+variable is the engine's and is injected by `crates/engine` alone — and it now
+points at artifacts only, since the text a run trains on comes back the other
+way through `/internal`.
 
 Two things that are load-bearing and non-obvious:
 

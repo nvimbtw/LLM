@@ -3,7 +3,12 @@
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
-import { parseMessage, textContent, type MElement, type MNode } from "@/lib/message-parser"
+import {
+  parseMessage,
+  textContent,
+  type MElement,
+  type MNode,
+} from "@/lib/message-parser"
 
 /**
  * One tool call inside a `Trace`: what was asked, and what came back.
@@ -34,7 +39,13 @@ export interface TraceStepProps {
  */
 const TOOL_VERBS: Record<string, string> = { "web-search": "Searched" }
 
-export function TraceStep({ tool, argument, body, running, className }: TraceStepProps) {
+export function TraceStep({
+  tool,
+  argument,
+  body,
+  running,
+  className,
+}: TraceStepProps) {
   const { items, failed } = React.useMemo(() => resultsOf(body), [body])
   const [open, setOpen] = React.useState(false)
 

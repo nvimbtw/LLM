@@ -12,8 +12,10 @@ backend/crates/llm/src/training/shaders/*.a
 # Python bytecode caches
 __pycache__/
 
-# The engine's virtualenv — 5 GB of wheels, rebuilt from requirements.
+# The virtualenvs — the engine's is 5 GB of wheels; both rebuild from
+# requirements.txt.
 engine/.venv/
+data-engine/.venv/
 
 # The engine owns the corpora, models and datasets. They arrive via the fetch
 # scripts and are regenerated, not versioned. This also covers what a fetch

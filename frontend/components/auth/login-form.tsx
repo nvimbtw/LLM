@@ -61,11 +61,7 @@ export function LoginForm() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-        {error && (
-          <FormError>
-            {error}
-          </FormError>
-        )}
+        {error && <FormError>{error}</FormError>}
         <Button type="submit" disabled={isSubmitting} className="h-10">
           {isSubmitting ? "Logging in…" : "Log in"}
         </Button>
