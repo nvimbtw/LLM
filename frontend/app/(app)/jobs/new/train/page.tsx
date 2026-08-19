@@ -7,18 +7,14 @@ import { PageShell } from "@/components/ui/page-shell"
 
 export default function NewTrainJobPage() {
   return (
-    <PageShell width="reading">
+    <PageShell width="board">
       <PageHeader
         back={{ href: "/admin", label: "Admin" }}
         title="Train a model"
         description={
           <>
             <p>
-              Pretrain from scratch or fine-tune an existing model. The run is
-              queued — it starts when the GPU is free, and you can close the
-              tab.
-            </p>
-            <p>
+              Pretrain from scratch, or fine-tune a model you already have.
               Self-training and preference tuning are not here: they are stages
               a{" "}
               <Link href="/cycles" className="underline underline-offset-4">

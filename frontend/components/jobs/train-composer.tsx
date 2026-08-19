@@ -9,7 +9,7 @@ import {
   toFollowUps,
   type Step,
 } from "@/components/jobs/follow-ups"
-import { ParamsRail } from "@/components/training/params-rail"
+import { TrainBoard } from "@/components/training/train-board"
 import { toast } from "@/components/ui/toast"
 import { DEFAULT_CONFIG, useTrainingComposer } from "@/hooks/use-training"
 import { getJob, trainConfig } from "@/lib/jobs"
@@ -70,10 +70,10 @@ export function TrainComposer() {
     start(config, toFollowUps(steps))
   }
 
-  // Client-side validation stays inside the rail, next to the field it is about.
-  // A rejection from the server is an outcome and arrives as a toast.
+  // Client-side validation stays inside the board, next to the field it is
+  // about. A rejection from the server is an outcome and arrives as a toast.
   return (
-    <ParamsRail
+    <TrainBoard
       cfg={cfg}
       onChange={setCfg}
       disabled={isSubmitting}

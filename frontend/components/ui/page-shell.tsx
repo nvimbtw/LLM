@@ -7,13 +7,18 @@ import { cn } from "@/lib/utils"
  * narrow column with two deserts beside it on a wide monitor — the emptiness was
  * the aspect ratio, not the minimalism.
  *
- * - `reading` is for prose and forms. A composer's fields do not get better at
- *   1600px; a line of body copy gets worse. Chat, auth and every `/jobs/new/*`
- *   form live here.
+ * - `reading` is for prose and short forms. A line of body copy gets worse at
+ *   1600px, and so does a form of four fields. Chat, auth and the benchmark
+ *   composer live here.
  * - `board` is for anything data-bearing — the queue, cycles, benchmark, models,
  *   the corpus. These want columns, and columns are the editorial idiom the app
  *   was only ever using one of. Capped rather than edge-to-edge so a 4K monitor
  *   does not stretch a table into a horizon.
+ *
+ *   The training composer is here too, which looks like an exception and is not:
+ *   a form of four fields is prose, and a form of fifteen across four groups is
+ *   a board with a summary beside it. The width is what lets the summary sit
+ *   next to the decisions instead of a screen below them.
  */
 export type PageWidth = "reading" | "board"
 

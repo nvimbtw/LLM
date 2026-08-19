@@ -150,7 +150,7 @@ the Base UI primitive underneath, both learned the hard way:
   the list it opens reads `Layer 0`.
 - An option meaning "nothing chosen" needs a sentinel value of its own; the
   empty string is how a Select says *no selection*. Map it back at the edge
-  (see `LEARN_WITH_RUN` in `components/training/params-rail.tsx`).
+  (see `LEARN_WITH_RUN` in `components/training/run-config.ts`).
 
 ### Hooks
 
@@ -338,6 +338,22 @@ been built — a vocabulary is picked far more often than it is built.
 - **The board lives at `/admin`**, as the hero of the panel — `JobsView` is
   mounted there, and `/jobs` is a redirect kept only so bookmarked URLs work.
   `/jobs/{id}` and `/jobs/new/*` are unchanged.
+
+#### Composing a training run
+
+The same fields are rendered two ways, and neither may drift from the other:
+
+- `components/training/train-board.tsx` at `/jobs/new/train` — the decisions in
+  panels down the left, and a **build sheet** beside them stating what the run
+  *is* rather than what was typed. That sheet is the spec-sheet idiom
+  `/models/[id]` uses for a model that exists, on purpose: composing a run and
+  reading a model back are one object at two moments.
+- `components/training/params-rail.tsx` inside a follow-up step, where the same
+  fields have a rail's width and no submit of their own.
+
+Both take their field list, their derived figures and their validation from
+`components/training/run-config.ts`, which holds no JSX. A rule about what a
+run may be belongs there, never in a layout.
 - **The board polls.** It moves when a run is queued, starts or ends — rare
   enough that a 3s refetch of `GET /runs` says the same thing a nudge would,
   without a second live connection to keep alive across sleeps and restarts.
