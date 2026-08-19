@@ -127,3 +127,38 @@ async def test_the_latest_comparable_score_matches_on_suite_and_version(client, 
     assert (v1.json()["score"], v2.json()["score"]) == (10.0, 20.0)
 
     assert (await client.get(f"/models/{recorded}/benchmarks/markup")).status_code == 404
+
+
+async def test_a_fine_tune_reports_the_window_of_the_base_it_started_from(client, recorded):
+    """A fine-tune does not choose a context window — it inherits the one its
+    base's positions already encode, and nothing writes that onto its own row.
+    Without this the chat UI has no window to measure a conversation against
+    and simply hides the meter when you pick such a model."""
+    with store.session() as db:
+        tuned = q.upsert_model(
+            db,
+            model_id=uuid.uuid4(),
+            name="tuned",
+            family="sft",
+            parameters={"config": {"base_model": str(recorded)}},
+        ).id
+
+    listed = {m["name"]: m for m in (await client.get("/models")).json()["models"]}
+    assert listed["tuned"]["context"] == listed["rowed"]["context"] == 256
+
+
+async def test_a_fine_tune_of_itself_does_not_resolve_forever(client):
+    """A config that names its own model as the base is nonsense, but it is
+    reachable nonsense — the chain has to terminate rather than recurse."""
+    model_id = uuid.uuid4()
+    with store.session() as db:
+        q.upsert_model(
+            db,
+            model_id=model_id,
+            name="ouroboros",
+            family="sft",
+            parameters={"config": {"base_model": str(model_id)}},
+        )
+
+    listed = {m["name"]: m for m in (await client.get("/models")).json()["models"]}
+    assert listed["ouroboros"]["context"] is None

@@ -24,6 +24,7 @@ import { useSettings } from "@/components/settings/settings-provider"
 import { useModels } from "@/hooks/use-models"
 import { ModelSelector } from "./model-selector"
 import { BudgetSelector, type ThinkBudget } from "./budget-selector"
+import { useComposerChoice } from "./composer-choice-provider"
 import { SlashCommandMenu } from "./slash-command-menu"
 import { AttachMenu } from "./attach-menu"
 import { AttachmentStrip, type PendingAttachment } from "./attachment-strip"
@@ -163,12 +164,12 @@ export function ChatComposer({
   onRenameTitle?: (title: string) => void
   contextTokensUsed?: number
 }) {
-  const [model, setModel] = React.useState("")
-  // Per-message, and deliberately not a stored setting: how hard you want the
-  // model to think is a property of the question you are about to ask, not a
-  // preference. It does persist for the life of the composer, so a run of
-  // similar questions is not a run of re-picking.
-  const [budget, setBudget] = React.useState<ThinkBudget>("auto")
+  // Both live above the router (see composer-choice-provider.tsx) rather than
+  // here: sending the first message replaces the new-chat composer with the
+  // thread's own, and a choice held in this component's state would be reset by
+  // that swap — you would pick a model, send, and land in the conversation on
+  // whichever model happens to be first in the list.
+  const { model, setModel, budget, setBudget } = useComposerChoice()
   const [isEmpty, setIsEmpty] = React.useState(true)
   const [isCommand, setIsCommand] = React.useState(false)
   const [editorText, setEditorText] = React.useState("")
@@ -269,8 +270,10 @@ export function ChatComposer({
       setSetting,
       setCommandOpen,
       model,
+      setModel,
       models,
       budget,
+      setBudget,
       theme,
       setTheme,
       clearComposer,

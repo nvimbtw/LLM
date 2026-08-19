@@ -33,8 +33,8 @@ def list_models(include_private: bool = True):
     directories = {d.name: d for d in _weight_dirs()}
     with store.session() as db:
         rows = {m.id: m for m in q.list_models(db, include_private=include_private)}
-        listed = [_model(_row_for(rows, name), d) for name, d in directories.items()]
-        listed += [_model(m, None) for m in rows.values() if str(m.id) not in directories]
+        listed = [_model(db, _row_for(rows, name), d) for name, d in directories.items()]
+        listed += [_model(db, m, None) for m in rows.values() if str(m.id) not in directories]
     return {"models": listed}
 
 
@@ -45,7 +45,7 @@ def get_model(model_id: uuid.UUID):
         if model is None:
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
         return {
-            **_model(model, storage.model_dir(str(model_id))),
+            **_model(db, model, storage.model_dir(str(model_id))),
             "benchmarks": [benchmark_row(b) for b in q.benchmarks_of(db, model_id)],
         }
 
@@ -61,7 +61,7 @@ def edit_model(model_id: uuid.UUID, body: ModelEdit):
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
         for key, value in fields.items():
             setattr(model, key, value)
-        return _model(model, storage.model_dir(str(model_id)))
+        return _model(db, model, storage.model_dir(str(model_id)))
 
 
 @router.delete("/models/{model_id}", status_code=200)
@@ -104,23 +104,65 @@ def _row_for(rows: dict[uuid.UUID, Model], directory_name: str) -> Model | None:
         return None
 
 
-def _model(model: Model | None, directory) -> dict:
+def _model(db, model: Model | None, directory) -> dict:
     """A model as the API reports it — whichever half of it exists."""
+    meta = _meta(directory)
     entry = {
         "model_id": str(model.id) if model else None,
         "name": model.name if model else (directory.name if directory else None),
         "description": model.description if model else None,
         "family": model.family if model else None,
-        "context": model.context if model else None,
+        "context": _context(db, model, meta),
         "published": model.published if model else False,
         "parameters": model.parameters if model else None,
         "created_at": model.created_at.isoformat() if model and model.created_at else None,
         "has_weights": bool(directory and (directory / "model.pt").is_file()),
-        "config": _meta(directory),
+        "config": meta,
     }
     if directory is not None and model is None:
         entry["model_id"] = directory.name
     return entry
+
+
+def _context(db, model: Model | None, meta: dict, seen: set | None = None) -> int | None:
+    """The window this model can actually be prompted with.
+
+    Three places hold it, and only the first is guaranteed to. The row is
+    written at registration, so anything trained since is answered there. A
+    model from before that column existed still has its `ctx_window` in the
+    meta.json beside its weights. A fine-tune has neither — it does not choose
+    a window, it inherits the one whose positions its weights already encode,
+    so the answer is its base's, resolved the same way.
+
+    Callers are entitled to a number: without one the chat UI cannot say how
+    much of the window a conversation has spent, and hides the meter entirely —
+    which reads as the meter breaking when you switch to a fine-tune.
+    """
+    if model is None:
+        return meta.get("ctx_window")
+    if model.context:
+        return model.context
+    if meta.get("ctx_window"):
+        return meta["ctx_window"]
+
+    config = (model.parameters or {}).get("config") or {}
+    base = config.get("base_model")
+    if not base:
+        return None
+    # A chain of fine-tunes resolves through as many hops as it has; a config
+    # that names itself (or a cycle between two) would otherwise not terminate.
+    seen = seen or set()
+    if base in seen:
+        return None
+    seen.add(base)
+    try:
+        base_id = uuid.UUID(str(base))
+    except ValueError:
+        return None
+    base_model = q.get_model(db, base_id)
+    if base_model is None:
+        return None
+    return _context(db, base_model, _meta(storage.model_dir(str(base_id))), seen)
 
 
 def _meta(directory) -> dict:

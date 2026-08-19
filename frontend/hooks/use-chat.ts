@@ -239,27 +239,37 @@ export function useChat(chatId: string) {
       // visible answer yet" — the model can think after it starts answering,
       // and can open several thinking blocks per reply, so the position of the
       // first visible word tells us nothing reliable about thinking length.
+      //
+      // The tally is advanced in `onToken` below and the running totals are
+      // passed *into* these updaters. It used to be kept inside them, which
+      // made the count wrong by a whole factor: a `setState` updater is not
+      // allowed to have effects, because React runs it as many times as it
+      // likes — twice under StrictMode, again on any render it replays — and
+      // each extra run charged the same token to the counter again. Appending
+      // the text is safe there (it derives from `prev`, so re-running is
+      // idempotent) which is why the reply read correctly while its byline
+      // claimed exactly twice the tokens the server had generated.
       let totalTokens = 0
       let thinkingTokens = 0
       let insideThinking = false
 
-      const appendToAssistant = (value: string) =>
+      const appendToAssistant = (
+        value: string,
+        tokenCount: number,
+        thinkingTokenCount: number
+      ) =>
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === "assistant") {
-            totalTokens += 1
-            if (value.includes("<|thinking|>")) insideThinking = true
-            if (insideThinking) thinkingTokens += 1
-            if (value.includes("<|/thinking|>")) insideThinking = false
             // Tokens are whitespace-split words; rejoin with spaces to
             // approximate the structured markup while it streams.
             const sep = last.content ? " " : ""
             next[next.length - 1] = {
               ...last,
               content: last.content + sep + value,
-              tokenCount: totalTokens,
-              thinkingTokenCount: thinkingTokens,
+              tokenCount,
+              thinkingTokenCount,
             }
           }
           return next
@@ -305,17 +315,16 @@ export function useChat(chatId: string) {
        * before it have already been moved into `working`, and the markup of the
        * call itself has to keep landing there so the trace can see it.
        */
-      const appendToWorking = (value: string) =>
+      const appendToWorking = (value: string, tokenCount: number) =>
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === "assistant" && last.working !== undefined) {
-            totalTokens += 1
             const sep = last.working ? " " : ""
             next[next.length - 1] = {
               ...last,
               working: last.working + sep + value,
-              tokenCount: totalTokens,
+              tokenCount,
             }
           }
           return next
@@ -339,8 +348,17 @@ export function useChat(chatId: string) {
           {
             onToken: (value: string) => {
               setQueuedAhead(0)
-              if (working && !answering) appendToWorking(value)
-              else appendToAssistant(value)
+              // One frame, one token — counted once, here, where the arrival of
+              // the frame is the event. See the note on the appenders above.
+              totalTokens += 1
+              if (working && !answering) {
+                appendToWorking(value, totalTokens)
+                return
+              }
+              if (value.includes("<|thinking|>")) insideThinking = true
+              if (insideThinking) thinkingTokens += 1
+              if (value.includes("<|/thinking|>")) insideThinking = false
+              appendToAssistant(value, totalTokens, thinkingTokens)
             },
             onToolCall: () => {
               // The markup spelling the call has already streamed into the
