@@ -7,6 +7,7 @@ import { FigureHorizon } from "@/components/ui/figure-horizon"
 import { useChats } from "./chats-provider"
 import { ChatComposer } from "./chat-composer"
 import type { ThinkBudget } from "./budget-selector"
+import type { Attachment } from "@/lib/attachments"
 
 export function NewChat() {
   const router = useRouter()
@@ -17,12 +18,13 @@ export function NewChat() {
   async function handleSend(
     content: string,
     modelId: string,
-    budget: ThinkBudget
+    budget: ThinkBudget,
+    attachments: Attachment[]
   ) {
     setIsSending(true)
     setError(null)
     try {
-      const chatId = await createChat(content, modelId, budget)
+      const chatId = await createChat(content, modelId, budget, attachments)
       router.push(`/chat/${chatId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start a chat.")

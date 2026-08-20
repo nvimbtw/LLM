@@ -1,6 +1,7 @@
 """One router per resource. `main` includes them and adds nothing of its own."""
 
 from api.routes import (
+    attachments,
     benchmarks,
     chats,
     inference,
@@ -12,6 +13,7 @@ from api.routes import (
 
 ROUTERS = [
     runs.router,
+    attachments.router,
     chats.router,
     models.router,
     tokenizers.router,

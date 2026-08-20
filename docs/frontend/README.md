@@ -347,7 +347,7 @@ One socket per chat, opened at `/ws/chats/{id}`:
 ```
 client → { token }                            (auth frame)
 server → { type: "ready" }
-client → { model_name, text, system?, budget?,
+client → { model_name, text, attachment_ids?, system?, budget?,
            temperature?, top_k?, top_p? }
 server → { type: "token", token }             (repeated)
 server → { type: "tool_call", tool, argument } (the reply asked for something)
@@ -371,6 +371,80 @@ The two tool frames bracket the wait: `tool_call` the moment the marker closes
 (so a search can be shown as started while the rest of the reply is still
 streaming), `tool_result` once the backend has run it. `body` is in the marker
 vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
+
+### Attachments
+
+A file is uploaded **when it is picked**, not when the turn is sent
+(`lib/attachments.ts`). That is the whole design decision on this side, and it
+buys one thing: the composer on the home screen has no conversation to attach
+to, so any scheme that holds files until send makes the first message of a new
+chat a different code path from every other one. An upload belongs to its owner
+until a turn claims it, and `attachment_ids` on the socket's opening frame is
+what claims it.
+
+The consequences are all in `chat-composer.tsx`:
+
+- **Emptying the strip comes in two kinds.** After a send the rows belong to the
+  turn, so only the local object URLs are released. Abandoning a draft
+  (`/clear`) has to delete the rows too, or every discarded draft leaves stored
+  files nothing will ever claim.
+- **Nothing sends while an upload is in flight.** A turn stored without the file
+  the person is watching arrive cannot be given one afterwards — there is no
+  route that edits a stored message.
+- **A failed upload stays visible** rather than being dropped from the strip, and
+  is not sent. A file past the per-turn cap becomes one of these without being
+  uploaded at all, so a drop of twelve says which two are not going.
+
+Rendering one costs a fetch: the bytes are behind the same bearer token
+everything else carries and an `<img src>` cannot send a header, so
+`useAttachmentUrl` fetches the blob and hands back an object URL it revokes on
+unmount. Thumbnails sit in a fixed box, so a thread of mixed aspect ratios does
+not reflow as each one lands.
+
+**The strip has one height, not one shape.** A picture and a document are
+different objects and get different tiles, but both are `h-28`, because a mixed
+row whose tops do not line up reads as two things that happen to be adjacent.
+The file tile lifts the extension out of the name and into the meta line
+(`TXT · 5.0 MB`): a card that wide truncates the end of a long filename, and the
+end is exactly the part that says what the file is.
+
+### Opening one
+
+`AttachmentViewer` is a panel beside the thread, not a dialog over it — the
+point of opening a file mid-conversation is to read it *against* what was said
+about it, and a modal would take the conversation away to show its attachment.
+`ChatThread` is a flex row: the chat column is centred in whatever width is
+left, so it drifts left as the panel arrives and back when it closes, with no
+second layout to maintain. Below `lg` there is no room for both and the panel
+takes the width; a half-conversation beside a half-document is neither.
+
+Which state lives where matters: the open file is `ChatThread`'s, not a
+message's, because opening a second one has to *replace* the first — a turn that
+owned its own viewer could not do that.
+
+Four previews, and each is its own component because each needs a different
+fetch and a hook cannot be called conditionally:
+
+| Kind | What it is | Shown as |
+| --- | --- | --- |
+| `image` | `image/*` | The picture, contained |
+| `text` | `text/*`, JSON/XML/YAML, or a known extension | The decoded contents |
+| `embed` | `application/pdf` | An `<iframe>` — the browser's own viewer |
+| `none` | anything else | A note, and the download in the header |
+
+Extensions are trusted over the media type for the text case, because the
+browser guesses the type from the extension anyway and guesses badly: a `.bak`
+arrives as `application/x-trash`, which is a verdict rather than a type.
+
+**A text preview is capped** at `PREVIEW_CHARS` (200k). People attach novels —
+one of the files this was built against is a five-megabyte `.txt` — and laying
+that out as one text node stalls the tab. The rest is stored and downloadable,
+and the panel says so rather than letting the reader discover the file stops
+mid-sentence.
+
+Nothing here is sent to the model, and nothing is counted against the context
+window — see
+[`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
 
 ### Acting on a message you sent
 

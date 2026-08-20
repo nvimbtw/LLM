@@ -10,9 +10,10 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import case, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from store.schema import (
+    Attachment,
     Benchmark,
     Chat,
     Message,
@@ -239,11 +240,16 @@ def add_message(
 
 
 def messages_of(db: Session, chat_id: uuid.UUID) -> list[Message]:
-    return list(
-        db.scalars(
-            select(Message).where(Message.chat_id == chat_id).order_by(Message.created_at)
-        )
+    # Attachments eagerly, in one further statement: every caller renders them,
+    # and lazily is one query per message in a conversation of any length. The
+    # bytes do not come with them — `Attachment.content` is deferred.
+    stmt = (
+        select(Message)
+        .where(Message.chat_id == chat_id)
+        .order_by(Message.created_at)
+        .options(selectinload(Message.attachments))
     )
+    return list(db.scalars(stmt))
 
 
 def set_feedback(db: Session, message_id: uuid.UUID, owner_id: uuid.UUID, feedback) -> bool:
@@ -258,6 +264,87 @@ def set_feedback(db: Session, message_id: uuid.UUID, owner_id: uuid.UUID, feedba
     if message is None:
         return False
     message.feedback = feedback
+    return True
+
+
+# ── attachments ─────────────────────────────────────────────────────────────
+#
+# Scoped by owner rather than through a chat, because an attachment exists
+# before the message it belongs to does — and on a new conversation, before the
+# chat does. Binding is what later ties it to a turn.
+
+
+def create_attachment(
+    db: Session,
+    *,
+    owner_id: uuid.UUID,
+    filename: str,
+    media_type: str,
+    content: bytes,
+) -> Attachment:
+    attachment = Attachment(
+        owner_id=owner_id,
+        filename=filename,
+        media_type=media_type,
+        size=len(content),
+        content=content,
+    )
+    db.add(attachment)
+    db.flush()
+    return attachment
+
+
+def owned_attachment(
+    db: Session, attachment_id: uuid.UUID, owner_id: uuid.UUID
+) -> Attachment | None:
+    stmt = select(Attachment).where(
+        Attachment.id == attachment_id, Attachment.owner_id == owner_id
+    )
+    return db.scalar(stmt)
+
+
+def bind_attachments(
+    db: Session,
+    *,
+    message_id: uuid.UUID,
+    owner_id: uuid.UUID,
+    attachment_ids: list[uuid.UUID],
+) -> list[Attachment] | None:
+    """Tie staged uploads to the turn they were sent with.
+
+    None when any id is not this owner's or is already bound — all or nothing,
+    because a turn that silently carried three of the four files a person
+    attached is worse than one that refused. Rebinding is refused rather than
+    moved: a sent turn is history, and a file cannot leave one message for
+    another.
+    """
+    if not attachment_ids:
+        return []
+
+    stmt = select(Attachment).where(
+        Attachment.id.in_(attachment_ids),
+        Attachment.owner_id == owner_id,
+        Attachment.message_id.is_(None),
+    )
+    found = {a.id: a for a in db.scalars(stmt)}
+    if len(found) != len(set(attachment_ids)):
+        return None
+
+    ordered = [found[a] for a in dict.fromkeys(attachment_ids)]
+    for attachment in ordered:
+        attachment.message_id = message_id
+    db.flush()
+    return ordered
+
+
+def delete_attachment(db: Session, attachment_id: uuid.UUID, owner_id: uuid.UUID) -> bool:
+    """Discard a staged upload. Only an unbound one: removing a file from a turn
+    that has already been sent would edit history nobody asked to edit."""
+    attachment = owned_attachment(db, attachment_id, owner_id)
+    if attachment is None or attachment.message_id is not None:
+        return False
+    db.delete(attachment)
+    db.flush()
     return True
 
 

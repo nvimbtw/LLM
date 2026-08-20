@@ -18,6 +18,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     Uuid,
@@ -191,6 +192,56 @@ class Message(Base):
     #: Read-only: what a reply is labelled with. Deleting a model nulls the FK,
     #: and the turn keeps its role.
     model: Mapped["Model | None"] = relationship(lazy="joined")
+    attachments: Mapped[list["Attachment"]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="Attachment.created_at",
+    )
+
+
+class Attachment(Base):
+    """A file a person put in the composer.
+
+    Stored and shown back in the history, and read by nothing: the models served
+    here take text and only text, so an attachment is content the *conversation*
+    carries rather than content the *model* is given. Nothing under `llm/` may
+    touch this table — see
+    `docs/decisions/attachments-are-stored-not-read.md`.
+
+    The bytes are a column rather than a file under `data/`, which is derived
+    artifacts and nothing else; an upload is derived from nothing. It also makes
+    forgetting one a cascade rather than a directory walk that has to not go
+    wrong.
+
+    `message_id` is null between the upload and the turn it is sent with — a
+    file is picked before there is a message to hang it on, and on a new chat
+    before there is even a chat. So `owner_id` is what scopes a row in both
+    states, and it is the column that answers "may this caller see this file".
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
+    #: A `users.id` in the backend's database, carried for the same reason
+    #: `Chat.owner_id` is, and never resolved here.
+    owner_id: Mapped[uuid.UUID] = mapped_column(Key, index=True)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Key, ForeignKey("messages.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String(255))
+    #: What the browser said it was. Believed for display and never for parsing,
+    #: because nothing here parses it.
+    media_type: Mapped[str] = mapped_column(String(160))
+    #: Denormalised from `content` so a listing can report a size without
+    #: loading the bytes to measure them.
+    size: Mapped[int] = mapped_column(Integer)
+    #: Deferred: every history read walks these rows for their metadata and
+    #: exactly one route ever wants the bytes. Without it, opening a chat with
+    #: ten images in it loads ten images to render ten filenames.
+    content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    message: Mapped["Message | None"] = relationship(back_populates="attachments")
 
 
 class Benchmark(Base):

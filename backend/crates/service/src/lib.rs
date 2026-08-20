@@ -23,5 +23,5 @@ pub mod supervisor;
 pub use config::{Config, Defaults};
 pub use error::{Error, Result};
 pub use inbound::{InboundSecret, Refused};
-pub use proxy::{Frame, Method, Proxy};
+pub use proxy::{Blob, FilePart, Frame, Method, Proxy};
 pub use supervisor::Supervisor;

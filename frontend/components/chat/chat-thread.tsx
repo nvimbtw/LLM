@@ -2,7 +2,9 @@
 
 import * as React from "react"
 
+import { cn } from "@/lib/utils"
 import { hasVisibleContent, isInThinkingBlock } from "@/lib/message-parser"
+import type { Attachment } from "@/lib/attachments"
 import { useChat } from "@/hooks/use-chat"
 import { ChatComposer } from "./chat-composer"
 import { useChats } from "./chats-provider"
@@ -10,6 +12,7 @@ import { useComposerChoice } from "./composer-choice-provider"
 
 /** How close (px) to the bottom the user must be for auto-scroll to engage. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 120
+import { AttachmentViewer } from "./attachment-viewer"
 import { ChatMessageBubble } from "./chat-message"
 import { Throbber } from "@/components/ui/throbber"
 import { LoadError } from "@/components/ui/error-state"
@@ -36,6 +39,11 @@ export function ChatThread({ chatId }: { chatId: string }) {
   // What "edit and ask again" has loaded into the composer. A fresh object each
   // time, so editing the same message twice loads it twice — see ChatComposer.
   const [draft, setDraft] = React.useState<{ text: string } | undefined>()
+  // The file open beside the thread, if any. Held here rather than in a message
+  // because the panel is a sibling of the whole conversation — and because
+  // opening a second file has to replace the first, which it cannot do if each
+  // turn owns its own.
+  const [viewing, setViewing] = React.useState<Attachment | null>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   // Whether to keep the thread pinned to the bottom. Driven by the user's own
   // wheel/touch gestures (see trackStickIntent) so our programmatic scrolls
@@ -105,6 +113,12 @@ export function ChatThread({ chatId }: { chatId: string }) {
     lastHeightRef.current = 0
   }, [chatId])
 
+  // A file belongs to the conversation it was sent in, so it closes with it.
+  React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setViewing(null)
+  }, [chatId])
+
   // Follow the bottom as content arrives — but only on genuine growth (a new
   // line, not an in-place token edit) and only while following. Streaming
   // glides smoothly; history loads and freshly-sent messages snap instantly.
@@ -121,20 +135,33 @@ export function ChatThread({ chatId }: { chatId: string }) {
   }, [messages, isSending])
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      {/* A flex column, so the thread below can be told to absorb whatever
+    // A row, so opening a file narrows the thread rather than covering it. The
+    // conversation column is centred in whatever width is left, which is what
+    // makes it drift left as the panel comes in — no second layout, and nothing
+    // to put back when it closes.
+    <div className="flex flex-1 overflow-hidden">
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 flex-col overflow-hidden",
+          // There is not room for both on a narrow screen, and half a
+          // conversation beside half a document is neither. The panel wins,
+          // because it is the thing just asked for.
+          viewing && "hidden lg:flex"
+        )}
+      >
+        {/* A flex column, so the thread below can be told to absorb whatever
           height the messages don't use. Without that, `sticky bottom-0` on the
           composer does nothing until the thread is long enough to scroll —
           sticky only pins an element that would otherwise leave the viewport —
           and a two-message conversation left the composer stranded halfway up
           the page with empty space under it. */}
-      <div
-        ref={scrollRef}
-        onWheel={trackStickIntent}
-        onTouchMove={trackStickIntent}
-        className="flex flex-1 flex-col overflow-y-auto"
-      >
-        {/* `flex-1` is the piece that puts the composer on the floor: short
+        <div
+          ref={scrollRef}
+          onWheel={trackStickIntent}
+          onTouchMove={trackStickIntent}
+          className="flex flex-1 flex-col overflow-y-auto"
+        >
+          {/* `flex-1` is the piece that puts the composer on the floor: short
             threads stretch this block to fill the column and push the composer
             down, long ones grow past it and scroll as before (a flex item's
             `min-height: auto` is what stops the `flex-basis: 0` from crushing
@@ -147,121 +174,134 @@ export function ChatThread({ chatId }: { chatId: string }) {
             continuous column of text instead of an exchange. The air is what
             separates who is speaking, since the assistant side has no bubble to
             do it. */}
-        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-7 px-4 py-8">
-          {isLoading ? (
-            <div className="flex justify-center px-1 py-8">
-              <Throbber mode="loading" />
-            </div>
-          ) : (
-            messages.map((message, i) => {
-              const id = message.id
-              return (
-                <ChatMessageBubble
-                  key={i}
-                  message={message}
-                  streaming={
-                    isSending &&
-                    i === messages.length - 1 &&
-                    message.role === "assistant"
-                  }
-                  // Only assistant replies that exist server-side are rateable —
-                  // there is nothing to attach a verdict to otherwise.
-                  onRate={
-                    id && message.role === "assistant"
-                      ? (feedback) => void rateMessage(id, feedback)
-                      : undefined
-                  }
-                  // Both re-ask rather than rewrite — see `UserActions`. Edit
-                  // routes through the composer so the question can be changed,
-                  // and so it is sent by the one path that owns sending.
-                  onEdit={(content) => setDraft({ text: content })}
-                  onResend={(content) =>
-                    void sendMessage(content, model, budget)
-                  }
-                  // No model chosen yet means the list is still loading, and a
-                  // send with an empty id would fail on the socket rather than
-                  // in the UI.
-                  busy={isSending || !model}
-                />
-              )
-            })
-          )}
+          <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-7 px-4 py-8">
+            {isLoading ? (
+              <div className="flex justify-center px-1 py-8">
+                <Throbber mode="loading" />
+              </div>
+            ) : (
+              messages.map((message, i) => {
+                const id = message.id
+                return (
+                  <ChatMessageBubble
+                    key={i}
+                    message={message}
+                    streaming={
+                      isSending &&
+                      i === messages.length - 1 &&
+                      message.role === "assistant"
+                    }
+                    // Only assistant replies that exist server-side are rateable —
+                    // there is nothing to attach a verdict to otherwise.
+                    onRate={
+                      id && message.role === "assistant"
+                        ? (feedback) => void rateMessage(id, feedback)
+                        : undefined
+                    }
+                    // Both re-ask rather than rewrite — see `UserActions`. Edit
+                    // routes through the composer so the question can be changed,
+                    // and so it is sent by the one path that owns sending.
+                    onEdit={(content) => setDraft({ text: content })}
+                    onResend={(content) =>
+                      void sendMessage(content, model, budget)
+                    }
+                    // No model chosen yet means the list is still loading, and a
+                    // send with an empty id would fail on the socket rather than
+                    // in the UI.
+                    busy={isSending || !model}
+                    onOpenAttachment={setViewing}
+                  />
+                )
+              })
+            )}
 
-          {/* One fixed-height slot for all throbber states, so the
+            {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}
-          {(showThinking ||
-            showGenerating ||
-            searching ||
-            showIdle ||
-            waiting) && (
-            // Mark, label, then the token count pushed to the right edge. One
-            // Throbber instance rather than one per state — that's what lets
-            // thinking → generating → idle morph instead of swapping, since the
-            // element is never unmounted.
-            //
-            // items-center, not items-baseline: the mark is a ball, so its
-            // optical centre is its middle rather than its bottom edge, and a
-            // baseline row would hang it below the line of the label.
-            <div className="flex items-center gap-3 px-1 text-sm">
-              <Throbber
-                mode={
-                  waiting
-                    ? "loading"
-                    : searching
-                      ? "tool"
-                      : showThinking
-                        ? "thinking"
-                        : showGenerating
-                          ? "generating"
-                          : "idle"
-                }
-              />
-              {/* A fixed word rather than the rotating ThinkingLabel: that one
+            {(showThinking ||
+              showGenerating ||
+              searching ||
+              showIdle ||
+              waiting) && (
+              // Mark, label, then the token count pushed to the right edge. One
+              // Throbber instance rather than one per state — that's what lets
+              // thinking → generating → idle morph instead of swapping, since the
+              // element is never unmounted.
+              //
+              // items-center, not items-baseline: the mark is a ball, so its
+              // optical centre is its middle rather than its bottom edge, and a
+              // baseline row would hang it below the line of the label.
+              <div className="flex items-center gap-3 px-1 text-sm">
+                <Throbber
+                  mode={
+                    waiting
+                      ? "loading"
+                      : searching
+                        ? "tool"
+                        : showThinking
+                          ? "thinking"
+                          : showGenerating
+                            ? "generating"
+                            : "idle"
+                  }
+                />
+                {/* A fixed word rather than the rotating ThinkingLabel: that one
                   guesses at what a model might be doing, and here we know. */}
-              {searching && (
-                <span className="text-shimmer font-medium">Searching…</span>
-              )}
-              {waiting && (
-                <span className="text-muted-foreground">
-                  Queued — {queuedAhead} {queuedAhead === 1 ? "job" : "jobs"}{" "}
-                  ahead on the GPU. You can close this tab; the reply will be
-                  here.
-                </span>
-              )}
-              {showThinking && <ThinkingLabel />}
-              {/* Pushes the token count to the far edge, which the throbber used to
+                {searching && (
+                  <span className="text-shimmer font-medium">Searching…</span>
+                )}
+                {waiting && (
+                  <span className="text-muted-foreground">
+                    Queued — {queuedAhead} {queuedAhead === 1 ? "job" : "jobs"}{" "}
+                    ahead on the GPU. You can close this tab; the reply will be
+                    here.
+                  </span>
+                )}
+                {showThinking && <ThinkingLabel />}
+                {/* Pushes the token count to the far edge, which the throbber used to
                   do by spanning the gap itself. */}
-              <span className="min-w-0 flex-1" />
-              {statusTokens !== null && (
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {statusTokens.toLocaleString("en-US")} tokens
-                </span>
-              )}
-            </div>
-          )}
+                <span className="min-w-0 flex-1" />
+                {statusTokens !== null && (
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                    {statusTokens.toLocaleString("en-US")} tokens
+                  </span>
+                )}
+              </div>
+            )}
 
-          {error && <LoadError title={error} />}
-        </div>
+            {error && <LoadError title={error} />}
+          </div>
 
-        {/* Sticky, and *inside* the scroller rather than a sibling below it, so
+          {/* Sticky, and *inside* the scroller rather than a sibling below it, so
             the thread passes behind the composer as you scroll back through it
             instead of being clipped at a hard edge. Sticky rather than absolute
             on purpose: the composer still takes real space at the end of the
             flow, so the last reply clears it at the bottom of the thread without
             anyone maintaining a padding constant against a box whose height
             changes with attachments and wrapped lines. */}
-        <div className="sticky bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pb-4">
-          <ChatComposer
-            onSend={sendMessage}
-            disabled={isSending}
-            onCancel={cancel}
-            title={chatSummary?.title ?? "New chat"}
-            onRenameTitle={(next) => void renameChat(chatId, next)}
-            contextTokensUsed={contextTokensUsed}
-            draft={draft}
-          />
+          <div className="sticky bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pb-4">
+            <ChatComposer
+              onSend={sendMessage}
+              disabled={isSending}
+              onCancel={cancel}
+              title={chatSummary?.title ?? "New chat"}
+              onRenameTitle={(next) => void renameChat(chatId, next)}
+              contextTokensUsed={contextTokensUsed}
+              draft={draft}
+            />
+          </div>
         </div>
       </div>
+
+      {viewing && (
+        <AttachmentViewer
+          // Keyed by the file, so opening a second one remounts rather than
+          // showing the first one's contents under the second one's name while
+          // the fetch is in flight.
+          key={viewing.id}
+          attachment={viewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   )
 }

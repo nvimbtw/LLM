@@ -812,6 +812,19 @@
   animation: word-fade-in 0.4s ease both;
 }
 
+/* An upload in flight, under its tile in the composer's attachment strip. A
+   sliver travelling the width rather than a filling bar: the browser reports no
+   progress for a request this small, and a bar that claims a fraction it does
+   not know is worse than one that only says "working". */
+@keyframes attachment-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 /* ---- The new-chat figure, idling -----------------------------------------
    `FigureHorizon` is a rule opened at the centre with four half-rings over the
    aperture. At rest it now breathes: a slow swell travels outward through the

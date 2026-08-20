@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use service::{Config, Defaults};
 
-pub use service::{Frame, Method, Result};
+pub use service::{Blob, FilePart, Frame, Method, Result};
 /// Kept under its old name: `api` matches on these variants in a dozen places
 /// and the type is genuinely shared with every other service.
 pub use service::Error as EngineError;

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 import store
 from api import auth, sse
+from api.routes.attachments import MAX_PER_MESSAGE, describe
 from llm.chat import tools
 from llm.config import ChatConfig, ChatTurn
 from llm.orchestrate import chat as chat_pipeline
@@ -62,6 +63,11 @@ class Ask(BaseModel):
     model_name: str
     text: str | None = None
     tool_result: ToolResult | None = None
+    #: Files already uploaded to `/attachments`, bound to the message this
+    #: request stores. They are not rendered, not counted and not prompted with
+    #: — the conversation carries them, the model never sees them. See
+    #: `../decisions/attachments-are-stored-not-read.md`.
+    attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_PER_MESSAGE)
     system: str | None = None
     #: "low" | "med" | "high". Absent is not a fourth value — it renders no
     #: marker, which is the prompt shape the model was trained under.
@@ -217,6 +223,14 @@ def _new_turn(body: Ask) -> tuple[Role, str]:
     if body.text is not None:
         return Role.user, body.text
 
+    # A tool answering a call is not something a person attached a file to. The
+    # backend's `carry_settings` already drops the field on a follow-up round;
+    # this is what makes that a contract rather than a coincidence.
+    if body.attachment_ids:
+        raise HTTPException(
+            status_code=400, detail="a tool result carries no attachments"
+        )
+
     result = body.tool_result
     tool = tools.by_name(result.tool)
     if tool is None:
@@ -245,7 +259,10 @@ def _prepare(
         history = [
             ChatTurn(role=m.role.value, text=m.content) for m in q.messages_of(db, chat_id)
         ]
-        q.add_message(db, chat_id=chat_id, role=role, content=content, tokens=asked)
+        asked_message = q.add_message(
+            db, chat_id=chat_id, role=role, content=content, tokens=asked
+        )
+        _bind(db, asked_message, owner, body.attachment_ids)
 
     return (
         ChatConfig(
@@ -261,6 +278,21 @@ def _prepare(
         ),
         model_id,
     )
+
+
+def _bind(db, message: Message, owner: uuid.UUID, attachment_ids: list[uuid.UUID]) -> None:
+    """Tie staged uploads to the turn being stored.
+
+    A 400 rather than a silent skip: an id that is not this owner's, or that was
+    already sent with another turn, means the client and this side disagree
+    about what the person just sent.
+    """
+    if q.bind_attachments(
+        db, message_id=message.id, owner_id=owner, attachment_ids=attachment_ids
+    ) is None:
+        raise HTTPException(
+            status_code=400, detail="an attachment is unknown or already sent"
+        )
 
 
 def _credit(db, model_name: str) -> uuid.UUID | None:
@@ -302,6 +334,7 @@ def _message(message: Message) -> dict:
         "model_id": str(message.model_id) if message.model_id else None,
         "model_name": message.model.name if message.model else None,
         "feedback": message.feedback.value if message.feedback else None,
+        "attachments": [describe(a) for a in message.attachments],
         "created_at": message.created_at.isoformat() if message.created_at else None,
     }
 
