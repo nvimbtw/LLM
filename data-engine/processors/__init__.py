@@ -7,7 +7,9 @@ reshapes conversations.
 
 from processors.chat import PROCESSORS as CONVERSATION
 from processors.filter import PROCESSORS as SELECTION
+from processors.markdown import PROCESSORS as MARKUP
 from processors.pipeline import Outcome, Step, resolve, run
+from processors.smoltalk import PROCESSORS as CONVERTERS
 from processors.spec import Document, Param, Processor, State
 from processors.text import PROCESSORS as REWRITING
 from store.schema import DatasetKind
@@ -20,7 +22,7 @@ __all__ = [
 
 def _registry() -> dict[str, Processor]:
     registry: dict[str, Processor] = {}
-    for processor in (*REWRITING, *SELECTION, *CONVERSATION):
+    for processor in (*REWRITING, *SELECTION, *CONVERSATION, *MARKUP, *CONVERTERS):
         if processor.name in registry:
             raise ValueError(f"two processors named {processor.name}")
         registry[processor.name] = processor
