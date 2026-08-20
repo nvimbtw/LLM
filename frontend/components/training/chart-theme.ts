@@ -75,7 +75,7 @@ export function lossStageColor(stage: number, tWithinStage: number): string {
 }
 
 // Intra-batch spread band. min ≤ avg ≤ max is an ordered magnitude, so it's the
-// same single-hue ramp (amber family, `--chart-1` #de9800): min light, max dark.
+// same single-hue ramp (amber family, `--chart-1` #bf7c00): min light, max dark.
 export const batchRamp = {
   min: sequential(41, 70, 0),
   avg: sequential(41, 70, 0.5),
@@ -126,12 +126,12 @@ export const EMB_COLOR = "var(--chart-3)"
 //      lightening them by rule would fail the chroma floor. These are their own
 //      steps, validated against the dark surface #282727.
 //
-// Both pairs pass all six checks of the dataviz validator (lightness band, chroma
-// floor, CVD separation, normal-vision floor, contrast vs surface). Re-run it
-// before changing either value:
-//
-//   node scripts/validate_palette.js "#3f6bb8,#de9800" --mode light --surface "#f7f4e4"
-//   node scripts/validate_palette.js "#6d92da,#b98a2c" --mode dark  --surface "#282727"
+// Both pairs were validated against all six checks of the dataviz validator that
+// used to live in scripts/validate_palette.js — lightness band, chroma floor,
+// CVD separation, normal-vision floor, contrast vs surface — before that script
+// was retired. The numbers above (ΔE 29.4 protan / 30.1 tritan) are its record;
+// if either value is touched again, re-measure the pair's separation under
+// deuteranopia before committing the change.
 //
 // Colour is never the only cue regardless: both figures carry a legend, and the
 // feed states the verdict in words.

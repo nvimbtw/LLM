@@ -111,8 +111,27 @@ graphical objects that carry meaning (chart marks, form-control boundaries), and
 **1.8** for hairlines, which carry none and only have to survive a bright screen.
 Exactly one row fails by design — `--tier-low`, for the reason written on it.
 
-If you change a token, run it, and keep the hue: the fixes it prompts should be
-lightness moves, which is what keeps the scheme recognisably Kanagawa.
+WCAG is the floor, not the whole test, and
+
+```sh
+cd frontend && node scripts/audit-theme.mjs
+```
+
+is the perceptual audit that sits on top of it: the OKLCH ladder of every token,
+APCA Lc (vendored apca-w3) with the minimum font size each body pair supports,
+and a chromatic-aberration check on every text pair. That check is why the body
+ink is a red-violet *whisper* (#4f4f58) rather than the old full violet: a cool
+text hue on a warm ground makes the lens hunt between two focal planes at every
+letter edge, and the rule catches it as `energy ≥ 3.0` (hue gap × text chroma).
+`--primary` links score high on that measure too and are exempt only because
+they are short, underlined and spaced — the flag applies to body-carrying pairs.
+
+If you change a token, run both, and keep the hue: the fixes they prompt should
+be lightness moves, which is what keeps the scheme recognisably Kanagawa.
+
+A palette change is judged against the old values on the `/colors` fixture
+page — both themes, the token ladder, and the frozen pre-change snapshot with
+its measured deltas.
 
 ## Conventions
 
