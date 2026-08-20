@@ -39,9 +39,12 @@ function meterTone(percentUsed: number) {
 }
 
 /**
- * Sits below the composer, not inside its border — a quieter, separate line
- * rather than a second compartment of the same card. Which conversation this
- * is, and how much of its context window is spent.
+ * The composer's bottom band, inside its border and under a hairline: which
+ * conversation this is, and how much of its context window is spent.
+ *
+ * It reads as the quieter line by type and colour rather than by being a
+ * separate object — it was one, floating below the card, and the gap between
+ * them was a slot of unblurred thread text between two frosted surfaces.
  */
 export function ComposerFooter({
   title,

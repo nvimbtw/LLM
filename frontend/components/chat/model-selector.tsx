@@ -72,7 +72,7 @@ export function ModelSelector({
           <React.Fragment key={family}>
             {i > 0 && <DropdownMenuSeparator />}
             <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-[11px] font-medium tracking-[0.1em] text-muted-foreground/80 uppercase">
+              <DropdownMenuLabel className="eyebrow text-muted-foreground/80">
                 {family}
               </DropdownMenuLabel>
               {familyModels.map((model) => {
@@ -92,7 +92,7 @@ export function ModelSelector({
                     <span className={cn(isActive && "font-medium")}>
                       {model.name}
                     </span>
-                    <span className="ml-auto text-[11px] font-medium tracking-[0.1em] text-muted-foreground/70 uppercase">
+                    <span className="eyebrow ml-auto text-muted-foreground/70">
                       {model.tier}
                     </span>
                   </DropdownMenuItem>

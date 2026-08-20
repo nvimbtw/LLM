@@ -9,10 +9,10 @@ import { formatContext, formatParams } from "./format"
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-0.5 font-display text-base font-semibold tabular-nums">
+      <dd className="figure mt-0.5 text-base">
         {value}
       </dd>
     </div>
@@ -39,7 +39,7 @@ export function ModelCard({
 }: ModelCardProps) {
   if (selectable) {
     return (
-      <label className="group block cursor-pointer rounded-lg focus-within:ring-2 focus-within:ring-ring">
+      <label className="group block cursor-pointer rounded-(--radius-sheet) focus-within:ring-2 focus-within:ring-ring">
         <CardBody
           model={model}
           selected={selected}
@@ -58,7 +58,7 @@ export function ModelCard({
   return (
     <Link
       href={`/models/${model.id}`}
-      className="group block rounded-lg focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      className="group block rounded-(--radius-sheet) focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
       <CardBody model={model} />
     </Link>
@@ -81,10 +81,18 @@ function CardBody({
   return (
     <div
       className={cn(
-        "flex h-full flex-col rounded-lg border bg-background p-5 transition-colors",
+        // A sheet: the card surface (this used to be `bg-background`, which made
+        // a tile the page colour with a line round it — the whole registry read
+        // flat because the only thing separating a card from the page was its
+        // border). The lift is a single pixel; anything more turns a grid of
+        // eight into a fairground.
+        "flex h-full flex-col rounded-(--radius-sheet) border bg-card p-5 shadow-sheet",
+        "transition-[box-shadow,border-color,translate] duration-150",
+        "group-hover:-translate-y-px group-hover:shadow-sheet-hover",
+        "motion-reduce:transition-none motion-reduce:group-hover:translate-y-0",
         selected
-          ? "border-foreground/50 bg-muted/40"
-          : "border-border group-hover:border-foreground/25"
+          ? "border-foreground/40 bg-muted/40"
+          : "border-border/45 group-hover:border-border"
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -95,7 +103,7 @@ function CardBody({
           {corner ?? (
             <>
               <ModelSizeMeter tier={model.tier} />
-              <span className="text-[9px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
+              <span className="eyebrow text-muted-foreground">
                 {model.tier}
               </span>
             </>
@@ -107,7 +115,7 @@ function CardBody({
           visibility headings used to: which family it belongs to, and whether it
           is visible to anyone but an admin. Private is called out; published is
           the expected state and says nothing by being silent. */}
-      <div className="mt-1.5 flex items-center gap-2 text-[10px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
+      <div className="eyebrow mt-1.5 flex items-center gap-2 text-muted-foreground">
         <span className="truncate">{model.family || "Custom"}</span>
         {!model.published && (
           <>

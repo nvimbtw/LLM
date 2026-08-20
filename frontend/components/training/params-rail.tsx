@@ -216,7 +216,7 @@ export function ParamsRail({
           job — that config is real and re-runnable, so the mode is shown as a fact
           rather than silently rewritten to something the run was not. */}
       {isCycleMode ? (
-        <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+        <p className="rounded-(--radius-control-sm) border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
           Seeded from a cycle&rsquo;s{" "}
           <span className="font-medium text-foreground">
             {isRaft ? "self-train" : "preference"}
@@ -225,7 +225,7 @@ export function ParamsRail({
           themselves.
         </p>
       ) : (
-        <div className="inline-flex w-full gap-0.5 rounded-md border p-0.5">
+        <div className="inline-flex w-full gap-0.5 rounded-(--radius-control-sm) border p-0.5">
           {(
             [
               ["pretrain", "Pretrain"],
@@ -410,7 +410,7 @@ export function ParamsRail({
       {!isSft && (
         <div className="space-y-3">
           {/* Data-order controls: shuffle each epoch + curriculum staging. */}
-          <div className="space-y-2 rounded-lg border p-2.5">
+          <div className="space-y-2 rounded-(--radius-sheet) border p-2.5">
             <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
                 Shuffle documents each epoch

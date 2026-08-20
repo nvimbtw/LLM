@@ -285,8 +285,8 @@ export function MarkupShowcase() {
               key={token}
               className={
                 UNSHIPPED.has(token)
-                  ? "bg-kind-gather/14 text-kind-gather rounded-sm px-1.5 py-0.5 font-mono text-xs"
-                  : "rounded-sm bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
+                  ? "bg-kind-gather/14 text-kind-gather rounded-(--radius-marker) px-1.5 py-0.5 font-mono text-xs"
+                  : "rounded-(--radius-marker) bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
               }
               title={
                 UNSHIPPED.has(token)
@@ -307,7 +307,7 @@ export function MarkupShowcase() {
         </Button>
       </div>
 
-      <div className="rounded-lg border border-border bg-card px-5 py-8 sm:px-8">
+      <div className="rounded-(--radius-sheet) border border-border bg-card px-5 py-8 sm:px-8">
         {/* gap-7 matches the real thread, so the rhythm previewed here is the
             rhythm you get in a conversation. */}
         <div className="flex flex-col gap-7">
@@ -328,7 +328,7 @@ export function MarkupShowcase() {
                 }
               />
               {showSource && (
-                <pre className="overflow-x-auto rounded-md border border-border bg-muted px-3 py-2">
+                <pre className="overflow-x-auto rounded-(--radius-control-sm) border border-border bg-muted px-3 py-2">
                   <code className="font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
                     {sourceOf(turn)}
                   </code>

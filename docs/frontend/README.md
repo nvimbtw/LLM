@@ -18,7 +18,8 @@ Guidance for building and fixing the frontend half of the project.
 frontend/
 ├── app/             App Router pages and layouts (server components by default)
 │   ├── layout.tsx   Root layout: ThemeProvider → providers
-│   ├── (app)/       The signed-in frame: sidebar, header, scroll container
+│   ├── (app)/       The signed-in frame: sidebar and scroll container. No
+│   │                header bar — see the layout for why.
 │   │   ├── admin/       the admin panel — the queue, and the way to the rest
 │   │   ├── chat/[id]/ · conversations/ · models/ · usage/ · profile/
 │   │   ├── jobs/        [id] and new/{train,benchmark}; the bare path redirects
@@ -93,10 +94,37 @@ its sidebar entry appear on the next build.
 
 ## Colour
 
-The palette is Kanagawa (Dragon in dark, a warm-paper light mode) and the token
-values live in [`app/globals.css`](../../frontend/app/globals.css) with the
-reasoning for each non-obvious one written on the token itself. Read those
-comments before changing a value — several encode a measurement, not a taste.
+The palette is Kanagawa (Dragon in dark, a warm-paper light mode) — *our*
+Kanagawa: derived from rebelot's and then moved where a screen full of small
+text needed it moved. Upstream is lineage, not a source of truth; do not
+"restore" a value to it.
+
+It lives in [`app/globals.css`](../../frontend/app/globals.css) in three layers,
+which exist so that what a colour **is** stays separate from what **uses** it:
+
+| layer | tokens | holds |
+| --- | --- | --- |
+| 1. palette | `--kanagawa-dragon-*`, `--kanagawa-lotus-*` | the hexes, named in Kanagawa's vocabulary. Never referenced by a component. |
+| 2. theme | `--background-light` / `--background-dark`, one pair per role | which colour each role takes in each mode, both modes side by side |
+| 3. active mode | `--background`, … | `:root`/`.theme-light` resolve the light half, `.dark` the dark one. The only layer components see. |
+
+So trying something is a one-line edit in layer 2 — point a role at a different
+palette entry and both the app and the `/colors` fixture follow. A hex belongs
+in layer 1 and nowhere else; a component reads layer 3 and nothing else. The
+reasoning for a *value* is written on it in the palette, the reasoning for a
+*role's choice* on it in the theme.
+
+`.theme-light` is `:root`'s twin, declared in the same rule so the two cannot
+drift: it lets a subtree render the light theme while the app is in the dark
+one, which is what the `/colors` fixture uses to show both at once.
+
+**Selected text** is a role like any other — `--selection` / `--selection-foreground`,
+resolved in `::selection` in the base layer. Both modes take Kanagawa's own
+`Visual` colour (waveBlue1 under Dragon, lotusViolet3 under Lotus), which is the
+one role where upstream's answer is exactly the right one. The foreground is
+pinned rather than inherited, so the ratio is a fact rather than a function of
+whatever happens to be selected — which is also why selecting coloured text
+drops its colour, the same as in an editor.
 
 Every pair is checked by
 
@@ -111,8 +139,128 @@ graphical objects that carry meaning (chart marks, form-control boundaries), and
 **1.8** for hairlines, which carry none and only have to survive a bright screen.
 Exactly one row fails by design — `--tier-low`, for the reason written on it.
 
-If you change a token, run it, and keep the hue: the fixes it prompts should be
-lightness moves, which is what keeps the scheme recognisably Kanagawa.
+WCAG is the floor, not the whole test, and
+
+```sh
+cd frontend && node scripts/audit-theme.mjs
+```
+
+is the perceptual audit that sits on top of it: the OKLCH ladder of every token,
+APCA Lc (vendored apca-w3) with the minimum font size each body pair supports,
+and a chromatic-aberration check on every text pair. That check is why the body
+ink is a red-violet *whisper* (#4f4f58) rather than the old full violet: a cool
+text hue on a warm ground makes the lens hunt between two focal planes at every
+letter edge, and the rule catches it as `energy ≥ 3.0` (hue gap × text chroma).
+`--primary` links score high on that measure too and are exempt only because
+they are short, underlined and spaced — the flag applies to body-carrying pairs.
+
+Both read the stylesheet through
+[`scripts/theme-tokens.mjs`](../../frontend/scripts/theme-tokens.mjs), which
+resolves the three layers the way the browser does and hands them one flat
+`{ role: "#rrggbb" }` map per mode — so an audit measures what ships, not what
+a regex could find in one block.
+
+If you change a token, run both, and keep the hue: the fixes they prompt should
+be lightness moves, which is what keeps the scheme recognisably Kanagawa.
+
+A palette change is judged against the old values on the `/colors` fixture
+page — both themes, the token ladder, and the frozen pre-change snapshot with
+its measured deltas.
+
+## Sizing
+
+The same two-layer split the colour tokens got, applied to everything with a
+size. In `globals.css`:
+
+1. **The scales** (`@theme`) — what a size *is*. The type steps `2xs`…`5xl`, each
+   carrying its own line-height and letter-spacing; the radius steps derived
+   from `--radius`; the 4px spacing unit.
+2. **The roles** (`:root`, under `SIZING ROLES`) — what *uses* a size.
+   `--type-eyebrow-tracking`, `--space-sheet`, `--radius-sheet`,
+   `--elevation-overlay`. Components reference roles, never raw steps.
+
+There is no third layer: a size is a size in both themes.
+
+### The two composite utilities
+
+Two devices appear so often, and drifted so far, that they are classes rather
+than sets of tokens to remember:
+
+- **`eyebrow`** — the small uppercase label over a section, a stat, a field.
+  Sets size, weight, letter-spacing, word-spacing and the transform. Colour is
+  *not* included: most take `text-muted-foreground`, the sidebar's take a
+  sidebar token. Use `tag` for its mono cousin inside chat traces, which is
+  sized in `em` because it sits in text that is itself scaled.
+- **`figure`** — the number in a stat: display face, `font-variant-numeric:
+  tabular-nums`, one weight. Deliberately sets **no font-size**; the call site
+  picks the step (`figure text-2xl`) so the step's own tracking applies. Never
+  add `tracking-tight` to a figure — the scale already tracks by size, and the
+  constant overrides it.
+
+Before this pass the eyebrow had 17 distinct spellings across 69 uses, with 7
+different letter-spacings for one element; the figure had 10 sizes, half of them
+fighting the scale with `tracking-tight`.
+
+### Radius roles
+
+`--radius-sheet`, `--radius-control`, `--radius-control-sm`, `--radius-marker`,
+and — pinned off the scale — `--radius-composer` and `--radius-bubble`, which
+follows it. Chat is the one place the app is allowed to be round, and those
+values are absolute so that squaring the app's corners cannot reach into the
+composer.
+
+No component spells `rounded-lg`/`rounded-md` any more. The only bare radius
+utilities left are `rounded-full` (pills, avatars), `rounded-none`, and three
+micro values on chart bars and inline code where the role step would round them
+into blobs.
+
+## Elevation
+
+Four levels on one ladder — `shadow-raised`, `shadow-sheet`,
+`shadow-sheet-hover`, `shadow-overlay` — and one rule for deciding between the
+middle two:
+
+- **A surface you can act on is a sheet.** `bg-card`, an edge at `border/45`,
+  and `shadow-sheet` — `ui/panel.tsx`, `ui/card.tsx` and the model tiles. A tile
+  that is also a link adds `group-hover:-translate-y-px
+  group-hover:shadow-sheet-hover` (and `motion-reduce:` opts out of the move).
+- **A surface that summarises is furniture.** No box, no fill: rules only. The
+  **ruled ledger** is the idiom — `grid … gap-x-8 gap-y-5 border-y border-border
+  py-4`, cells carrying nothing but `pr-6`. It is what the headline figures use
+  on `/models`, `/usage`, a model page, and inside the benchmark and job panels.
+
+The app used to give both the same 1px box at the same radius, which is why a
+stat band and a model tile carried equal weight and a page of them read flat.
+The distinction is the fix; the shadow is only how one half of it is drawn.
+
+Either side of the sheet:
+
+- **`shadow-raised`** — a control that sits a hair proud of its surface: the
+  checkbox, the switch thumb, the active tab, the composer.
+- **`shadow-overlay`** — anything that floats free of the page: a menu, a select
+  popup, a dialog, a toast, a chart tooltip. It separates from a sheet that is
+  *already* casting a shadow, so the difference is travel (48px) rather than
+  darkness.
+
+**Two surfaces are frosted**, and only two: the composer and the toast
+(`bg-*/75 backdrop-blur-2xl backdrop-saturate-150`). Both land on top of content
+that is still live underneath — a thread being scrolled, a queue that is moving —
+and a solid card cuts a hole in it. The blur is what stops what passes behind
+from being *readable*, and the saturate puts back the colour that blurring alone
+averages away. Everything else that floats is opaque: a menu or a dialog replaces
+your attention rather than sharing it.
+
+Every elevation lives in the theme layer with the other roles. The two modes are
+deliberately **not** the same shape: light lifts with a shadow mixed from the ink
+(grey on cream reads as dirt), while dark — where a shadow has nothing to fall on
+— lifts with its surface step plus a highlight along the top edge, the way a pane
+catches the light above it. This is why `shadow-sm`/`md`/`lg`/`xl` are banned:
+Tailwind's defaults are black at a fixed opacity, invisible on the dragon ground,
+which is what made those controls read flat in dark mode.
+
+A page that opens with a ruled ledger drops the rule under its `PageHeader`
+(`className="mb-6 border-b-0 pb-0"`): the ledger's own top rule is the section
+break, and two parallel rules 32px apart read as an accident.
 
 ## Conventions
 
@@ -174,6 +322,11 @@ the Base UI primitive underneath, both learned the hard way:
 - Tailwind utility classes in JSX. No separate `.module.css` files.
 - Use `cn()` from `@/lib/utils` for conditional class merging.
 - Follow the existing design: Geist font (sans), the shadcn/ui color tokens, the sidebar layout.
+- **Reach for a role, not a raw value.** `rounded-(--radius-sheet)`, not
+  `rounded-lg`; `shadow-overlay`, not `shadow-md`; `eyebrow`, not `text-2xs
+  font-medium tracking-[0.14em] uppercase`. An arbitrary value (`text-[11px]`,
+  `rounded-[4px]`) means either the role is missing or you want the wrong thing —
+  see [Sizing](#sizing).
 
 ### Where the data lives
 
@@ -218,6 +371,24 @@ The two tool frames bracket the wait: `tool_call` the moment the marker closes
 (so a search can be shown as started while the rest of the reply is still
 streaming), `tool_result` once the backend has run it. `body` is in the marker
 vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
+
+### Acting on a message you sent
+
+A user bubble carries three actions (`UserActions` in
+`components/chat/chat-message.tsx`): copy, "edit and ask again", "ask again".
+
+**Both re-ask; neither rewrites.** A new turn is appended with the same (or
+amended) question, and the original stays where it is. That is a property of the
+data, not a UI choice — there is no route that removes a stored message
+(`routes/chats.rs` has create, rename, and delete-the-whole-chat, nothing
+finer), and the thread *is* the prompt, so editing in place would either lie
+about what was sent or silently drop everything after it. Giving these branching
+semantics means adding a truncate to the backend and the engine first.
+
+Edit goes through the composer rather than sending directly, via its `draft`
+prop — so the question can actually be changed, and so sending still happens on
+the one path that owns sending. The prop is keyed by object identity, not by the
+string: editing the same message twice has to load it twice.
 
 ### The trace
 
@@ -298,7 +469,10 @@ footer, beside Settings — not a labelled nav group. The row is a mode of the a
 you have access to, which is what the footer holds; the content above it is the
 subject you are reading.
 
-- `/admin` is the panel: `JobsView` as the hero, `AdminDirectory` below it.
+- `/admin` is the panel, in three parts: `QueueView` as the hero,
+  `AdminDirectory` under it, and `HistoryView` last. **The directory sits
+  between the two halves of the queue on purpose** — history is unbounded, so
+  anything below it is reached only by scrolling past every run ever made.
   **Add an admin destination to the directory, not to the sidebar** — a
   directory has room for a sentence saying what a page is, and a nav row does
   not. The two bands are what puts work on the GPU (`WORKBENCH`) and what only
@@ -335,9 +509,11 @@ running train for it, and because the queue already has the frames, the cancel
 and the job page it wants. Composed at `/tokenizers`, beside the list of what has
 been built — a vocabulary is picked far more often than it is built.
 
-- **The board lives at `/admin`**, as the hero of the panel — `JobsView` is
-  mounted there, and `/jobs` is a redirect kept only so bookmarked URLs work.
-  `/jobs/{id}` and `/jobs/new/*` are unchanged.
+- **The board lives at `/admin`**, as the hero of the panel — `QueueView` and
+  `HistoryView` are mounted there, and `/jobs` is a redirect kept only so
+  bookmarked URLs work. `/jobs/{id}` and `/jobs/new/*` are unchanged. The two
+  are separate components only so the panel can put its directory between them;
+  they read from the same `JobsProvider` and are one ledger.
 
 #### Composing a training run
 

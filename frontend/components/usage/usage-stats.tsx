@@ -11,11 +11,11 @@ function Stat({
   hint?: string
 }) {
   return (
-    <div className="bg-background px-5 py-5">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+    <div className="pr-6">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-2 font-display text-3xl font-semibold tracking-tight tabular-nums">
+      <dd className="figure mt-2 text-3xl">
         {value}
       </dd>
       {hint && (
@@ -32,10 +32,12 @@ export function UsageStats({ usage }: { usage: Usage }) {
     ? Math.round(usage.totalTokens / usage.totalRequests)
     : 0
 
-  // gap-px over a border-toned background paints hairline rules between cells —
-  // a divided ledger rather than four boxes.
+  // The ruled ledger: summary figures are furniture, not content, so they take
+  // rules and no box (see the elevation rule in globals.css). A rule above and
+  // below, the figures spaced across it, and the page showing through — the
+  // band no longer competes with the cards it sits over.
   return (
-    <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
       <Stat
         label="Requests"
         value={formatNumber(usage.totalRequests)}

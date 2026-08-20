@@ -69,7 +69,7 @@ export function CurriculumBuilder({
         const isCollapsed = collapsed.has(i)
         const title = stage.name?.trim() || `Stage ${i + 1}`
         return (
-          <div key={i} className="rounded-lg border">
+          <div key={i} className="rounded-(--radius-sheet) border">
             {/* Header: click the title to collapse/expand; reorder + remove stay
                 on the right. Kept compact so a long curriculum doesn't dominate. */}
             <div className="flex items-center justify-between gap-2 p-2.5">

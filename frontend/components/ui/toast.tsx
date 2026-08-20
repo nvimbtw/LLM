@@ -53,7 +53,15 @@ function ToastList() {
         toast={t}
         swipeDirection="right"
         className={cn(
-          "relative flex items-start gap-3 overflow-hidden rounded-lg border border-border bg-popover bg-clip-padding py-3 pr-3 pl-4 text-popover-foreground shadow-md",
+          // Frosted on the composer's terms — see chat-composer.tsx. A toast is
+          // the other thing in the app that lands on top of live content it must
+          // not erase: it arrives over a thread or a running queue, and a solid
+          // card cuts a hole in whatever it covers for four seconds. The blur is
+          // what keeps what passes behind it from being readable, and the
+          // saturate puts back the colour that blurring alone averages out.
+          // `bg-clip-padding` matters more here than it looks: without it the
+          // translucent fill runs under the border and the edge goes muddy.
+          "relative flex items-start gap-3 overflow-hidden rounded-(--radius-sheet) border border-border bg-popover/75 bg-clip-padding py-3 pr-3 pl-4 text-popover-foreground shadow-overlay backdrop-blur-2xl backdrop-saturate-150",
           "before:absolute before:inset-y-0 before:left-0 before:w-1 before:content-['']",
           "transition-all duration-200 ease-out data-ending-style:translate-x-4 data-ending-style:opacity-0 data-starting-style:translate-x-4 data-starting-style:opacity-0",
           RAIL_BY_TYPE[type]

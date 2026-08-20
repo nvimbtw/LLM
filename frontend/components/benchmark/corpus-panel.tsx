@@ -57,7 +57,7 @@ export function CorpusPanel({ corpus }: { corpus: CorpusMetrics | null }) {
         />
       </div>
 
-      <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-4">
+      <dl className="mt-6 grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
         <Stat label="Bits / byte" value={formatNumber(model)} />
         <Stat
           label="Perplexity"
@@ -128,11 +128,11 @@ function Stat({
   hint?: string
 }) {
   return (
-    <div className="bg-background px-4 py-3">
-      <dt className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
+    <div className="pr-6">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-1 font-display text-xl font-semibold tracking-tight tabular-nums">
+      <dd className="figure mt-1 text-xl">
         {value}
       </dd>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}

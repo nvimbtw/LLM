@@ -34,7 +34,7 @@ export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
         }
       >
         <div className="space-y-5">
-          <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-border bg-border/60">
+          <dl className="grid grid-cols-3 gap-x-8 gap-y-5 border-y border-border py-4">
             <Figure label="Files" value={count(tokenize.files)} />
             <Figure label="Vocab" value={count(tokenize.vocab)} />
             <Figure label="Merges" value={count(tokenize.merges)} />
@@ -61,11 +61,11 @@ function count(n: number | undefined): string {
 
 function Figure({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-background px-5 py-4">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+    <div className="pr-6">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-1.5 font-display text-2xl font-semibold tracking-tight tabular-nums">
+      <dd className="figure mt-1.5 text-2xl">
         {value}
       </dd>
     </div>

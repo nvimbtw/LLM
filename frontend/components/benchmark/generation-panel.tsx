@@ -24,7 +24,7 @@ export function GenerationPanel({
       title="Generation"
       description={`${samples.length} prompts · ${surface.words} words`}
     >
-      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-3 lg:grid-cols-5">
+      <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
           label="Real words"
           value={formatPercent(surface.real_word_rate)}
@@ -53,7 +53,7 @@ export function GenerationPanel({
       </dl>
 
       {samples.length > 0 && (
-        <ul className="mt-6 flex flex-col gap-px overflow-hidden rounded-lg border border-border bg-border/60">
+        <ul className="mt-6 flex flex-col gap-px overflow-hidden rounded-(--radius-sheet) border border-border bg-border/60">
           {samples.map((sample, i) => (
             <li
               key={i}
@@ -87,11 +87,11 @@ function Stat({
   hint: string
 }) {
   return (
-    <div className="bg-background px-4 py-3">
-      <dt className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
+    <div className="pr-6">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-1 font-display text-xl font-semibold tracking-tight tabular-nums">
+      <dd className="figure mt-1 text-xl">
         {value}
       </dd>
       <p className="text-xs text-muted-foreground">{hint}</p>

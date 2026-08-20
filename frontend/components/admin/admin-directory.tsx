@@ -82,10 +82,10 @@ export function AdminDirectory() {
   const total = WORKBENCH.length + INTERFACE.length
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border bg-card">
+    <section className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
       <header className="border-b border-border px-5 py-4">
         <h2 className="text-sm font-semibold tracking-tight">Elsewhere</h2>
-        <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+        <p className="eyebrow mt-0.5 text-muted-foreground">
           {total} pages
         </p>
       </header>
@@ -113,7 +113,7 @@ function Band({
 }) {
   return (
     <div className={className}>
-      <p className="px-5 pt-4 pb-1 text-[0.6875rem] font-medium tracking-[0.16em] text-muted-foreground/70 uppercase">
+      <p className="eyebrow px-5 pt-4 pb-1 text-muted-foreground/70">
         {label}
       </p>
       <ul>

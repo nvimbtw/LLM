@@ -317,7 +317,7 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     <div
       className={cn(
         BLOCK,
-        "group relative overflow-hidden rounded-md border border-border/70 bg-foreground/[0.035]"
+        "group relative overflow-hidden rounded-(--radius-control-sm) border border-border/70 bg-foreground/[0.035]"
       )}
     >
       <pre className="overflow-x-auto py-3 pr-16 pl-3.5">
@@ -341,7 +341,7 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
           )}
         </button>
         {lang && (
-          <span className="font-mono text-[0.7em] tracking-[0.1em] text-muted-foreground/70 uppercase">
+          <span className="tag text-muted-foreground/70">
             {lang}
           </span>
         )}

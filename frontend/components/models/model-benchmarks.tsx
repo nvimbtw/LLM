@@ -15,6 +15,7 @@ import {
 } from "@/lib/benchmark"
 import { cn } from "@/lib/utils"
 import { LoadError } from "@/components/ui/error-state"
+import { Panel } from "@/components/ui/panel"
 
 /**
  * How the model scored, under the specs that say what it is.
@@ -36,7 +37,7 @@ export interface ModelBenchmarksProps {
 export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   const { data, isLoading, error } = useModelBenchmarks(modelId)
 
-  if (isLoading) return <Skeleton className="h-44 rounded-lg" />
+  if (isLoading) return <Skeleton className="h-44 rounded-(--radius-sheet)" />
   if (error) {
     return (
       <Section>
@@ -78,6 +79,9 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   )
 }
 
+// A sheet, via `Panel` — the section used to draw its own flat outline box and
+// title it with an eyebrow, which put it a tier below the spec panels beside it
+// when it is the same kind of thing.
 function Section({
   subtitle,
   children,
@@ -86,19 +90,21 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-lg border border-border bg-background">
-      <header className="flex items-baseline justify-between gap-3 border-b border-border px-5 py-3.5">
-        <h2 className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
-          Benchmarks
-        </h2>
-        {subtitle && (
+    <Panel
+      title="Benchmarks"
+      aside={
+        subtitle && (
           <span className="text-xs text-muted-foreground tabular-nums">
             {subtitle}
           </span>
-        )}
-      </header>
+        )
+      }
+      // The bands set their own padding: the headline grid is a divided ledger
+      // that has to reach the panel's edges, and the run list is rows.
+      bodyClassName="p-0"
+    >
       {children}
-    </section>
+    </Panel>
   )
 }
 
@@ -155,13 +161,14 @@ function Figure({
   lead?: boolean
 }) {
   return (
-    <div className="bg-background px-5 py-4">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
-        {label}
-      </dt>
+    // `bg-card`, the sheet's own surface: these cells are what the `gap-px`
+    // divider above shows through, so they have to be the panel's colour and not
+    // the page's.
+    <div className="bg-card px-5 py-4">
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
       <dd
         className={cn(
-          "mt-1.5 font-display font-semibold tracking-tight tabular-nums",
+          "mt-1.5 figure",
           lead ? "text-3xl" : "text-2xl",
           value === NO_VALUE && "text-muted-foreground/30"
         )}

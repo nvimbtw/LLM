@@ -104,7 +104,7 @@ export function TokenizersView() {
         ) : isLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-20 rounded-lg" />
+              <Skeleton key={i} className="h-20 rounded-(--radius-sheet)" />
             ))}
           </div>
         ) : (
@@ -172,7 +172,7 @@ function BuildingBand({ job }: { job: Job }) {
   return (
     <Link
       href={jobHref(job)}
-      className="flex items-center gap-4 rounded-lg border border-border bg-secondary/25 px-5 py-4 transition-colors hover:border-primary/40"
+      className="flex items-center gap-4 rounded-(--radius-control) border border-border bg-secondary/25 px-5 py-4 transition-colors hover:border-primary/40"
     >
       <Throbber mode="tokenizing" />
       <span className="min-w-0">
@@ -200,7 +200,7 @@ function Row({
         <p className="flex items-center gap-2 font-medium">
           <span className="truncate">{tokenizer.name}</span>
           {!tokenizer.hasVocab && (
-            <span className="shrink-0 rounded-sm bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
+            <span className="shrink-0 rounded-(--radius-marker) bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
               missing on disk
             </span>
           )}

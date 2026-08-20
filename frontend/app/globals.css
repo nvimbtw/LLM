@@ -47,6 +47,12 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  /* The elevation ladder, as `shadow-raised`, `shadow-sheet`, `shadow-sheet-hover`
+     and `shadow-overlay`. */
+  --shadow-sheet: var(--elevation-sheet);
+  --shadow-sheet-hover: var(--elevation-sheet-hover);
+  --shadow-raised: var(--elevation-raised);
+  --shadow-overlay: var(--elevation-overlay);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -68,7 +74,18 @@
        legible) and the top is stretched: 3xl and 4xl are half again what they
        were. Line-height tightens as size grows, tracking goes negative, because
        both are functions of size — a heading tracked like body text falls apart,
-       and body tracked like a heading is unreadable. */
+       and body tracked like a heading is unreadable.
+
+       `2xs` is new, and it is not decoration: the app invented this tier
+       fourteen times by hand as `text-[9px]`, `[10px]`, `[11px]` and
+       `[0.6875rem]`, because the scale bottomed out at 12px and the eyebrows,
+       badges and meter captions needed something under it. One step, named,
+       beats four arbitrary values that disagree by a pixel. Tracked positive and
+       leaded loose, because everything set at this size is either uppercase or a
+       caption, and both need the air. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.45;
+  --text-2xs--letter-spacing: 0.02em;
   --text-xs: 0.75rem;
   --text-xs--line-height: 1.5;
   --text-xs--letter-spacing: 0.01em;
@@ -98,228 +115,666 @@
   --text-5xl--letter-spacing: -0.035em;
 }
 
+/* ═══ SIZING ROLES ═════════════════════════════════════════════════════════
+   The same split the colours got, applied to everything that has a size.
+
+   Above, in `@theme`, are the *scales*: what a size is. Type steps, radius
+   steps, the spacing unit. Nothing up there says what a size is used for.
+
+   Here are the *roles*: what uses a size. `--type-eyebrow-size` is the answer to
+   "how big is a section label", and it happens to resolve to `--text-2xs`; move
+   it to `--text-xs` and every eyebrow in the app changes together. That is the
+   whole point, and it is why this file can be tuned in a browser devtools panel
+   instead of across sixty files.
+
+   Unlike the colours there is no third layer. A size is a size in both themes —
+   nothing here needs a light and a dark value — so roles map straight onto the
+   scale and stop.
+
+   ---- Why these particular roles -----------------------------------------
+   They were not invented. Each one is a spelling that already existed in the
+   components, several times over and never twice the same way. The eyebrow was
+   the worst: sixty-nine uses, seventeen distinct spellings, seven different
+   letter-spacings for one visual element. */
+
 :root {
-  /* Warm paper (light).
-       #f7f4e4 stays the dominant base — it is the character of the theme. What
-       changed is everything measured against it: the old secondary (#efeacd) and
-       border (#e2dab2) sat so close to the paper that a panel edge was a guess,
-       and diluting the border to /60 at the call sites finished the job. The
-       steps below are pulled down far enough to be seen at 1px, and the /60
-       dilution is gone from the components. */
-  --background: #f7f4e4;
-  --foreground: #545464;
-  /* A shade *above* the paper: a panel is a sheet resting on the desk, which is
-       what gives the light mode any depth at all. It was previously identical to
-       the background, so a card was only ever its border. */
-  --card: #fdfbf1;
-  --card-foreground: #545464;
-  --popover: #fdfbf1;
-  --popover-foreground: #545464;
-  --primary: #4d699b;
-  --primary-foreground: #f7f4e4;
-  --secondary: #e9e2c4;
-  --secondary-foreground: #545464;
-  --muted: #ece6cc;
-  /* Was #83816f (3.56:1), then #6f6d57. These carry the eyebrow labels and
-       hints — small, often letterspaced — so they need to clear AA as *body*
-       text, not as large text, and on **every** surface they land on rather than
-       only the paper. #6f6d57 cleared the paper at 4.75 but fell to 4.03 on
-       `--secondary` and 4.19 on `--muted`, which is where half the eyebrows in
-       the app actually sit. Three points of lightness down fixes both without
-       touching the hue: 4.54 on secondary, 4.72 on muted, 5.35 on paper. */
-  --muted-foreground: #676550;
-  --accent: #e9e2c4;
-  --accent-foreground: #545464;
-  /* 4.41:1 on the paper as #c84053 — under AA by a hair, and destructive text
-       is the one string in the app nobody can afford to misread. Half a point of
-       lightness buys 4.51. */
-  --destructive: #c63e52;
-  /* A hairline carries no information a sighted reader needs, so it has no WCAG
-       floor and is judged by eye against one number instead: it must survive a
-       bright, badly-calibrated screen, which is where 1.42:1 disappeared
-       outright. 1.81:1 is visible on a laptop at noon and still reads as a
-       hairline rather than a border. */
-  --border: #c1b88c;
-  /* Unlike the hairline above, this one *is* a WCAG object: the boundary of a
-       form control is what tells you where to click. 1.75:1 → 3.03:1. */
-  --input: #988d58;
-  --ring: #4d699b;
-  /* Amber on warm paper is the hardest pair in the light theme, and #de9800
-       measured 2.21:1 — a line in it sank into the page. Darkened to the 3:1
-       floor for a graphical object. Dark mode's amber is untouched; it never had
-       the problem. */
-  --chart-1: #c37e00;
-  --chart-2: #6f894e;
-  --chart-3: #4d699b;
-  --chart-4: #b35b79;
-  --chart-5: #766b90;
+  /* ---- Type roles -------------------------------------------------------
+     Four jobs, not nine sizes. Everything on a page is display type, body
+     copy, a supporting note, or a label — and the app had 23 distinct font
+     sizes serving those four. */
+
+  /* The eyebrow: the small uppercase label over a section, a stat, a field.
+     It is the app's signature editorial device and it appears everywhere, so
+     it gets the most specific treatment.
+
+     `word-spacing` is the piece that is usually missed. Letter-spacing an
+     uppercase string opens the letters *and* the existing word gaps, so the
+     gaps grow past the point where the words read as one phrase — "TOTAL
+     TOKENS" becomes two labels. Pulling word-spacing back by roughly half the
+     tracking restores the phrase without closing the letters up again. */
+  --type-eyebrow-size: var(--text-2xs);
+  --type-eyebrow-tracking: 0.14em;
+  --type-eyebrow-word-spacing: -0.07em;
+  --type-eyebrow-weight: 500;
+
+  /* Figures: the number in a stat, set in the display face and lined up in
+     columns, which is what `tabular-nums` is for. */
+  --type-figure-size: var(--text-base);
+  --type-figure-weight: 600;
+
+  /* Body and its quieter twin. `note` is the caption, the helper line, the
+     secondary sentence — one step down, never two. */
+  --type-body-size: var(--text-sm);
+  --type-note-size: var(--text-xs);
+
+  /* ---- Weight roles -----------------------------------------------------
+     Three weights, and the reason there are three: body copy at 400 so a
+     paragraph reads as a paragraph, 500 for anything that labels something,
+     600 for headings. The app currently sets `font-medium` 144 times, much of
+     it on running text, which is why prose here reads slightly shouty. */
+  --weight-body: 400;
+  --weight-label: 500;
+  --weight-heading: 600;
+
+  /* ---- Space roles ------------------------------------------------------
+     Tailwind's `--spacing` unit already puts everything on a 4px grid; the
+     drift was never off-grid, it was *which step*. 82 distinct padding
+     spellings across the app, for maybe six actual jobs. */
+
+  /* Inside a sheet — a panel, a card. The dominant existing value (px-5/p-5,
+     72 uses) and the right one: 20px is the smallest inset that still reads
+     as a margin rather than a gap. */
+  --space-sheet: calc(var(--spacing) * 5);
+  --space-sheet-tight: calc(var(--spacing) * 4);
+
+  /* Between a section and the next one, and between the rows inside one. */
+  --space-section: calc(var(--spacing) * 8);
+  --space-stack: calc(var(--spacing) * 3);
+  --space-inline: calc(var(--spacing) * 2);
+
+  /* The ruled ledger's own rhythm — see the elevation rule below. Columns sit
+     far enough apart to read as columns; rows breathe more than they do in a
+     table because there is no rule between them to do the separating. */
+  --space-ledger-x: calc(var(--spacing) * 8);
+  --space-ledger-y: calc(var(--spacing) * 5);
+
+  /* ---- Radius roles -----------------------------------------------------
+     The scale is derived from `--radius` at the bottom of this file. These say
+     which step a given kind of thing takes, so "controls are slightly rounder
+     than sheets" is a decision recorded in one place rather than re-derived at
+     every call site.
+
+     Sheets are *harder* than controls, which looks backwards and is the point.
+     A panel or a card is standing in for a printed thing — a page, a card, a
+     ledger — and print has no radius at all; 2px is the concession to the
+     screen, not to softness. A control is a thing you press, and 3px is enough
+     to say so. One pixel apart is the whole distinction, and at these sizes one
+     pixel is plenty: the corner is being acknowledged rather than drawn.
+
+     The small-control step is not new — the buttons already tightened their
+     corner at `xs` and `sm`. They spelled it
+     `rounded-[min(var(--radius-md),10px)]`, inherited from shadcn's larger
+     default radius, where the clamp did something. */
+  --radius-control: var(--radius-lg);
+  --radius-control-sm: var(--radius-md);
+  --radius-sheet: 2px;
+  --radius-marker: var(--radius-sm);
+
+  /* Chat is the one place the app is allowed to be round, and these three are
+     deliberately *off* the `--radius` scale and pinned to absolute values.
+
+     That is the point of them. Squaring the app's corners is a live option (see
+     the report), and it should be able to happen without reaching into the
+     composer, which is the one surface whose softness is doing a job: it is the
+     only thing on the page you type into, and it reads as a place to write
+     rather than a field to fill in. Sheets and controls are hard-edged around
+     it — 2px and 3px — and these stay exactly where they are.
+
+     The bubble follows the composer rather than carrying its own value. They
+     were 16px and 14px, two pixels apart and inches apart on screen, which read
+     as a mistake rather than as a distinction; and a message *is* the thing you
+     just typed into the composer, so it should keep the composer's shape. One
+     token now, so they cannot drift again. There is no third value for the
+     footer: it is a band inside the composer, on the composer's own corner. */
+  --radius-composer: 0.875rem;
+  --radius-bubble: var(--radius-composer);
+}
+
+/* ---- The eyebrow, as a utility -----------------------------------------
+   A composite role gets a class, not four tokens to remember. This is the same
+   reasoning that turned fifteen hand-spelled page mastheads into `PageHeader`:
+   the rule only holds if spelling it correctly is easier than spelling it
+   wrong.
+
+   Colour is deliberately *not* in here. Most eyebrows are
+   `text-muted-foreground`, but the ones in the sidebar take a sidebar token and
+   a few take an opacity — so the utility sets the four things that were
+   drifting and leaves colour to the call site. */
+@utility eyebrow {
+  font-size: var(--type-eyebrow-size);
+  font-weight: var(--type-eyebrow-weight);
+  letter-spacing: var(--type-eyebrow-tracking);
+  word-spacing: var(--type-eyebrow-word-spacing);
+  line-height: 1.45;
+  text-transform: uppercase;
+}
+
+/* The eyebrow's mono cousin, used for the step tags inside a chat trace and a
+   reasoning panel. It is a separate utility for one reason: its size is `em`,
+   not `rem`. These tags sit inside message text that is itself scaled, so an
+   absolute size would break away from the text it labels the moment a message
+   renders at a different size. Everything else about it matches the eyebrow. */
+@utility tag {
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  letter-spacing: var(--type-eyebrow-tracking);
+  word-spacing: var(--type-eyebrow-word-spacing);
+  text-transform: uppercase;
+}
+
+/* The figure in a stat: display face, lined figures, one weight. Pairs with
+   `eyebrow` — a label over a number is the app's most repeated two-line unit.
+   It was spelled by hand nineteen times, at ten different sizes, half of them
+   carrying `tracking-tight` and half not.
+
+   Deliberately *no* font-size. A figure in a card and a figure in a hero are
+   genuinely different sizes, so the size step stays at the call site — and that
+   is also what fixes the tracking. The type scale already tracks every step by
+   size (`--text-2xl--letter-spacing`, and so on down); `tracking-tight` pinned a
+   constant -0.025em over the top of it, so a `text-xl` figure was tracked as if
+   it were `text-3xl`. Letting the step supply its own tracking is the whole
+   reason the scale carries one. */
+@utility figure {
+  font-family: var(--font-display);
+  font-weight: var(--type-figure-weight);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ═══ 1. The palette ═══════════════════════════════════════════════════════
+   What the colours *are*. Nothing in this block says what a colour is used
+   for — that is the next block's job — so a value here can be read, measured
+   and swapped without knowing anything about the app.
+
+   This is our Kanagawa, not rebelot's: a scheme derived from Dragon and Lotus
+   and then moved where a screen full of small text needed it moved. Where a
+   value is upstream's verbatim, the comment says so; where it is ours, the
+   comment says what it came from and why it left. Upstream is lineage here,
+   not a source of truth — do not "restore" a value to it.
+
+   Naming is Kanagawa's own vocabulary (ink, paper, black, white, and the hue
+   names) so a token here can be found in the scheme it came from. The suffixes
+   are ours: `-soft` (chroma taken out), `-deep`/`-deeper` (lightness taken
+   out), `-light` (lightness added), `-vivid` (chroma added), and the numbered
+   surface steps, which are a ladder the UI needs and upstream does not have. */
+:root {
+  /* ── Dragon (the dark scheme) ──────────────────────────────────────────
+       Upstream Dragon has six blacks but only two of them land in the range a
+       UI's surfaces need, so the ladder below fills the gaps. black1 and
+       black3 are upstream; the three between them are ours. */
+  --kanagawa-dragon-black0: #0d0c0c; /* upstream dragonBlack0 — used only as the colour a shadow is mixed from */
+  --kanagawa-dragon-black1: #12120f; /* upstream dragonBlack1 */
+  --kanagawa-dragon-black3: #181616; /* upstream dragonBlack3 */
+  --kanagawa-dragon-surface-1: #232221; /* ours — a step above black3 */
+  --kanagawa-dragon-surface-2: #2a2827; /* ours */
+  --kanagawa-dragon-surface-3: #333130; /* ours */
+
+  /* The edges. Upstream's dragonBlack5 (#393836) is where the border used to
+     sit and it is the value that vanished under any glare in the room: 1.79:1
+     on the page, 1.58:1 on a card. These are lifted clear of every surface
+     above — 2.16:1 / 1.90:1 — which is still a hairline, just one that
+     survives being read somewhere other than a dark office. */
+  --kanagawa-dragon-edge: #514d4c; /* ours, from dragonBlack5 */
+  --kanagawa-dragon-edge-strong: #68625f; /* ours — a form control's boundary, held to 3:1 */
+  --kanagawa-dragon-edge-sidebar: #494644; /* ours — the sidebar sits a step darker, so its edge cannot borrow the page's */
+
+  --kanagawa-dragon-white: #c5c9c5; /* upstream dragonWhite */
+  --kanagawa-dragon-gray: #a6a69c; /* upstream dragonGray */
+  --kanagawa-dragon-blue2: #8ba4b0; /* upstream dragonBlue2 */
+  --kanagawa-dragon-blue2-deep: #5e7480; /* ours — the same blue four degrees off, L* 47.5 */
+  --kanagawa-dragon-blue-vivid: #6d92da; /* ours — chroma the dark band's own blues do not carry */
+  --kanagawa-dragon-red: #c4746e; /* upstream dragonRed */
+  --kanagawa-dragon-green: #87a987; /* upstream dragonGreen */
+  --kanagawa-dragon-green-light: #8fb08f; /* ours — reads out of an 18% tint of itself */
+  --kanagawa-dragon-pink: #a292a3; /* upstream dragonPink */
+  --kanagawa-dragon-pink-light: #ada0ae; /* ours — same reason as green-light */
+  --kanagawa-dragon-violet: #8992a7; /* upstream dragonViolet */
+  --kanagawa-dragon-yellow: #c4b28a; /* upstream dragonYellow */
+  --kanagawa-dragon-yellow-vivid: #b98a2c; /* ours — the amber half of a polarity pair */
+  --kanagawa-dragon-orange-light: #c2a184; /* ours, from dragonOrange (#b6927b) */
+  --kanagawa-dragon-aqua-light: #79cbb8; /* ours — L* 76.2, a pale aqua */
+  --kanagawa-dragon-wave-blue1: #223249; /* upstream waveBlue1 — what Kanagawa itself selects text with */
+  /* An ordered terracotta ramp, ours entirely: upstream has no sequential
+     scale. Monotone in lightness (OKLCH 0.53 → 0.66 → 0.78), each step clear
+     of the chroma floor, which is the check a sequential ramp answers to. */
+  --kanagawa-dragon-terracotta-1: #b1452f;
+  --kanagawa-dragon-terracotta-2: #d97145;
+  --kanagawa-dragon-terracotta-3: #f1a355;
+
+  /* ── Lotus (the light scheme) ──────────────────────────────────────────
+       Upstream Lotus is a yellow paper (lotusWhite3 #f2ecbc) under a violet
+       ink (lotusInk1 #545464). Both moved. The paper because 90% relative
+       luminance sits near max backlight, which is the glare that makes a light
+       screen hurt, and because every dark value measured against it was within
+       a hair of its floor. The ink because violet on yellow is the one pairing
+       the eye's optics punish: 173° apart on the OKLCH wheel, so short and
+       long wavelengths focus on either side of the retina and the lens hunts
+       between two focal planes at every letter edge. */
+  /* The paper ladder. A sheet on a desk, the desk, and what the desk sits on —
+     three steps rather than the two the mode used to have, because depth that
+     comes from a *line* is depth a hairline has to carry alone. ΔL 0.031 from
+     the raised sheet to the paper, 0.024 from the paper down to the sunk one. */
+  --kanagawa-lotus-paper-raised: #fdfbf5; /* ours — a sheet resting on the desk */
+  --kanagawa-lotus-paper: #f5f1e1; /* ours, from lotusWhite3 — Y 0.878, one step off full blast */
+  --kanagawa-lotus-paper-under: #eee9d8; /* ours — a step *below* the paper, for the chrome around it */
+  /* The tinted surfaces: chips, hovers, the muted band. Upstream's papers are
+     yellow (lotusWhite2 #e5ddb0) and at this size and quantity that reads as a
+     legal pad — the chroma is down ~40% from where these started (C 0.040 →
+     0.024, 0.035 → 0.021) with the lightness and hue held, so a chip reads as
+     paper with a shadow on it rather than as a second colour. */
+  --kanagawa-lotus-paper-shade: #e9e6d6; /* ours, was #ece6cc */
+  --kanagawa-lotus-paper-sunk: #e6e2d0; /* ours, was #e9e2c4 */
+  /* The edges, and the reason the light mode used to read as dried grass: at
+     C 0.058 and C 0.079 these were the most chromatic thing on the page after
+     the accents, and they draw *everything* — every card, rule, gridline and
+     input. Same move the body ink got: keep the hue, take the chroma out
+     (C 0.013 and 0.019), hold the contrast where it was. The line recedes and
+     the type carries the page. */
+  --kanagawa-lotus-edge: #b6b3aa; /* ours, was #beb48a — 1.85:1 on the page, 2.03:1 on a card */
+  --kanagawa-lotus-edge-sidebar: #afada4; /* ours — the sunk chrome needs its own, 1.85:1 there, 1.99:1 on the page */
+  --kanagawa-lotus-edge-strong: #8c897c; /* ours, was #95894f — a form control's boundary, 3.10:1 */
+
+  --kanagawa-lotus-ink-soft: #4f4f58; /* ours, from lotusInk1 — same hue at half the chroma (C 0.015, was 0.026) */
+  --kanagawa-lotus-gray-deep: #66645f; /* ours, from lotusGray2 (#716e61) — olive taken out (C 0.032 → 0.008), clears 4.5:1 on every surface it lands on */
+  --kanagawa-lotus-blue4: #4d699b; /* upstream lotusBlue4 */
+  --kanagawa-lotus-blue4-vivid: #3f6bb8; /* ours */
+  --kanagawa-lotus-blue4-deep: #3f5f96; /* ours — reads out of a 14% tint of itself */
+  --kanagawa-lotus-blue4-deeper: #2f4f7a; /* ours — L* 33, the throbber's resting blue */
+  --kanagawa-lotus-green: #6f894e; /* upstream lotusGreen */
+  --kanagawa-lotus-green-deep: #4e6733; /* ours */
+  --kanagawa-lotus-pink: #b35b79; /* upstream lotusPink */
+  --kanagawa-lotus-violet2: #766b90; /* upstream lotusViolet2 */
+  --kanagawa-lotus-violet3: #c9cbd1; /* upstream lotusViolet3 — Lotus's own selection wash */
+  --kanagawa-lotus-violet2-deep: #655a80; /* ours */
+  --kanagawa-lotus-red-deep: #c43b4f; /* ours, from lotusRed (#c84053) — 4.54:1, over AA */
+  --kanagawa-lotus-yellow3-deep: #bf7c00; /* ours, from lotusYellow3 (#de9800), which measured 2.21:1 and sank into the page */
+  --kanagawa-lotus-orange-deep: #86582a; /* ours, from lotusOrange (#cc6d00) */
+  --kanagawa-lotus-teal-vivid: #14958a; /* ours — 3.26:1 on the paper */
+  /* The light half of the terracotta ramp. Monotone in lightness
+     (OKLCH 0.76 → 0.58 → 0.44), worst adjacent ΔE 15.4 normal / 13.3 protan. */
+  --kanagawa-lotus-terracotta-1: #ea9971;
+  --kanagawa-lotus-terracotta-2: #c94f26;
+  --kanagawa-lotus-terracotta-3: #883120;
+}
+
+/* ═══ 2. The theme ═════════════════════════════════════════════════════════
+   Which colour each role takes, in each mode, side by side. This is the block
+   to edit when trying something: swap a palette var here and both the app and
+   the /colors fixture follow, with no component touched and no hex typed
+   outside the block above.
+
+   The reasoning that belongs to a *role* lives here; the reasoning that
+   belongs to a *value* lives in the palette. */
+:root {
+  --background-light: var(--kanagawa-lotus-paper);
+  --background-dark: var(--kanagawa-dragon-black3);
+  --foreground-light: var(--kanagawa-lotus-ink-soft);
+  --foreground-dark: var(--kanagawa-dragon-white);
+
+  /* A panel is a sheet resting on the desk, which is what gives the light mode
+     any depth at all; it was once identical to the background, so a card was
+     only ever its border. The dark mode does the same in the other direction —
+     upstream Dragon put card, popover and muted on one value and every surface
+     in the app was one of two blacks. */
+  --card-light: var(--kanagawa-lotus-paper-raised);
+  --card-dark: var(--kanagawa-dragon-surface-1);
+  --card-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --card-foreground-dark: var(--kanagawa-dragon-white);
+  --popover-light: var(--kanagawa-lotus-paper-raised);
+  --popover-dark: var(--kanagawa-dragon-surface-2);
+  --popover-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --popover-foreground-dark: var(--kanagawa-dragon-white);
+
+  --primary-light: var(--kanagawa-lotus-blue4);
+  --primary-dark: var(--kanagawa-dragon-blue2);
+  --primary-foreground-light: var(--kanagawa-lotus-paper);
+  --primary-foreground-dark: var(--kanagawa-dragon-black3);
+
+  --secondary-light: var(--kanagawa-lotus-paper-sunk);
+  --secondary-dark: var(--kanagawa-dragon-surface-3);
+  --secondary-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --secondary-foreground-dark: var(--kanagawa-dragon-white);
+
+  --muted-light: var(--kanagawa-lotus-paper-shade);
+  --muted-dark: var(--kanagawa-dragon-surface-2);
+  /* The eyebrows and hints: small, often letterspaced, and they land on every
+     surface above rather than only the page — so they are held to AA as body
+     text on all of them, not as large text on the paper. */
+  --muted-foreground-light: var(--kanagawa-lotus-gray-deep);
+  --muted-foreground-dark: var(--kanagawa-dragon-gray);
+
+  /* Accent is a *surface* in both modes, like its light-mode counterpart. It
+     used to be a light violet in the dark mode, which made every hover flash
+     pale under text that could not sit on it; that violet lives on as chart-5. */
+  --accent-light: var(--kanagawa-lotus-paper-sunk);
+  --accent-dark: var(--kanagawa-dragon-surface-3);
+  --accent-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --accent-foreground-dark: var(--kanagawa-dragon-white);
+
+  /* Destructive text is the one string in the app nobody can afford to
+     misread, so it is held to AA as body text rather than as a graphic. */
+  --destructive-light: var(--kanagawa-lotus-red-deep);
+  --destructive-dark: var(--kanagawa-dragon-red);
+
+  /* A hairline carries no information a sighted reader needs, so it has no
+     WCAG floor and is judged against one number instead: it must survive a
+     bright, badly-calibrated screen. The form-control boundary below *is* a
+     WCAG object — it is what tells you where to click — and takes the 3:1. */
+  --border-light: var(--kanagawa-lotus-edge);
+  --border-dark: var(--kanagawa-dragon-edge);
+  --input-light: var(--kanagawa-lotus-edge-strong);
+  --input-dark: var(--kanagawa-dragon-edge-strong);
+  --ring-light: var(--kanagawa-lotus-blue4);
+  --ring-dark: var(--kanagawa-dragon-blue2);
+
+  --chart-1-light: var(--kanagawa-lotus-yellow3-deep);
+  --chart-1-dark: var(--kanagawa-dragon-yellow);
+  --chart-2-light: var(--kanagawa-lotus-green);
+  --chart-2-dark: var(--kanagawa-dragon-green);
+  --chart-3-light: var(--kanagawa-lotus-blue4);
+  --chart-3-dark: var(--kanagawa-dragon-blue2);
+  --chart-4-light: var(--kanagawa-lotus-pink);
+  --chart-4-dark: var(--kanagawa-dragon-pink);
+  --chart-5-light: var(--kanagawa-lotus-violet2);
+  --chart-5-dark: var(--kanagawa-dragon-violet);
+
   /* Approved/rejected in the preference figures. A polarity pair, kept out of
-       the numbered chart slots because it means one specific thing. Blue/amber
-       rather than green/red: that pair collides under deuteranopia (ΔE 5.8, under
-       the 8 floor) where this measures 29.4. Validated in both modes — see
-       components/training/chart-theme.ts for the commands. */
-  --chart-approved: #3f6bb8;
-  /* Darkened with `--chart-1` above and for the same reason (2.21:1 → 3.02:1 on
-       the paper). The pair's separation is what matters here and it survives
-       intact: ΔE 29.3 normal, 30.0 under deuteranopia, against the 8 floor. */
-  --chart-rejected: #c37e00;
+     the numbered chart slots because it means one specific thing. Blue/amber
+     rather than green/red: that pair collides under deuteranopia (ΔE 5.8,
+     under the 8 floor) where this measures 29.4. The dark half is its own
+     steps, not lightened light-mode ones — the dark band is tighter
+     (OKLCH L 0.48–0.67) and a rule-based flip lands outside it. */
+  --chart-approved-light: var(--kanagawa-lotus-blue4-vivid);
+  --chart-approved-dark: var(--kanagawa-dragon-blue-vivid);
+  --chart-rejected-light: var(--kanagawa-lotus-yellow3-deep);
+  --chart-rejected-dark: var(--kanagawa-dragon-yellow-vivid);
+
   /* The three thinking budgets, in the teacher's figures. An ORDERED scale
-       (short → medium → long), so a single-hue sequential ramp light→dark rather
-       than three categorical hues — more thinking, more ink. The hue is the teach
-       kind's own terracotta, so the run's charts belong to its chip.
-       Light mode clears every check the categorical validator applies:
-         node scripts/validate_palette.js "#ea9971,#c94f26,#883120" --mode light --surface "#f7f4e4"
-       (worst adjacent ΔE 15.4 normal / 13.3 protan, chroma and band pass; the
-       sub-3:1 contrast WARN on the lightest step is relieved by the count and
-       percentage printed beside every slice, which is what the rule requires). */
-  --tier-low: #ea9971;
-  --tier-med: #c94f26;
-  --tier-high: #883120;
-  /* One hue per job kind, for the chip on a history row.
-       Deliberately not the numbered chart slots: those are tuned to be told apart
-       as *fills* in a figure, and the same values used as small text on a tint of
-       themselves land around 2:1. These are the darkened counterparts — each one
-       clears 4.5:1 against a 14% tint of itself, which is what the chip is. */
-  --kind-train: #3f5f96;
-  --kind-benchmark: #4e6733;
-  --kind-chat: #655a80;
-  --kind-tokenize: #8a5a2b;
-  /* The colour the throbber's segment warms to as it works — the one place in the
-       app a second hue is spent on a status mark. Its own token rather than a
-       chart or kind slot: those mean something (a series, a job kind), and
-       borrowing one would tie the mark's colour to a decision made about
-       something else. Not exposed as a Tailwind utility — it is read as a raw var
-       by an SVG stroke, and nothing else should want it.
+     (short → medium → long), so a single-hue sequential ramp rather than three
+     categorical hues — more thinking, more ink. The anchor flips on a dark
+     surface: there, more thinking is the *lighter* step, so the heaviest
+     budget stays the most prominent mark rather than sinking into the page.
+     The ramp is never the only cue — every slice is labelled and counted —
+     which is what relieves the lightest light-mode step of the 3:1 graphic
+     floor (it lands at 2.0:1, the one row audit-contrast.mjs reports failing)
+     and the dark ramp of fitting three ΔE-15 steps inside a 0.19-wide band. */
+  --tier-low-light: var(--kanagawa-lotus-terracotta-1);
+  --tier-low-dark: var(--kanagawa-dragon-terracotta-1);
+  --tier-med-light: var(--kanagawa-lotus-terracotta-2);
+  --tier-med-dark: var(--kanagawa-dragon-terracotta-2);
+  --tier-high-light: var(--kanagawa-lotus-terracotta-3);
+  --tier-high-dark: var(--kanagawa-dragon-terracotta-3);
 
-       A teal, where this was a burnt orange (#c8791a) and a violet before that.
-       The orange was chosen for *hue opposition*: back then the mark was a solid
-       bar and hue alone had to carry the state, so the pair had to sit across the
-       wheel from each other. It does not any more — the throbber is a track with a
-       segment on it, and the state is told by where the segment is and how much of
-       the rail it covers. Hue is the second signal now, and it can be chosen to
-       look like the rest of the app rather than to fight the other half of itself.
+  /* One hue per job kind, for the chip on a history row. Deliberately not the
+     numbered chart slots: those are tuned to be told apart as *fills* in a
+     figure, and the same values used as small text on a tint of themselves
+     land around 2:1. Each of these clears 4.5:1 against the tint that is the
+     chip — darkened for that in the light mode, lightened for it in the dark. */
+  --kind-train-light: var(--kanagawa-lotus-blue4-deep);
+  --kind-train-dark: var(--kanagawa-dragon-blue2);
+  --kind-benchmark-light: var(--kanagawa-lotus-green-deep);
+  --kind-benchmark-dark: var(--kanagawa-dragon-green-light);
+  --kind-chat-light: var(--kanagawa-lotus-violet2-deep);
+  --kind-chat-dark: var(--kanagawa-dragon-pink-light);
+  --kind-tokenize-light: var(--kanagawa-lotus-orange-deep);
+  --kind-tokenize-dark: var(--kanagawa-dragon-orange-light);
 
-       What is not given up is the lightness gap, which is what was doing the real
-       work all along, and the swap costs nothing there: teal is ΔL* 22.4 from the
-       base against the orange's 24.9, and it holds *more* contrast on the paper
-       (3.34:1 against 3.06:1, over the 3:1 floor for a graphic). What it does give
-       up is the hue axis under deuteranopia — teal and the base blue are 40°
-       apart, not 167° — so the ΔL* above is now the only thing separating them for
-       those readers. Keep it above 20 if you touch either value. */
-  --throbber-spark: #14958a;
-  /* The mark's *resting* colour, and the pair's other half — the track, and the
-       segment before it warms.
-       It used to borrow `--primary` and that was the whole problem: the two
-       measured ΔL* 8.3 apart in OKLab, so they differed almost only in hue, and
-       hue alone is the weakest way to tell two things apart at a glance and no way
-       at all for some readers. The fix was a *deeper base*, which had room in the
-       direction a brighter spark did not.
-       #2f4f7a is the same blue five degrees off the primary's hue — so the mark
-       still reads as the app's colour — at L* 33 against the spark's 55.6.
-       7.54:1 on the paper. */
-  --throbber-base: #2f4f7a;
-  /* 6px, down from 10. Editorial wants the corner acknowledged, not rounded —
-       and the whole app inherits from this one number, so it is the cheapest
-       single change to how rigid the page reads. */
-  --radius: 0.375rem;
-  --sidebar: #f7f4e4;
-  --sidebar-foreground: #545464;
-  --sidebar-primary: #4d699b;
-  --sidebar-primary-foreground: #f7f4e4;
-  --sidebar-accent: #e9e2c4;
-  --sidebar-accent-foreground: #545464;
-  --sidebar-border: #c1b88c;
-  --sidebar-ring: #4d699b;
+  /* Selected text. Both modes take Kanagawa's own `Visual` colour rather than
+     something invented — waveBlue1 under Dragon, lotusViolet3 under Lotus —
+     which is the one role where upstream's answer is exactly the answer here.
+     A wash, not a tint of `--primary`: a link and a selection would otherwise
+     be the same blue, and the browser default (a saturated system blue) is the
+     one colour on screen belonging to no scheme at all.
+
+     The foreground is pinned rather than inherited, so the ratio is a fact and
+     not a function of whatever happens to be selected — 7.74:1 in the dark
+     mode, 5.00:1 in the light one. That is also why selecting a coloured run of
+     text drops its colour: correctness over prettiness, the same as an editor. */
+  --selection-light: var(--kanagawa-lotus-violet3);
+  --selection-dark: var(--kanagawa-dragon-wave-blue1);
+  --selection-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --selection-foreground-dark: var(--kanagawa-dragon-white);
+
+  /* The throbber's pair: the segment's resting colour and the colour it warms
+     to as it works — the one place in the app a second hue is spent on a
+     status mark. It used to borrow `--primary` for the base, which put the two
+     halves ΔL* 8 apart: they differed almost only in hue, and hue alone is the
+     weakest way to tell two things apart at a glance and no way at all for
+     some readers. The fix is the lightness gap, and it is the only thing
+     separating the pair for a deuteranopic reader now that the hues are no
+     longer opposed — ΔL* 22.4 in the light mode, 28.7 in the dark. Keep it
+     above 20 if you touch either value. */
+  --throbber-spark-light: var(--kanagawa-lotus-teal-vivid);
+  --throbber-spark-dark: var(--kanagawa-dragon-aqua-light);
+  --throbber-base-light: var(--kanagawa-lotus-blue4-deeper);
+  --throbber-base-dark: var(--kanagawa-dragon-blue2-deep);
+
+  /* The sidebar. Both modes now sit it a step *under* the page, so the chrome
+     frames the content by tone instead of by a line — the light mode used to
+     take the page's own values and separate from it by the hairline alone.
+     Both modes need their own edge for the same reason: a border tuned against
+     the page is measured against a surface it no longer lands on (1.43:1 in
+     the dark mode, 1.73:1 in the light one — both under the hairline floor). */
+  --sidebar-light: var(--kanagawa-lotus-paper-under);
+  --sidebar-dark: var(--kanagawa-dragon-black1);
+  --sidebar-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --sidebar-foreground-dark: var(--kanagawa-dragon-white);
+  --sidebar-primary-light: var(--kanagawa-lotus-blue4);
+  --sidebar-primary-dark: var(--kanagawa-dragon-blue2);
+  --sidebar-primary-foreground-light: var(--kanagawa-lotus-paper);
+  --sidebar-primary-foreground-dark: var(--kanagawa-dragon-black3);
+  --sidebar-accent-light: var(--kanagawa-lotus-paper-sunk);
+  --sidebar-accent-dark: var(--kanagawa-dragon-surface-2);
+  --sidebar-accent-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --sidebar-accent-foreground-dark: var(--kanagawa-dragon-white);
+  --sidebar-border-light: var(--kanagawa-lotus-edge-sidebar);
+  --sidebar-border-dark: var(--kanagawa-dragon-edge-sidebar);
+  --sidebar-ring-light: var(--kanagawa-lotus-blue4);
+  --sidebar-ring-dark: var(--kanagawa-dragon-blue2);
+
+  /* ── Elevation ────────────────────────────────────────────────────────
+     Two levels, and one rule for which is which: a surface you can *act on*
+     is a sheet and gets an elevation; a surface that *summarises* is
+     furniture and gets rules instead (`border-y`, no box, no fill). The app
+     used to give both the same 1px box at the same radius, which is why a
+     stat band and a model tile carried equal weight and the eye found no
+     entry point — the flatness was a missing distinction, not a missing
+     shadow.
+
+     Light lifts with a shadow mixed from the ink itself, never a neutral
+     grey: grey on cream reads as dirt, where the paper's own dark reads as
+     shade. Dark cannot lift with a shadow — on near-black there is nothing
+     for one to fall on — so it lifts with the surface step it already has
+     plus a 6% highlight along the top edge, the way a real pane catches the
+     light above it. That is why the two halves are not the same shape. */
+  --elevation-sheet-light:
+    0 1px 1px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 5%, transparent),
+    0 10px 24px -10px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 22%, transparent);
+  --elevation-sheet-dark:
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 6%, transparent),
+    0 12px 26px -12px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 60%, transparent);
+  --elevation-sheet-hover-light:
+    0 2px 4px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 7%, transparent),
+    0 16px 32px -12px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 28%, transparent);
+  --elevation-sheet-hover-dark:
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 9%, transparent),
+    0 16px 32px -12px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 70%, transparent);
+
+  /* Below the sheet: a control that sits a hair proud of its surface — the
+     checkbox, the switch thumb, the active tab, the composer. Spelled
+     `shadow-sm` in six places, which is Tailwind's default black at 5% and takes
+     no account of the theme; on the dragon ground it is invisible, which is why
+     those controls read as flat in dark mode. */
+  --elevation-raised-light: 0 1px 2px
+    color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 8%, transparent);
+  --elevation-raised-dark:
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 5%, transparent),
+    0 1px 2px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 40%, transparent);
+
+  /* Above the sheet: anything that floats free of the page — a menu, a select
+     popup, a dialog, a toast, a chart tooltip. One job, and it was spelled three
+     ways (`shadow-md`, `shadow-lg`, `shadow-xl`) depending on which shadcn file
+     it came from, so a dropdown and the dialog it opened sat at different
+     heights for no reason anyone chose.
+
+     It is a long, soft shadow rather than a big one: an overlay has to separate
+     from a *sheet* that already casts its own, so the readable difference is
+     travel, not darkness. In dark the highlight is stronger than the sheet's,
+     because on near-black the top edge is the only thing that says "in front". */
+  --elevation-overlay-light:
+    0 2px 4px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 6%, transparent),
+    0 24px 48px -16px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 30%, transparent);
+  --elevation-overlay-dark:
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 10%, transparent),
+    0 24px 48px -16px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 78%, transparent);
+}
+
+/* ═══ 3. The active mode ═══════════════════════════════════════════════════
+   The only block the components see. Each role resolves to its light or dark
+   half; nothing below this line is a colour decision, and nothing here should
+   ever be a hex.
+
+   `.theme-light` is `:root`'s twin for a subtree — it exists so the /colors
+   fixture can render the light theme while the app is in the dark one. The
+   two are written as one rule so they can never drift apart.
+
+   `--radius` is not a colour and sits outside all three layers, at the end. */
+:root,
+.theme-light {
+  --background: var(--background-light);
+  --foreground: var(--foreground-light);
+  --card: var(--card-light);
+  --card-foreground: var(--card-foreground-light);
+  --popover: var(--popover-light);
+  --popover-foreground: var(--popover-foreground-light);
+  --primary: var(--primary-light);
+  --primary-foreground: var(--primary-foreground-light);
+  --secondary: var(--secondary-light);
+  --secondary-foreground: var(--secondary-foreground-light);
+  --muted: var(--muted-light);
+  --muted-foreground: var(--muted-foreground-light);
+  --accent: var(--accent-light);
+  --accent-foreground: var(--accent-foreground-light);
+  --destructive: var(--destructive-light);
+  --border: var(--border-light);
+  --input: var(--input-light);
+  --ring: var(--ring-light);
+  --chart-1: var(--chart-1-light);
+  --chart-2: var(--chart-2-light);
+  --chart-3: var(--chart-3-light);
+  --chart-4: var(--chart-4-light);
+  --chart-5: var(--chart-5-light);
+  --chart-approved: var(--chart-approved-light);
+  --chart-rejected: var(--chart-rejected-light);
+  --tier-low: var(--tier-low-light);
+  --tier-med: var(--tier-med-light);
+  --tier-high: var(--tier-high-light);
+  --kind-train: var(--kind-train-light);
+  --kind-benchmark: var(--kind-benchmark-light);
+  --kind-chat: var(--kind-chat-light);
+  --kind-tokenize: var(--kind-tokenize-light);
+  --selection: var(--selection-light);
+  --selection-foreground: var(--selection-foreground-light);
+  --throbber-spark: var(--throbber-spark-light);
+  --throbber-base: var(--throbber-base-light);
+  --sidebar: var(--sidebar-light);
+  --sidebar-foreground: var(--sidebar-foreground-light);
+  --sidebar-primary: var(--sidebar-primary-light);
+  --sidebar-primary-foreground: var(--sidebar-primary-foreground-light);
+  --sidebar-accent: var(--sidebar-accent-light);
+  --sidebar-accent-foreground: var(--sidebar-accent-foreground-light);
+  --sidebar-border: var(--sidebar-border-light);
+  --sidebar-ring: var(--sidebar-ring-light);
+  --elevation-sheet: var(--elevation-sheet-light);
+  --elevation-sheet-hover: var(--elevation-sheet-hover-light);
+  --elevation-raised: var(--elevation-raised-light);
+  --elevation-overlay: var(--elevation-overlay-light);
 }
 
 .dark {
-  /* Kanagawa Dragon (dark).
-       The flatness was structural, not a matter of taste: card, popover and muted
-       were all #282727 and the border was #393836, so every surface in the app was
-       one of two values and an edge was barely a step. Dragon has six blacks —
-       this uses four of them as an actual ladder (bg → card → popover → secondary)
-       with the border above all of them. */
-  --background: #181616;
-  --foreground: #c5c9c5;
-  --card: #232221;
-  --card-foreground: #c5c9c5;
-  --popover: #2a2827;
-  --popover-foreground: #c5c9c5;
-  --primary: #8ba4b0;
-  --primary-foreground: #181616;
-  --secondary: #333130;
-  --secondary-foreground: #c5c9c5;
-  --muted: #2a2827;
-  --muted-foreground: #a6a69c;
-  /* Was #8992a7 — a *light* violet used as a background, which made every hover
-       flash pale under #c5c9c5 text that could not sit on it. Accent is a surface
-       here, like its light-mode counterpart; the violet lives on as chart-5. */
-  --accent: #333130;
-  --accent-foreground: #c5c9c5;
-  --destructive: #c4746e;
-  /* Lifted clear of every surface above, so a hairline actually draws against a
-       panel and not just against the page — and then lifted again: 1.79:1 on the
-       background and 1.58:1 on a card is a rule you lose to any glare in the
-       room. 2.16:1 / 1.90:1 is still a hairline, just one that survives being
-       read somewhere other than a dark office. */
-  --border: #514d4c;
-  /* The form-control boundary, held to the 3:1 WCAG asks of one. */
-  --input: #68625f;
-  --ring: #8ba4b0;
-  --chart-1: #c4b28a;
-  --chart-2: #87a987;
-  --chart-3: #8ba4b0;
-  --chart-4: #a292a3;
-  --chart-5: #8992a7;
-  /* Own steps, not lightened light-mode ones: the dark band is tighter
-       (OKLCH L 0.48–0.67) and a rule-based flip lands outside it. */
-  --chart-approved: #6d92da;
-  --chart-rejected: #b98a2c;
-  /* The ramp's anchor flips on a dark surface: more thinking is the *lighter*
-       step, so the heaviest budget stays the most prominent mark rather than
-       sinking into the background. Own steps, not lightened light-mode ones.
-         node scripts/validate_palette.js "#b1452f,#d97145,#f1a355" --mode dark --surface "#282727"
-       Monotone in lightness (0.52 → 0.65 → 0.78) with every step clear of the
-       chroma floor, which is the check a sequential ramp actually answers to. The
-       band and adjacency FAILs it reports are the documented by-design case — the
-       dark band is 0.19 wide and three steps at ΔE 15 cannot fit inside it — and
-       the ramp is never the only cue: every slice is labelled and counted. */
-  --tier-low: #b1452f;
-  --tier-med: #d97145;
-  --tier-high: #f1a355;
-  /* Lightened rather than flipped: the chip is an 18% tint on a dark card, so
-       these have to read *out* of it. Same 4.3:1-and-up floor as the light set. */
-  --kind-train: #8ba4b0;
-  --kind-benchmark: #8fb08f;
-  --kind-chat: #ada0ae;
-  --kind-tokenize: #c2a184;
-  /* Lightened rather than flipped, like the kind chips above: it has to read out
-       of a near-black card. The light mode's teal taken up to a pale aqua —
-       L* 76.2 and 9.87:1 on the ground, where the surimi orange it replaces was
-       74.4 and 9.36:1. See the light-mode note for why the hue moved. */
-  --throbber-spark: #79cbb8;
-  /* Darkened rather than lightened, which is the opposite of what every other
-       token in this block does, and is the point.
-       This mode was the worse of the two and for the same reason as the light
-       one: borrowing `--primary` put the pair ΔL* 8.7 apart, so the bar was two
-       pale things on black that differed only in hue. There is no headroom above
-       the spark — it is already near white — so the separation has to come out of
-       the base. #5e7480 is the primary's own blue four degrees off, at L* 47.5:
-       ΔL* 28.7 against the aqua, which is *wider* than the orange managed (26.9),
-       and 3.83:1 on the background, above the 3:1 floor for a graphic. That gap is
-       now the only thing separating the pair for a deuteranopic reader, since the
-       two hues are no longer opposed — do not narrow it. */
-  --throbber-base: #5e7480;
-  --sidebar: #12120f;
-  --sidebar-foreground: #c5c9c5;
-  --sidebar-primary: #8ba4b0;
-  --sidebar-primary-foreground: #181616;
-  --sidebar-accent: #2a2827;
-  --sidebar-accent-foreground: #c5c9c5;
-  /* The sidebar sits a step darker than the page, so its border cannot borrow
-       the page's — against #12120f the old value measured 1.43:1. */
-  --sidebar-border: #494644;
-  --sidebar-ring: #8ba4b0;
+  --background: var(--background-dark);
+  --foreground: var(--foreground-dark);
+  --card: var(--card-dark);
+  --card-foreground: var(--card-foreground-dark);
+  --popover: var(--popover-dark);
+  --popover-foreground: var(--popover-foreground-dark);
+  --primary: var(--primary-dark);
+  --primary-foreground: var(--primary-foreground-dark);
+  --secondary: var(--secondary-dark);
+  --secondary-foreground: var(--secondary-foreground-dark);
+  --muted: var(--muted-dark);
+  --muted-foreground: var(--muted-foreground-dark);
+  --accent: var(--accent-dark);
+  --accent-foreground: var(--accent-foreground-dark);
+  --destructive: var(--destructive-dark);
+  --border: var(--border-dark);
+  --input: var(--input-dark);
+  --ring: var(--ring-dark);
+  --chart-1: var(--chart-1-dark);
+  --chart-2: var(--chart-2-dark);
+  --chart-3: var(--chart-3-dark);
+  --chart-4: var(--chart-4-dark);
+  --chart-5: var(--chart-5-dark);
+  --chart-approved: var(--chart-approved-dark);
+  --chart-rejected: var(--chart-rejected-dark);
+  --tier-low: var(--tier-low-dark);
+  --tier-med: var(--tier-med-dark);
+  --tier-high: var(--tier-high-dark);
+  --kind-train: var(--kind-train-dark);
+  --kind-benchmark: var(--kind-benchmark-dark);
+  --kind-chat: var(--kind-chat-dark);
+  --kind-tokenize: var(--kind-tokenize-dark);
+  --selection: var(--selection-dark);
+  --selection-foreground: var(--selection-foreground-dark);
+  --throbber-spark: var(--throbber-spark-dark);
+  --throbber-base: var(--throbber-base-dark);
+  --sidebar: var(--sidebar-dark);
+  --sidebar-foreground: var(--sidebar-foreground-dark);
+  --sidebar-primary: var(--sidebar-primary-dark);
+  --sidebar-primary-foreground: var(--sidebar-primary-foreground-dark);
+  --sidebar-accent: var(--sidebar-accent-dark);
+  --sidebar-accent-foreground: var(--sidebar-accent-foreground-dark);
+  --sidebar-border: var(--sidebar-border-dark);
+  --sidebar-ring: var(--sidebar-ring-dark);
+  --elevation-sheet: var(--elevation-sheet-dark);
+  --elevation-sheet-hover: var(--elevation-sheet-hover-dark);
+  --elevation-raised: var(--elevation-raised-dark);
+  --elevation-overlay: var(--elevation-overlay-dark);
+}
+
+:root {
+  /* 3px, down from 6, which was down from 10. Editorial wants the corner
+     acknowledged, not rounded — and every role except the pinned chat values
+     inherits from this one number, so it is the cheapest single change to how
+     rigid the page reads.
+
+     At 3px the derived steps are 1.8 / 2.4 / 3px: markers are effectively
+     square, small controls barely turn. That is the intent. Sheets do not come
+     from here at all — they are pinned harder still, at 2px. */
+  --radius: 0.1875rem;
 }
 
 @layer base {
@@ -331,6 +786,16 @@
   }
   html {
     @apply font-sans;
+  }
+  /* One rule, no `::-moz-selection` twin — Firefox has understood the standard
+     spelling for years. Set on the universal selector as well as the root
+     because a `::selection` declared on an ancestor does not cascade into a
+     descendant that declares its own; nothing here does, and this keeps it that
+     way if something ever tries. */
+  ::selection,
+  *::selection {
+    background-color: var(--selection);
+    color: var(--selection-foreground);
   }
 }
 
@@ -345,6 +810,55 @@
 }
 .word-fade {
   animation: word-fade-in 0.4s ease both;
+}
+
+/* ---- The new-chat figure, idling -----------------------------------------
+   `FigureHorizon` is a rule opened at the centre with four half-rings over the
+   aperture. At rest it now breathes: a slow swell travels outward through the
+   rings, and the point at the centre pulses under them — a mark that is waiting
+   for a question rather than a diagram of one.
+
+   Opacity only. Nothing moves, nothing is redrawn, and the rings keep their
+   authored relationship to each other because each animates around its own
+   base value (`--o`, set at the call site) rather than to a shared constant.
+   The stagger (`--d`) is what makes it a wave leaving the centre instead of
+   four rings blinking together.
+
+   14s is deliberately slower than it looks like it should be: this sits above
+   the composer, which has to stay the subject of the screen, and anything
+   quick enough to notice is quick enough to compete. */
+@keyframes horizon-breathe {
+  0%,
+  100% {
+    stroke-opacity: calc(var(--o) * 0.55);
+  }
+  45% {
+    stroke-opacity: calc(var(--o) * 1.75);
+  }
+}
+@keyframes horizon-core {
+  0%,
+  100% {
+    fill-opacity: 0.45;
+  }
+  45% {
+    fill-opacity: 1;
+  }
+}
+.horizon-ring {
+  animation: horizon-breathe 14s ease-in-out infinite;
+  animation-delay: var(--d, 0s);
+}
+.horizon-core {
+  animation: horizon-core 14s ease-in-out infinite;
+}
+/* The figure is decoration, so reduced motion gets the static mark it was
+   before — not a slower version of the same movement. */
+@media (prefers-reduced-motion: reduce) {
+  .horizon-ring,
+  .horizon-core {
+    animation: none;
+  }
 }
 
 /* "Thinking…" — a soft highlight sweeping across the text. Seamless because the
@@ -662,31 +1176,61 @@
 }
 
 /**
- * A scrollbar that does not shout.
+ * Scrollbars that do not shout — everywhere, not by opt-in.
  *
- * For panes that scroll inside a card — the settings modal's bands — where the
- * platform's default bar, with its track and its end arrows, is a piece of OS
- * chrome sitting on top of an otherwise hairline-ruled design. The bar is kept
- * rather than hidden: the pane genuinely scrolls, and removing the one mark that
- * says so is a worse trade than styling it.
+ * The platform's default bar is a piece of OS chrome: a sunk channel, a heavy
+ * thumb, sometimes end arrows, all of it sitting on top of a design drawn in
+ * hairlines. This was already solved for one pane (the settings modal) behind a
+ * `.quiet-scrollbar` class, which meant every *other* scrolling surface — the
+ * page itself, the sidebar, chat, every log and code block — still got the OS
+ * version. It is now the default and the class is gone.
+ *
+ * Three decisions:
+ *
+ * - **The track is never painted.** A scrollbar should be a mark on the content,
+ *   not a channel cut beside it. Transparent track, transparent corner.
+ * - **The thumb is mixed from `--foreground`, not from `--border`.** One rule
+ *   then serves both themes at the same apparent weight; `--border` is tuned for
+ *   hairlines against a surface and reads too faint here on the dragon ground.
+ * - **It is dimmed, not hidden.** 10% at rest, 22% when you point at the thing
+ *   it scrolls, 38% on the thumb itself. Hiding it entirely costs you the only
+ *   mark that says a pane scrolls at all, and a hover-only bar cannot be found
+ *   by someone who needs to drag it.
+ *
+ * The 3px transparent border with `background-clip: padding-box` is what insets
+ * the thumb inside the 10px gutter: the bar is 4px of visible ink with air on
+ * both sides, rather than a 10px slab flush against the edge.
+ *
+ * This sits in `@layer base` and not at the top level on purpose. Unlayered CSS
+ * outranks every `@layer`, so a bare `* { scrollbar-width: thin }` would beat
+ * shadcn's `no-scrollbar` utility and quietly bring the bar back on the one
+ * surface — the sidebar's nav column — that asks to have none.
  */
-.quiet-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-.quiet-scrollbar::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.quiet-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.quiet-scrollbar::-webkit-scrollbar-thumb {
-  background-color: var(--border);
-  border: 2px solid transparent;
-  border-radius: 9999px;
-  background-clip: padding-box;
-}
-.quiet-scrollbar::-webkit-scrollbar-thumb:hover {
-  background-color: var(--muted-foreground);
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 14%, transparent)
+      transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--foreground) 10%, transparent);
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: padding-box;
+    transition: background-color 150ms ease;
+  }
+  *:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--foreground) 38%, transparent);
+  }
 }

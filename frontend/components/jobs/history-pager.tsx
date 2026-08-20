@@ -27,7 +27,7 @@ export function HistoryPager({ page, pages, onGo }: HistoryPagerProps) {
 
   return (
     <div className="flex items-center justify-between gap-3 border-t border-border/40 px-5 py-2.5">
-      <span className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase tabular-nums">
+      <span className="eyebrow text-muted-foreground tabular-nums">
         Page {page + 1} of {pages}
       </span>
 

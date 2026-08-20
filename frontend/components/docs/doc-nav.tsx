@@ -27,7 +27,7 @@ export function DocNav({ sections }: { sections: NavSection[] }) {
     <nav className="flex flex-col gap-7">
       {sections.map((section) => (
         <div key={section.title}>
-          <span className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+          <span className="eyebrow text-muted-foreground">
             {section.title}
           </span>
           <ul className="mt-2.5 flex flex-col border-l border-border">
@@ -75,7 +75,7 @@ function NavItem({
       href={link.href}
       className={cn(
         "-ml-px block border-l py-1 pl-3 text-sm transition-colors",
-        nested && "pl-6 text-[0.8125rem]",
+        nested && "pl-6 text-xs",
         active
           ? "border-primary font-medium text-foreground"
           : "border-transparent text-muted-foreground hover:border-border hover:text-foreground"

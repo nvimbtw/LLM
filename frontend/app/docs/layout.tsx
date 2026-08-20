@@ -38,7 +38,7 @@ export default function DocsLayout({
             <span className="font-display text-lg font-semibold tracking-tight">
               Slate
             </span>
-            <span className="text-xs font-medium tracking-[0.22em] text-muted-foreground uppercase">
+            <span className="eyebrow text-muted-foreground">
               Docs
             </span>
           </Link>
@@ -63,7 +63,7 @@ export default function DocsLayout({
               above the page. A <details> rather than a drawer: no state, no
               JS, and it closes itself on navigation because the page remounts. */}
           <details className="mb-10 border-b border-border pb-6 md:hidden">
-            <summary className="cursor-pointer text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase marker:text-border">
+            <summary className="eyebrow cursor-pointer text-muted-foreground marker:text-border">
               Contents
             </summary>
             <div className="mt-5">

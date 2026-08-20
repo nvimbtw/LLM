@@ -9,9 +9,9 @@ import { cn } from "@/lib/utils"
 /**
  * A labelled field on the auth screens.
  *
- * The label is the app's eyebrow — uppercase, `tracking-[0.12em]`, muted — the
- * same one `panel.tsx` puts over a section, so a form field and a panel header
- * are recognisably the same idiom. It stays a plain `<label>` because there is
+ * The label is the app's eyebrow — the `eyebrow` utility, muted — the same one
+ * `panel.tsx` puts over a section, so a form field and a panel header are
+ * recognisably the same idiom. It stays a plain `<label>` because there is
  * no `components/ui/label.tsx` in this codebase to reach for.
  *
  * A `type="password"` field grows a reveal button. The toggle swaps the input's
@@ -40,7 +40,7 @@ export function AuthField({
     <div className="flex flex-col gap-2">
       <label
         htmlFor={id}
-        className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase"
+        className="eyebrow text-muted-foreground"
       >
         {label}
       </label>
@@ -60,7 +60,7 @@ export function AuthField({
             tabIndex={-1}
             aria-label={revealed ? "Hide password" : "Show password"}
             onClick={() => setRevealed((v) => !v)}
-            className="absolute inset-y-0 right-0 inline-flex w-10 items-center justify-center rounded-r-lg text-muted-foreground transition-colors hover:text-foreground"
+            className="absolute inset-y-0 right-0 inline-flex w-10 items-center justify-center rounded-r-(--radius-control) text-muted-foreground transition-colors hover:text-foreground"
           >
             {revealed ? (
               <EyeOff className="size-4" />

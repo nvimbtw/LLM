@@ -47,9 +47,9 @@ export function BuildSheet({
   const stages = cfg.curriculum?.length ?? 0
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card">
+    <div className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
       <header className="border-b border-border px-5 py-4">
-        <p className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+        <p className="eyebrow text-muted-foreground">
           {isSft ? "Fine-tune" : "Pretrain"}
         </p>
         <h2

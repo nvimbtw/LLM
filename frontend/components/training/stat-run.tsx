@@ -37,7 +37,7 @@ export function StatRun({ stats }: { stats: Stat[] }) {
           {/* The display face, not the UI one: these are the figures the page
               exists to show, and Fraunces' numerals are where the editorial
               character actually lands. Tabular so columns of them still align. */}
-          <dd className="truncate font-display text-2xl font-semibold tabular-nums">
+          <dd className="figure truncate text-2xl">
             {s.value}
           </dd>
         </div>
@@ -85,7 +85,7 @@ export function FigurePlaceholder({
   return (
     <div
       className={cn(
-        "flex h-full min-h-[inherit] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground",
+        "flex h-full min-h-[inherit] items-center justify-center rounded-(--radius-control-sm) border border-dashed text-sm text-muted-foreground",
         className
       )}
     >

@@ -306,7 +306,7 @@ function FieldLabel({
 }) {
   return (
     <span className="block">
-      <span className="text-xs font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <span className="eyebrow text-muted-foreground">
         {children}
       </span>
       {hint && (
@@ -383,7 +383,7 @@ function ModeToggle({
   // as a fact rather than silently rewritten to something the run was not.
   if (isCycleMode) {
     return (
-      <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+      <p className="rounded-(--radius-control-sm) border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
         Seeded from a cycle&rsquo;s{" "}
         <span className="font-medium text-foreground">
           {mode === "raft" ? "self-train" : "preference"}
@@ -394,7 +394,7 @@ function ModeToggle({
   }
 
   return (
-    <div className="inline-flex gap-0.5 rounded-md border p-0.5">
+    <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border p-0.5">
       {(
         [
           ["pretrain", "Pretrain"],
@@ -508,7 +508,7 @@ function DataSection({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-2">
+      <div className="grid gap-px overflow-hidden rounded-(--radius-sheet) border border-border bg-border/60 sm:grid-cols-2">
         <Switch
           label="Shuffle each epoch"
           hint="Reorder documents every pass, separated by an end-of-text token."

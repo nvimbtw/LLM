@@ -36,7 +36,7 @@ export function AppSidebar() {
                 <span className="font-display text-xl leading-none font-semibold tracking-tight">
                   {APP_NAME}
                 </span>
-                <span className="mt-1 text-xs font-medium tracking-[0.22em] text-sidebar-foreground/75 uppercase">
+                <span className="eyebrow mt-1 text-sidebar-foreground/75">
                   LLM Project
                 </span>
               </span>

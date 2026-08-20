@@ -232,7 +232,7 @@ function ActivationHeatmap({ diag }: { diag: DiagPoint[] }) {
         <span>−4σ</span>
       </div>
       <div
-        className="grid flex-1 overflow-hidden rounded-md border"
+        className="grid flex-1 overflow-hidden rounded-(--radius-control-sm) border"
         style={{
           gridTemplateColumns: `repeat(${cols.length}, 1fr)`,
           gridTemplateRows: `repeat(${bins}, 1fr)`,
@@ -402,7 +402,7 @@ function EmbeddingBiplot({
       <svg
         viewBox={`0 0 ${S} ${S}`}
         preserveAspectRatio="xMidYMid meet"
-        className="block aspect-square w-full rounded-md border"
+        className="block aspect-square w-full rounded-(--radius-control-sm) border"
       >
         <line
           x1={M}

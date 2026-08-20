@@ -35,7 +35,7 @@ export function FormError({ children, className }: FormErrorProps) {
     <p
       role="alert"
       className={cn(
-        "rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive",
+        "rounded-(--radius-sheet) border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive",
         className
       )}
     >
@@ -66,7 +66,7 @@ export function LoadError({
       className={cn(
         // The footprint of the content it stands in for, so a failed section
         // still occupies its column instead of collapsing the page around it.
-        "rounded-md border border-border px-5 py-10 text-center",
+        "rounded-(--radius-sheet) border border-border px-5 py-10 text-center",
         className
       )}
     >

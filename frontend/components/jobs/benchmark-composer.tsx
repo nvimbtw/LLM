@@ -148,7 +148,7 @@ export function BenchmarkComposer() {
           SFT conversations at the start of every benchmark, so it is usually a
           statement about the first run rather than about the install. */}
       {which === "markup" && suite && suite.chat_files === 0 && (
-        <p className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+        <p className="rounded-(--radius-sheet) border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
           No held-out chat set in{" "}
           <code className="text-xs">{suite.chat_dir}</code> yet. It is exported
           from your SFT conversations when this run starts, so this run scores

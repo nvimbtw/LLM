@@ -80,7 +80,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
             >
               {job.label}
             </Link>
-            <span className="shrink-0 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
+            <span className="eyebrow shrink-0 text-muted-foreground">
               {KIND_LABEL[job.kind]}
             </span>
           </div>
@@ -93,7 +93,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
 
         <div className="flex items-center gap-4">
           <div className="text-right">
-            <div className="font-display text-lg leading-none font-semibold tabular-nums">
+            <div className="figure text-lg leading-none">
               {percent}%
             </div>
             {elapsed !== null && (

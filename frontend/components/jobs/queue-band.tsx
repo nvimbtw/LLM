@@ -133,7 +133,7 @@ export function QueueBand({
                 </Link>
               </div>
 
-              <span className="shrink-0 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
+              <span className="eyebrow shrink-0 text-muted-foreground">
                 {KIND_LABEL[job.kind]}
               </span>
 

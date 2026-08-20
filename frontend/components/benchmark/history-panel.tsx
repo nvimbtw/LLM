@@ -62,7 +62,7 @@ export function HistoryPanel({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border text-xs tracking-[0.12em] text-muted-foreground uppercase">
+              <tr className="eyebrow border-b border-border text-muted-foreground">
                 <th
                   scope="col"
                   className="w-10 py-2.5 pr-2 pl-5 text-right font-medium"
@@ -189,7 +189,7 @@ function HistoryRow({
         ) : (
           <span
             className={cn(
-              "font-display text-lg font-semibold tabular-nums",
+              "figure text-lg",
               run.status === "failed" && "text-destructive/70",
               score === null && "text-muted-foreground/30"
             )}
@@ -208,7 +208,7 @@ function HistoryRow({
           }}
           disabled={run.status === "running"}
           aria-label={`Delete benchmark of ${run.model_name}`}
-          className="rounded p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground hover:!text-destructive disabled:pointer-events-none"
+          className="rounded-(--radius-marker) p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground hover:!text-destructive disabled:pointer-events-none"
         >
           <Trash2 className="size-3.5" />
         </button>

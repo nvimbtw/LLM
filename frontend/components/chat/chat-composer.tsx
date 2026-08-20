@@ -145,6 +145,7 @@ export function ChatComposer({
   title,
   onRenameTitle,
   contextTokensUsed = 0,
+  draft,
 }: {
   onSend: (
     content: string,
@@ -163,6 +164,12 @@ export function ChatComposer({
   title?: string
   onRenameTitle?: (title: string) => void
   contextTokensUsed?: number
+  // Text to load into the composer, replacing whatever is in it — the "edit and
+  // ask again" action on a user message (see chat-message.tsx). Identified by
+  // object identity rather than by the string, so asking to edit the *same*
+  // message twice loads it twice; a plain string prop would be a no-op the
+  // second time.
+  draft?: { text: string }
 }) {
   // Both live above the router (see composer-choice-provider.tsx) rather than
   // here: sending the first message replaces the new-chat composer with the
@@ -589,6 +596,28 @@ export function ChatComposer({
     editor?.setEditable(!disabled)
   }, [editor, disabled])
 
+  // Load an incoming draft. Built as an explicit document of plain-text
+  // paragraphs rather than handed to `setContent` as a string, because a string
+  // is parsed as HTML: a question containing `<thing>` would lose it, and the
+  // markdown a message is stored as would be interpreted instead of typed.
+  // Every line lands as literal text, so `docToMarkdown` on submit gives back
+  // exactly what was loaded.
+  //
+  // No state is set here — `setContent` emits the editor's own update, and
+  // `onUpdate` above already owns `isEmpty` / `editorText` / `isCommand`.
+  React.useEffect(() => {
+    const ed = editorRef.current
+    if (!ed || !draft) return
+    ed.commands.setContent({
+      type: "doc",
+      content: draft.text.split("\n").map((line) => ({
+        type: "paragraph",
+        ...(line ? { content: [{ type: "text", text: line }] } : {}),
+      })),
+    })
+    ed.commands.focus("end")
+  }, [draft])
+
   // Type anywhere on the page and it lands in the composer — the same
   // "just start typing" feel as any chat app. A keystroke that isn't already
   // headed into some other editable field (an input, a textarea, another
@@ -662,13 +691,28 @@ export function ChatComposer({
   }
 
   return (
-    // The composer is its own card again — border/radius/shadow/focus-ring
-    // all its own — and the footer (see composer-footer.tsx) sits below it
-    // as a separate, quieter element, not sharing the card's outline.
-    <div className="flex flex-col gap-1.5">
+    // The composer card, and the footer (see composer-footer.tsx) as a drawer
+    // pulled out from under it: inset either side, rounded along the bottom
+    // only, and tucked up behind the card so there is no seam between them.
+    //
+    // They used to be two elements 6px apart, and since the composer is frosted
+    // and the thread scrolls behind it, that 6px was a slot of sharp text
+    // running between two blurred surfaces. Attaching the drawer closes the slot
+    // without making the footer a compartment of the card — which it is not: it
+    // says what the conversation is, not what you are about to send.
+    <div className="flex flex-col">
       <div
         className={cn(
-          "relative overflow-hidden rounded-[0.875rem] border border-input shadow-sm transition-colors",
+          // Above the drawer, and opaque enough to hide the part of it that
+          // reaches up behind the card.
+          "z-10",
+          // A hairline, not a form-control boundary: `border-input` is tuned to
+          // 3:1 because it has to say "click here" on a bare page, and around
+          // the largest element in the app that weight reads as a frame drawn
+          // around the whole screen. The composer says what it is by being a
+          // raised sheet (the card surface below) — the edge only has to close
+          // the shape.
+          "relative overflow-hidden rounded-(--radius-composer) border shadow-raised transition-colors",
           // Frosted, not merely translucent. The composer sits above the thread
           // (see the sticky wrapper in chat-thread.tsx), so scrolling back
           // through a conversation moves text behind it, and a solid card
@@ -678,7 +722,10 @@ export function ChatComposer({
           // solid card or a clear one. The saturate is the rest of the effect —
           // blurring alone greys out what it averages, and real frosted glass
           // keeps the colour of what is behind it.
-          "bg-background/75 backdrop-blur-2xl backdrop-saturate-150",
+          // The card surface rather than the page's: the composer is a sheet
+          // resting on the thread, and taking the page's own colour made it a
+          // hole in the page that only its outline distinguished.
+          "bg-card/75 backdrop-blur-2xl backdrop-saturate-150",
           "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
           disabled && "opacity-70"
         )}
@@ -705,7 +752,7 @@ export function ChatComposer({
         {/* Drop target feedback. pointer-events-none so it never steals the
             dragleave that would otherwise end the drag it's announcing. */}
         {isDraggingFiles && (
-          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-[0.875rem] border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
+          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-(--radius-composer) border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
             <Paperclip className="size-4" />
             Drop to add
           </div>
@@ -754,11 +801,20 @@ export function ChatComposer({
           onRenameTitle={onRenameTitle}
           contextTokensUsed={contextTokensUsed}
           contextWindow={contextWindow}
-          // The same not-quite-opaque surface as the card above it: the footer
-          // is outside the card's outline but on the same floating plane, and a
-          // clear strip under a translucent card would put sharp thread text
-          // directly beneath blurred thread text.
-          className="rounded-lg bg-background/75 py-1 backdrop-blur-md"
+          // The drawer. `mx-2` is the inset that makes it read as a thing under
+          // the composer rather than a continuation of it; `-mt-3` reaches it
+          // back up behind the card, so the two rounded shapes meet with no
+          // notch of thread showing between them. No border, and a surface
+          // faint enough to be invisible against the page — it only resolves
+          // into a plate when text passes under it, which is the whole job it
+          // has to do.
+          //
+          // The padding is asymmetric *so that it looks symmetric*: 12px of the
+          // top is hidden behind the card, so `pt-4` (16px) leaves 4px of
+          // visible space above the text and `pb-1` gives it the same below.
+          // Centring the box would put the text high by exactly the overlap.
+          // Keep the two in step — `pt` is always the overlap plus `pb`.
+          className="mx-2 -mt-3 rounded-b-(--radius-composer) bg-card/60 px-2 pt-4 pb-1 backdrop-blur-md"
         />
       )}
     </div>
