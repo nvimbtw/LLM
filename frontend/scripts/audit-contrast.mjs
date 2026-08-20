@@ -39,6 +39,9 @@ const pairs = (t) => [
   ["primary-foreground / primary",       t["primary-foreground"],t.primary,    4.5],
   ["destructive / background",           t.destructive,          t.background, 4.5],
   ["destructive / card",                 t.destructive,          t.card,       4.5],
+  // Selected text sets its own foreground, so this pair is the whole story —
+  // whatever was selected, this is what it reads as while it is.
+  ["selection-fg / selection",           t["selection-foreground"], t.selection, 4.5],
   ["border / background",                t.border,               t.background, 1.8],
   ["border / card",                      t.border,               t.card,       1.8],
   ["input / background",                 t.input,                t.background, 3.0],

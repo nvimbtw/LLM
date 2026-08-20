@@ -18,7 +18,8 @@ Guidance for building and fixing the frontend half of the project.
 frontend/
 ├── app/             App Router pages and layouts (server components by default)
 │   ├── layout.tsx   Root layout: ThemeProvider → providers
-│   ├── (app)/       The signed-in frame: sidebar, header, scroll container
+│   ├── (app)/       The signed-in frame: sidebar and scroll container. No
+│   │                header bar — see the layout for why.
 │   │   ├── admin/       the admin panel — the queue, and the way to the rest
 │   │   ├── chat/[id]/ · conversations/ · models/ · usage/ · profile/
 │   │   ├── jobs/        [id] and new/{train,benchmark}; the bare path redirects
@@ -117,6 +118,14 @@ reasoning for a *value* is written on it in the palette, the reasoning for a
 drift: it lets a subtree render the light theme while the app is in the dark
 one, which is what the `/colors` fixture uses to show both at once.
 
+**Selected text** is a role like any other — `--selection` / `--selection-foreground`,
+resolved in `::selection` in the base layer. Both modes take Kanagawa's own
+`Visual` colour (waveBlue1 under Dragon, lotusViolet3 under Lotus), which is the
+one role where upstream's answer is exactly the right one. The foreground is
+pinned rather than inherited, so the ratio is a fact rather than a function of
+whatever happens to be selected — which is also why selecting coloured text
+drops its colour, the same as in an editor.
+
 Every pair is checked by
 
 ```sh
@@ -195,10 +204,10 @@ fighting the scale with `tracking-tight`.
 ### Radius roles
 
 `--radius-sheet`, `--radius-control`, `--radius-control-sm`, `--radius-marker`,
-and — pinned off the scale — `--radius-bubble`, `--radius-composer`,
-`--radius-composer-bar`. Chat is the one place the app is allowed to be round,
-and its three values are absolute so that squaring the app's corners cannot
-reach into the composer.
+and — pinned off the scale — `--radius-composer` and `--radius-bubble`, which
+follows it. Chat is the one place the app is allowed to be round, and those
+values are absolute so that squaring the app's corners cannot reach into the
+composer.
 
 No component spells `rounded-lg`/`rounded-md` any more. The only bare radius
 utilities left are `rounded-full` (pills, avatars), `rounded-none`, and three
@@ -232,6 +241,14 @@ Either side of the sheet:
   popup, a dialog, a toast, a chart tooltip. It separates from a sheet that is
   *already* casting a shadow, so the difference is travel (48px) rather than
   darkness.
+
+**Two surfaces are frosted**, and only two: the composer and the toast
+(`bg-*/75 backdrop-blur-2xl backdrop-saturate-150`). Both land on top of content
+that is still live underneath — a thread being scrolled, a queue that is moving —
+and a solid card cuts a hole in it. The blur is what stops what passes behind
+from being *readable*, and the saturate puts back the colour that blurring alone
+averages away. Everything else that floats is opaque: a menu or a dialog replaces
+your attention rather than sharing it.
 
 Every elevation lives in the theme layer with the other roles. The two modes are
 deliberately **not** the same shape: light lifts with a shadow mixed from the ink
@@ -355,6 +372,24 @@ The two tool frames bracket the wait: `tool_call` the moment the marker closes
 streaming), `tool_result` once the backend has run it. `body` is in the marker
 vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
 
+### Acting on a message you sent
+
+A user bubble carries three actions (`UserActions` in
+`components/chat/chat-message.tsx`): copy, "edit and ask again", "ask again".
+
+**Both re-ask; neither rewrites.** A new turn is appended with the same (or
+amended) question, and the original stays where it is. That is a property of the
+data, not a UI choice — there is no route that removes a stored message
+(`routes/chats.rs` has create, rename, and delete-the-whole-chat, nothing
+finer), and the thread *is* the prompt, so editing in place would either lie
+about what was sent or silently drop everything after it. Giving these branching
+semantics means adding a truncate to the backend and the engine first.
+
+Edit goes through the composer rather than sending directly, via its `draft`
+prop — so the question can actually be changed, and so sending still happens on
+the one path that owns sending. The prop is keyed by object identity, not by the
+string: editing the same message twice has to load it twice.
+
 ### The trace
 
 A turn's working — the first round's reply plus what each call came back with —
@@ -434,7 +469,10 @@ footer, beside Settings — not a labelled nav group. The row is a mode of the a
 you have access to, which is what the footer holds; the content above it is the
 subject you are reading.
 
-- `/admin` is the panel: `JobsView` as the hero, `AdminDirectory` below it.
+- `/admin` is the panel, in three parts: `QueueView` as the hero,
+  `AdminDirectory` under it, and `HistoryView` last. **The directory sits
+  between the two halves of the queue on purpose** — history is unbounded, so
+  anything below it is reached only by scrolling past every run ever made.
   **Add an admin destination to the directory, not to the sidebar** — a
   directory has room for a sentence saying what a page is, and a nav row does
   not. The two bands are what puts work on the GPU (`WORKBENCH`) and what only
@@ -471,9 +509,11 @@ running train for it, and because the queue already has the frames, the cancel
 and the job page it wants. Composed at `/tokenizers`, beside the list of what has
 been built — a vocabulary is picked far more often than it is built.
 
-- **The board lives at `/admin`**, as the hero of the panel — `JobsView` is
-  mounted there, and `/jobs` is a redirect kept only so bookmarked URLs work.
-  `/jobs/{id}` and `/jobs/new/*` are unchanged.
+- **The board lives at `/admin`**, as the hero of the panel — `QueueView` and
+  `HistoryView` are mounted there, and `/jobs` is a redirect kept only so
+  bookmarked URLs work. `/jobs/{id}` and `/jobs/new/*` are unchanged. The two
+  are separate components only so the panel can put its directory between them;
+  they read from the same `JobsProvider` and are one ledger.
 
 #### Composing a training run
 

@@ -30,9 +30,10 @@ import { ModelsFilter, type Visibility } from "./models-filter"
  * Previously this nested a family section inside a visibility section inside the
  * grid — two levels of heading over a set that is usually a dozen rows, so the page
  * was mostly scaffolding and the same family appeared twice whenever it held both a
- * published and an unpublished model. Family and visibility are now filters
- * (`ModelsFilter`), which is what they always were: ways of narrowing one list, not
- * a hierarchy the list has.
+ * published and an unpublished model. Visibility is now a filter (`ModelsFilter`),
+ * which is what it always was: a way of narrowing one list, not a hierarchy the
+ * list has. Family is narrowed through the search — the query is matched against
+ * it below — rather than through a second row of controls.
  *
  * The grid itself is sorted largest-first. Size is the one ordering that reads
  * without a heading to explain it, and it puts the model most likely to be wanted
@@ -43,13 +44,12 @@ export function ModelsGrid() {
   const { models, isLoading, error } = useModels(refreshKey)
   const { isAdmin } = useAuth()
 
-  const [family, setFamily] = React.useState<string | null>(null)
   const [visibility, setVisibility] = React.useState<Visibility>("all")
   const [query, setQuery] = React.useState("")
   const [selecting, setSelecting] = React.useState(false)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(new Set())
 
-  const families = React.useMemo(() => familyCounts(models), [models])
+  const families = React.useMemo(() => countFamilies(models), [models])
   const counts = React.useMemo(
     () => ({
       all: models.length,
@@ -62,7 +62,6 @@ export function ModelsGrid() {
   const shown = React.useMemo(() => {
     const needle = query.trim().toLowerCase()
     return models
-      .filter((m) => family === null || familyOf(m) === family)
       .filter((m) =>
         visibility === "all"
           ? true
@@ -76,7 +75,7 @@ export function ModelsGrid() {
           familyOf(m).toLowerCase().includes(needle)
       )
       .sort((a, b) => b.params - a.params)
-  }, [models, family, visibility, query])
+  }, [models, visibility, query])
 
   // Selection is held as ids and resolved against the *whole* registry, not the
   // filtered view: narrowing the filter must not silently drop what is already
@@ -172,12 +171,9 @@ export function ModelsGrid() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Ledger models={models} families={families.length} />
+      <Ledger models={models} families={families} />
 
       <ModelsFilter
-        families={families}
-        family={family}
-        onFamily={setFamily}
         visibility={visibility}
         onVisibility={setVisibility}
         counts={counts}
@@ -258,12 +254,8 @@ function Figure({
 }) {
   return (
     <div className="pr-6">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="figure mt-1.5 text-2xl">
-        {value}
-      </dd>
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
+      <dd className="mt-1.5 figure text-2xl">{value}</dd>
       {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
@@ -414,15 +406,8 @@ function familyOf(model: Model): string {
   return model.family || "Custom"
 }
 
-// Families with how many models each holds, alphabetical — the order a filter row
-// is read in, unlike the grid, which is ordered by size.
-function familyCounts(models: Model[]): { name: string; count: number }[] {
-  const counts = new Map<string, number>()
-  for (const model of models) {
-    const name = familyOf(model)
-    counts.set(name, (counts.get(name) ?? 0) + 1)
-  }
-  return Array.from(counts, ([name, count]) => ({ name, count })).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  )
+// How many distinct families the registry holds — a ledger figure, and the only
+// thing left that needs to know. The per-family counts went with the chips.
+function countFamilies(models: Model[]): number {
+  return new Set(models.map(familyOf)).size
 }

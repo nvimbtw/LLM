@@ -234,11 +234,10 @@
      were 16px and 14px, two pixels apart and inches apart on screen, which read
      as a mistake rather than as a distinction; and a message *is* the thing you
      just typed into the composer, so it should keep the composer's shape. One
-     token now, so they cannot drift again. `composer-bar` is the footer strip
-     inside the composer and keeps its own, softer corner. */
+     token now, so they cannot drift again. There is no third value for the
+     footer: it is a band inside the composer, on the composer's own corner. */
   --radius-composer: 0.875rem;
   --radius-bubble: var(--radius-composer);
-  --radius-composer-bar: 0.375rem;
 }
 
 /* ---- The eyebrow, as a utility -----------------------------------------
@@ -343,6 +342,7 @@
   --kanagawa-dragon-yellow-vivid: #b98a2c; /* ours — the amber half of a polarity pair */
   --kanagawa-dragon-orange-light: #c2a184; /* ours, from dragonOrange (#b6927b) */
   --kanagawa-dragon-aqua-light: #79cbb8; /* ours — L* 76.2, a pale aqua */
+  --kanagawa-dragon-wave-blue1: #223249; /* upstream waveBlue1 — what Kanagawa itself selects text with */
   /* An ordered terracotta ramp, ours entirely: upstream has no sequential
      scale. Monotone in lightness (OKLCH 0.53 → 0.66 → 0.78), each step clear
      of the chroma floor, which is the check a sequential ramp answers to. */
@@ -393,6 +393,7 @@
   --kanagawa-lotus-green-deep: #4e6733; /* ours */
   --kanagawa-lotus-pink: #b35b79; /* upstream lotusPink */
   --kanagawa-lotus-violet2: #766b90; /* upstream lotusViolet2 */
+  --kanagawa-lotus-violet3: #c9cbd1; /* upstream lotusViolet3 — Lotus's own selection wash */
   --kanagawa-lotus-violet2-deep: #655a80; /* ours */
   --kanagawa-lotus-red-deep: #c43b4f; /* ours, from lotusRed (#c84053) — 4.54:1, over AA */
   --kanagawa-lotus-yellow3-deep: #bf7c00; /* ours, from lotusYellow3 (#de9800), which measured 2.21:1 and sank into the page */
@@ -527,6 +528,22 @@
   --kind-tokenize-light: var(--kanagawa-lotus-orange-deep);
   --kind-tokenize-dark: var(--kanagawa-dragon-orange-light);
 
+  /* Selected text. Both modes take Kanagawa's own `Visual` colour rather than
+     something invented — waveBlue1 under Dragon, lotusViolet3 under Lotus —
+     which is the one role where upstream's answer is exactly the answer here.
+     A wash, not a tint of `--primary`: a link and a selection would otherwise
+     be the same blue, and the browser default (a saturated system blue) is the
+     one colour on screen belonging to no scheme at all.
+
+     The foreground is pinned rather than inherited, so the ratio is a fact and
+     not a function of whatever happens to be selected — 7.74:1 in the dark
+     mode, 5.00:1 in the light one. That is also why selecting a coloured run of
+     text drops its colour: correctness over prettiness, the same as an editor. */
+  --selection-light: var(--kanagawa-lotus-violet3);
+  --selection-dark: var(--kanagawa-dragon-wave-blue1);
+  --selection-foreground-light: var(--kanagawa-lotus-ink-soft);
+  --selection-foreground-dark: var(--kanagawa-dragon-white);
+
   /* The throbber's pair: the segment's resting colour and the colour it warms
      to as it works — the one place in the app a second hue is spent on a
      status mark. It used to borrow `--primary` for the base, which put the two
@@ -580,28 +597,38 @@
      plus a 6% highlight along the top edge, the way a real pane catches the
      light above it. That is why the two halves are not the same shape. */
   --elevation-sheet-light:
-    0 1px 1px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 5%, transparent),
-    0 10px 24px -10px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 22%, transparent);
+    0 1px 1px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 5%, transparent),
+    0 10px 24px -10px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 22%, transparent);
   --elevation-sheet-dark:
-    inset 0 1px 0 color-mix(in oklab, var(--kanagawa-dragon-white) 6%, transparent),
-    0 12px 26px -12px color-mix(in oklab, var(--kanagawa-dragon-black0) 60%, transparent);
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 6%, transparent),
+    0 12px 26px -12px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 60%, transparent);
   --elevation-sheet-hover-light:
-    0 2px 4px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 7%, transparent),
-    0 16px 32px -12px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 28%, transparent);
+    0 2px 4px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 7%, transparent),
+    0 16px 32px -12px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 28%, transparent);
   --elevation-sheet-hover-dark:
-    inset 0 1px 0 color-mix(in oklab, var(--kanagawa-dragon-white) 9%, transparent),
-    0 16px 32px -12px color-mix(in oklab, var(--kanagawa-dragon-black0) 70%, transparent);
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 9%, transparent),
+    0 16px 32px -12px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 70%, transparent);
 
   /* Below the sheet: a control that sits a hair proud of its surface — the
      checkbox, the switch thumb, the active tab, the composer. Spelled
      `shadow-sm` in six places, which is Tailwind's default black at 5% and takes
      no account of the theme; on the dragon ground it is invisible, which is why
      those controls read as flat in dark mode. */
-  --elevation-raised-light:
-    0 1px 2px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 8%, transparent);
+  --elevation-raised-light: 0 1px 2px
+    color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 8%, transparent);
   --elevation-raised-dark:
-    inset 0 1px 0 color-mix(in oklab, var(--kanagawa-dragon-white) 5%, transparent),
-    0 1px 2px color-mix(in oklab, var(--kanagawa-dragon-black0) 40%, transparent);
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 5%, transparent),
+    0 1px 2px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 40%, transparent);
 
   /* Above the sheet: anything that floats free of the page — a menu, a select
      popup, a dialog, a toast, a chart tooltip. One job, and it was spelled three
@@ -614,11 +641,15 @@
      travel, not darkness. In dark the highlight is stronger than the sheet's,
      because on near-black the top edge is the only thing that says "in front". */
   --elevation-overlay-light:
-    0 2px 4px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 6%, transparent),
-    0 24px 48px -16px color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 30%, transparent);
+    0 2px 4px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 6%, transparent),
+    0 24px 48px -16px
+      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 30%, transparent);
   --elevation-overlay-dark:
-    inset 0 1px 0 color-mix(in oklab, var(--kanagawa-dragon-white) 10%, transparent),
-    0 24px 48px -16px color-mix(in oklab, var(--kanagawa-dragon-black0) 78%, transparent);
+    inset 0 1px 0
+      color-mix(in oklab, var(--kanagawa-dragon-white) 10%, transparent),
+    0 24px 48px -16px
+      color-mix(in oklab, var(--kanagawa-dragon-black0) 78%, transparent);
 }
 
 /* ═══ 3. The active mode ═══════════════════════════════════════════════════
@@ -665,6 +696,8 @@
   --kind-benchmark: var(--kind-benchmark-light);
   --kind-chat: var(--kind-chat-light);
   --kind-tokenize: var(--kind-tokenize-light);
+  --selection: var(--selection-light);
+  --selection-foreground: var(--selection-foreground-light);
   --throbber-spark: var(--throbber-spark-light);
   --throbber-base: var(--throbber-base-light);
   --sidebar: var(--sidebar-light);
@@ -714,6 +747,8 @@
   --kind-benchmark: var(--kind-benchmark-dark);
   --kind-chat: var(--kind-chat-dark);
   --kind-tokenize: var(--kind-tokenize-dark);
+  --selection: var(--selection-dark);
+  --selection-foreground: var(--selection-foreground-dark);
   --throbber-spark: var(--throbber-spark-dark);
   --throbber-base: var(--throbber-base-dark);
   --sidebar: var(--sidebar-dark);
@@ -752,6 +787,16 @@
   html {
     @apply font-sans;
   }
+  /* One rule, no `::-moz-selection` twin — Firefox has understood the standard
+     spelling for years. Set on the universal selector as well as the root
+     because a `::selection` declared on an ancestor does not cascade into a
+     descendant that declares its own; nothing here does, and this keeps it that
+     way if something ever tries. */
+  ::selection,
+  *::selection {
+    background-color: var(--selection);
+    color: var(--selection-foreground);
+  }
 }
 
 /* Streamed words ease in as they arrive. */
@@ -765,6 +810,55 @@
 }
 .word-fade {
   animation: word-fade-in 0.4s ease both;
+}
+
+/* ---- The new-chat figure, idling -----------------------------------------
+   `FigureHorizon` is a rule opened at the centre with four half-rings over the
+   aperture. At rest it now breathes: a slow swell travels outward through the
+   rings, and the point at the centre pulses under them — a mark that is waiting
+   for a question rather than a diagram of one.
+
+   Opacity only. Nothing moves, nothing is redrawn, and the rings keep their
+   authored relationship to each other because each animates around its own
+   base value (`--o`, set at the call site) rather than to a shared constant.
+   The stagger (`--d`) is what makes it a wave leaving the centre instead of
+   four rings blinking together.
+
+   14s is deliberately slower than it looks like it should be: this sits above
+   the composer, which has to stay the subject of the screen, and anything
+   quick enough to notice is quick enough to compete. */
+@keyframes horizon-breathe {
+  0%,
+  100% {
+    stroke-opacity: calc(var(--o) * 0.55);
+  }
+  45% {
+    stroke-opacity: calc(var(--o) * 1.75);
+  }
+}
+@keyframes horizon-core {
+  0%,
+  100% {
+    fill-opacity: 0.45;
+  }
+  45% {
+    fill-opacity: 1;
+  }
+}
+.horizon-ring {
+  animation: horizon-breathe 14s ease-in-out infinite;
+  animation-delay: var(--d, 0s);
+}
+.horizon-core {
+  animation: horizon-core 14s ease-in-out infinite;
+}
+/* The figure is decoration, so reduced motion gets the static mark it was
+   before — not a slower version of the same movement. */
+@media (prefers-reduced-motion: reduce) {
+  .horizon-ring,
+  .horizon-core {
+    animation: none;
+  }
 }
 
 /* "Thinking…" — a soft highlight sweeping across the text. Seamless because the

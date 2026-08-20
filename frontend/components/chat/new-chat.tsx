@@ -31,12 +31,11 @@ export function NewChat() {
   }
 
   return (
-    // pb-12 biases the centered group upward by half its value (24px) — this
-    // sits inside <main>, which itself starts 48px down from the true page
-    // top (the h-12 header in (app)/layout.tsx), so centering on <main>'s own
-    // box alone lands 24px low. The padding cancels exactly that, so the
-    // group centers on the page, not just on the box it happens to be in.
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4 pb-12">
+    // No optical correction any more: <main> now starts at the true page top
+    // (the 48px header this used to cancel is gone — see (app)/layout.tsx), so
+    // centring on its own box and centring on the page are the same thing. The
+    // old `pb-12` would now push the group 24px *high*.
+    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4">
       {/* Only the empty state gets a figure. A conversation with messages in it
           has a subject already, and `chat-thread.tsx` stays as it was. */}
       <FigureHorizon className="max-w-md" />

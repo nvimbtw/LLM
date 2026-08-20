@@ -6,6 +6,7 @@ import { hasVisibleContent, isInThinkingBlock } from "@/lib/message-parser"
 import { useChat } from "@/hooks/use-chat"
 import { ChatComposer } from "./chat-composer"
 import { useChats } from "./chats-provider"
+import { useComposerChoice } from "./composer-choice-provider"
 
 /** How close (px) to the bottom the user must be for auto-scroll to engage. */
 const STICK_TO_BOTTOM_THRESHOLD_PX = 120
@@ -27,7 +28,14 @@ export function ChatThread({ chatId }: { chatId: string }) {
     rateMessage,
   } = useChat(chatId)
   const { conversations, renameChat } = useChats()
+  // Resending asks the same question with whatever the composer is currently set
+  // to — the model and budget are a property of the ask, not of the message
+  // being repeated, so a re-ask picks up a model you switched to since.
+  const { model, budget } = useComposerChoice()
   const chatSummary = conversations.find((c) => c.id === chatId)
+  // What "edit and ask again" has loaded into the composer. A fresh object each
+  // time, so editing the same message twice loads it twice — see ChatComposer.
+  const [draft, setDraft] = React.useState<{ text: string } | undefined>()
   const scrollRef = React.useRef<HTMLDivElement>(null)
   // Whether to keep the thread pinned to the bottom. Driven by the user's own
   // wheel/touch gestures (see trackStickIntent) so our programmatic scrolls
@@ -114,17 +122,32 @@ export function ChatThread({ chatId }: { chatId: string }) {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      {/* A flex column, so the thread below can be told to absorb whatever
+          height the messages don't use. Without that, `sticky bottom-0` on the
+          composer does nothing until the thread is long enough to scroll —
+          sticky only pins an element that would otherwise leave the viewport —
+          and a two-message conversation left the composer stranded halfway up
+          the page with empty space under it. */}
       <div
         ref={scrollRef}
         onWheel={trackStickIntent}
         onTouchMove={trackStickIntent}
-        className="flex-1 overflow-y-auto"
+        className="flex flex-1 flex-col overflow-y-auto"
       >
-        {/* gap-7 rather than gap-4: replies are now set at 16px with a 1.65 line,
-            and at that size four units between turns reads as one continuous
-            column of text instead of an exchange. The air is what separates who
-            is speaking, since the assistant side has no bubble to do it. */}
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-7 px-4 py-8">
+        {/* `flex-1` is the piece that puts the composer on the floor: short
+            threads stretch this block to fill the column and push the composer
+            down, long ones grow past it and scroll as before (a flex item's
+            `min-height: auto` is what stops the `flex-basis: 0` from crushing
+            it). Messages stay top-aligned either way — a two-line exchange
+            floating at the bottom of an empty page reads as the end of
+            something rather than the start.
+
+            gap-7 rather than gap-4: replies are now set at 16px with a 1.65
+            line, and at that size four units between turns reads as one
+            continuous column of text instead of an exchange. The air is what
+            separates who is speaking, since the assistant side has no bubble to
+            do it. */}
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-7 px-4 py-8">
           {isLoading ? (
             <div className="flex justify-center px-1 py-8">
               <Throbber mode="loading" />
@@ -148,6 +171,17 @@ export function ChatThread({ chatId }: { chatId: string }) {
                       ? (feedback) => void rateMessage(id, feedback)
                       : undefined
                   }
+                  // Both re-ask rather than rewrite — see `UserActions`. Edit
+                  // routes through the composer so the question can be changed,
+                  // and so it is sent by the one path that owns sending.
+                  onEdit={(content) => setDraft({ text: content })}
+                  onResend={(content) =>
+                    void sendMessage(content, model, budget)
+                  }
+                  // No model chosen yet means the list is still loading, and a
+                  // send with an empty id would fail on the socket rather than
+                  // in the UI.
+                  busy={isSending || !model}
                 />
               )
             })
@@ -224,6 +258,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
             title={chatSummary?.title ?? "New chat"}
             onRenameTitle={(next) => void renameChat(chatId, next)}
             contextTokensUsed={contextTokensUsed}
+            draft={draft}
           />
         </div>
       </div>

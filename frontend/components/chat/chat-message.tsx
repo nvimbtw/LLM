@@ -1,7 +1,14 @@
 "use client"
 
 import * as React from "react"
-import { ThumbsDown, ThumbsUp } from "lucide-react"
+import {
+  Check,
+  Copy,
+  Pencil,
+  RotateCcw,
+  ThumbsDown,
+  ThumbsUp,
+} from "lucide-react"
 
 import type { ChatMessage } from "@/hooks/use-chat"
 import type { Feedback } from "@/lib/feedback"
@@ -15,17 +22,29 @@ export function ChatMessageBubble({
   message,
   streaming = false,
   onRate,
+  onEdit,
+  onResend,
+  busy = false,
 }: {
   message: ChatMessage
   streaming?: boolean
   // Absent on a reply that can't be rated (no server id yet).
   onRate?: (feedback: Feedback) => void
+  // User messages only: put this question back in the composer to change it, and
+  // ask it again as it stands. Both append a new turn — see `UserActions`.
+  onEdit?: (content: string) => void
+  onResend?: (content: string) => void
+  /** A turn is already in flight, so nothing may start another one. */
+  busy?: boolean
 }) {
   // User messages use a markdown subset; assistant messages use the model's markup.
   if (message.role === "user") {
     const tree = parseUserMarkdown(message.content)
     return (
-      <div className="flex w-full justify-end">
+      // `group` so the actions below can dim until the turn is hovered, and
+      // `flex-col items-end` so they hang under the bubble's right edge rather
+      // than under the column's.
+      <div className="group flex w-full flex-col items-end">
         {/* Capped in `ch` as well as `%`: a percentage alone means a two-word
             question and a five-line one get wildly different shapes, and the long
             one runs to a measure nobody wants to read right-aligned.
@@ -49,6 +68,13 @@ export function ChatMessageBubble({
               it is this. */}
           <RichContent root={tree} className="text-base" />
         </div>
+
+        <UserActions
+          content={message.content}
+          onEdit={onEdit}
+          onResend={onResend}
+          busy={busy}
+        />
       </div>
     )
   }
@@ -101,6 +127,106 @@ export function ChatMessageBubble({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * What you can do with a question you already asked: copy it, edit it, ask it
+ * again.
+ *
+ * **Edit and resend both append a new turn** rather than rewriting the one that
+ * is there. That is a deliberate limit and not an oversight: the thread is the
+ * transcript the model is prompted with, and there is no route that removes a
+ * stored message (`backend/crates/api/src/routes/chats.rs` has create, rename
+ * and delete-the-whole-chat, and nothing finer). Editing in place would mean
+ * either lying about what was sent or silently discarding everything after it.
+ * Asking again, out loud, at the end, is the honest version of the same action —
+ * and it is what "resend" says on the label.
+ *
+ * Dimmed rather than hidden, for the reason written on the code block's copy
+ * button in `rich-message.tsx`: hover is the obvious way to reveal a control and
+ * the wrong one, because a touch screen has no hover and the affordance would
+ * simply not exist there.
+ */
+function UserActions({
+  content,
+  onEdit,
+  onResend,
+  busy,
+}: {
+  content: string
+  onEdit?: (content: string) => void
+  onResend?: (content: string) => void
+  busy: boolean
+}) {
+  const [copied, setCopied] = React.useState(false)
+
+  // The raw markdown, not the rendered text: what goes to the clipboard should
+  // be what you typed, so pasting it back into the composer asks the same
+  // question rather than a flattened version of it.
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard unavailable — ignore.
+    }
+  }
+
+  return (
+    <div className="mt-1.5 flex items-center gap-0.5 pr-0.5 opacity-45 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+      <MessageAction
+        icon={copied ? Check : Copy}
+        label={copied ? "Copied" : "Copy message"}
+        onClick={copy}
+      />
+      {onEdit && (
+        <MessageAction
+          icon={Pencil}
+          // Named for what it does, not for what it looks like it does: this
+          // loads the question into the composer, and sending it asks a new
+          // turn. "Edit" alone would promise the message is about to change.
+          label="Edit and ask again"
+          disabled={busy}
+          onClick={() => onEdit(content)}
+        />
+      )}
+      {onResend && (
+        <MessageAction
+          icon={RotateCcw}
+          label="Ask again"
+          disabled={busy}
+          onClick={() => onResend(content)}
+        />
+      )}
+    </div>
+  )
+}
+
+function MessageAction({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: typeof Copy
+  label: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="text-muted-foreground hover:text-foreground"
+    >
+      <Icon />
+    </Button>
   )
 }
 

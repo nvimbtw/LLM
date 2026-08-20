@@ -11,12 +11,19 @@ import { cn } from "@/lib/utils"
 export function Panel({
   title,
   description,
+  aside,
   className,
   bodyClassName,
   children,
 }: {
   title: string
   description?: string
+  /**
+   * One short fact about the panel as a whole, set against the right edge of its
+   * header — when the panel was scored, how many rows it holds. Not a place for
+   * a control: an action belongs on the thing it acts on.
+   */
+  aside?: React.ReactNode
   className?: string
   bodyClassName?: string
   children: React.ReactNode
@@ -31,13 +38,16 @@ export function Panel({
         className
       )}
     >
-      <header className="border-b border-border px-5 py-4">
-        <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
-        {description && (
-          <p className="eyebrow mt-0.5 text-muted-foreground">
-            {description}
-          </p>
-        )}
+      <header className="flex items-baseline justify-between gap-3 border-b border-border px-5 py-4">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
+          {description && (
+            <p className="mt-0.5 eyebrow text-muted-foreground">
+              {description}
+            </p>
+          )}
+        </div>
+        {aside && <div className="shrink-0">{aside}</div>}
       </header>
       <div className={cn("p-5", bodyClassName)}>{children}</div>
     </section>

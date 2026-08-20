@@ -5,40 +5,33 @@ import { FormError } from "@/components/ui/error-state"
 import { useJobsContext } from "./jobs-provider"
 import { AddJobMenu } from "./add-job-menu"
 import { ChainBand } from "./chain-band"
-import { HistoryPager } from "./history-pager"
-import { JobHistory } from "./job-history"
 import { NowBand } from "./now-band"
 import { QueueBand } from "./queue-band"
 
 /**
- * The queue, as one ledger: what is running, what is waiting, what has finished.
+ * The queue: what is running, what is waiting on the GPU, and what is chained
+ * behind a job that has not finished yet.
  *
- * The three bands share a single frame rather than sitting in separate cards,
- * because they are one sequence read top to bottom — a job moves down it, and a
- * border between each stage would make that continuity into three lists.
+ * The bands share a single frame rather than sitting in separate cards, because
+ * they are one sequence read top to bottom — a job moves down it, and a border
+ * between each stage would make that continuity into three lists.
  *
- * Queue above history, always. They were briefly side by side to use the width,
- * but a history row carries seven columns of its own — time, label, kind, ran,
- * status, menu — and squeezing that into a third of the page cost more than the
- * empty margin did. The width is better spent letting each row breathe.
+ * Queue above history, always — but no longer *directly* above it. This and
+ * `HistoryView` are separate components so the admin panel can put its directory
+ * between them: history is the longest thing on that page, and every other admin
+ * destination used to sit below a ledger of every run ever made.
  */
-export function JobsView() {
+export function QueueView() {
   const {
     board,
     running,
     queued,
     waiting,
-    history,
-    historyTotal,
-    historyPage,
-    historyPages,
-    goToHistoryPage,
     paused,
     isLoading,
     error,
     cancel,
     remove,
-    retry,
     reorder,
     pause,
   } = useJobsContext()
@@ -51,7 +44,7 @@ export function JobsView() {
         <header className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border px-5 py-4">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
-            <p className="eyebrow mt-0.5 text-muted-foreground">
+            <p className="mt-0.5 eyebrow text-muted-foreground">
               {summarize(queued.length, running !== null, paused)}
             </p>
           </div>
@@ -96,24 +89,6 @@ export function JobsView() {
               Nothing queued. Add a job to put the GPU to work.
             </p>
           )}
-      </section>
-
-      <section className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
-        <header className="border-b border-border px-5 py-4">
-          <h2 className="text-sm font-semibold tracking-tight">History</h2>
-          {/* The count is the whole ledger, not the page — "25 jobs" on every page
-              of a hundred would be a worse answer to "how much have I run" than no
-              number at all. */}
-          <p className="eyebrow mt-0.5 text-muted-foreground">
-            {historyTotal} {historyTotal === 1 ? "job" : "jobs"}
-          </p>
-        </header>
-        <JobHistory jobs={history} onRetry={retry} onDelete={remove} />
-        <HistoryPager
-          page={historyPage}
-          pages={historyPages}
-          onGo={goToHistoryPage}
-        />
       </section>
     </div>
   )
