@@ -75,10 +75,13 @@ export async function apiFetch(
   path: string,
   init: RequestInit = {}
 ): Promise<Response> {
-  const response = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: { ...authHeaders(), ...(init.headers ?? {}) },
-  })
+  const headers = new Headers({ ...authHeaders(), ...(init.headers ?? {}) })
+  // A multipart body is only parseable with the boundary the browser generates,
+  // and it only writes the header when nothing has claimed it — so the JSON
+  // default `authHeaders` names has to come back off for an upload.
+  if (init.body instanceof FormData) headers.delete("Content-Type")
+
+  const response = await fetch(`${API_URL}${path}`, { ...init, headers })
   if (response.status === 401) {
     handleSessionExpired()
     throw new Error("Your session has expired. Please log in again.")

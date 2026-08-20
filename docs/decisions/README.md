@@ -12,3 +12,4 @@ what was weighed, chosen, and rejected, dated once.
 | 2026-08-19 | [Dataset content in Postgres](dataset-content-in-postgres.md) | The data engine stores documents as rows, not files — what that cost, and the caps that pay for it |
 | 2026-08-19 | [A crate per service](a-crate-per-service.md) | Extracting a generic `service` crate, and why each service needs its own `Proxy` newtype |
 | 2026-08-19 | [The engine stopped owning training data](datasets-out-of-the-engine.md) | Corpora moved to the data engine and a run reads them by page through the backend — the one hop that runs toward it |
+| 2026-08-20 | [Attachments are stored, not read](attachments-are-stored-not-read.md) | Uploads live beside the messages they hang off, in the engine's database — and reach no prompt, enforced rather than assumed |

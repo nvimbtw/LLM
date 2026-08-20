@@ -216,6 +216,18 @@ mod tests {
     }
 
     #[test]
+    fn a_follow_up_carries_no_attachments() {
+        // They belong to the question, and the engine stored them with it. A
+        // second round that repeated them would try to bind rows already sent
+        // and fail the turn — see `_bind` in the engine's chats route.
+        let ask = json!({ "model_name": "tiny", "text": "what is this", "attachment_ids": ["a"] });
+        let mut next = json!({ "tool_result": { "tool": "web-search" } });
+        carry_settings(&ask, &mut next);
+
+        assert!(next.get("attachment_ids").is_none());
+    }
+
+    #[test]
     fn a_frame_the_client_has_never_seen_still_arrives_with_its_fields() {
         let frame = Frame {
             kind: "tool_call".to_string(),

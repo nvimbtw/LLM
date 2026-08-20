@@ -19,6 +19,30 @@ pub use reqwest::Method;
 /// a proof of anything.
 const UNSIGNED: &str = "unsigned";
 
+/// A file on its way to a service.
+///
+/// Named parts rather than a `Value`, because this is the one payload that is
+/// not JSON and cannot be forwarded by the generic path — a service that takes
+/// an upload takes it as multipart, and the field name is the service's to
+/// choose.
+pub struct FilePart {
+    pub field: String,
+    pub filename: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// A file on its way back, with what the service said it is.
+///
+/// The headers travel with the bytes because only the service knows them: this
+/// side stores nothing about the file and would otherwise have to guess a
+/// content type from a name it never saw.
+pub struct Blob {
+    pub media_type: String,
+    pub disposition: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub kind: String,
@@ -96,6 +120,10 @@ impl Proxy {
             request = request.json(&body);
         }
 
+        self.read_json(request).await
+    }
+
+    async fn read_json(&self, request: reqwest::RequestBuilder) -> Result<Value> {
         let response = request
             .send()
             .await
@@ -112,6 +140,56 @@ impl Proxy {
             return Ok(Value::Null);
         }
         serde_json::from_str(&text).map_err(|e| Error::Decode(format!("{e}: {text}")))
+    }
+
+    /// A file, forwarded as multipart. The service answers with JSON like any
+    /// other route — an upload is a write, and what it wrote is a row.
+    pub async fn upload(&self, caller: &auth::Caller, path: &str, file: FilePart) -> Result<Value> {
+        let part = reqwest::multipart::Part::bytes(file.bytes)
+            .file_name(file.filename)
+            .mime_str(&file.media_type)
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        let form = reqwest::multipart::Form::new().part(file.field, part);
+
+        let mut request = self.http.post(self.url(path)).multipart(form);
+        if let Some(header) = self.authorization(caller) {
+            request = request.header(reqwest::header::AUTHORIZATION, header);
+        }
+        self.read_json(request).await
+    }
+
+    /// A response that is bytes rather than JSON.
+    ///
+    /// Buffered, not streamed: what comes back this way is capped by the
+    /// service that stores it, and a streaming body would have to carry the
+    /// upstream's failure through a stream this side has already answered.
+    pub async fn fetch(&self, caller: &auth::Caller, path: &str) -> Result<Blob> {
+        let mut request = self.http.get(self.url(path));
+        if let Some(header) = self.authorization(caller) {
+            request = request.header(reqwest::header::AUTHORIZATION, header);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(status_error(response).await);
+        }
+
+        let media_type = header_of(&response, reqwest::header::CONTENT_TYPE)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let disposition = header_of(&response, reqwest::header::CONTENT_DISPOSITION);
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?;
+
+        Ok(Blob {
+            media_type,
+            disposition,
+            bytes: bytes.to_vec(),
+        })
     }
 
     /// A service's event stream, frame by frame. It replays what a run has
@@ -176,6 +254,14 @@ impl Proxy {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
+}
+
+fn header_of(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 /// Frames are delimited by a blank line and a chunk can split one anywhere, so

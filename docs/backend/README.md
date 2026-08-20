@@ -69,6 +69,19 @@ payload is `serde_json::Value` on purpose — a field the engine adds needs no
 change here, and `upstream::Upstream` carries the service's own status back, so
 a 404 stays a 404 instead of becoming a generic 502.
 
+**One pair of routes forwards something that is not JSON.** `/attachments` takes
+a multipart upload from the browser and forwards it as multipart to the engine
+(`Proxy::upload`), and serves the bytes back with the content type and
+disposition the engine set (`Proxy::fetch`) — this side stores nothing about a
+file and would otherwise be guessing at a name it never saw. Both are buffered
+rather than streamed: the engine caps what it will store, and a streaming body
+cannot carry an upstream failure through a response already begun. The size
+ceiling is repeated here so an oversized body is refused at the edge rather than
+read into memory on its way to being refused; keep it in step with `MAX_BYTES`
+in `engine/api/routes/attachments.py`. What the engine does with them —
+and, more to the point, what it does not — is
+[`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
+
 The one thing this side decides is **who is asking**: `upstream::caller` turns
 the verified user token into the `act` claim of a short-lived service token, and
 the service scopes by that. A user token is never forwarded.

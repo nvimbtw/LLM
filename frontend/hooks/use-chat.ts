@@ -4,6 +4,11 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import { streamChat, type SamplingSettings } from "@/lib/chat-socket"
+import {
+  mapAttachment,
+  type Attachment,
+  type AttachmentWire,
+} from "@/lib/attachments"
 import { parseMessage, textContent, toolOf } from "@/lib/message-parser"
 import type { ToolAnswer } from "@/components/chat/trace"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
@@ -39,6 +44,9 @@ export interface ChatMessage {
   // on assistant messages that came back from the server — a reply still streaming
   // has no byline, and gains one when `onDone` refetches the persisted message.
   modelName?: string
+  // Files sent with the question. Only ever on a user turn: the model is not
+  // given them and so cannot answer with one.
+  attachments?: Attachment[]
 }
 
 // What GET /chat/:id returns per message. Kept separate from ChatMessage because the
@@ -52,6 +60,7 @@ interface MessageWire {
   content: string
   model_name: string | null
   feedback: Feedback | null
+  attachments: AttachmentWire[]
 }
 
 /**
@@ -102,6 +111,11 @@ function groupTurns(rows: MessageWire[]): ChatMessage[] {
       id: row.message_id,
       role: row.role,
       content: row.content,
+      // Absent rather than empty, so nothing downstream has to distinguish
+      // "no files" from "a row written before attachments existed".
+      attachments: row.attachments?.length
+        ? row.attachments.map(mapAttachment)
+        : undefined,
       // Normalized to undefined so the byline's presence check is a single
       // truthiness test rather than having to know about null as well.
       modelName: row.model_name ?? undefined,
@@ -222,13 +236,25 @@ export function useChat(chatId: string) {
   }, [fetchMessages])
 
   const sendMessage = React.useCallback(
-    (content: string, modelId: string, budget: ThinkBudget) => {
+    (
+      content: string,
+      modelId: string,
+      budget: ThinkBudget,
+      attachments: Attachment[] = []
+    ) => {
       setError(null)
       setIsSending(true)
       // User message + an empty assistant message we fill as tokens arrive.
+      // The question carries its attachments optimistically for the same reason
+      // it carries its text: the refetch on `done` replaces both with the rows
+      // the server actually wrote.
       setMessages((prev) => [
         ...prev,
-        { role: "user", content },
+        {
+          role: "user",
+          content,
+          attachments: attachments.length ? attachments : undefined,
+        },
         { role: "assistant", content: "" },
       ])
 
@@ -340,7 +366,7 @@ export function useChat(chatId: string) {
       return new Promise<void>((resolve) => {
         cancelRef.current = streamChat(
           chatId,
-          content,
+          { text: content, attachmentIds: attachments.map((a) => a.id) },
           modelId,
           systemRef.current,
           budget,
@@ -437,8 +463,15 @@ export function useChat(chatId: string) {
     const pending = takePendingMessage(chatId)
     // Intentional: starting the first turn here is the whole point of the
     // handoff, and takePendingMessage is one-shot so it can't loop.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (pending) sendMessage(pending.content, pending.modelId, pending.budget)
+    if (pending) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      sendMessage(
+        pending.content,
+        pending.modelId,
+        pending.budget,
+        pending.attachments
+      )
+    }
   }, [loadedOnce, chatId, takePendingMessage, sendMessage])
 
   // Rate a reply, or clear the rating by passing the value it already has —

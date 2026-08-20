@@ -10,6 +10,12 @@ import Placeholder from "@tiptap/extension-placeholder"
 import { useTheme } from "next-themes"
 
 import { cn } from "@/lib/utils"
+import {
+  discardAttachment,
+  uploadAttachment,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  type Attachment,
+} from "@/lib/attachments"
 import { Button } from "@/components/ui/button"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
 import {
@@ -150,7 +156,10 @@ export function ChatComposer({
   onSend: (
     content: string,
     modelId: string,
-    budget: ThinkBudget
+    budget: ThinkBudget,
+    // The uploads this turn claims. Rows already, not files — see
+    // `lib/attachments.ts` for why they are stored before the turn exists.
+    attachments: Attachment[]
   ) => Promise<void> | void
   disabled?: boolean
   // Stops the turn in flight. A reply is a queued job now, so it can be waiting
@@ -182,8 +191,8 @@ export function ChatComposer({
   const [editorText, setEditorText] = React.useState("")
   const [selectedIndex, setSelectedIndex] = React.useState(0)
   const [menuDismissed, setMenuDismissed] = React.useState(false)
-  // Staged, not yet wired to sending — see attachment-strip.tsx. Dropped on
-  // submit for now (`clearAttachments` in `submit`, below).
+  // Uploaded as they are picked; what is staged here is the *link* to a turn,
+  // which is made when the turn is sent. See `addFiles` below.
   const [attachments, setAttachments] = React.useState<PendingAttachment[]>([])
   const [isDraggingFiles, setIsDraggingFiles] = React.useState(false)
 
@@ -199,44 +208,36 @@ export function ChatComposer({
     onSendRef.current = onSend
   })
 
-  // Object URLs (image thumbnails) are only ever revoked here and in
-  // `removeAttachment` below — kept as the single place that owns their
-  // lifetime so none leak past a re-render or an unmount.
-  const clearAttachments = React.useCallback(() => {
+  // Object URLs (image thumbnails) are only ever revoked in the three callbacks
+  // below — kept as the only places that own their lifetime so none leak past a
+  // re-render or an unmount.
+  //
+  // Emptying the strip comes in two kinds and they are not interchangeable.
+  // After a send the rows belong to the turn, so only the local previews are
+  // released; abandoning them (the `/clear` command) has to take the rows with
+  // it, or every discarded draft leaves stored files nothing will ever claim.
+  const releaseAttachments = React.useCallback(() => {
     setAttachments((prev) => {
       for (const a of prev) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
       return []
     })
   }, [])
 
-  const addFiles = React.useCallback((files: FileList | File[]) => {
-    const incoming = Array.from(files)
-    if (incoming.length === 0) return
-    setAttachments((prev) => [
-      ...prev,
-      ...incoming.map((file): PendingAttachment => {
-        const isImage = file.type.startsWith("image/")
-        return {
-          id: crypto.randomUUID(),
-          file,
-          kind: isImage ? "image" : "file",
-          previewUrl: isImage ? URL.createObjectURL(file) : undefined,
-        }
-      }),
-    ])
-  }, [])
-
-  const removeAttachment = React.useCallback((id: string) => {
+  const discardAttachments = React.useCallback(() => {
     setAttachments((prev) => {
-      const target = prev.find((a) => a.id === id)
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
-      return prev.filter((a) => a.id !== id)
+      for (const a of prev) {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
+        // Nothing waits on this and nothing recovers from it: the row is the
+        // server's to sweep if the request never lands.
+        if (a.attachmentId) void discardAttachment(a.attachmentId).catch(() => {})
+      }
+      return []
     })
   }, [])
 
-  // Revoke whatever's left on unmount. `attachments` itself isn't a
-  // dependency — this should only run once, reading whatever the ref holds
-  // at that moment — so it's mirrored into a ref rather than closed over.
+  // The current strip, for the two callbacks below that read it without wanting
+  // to be rebuilt whenever it changes: `addFiles` needs to know how full it is,
+  // and the unmount sweep needs whatever it holds at the moment it runs.
   const attachmentsRef = React.useRef(attachments)
   React.useEffect(() => {
     attachmentsRef.current = attachments
@@ -249,14 +250,78 @@ export function ChatComposer({
     }
   }, [])
 
+  const settle = React.useCallback(
+    (key: string, change: Partial<PendingAttachment>) =>
+      setAttachments((prev) =>
+        prev.map((a) => (a.key === key ? { ...a, ...change } : a))
+      ),
+    []
+  )
+
+  // Picked is uploaded. The alternative — hold the files and send them with the
+  // turn — makes the first message of a new chat a different code path from
+  // every other one, because there is no conversation to attach to yet.
+  const addFiles = React.useCallback(
+    (files: FileList | File[]) => {
+      const incoming = Array.from(files)
+      if (incoming.length === 0) return
+
+      // Past the cap a file becomes a failed tile rather than being dropped:
+      // the strip already has a way to say "this one is not going", and
+      // silently ignoring half a drop is the version nobody notices.
+      const room = MAX_ATTACHMENTS_PER_MESSAGE - attachmentsRef.current.length
+      const staged = incoming.map((file, i): PendingAttachment => {
+        const isImage = file.type.startsWith("image/")
+        return {
+          key: crypto.randomUUID(),
+          file,
+          kind: isImage ? "image" : "file",
+          previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+          ...(i < room
+            ? { status: "uploading" as const }
+            : {
+                status: "failed" as const,
+                error: `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message.`,
+              }),
+        }
+      })
+      setAttachments((prev) => [...prev, ...staged])
+
+      for (const pending of staged.slice(0, Math.max(0, room))) {
+        uploadAttachment(pending.file)
+          .then((stored) =>
+            settle(pending.key, { status: "ready", attachmentId: stored.id })
+          )
+          .catch((err: unknown) =>
+            settle(pending.key, {
+              status: "failed",
+              error: err instanceof Error ? err.message : undefined,
+            })
+          )
+      }
+    },
+    [settle]
+  )
+
+  const removeAttachment = React.useCallback((key: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.key === key)
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+      if (target?.attachmentId) {
+        void discardAttachment(target.attachmentId).catch(() => {})
+      }
+      return prev.filter((a) => a.key !== key)
+    })
+  }, [])
+
   const clearComposer = React.useCallback(() => {
     setIsEmpty(true)
     setIsCommand(false)
     setEditorText("")
     setMenuDismissed(false)
     setSelectedIndex(0)
-    clearAttachments()
-  }, [clearAttachments])
+    discardAttachments()
+  }, [discardAttachments])
 
   const commandContext: CommandContext = React.useMemo(
     () => ({
@@ -579,14 +644,25 @@ export function ChatComposer({
 
     const markdown = docToMarkdown(editor.getJSON())
     if (!markdown.trim()) return
+
+    // Only the ones that made it. A failed upload is left visible rather than
+    // sent as nothing — but `canSend` already keeps the button off while any is
+    // in flight, so this drops nothing a person is still waiting on.
+    const sending: Attachment[] = attachments
+      .filter((a) => a.status === "ready" && a.attachmentId)
+      .map((a) => ({
+        id: a.attachmentId as string,
+        filename: a.file.name,
+        mediaType: a.file.type,
+        size: a.file.size,
+      }))
+
     editor.commands.clearContent()
     setIsEmpty(true)
     setEditorText("")
-    // Attachments aren't wired to the send path yet — they're discarded
-    // here rather than passed through. See attachment-strip.tsx.
-    clearAttachments()
-    onSendRef.current(markdown, model, budget)
-  }, [editor, disabled, model, budget, clearAttachments])
+    releaseAttachments()
+    onSendRef.current(markdown, model, budget, sending)
+  }, [editor, disabled, model, budget, attachments, releaseAttachments])
 
   React.useEffect(() => {
     submitRef.current = submit
@@ -650,7 +726,11 @@ export function ChatComposer({
     return () => document.removeEventListener("keydown", handleGlobalKeyDown)
   }, [disabled])
 
-  const canSend = !isEmpty && !disabled
+  // Nothing goes while an upload is in flight: the turn would be stored without
+  // the file the person is watching arrive, and there is no second chance to
+  // attach it to a message already written.
+  const uploading = attachments.some((a) => a.status === "uploading")
+  const canSend = !isEmpty && !disabled && !uploading
 
   const contextWindow =
     models.find((m) => m.id === model)?.contextWindow ?? null
@@ -758,10 +838,7 @@ export function ChatComposer({
           </div>
         )}
 
-        <AttachmentStrip
-          attachments={attachments}
-          onRemove={removeAttachment}
-        />
+        <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
 
         {/* A recognised command colours the line blue (primary),
             signalling it'll run as a command rather than be sent to the model. */}

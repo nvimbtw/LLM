@@ -11,10 +11,12 @@ import {
 } from "lucide-react"
 
 import type { ChatMessage } from "@/hooks/use-chat"
+import type { Attachment } from "@/lib/attachments"
 import type { Feedback } from "@/lib/feedback"
 import { parseUserMarkdown } from "@/lib/user-parser"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { MessageAttachments } from "./message-attachments"
 import { RichContent, RichMessage } from "./rich-message"
 import { Trace } from "./trace"
 
@@ -25,6 +27,7 @@ export function ChatMessageBubble({
   onEdit,
   onResend,
   busy = false,
+  onOpenAttachment,
 }: {
   message: ChatMessage
   streaming?: boolean
@@ -36,6 +39,9 @@ export function ChatMessageBubble({
   onResend?: (content: string) => void
   /** A turn is already in flight, so nothing may start another one. */
   busy?: boolean
+  // Opens a file in the panel beside the thread. Owned by `ChatThread`, because
+  // the panel is a sibling of the whole conversation rather than of one turn.
+  onOpenAttachment?: (attachment: Attachment) => void
 }) {
   // User messages use a markdown subset; assistant messages use the model's markup.
   if (message.role === "user") {
@@ -45,6 +51,12 @@ export function ChatMessageBubble({
       // `flex-col items-end` so they hang under the bubble's right edge rather
       // than under the column's.
       <div className="group flex w-full flex-col items-end">
+        {message.attachments && (
+          <MessageAttachments
+            attachments={message.attachments}
+            onOpen={onOpenAttachment}
+          />
+        )}
         {/* Capped in `ch` as well as `%`: a percentage alone means a two-word
             question and a five-line one get wildly different shapes, and the long
             one runs to a measure nobody wants to read right-aligned.

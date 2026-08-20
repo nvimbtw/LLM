@@ -5,6 +5,7 @@ import * as React from "react"
 import type { ThinkBudget } from "./budget-selector"
 
 import { apiFetch, getToken } from "@/lib/api"
+import type { Attachment } from "@/lib/attachments"
 import { useAuth } from "@/hooks/use-auth"
 
 export interface ChatSummary {
@@ -21,6 +22,10 @@ export interface PendingMessage {
   // Carried across the navigation into the new chat, so the budget picked in the
   // composer is the one the first turn is actually generated under.
   budget: ThinkBudget
+  // Rows, not files: they were stored while the composer still belonged to the
+  // home screen, and survive the navigation because they are already on the
+  // server by the time it happens.
+  attachments: Attachment[]
 }
 
 interface ChatsContextValue {
@@ -31,7 +36,8 @@ interface ChatsContextValue {
   createChat: (
     message: string,
     modelId: string,
-    budget: ThinkBudget
+    budget: ThinkBudget,
+    attachments: Attachment[]
   ) => Promise<string>
   // The first message of a freshly-created chat, handed off to the chat page so
   // it can stream the reply there (one-shot: returns and clears it).
@@ -154,7 +160,8 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
     async (
       message: string,
       modelId: string,
-      budget: ThinkBudget
+      budget: ThinkBudget,
+      attachments: Attachment[] = []
     ): Promise<string> => {
       const response = await apiFetch(`/chats`, {
         method: "POST",
@@ -165,7 +172,12 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
         throw new Error(text || "Unable to start a chat.")
       }
       const id = String((await response.json()).chat_id)
-      pendingRef.current.set(id, { content: message, modelId, budget })
+      pendingRef.current.set(id, {
+        content: message,
+        modelId,
+        budget,
+        attachments,
+      })
       // Surface the new chat in the sidebar; no need to block navigation on it.
       refresh()
       return id

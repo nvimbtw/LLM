@@ -10,7 +10,7 @@ edition = "2021"
 # a consumer of this project's domain types.
 [dependencies]
 auth = { path = "../auth" }
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "stream", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "time", "rt", "sync", "macros", "io-util"] }

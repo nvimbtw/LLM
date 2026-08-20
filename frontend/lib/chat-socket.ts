@@ -8,7 +8,7 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 //
 //   client → { token }                            (first frame, auth)
 //   server → { type: "ready" }
-//   client → { model_name, text, system?, budget?, temperature?, top_k?, top_p? }
+//   client → { model_name, text, attachment_ids?, system?, budget?, temperature?, top_k?, top_p? }
 //   server → { type: "token", token }             (decoded text, repeated)
 //   server → { type: "tool_call", tool, argument } (the reply asked for something)
 //   server → { type: "done", message_id, content, usage }
@@ -18,6 +18,10 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 // A turn that calls a tool runs more than one round, so `token` and `done` can
 // each arrive twice — the reply that called, then the reply that answers with
 // what came back. The two tool frames are not rendered yet.
+//
+// `attachment_ids` names files already stored (see lib/attachments.ts). They are
+// bound to the message this turn writes and go no further: nothing about them
+// reaches the prompt, which is why they need no room in the context window.
 //
 // The chat exists before the socket opens — its id is in the URL — so there is no
 // "which conversation is this" frame and no id to wait for on the way back. The
@@ -33,6 +37,18 @@ export interface SamplingSettings {
   temperature: number
   topK: number
   topP: number
+}
+
+/**
+ * The turn being asked. An object rather than two more positional arguments to
+ * `streamChat`, which already takes as many as it can carry — and the two
+ * belong together anyway: attachments are part of the question, and are dropped
+ * with it on the follow-up round a tool call forces.
+ */
+export interface Question {
+  text: string
+  /** Ids from `uploadAttachment`, in the order they were added. */
+  attachmentIds: string[]
 }
 
 /** One search the reply asked for, reported the moment its call closed. */
@@ -64,7 +80,7 @@ export interface ChatStreamHandlers {
 /** Opens the stream and returns a cancel function. */
 export function streamChat(
   chatId: string,
-  content: string,
+  question: Question,
   modelId: string,
   system: string | null,
   // How long the model should reason. "auto" is sent as nothing at all — the
@@ -118,7 +134,12 @@ export function streamChat(
         ws.send(
           JSON.stringify({
             model_name: modelId,
-            text: content,
+            text: question.text,
+            // Omitted when empty, so a turn with no files is byte-for-byte the
+            // request it always was.
+            ...(question.attachmentIds.length
+              ? { attachment_ids: question.attachmentIds }
+              : {}),
             ...(trimmedSystem ? { system: trimmedSystem } : {}),
             // Same rule for the budget: "auto" is the absence of one, so it is
             // omitted rather than sent as a value the engine has to interpret.

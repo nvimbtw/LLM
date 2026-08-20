@@ -135,6 +135,28 @@ is stored as a message of its own, between the assistant turn that called for it
 and the one that uses it, because the history a later turn is rendered from has
 to carry what the model was told and not merely that it asked.
 
+`attachments` holds files a person put in the composer — bytes in a `bytea`
+column, hanging off the message they were sent with. Two things about it are
+load-bearing and neither is in the types:
+
+- **Nothing reads them.** They are stored and served back, and no part of one
+  reaches a prompt. Nothing under `llm/` may import `api/routes/attachments.py`
+  or name the table; `attachment_ids` on a chat request binds rows and does
+  nothing else. See
+  [`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
+- **`message_id` is nullable and `owner_id` is what scopes a row.** A file is
+  uploaded when it is picked, which is before the turn it belongs to exists and,
+  on a new conversation, before the chat does. Binding happens when the turn is
+  stored; an unbound row is reachable by its owner and nobody else, and only an
+  unbound row can be deleted — a sent turn is history.
+
+Bytes in a table only work with caps, and there are two: `MAX_BYTES` (50 MB a
+file) and `MAX_PER_MESSAGE` (5 a turn), both in `api/routes/attachments.py` and
+mirrored at the edge by the backend's route. It is their **product** that is the
+real constraint — a turn's files pass whole through three processes — so the two
+move against each other rather than independently. `Attachment.content` is a deferred
+column, so listing a conversation's files does not load them.
+
 <!-- TODO: the remaining tables, who writes each, invariants not in the types. -->
 
 ## Routes
@@ -142,6 +164,11 @@ to carry what the model was told and not merely that it asked.
 Every route is behind `Depends(auth.require_service)`; the backend signs a
 short-lived token naming who it acts for (`ENGINE_SERVICE_SECRET` on both sides,
 unset leaves the engine open and it says so at startup).
+
+`/attachments` is the one route family whose payload is not JSON: `POST` takes a
+multipart file, `GET /attachments/{id}` answers with the bytes and the headers
+that say what they are, and `DELETE` discards a staged one. All three are scoped
+by the acting caller, like everything else here.
 
 `POST /chats/{id}/messages/stream` is the one with a protocol rather than a
 payload. It takes **exactly one** of `text` (a person asking) and `tool_result`
