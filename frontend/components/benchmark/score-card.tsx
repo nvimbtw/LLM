@@ -41,14 +41,14 @@ function Composite({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-lg border border-border bg-background">
+    <section className="rounded-(--radius-sheet) border border-border bg-background">
       <div className="grid gap-px bg-border/60 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)]">
         <div className="bg-background px-6 py-7">
-          <div className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+          <div className="eyebrow text-muted-foreground">
             {label}
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-display text-6xl font-semibold tracking-tight tabular-nums">
+            <span className="figure text-6xl">
               {formatNumber(score, 1)}
             </span>
             <span className="text-lg text-muted-foreground tabular-nums">
@@ -194,11 +194,11 @@ function Headline({
 }) {
   return (
     <div className="bg-background px-5 py-5">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
       <dd
-        className={`mt-2 font-display text-3xl font-semibold tracking-tight tabular-nums ${
+        className={`figure mt-2 text-3xl ${
           value === NO_VALUE ? "text-muted-foreground/30" : ""
         }`}
       >

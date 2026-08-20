@@ -3,33 +3,40 @@ import { cn } from "@/lib/utils"
 /**
  * The palette as a fixture: every token laddered, both themes at once.
  *
- * The dark panel renders inside a `.dark` subtree (the app's custom variant is
- * `&:is(.dark *)`, so one wrapper flips its whole contents to the dark tokens)
- * — the fixture shows both themes without toggling.
+ * Each panel wraps itself in the mode it shows — `.dark` for one, `.theme-light`
+ * (`:root`'s twin, declared beside it in globals.css) for the other — so the
+ * fixture shows both themes at once and shows the *same* two whichever mode the
+ * app itself happens to be in. Without the light wrapper the "light" panel is
+ * only light while the app is, which is exactly the moment nobody is looking.
  *
  * The light panel ghosts the pre-change value under every token that moved,
  * with the OKLCH deltas frozen from that change; the table below carries the
  * same numbers plus the WCAG pair each token is judged by. Token names are
- * shown as the vars themselves so a name here is the token there.
+ * shown as the vars themselves so a name here is the token there. The ghosts
+ * and deltas are the *light* theme's — the change they record never touched a
+ * dark value — so the dark panel carries its own hexes and no ghosts.
  *
- * `TOKENS` is the fixture's snapshot of the current hexes — keep it in sync
- * when the palette changes, the same way /markup has to track the special-token
- * vocabulary. Deliberately not read from the stylesheet: a fixture that reads
- * its own source would only ever show itself that everything is fine.
+ * `LIGHT_TOKENS` / `DARK_TOKENS` are the fixture's snapshot of the current
+ * hexes — keep them in sync when the palette changes, the same way /markup has
+ * to track the special-token vocabulary. Deliberately not read from the
+ * stylesheet: a fixture that reads its own source would only ever show itself
+ * that everything is fine.
  */
 
-/** token → current hex, for the swatches' captions. */
-const TOKENS: Record<string, string> = {
+/** token → current hex in `:root`, for the light panel's captions. */
+const LIGHT_TOKENS: Record<string, string> = {
   "--background": "#f5f1e1",
-  "--card": "#fbf8ee",
-  "--popover": "#fbf8ee",
-  "--secondary": "#e9e2c4",
-  "--muted": "#ece6cc",
-  "--accent": "#e9e2c4",
-  "--border": "#beb48a",
-  "--input": "#95894f",
+  "--card": "#fdfbf5",
+  "--popover": "#fdfbf5",
+  "--secondary": "#e6e2d0",
+  "--muted": "#e9e6d6",
+  "--accent": "#e6e2d0",
+  "--border": "#b6b3aa",
+  "--input": "#8c897c",
+  "--sidebar": "#eee9d8",
+  "--sidebar-border": "#afada4",
   "--foreground": "#4f4f58",
-  "--muted-foreground": "#676550",
+  "--muted-foreground": "#66645f",
   "--primary": "#4d699b",
   "--primary-foreground": "#f5f1e1",
   "--destructive": "#c43b4f",
@@ -51,6 +58,41 @@ const TOKENS: Record<string, string> = {
   "--throbber-base": "#2f4f7a",
 }
 
+/** token → current hex in `.dark`. Untouched by the change the ghosts record. */
+const DARK_TOKENS: Record<string, string> = {
+  "--background": "#181616",
+  "--card": "#232221",
+  "--popover": "#2a2827",
+  "--secondary": "#333130",
+  "--muted": "#2a2827",
+  "--accent": "#333130",
+  "--border": "#514d4c",
+  "--input": "#68625f",
+  "--sidebar": "#12120f",
+  "--sidebar-border": "#494644",
+  "--foreground": "#c5c9c5",
+  "--muted-foreground": "#a6a69c",
+  "--primary": "#8ba4b0",
+  "--primary-foreground": "#181616",
+  "--destructive": "#c4746e",
+  "--chart-1": "#c4b28a",
+  "--chart-2": "#87a987",
+  "--chart-3": "#8ba4b0",
+  "--chart-4": "#a292a3",
+  "--chart-5": "#8992a7",
+  "--chart-approved": "#6d92da",
+  "--chart-rejected": "#b98a2c",
+  "--tier-low": "#b1452f",
+  "--tier-med": "#d97145",
+  "--tier-high": "#f1a355",
+  "--kind-train": "#8ba4b0",
+  "--kind-benchmark": "#8fb08f",
+  "--kind-chat": "#ada0ae",
+  "--kind-tokenize": "#c2a184",
+  "--throbber-spark": "#79cbb8",
+  "--throbber-base": "#5e7480",
+}
+
 interface Ghost {
   hex: string
   d: { L: string; C: string; H: string }
@@ -58,20 +100,30 @@ interface Ghost {
 
 /** token → the value it replaced, with the OKLCH deltas of that move. */
 const OLD: Record<string, Ghost> = {
-  "--background": { hex: "#f7f4e4", d: { L: "−.008", C: "+.000", H: "−2.8°" } },
-  "--card": { hex: "#fdfbf1", d: { L: "−.008", C: "+.000", H: "−4.5°" } },
-  "--popover": { hex: "#fdfbf1", d: { L: "−.008", C: "+.000", H: "−4.5°" } },
-  "--border": { hex: "#c1b88c", d: { L: "−.011", C: "−.002", H: "−1.6°" } },
-  "--input": { hex: "#988d58", d: { L: "−.013", C: "+.006", H: "0.0°" } },
-  "--foreground": { hex: "#545464", d: { L: "−.021", C: "−.011", H: "+0.5°" } },
-  "--primary-foreground": { hex: "#f7f4e4", d: { L: "−.008", C: "+.000", H: "−2.8°" } },
-  "--destructive": { hex: "#c63e52", d: { L: "−.007", C: "+.001", H: "+0.4°" } },
-  "--chart-1": { hex: "#c37e00", d: { L: "−.009", C: "−.002", H: "+0.5°" } },
-  "--chart-rejected": { hex: "#c37e00", d: { L: "−.009", C: "−.002", H: "+0.5°" } },
-  "--kind-tokenize": { hex: "#8a5a2b", d: { L: "−.009", C: "−.002", H: "+0.7°" } },
+  "--card": { hex: "#fbf8ee", d: { L: "+.009", C: "−.005", H: "−1.5°" } },
+  "--popover": { hex: "#fbf8ee", d: { L: "+.009", C: "−.005", H: "−1.5°" } },
+  "--secondary": { hex: "#e9e2c4", d: { L: "+.001", C: "−.016", H: "+0.3°" } },
+  "--accent": { hex: "#e9e2c4", d: { L: "+.001", C: "−.016", H: "+0.3°" } },
+  "--muted": { hex: "#ece6cc", d: { L: "+.000", C: "−.013", H: "+1.8°" } },
+  "--border": { hex: "#beb48a", d: { L: "−.001", C: "−.045", H: "−4.7°" } },
+  "--input": { hex: "#95894f", d: { L: "+.002", C: "−.060", H: "−1.7°" } },
+  "--sidebar": { hex: "#f5f1e1", d: { L: "−.024", C: "+.002", H: "−1.9°" } },
+  "--sidebar-border": { hex: "#beb48a", d: { L: "−.021", C: "−.045", H: "+0.2°" } },
+  "--muted-foreground": { hex: "#676550", d: { L: "+.001", C: "−.024", H: "−14.3°" } },
 }
 
-const SURFACES = ["--background", "--card", "--popover", "--secondary", "--muted", "--accent", "--border", "--input"]
+const SURFACES = [
+  "--background",
+  "--card",
+  "--popover",
+  "--secondary",
+  "--muted",
+  "--accent",
+  "--sidebar",
+  "--border",
+  "--sidebar-border",
+  "--input",
+]
 const TEXT = ["--foreground", "--muted-foreground", "--primary", "--primary-foreground", "--destructive"]
 const ACCENTS = [
   "--chart-1",
@@ -96,36 +148,38 @@ const ACCENTS = [
 // and the WCAG pair each token is held to, before → after, both modes included
 // where a pair has one.
 const DELTA_ROWS = [
-  ["--background", "#f7f4e4", "#f5f1e1", "−.008", "+.000", "−2.8°", "Y .901 → .878"],
-  ["--foreground", "#545464", "#4f4f58", "−.021", "−.011", "+0.5°", "6.72 → 7.16 on paper"],
-  ["--card / --popover", "#fdfbf1", "#fbf8ee", "−.008", "+.000", "−4.5°", "fg 7.16 → 7.63 on card"],
-  ["--primary-foreground", "#f7f4e4", "#f5f1e1", "−.008", "+.000", "−2.8°", "4.99 → 4.87 on primary"],
-  ["--destructive", "#c63e52", "#c43b4f", "−.007", "+.001", "+0.4°", "4.51 → 4.54 on paper"],
-  ["--border", "#c1b88c", "#beb48a", "−.011", "−.002", "−1.6°", "1.81 → 1.84 on paper"],
-  ["--input", "#988d58", "#95894f", "−.013", "+.006", "0.0°", "3.03 → 3.11 on paper"],
-  ["--chart-1 / --chart-rejected", "#c37e00", "#bf7c00", "−.009", "−.002", "+0.5°", "3.02 → 3.04 on paper"],
-  ["--kind-tokenize", "#8a5a2b", "#86582a", "−.009", "−.002", "+0.7°", "4.53 → 4.61 on its tint"],
+  ["--border", "#beb48a", "#b6b3aa", "−.001", "−.045", "−4.7°", "1.84 → 1.85 on paper"],
+  ["--input", "#95894f", "#8c897c", "+.002", "−.060", "−1.7°", "3.11 → 3.10 on paper"],
+  ["--sidebar-border", "#beb48a", "#afada4", "−.021", "−.045", "+0.2°", "1.85 on the sunk sidebar"],
+  ["--muted-foreground", "#676550", "#66645f", "+.001", "−.024", "−14.3°", "4.54 → 4.55 on secondary"],
+  ["--card / --popover", "#fbf8ee", "#fdfbf5", "+.009", "−.005", "−1.5°", "fg 7.63 → 7.83 on card"],
+  ["--sidebar", "#f5f1e1", "#eee9d8", "−.024", "+.002", "−1.9°", "fg 7.16 → 6.67 on sidebar"],
+  ["--secondary / --accent", "#e9e2c4", "#e6e2d0", "+.001", "−.016", "+0.3°", "fg 6.23 → 6.23"],
+  ["--muted", "#ece6cc", "#e9e6d6", "+.000", "−.013", "+1.8°", "fg 6.47 → 6.46"],
 ] as const
 
-function TokenRow({ token }: { token: string }) {
-  const g = OLD[token]
+function TokenRow({ token, dark }: { token: string; dark?: boolean }) {
+  // The ghost is a light-theme record; in the dark panel there is nothing to
+  // ghost and the caption has to read the dark hex, not the light one.
+  const g = dark ? undefined : OLD[token]
+  const hex = dark ? DARK_TOKENS[token] : LIGHT_TOKENS[token]
   return (
     <div className="flex items-center gap-3">
       <div
-        className="h-9 w-9 shrink-0 rounded-md border"
+        className="h-9 w-9 shrink-0 rounded-(--radius-control-sm) border"
         style={{ backgroundColor: `var(${token})`, borderColor: "var(--border)" }}
       />
       {g && (
         <div
-          className="h-9 w-9 shrink-0 rounded-md border border-dashed"
+          className="h-9 w-9 shrink-0 rounded-(--radius-control-sm) border border-dashed"
           style={{ backgroundColor: g.hex, borderColor: "var(--muted-foreground)" }}
           title={`was ${g.hex}`}
         />
       )}
       <div className="min-w-0">
         <div className="font-mono text-xs text-foreground">{token}</div>
-        <div className="font-mono text-[10px] text-muted-foreground">
-          {TOKENS[token]}
+        <div className="font-mono text-2xs text-muted-foreground">
+          {hex}
           {g && (
             <span className="pl-1" title={`ΔL ${g.d.L} · ΔC ${g.d.C} · ΔH ${g.d.H} vs ${g.hex}`}>
               · ΔL {g.d.L} ΔC {g.d.C} ΔH {g.d.H}
@@ -164,41 +218,41 @@ function Panel({
 }) {
   return (
     <div
-      className={cn("rounded-xl border p-5", dark && "dark")}
+      className={cn("rounded-(--radius-sheet) border p-5", dark ? "dark" : "theme-light")}
       style={{ backgroundColor: "var(--background)", borderColor: "var(--border)", color: "var(--foreground)" }}
     >
       <div className="mb-4 flex items-baseline justify-between">
         <h2 className="text-base font-semibold text-foreground">{title}</h2>
-        <span className="font-mono text-[10px] text-muted-foreground">{dark ? "dragon" : "warm paper"}</span>
+        <span className="font-mono text-2xs text-muted-foreground">{dark ? "dragon" : "warm paper"}</span>
       </div>
 
-      <h3 className="mb-2 mt-4 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Surfaces</h3>
+      <h3 className="eyebrow mb-2 mt-4 text-muted-foreground">Surfaces</h3>
       <div className="grid gap-2.5">
         {SURFACES.map((t) => (
-          <TokenRow key={t} token={t} />
+          <TokenRow key={t} token={t} dark={dark} />
         ))}
       </div>
 
-      <h3 className="mb-2 mt-5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Text</h3>
+      <h3 className="eyebrow mb-2 mt-5 text-muted-foreground">Text</h3>
       <div className="grid gap-2.5">
         {TEXT.map((t) => (
-          <TokenRow key={t} token={t} />
+          <TokenRow key={t} token={t} dark={dark} />
         ))}
       </div>
 
       {bodyText && (
         <>
-          <h3 className="mb-2 mt-5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <h3 className="eyebrow mb-2 mt-5 text-muted-foreground">
             Body sample
           </h3>
           <Sample />
         </>
       )}
 
-      <h3 className="mb-2 mt-5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Accents</h3>
+      <h3 className="eyebrow mb-2 mt-5 text-muted-foreground">Accents</h3>
       <div className="grid gap-2.5">
         {ACCENTS.map((t) => (
-          <TokenRow key={t} token={t} />
+          <TokenRow key={t} token={t} dark={dark} />
         ))}
       </div>
     </div>
@@ -220,14 +274,14 @@ export function ColorsShowcase() {
           at the change this fixture documents. Every move was a lightness or chroma move —
           hue nearly untouched, which is what keeps the scheme Kanagawa.
         </p>
-        <div className="mt-3 overflow-x-auto rounded-lg border" style={{ borderColor: "var(--border)" }}>
+        <div className="mt-3 overflow-x-auto rounded-(--radius-sheet) border" style={{ borderColor: "var(--border)" }}>
           <table className="w-full border-collapse text-xs">
             <thead>
               <tr className="border-b" style={{ borderColor: "var(--border)" }}>
                 {["token", "old", "new", "ΔL", "ΔC", "ΔH", "WCAG pair"].map((h) => (
                   <th
                     key={h}
-                    className="px-3 py-2 text-left font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground"
+                    className="tag px-3 py-2 text-left font-medium text-muted-foreground"
                   >
                     {h}
                   </th>

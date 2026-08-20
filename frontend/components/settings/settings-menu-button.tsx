@@ -21,7 +21,7 @@ export function SidebarSettingsButton() {
         >
           <Settings />
           <span className="group-data-[collapsible=icon]:hidden">Settings</span>
-          <kbd className="ml-auto rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+          <kbd className="ml-auto rounded-(--radius-marker) border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
             ⌘K
           </kbd>
         </SidebarMenuButton>

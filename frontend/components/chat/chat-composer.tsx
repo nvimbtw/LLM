@@ -668,7 +668,13 @@ export function ChatComposer({
     <div className="flex flex-col gap-1.5">
       <div
         className={cn(
-          "relative overflow-hidden rounded-[0.875rem] border border-input shadow-sm transition-colors",
+          // A hairline, not a form-control boundary: `border-input` is tuned to
+          // 3:1 because it has to say "click here" on a bare page, and around
+          // the largest element in the app that weight reads as a frame drawn
+          // around the whole screen. The composer says what it is by being a
+          // raised sheet (the card surface below) — the edge only has to close
+          // the shape.
+          "relative overflow-hidden rounded-(--radius-composer) border shadow-raised transition-colors",
           // Frosted, not merely translucent. The composer sits above the thread
           // (see the sticky wrapper in chat-thread.tsx), so scrolling back
           // through a conversation moves text behind it, and a solid card
@@ -678,7 +684,10 @@ export function ChatComposer({
           // solid card or a clear one. The saturate is the rest of the effect —
           // blurring alone greys out what it averages, and real frosted glass
           // keeps the colour of what is behind it.
-          "bg-background/75 backdrop-blur-2xl backdrop-saturate-150",
+          // The card surface rather than the page's: the composer is a sheet
+          // resting on the thread, and taking the page's own colour made it a
+          // hole in the page that only its outline distinguished.
+          "bg-card/75 backdrop-blur-2xl backdrop-saturate-150",
           "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
           disabled && "opacity-70"
         )}
@@ -705,7 +714,7 @@ export function ChatComposer({
         {/* Drop target feedback. pointer-events-none so it never steals the
             dragleave that would otherwise end the drag it's announcing. */}
         {isDraggingFiles && (
-          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-[0.875rem] border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
+          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-(--radius-composer) border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
             <Paperclip className="size-4" />
             Drop to add
           </div>
@@ -758,7 +767,7 @@ export function ChatComposer({
           // is outside the card's outline but on the same floating plane, and a
           // clear strip under a translucent card would put sharp thread text
           // directly beneath blurred thread text.
-          className="rounded-lg bg-background/75 py-1 backdrop-blur-md"
+          className="rounded-(--radius-composer-bar) bg-background/75 py-1 backdrop-blur-md"
         />
       )}
     </div>

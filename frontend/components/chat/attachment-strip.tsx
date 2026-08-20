@@ -37,7 +37,7 @@ export function AttachmentStrip({
       {attachments.map((a) => (
         <div
           key={a.id}
-          className="group/attachment relative overflow-hidden rounded-lg border border-border bg-muted"
+          className="group/attachment relative overflow-hidden rounded-(--radius-sheet) border border-border bg-muted"
         >
           {a.kind === "image" && a.previewUrl ? (
             // A transient local object URL — not worth Next's remote-image pipeline.
@@ -54,7 +54,7 @@ export function AttachmentStrip({
                 <div className="truncate text-xs font-medium">
                   {a.file.name}
                 </div>
-                <div className="text-[10px] text-muted-foreground">
+                <div className="text-2xs text-muted-foreground">
                   {formatSize(a.file.size)}
                 </div>
               </div>

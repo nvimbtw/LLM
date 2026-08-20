@@ -78,7 +78,7 @@ export function NavConversations() {
             onClick={() => setExpanded((v) => !v)}
           />
         }
-        className="w-full justify-between text-xs font-medium tracking-[0.16em] text-sidebar-foreground/75 uppercase hover:text-sidebar-foreground"
+        className="eyebrow w-full justify-between text-sidebar-foreground/75 hover:text-sidebar-foreground"
       >
         Conversations
         <ChevronRight

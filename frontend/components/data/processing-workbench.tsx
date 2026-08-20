@@ -266,7 +266,7 @@ function StepChip({
   return (
     <div
       className={cn(
-        "flex shrink-0 items-center gap-2 rounded-md border px-3 py-1.5 transition-colors",
+        "flex shrink-0 items-center gap-2 rounded-(--radius-control-sm) border px-3 py-1.5 transition-colors",
         isOpen
           ? "border-primary/50 bg-[color-mix(in_oklab,var(--primary)_7%,transparent)]"
           : "border-border bg-background"
@@ -455,7 +455,7 @@ function DocumentDiff({
 
   if (dropped) {
     return (
-      <div className="grid overflow-hidden rounded-md border border-border sm:grid-cols-2">
+      <div className="grid overflow-hidden rounded-(--radius-control-sm) border border-border sm:grid-cols-2">
         <Side text={before} tone="removed" />
         <div className="flex items-center justify-center border-t border-border px-3 py-6 text-xs text-muted-foreground italic sm:border-t-0 sm:border-l">
           — removed —
@@ -465,7 +465,7 @@ function DocumentDiff({
   }
 
   return (
-    <div className="max-h-80 overflow-auto rounded-md border border-border font-mono text-xs">
+    <div className="max-h-80 overflow-auto rounded-(--radius-control-sm) border border-border font-mono text-xs">
       <table className="w-full table-fixed border-collapse">
         <colgroup>
           <col className="w-10" />
@@ -553,7 +553,7 @@ function Folded({ count }: { count: number }) {
     <tr>
       <td
         colSpan={4}
-        className="border-y border-border bg-[color-mix(in_oklab,var(--foreground)_3.5%,transparent)] px-3 py-1 text-center text-[0.7rem] text-muted-foreground"
+        className="border-y border-border bg-[color-mix(in_oklab,var(--foreground)_3.5%,transparent)] px-3 py-1 text-center text-2xs text-muted-foreground"
       >
         {count} unchanged {count === 1 ? "line" : "lines"}
       </td>

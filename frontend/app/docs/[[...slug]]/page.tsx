@@ -42,7 +42,7 @@ export default async function DocsPage({ params }: DocsPageProps) {
       <article className="min-w-0 flex-1">
         <header className="mb-10 border-b border-border pb-6">
           {eyebrow && (
-            <span className="text-xs font-medium tracking-[0.22em] text-muted-foreground uppercase">
+            <span className="eyebrow text-muted-foreground">
               {eyebrow}
             </span>
           )}

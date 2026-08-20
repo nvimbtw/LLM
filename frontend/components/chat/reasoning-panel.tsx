@@ -94,7 +94,7 @@ export function ReasoningPanel({
         />
         <span
           className={cn(
-            "font-mono text-[0.72em] tracking-[0.18em] uppercase",
+            "tag",
             // The same shimmer the thread's status row uses while the model is
             // mid-thought, so a trace that is still being written says so the way
             // everything else in the app says it.

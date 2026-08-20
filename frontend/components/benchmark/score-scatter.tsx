@@ -689,8 +689,8 @@ function PointTooltip({
   if (!active || !payload?.length) return null
   const point = payload[0].payload
   return (
-    <div className="min-w-40 rounded-lg border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
-      <div className="mb-1 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+    <div className="min-w-40 rounded-(--radius-sheet) border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-overlay">
+      <div className="eyebrow mb-1 text-muted-foreground">
         {formatDate(point.created_at)}
       </div>
       <div className="flex items-baseline justify-between gap-6">

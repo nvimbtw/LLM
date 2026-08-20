@@ -128,7 +128,7 @@ function Summary({ dataset }: { dataset: Dataset }) {
 
       {dataset.steps && dataset.steps.length > 0 && (
         <div className="mt-5 border-t border-border pt-4">
-          <p className="mb-2 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+          <p className="eyebrow mb-2 text-muted-foreground">
             How it was made
           </p>
           <ol className="space-y-1 text-xs text-muted-foreground">
@@ -152,7 +152,7 @@ function Summary({ dataset }: { dataset: Dataset }) {
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex justify-between gap-4 sm:block">
-      <dt className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
       <dd className="sm:mt-0.5">{value}</dd>

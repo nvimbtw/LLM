@@ -111,13 +111,13 @@ function Panel({
 }
 
 const HINT_CLASS =
-  "font-mono text-[11px] tracking-normal lowercase text-muted-foreground"
+  "font-mono text-2xs tracking-normal lowercase text-muted-foreground"
 
 // Row styling shared by every option list: a hairline accent rule on the left
 // that grows in on hover/active, rather than a filled highlight.
 function rowClass(isActive: boolean) {
   return cn(
-    "relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+    "relative flex w-full items-center justify-between gap-3 rounded-(--radius-control-sm) px-2.5 py-1.5 text-left text-xs transition-colors",
     "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-['']",
     isActive
       ? "bg-accent text-accent-foreground before:h-3.5"
@@ -259,7 +259,7 @@ export function SlashCommandMenu({
                 </span>
 
                 {currentDisplay && (
-                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+                  <span className="shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
                     {currentDisplay}
                   </span>
                 )}
@@ -279,7 +279,7 @@ export function SlashCommandMenu({
   return (
     <Panel visible={visible}>
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-3.5 py-1.5 text-[10px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
+      <div className="eyebrow flex items-center justify-between border-b border-border px-3.5 py-1.5 text-muted-foreground">
         <div className="flex items-center gap-1.5">
           <span className="font-mono font-medium text-primary">
             /{command.name}
@@ -333,7 +333,7 @@ export function SlashCommandMenu({
                       )}
                     </span>
                     {model.tier && (
-                      <span className="ml-auto font-mono text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+                      <span className="tag ml-auto font-medium text-muted-foreground">
                         {model.tier}
                       </span>
                     )}
@@ -373,7 +373,7 @@ export function SlashCommandMenu({
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto text-[11px] text-muted-foreground">
+                  <span className="ml-auto text-2xs text-muted-foreground">
                     {opt.hint}
                   </span>
                 </button>
@@ -410,7 +410,7 @@ export function SlashCommandMenu({
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  <span className="ml-auto font-mono text-2xs text-muted-foreground">
                     {opt.value}
                   </span>
                 </button>
@@ -455,7 +455,7 @@ export function SlashCommandMenu({
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto text-[11px] text-muted-foreground">
+                  <span className="ml-auto text-2xs text-muted-foreground">
                     {opt.description}
                   </span>
                 </button>
@@ -485,10 +485,10 @@ export function SlashCommandMenu({
 
             {data.info.presets.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+                <span className="eyebrow text-muted-foreground">
                   Presets:
                 </span>
-                <div className="inline-flex gap-0.5 rounded-md border border-border p-0.5">
+                <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border border-border p-0.5">
                   {data.info.presets.map((preset, idx) => {
                     const isPresetActive =
                       data.info.current === preset.value ||
@@ -538,7 +538,7 @@ export function SlashCommandMenu({
               )}
             </div>
 
-            <div className="rounded-md border border-border bg-accent/30 p-2 font-mono text-xs text-foreground">
+            <div className="rounded-(--radius-control-sm) border border-border bg-accent/30 p-2 font-mono text-xs text-foreground">
               {data.info.current
                 ? `“${data.info.current}”`
                 : "No system prompt configured."}
@@ -546,7 +546,7 @@ export function SlashCommandMenu({
 
             {data.info.templates.length > 0 && (
               <div className="space-y-0.5 pt-0.5">
-                <span className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+                <span className="eyebrow text-muted-foreground">
                   Templates:
                 </span>
                 <div className="flex flex-col-reverse gap-0.5">
@@ -559,7 +559,7 @@ export function SlashCommandMenu({
                         data-active={isActive}
                         onClick={() => onSelectOption(tpl.value, true)}
                         className={cn(
-                          "flex w-full items-baseline justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                          "flex w-full items-baseline justify-between gap-2 rounded-(--radius-control-sm) px-2.5 py-1.5 text-left text-xs transition-colors",
                           isActive
                             ? "bg-accent font-medium text-accent-foreground"
                             : "text-foreground hover:bg-accent/50"
@@ -568,7 +568,7 @@ export function SlashCommandMenu({
                         <span className="shrink-0 font-medium text-primary">
                           {tpl.label}
                         </span>
-                        <span className="truncate text-[11px] text-muted-foreground">
+                        <span className="truncate text-2xs text-muted-foreground">
                           {tpl.value}
                         </span>
                       </button>

@@ -60,7 +60,7 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
     <div>
       {[...groups].map(([day, dayJobs]) => (
         <section key={day}>
-          <h3 className="border-b border-border/40 bg-secondary/20 px-5 py-1.5 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+          <h3 className="eyebrow border-b border-border/40 bg-secondary/20 px-5 py-1.5 text-muted-foreground">
             {day}
           </h3>
           <ul>
@@ -113,7 +113,7 @@ function HistoryRow({
 
         <span
           className={cn(
-            "shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium tracking-[0.06em]",
+            "shrink-0 rounded-(--radius-marker) px-1.5 py-0.5 text-xs font-medium tracking-[0.06em]",
             KIND_CHIP[job.kind]
           )}
         >

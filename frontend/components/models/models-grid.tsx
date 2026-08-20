@@ -148,11 +148,11 @@ export function ModelsGrid() {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
-        <Skeleton className="h-20 rounded-lg" />
-        <Skeleton className="h-8 w-72 rounded-md" />
+        <Skeleton className="h-20 rounded-(--radius-sheet)" />
+        <Skeleton className="h-8 w-72 rounded-(--radius-control-sm)" />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-44 rounded-lg" />
+            <Skeleton key={i} className="h-44 rounded-(--radius-sheet)" />
           ))}
         </div>
       </div>
@@ -222,15 +222,15 @@ export function ModelsGrid() {
   )
 }
 
-// The headline figures, in the divided-ledger idiom the model detail page and the
+// The headline figures, in the ruled-ledger idiom the model detail page and the
 // usage page share — so "how big is the registry" is answered in the same shape
-// wherever it is asked.
+// wherever it is asked. Furniture: rules, no box, no fill.
 function Ledger({ models, families }: { models: Model[]; families: number }) {
   const largest = models.reduce((max, m) => Math.max(max, m.params), 0)
   const context = models.reduce((max, m) => Math.max(max, m.contextWindow), 0)
 
   return (
-    <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
       <Figure label="Models" value={String(models.length)} />
       <Figure label="Families" value={String(families)} />
       <Figure
@@ -257,11 +257,11 @@ function Figure({
   hint?: string
 }) {
   return (
-    <div className="bg-background px-5 py-4">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+    <div className="pr-6">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-1.5 font-display text-2xl font-semibold tracking-tight tabular-nums">
+      <dd className="figure mt-1.5 text-2xl">
         {value}
       </dd>
       {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
@@ -314,7 +314,7 @@ function SelectBar({
     shown.length > 0 && shown.every((m) => chosen.some((c) => c.id === m.id))
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-4 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-(--radius-sheet) border border-border bg-muted/30 px-4 py-2.5">
       <p className="text-sm tabular-nums">
         {chosen.length === 0
           ? "Nothing selected"
@@ -359,7 +359,7 @@ function SelectBar({
 
             {/* Named, not just counted. Selection survives a filter change, so the
                 list is the only thing that guarantees nothing is deleted unseen. */}
-            <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+            <ul className="max-h-48 space-y-1 overflow-y-auto rounded-(--radius-control-sm) border border-border bg-muted/30 px-3 py-2 text-sm">
               {chosen.map((m) => (
                 <li key={m.id} className="truncate">
                   {m.name}

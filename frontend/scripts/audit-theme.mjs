@@ -36,7 +36,7 @@
 // Self-tests run first and abort on mismatch, so a future transcription bug in
 // the vendored block fails loudly instead of silently misreading the theme.
 
-import { readFileSync } from "node:fs"
+import { themeTokens } from "./theme-tokens.mjs"
 
 ///////////////////////////////////////////////////////////////////////////////
 // Vendored from apca-w3 0.1.9 (Myndex / A. Somers), W3 license.
@@ -204,18 +204,8 @@ function fontLookupAPCA(contrast, places = 2) {
 }
 // ── End vendored apca-w3 (0.1.9, W3 license) ────────────────────────────────
 
-// ---- CSS token parsing (same block parser as audit-contrast.mjs) -----------
-const css = readFileSync("app/globals.css", "utf8")
-
-function block(selector) {
-  const i = css.indexOf(selector + " {")
-  const body = css.slice(i, css.indexOf("\n}", i))
-  const out = {}
-  for (const m of body.matchAll(/^\s*--([\w-]+):\s*(#[0-9a-fA-F]{6});/gm)) out[m[1]] = m[2]
-  return out
-}
-const light = block(":root")
-const dark = block(".dark")
+// ---- CSS tokens (resolved through the three layers, as the browser would) ---
+const { light, dark } = themeTokens()
 
 // ---- Colour math -----------------------------------------------------------
 const srgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16))
@@ -270,6 +260,12 @@ const CA = (fg, bg) => {
   return { energy: hueDist(f.H, g.H) * f.C, coolOnWarm }
 }
 const CA_LIMIT = 3.0
+
+// fontLookupAPCA returns [contrast, w100, w200, … w900] — the weight columns of
+// fontMatrixAscend, whose row is ["Lc", 100, 200, …]. So weight 400 is index 4,
+// and reading index 5 would report the smallest size at weight *500* instead:
+// lighter than the app sets its body, and so a size that looks safe and is not.
+const W400 = 4
 
 // ---- Self-tests ------------------------------------------------------------
 function check(name, got, want, tol = 0.3) {
@@ -332,7 +328,7 @@ for (const [label, fg, bg, isBody] of pairs(light).filter(([, f, b]) => f && b))
       : "  no cool×warm fringe"
     : ""
   console.log(
-    `  ${label.padEnd(32)} ${w.toFixed(2).padStart(5)} ${lc.toFixed(1).padStart(6)} ${font[5].toString().padStart(7)}  ${energy.toFixed(2).padStart(6)}  ${note}`
+    `  ${label.padEnd(32)} ${w.toFixed(2).padStart(5)} ${lc.toFixed(1).padStart(6)} ${font[W400].toString().padStart(7)}  ${energy.toFixed(2).padStart(6)}  ${note}`
   )
 }
 
@@ -357,5 +353,5 @@ for (const [label, fg, bg, isBody] of pairs(dark).filter(([, f, b]) => f && b)) 
         : `  cool × warm — energy ${energy.toFixed(1)}, under the line`
       : "  no cool×warm fringe"
     : ""
-  console.log(`  ${label.padEnd(32)} ${w.toFixed(2).padStart(5)} ${lc.toFixed(1).padStart(6)} ${font[5].toString().padStart(7)}  ${energy.toFixed(2).padStart(6)}  ${note}`)
+  console.log(`  ${label.padEnd(32)} ${w.toFixed(2).padStart(5)} ${lc.toFixed(1).padStart(6)} ${font[W400].toString().padStart(7)}  ${energy.toFixed(2).padStart(6)}  ${note}`)
 }

@@ -9,9 +9,9 @@ import Link from "next/link"
  * in the app still using it, and the reason login was the only screen not
  * speaking the editorial vocabulary. The type here is deliberately the same as
  * `page-header.tsx` and `panel.tsx` down to the values: `font-display` at
- * `text-3xl` for the title, the `tracking-[0.12em]` uppercase eyebrow, a hairline
- * `border-border` rule under the header. If those change there, they should
- * change here.
+ * `text-3xl` for the title, the `eyebrow` utility over it, a hairline
+ * `border-border` rule under the header. The eyebrow is now a token, so that
+ * part stays in step on its own; the rest still has to be kept in step by hand.
  *
  * The figure column is `hidden lg:flex`, not merely narrowed. Below `lg` a form
  * wants the whole width and an illustration is in the way; the screen resolves to
@@ -53,13 +53,13 @@ export function AuthShell({
             <span className="font-display text-xl leading-none font-semibold tracking-tight">
               Slate
             </span>
-            <span className="mt-1 text-xs font-medium tracking-[0.22em] text-muted-foreground uppercase">
+            <span className="eyebrow mt-1 text-muted-foreground">
               LLM Project
             </span>
           </Link>
 
           <header className="mt-12 border-b border-border pb-6">
-            <p className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+            <p className="eyebrow text-muted-foreground">
               {eyebrow}
             </p>
             <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight">

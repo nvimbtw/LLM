@@ -53,7 +53,7 @@ function ToastList() {
         toast={t}
         swipeDirection="right"
         className={cn(
-          "relative flex items-start gap-3 overflow-hidden rounded-lg border border-border bg-popover bg-clip-padding py-3 pr-3 pl-4 text-popover-foreground shadow-md",
+          "relative flex items-start gap-3 overflow-hidden rounded-(--radius-sheet) border border-border bg-popover bg-clip-padding py-3 pr-3 pl-4 text-popover-foreground shadow-overlay",
           "before:absolute before:inset-y-0 before:left-0 before:w-1 before:content-['']",
           "transition-all duration-200 ease-out data-ending-style:translate-x-4 data-ending-style:opacity-0 data-starting-style:translate-x-4 data-starting-style:opacity-0",
           RAIL_BY_TYPE[type]

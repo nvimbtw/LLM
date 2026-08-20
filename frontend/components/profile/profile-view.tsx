@@ -29,8 +29,8 @@ export function ProfileView() {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
-        <Skeleton className="h-28 w-full rounded-lg" />
-        <Skeleton className="h-40 w-full rounded-lg" />
+        <Skeleton className="h-28 w-full rounded-(--radius-sheet)" />
+        <Skeleton className="h-40 w-full rounded-(--radius-sheet)" />
       </div>
     )
   }
@@ -42,7 +42,7 @@ export function ProfileView() {
   return (
     <div className="flex flex-col gap-10">
       <section>
-        <p className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+        <p className="eyebrow text-muted-foreground">
           Signed in as
         </p>
         <h2 className="mt-1 font-display text-4xl font-semibold tracking-tight">
@@ -59,7 +59,7 @@ export function ProfileView() {
 
       {/* Counts rather than charts: /usage is one click away and does the charts
           properly. These are here to be glanced at. */}
-      <section className="grid gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-3">
+      <section className="grid gap-x-8 gap-y-2 border-y border-border py-3 sm:grid-cols-3">
         <Stat
           label="Conversations"
           value={conversations.length.toLocaleString()}
@@ -95,12 +95,15 @@ function Stat({
   return (
     <Link
       href={href}
-      className="bg-background px-5 py-4 transition-colors hover:bg-muted/40"
+      // A ledger cell that is also a link: the hover target keeps its own
+      // padding and pulls back out with a negative margin, so the figures stay
+      // optically flush with the rules above and below them.
+      className="-mx-3 rounded-(--radius-control-sm) px-3 py-2 transition-colors hover:bg-muted/50"
     >
-      <p className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+      <p className="eyebrow text-muted-foreground">
         {label}
       </p>
-      <p className="mt-1 font-display text-2xl font-semibold tabular-nums">
+      <p className="figure mt-1 text-2xl">
         {value}
       </p>
     </Link>

@@ -50,7 +50,7 @@ export function NavJobs() {
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-      <SidebarGroupLabel className="text-xs font-medium tracking-[0.16em] text-sidebar-foreground/75 uppercase">
+      <SidebarGroupLabel className="eyebrow text-sidebar-foreground/75">
         Active
         <span className="ml-auto text-sidebar-foreground/75 tabular-nums">
           {active.length}
@@ -111,7 +111,7 @@ function JobItem({ job, position }: { job: Job; position: number }) {
           <span className="w-full truncate text-sm leading-tight">
             {job.label}
           </span>
-          <span className="flex w-full items-center justify-between gap-2 text-xs font-medium tracking-[0.1em] text-muted-foreground uppercase tabular-nums">
+          <span className="eyebrow flex w-full items-center justify-between gap-2 text-muted-foreground tabular-nums">
             <span className="truncate">
               {KIND_LABEL[job.kind]}
               {live && job.stage ? ` · ${job.stage}` : ""}

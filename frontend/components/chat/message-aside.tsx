@@ -63,7 +63,7 @@ export function MessageAside({ tone, children }: MessageAsideProps) {
         // other block in a reply is now on (see BLOCK in rich-message.tsx).
         // Symmetric padding now that nothing is pinned to the right edge; the
         // left inset is deeper because the mark lives in it.
-        "relative my-[1.5em] overflow-hidden rounded-r-md border-l-2 py-3 pr-4 pl-10",
+        "relative my-[1.5em] overflow-hidden rounded-r-(--radius-control-sm) border-l-2 py-3 pr-4 pl-10",
         t.rail,
         t.wash,
         t.text

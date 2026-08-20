@@ -73,7 +73,7 @@ export function TraceStep({
       >
         <span
           className={cn(
-            "shrink-0 font-mono text-[0.72em] tracking-[0.18em] whitespace-nowrap uppercase",
+            "tag shrink-0 whitespace-nowrap",
             "text-muted-foreground/60",
             // The same shimmer everything mid-flight in the app carries.
             running && "text-shimmer"

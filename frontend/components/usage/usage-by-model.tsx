@@ -38,7 +38,7 @@ export function UsageByModel({ models }: { models: ModelUsage[] }) {
                     style={{ width: `${Math.max(share * 100, 2)}%` }}
                   />
                 </div>
-                <span className="mt-1.5 block text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase tabular-nums">
+                <span className="eyebrow mt-1.5 block text-muted-foreground tabular-nums">
                   {formatNumber(model.requests)} requests
                 </span>
               </li>

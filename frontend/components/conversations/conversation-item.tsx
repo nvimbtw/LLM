@@ -98,12 +98,12 @@ export function ConversationItem({
         ) : (
           <Link
             href={`/chat/${chat.id}`}
-            className="min-w-0 flex-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-w-0 flex-1 rounded-(--radius-marker) outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span className="block truncate font-display text-lg leading-snug tracking-tight underline-offset-4 group-hover:underline">
               {chat.title}
             </span>
-            <span className="mt-1.5 flex items-center gap-2.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase tabular-nums">
+            <span className="eyebrow mt-1.5 flex items-center gap-2.5 text-muted-foreground tabular-nums">
               <span>{formatDate(chat.createdAt)}</span>
               {chat.tokens > 0 && (
                 <>

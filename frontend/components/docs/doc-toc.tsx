@@ -10,7 +10,7 @@ export function DocToc({ headings }: { headings: Heading[] }) {
 
   return (
     <nav className="sticky top-10 flex flex-col gap-2 border-l border-border pl-5">
-      <span className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+      <span className="eyebrow text-muted-foreground">
         On this page
       </span>
       <ul className="flex flex-col gap-1.5 text-sm">

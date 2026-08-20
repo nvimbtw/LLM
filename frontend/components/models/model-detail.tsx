@@ -39,7 +39,7 @@ function BackLink() {
   return (
     <Link
       href="/models"
-      className="mb-8 inline-flex items-center gap-1.5 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase transition-colors hover:text-foreground"
+      className="eyebrow mb-8 inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
     >
       <ArrowLeft className="size-3.5" />
       Models
@@ -62,11 +62,11 @@ function HeroStat({
   hint?: string
 }) {
   return (
-    <div className="bg-background px-5 py-4">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+    <div className="pr-6">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-1.5 font-display text-2xl font-semibold tracking-tight tabular-nums">
+      <dd className="figure mt-1.5 text-2xl">
         {value}
       </dd>
       {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
@@ -77,10 +77,10 @@ function HeroStat({
 function Spec({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-0.5 font-display text-sm font-semibold tabular-nums">
+      <dd className="figure mt-0.5 text-sm">
         {value}
       </dd>
     </div>
@@ -96,9 +96,9 @@ function SpecPanel({
 }) {
   if (specs.length === 0) return null
   return (
-    <section className="rounded-lg border border-border bg-background">
+    <section className="rounded-(--radius-sheet) border border-border bg-background">
       <header className="border-b border-border px-5 py-3.5">
-        <h2 className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+        <h2 className="eyebrow text-muted-foreground">
           {title}
         </h2>
       </header>
@@ -185,10 +185,10 @@ export function ModelDetail({ modelId }: { modelId: string }) {
             <Skeleton className="h-9 w-64" />
             <Skeleton className="h-4 w-80" />
           </div>
-          <Skeleton className="h-24 rounded-lg" />
+          <Skeleton className="h-24 rounded-(--radius-sheet)" />
           <div className="grid gap-4 sm:grid-cols-2">
-            <Skeleton className="h-44 rounded-lg" />
-            <Skeleton className="h-44 rounded-lg" />
+            <Skeleton className="h-44 rounded-(--radius-sheet)" />
+            <Skeleton className="h-44 rounded-(--radius-sheet)" />
           </div>
         </div>
       </>
@@ -254,7 +254,7 @@ export function ModelDetail({ modelId }: { modelId: string }) {
                 </h1>
                 <ModelSizeMeter tier={model.tier} className="mb-1 shrink-0" />
               </div>
-              <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
+              <div className="eyebrow mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-muted-foreground">
                 <span>{model.family}</span>
                 <Dot />
                 <span>{model.tier}</span>
@@ -328,8 +328,8 @@ export function ModelDetail({ modelId }: { modelId: string }) {
           </div>
         </header>
 
-        {/* Headline figures — the divided ledger shared with the usage page. */}
-        <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border/60 sm:grid-cols-3">
+        {/* Headline figures — the ruled ledger shared with the usage page. */}
+        <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-3">
           <HeroStat
             label="Parameters"
             value={

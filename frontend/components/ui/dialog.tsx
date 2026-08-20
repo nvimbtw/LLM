@@ -53,7 +53,7 @@ function DialogContent({
         className={cn(
           // Centered card. The subtle scale + fade on enter/leave keeps it calm
           // rather than springy — in keeping with the site's editorial restraint.
-          "fixed top-1/2 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-lg border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-lg transition duration-150 ease-out outline-none data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-starting-style:scale-[0.98] data-starting-style:opacity-0",
+          "fixed top-1/2 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-(--radius-sheet) border border-border bg-popover bg-clip-padding p-5 text-sm text-popover-foreground shadow-overlay transition duration-150 ease-out outline-none data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-starting-style:scale-[0.98] data-starting-style:opacity-0",
           className
         )}
         {...props}

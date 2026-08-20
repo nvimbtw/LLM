@@ -36,7 +36,7 @@ export interface ModelBenchmarksProps {
 export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   const { data, isLoading, error } = useModelBenchmarks(modelId)
 
-  if (isLoading) return <Skeleton className="h-44 rounded-lg" />
+  if (isLoading) return <Skeleton className="h-44 rounded-(--radius-sheet)" />
   if (error) {
     return (
       <Section>
@@ -86,9 +86,9 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-lg border border-border bg-background">
+    <section className="rounded-(--radius-sheet) border border-border bg-background">
       <header className="flex items-baseline justify-between gap-3 border-b border-border px-5 py-3.5">
-        <h2 className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+        <h2 className="eyebrow text-muted-foreground">
           Benchmarks
         </h2>
         {subtitle && (
@@ -156,12 +156,12 @@ function Figure({
 }) {
   return (
     <div className="bg-background px-5 py-4">
-      <dt className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+      <dt className="eyebrow text-muted-foreground">
         {label}
       </dt>
       <dd
         className={cn(
-          "mt-1.5 font-display font-semibold tracking-tight tabular-nums",
+          "figure mt-1.5",
           lead ? "text-3xl" : "text-2xl",
           value === NO_VALUE && "text-muted-foreground/30"
         )}

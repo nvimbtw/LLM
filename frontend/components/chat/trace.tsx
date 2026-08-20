@@ -168,7 +168,7 @@ function Summary({
     <>
       <span
         className={cn(
-          "font-mono text-[0.72em] tracking-[0.18em] uppercase",
+          "tag",
           // The same shimmer the thread's status row uses, so a trace still
           // being written says so the way everything else in the app says it.
           streaming && "text-shimmer"

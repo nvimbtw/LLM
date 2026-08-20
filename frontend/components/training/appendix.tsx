@@ -45,7 +45,7 @@ export function Appendix({
         <div className="mt-4 space-y-4">
           <div className="space-y-1.5">
             <div className="text-xs font-medium text-muted-foreground">Log</div>
-            <div className="max-h-64 overflow-y-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed">
+            <div className="max-h-64 overflow-y-auto rounded-(--radius-control-sm) border bg-muted/40 p-3 font-mono text-xs leading-relaxed">
               {log.length === 0 ? (
                 <span className="text-muted-foreground">No output yet.</span>
               ) : (

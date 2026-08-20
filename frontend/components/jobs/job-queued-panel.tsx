@@ -81,7 +81,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
         ) : (
           <Panel title="In line" description="GPU queue">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <span className="font-display text-4xl leading-none font-semibold tabular-nums">
+              <span className="figure text-4xl leading-none">
                 {ahead === 0 ? "Next" : ordinal(ahead + 1)}
               </span>
               <span className="text-sm text-muted-foreground">
@@ -110,7 +110,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
               plainly rather than left to be inferred from a queue that never
               advances. */}
             {paused && (
-              <p className="mt-4 rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              <p className="mt-4 rounded-(--radius-sheet) border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
                 The queue is paused. Nothing new will start until it is resumed
                 — the running job carries on.
               </p>

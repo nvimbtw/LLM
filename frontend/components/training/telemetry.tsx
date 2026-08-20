@@ -155,7 +155,7 @@ function PhaseOneFigure({
       ]
 
   return (
-    <ul className="rounded-md border border-dashed px-4 py-1">
+    <ul className="rounded-(--radius-control-sm) border border-dashed px-4 py-1">
       {steps.map((s) => (
         <BuildStep key={s.label} {...s} />
       ))}

@@ -19,7 +19,7 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="grid gap-6 xl:grid-cols-2">
-        <section className="rounded-lg border border-border bg-background px-6 py-5">
+        <section className="rounded-(--radius-sheet) border border-border bg-background px-6 py-5">
           <h2 className="text-sm font-medium">Marker placement</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             At each marker in a held-out reply: would the model have emitted it?
@@ -52,7 +52,7 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
           )}
         </section>
 
-        <section className="rounded-lg border border-border bg-background px-6 py-5">
+        <section className="rounded-(--radius-sheet) border border-border bg-background px-6 py-5">
           <h2 className="text-sm font-medium">Generated structure</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Replies generated from held-out prompts, checked over the tokens

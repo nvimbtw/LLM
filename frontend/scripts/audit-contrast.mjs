@@ -8,19 +8,9 @@
 // which carry none and are held only to "still visible on a bright screen".
 // One row fails by design: `--tier-low`, whose reasoning is on the token itself.
 
-import { readFileSync } from "node:fs"
+import { themeTokens } from "./theme-tokens.mjs"
 
-const css = readFileSync("app/globals.css", "utf8")
-
-function block(selector) {
-  const i = css.indexOf(selector + " {")
-  const body = css.slice(i, css.indexOf("\n}", i))
-  const out = {}
-  for (const m of body.matchAll(/^\s*--([\w-]+):\s*(#[0-9a-fA-F]{6});/gm)) out[m[1]] = m[2]
-  return out
-}
-const light = block(":root")
-const dark = block(".dark")
+const { light, dark } = themeTokens()
 
 const srgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
 const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)

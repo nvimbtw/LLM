@@ -40,8 +40,14 @@ export function ChatMessageBubble({
             The bottom-right corner is tightened to a fraction of the others. That
             asymmetry is the whole reason it reads as *said by someone* rather than
             as a rounded rectangle — a tail, without drawing a tail. */}
-        <div className="max-w-[min(52ch,85%)] min-w-0 rounded-2xl rounded-br-sm bg-secondary px-[1.05em] py-[0.7em] text-secondary-foreground">
-          <RichContent root={tree} className="text-[0.95rem] leading-[1.6]" />
+        <div className="max-w-[min(52ch,85%)] min-w-0 rounded-(--radius-bubble) rounded-br-(--radius-marker) bg-secondary px-[1.05em] py-[0.7em] text-secondary-foreground">
+          {/* `text-base`, the scale's reading step. This was `text-[0.95rem]`
+              with a hand-set 1.6 leading — 15.2px, which is 0.8px off the size
+              the scale already defines *as* the size for reading, with a
+              line-height and tracking chosen to match it. A chat answer is the
+              longest prose in the app; if anything is set at the reading size,
+              it is this. */}
+          <RichContent root={tree} className="text-base" />
         </div>
       </div>
     )

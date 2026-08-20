@@ -68,7 +68,7 @@ export function SettingsDialog() {
               so it belongs beside it. */}
           <DialogTitle className="flex items-center gap-2">
             Settings
-            <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">
+            <kbd className="rounded-(--radius-marker) border border-border bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">
               ⌘K
             </kbd>
           </DialogTitle>
@@ -81,7 +81,7 @@ export function SettingsDialog() {
         {/* 70vh rather than a fixed height: the card is centred by transform, so
             it can grow to its content on a tall screen and only scroll when it
             genuinely does not fit. */}
-        <div className="quiet-scrollbar max-h-[70vh] overflow-y-auto px-6">
+        <div className="max-h-[70vh] overflow-y-auto px-6">
           {GROUPS.map((group) => {
             const rows = SETTINGS.filter((s) => s.group === group.id)
             if (group.id !== "appearance" && rows.length === 0) return null
@@ -91,7 +91,7 @@ export function SettingsDialog() {
                 key={group.id}
                 className="border-b border-border py-5 last:border-0 last:pb-6"
               >
-                <h3 className="text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+                <h3 className="eyebrow text-muted-foreground">
                   {group.label}
                 </h3>
                 {group.blurb && (
@@ -194,7 +194,7 @@ function ThemeRow() {
       label="Theme"
       description="Warm paper, or Kanagawa Dragon after dark. Press D anywhere to flip."
       control={
-        <div className="inline-flex gap-0.5 rounded-md border border-border p-0.5">
+        <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border border-border p-0.5">
           {options.map(([value, label]) => (
             <Button
               key={value}

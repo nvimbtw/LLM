@@ -45,7 +45,7 @@ export function ThrobberShowcase() {
               type="button"
               onClick={() => setMode(option)}
               className={cn(
-                "rounded-sm border px-3 py-1 text-xs capitalize transition-colors",
+                "rounded-(--radius-marker) border px-3 py-1 text-xs capitalize transition-colors",
                 option === mode
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border text-muted-foreground hover:border-input hover:text-foreground"
@@ -65,7 +65,7 @@ export function ThrobberShowcase() {
         title="Every state"
         description="Eight different pictures, not one picture at eight speeds"
       >
-        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-md border border-border bg-border/60 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-(--radius-control-sm) border border-border bg-border/60 sm:grid-cols-2">
           {MODES.map(({ mode: option, description }) => (
             <div
               key={option}

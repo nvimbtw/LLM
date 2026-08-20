@@ -64,8 +64,8 @@ export function ModelFilter({
   const shown = models.length - models.filter((m) => hidden.has(m.name)).length
 
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-border bg-card px-5 py-3.5">
-      <span className="text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-(--radius-sheet) border border-border bg-card px-5 py-3.5">
+      <span className="eyebrow text-muted-foreground">
         Models
       </span>
 

@@ -118,7 +118,7 @@ export function BenchmarkView() {
       <div
         role="tablist"
         aria-label="Benchmark"
-        className="inline-flex self-start rounded-md border border-border p-0.5"
+        className="inline-flex self-start rounded-(--radius-control-sm) border border-border p-0.5"
       >
         {BENCHMARK_SUITES.map((suite) => (
           <button
@@ -128,7 +128,7 @@ export function BenchmarkView() {
             aria-selected={selectedSuite === suite.id}
             onClick={() => selectSuite(suite.id)}
             className={cn(
-              "rounded px-3 py-1.5 text-sm transition-colors",
+              "rounded-(--radius-marker) px-3 py-1.5 text-sm transition-colors",
               selectedSuite === suite.id
                 ? "bg-muted font-medium text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -148,9 +148,9 @@ export function BenchmarkView() {
     return (
       <div className="flex flex-col gap-6">
         {switcher}
-        <Skeleton className="h-72 rounded-lg" />
-        <Skeleton className="h-40 rounded-lg" />
-        <Skeleton className="h-16 rounded-lg" />
+        <Skeleton className="h-72 rounded-(--radius-sheet)" />
+        <Skeleton className="h-40 rounded-(--radius-sheet)" />
+        <Skeleton className="h-16 rounded-(--radius-sheet)" />
       </div>
     )
   }
@@ -220,7 +220,7 @@ export function BenchmarkView() {
           // The first run of all has no earlier report to sit under, which would
           // otherwise leave the page empty while the GPU works. The mark fills that
           // space and reads as "measuring" rather than "stalled".
-          <div className="flex flex-col items-center gap-5 rounded-lg border border-dashed border-border px-6 py-12">
+          <div className="flex flex-col items-center gap-5 rounded-(--radius-sheet) border border-dashed border-border px-6 py-12">
             <Throbber mode="benchmarking" />
             <p className="text-center text-sm text-muted-foreground">
               Scoring in progress.
@@ -233,7 +233,7 @@ export function BenchmarkView() {
         ) : (
           // Failed runs carry their error in the history row, so this only has to
           // cover "nothing selected yet".
-          <p className="rounded-lg border border-dashed border-border px-5 py-10 text-center text-sm text-muted-foreground">
+          <p className="rounded-(--radius-sheet) border border-dashed border-border px-5 py-10 text-center text-sm text-muted-foreground">
             {detail?.status === "failed"
               ? (detail.error ?? "This run failed.")
               : "Select a run above, or queue a benchmark from the jobs page."}

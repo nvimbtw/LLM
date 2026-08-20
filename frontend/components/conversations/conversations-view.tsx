@@ -42,7 +42,7 @@ function Stat({ label, value }: { label: string; value: string }) {
       <dd className="font-display text-2xl leading-none font-semibold tracking-tight">
         {value}
       </dd>
-      <dt className="mt-1.5 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+      <dt className="eyebrow mt-1.5 text-muted-foreground">
         {label}
       </dt>
     </div>

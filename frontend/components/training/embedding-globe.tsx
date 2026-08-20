@@ -455,7 +455,7 @@ export function EmbeddingGlobe({
       className={
         mini
           ? "block size-full touch-none select-none"
-          : "block aspect-square w-full touch-none rounded-md border select-none" +
+          : "block aspect-square w-full touch-none rounded-(--radius-control-sm) border select-none" +
             (dragging ? " cursor-grabbing" : " cursor-grab")
       }
     >

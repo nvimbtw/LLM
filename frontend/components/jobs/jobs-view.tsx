@@ -47,11 +47,11 @@ export function JobsView() {
     <div className="space-y-8">
       {error && <FormError>{error}</FormError>}
 
-      <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <section className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
         <header className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border px-5 py-4">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
-            <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+            <p className="eyebrow mt-0.5 text-muted-foreground">
               {summarize(queued.length, running !== null, paused)}
             </p>
           </div>
@@ -98,13 +98,13 @@ export function JobsView() {
           )}
       </section>
 
-      <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <section className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
         <header className="border-b border-border px-5 py-4">
           <h2 className="text-sm font-semibold tracking-tight">History</h2>
           {/* The count is the whole ledger, not the page — "25 jobs" on every page
               of a hundred would be a worse answer to "how much have I run" than no
               number at all. */}
-          <p className="mt-0.5 text-xs font-medium tracking-[0.12em] text-muted-foreground uppercase">
+          <p className="eyebrow mt-0.5 text-muted-foreground">
             {historyTotal} {historyTotal === 1 ? "job" : "jobs"}
           </p>
         </header>

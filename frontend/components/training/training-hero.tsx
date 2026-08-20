@@ -294,7 +294,7 @@ export function TrainingHero({
         : "Phase 1 of 2 — preparing the data"
 
   return (
-    <section className="rounded-lg border border-border bg-card">
+    <section className="rounded-(--radius-sheet) border border-border bg-card">
       <div className="flex items-start justify-between gap-6 p-5">
         <div className="min-w-0 space-y-1">
           <h2 className="font-heading text-xl font-semibold tracking-tight">

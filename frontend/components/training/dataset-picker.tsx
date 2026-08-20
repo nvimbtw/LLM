@@ -117,15 +117,15 @@ export function DatasetPicker({
       </div>
 
       {loading ? (
-        <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
+        <p className="rounded-(--radius-sheet) border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
           Loading datasets…
         </p>
       ) : available.length === 0 ? (
-        <p className="rounded-lg border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
+        <p className="rounded-(--radius-sheet) border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
           {emptyHint ?? <>No datasets yet. Pull one from the Data view first.</>}
         </p>
       ) : (
-        <ul className="divide-y rounded-lg border">
+        <ul className="divide-y rounded-(--radius-sheet) border">
           {available.map((d) => {
             const checked = selected.has(d.id)
             const count = selected.get(d.id) ?? 0
