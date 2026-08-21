@@ -3,7 +3,7 @@
 import * as React from "react"
 import { ArrowUp, Paperclip, Square } from "lucide-react"
 import { EditorContent, useEditor } from "@tiptap/react"
-import { Extension, type Editor } from "@tiptap/core"
+import { Extension, Mark, type Editor, type JSONContent } from "@tiptap/core"
 import type { ResolvedPos } from "@tiptap/pm/model"
 import StarterKit from "@tiptap/starter-kit"
 import Placeholder from "@tiptap/extension-placeholder"
@@ -17,6 +17,7 @@ import {
   type Attachment,
 } from "@/lib/attachments"
 import { Button } from "@/components/ui/button"
+import { FormError } from "@/components/ui/error-state"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
 import {
   findCommand,
@@ -28,11 +29,14 @@ import {
 } from "@/lib/commands"
 import { useSettings } from "@/components/settings/settings-provider"
 import { useModels } from "@/hooks/use-models"
+import { useSpeechRecognition } from "@/hooks/use-speech-recognition"
+import { useDraftTokens } from "@/hooks/use-draft-tokens"
 import { ModelSelector } from "./model-selector"
 import { BudgetSelector, type ThinkBudget } from "./budget-selector"
 import { useComposerChoice } from "./composer-choice-provider"
 import { SlashCommandMenu } from "./slash-command-menu"
 import { AttachMenu } from "./attach-menu"
+import { MicButton } from "./mic-button"
 import { AttachmentStrip, type PendingAttachment } from "./attachment-strip"
 import { ComposerFooter } from "./composer-footer"
 
@@ -143,6 +147,24 @@ const ComposerKeys = Extension.create({
   },
 })
 
+// The tail of a dictation the recogniser has not settled on yet. It exists to
+// be seen — text firming up as you keep speaking is how you know the microphone
+// is keeping up — and to be gone before anything is sent. Both are handled:
+// `docToMarkdown` ignores marks it does not know, and the mark comes off when
+// dictation ends. `inclusive: false` keeps it from spreading onto characters
+// typed against its right edge.
+const InterimTranscript = Mark.create({
+  name: "interimTranscript",
+  inclusive: false,
+  renderHTML() {
+    return ["span", { class: "opacity-55" }, 0]
+  },
+})
+
+// Set on the transactions this component dispatches for dictation, so the
+// position mapping below can tell them from edits a person made.
+const VOICE_TRANSACTION = "voiceTranscript"
+
 export function ChatComposer({
   onSend,
   disabled = false,
@@ -198,6 +220,20 @@ export function ChatComposer({
 
   const { settings, setSetting, setCommandOpen } = useSettings()
   const { models } = useModels()
+  const {
+    supported: voiceSupported,
+    listening,
+    transcript,
+    onDevice: voiceOnDevice,
+    error: voiceError,
+    start: startRecognition,
+    stop: stopDictation,
+  } = useSpeechRecognition()
+
+  // Where in the document the running dictation is writing, or null when
+  // nothing is. Document offsets, so they move whenever the document does —
+  // which is what the editor's `onTransaction` below keeps up with.
+  const voiceRangeRef = React.useRef<{ from: number; to: number } | null>(null)
   const { theme, setTheme } = useTheme()
 
   const onSendRef = React.useRef(onSend)
@@ -315,13 +351,14 @@ export function ChatComposer({
   }, [])
 
   const clearComposer = React.useCallback(() => {
+    stopDictation()
     setIsEmpty(true)
     setIsCommand(false)
     setEditorText("")
     setMenuDismissed(false)
     setSelectedIndex(0)
     discardAttachments()
-  }, [discardAttachments])
+  }, [discardAttachments, stopDictation])
 
   const commandContext: CommandContext = React.useMemo(
     () => ({
@@ -520,6 +557,7 @@ export function ChatComposer({
       }),
       Placeholder.configure({ placeholder }),
       ComposerKeys,
+      InterimTranscript,
     ],
     editorProps: {
       attributes: {
@@ -608,6 +646,18 @@ export function ChatComposer({
       setEditorText(text)
       setIsCommand(matchStandaloneCommand(text) !== null)
     },
+    onTransaction: ({ transaction }) => {
+      // Keep the dictation's range over the same text when something else edits
+      // the document — typing ahead of it, a paste, a command. Our own inserts
+      // carry the meta and set the range themselves, so they are skipped.
+      const range = voiceRangeRef.current
+      if (!range || !transaction.docChanged) return
+      if (transaction.getMeta(VOICE_TRANSACTION)) return
+      voiceRangeRef.current = {
+        from: transaction.mapping.map(range.from),
+        to: transaction.mapping.map(range.to),
+      }
+    },
     onUpdate: ({ editor }) => {
       const text = editor.getText()
       setIsEmpty(editor.isEmpty)
@@ -625,8 +675,115 @@ export function ChatComposer({
     editorRef.current = editor
   })
 
+  const beginDictation = React.useCallback(() => {
+    const ed = editorRef.current
+    if (!ed || disabled) return
+    ed.commands.focus()
+
+    // Speaking straight after a finished word would run the two together. The
+    // gap goes in once, here, rather than being guessed at on every result.
+    const at = ed.state.selection.to
+    const $at = ed.state.doc.resolve(at)
+    const previous =
+      $at.parentOffset > 0
+        ? $at.parent.textBetween($at.parentOffset - 1, $at.parentOffset)
+        : ""
+    if (previous && !/\s/.test(previous)) {
+      ed.commands.insertContentAt(at, { type: "text", text: " " })
+    }
+
+    const anchor = ed.state.selection.to
+    voiceRangeRef.current = { from: anchor, to: anchor }
+    startRecognition()
+  }, [disabled, startRecognition])
+
+  // The spoken text, written in as one span that is replaced whole on every
+  // event rather than appended to. The interim tail is not additive — the
+  // recogniser rewrites its guess as it hears more — and appending successive
+  // guesses is exactly how you end up with a paragraph of stuttered half-words.
+  React.useEffect(() => {
+    const ed = editorRef.current
+    const range = voiceRangeRef.current
+    if (!ed || !range) return
+
+    const { final, interim } = transcript
+    if (!final && !interim) return
+
+    const content: JSONContent[] = []
+    if (final) content.push({ type: "text", text: final })
+    if (interim) {
+      content.push({
+        type: "text",
+        text: final ? ` ${interim}` : interim,
+        marks: [{ type: InterimTranscript.name }],
+      })
+    }
+    const length = content.reduce((n, node) => n + (node.text?.length ?? 0), 0)
+
+    ed.chain()
+      .command(({ tr }) => {
+        tr.setMeta(VOICE_TRANSACTION, true)
+        return true
+      })
+      .insertContentAt({ from: range.from, to: range.to }, content)
+      .setTextSelection(range.from + length)
+      .run()
+
+    voiceRangeRef.current = { from: range.from, to: range.from + length }
+  }, [transcript])
+
+  // Dictation over: everything in the range is settled now, so the interim
+  // styling comes off it. Declared after the effect above so that within one
+  // commit the last result to land is written before this runs.
+  const wasListeningRef = React.useRef(false)
+  React.useEffect(() => {
+    const stopped = wasListeningRef.current && !listening
+    wasListeningRef.current = listening
+    if (!stopped) return
+
+    const ed = editorRef.current
+    const range = voiceRangeRef.current
+    voiceRangeRef.current = null
+    if (!ed || !range || range.to <= range.from) return
+    // The text may not be there any more — `/clear` and a send both empty the
+    // composer on the way to stopping dictation, and a range reaching past the
+    // end of the document is one there is nothing left to unmark.
+    if (range.to > ed.state.doc.content.size) return
+    ed.chain()
+      .setTextSelection(range)
+      .unsetMark(InterimTranscript.name)
+      .setTextSelection(range.to)
+      .focus()
+      .run()
+  }, [listening])
+
+  // Dictate without reaching for the microphone. Ctrl/Cmd+Shift+Space because
+  // the letters that would read better — V, D, M — are all spoken for by the
+  // browsers this feature runs in.
+  React.useEffect(() => {
+    if (!voiceSupported || disabled) return
+
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || !event.shiftKey) return
+      if (!event.metaKey && !event.ctrlKey) return
+      event.preventDefault()
+      if (listening) stopDictation()
+      else beginDictation()
+    }
+
+    document.addEventListener("keydown", handleShortcut)
+    return () => document.removeEventListener("keydown", handleShortcut)
+  }, [voiceSupported, disabled, listening, stopDictation, beginDictation])
+
   const submit = React.useCallback(() => {
     if (!editor || editor.isEmpty || disabled) return
+
+    // Sending ends dictation: what was said is in the message now, and the
+    // range it was writing into is about to stop existing. Cleared here rather
+    // than left to the effect above, which would otherwise reach for it after
+    // the content is gone.
+    stopDictation()
+    voiceRangeRef.current = null
 
     // A standalone, recognised slash command runs locally and is never sent to
     // the model. Anything else (including a "/" mid-sentence) is an ordinary
@@ -662,7 +819,15 @@ export function ChatComposer({
     setEditorText("")
     releaseAttachments()
     onSendRef.current(markdown, model, budget, sending)
-  }, [editor, disabled, model, budget, attachments, releaseAttachments])
+  }, [
+    editor,
+    disabled,
+    model,
+    budget,
+    attachments,
+    releaseAttachments,
+    stopDictation,
+  ])
 
   React.useEffect(() => {
     submitRef.current = submit
@@ -734,6 +899,18 @@ export function ChatComposer({
 
   const contextWindow =
     models.find((m) => m.id === model)?.contextWindow ?? null
+
+  // The markdown, not the text on screen: the `**` and the `- ` are in the
+  // string the model is handed, and on a 256-token window a list's bullets are
+  // a percentage rather than a rounding error. A recognised standalone command
+  // never reaches the model at all, so it costs the window nothing — `submit`
+  // runs it locally and clears the composer.
+  const readDraft = () => {
+    const ed = editorRef.current
+    if (!ed || matchStandaloneCommand(ed.getText())) return ""
+    return docToMarkdown(ed.getJSON())
+  }
+  const draftTokens = useDraftTokens(editorText, model, readDraft)
 
   // A file drag carries "Files" in dataTransfer.types from the moment it
   // enters the window — checking for that (rather than inspecting the files
@@ -850,25 +1027,44 @@ export function ChatComposer({
         >
           <EditorContent editor={editor} />
         </div>
+        {voiceError && (
+          <FormError className="px-3.5 pb-1.5">{voiceError}</FormError>
+        )}
+
         <div className="flex items-center gap-2 px-2.5 pb-2">
           <AttachMenu onFiles={addFiles} disabled={disabled} />
           <ModelSelector value={model} onValueChange={setModel} />
           <BudgetSelector value={budget} onValueChange={setBudget} />
-          <Button
-            aria-label={disabled && onCancel ? "Stop" : "Send"}
-            size="icon-sm"
-            className="ml-auto rounded-full"
-            // While a turn is in flight the button becomes the way to stop it, so
-            // it stays live rather than going inert with a mark spinning on it.
-            disabled={disabled ? !onCancel : !canSend}
-            onClick={disabled ? onCancel : submit}
-          >
-            {/* A stop glyph rather than a mark of activity: while a turn is in
-                flight this button *is* the way to stop it, and its own label says so.
-                What the model is doing is said once, by the throbber in the thread —
-                it does not also need saying at 32px inside a control. */}
-            {disabled ? <Square className="fill-current" /> : <ArrowUp />}
-          </Button>
+          {/* The two ways a message leaves this box, kept together at the
+              right end of the row. The microphone is simply absent where the
+              browser has no recogniser — a control that cannot work is worse
+              than no control. */}
+          <div className="ml-auto flex items-center gap-2">
+            {voiceSupported && (
+              <MicButton
+                listening={listening}
+                onDevice={voiceOnDevice}
+                onStart={beginDictation}
+                onStop={stopDictation}
+                disabled={disabled}
+              />
+            )}
+            <Button
+              aria-label={disabled && onCancel ? "Stop" : "Send"}
+              size="icon-sm"
+              className="rounded-full"
+              // While a turn is in flight the button becomes the way to stop it, so
+              // it stays live rather than going inert with a mark spinning on it.
+              disabled={disabled ? !onCancel : !canSend}
+              onClick={disabled ? onCancel : submit}
+            >
+              {/* A stop glyph rather than a mark of activity: while a turn is in
+                  flight this button *is* the way to stop it, and its own label says so.
+                  What the model is doing is said once, by the throbber in the thread —
+                  it does not also need saying at 32px inside a control. */}
+              {disabled ? <Square className="fill-current" /> : <ArrowUp />}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -877,7 +1073,10 @@ export function ChatComposer({
           title={title}
           onRenameTitle={onRenameTitle}
           contextTokensUsed={contextTokensUsed}
+          draftTokens={draftTokens}
           contextWindow={contextWindow}
+          listening={listening}
+          onDeviceDictation={voiceOnDevice}
           // The drawer. `mx-2` is the inset that makes it read as a thing under
           // the composer rather than a continuation of it; `-mt-3` reaches it
           // back up behind the card, so the two rounded shapes meet with no

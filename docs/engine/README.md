@@ -261,6 +261,15 @@ The renamed row is at its original init until an SFT run touches it, which
   one fixed question, recorded at five layer boundaries under a pinned seed.
   Re-record with `python -m tests.fixtures.record` only when a behaviour change
   is intended, and commit the diff as the evidence of what moved.
+- **`bpe.load` hands back a shared object, not a fresh one.** It is memoized on
+  the tokenizer file's path and mtime, because `/tokenize/count` is called for
+  every message stored and again on every pause in the composer, and re-parsing
+  a `tokenizer.json` per call dominated both — 9.9 ms of parse for 0.055 ms of
+  encoding, measured in `corpus/bpe.py`. Nothing mutates a loaded
+  tokenizer today and nothing may start: it would be mutating every caller's.
+  The mtime is in the key so that an SFT run saving its vocabulary over the base
+  model's is picked up rather than served from the copy read before it moved —
+  `tests/test_vocabulary_cache.py` is what notices.
 - **Anything asking "which ids are markers?" must use `special.block_names()`,
   not `token_list()`.** A vocabulary older than a marker still calls that slot
   `<|reserved_N|>`, and matching only the current spelling drops those ids out

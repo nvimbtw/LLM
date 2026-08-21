@@ -82,6 +82,15 @@ in `engine/api/routes/attachments.py`. What the engine does with them —
 and, more to the point, what it does not — is
 [`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
 
+**Two routes are spelled almost alike and are not the same thing.**
+`POST /runs/tokenize` queues a vocabulary *build* — minutes of CPU, admin work,
+a job with a page. `POST /tokenize/count` measures a string under a model's
+existing vocabulary, loads no weights, and takes `AuthUser`, because the
+composer's context meter asks it on every pause in typing
+([`../frontend/README.md`](../frontend/README.md)). Gating the second one behind
+`AdminUser` by analogy with the first would leave every ordinary session's meter
+collecting 403s.
+
 The one thing this side decides is **who is asking**: `upstream::caller` turns
 the verified user token into the `act` claim of a short-lived service token, and
 the service scopes by that. A user token is never forwarded.
