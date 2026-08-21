@@ -7,6 +7,7 @@ special-token block, saving/loading as one self-contained file, and how much tex
 a vocabulary is allowed to learn from.
 """
 
+import functools
 from pathlib import Path
 
 from tokenizers import Tokenizer
@@ -146,16 +147,49 @@ def _slug(name: str) -> str:
     return keep.strip("-")[:40] or "dataset"
 
 
+# How many parsed vocabularies to keep. A serving process answers for the handful
+# of models being chatted with, not for the whole registry, and one is a few MB of
+# Rust structures — so this bounds the memory while still hitting on every request
+# of a conversation.
+#
+# What the cache is worth, measured on a 539 KB `tokenizer.json` (vocab 8192)
+# encoding a 195-character message:
+#
+#     load, cold (parse)    9.945 ms
+#     load, warm (cached)   0.009 ms
+#     encode                0.055 ms
+#
+# So a count used to spend 99% of itself re-reading a file it had just read. That
+# is affordable once per stored message and is not affordable per pause in
+# typing, which is what the composer's context meter asks for.
+CACHED_VOCABULARIES = 8
+
+
+@functools.lru_cache(maxsize=CACHED_VOCABULARIES)
+def _parse(path: str, _stamp: tuple[int, int]) -> Tokenizer:
+    """`_stamp` is never read. It is in the key so that a file rewritten in
+    place — an SFT run saving its vocabulary over the base model's — misses
+    rather than being served from a copy parsed before it moved."""
+    return Tokenizer.from_file(path)
+
+
 def load(directory: Path | None = None) -> Tokenizer:
     """Load a trained tokenizer. Defaults to the shared build; pass a model's
-    directory to load the copy saved beside its weights."""
+    directory to load the copy saved beside its weights.
+
+    Parsed once per file and shared thereafter: `/tokenize/count` is called for
+    every message stored and again as one is typed, and re-reading a multi-MB
+    JSON per call dominated both. Callers get the *same* object, so a tokenizer
+    is to be treated as immutable — nothing here mutates one, and the encode
+    paths only take `&self`."""
     path = storage.tokenizer_file(directory)
     if not path.is_file():
         raise FileNotFoundError(
             f"No tokenizer at {path}. Train a model first — the training "
             f"pipeline builds one and copies it next to the weights."
         )
-    return Tokenizer.from_file(str(path))
+    stat = path.stat()
+    return _parse(str(path), (stat.st_mtime_ns, stat.st_size))
 
 
 def encode(tok: Tokenizer, text: str) -> list[int]:

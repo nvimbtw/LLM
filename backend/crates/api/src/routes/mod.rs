@@ -9,6 +9,7 @@ pub mod models;
 pub mod preset;
 pub mod runs;
 pub mod stream;
+pub mod tokenize;
 pub mod tokenizers;
 pub mod usage;
 pub mod user;
@@ -30,6 +31,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/models").configure(models::configure));
     cfg.service(web::scope("/benchmarks").configure(benchmarks::configure));
     cfg.service(web::scope("/runs").configure(runs::configure));
+    cfg.service(web::scope("/tokenize").configure(tokenize::configure));
     cfg.service(web::scope("/tokenizers").configure(tokenizers::configure));
     cfg.service(web::scope("/usage").configure(usage::configure));
     cfg.service(web::scope("/ws").configure(stream::configure));

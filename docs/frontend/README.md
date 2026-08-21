@@ -41,6 +41,8 @@ frontend/
 │   ├── training/
 │   └── usage/
 ├── hooks/           Custom React hooks (use-chat, use-models, use-auth, etc.)
+│                 — and the browser-capability ones: use-mobile,
+│                 use-reduced-motion, use-speech-recognition, use-audio-level
 ├── lib/             Pure utilities, API helpers, socket clients
 │   ├── api.ts           HTTP helpers, auth token management
 │   ├── chat-socket.ts   one socket per chat, streaming a reply
@@ -333,7 +335,8 @@ the Base UI primitive underneath, both learned the hard way:
 The backend owns people, sessions and presets. Everything else — models,
 conversations, runs, scores, usage — belongs to the Python engine, and the
 backend forwards to it. So a route here is `/chats`, `/models`, `/runs`,
-`/benchmarks`, `/usage`, and the shape that comes back is the engine's.
+`/benchmarks`, `/usage`, `/tokenize`, and the shape that comes back is the
+engine's.
 
 Two names are adapted at the wire rather than renamed through every component,
 each in one place: the engine's `run_id` is this side's `id_job` (`lib/jobs.ts`),
@@ -407,6 +410,85 @@ row whose tops do not line up reads as two things that happen to be adjacent.
 The file tile lifts the extension out of the name and into the meta line
 (`TXT · 5.0 MB`): a card that wide truncates the end of a long filename, and the
 end is exactly the part that says what the file is.
+
+### Dictation
+
+The microphone next to Send is the browser's own `SpeechRecognition` — free,
+keyless, nothing in the bundle, and absent on Firefox, where the button does not
+render at all. What it costs in privacy and why it beat a local Whisper is in
+[`decisions/voice-input-uses-the-browser.md`](../decisions/voice-input-uses-the-browser.md).
+
+Two hooks, because they are two browser APIs with two lifetimes:
+
+- **`use-speech-recognition.ts`** owns the recogniser. It hands back `final` and
+  `interim` as separate strings — the second is a guess the recogniser keeps
+  rewriting — plus `onDevice`, true when Chrome's local pack is already
+  installed. It restarts its own session on `onend`, because a session ends by
+  itself after a stretch of silence even with `continuous` set; a run of
+  sessions too short to have heard anything is how that restart chain ends
+  rather than spinning against a browser that has said no.
+- **`use-audio-level.ts`** opens a *second* capture of the same microphone,
+  because `SpeechRecognition` exposes no audio to draw. It calls back once per
+  frame with three bands and never sets state; `VoiceWaveform` writes the
+  transforms to the DOM itself.
+
+In `chat-composer.tsx` the spoken text lives in a **range** — where this
+dictation is writing — that is replaced whole on every event rather than appended
+to, since the interim tail is revised and not added to. The range is ProseMirror
+positions, so the editor's `onTransaction` maps it through anything typed
+alongside it, skipping the composer's own inserts by a meta flag. The interim
+tail carries the `interimTranscript` mark (faded, `inclusive: false`), which is
+stripped when dictation ends and which `docToMarkdown` would ignore anyway.
+
+Sending or `/clear` stops dictation. The footer band holds the three bars in its
+middle column while it runs — it is a `1fr auto 1fr` grid rather than a two-ended
+row precisely so the bars are centred on the band itself, and so the title and
+the context meter never move to make room for them. The bars are also the only
+thing that animates: the mic button just fills blue and swaps to a stop glyph,
+the same swap the send button makes mid-turn. `Ctrl`/`Cmd`+`Shift`+`Space`
+toggles it; the mic button takes both a click (dictate until clicked again) and
+a hold (dictate until released), told apart by how long the press lasted.
+
+### The context meter
+
+The right end of the footer band: a bar and `used/window`, tinted at 70% and
+again at 90% (`meterTone`). It counts two things that are known to different
+standards, and keeping them apart is the whole of the design.
+
+- **The conversation behind the draft is an estimate.** The last persisted total
+  from the sidebar, plus whatever a turn in flight has tallied client-side as it
+  streamed — see `chat-thread.tsx`. Neither half was checked against a
+  tokenizer.
+- **The draft in the composer is a real count.** `hooks/use-draft-tokens.ts`
+  posts it to `/tokenize/count` 200ms after typing settles, and the engine
+  encodes it under that model's own vocabulary. A guess from character count
+  would be wrong by an amount that changes with the model — these vocabularies
+  are trained per model — against windows that start at 256 tokens, where a
+  handful either way is a percentage.
+
+So the bar is drawn as two segments, the draft's at 45% opacity, and the tooltip
+says which number is which. The alternative — one figure labelled "estimated" —
+threw away the half that is exact.
+
+Three things the hook does that are not optional:
+
+- **It counts the markdown, not the text on screen.** `docToMarkdown` is what
+  `submit` sends, and a list's `- ` is in the string the model is handed.
+- **It holds the last count while a request is in flight**, and on failure keeps
+  it rather than falling to zero. A meter that emptied itself mid-sentence would
+  be a worse lie than one a keystroke stale.
+- **It returns to zero without a round trip** when the composer empties, adjusted
+  during render rather than in an Effect — otherwise the count of a turn already
+  sent survives a frame into the next one.
+
+A recognised standalone command (`/clear`, `/model …`) reads as zero: it runs
+locally and never reaches the model, so it costs the window nothing.
+
+Counting per keystroke is only affordable because the engine caches the parsed
+vocabulary — see [`../engine/README.md`](../engine/README.md). Attachments
+contribute nothing here, and that is a property of the system rather than an
+omission: nothing reads them
+([`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md)).
 
 ### Opening one
 
