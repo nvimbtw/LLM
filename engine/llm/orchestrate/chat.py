@@ -14,8 +14,8 @@ from tokenizers import Tokenizer
 
 from llm import storage
 from llm.chat.markup import OpenBlocks, Rules
-from llm.chat.template import Role, ThinkBudget, Turn, build_prompt
-from llm.config import ChatConfig
+from llm.chat.template import Role, ThinkBudget, Turn, build_prompt, context_floor
+from llm.config import ChatConfig, ChatTurn
 from llm.corpus import bpe
 from llm.model import checkpoint, sample
 from llm.train.loop import pick_device
@@ -108,9 +108,15 @@ def stream(cfg: ChatConfig):
     history = [Turn(role=Role(t.role), text=t.text) for t in cfg.turns]
     budget = ThinkBudget.parse(cfg.budget) if cfg.budget else None
 
-    reserve = min(RESERVE_FOR_REPLY, max(1, model.ctx_window // 2))
+    # NTK-scaled tables computed fresh per turn, never written into the cached
+    # model's own buffers — see `Transformer.extended_rope`. `context_window` is
+    # this turn's ceiling everywhere `model.ctx_window` used to be it.
+    context_window = round(model.ctx_window * cfg.context_multiplier)
+    rope = model.extended_rope(context_window) if context_window > model.ctx_window else None
+
+    reserve = min(RESERVE_FOR_REPLY, max(1, context_window // 2))
     prompt_ids = build_prompt(
-        cfg.system, history, tokenizer, model.ctx_window, reserve, budget
+        cfg.system, history, tokenizer, context_window, reserve, budget
     )
     if not prompt_ids:
         raise ValueError("Conversation rendered to zero tokens")
@@ -122,7 +128,10 @@ def stream(cfg: ChatConfig):
     generator = torch.Generator(device=device).manual_seed(cfg.seed) if cfg.seed else None
 
     logits, caches = model(
-        torch.tensor([prompt_ids], device=device), caches=model.empty_caches(), pos_offset=0
+        torch.tensor([prompt_ids], device=device),
+        caches=model.empty_caches(),
+        pos_offset=0,
+        rope=rope,
     )
 
     produced: list[int] = []
@@ -133,7 +142,7 @@ def stream(cfg: ChatConfig):
         # The closers a drain would cost are reserved against the cap, so the
         # markup this turn still has to close is budgeted rather than spent past
         # the ceiling the caller set.
-        if position >= model.ctx_window - blocks.depth:
+        if position >= context_window - blocks.depth:
             break
 
         step = logits[0, -1].clone()
@@ -157,7 +166,7 @@ def stream(cfg: ChatConfig):
             yield "tool_call", call
 
         logits, caches = model(
-            torch.tensor([[next_id]], device=device), caches=caches, pos_offset=position
+            torch.tensor([[next_id]], device=device), caches=caches, pos_offset=position, rope=rope
         )
         position += 1
 
@@ -194,6 +203,17 @@ def run(cfg: ChatConfig) -> dict:
             next(generator)
         except StopIteration as done:
             return done.value
+
+
+def history_floor(model_name: str, turns: list[ChatTurn]) -> int:
+    """Index into `turns` where `/prune` should cut — see
+    `llm.chat.template.context_floor` for what that means and why. Loads the
+    model like `stream` does (cached the same way), because `ctx_window` is
+    architecture and lives on the checkpoint, not in the tokenizer alone."""
+    model, tokenizer, _ = load(model_name)
+    history = [Turn(role=Role(t.role), text=t.text) for t in turns]
+    reserve = min(RESERVE_FOR_REPLY, max(1, model.ctx_window // 2))
+    return context_floor(history, tokenizer, model.ctx_window, reserve)
 
 
 def count_tokens(model_name: str, text: str) -> dict:

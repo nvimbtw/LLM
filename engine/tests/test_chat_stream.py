@@ -109,3 +109,26 @@ async def test_the_question_is_counted_in_the_models_own_tokenizer(
     with store.session() as db:
         asked = q.messages_of(db, chat_id)[0]
         assert asked.tokens == len(recorded_trace["question_ids"])
+
+
+async def test_context_multiplier_runs_the_reply_past_the_trained_window(
+    client, chat_id
+):
+    """`tiny`'s ctx_window is 128, so an uncapped generation stops there — well
+    short of `max_tokens` — without extension. NTK-scaled tables let the same
+    seed keep going past that point instead."""
+    body = ask() | {"max_tokens": 500}
+
+    baseline = await stream(client, chat_id, body)
+    [done] = [e for e in baseline if e["event"] == "done"]
+    at_window = done["data"]["usage"]["generated_tokens"]
+    assert done["data"]["usage"]["stopped"] == "length"
+
+    with store.session() as db:
+        extended_chat = q.create_chat(db, OWNER, "extended").id
+    extended = await stream(
+        client, extended_chat, body | {"context_multiplier": 4.0}
+    )
+    [done] = [e for e in extended if e["event"] == "done"]
+
+    assert done["data"]["usage"]["generated_tokens"] > at_window

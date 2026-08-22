@@ -306,6 +306,15 @@ class ChatConfig(BaseModel):
     top_p: float = 0.95
     seed: int | None = None
 
+    context_multiplier: float = Field(
+        default=1.0,
+        ge=1.0,
+        description="stretch the context window to this multiple of the model's trained "
+        "ctx_window, via NTK-aware RoPE scaling computed fresh for the turn. 1 (default) "
+        "runs the model exactly as trained; above 1 trades some quality at the tokens "
+        "past ctx_window for headroom the model was never trained at",
+    )
+
 
 class CountRequest(BaseModel):
     model_config = _ALLOW_MODEL_PREFIX

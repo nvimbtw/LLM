@@ -173,7 +173,9 @@ export function ChatComposer({
   title,
   onRenameTitle,
   contextTokensUsed = 0,
+  unseenTokens = 0,
   draft,
+  onPruneContext,
 }: {
   onSend: (
     content: string,
@@ -195,12 +197,17 @@ export function ChatComposer({
   title?: string
   onRenameTitle?: (title: string) => void
   contextTokensUsed?: number
+  // See composer-footer.tsx — `prunedTokens` from `useChat`.
+  unseenTokens?: number
   // Text to load into the composer, replacing whatever is in it — the "edit and
   // ask again" action on a user message (see chat-message.tsx). Identified by
   // object identity rather than by the string, so asking to edit the *same*
   // message twice loads it twice; a plain string prop would be a no-op the
   // second time.
   draft?: { text: string }
+  // `/prune` — see lib/context-floor.ts. Optional for the same reason
+  // `onRenameTitle` is: the new-chat composer has no chat yet to prune.
+  onPruneContext?: () => Promise<{ prunedTurns: number; prunedTokens: number }>
 }) {
   // Both live above the router (see composer-choice-provider.tsx) rather than
   // here: sending the first message replaces the new-chat composer with the
@@ -373,6 +380,7 @@ export function ChatComposer({
       theme,
       setTheme,
       clearComposer,
+      pruneContext: onPruneContext,
     }),
     [
       settings,
@@ -386,6 +394,7 @@ export function ChatComposer({
       theme,
       setTheme,
       clearComposer,
+      onPruneContext,
     ]
   )
 
@@ -1075,6 +1084,8 @@ export function ChatComposer({
           contextTokensUsed={contextTokensUsed}
           draftTokens={draftTokens}
           contextWindow={contextWindow}
+          contextMultiplier={settings.contextMultiplier}
+          unseenTokens={unseenTokens}
           listening={listening}
           onDeviceDictation={voiceOnDevice}
           // The drawer. `mx-2` is the inset that makes it read as a thing under

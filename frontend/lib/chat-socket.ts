@@ -8,7 +8,8 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 //
 //   client → { token }                            (first frame, auth)
 //   server → { type: "ready" }
-//   client → { model_name, text, attachment_ids?, system?, budget?, temperature?, top_k?, top_p? }
+//   client → { model_name, text, attachment_ids?, system?, budget?, temperature?,
+//              top_k?, top_p?, context_multiplier?, history_floor? }
 //   server → { type: "token", token }             (decoded text, repeated)
 //   server → { type: "tool_call", tool, argument } (the reply asked for something)
 //   server → { type: "done", message_id, content, usage }
@@ -37,6 +38,7 @@ export interface SamplingSettings {
   temperature: number
   topK: number
   topP: number
+  contextMultiplier: number
 }
 
 /**
@@ -87,6 +89,10 @@ export function streamChat(
   // engine renders no marker, which is the prompt shape it has always used.
   budget: ThinkBudget,
   sampling: SamplingSettings,
+  // A message id from `lib/context-floor.ts`, or null. Resent on every turn
+  // rather than remembered here — the socket is per-turn, the floor is
+  // per-chat, and this is the seam where the two meet.
+  historyFloor: string | null,
   handlers: ChatStreamHandlers
 ): () => void {
   const ws = new WebSocket(`${WS_URL}/ws/chats/${chatId}`)
@@ -155,6 +161,10 @@ export function streamChat(
               ? { top_k: Math.round(sampling.topK) }
               : {}),
             ...(Number.isFinite(sampling.topP) ? { top_p: sampling.topP } : {}),
+            ...(Number.isFinite(sampling.contextMultiplier)
+              ? { context_multiplier: sampling.contextMultiplier }
+              : {}),
+            ...(historyFloor ? { history_floor: historyFloor } : {}),
           })
         )
         break

@@ -351,7 +351,7 @@ One socket per chat, opened at `/ws/chats/{id}`:
 client → { token }                            (auth frame)
 server → { type: "ready" }
 client → { model_name, text, attachment_ids?, system?, budget?,
-           temperature?, top_k?, top_p? }
+           temperature?, top_k?, top_p?, context_multiplier? }
 server → { type: "token", token }             (repeated)
 server → { type: "tool_call", tool, argument } (the reply asked for something)
 server → { type: "done", message_id, content, tokens, usage, final }
@@ -579,6 +579,56 @@ how random you want decoding to be is a standing preference, not a property of
 one question. Each is omitted individually when unset or non-finite, and the
 engine then falls back to its own defaults.
 
+`context_multiplier` is a setting the same way: how much headroom past the
+trained context window you want is a standing preference, not a property of one
+question. 1 (the default) is the model exactly as trained; the engine builds an
+NTK-scaled RoPE table fresh per turn for anything above that, computed from the
+model's own `ctx_window` rather than a token count this side would have to keep
+in sync with it — see `docs/engine/README.md`.
+
+### `/prune`
+
+Cuts a chat's usable range back to what it would be at `context_multiplier: 1`,
+while leaving the multiplier itself wherever it's set — real headroom past the
+trained window again, instead of already sitting near a raised cap. Nothing is
+deleted: every message stays exactly where it was, visible in the thread and
+counted in `/usage`. What changes is what a *future* turn is built from.
+
+The mechanism is deliberately stateless on the engine's side. `GET
+/chats/{id}/context-floor?model_name=...` is a pure read — it answers "where
+would the cut land under this model's own `ctx_window`," using the identical
+walk `build_prompt` already runs, and writes nothing down. `lib/context-floor.ts`
+is what remembers the answer: a message id kept in `localStorage`, per chat, at
+the same durability tier as every other chat setting in this file — lost on a
+cleared browser or a different device, same as your temperature would reset.
+Every `ask` after that resends it as `history_floor`, and the engine slices its
+own stored history against it before `build_prompt` ever runs (`_floored` in
+`api/routes/chats.py`) — a stale or unrecognised floor falls back to the full
+history rather than erroring, since a client's memory of a prune is a
+convenience, not something a turn should fail over.
+
+If a prune ever needs to survive a lost `localStorage` or a second device, this
+is the point to reconsider: persist the floor against the chat server-side
+instead of trusting the client to keep resending it.
+
+The composer footer subtracts the floor's own reported token count from
+`chatSummary.tokens` rather than asking the engine for a second, smaller total
+— `chatSummary.tokens` is also what `/usage` bills from, and has to keep
+counting every token this chat ever cost regardless of what a later prune
+excludes from the model's view of it.
+
+**The meter's badges are how a prune is actually seen.** Past the trained
+window under a raised multiplier, one reads `+190% ×4` — how far over the
+trained size you are, and what's letting you get away with it. Once `/prune`
+succeeds, a second badge appears beside it: `62% unseen`, how much of this chat
+the model can no longer see. They are independent facts shown independently,
+not two views of one state — pruning brings usage back under the trained
+window the instant it runs, but the conversation can grow past that window
+again afterwards, at which point both are true at once (some of the chat is
+unseen, *and* what's left has gone past the trained size again). Both badges
+read off the same `tone` (`composer-footer.tsx`'s `meterTone`) as the bar and
+the count beside them, so either turning red means the same thing.
+
 ### Settings
 
 `lib/settings.ts` is the single source of truth. One entry in `SETTINGS` (plus a
@@ -604,14 +654,17 @@ Typing a leading `/` in the composer brings up the floating fuzzy finder popover
 
 - **Stage 1 (Command Discovery)**: Fuzzy-matches command names, aliases, and
   descriptions (e.g. `/model`, `/thinking`, `/show-thinking`, `/temperature`,
-  `/top-k`, `/top-p`, `/system-prompt`, `/notify`, `/theme`, `/settings`,
-  `/help`, `/clear`).
+  `/top-k`, `/top-p`, `/context-multiplier`, `/prune`, `/system-prompt`,
+  `/notify`, `/theme`, `/settings`, `/help`, `/clear`).
 - **Stage 2 (Argument Selection & Range Guides)**:
   - `/model <name>`: Fuzzy-filters and selects available models.
   - `/thinking <budget>`: Sets the thinking budget (`auto | low | med | high`).
   - `/show-thinking` / `/notify`: Toggles reasoning visibility and notifications.
-  - `/temperature`, `/top-k`, `/top-p`: Displays allowed ranges, current values,
-    and clickable preset buttons.
+  - `/temperature`, `/top-k`, `/top-p`, `/context-multiplier`: Displays allowed
+    ranges, current values, and clickable preset buttons.
+  - `/prune`: No argument. A no-op toast at `context_multiplier: 1`; otherwise
+    asks the engine for this chat's floor and toasts what it cut — see the
+    note on `/prune` above.
   - `/system-prompt <text>`: Previews current prompt and offers templates or `clear`.
   - `/theme <light | dark | system>`: Switches visual theme.
 - **Keyboard navigation**: Seamless `↑` / `↓` navigation, `Tab` autocomplete,

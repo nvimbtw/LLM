@@ -29,6 +29,8 @@ export function ChatThread({ chatId }: { chatId: string }) {
     sendMessage,
     cancel,
     rateMessage,
+    prunedTokens,
+    pruneContext,
   } = useChat(chatId)
   const { conversations, renameChat } = useChats()
   // Resending asks the same question with whatever the composer is currently set
@@ -59,8 +61,14 @@ export function ChatThread({ chatId }: { chatId: string }) {
   // what's been tallied client-side as it streams (see use-chat.ts). Neither
   // half is server-verified against the tokenizer, so this is an estimate for
   // the composer's status row, not an accounting figure.
+  //
+  // `prunedTokens` is subtracted rather than the total swapped for a smaller
+  // one: `chatSummary.tokens` is also what the usage page bills from, and has
+  // to keep counting every token this chat ever cost regardless of what a
+  // later `/prune` excludes from the model's own view of it — see
+  // `lib/context-floor.ts`.
   const contextTokensUsed =
-    (chatSummary?.tokens ?? 0) +
+    Math.max(0, (chatSummary?.tokens ?? 0) - prunedTokens) +
     (isSending ? (lastMessage?.tokenCount ?? 0) : 0)
 
   const showIdle = !isLoading && !isSending && lastMessage?.role === "assistant"
@@ -286,7 +294,9 @@ export function ChatThread({ chatId }: { chatId: string }) {
               title={chatSummary?.title ?? "New chat"}
               onRenameTitle={(next) => void renameChat(chatId, next)}
               contextTokensUsed={contextTokensUsed}
+              unseenTokens={prunedTokens}
               draft={draft}
+              onPruneContext={() => pruneContext(model)}
             />
           </div>
         </div>

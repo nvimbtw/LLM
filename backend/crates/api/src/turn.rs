@@ -186,8 +186,10 @@ fn string_at(value: &Value, key: &str) -> String {
 /// that opened the turn must be dropped from the follow-up — it is already
 /// stored as a message and comes back as history.
 pub fn carry_settings(ask: &Value, next: &mut Value) {
-    const CARRIED: [&str; 7] =
-        ["model_name", "system", "budget", "max_tokens", "temperature", "top_k", "top_p"];
+    const CARRIED: [&str; 9] = [
+        "model_name", "system", "budget", "max_tokens", "temperature", "top_k", "top_p",
+        "context_multiplier", "history_floor",
+    ];
 
     let (Some(from), Some(into)) = (ask.as_object(), next.as_object_mut()) else { return };
     for key in CARRIED {
@@ -213,6 +215,22 @@ mod tests {
         assert_eq!(next["temperature"], 0.4);
         assert_eq!(next["top_k"], 20);
         assert!(next.get("text").is_none());
+    }
+
+    #[test]
+    fn a_follow_up_keeps_the_context_extension_settings_too() {
+        // Both are properties of the standing conversation, exactly like
+        // temperature — a turn that happens to call a tool should not silently
+        // drop back to an un-extended window for its follow-up round.
+        let ask = json!({
+            "model_name": "tiny", "text": "how tall?",
+            "context_multiplier": 4.0, "history_floor": "11111111-1111-1111-1111-111111111111",
+        });
+        let mut next = json!({ "tool_result": { "tool": "web-search" } });
+        carry_settings(&ask, &mut next);
+
+        assert_eq!(next["context_multiplier"], 4.0);
+        assert_eq!(next["history_floor"], "11111111-1111-1111-1111-111111111111");
     }
 
     #[test]

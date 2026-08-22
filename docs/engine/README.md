@@ -189,6 +189,62 @@ turn, so the caller can start the work while the rest of the reply is still
 generating. The row is written when the last token lands, so a dropped
 connection loses the reply rather than storing half of one.
 
+### Context extension (NTK-aware RoPE)
+
+`ChatConfig.context_multiplier` (default `1.0`) stretches a turn's context past
+the model's trained `ctx_window`. `Transformer.extended_rope` builds a fresh
+`(cos, sin)` table at `round(ctx_window * context_multiplier)`, scaling the RoPE
+base by the length ratio raised to `head_dim / (head_dim - 2)` — the tables the
+model trained on stay exact, and only the extrapolated tail stretches. `orchestrate/chat.py`
+passes that table into every `Transformer.forward` call for the turn via the
+`rope=` override, and uses the stretched length everywhere `ctx_window` used to
+bound the prompt and the generation loop.
+
+Two things keep this from touching what SFT and pretrain already guard:
+
+- **Nothing is written into the model's own `rope_cos`/`rope_sin` buffers.** They
+  are shared by every request against a cached model (see `orchestrate/chat.py`'s
+  `_CACHE`), and mutating them would race two concurrent turns extending to
+  different lengths against each other.
+- **It never reaches the checkpoint.** `ctx_window` and `rope_base` still come
+  from `arch`, exactly as `SftConfig`'s docstring insists — this is a per-turn
+  inference parameter, not an architecture change. It buys headroom against
+  silent truncation (`build_prompt` in `llm/chat/template.py` evicts oldest
+  turns first), not the quality of a model actually trained at the longer
+  length.
+
+### `/prune`'s floor: `context_floor`, and why nothing is written down
+
+`GET /chats/{id}/context-floor` answers "where would this chat's history be cut
+if it were fitting the model's own `ctx_window` rather than whatever
+`context_multiplier` extends it to" — `llm.chat.template.context_floor` runs the
+identical newest-to-oldest walk `build_prompt` already does (`_fit_history`,
+factored out so the two cannot disagree), just with the un-multiplied allowance.
+It is read-only: nothing is stored, on either side of the call.
+
+The frontend is what remembers the answer — a message id, kept in
+`localStorage` per chat (`lib/context-floor.ts`) — and resends it as
+`Ask.history_floor` on every later turn. `_floored` in `api/routes/chats.py`
+slices `q.messages_of(...)` against it before `ChatConfig.turns` is built, so
+history before the floor never reaches `build_prompt` at all, regardless of how
+wide a raised `context_multiplier` would otherwise let it reach. A floor that
+doesn't match any stored message — a stale id, another chat's — falls back to
+the full history rather than erroring: a client's memory of a prune is a
+convenience the turn it's answering should not fail over.
+
+This buys the whole feature without a migration: no chat gains a column, no
+message is ever deleted, and a lost `localStorage` (a cleared browser, a second
+device) just means the next turn falls back to full history — the same
+durability every other chat setting in this app already has. If a prune ever
+needs to survive that, this is the point to reconsider: persist the floor
+against the chat instead of trusting the client to keep resending it.
+
+**Snapped past a lone `Role.TOOL` turn.** A naive cut can land exactly on a
+tool's answer, and dropping the assistant turn that called it while keeping the
+answer would leave a `<|tool-result|>` naming no call — see the tool section
+below for why that shape is never allowed to exist. `context_floor` shifts
+forward past it rather than trying to pull the call back in.
+
 ## Tools
 
 A tool call is a leaf block inside an assistant turn, spelled with the tool's own

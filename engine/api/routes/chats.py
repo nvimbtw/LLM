@@ -77,6 +77,12 @@ class Ask(BaseModel):
     top_k: int = 40
     top_p: float = 0.95
     seed: int | None = None
+    context_multiplier: float = 1.0
+    #: A message id from a `/chats/{id}/context-floor` response, resent by the
+    #: client on every later turn. History strictly before it is excluded from
+    #: what the model is prompted with — see `context_floor` above for why this
+    #: lives on the request rather than being written down anywhere.
+    history_floor: uuid.UUID | None = None
 
 
 @router.get("/chats")
@@ -102,6 +108,39 @@ def get_chat(chat_id: uuid.UUID, owner: uuid.UUID = Depends(auth.require_owner))
             **_chat(chat, sum(m.tokens for m in messages)),
             "messages": [_message(m) for m in messages],
         }
+
+
+@router.get("/chats/{chat_id}/context-floor")
+def context_floor(
+    chat_id: uuid.UUID, model_name: str, owner: uuid.UUID = Depends(auth.require_owner)
+):
+    """Where `/prune` (the frontend command) would cut this chat's history if
+    `model_name` were fitting its own `ctx_window` rather than whatever
+    `context_multiplier` extends it to right now.
+
+    Read-only, on both sides of this call: nothing is written here, and the
+    frontend is what remembers the answer and resends it as `history_floor` on
+    every later turn (`Ask.history_floor` below) — see
+    `docs/frontend/README.md`. If that ever needs to survive a lost
+    localStorage or a second device, this is the point to reconsider: persist
+    the floor against the chat instead of trusting the client to keep it.
+    """
+    with store.session() as db:
+        _owned(db, chat_id, owner)
+        messages = q.messages_of(db, chat_id)
+
+    try:
+        turns = [ChatTurn(role=m.role.value, text=m.content) for m in messages]
+        start = chat_pipeline.history_floor(model_name, turns)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    pruned = messages[:start]
+    return {
+        "floor_message_id": str(messages[start].id) if start < len(messages) else None,
+        "pruned_turns": len(pruned),
+        "pruned_tokens": sum(m.tokens for m in pruned),
+    }
 
 
 @router.patch("/chats/{chat_id}")
@@ -238,6 +277,22 @@ def _new_turn(body: Ask) -> tuple[Role, str]:
     return Role.tool, tools.render_result(tool, result.argument, result.body)
 
 
+def _floored(messages: list[Message], floor: uuid.UUID | None) -> list[Message]:
+    """`messages`, or the suffix from `floor` onward when the client sent one.
+
+    A floor that doesn't match any stored message — the chat since deleted
+    down to before it, or a stale id from another chat entirely — falls back
+    to the full history rather than erroring: a client's memory of a prune is
+    a convenience, never something the turn it is answering should fail over.
+    """
+    if floor is None:
+        return messages
+    for i, message in enumerate(messages):
+        if message.id == floor:
+            return messages[i:]
+    return messages
+
+
 def _prepare(
     chat_id: uuid.UUID, owner: uuid.UUID, body: Ask
 ) -> tuple[ChatConfig, uuid.UUID | None]:
@@ -257,7 +312,8 @@ def _prepare(
         _owned(db, chat_id, owner)
         model_id = _credit(db, body.model_name)
         history = [
-            ChatTurn(role=m.role.value, text=m.content) for m in q.messages_of(db, chat_id)
+            ChatTurn(role=m.role.value, text=m.content)
+            for m in _floored(q.messages_of(db, chat_id), body.history_floor)
         ]
         asked_message = q.add_message(
             db, chat_id=chat_id, role=role, content=content, tokens=asked
@@ -275,6 +331,7 @@ def _prepare(
             top_k=body.top_k,
             top_p=body.top_p,
             seed=body.seed,
+            context_multiplier=body.context_multiplier,
         ),
         model_id,
     )

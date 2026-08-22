@@ -209,6 +209,29 @@ def render_conversation(
     return "".join(out)
 
 
+def _fit_history(
+    history: list[Turn], tokenizer: Tokenizer, scaffold: int, allowance: int
+) -> int:
+    """Index of the oldest turn that survives once `history` is fitted under
+    `allowance` tokens with `scaffold` already spent — newest first, whole
+    turns only, the most recent kept even if it alone busts the budget.
+
+    The walk `build_prompt` renders from, and the one `context_floor` reuses to
+    ask where a cut would land under a *different* budget, without rendering
+    anything.
+    """
+    used = scaffold
+    start = len(history)
+    for i in range(len(history) - 1, -1, -1):
+        turn_cost = len(bpe.encode(tokenizer, _format_turn(history[i])))
+        is_latest = i == len(history) - 1
+        if not is_latest and used + turn_cost > allowance:
+            break
+        used += turn_cost
+        start = i
+    return start
+
+
 def build_prompt(
     system: str | None,
     history: list[Turn],
@@ -237,22 +260,40 @@ def build_prompt(
     # the budget before history is fitted around it.
     scaffold = cost(ASSISTANT_OPEN) + cost(budget_str) + cost(system_str)
     allowance = max(0, ctx_window - reserve_for_reply)
-
-    used = scaffold
-    start = len(history)
-    for i in range(len(history) - 1, -1, -1):
-        turn_cost = cost(_format_turn(history[i]))
-        is_latest = i == len(history) - 1
-        if not is_latest and used + turn_cost > allowance:
-            break
-        used += turn_cost
-        start = i
+    start = _fit_history(history, tokenizer, scaffold, allowance)
 
     # Assemble the kept turns chronologically and encode once, so the returned
     # ids exactly match a single pass (no cross-turn BPE-merge surprises).
     rendered = system_str + "".join(_format_turn(t) for t in history[start:])
     rendered += budget_str + ASSISTANT_OPEN
     return bpe.encode(tokenizer, rendered)
+
+
+def context_floor(history: list[Turn], tokenizer: Tokenizer, ctx_window: int, reserve_for_reply: int) -> int:
+    """Index of the oldest turn `build_prompt` would still keep if it were
+    fitting the model's own `ctx_window` rather than some multiplier's
+    extension of it.
+
+    Read-only, and deliberately conservative rather than exact: `system` and
+    the budget marker are ignored, both being a handful of tokens next to a
+    real conversation, so the floor this returns is never later than the one a
+    real turn would land on. This is the boundary `/prune` (the frontend
+    command) snapshots — see `docs/frontend/README.md` — so a chat's usable
+    range can be pulled back to what the model actually trained on while a
+    raised `context_multiplier` keeps the room past it free for new growth,
+    instead of that same old range being included again the moment it still
+    fits the wider budget.
+
+    Snapped past a lone `Role.TOOL` turn: dropping the assistant turn that
+    called it but keeping the answer would leave a `<|tool-result|>` with
+    nothing before it naming what it is an answer to — see
+    `docs/engine/README.md`'s note on where a tool's answer is stored.
+    """
+    allowance = max(0, ctx_window - reserve_for_reply)
+    start = _fit_history(history, tokenizer, 0, allowance)
+    if start < len(history) and history[start].role is Role.TOOL:
+        start += 1
+    return start
 
 
 def training_segments(

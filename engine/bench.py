@@ -637,6 +637,54 @@ def check(args) -> None:
             legacy_model.rope_base == 10_000.0,
         )
 
+    print("context extension")
+    torch.manual_seed(9)
+    head_dim, ctx_window = 8, 16
+    scale = 4.0
+    scaled_base = 10_000.0 * (scale ** (head_dim / (head_dim - 2)))
+    expect(
+        "max_seq_len within ctx_window changes nothing",
+        torch.allclose(rope_tables(head_dim, ctx_window)[0], rope_tables(head_dim, ctx_window, max_seq_len=ctx_window)[0]),
+    )
+    expect(
+        "max_seq_len past ctx_window is the NTK-scaled base at that length",
+        torch.allclose(
+            rope_tables(head_dim, ctx_window, max_seq_len=int(ctx_window * scale))[0],
+            rope_tables(head_dim, int(ctx_window * scale), scaled_base)[0],
+        ),
+    )
+
+    ext = Transformer(64, head_dim * 4, 4, 2, 4, ctx_window).eval()
+    expect(
+        "extended_rope leaves the model's own tables untouched",
+        torch.equal(ext.rope_cos, rope_tables(head_dim, ctx_window)[0]),
+    )
+    long_prompt = torch.randint(0, 64, (1, ctx_window * 2))
+    with torch.no_grad():
+        try:
+            ext(long_prompt)
+            overflowed = False
+        except ValueError:
+            overflowed = True
+        expect("past ctx_window still refuses without an extended table", overflowed)
+
+        rope = ext.extended_rope(ctx_window * 2)
+        whole, _ = ext(long_prompt, rope=rope)
+        caches = ext.empty_caches()
+        stepwise = []
+        for i in range(long_prompt.shape[1]):
+            out, caches = ext(long_prompt[:, i : i + 1], caches, pos_offset=i, rope=rope)
+            stepwise.append(out)
+    expect(
+        "cached decode past ctx_window reproduces the extended full-context forward",
+        torch.allclose(whole, torch.cat(stepwise, dim=1), atol=1e-5),
+        f"max Δ {(whole - torch.cat(stepwise, dim=1)).abs().max().item():.2e}",
+    )
+    expect(
+        "extending twice from the same model never mutates its buffers",
+        torch.equal(ext.rope_cos, rope_tables(head_dim, ctx_window)[0]),
+    )
+
     print("per-head attention temperature")
     torch.manual_seed(11)
     plain = Transformer(64, 32, 4, 2, 4, 16)
