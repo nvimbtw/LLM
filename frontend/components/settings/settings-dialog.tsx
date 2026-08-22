@@ -73,8 +73,8 @@ export function SettingsDialog() {
             </kbd>
           </DialogTitle>
           <DialogDescription className="mt-1 text-xs">
-            Kept on this device. Toggles are also available as slash commands in
-            the composer.
+            Saved to your account. Toggles are also available as slash
+            commands in the composer.
           </DialogDescription>
         </header>
 

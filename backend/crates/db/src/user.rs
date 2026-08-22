@@ -1,3 +1,4 @@
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -72,6 +73,71 @@ pub async fn update(
     )
     .fetch_optional(pool)
     .await
+}
+
+/// Settings are opaque here — the frontend's `Settings` shape can grow without
+/// a migration on this side. `None` means no user with that id.
+pub async fn get_settings(pool: &PgPool, id: Uuid) -> Result<Option<Value>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT settings as "settings: Value" FROM users WHERE id_user = $1"#,
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| r.settings))
+}
+
+/// Replaces the whole blob rather than merging — the caller already holds the
+/// full object (`SettingsProvider` builds it from its current state plus one
+/// changed key), so a partial-update path here would be a second way to do the
+/// same thing.
+pub async fn update_settings(
+    pool: &PgPool,
+    id: Uuid,
+    settings: &Value,
+) -> Result<Option<Value>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"UPDATE users SET settings = $2 WHERE id_user = $1
+           RETURNING settings as "settings: Value""#,
+        id,
+        settings,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| r.settings))
+}
+
+/// What the composer is set to send with (model, thinking budget), opaque here
+/// for the same reason `get_settings` is. `None` means no user with that id.
+pub async fn get_composer_choice(pool: &PgPool, id: Uuid) -> Result<Option<Value>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT composer_choice as "composer_choice: Value" FROM users WHERE id_user = $1"#,
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| r.composer_choice))
+}
+
+/// Replaces the whole blob, same reasoning as `update_settings`.
+pub async fn update_composer_choice(
+    pool: &PgPool,
+    id: Uuid,
+    composer_choice: &Value,
+) -> Result<Option<Value>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"UPDATE users SET composer_choice = $2 WHERE id_user = $1
+           RETURNING composer_choice as "composer_choice: Value""#,
+        id,
+        composer_choice,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| r.composer_choice))
 }
 
 /// True when a row was actually removed, so a no-op delete is not a success.

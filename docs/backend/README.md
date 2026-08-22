@@ -43,6 +43,23 @@ each other: the two Python processes are siblings that never speak.
 The database holds three tables: `users`, `training_presets`, and sqlx's own
 migration ledger. Everything else moved to the engine.
 
+A user's chat settings (decoding knobs, system prompt, UI toggles) live in
+`users.settings`, one opaque JSONB blob rather than a table of their own — a
+user has exactly one, so a table keyed `UNIQUE(id_user)` would only ever hold
+the row the user row already has. `GET`/`PUT /user/me/settings`
+(`api/routes/user.rs`) read and replace it whole; the backend never parses the
+blob, so the frontend's `Settings` shape (`lib/settings.ts`) can grow without a
+migration here, the same way `training_presets.config` stays opaque to a run
+shape it doesn't need to know either.
+
+`users.composer_choice` is a second, identically-shaped blob for what the
+composer is set to send with (model, thinking budget), behind its own
+`GET`/`PUT /user/me/composer-choice`. Not merged into `settings` — the two
+write at different rhythms (a pick fires immediately, a settings change
+debounces), and one column would mean the later of two independent writes
+clobbering the other's field. See
+[`../frontend/README.md`](../frontend/README.md) for the client side of both.
+
 Dependency order is strictly one-directional and Cargo enforces it — a cycle
 simply fails to compile. `crates/*` are workspace members subordinate to
 `backend`; never create a crate outside `crates/`.

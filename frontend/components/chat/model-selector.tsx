@@ -25,9 +25,11 @@ export function ModelSelector({
 }) {
   const { models, isLoading } = useModels()
 
-  // Default to the first model once the list has loaded.
+  // Default to the first model once the list has loaded — and correct a
+  // persisted choice that no longer exists (deleted or unpublished since a
+  // past session), which otherwise shows a blank trigger forever.
   React.useEffect(() => {
-    if (!value && models.length > 0) {
+    if (models.length > 0 && !models.some((m) => m.id === value)) {
       onValueChange(models[0].id)
     }
   }, [value, models, onValueChange])

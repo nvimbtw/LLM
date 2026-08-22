@@ -568,10 +568,9 @@ nothing has no trace and renders exactly as it always did, reasoning inline.
 labels the SFT corpus is tagged with, since the string sent becomes the marker
 the model was trained under. **"Auto" is the absence of a budget, not a fourth
 value**: it is omitted from the frame entirely, so the engine renders no marker
-and the model is prompted exactly as it always was. Unlike `systemPrompt` it is
-*not* a setting — how hard you want the model to think is a property of the
-question, so it lives as composer state and rides through `PendingMessage` when
-a new chat navigates.
+and the model is prompted exactly as it always was. It rides through
+`PendingMessage` when a new chat navigates, same as `model` — see
+"The composer's own choice" below for both.
 
 `temperature` / `top_k` / `top_p` are the decoding knobs, and unlike `budget`
 they **are** settings (`lib/settings.ts`, rendered as sliders in the ⌘K modal) —
@@ -646,6 +645,37 @@ toggle, a slash command — nothing else needs touching.
   persists it (the no-flash script reads it before React exists), so declaring
   it here would give the app two answers to what the theme is. It gets a
   hand-written row in the `appearance` band that reads and writes the real one.
+
+Everything else in `Settings` is stored on the account, not the browser —
+`components/settings/settings-provider.tsx` fetches `GET /user/me/settings` on
+login and writes back with `PUT` on every change, debounced 500ms so a dragged
+slider or a typed system prompt isn't one request per tick. Logged-out state is
+*derived* (`isAuthenticated ? settings : DEFAULT_SETTINGS`) rather than written
+in the effect that notices the session changed, same reasoning as
+`ChatsProvider`'s empty list — a synchronous `setState` in that effect is what
+the `react-hooks/set-state-in-effect` lint rule catches. A fetched blob is
+merged over `DEFAULT_SETTINGS`, so a setting added after an account last saved
+comes back with its default rather than `undefined`. See
+[`../backend/README.md`](../backend/README.md) for where it lives server-side.
+
+### The composer's own choice
+
+`model` and `budget` — what to send with, not how to behave — are not in
+`Settings` and never render in the ⌘K modal; they stay `ComposerChoiceProvider`
+state (`components/chat/composer-choice-provider.tsx`), read and set through
+`useComposerChoice()`, exactly as before. What changed is that the choice now
+persists too, through its own resource, `GET`/`PUT /user/me/composer-choice` —
+a separate blob from `Settings` rather than two more fields on it, because a
+model or budget pick writes immediately (it's one discrete action, not a
+dragged slider) while a settings change debounces; sharing a column would mean
+whichever write lands second clobbering the other's field. Same
+account-not-browser reasoning, same derive-on-logout shape as `Settings` above.
+
+A persisted model id can go stale between sessions — the model got deleted or
+unpublished — so `ModelSelector` corrects an id that isn't in the loaded list
+back to the first available one, the same effect that already handled "no
+choice yet"; that's the one place with the list, so it's the one place that
+needs to know.
 
 ### Slash commands & fuzzy finder
 

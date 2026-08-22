@@ -2,9 +2,9 @@
 
 import * as React from "react"
 
+import { apiFetch } from "@/lib/api"
+import { useAuth } from "@/hooks/use-auth"
 import { DEFAULT_SETTINGS, type Settings } from "@/lib/settings"
-
-const STORAGE_KEY = "llm.settings"
 
 interface SettingsContextValue {
   settings: Settings
@@ -18,65 +18,129 @@ interface SettingsContextValue {
 
 const SettingsContext = React.createContext<SettingsContextValue | null>(null)
 
-function loadSettings(): Settings {
-  if (typeof window === "undefined") return DEFAULT_SETTINGS
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return DEFAULT_SETTINGS
-    // Merge over defaults so a newly-added setting picks up its default rather
-    // than being undefined for anyone with older persisted state.
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) }
-  } catch {
-    return DEFAULT_SETTINGS
-  }
+/**
+ * How long a change sits before it's written back. A slider dragged across
+ * its range or a system prompt typed character by character would otherwise
+ * be one PUT per tick; this holds the last value of a burst and sends that.
+ */
+const WRITE_DEBOUNCE_MS = 500
+
+function persist(settings: Settings) {
+  void apiFetch("/user/me/settings", {
+    method: "PUT",
+    body: JSON.stringify({ settings }),
+  }).catch(() => {
+    // A dropped write leaves the account's copy stale, not this tab's — the
+    // next change, or the next load, tries again.
+  })
 }
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  // Start from defaults on both server and first client render (no hydration
-  // mismatch); hydrate from localStorage in an effect right after mount.
+  const { isAuthenticated } = useAuth()
   const [settings, setSettings] = React.useState<Settings>(DEFAULT_SETTINGS)
   const [commandOpen, setCommandOpen] = React.useState(false)
 
-  React.useEffect(() => {
-    // One-time hydration from localStorage after mount, kept out of render so
-    // server and first client render match (SSR-safe).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSettings(loadSettings())
+  // Whether the account's own copy has landed, so a change made in the gap
+  // between mount and that response doesn't PUT a still-default object over
+  // whatever was already saved. A ref, not state — read from inside a
+  // `setSettings` updater, where a stale closure over React state would win.
+  const loaded = React.useRef(false)
+  const writeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pending = React.useRef<Settings | null>(null)
+
+  const flush = React.useCallback(() => {
+    if (writeTimer.current !== null) {
+      clearTimeout(writeTimer.current)
+      writeTimer.current = null
+    }
+    if (pending.current) {
+      persist(pending.current)
+      pending.current = null
+    }
   }, [])
+
+  const schedule = React.useCallback(
+    (next: Settings) => {
+      pending.current = next
+      if (writeTimer.current !== null) clearTimeout(writeTimer.current)
+      writeTimer.current = setTimeout(flush, WRITE_DEBOUNCE_MS)
+    },
+    [flush]
+  )
+
+  // Settings belong to the account, not the browser: load them on login. This
+  // provider lives in the root layout (mounted on /login and /signup too), so
+  // the fetch is skipped whenever there's no session — same reasoning as
+  // `ChatsProvider`. Logged-out is *derived* below rather than written here,
+  // for the same reason `ChatsProvider` derives its empty list instead of
+  // clearing state in this effect: it keeps the previous session's values out
+  // of `settings` without a synchronous `setState` in an effect body.
+  React.useEffect(() => {
+    loaded.current = false
+    if (!isAuthenticated) {
+      // Discard rather than flush: the token is already gone, so a write here
+      // would only 401 and bounce back through `handleSessionExpired`.
+      if (writeTimer.current !== null) clearTimeout(writeTimer.current)
+      writeTimer.current = null
+      pending.current = null
+      return
+    }
+    let active = true
+    apiFetch("/user/me/settings")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load settings.")
+        return (await response.json()) as { settings: Partial<Settings> }
+      })
+      .then((data) => {
+        if (!active) return
+        // Merged over defaults so a setting added after this account last
+        // saved picks up its default rather than coming back `undefined`.
+        setSettings({ ...DEFAULT_SETTINGS, ...data.settings })
+      })
+      .catch(() => {
+        // Stay on defaults; the next change still saves normally.
+      })
+      .finally(() => {
+        if (active) loaded.current = true
+      })
+    return () => {
+      active = false
+    }
+  }, [isAuthenticated])
+
+  // A pending debounced write must not be lost to a closed tab or a logout.
+  React.useEffect(() => {
+    return () => flush()
+  }, [flush])
 
   const setSetting = React.useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
       setSettings((prev) => {
         const next = { ...prev, [key]: value }
-        try {
-          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-        } catch {
-          // Storage unavailable (private mode / quota) — keep it in memory.
-        }
+        if (loaded.current) schedule(next)
         return next
       })
     },
-    []
+    [schedule]
   )
 
   const resetSettings = React.useCallback(() => {
     setSettings(DEFAULT_SETTINGS)
-    try {
-      window.localStorage.removeItem(STORAGE_KEY)
-    } catch {
-      // ignore
-    }
-  }, [])
+    if (loaded.current) schedule(DEFAULT_SETTINGS)
+  }, [schedule])
 
   const value = React.useMemo(
     () => ({
-      settings,
+      // Derived, not stored: logging out must not leave the previous
+      // session's values on screen until the next fetch happens to replace
+      // them (the same reasoning `ChatsProvider` applies to its list).
+      settings: isAuthenticated ? settings : DEFAULT_SETTINGS,
       setSetting,
       resetSettings,
       commandOpen,
       setCommandOpen,
     }),
-    [settings, setSetting, resetSettings, commandOpen]
+    [isAuthenticated, settings, setSetting, resetSettings, commandOpen]
   )
 
   return (

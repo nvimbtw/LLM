@@ -1,5 +1,6 @@
 use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -100,6 +101,75 @@ async fn fetch(pool: &PgPool, id: Uuid) -> HttpResponse {
     }
 }
 
+/// Not folded into `UserResponse`: `/{id}` is also how an admin looks up
+/// someone else, and that response shouldn't carry a stranger's system prompt
+/// and decoding knobs along with it.
+#[derive(Serialize, Deserialize)]
+struct SettingsPayload {
+    settings: Value,
+}
+
+#[get("/me/settings")]
+async fn get_my_settings(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
+    match db::user::get_settings(pool.get_ref(), auth.claims.sub).await {
+        Ok(Some(settings)) => HttpResponse::Ok().json(SettingsPayload { settings }),
+        Ok(None) => not_found(),
+        Err(e) => failed("get settings for", e),
+    }
+}
+
+/// Replaces the stored blob outright — the client always holds and sends the
+/// full object, so there is no partial-update case to reconcile here.
+#[put("/me/settings")]
+async fn update_my_settings(
+    auth: AuthUser,
+    payload: web::Json<SettingsPayload>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    match db::user::update_settings(pool.get_ref(), auth.claims.sub, &payload.settings).await {
+        Ok(Some(settings)) => HttpResponse::Ok().json(SettingsPayload { settings }),
+        Ok(None) => not_found(),
+        Err(e) => failed("update settings for", e),
+    }
+}
+
+/// What the composer is set to send with. Its own resource rather than a field
+/// on `SettingsPayload`: a model or budget pick writes immediately, a settings
+/// change debounces, and a shared blob would mean the later of two independent
+/// writes clobbering the other's field.
+#[derive(Serialize, Deserialize)]
+struct ComposerChoicePayload {
+    composer_choice: Value,
+}
+
+#[get("/me/composer-choice")]
+async fn get_my_composer_choice(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
+    match db::user::get_composer_choice(pool.get_ref(), auth.claims.sub).await {
+        Ok(Some(composer_choice)) => {
+            HttpResponse::Ok().json(ComposerChoicePayload { composer_choice })
+        }
+        Ok(None) => not_found(),
+        Err(e) => failed("get composer choice for", e),
+    }
+}
+
+#[put("/me/composer-choice")]
+async fn update_my_composer_choice(
+    auth: AuthUser,
+    payload: web::Json<ComposerChoicePayload>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
+    match db::user::update_composer_choice(pool.get_ref(), auth.claims.sub, &payload.composer_choice)
+        .await
+    {
+        Ok(Some(composer_choice)) => {
+            HttpResponse::Ok().json(ComposerChoicePayload { composer_choice })
+        }
+        Ok(None) => not_found(),
+        Err(e) => failed("update composer choice for", e),
+    }
+}
+
 #[derive(Deserialize)]
 struct UpdateUserPayload {
     username: Option<String>,
@@ -169,6 +239,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(insert_user);
     // Before get_user, or "/me" is captured by "/{id}" and fails to parse.
     cfg.service(get_me);
+    cfg.service(get_my_settings);
+    cfg.service(update_my_settings);
+    cfg.service(get_my_composer_choice);
+    cfg.service(update_my_composer_choice);
     cfg.service(get_user);
     cfg.service(update_user);
     cfg.service(delete_user);
