@@ -35,10 +35,26 @@ import torch.nn.functional as F
 ROPE_BASE = 10000.0
 
 
-def rope_tables(head_dim: int, ctx_window: int, base: float = ROPE_BASE):
-    """Precomputed cos/sin tables, shape [ctx_window, head_dim/2]."""
+def rope_tables(
+    head_dim: int, ctx_window: int, base: float = ROPE_BASE, max_seq_len: int | None = None
+):
+    """Precomputed cos/sin tables, shape [max_seq_len or ctx_window, head_dim/2].
+
+    `max_seq_len` extrapolates past `ctx_window` — the length the architecture
+    actually trained on — rather than sizing the tables to it. NTK-aware: `base`
+    is scaled up by the length ratio raised to `head_dim / (head_dim - 2))`, so
+    the low-frequency channels stretch to cover the extra range while the
+    highest-frequency channel (the one adjacent tokens are told apart by) barely
+    moves. Plain linear position scaling stretches every channel equally and
+    blurs exactly that local resolution instead.
+    """
+    actual_len = max_seq_len or ctx_window
+    if max_seq_len and max_seq_len > ctx_window:
+        scale = max_seq_len / ctx_window
+        base = base * (scale ** (head_dim / (head_dim - 2)))
+
     inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
-    positions = torch.arange(ctx_window).float()
+    positions = torch.arange(actual_len).float()
     freqs = torch.outer(positions, inv_freq)
     return freqs.cos(), freqs.sin()
 
@@ -261,20 +277,36 @@ class Transformer(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self, idx, caches=None, pos_offset: int = 0):
+    def extended_rope(self, target_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """NTK-scaled cos/sin tables reaching `target_len`, for a caller that
+        wants to run past `ctx_window` without touching the checkpoint.
+
+        Computed fresh and returned rather than written into `rope_cos`/
+        `rope_sin`: those buffers are shared by every request against a cached
+        model, and overwriting them would race two requests extending to
+        different lengths against each other.
+        """
+        cos, sin = rope_tables(self.head_dim, self.ctx_window, self.rope_base, target_len)
+        return cos.to(self.rope_cos.device), sin.to(self.rope_cos.device)
+
+    def forward(self, idx, caches=None, pos_offset: int = 0, rope=None):
         """Logits for `idx` [batch, seq], plus the updated KV caches.
 
         `pos_offset` is where this chunk starts in the sequence, so a cached
         decode step rotates by its true position rather than by 0.
-        """
-        seq = idx.shape[1]
-        if pos_offset + seq > self.ctx_window:
-            raise ValueError(
-                f"position {pos_offset + seq} exceeds context window {self.ctx_window}"
-            )
 
-        cos = self.rope_cos[pos_offset : pos_offset + seq]
-        sin = self.rope_sin[pos_offset : pos_offset + seq]
+        `rope` overrides the trained `(cos, sin)` tables — with the pair
+        `extended_rope` returns, a caller can run past `ctx_window` at whatever
+        length it built those tables for.
+        """
+        rope_cos, rope_sin = rope if rope is not None else (self.rope_cos, self.rope_sin)
+        limit = rope_cos.shape[0]
+        seq = idx.shape[1]
+        if pos_offset + seq > limit:
+            raise ValueError(f"position {pos_offset + seq} exceeds context window {limit}")
+
+        cos = rope_cos[pos_offset : pos_offset + seq]
+        sin = rope_sin[pos_offset : pos_offset + seq]
 
         x = self.embedding(idx)
         new_caches = []

@@ -2,10 +2,12 @@ import {
   Bell,
   Cpu,
   Eraser,
+  Expand,
   Gauge,
   HelpCircle,
   ListFilter,
   Percent,
+  Scissors,
   ScrollText,
   Settings2,
   SunMoon,
@@ -36,6 +38,9 @@ export interface CommandContext {
   theme?: string
   setTheme?: (theme: string) => void
   clearComposer?: () => void
+  /** `/prune` — see `lib/context-floor.ts`. Absent on the new-chat composer,
+   *  which has no chat yet to prune. */
+  pruneContext?: () => Promise<{ prunedTurns: number; prunedTokens: number }>
 }
 
 export type CommandKind =
@@ -117,6 +122,27 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
     kind: "number",
     settingKey: "topP",
     icon: Percent,
+  },
+  {
+    name: "context-multiplier",
+    aliases: ["multiplier", "ctx-multiplier", "context-window"],
+    label: "Context Multiplier",
+    description:
+      "Stretch the context window past what the model trained on (1 – 8x). Quality past the trained length is a step down",
+    argsHint: "<1 – 8>",
+    kind: "number",
+    settingKey: "contextMultiplier",
+    icon: Expand,
+  },
+  {
+    name: "prune",
+    aliases: ["trim-context", "prune-context"],
+    label: "Prune Context",
+    description:
+      "Cut this chat back to what fits its trained context window, keeping the multiplier for new headroom. No-op at 1×",
+    argsHint: "",
+    kind: "action",
+    icon: Scissors,
   },
   {
     name: "system-prompt",
@@ -344,6 +370,11 @@ const NUMBER_PRESETS: Record<string, { label: string; value: number }[]> = {
     { label: "0.50 (Focused)", value: 0.5 },
     { label: "0.90 (Default)", value: 0.9 },
     { label: "1.00 (Disabled)", value: 1.0 },
+  ],
+  contextMultiplier: [
+    { label: "1x (Default)", value: 1 },
+    { label: "2x", value: 2 },
+    { label: "4x", value: 4 },
   ],
 }
 
@@ -825,6 +856,41 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
       }
       if (command.name === "clear") {
         ctx.clearComposer?.()
+        return true
+      }
+      if (command.name === "prune") {
+        if (ctx.settings.contextMultiplier <= 1) {
+          toast({
+            title: "Prune Context",
+            description: "Nothing to prune — the context multiplier is 1×.",
+          })
+          return true
+        }
+        // Async, unlike every other action here: it asks the engine where the
+        // cut would land. The command is still handled synchronously — the
+        // toast just arrives a beat after the menu closes.
+        ctx
+          .pruneContext?.()
+          .then((result) => {
+            if (result.prunedTurns === 0) {
+              toast({
+                title: "Prune Context",
+                description: "Already within the trained window — nothing to prune.",
+              })
+              return
+            }
+            const turns = `${result.prunedTurns} turn${result.prunedTurns === 1 ? "" : "s"}`
+            toast({
+              title: "Prune Context",
+              description:
+                `Cut ${turns} (~${result.prunedTokens.toLocaleString("en-US")} tokens). ` +
+                "The multiplier still applies to new headroom.",
+              type: "success",
+            })
+          })
+          .catch(() => {
+            toast.error("Prune Context", "Could not compute a context floor for this chat.")
+          })
         return true
       }
       if (command.name === "help") {

@@ -78,6 +78,140 @@ async def test_a_turn_stores_the_question_and_the_reply(acting, recorded_trace):
     assert stored[1]["content"] == response.json()["content"]
 
 
+async def test_context_floor_reports_nothing_to_prune_for_a_short_chat(acting):
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    with store.session() as db:
+        first = q.add_message(
+            db, chat_id=uuid.UUID(chat_id), role=Role.user, content="hi", tokens=3
+        )
+        q.add_message(
+            db, chat_id=uuid.UUID(chat_id), role=Role.assistant, content="hello", tokens=3
+        )
+
+    response = await acting.get(
+        f"/chats/{chat_id}/context-floor", params={"model_name": TINY_MODEL}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pruned_turns"] == 0
+    assert body["pruned_tokens"] == 0
+    assert body["floor_message_id"] == str(first.id)
+
+
+async def test_context_floor_prunes_the_oldest_turns_past_ctx_window(acting):
+    """`tiny`'s ctx_window is 128, so a chat many times that size has real
+    history to cut — and the sum of what's reported pruned has to match
+    exactly what actually got left out, not just be "some positive number"."""
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    filler = "the quick brown fox jumps over the lazy dog and then does it again " * 3
+    chat_id = await new_chat(acting)
+    with store.session() as db:
+        for i in range(12):
+            q.add_message(
+                db,
+                chat_id=uuid.UUID(chat_id),
+                role=Role.user if i % 2 == 0 else Role.assistant,
+                content=filler,
+                tokens=50,
+            )
+
+    # The authoritative order — same query `context-floor` and every prompt
+    # builds `history` from — rather than trusting these inserts landed in the
+    # order this loop made them: same-transaction timestamps can tie.
+    messages = (await acting.get(f"/chats/{chat_id}")).json()["messages"]
+
+    response = await acting.get(
+        f"/chats/{chat_id}/context-floor", params={"model_name": TINY_MODEL}
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert 0 < body["pruned_turns"] < len(messages)
+    kept_from = body["pruned_turns"]
+    assert body["floor_message_id"] == messages[kept_from]["message_id"]
+    assert body["pruned_tokens"] == 50 * body["pruned_turns"]
+
+
+async def test_history_floor_excludes_pruned_turns_from_the_next_prompt(acting):
+    """The floor `/context-floor` reports, resent as `history_floor`, actually
+    shrinks what the next turn is built from — not just what a report claims.
+
+    Both requests carry the same raised `context_multiplier`, so a floored
+    request has just as much *room* to reach back for the pruned turns as the
+    unfloored one does; the only thing that can be stopping it is the floor
+    itself excluding them before `build_prompt` ever runs."""
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    filler = "the quick brown fox jumps over the lazy dog and then does it again "
+
+    async def seeded_chat() -> str:
+        chat_id = await new_chat(acting)
+        with store.session() as db:
+            for i in range(12):
+                q.add_message(
+                    db,
+                    chat_id=uuid.UUID(chat_id),
+                    role=Role.user if i % 2 == 0 else Role.assistant,
+                    content=filler,
+                    tokens=15,
+                )
+        return chat_id
+
+    full_chat = await seeded_chat()
+    full = await acting.post(
+        f"/chats/{full_chat}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "text": "one more thing",
+            "max_tokens": 1,
+            "context_multiplier": 4,
+        },
+    )
+    assert full.status_code == 201
+
+    floored_chat = await seeded_chat()
+    floor = (
+        await acting.get(
+            f"/chats/{floored_chat}/context-floor", params={"model_name": TINY_MODEL}
+        )
+    ).json()
+    assert floor["pruned_turns"] > 0, "nothing pruned — the two requests can't differ"
+
+    floored = await acting.post(
+        f"/chats/{floored_chat}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "text": "one more thing",
+            "max_tokens": 1,
+            "context_multiplier": 4,
+            "history_floor": floor["floor_message_id"],
+        },
+    )
+    assert floored.status_code == 201
+    assert floored.json()["usage"]["prompt_tokens"] < full.json()["usage"]["prompt_tokens"]
+
+
+async def test_an_unrecognised_history_floor_falls_back_to_the_full_history(acting):
+    """A stale floor — another chat's message id, or one from a chat since
+    cleared — is a client's memory being wrong, not this turn's problem."""
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    response = await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "text": "hello",
+            "max_tokens": 1,
+            "history_floor": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 201
+
+
 async def test_a_tool_result_is_a_turn_of_its_own(acting):
     """The second pass of a tool round: the backend hands back what the tool
     said, and the conversation grows a `tool` message the next prompt renders."""

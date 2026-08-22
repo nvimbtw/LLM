@@ -34,6 +34,14 @@ export interface Settings {
   topK: number
   /** Nucleus mass to keep. 1 disables it and leaves the cut to top-k alone. */
   topP: number
+  /**
+   * Stretch the context window to this multiple of the model's trained
+   * ctx_window, via NTK-aware RoPE scaling computed fresh for each turn. 1
+   * (default) runs the model exactly as trained; above 1 buys headroom before
+   * history starts getting evicted, at some quality cost on the tokens past
+   * the trained length.
+   */
+  contextMultiplier: number
 }
 
 /**
@@ -140,6 +148,20 @@ export const SETTINGS: SettingDef[] = [
     multiline: true,
     maxLength: 2000,
     command: "system-prompt",
+  },
+  {
+    kind: "number",
+    key: "contextMultiplier",
+    group: "chat",
+    label: "Context multiplier",
+    description:
+      "Stretch the context window past what the model trained on, so history survives longer before it's evicted. Quality past the trained length is a step down.",
+    default: 1,
+    min: 1,
+    max: 8,
+    step: 0.5,
+    precision: 1,
+    command: "context-multiplier",
   },
   {
     kind: "number",

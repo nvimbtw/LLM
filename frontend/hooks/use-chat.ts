@@ -5,6 +5,12 @@ import * as React from "react"
 import { apiFetch } from "@/lib/api"
 import { streamChat, type SamplingSettings } from "@/lib/chat-socket"
 import {
+  fetchContextFloor,
+  getContextFloor,
+  setContextFloor,
+  type StoredFloor,
+} from "@/lib/context-floor"
+import {
   mapAttachment,
   type Attachment,
   type AttachmentWire,
@@ -165,14 +171,47 @@ export function useChat(chatId: string) {
     temperature: settings.temperature,
     topK: settings.topK,
     topP: settings.topP,
+    contextMultiplier: settings.contextMultiplier,
   })
   React.useEffect(() => {
     samplingRef.current = {
       temperature: settings.temperature,
       topK: settings.topK,
       topP: settings.topP,
+      contextMultiplier: settings.contextMultiplier,
     }
-  }, [settings.temperature, settings.topK, settings.topP])
+  }, [settings.temperature, settings.topK, settings.topP, settings.contextMultiplier])
+
+  // What `/prune` last found for this chat — browser-local, not the engine's
+  // to remember (see `lib/context-floor.ts`). Re-read whenever the chat
+  // changes, and held in state (not just the ref below) so the footer's token
+  // count re-renders the moment a prune actually lands.
+  const [floor, setFloor] = React.useState<StoredFloor | null>(() => getContextFloor(chatId))
+  // Adjusted during render rather than in an Effect, same as the composer
+  // footer's own title-follows-prop pattern — see composer-footer.tsx.
+  const [floorChatId, setFloorChatId] = React.useState(chatId)
+  if (chatId !== floorChatId) {
+    setFloorChatId(chatId)
+    setFloor(getContextFloor(chatId))
+  }
+  const historyFloorRef = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    historyFloorRef.current = floor?.messageId ?? null
+  }, [floor])
+
+  const pruneContext = React.useCallback(
+    async (modelId: string) => {
+      const found = await fetchContextFloor(chatId, modelId)
+      if (found.prunedTurns > 0 && found.floorMessageId) {
+        const stored = { messageId: found.floorMessageId, prunedTokens: found.prunedTokens }
+        setContextFloor(chatId, stored)
+        setFloor(stored)
+      }
+      return found
+    },
+    [chatId]
+  )
+
   const [messages, setMessages] = React.useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSending, setIsSending] = React.useState(false)
@@ -371,6 +410,7 @@ export function useChat(chatId: string) {
           systemRef.current,
           budget,
           samplingRef.current,
+          historyFloorRef.current,
           {
             onToken: (value: string) => {
               setQueuedAhead(0)
@@ -524,5 +564,11 @@ export function useChat(chatId: string) {
     sendMessage,
     cancel,
     rateMessage,
+    // Tokens `/prune` has excluded from this chat's own future turns — the
+    // footer subtracts this from the lifetime total it would otherwise show.
+    // See `lib/context-floor.ts` for why this is a subtraction and not a
+    // second server-reported total.
+    prunedTokens: floor?.prunedTokens ?? 0,
+    pruneContext,
   }
 }
