@@ -8,6 +8,7 @@ import type { ResolvedPos } from "@tiptap/pm/model"
 import StarterKit from "@tiptap/starter-kit"
 import Placeholder from "@tiptap/extension-placeholder"
 import { useTheme } from "next-themes"
+import { useRouter } from "next/navigation"
 
 import { cn } from "@/lib/utils"
 import {
@@ -215,6 +216,10 @@ export function ChatComposer({
   // that swap — you would pick a model, send, and land in the conversation on
   // whichever model happens to be first in the list.
   const { model, setModel, budget, setBudget } = useComposerChoice()
+  // `/new` — one router for every mount of this component, since starting a
+  // fresh chat is the same navigation regardless of which conversation (or
+  // none) the composer is currently attached to.
+  const router = useRouter()
   const [isEmpty, setIsEmpty] = React.useState(true)
   const [isCommand, setIsCommand] = React.useState(false)
   const [editorText, setEditorText] = React.useState("")
@@ -380,6 +385,7 @@ export function ChatComposer({
       theme,
       setTheme,
       clearComposer,
+      newChat: () => router.push("/"),
       pruneContext: onPruneContext,
     }),
     [
@@ -394,6 +400,7 @@ export function ChatComposer({
       theme,
       setTheme,
       clearComposer,
+      router,
       onPruneContext,
     ]
   )

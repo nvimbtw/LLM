@@ -730,7 +730,7 @@ Typing a leading `/` in the composer brings up the floating fuzzy finder popover
 - **Stage 1 (Command Discovery)**: Fuzzy-matches command names, aliases, and
   descriptions (e.g. `/model`, `/thinking`, `/show-thinking`, `/temperature`,
   `/top-k`, `/top-p`, `/context-multiplier`, `/prune`, `/system-prompt`,
-  `/notify`, `/theme`, `/settings`, `/help`, `/clear`).
+  `/notify`, `/theme`, `/settings`, `/help`, `/clear`, `/new`).
 - **Stage 2 (Argument Selection & Range Guides)**:
   - `/model <name>`: Fuzzy-filters and selects available models.
   - `/thinking <budget>`: Sets the thinking budget (`auto | low | med | high`).
@@ -742,6 +742,10 @@ Typing a leading `/` in the composer brings up the floating fuzzy finder popover
     note on `/prune` above.
   - `/system-prompt <text>`: Previews current prompt and offers templates or `clear`.
   - `/theme <light | dark | system>`: Switches visual theme.
+  - `/new`: No argument. Navigates to `/`, the empty composer — the same
+    destination the sidebar's own "New" link goes to, not a route this command
+    invented. Available from any composer mount, including the new-chat screen
+    itself, where it's a no-op navigation to where you already are.
 - **Keyboard navigation**: Seamless `↑` / `↓` navigation, `Tab` autocomplete,
   `Enter` execution / selection, and `Esc` dismissal. Standalone commands execute
   locally with toast feedback and are never dispatched over the chat socket.

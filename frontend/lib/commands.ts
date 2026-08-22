@@ -6,6 +6,7 @@ import {
   Gauge,
   HelpCircle,
   ListFilter,
+  MessageSquarePlus,
   Percent,
   Scissors,
   ScrollText,
@@ -38,6 +39,10 @@ export interface CommandContext {
   theme?: string
   setTheme?: (theme: string) => void
   clearComposer?: () => void
+  /** `/new` — navigates to the empty composer. Present everywhere `ChatComposer`
+   *  mounts; on the new-chat screen itself it's a no-op navigation to where you
+   *  already are, the same as clicking the sidebar's own "New" link twice. */
+  newChat?: () => void
   /** `/prune` — see `lib/context-floor.ts`. Absent on the new-chat composer,
    *  which has no chat yet to prune. */
   pruneContext?: () => Promise<{ prunedTurns: number; prunedTokens: number }>
@@ -199,6 +204,15 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
     argsHint: "",
     kind: "action",
     icon: Eraser,
+  },
+  {
+    name: "new",
+    aliases: ["n", "new-chat"],
+    label: "New Chat",
+    description: "Start a new conversation",
+    argsHint: "",
+    kind: "action",
+    icon: MessageSquarePlus,
   },
 ]
 
@@ -856,6 +870,10 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
       }
       if (command.name === "clear") {
         ctx.clearComposer?.()
+        return true
+      }
+      if (command.name === "new") {
+        ctx.newChat?.()
         return true
       }
       if (command.name === "prune") {
