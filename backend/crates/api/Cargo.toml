@@ -13,6 +13,7 @@ tools = { path = "../tools" }
 actix-multipart = "0.7"
 actix-web = "4"
 actix-ws = "0.3"
+async-trait = "0.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 futures-util = "0.3"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }

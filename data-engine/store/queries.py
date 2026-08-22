@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from store.schema import (
@@ -30,6 +31,10 @@ from store.schema import (
 #: million-row export is not a million round trips, small enough that one batch
 #: of long documents is not a surprise allocation.
 STREAM_BATCH = 500
+
+#: The one dataset every cached tool result lands in. Reserved rather than
+#: chosen per-call, so every caller finds the same rows.
+CACHE_DATASET_NAME = "web-search-cache"
 
 
 def _now() -> datetime:
@@ -64,6 +69,11 @@ def create_dataset(
     source_split: str | None = None,
     parent_id: uuid.UUID | None = None,
     steps: list | None = None,
+    #: `pulling` fits a Hub pull, which fills over minutes and is not safe to
+    #: select from until it finishes. Nothing else in this module produces
+    #: that half-written state, so a caller that knows its rows are already
+    #: complete (the cache) may say so up front.
+    status: DatasetStatus = DatasetStatus.pulling,
 ) -> Dataset:
     row = Dataset(
         name=name,
@@ -76,6 +86,7 @@ def create_dataset(
         source_split=source_split,
         parent_id=parent_id,
         steps=steps,
+        status=status,
     )
     db.add(row)
     db.flush()
@@ -162,6 +173,87 @@ def clear_documents(db: Session, dataset_id: uuid.UUID) -> None:
     """Drop a dataset's rows without dropping the dataset — what a retried pull
     needs so a partial first attempt does not double every document."""
     db.execute(delete(Document).where(Document.dataset_id == dataset_id))
+
+
+def cache_dataset(db: Session) -> Dataset:
+    """The one dataset every cached tool result lands in, created the first
+    time anything is cached rather than by a migration — a fresh checkout has
+    made no searches yet, and a migration writing a name is a stranger
+    decision than the code that will actually read it making one.
+
+    Immediately `ready`: unlike a Hub pull there is no batch to wait out, so
+    there is no interval where it would be true to call this half-written.
+    """
+    row = dataset_by_name(db, CACHE_DATASET_NAME)
+    if row is not None:
+        return row
+    try:
+        with db.begin_nested():
+            return create_dataset(
+                db,
+                name=CACHE_DATASET_NAME,
+                kind=DatasetKind.pretrain,
+                origin=DatasetOrigin.search,
+                owner_id=None,
+                description="Web search results, cached by the web-search tool.",
+                status=DatasetStatus.ready,
+            )
+    except IntegrityError:
+        # Lost a race with another writer creating the same row between the
+        # lookup above and this insert — its commit is the one that landed.
+        row = dataset_by_name(db, CACHE_DATASET_NAME)
+        if row is None:
+            raise
+        return row
+
+
+def latest_by_key(db: Session, dataset_id: uuid.UUID, cache_key: str) -> Document | None:
+    """The freshest document under `cache_key` in this dataset, or None.
+
+    A re-fetch appends rather than replaces — the same shape a re-pulled Hub
+    dataset already has, "holding more documents under the same id" (see
+    `docs/engine/README.md`) — so the newest row by `created_at` is the one
+    that answers "what do we currently believe," and nothing is ever
+    overwritten in place.
+    """
+    return db.scalar(
+        select(Document)
+        .where(Document.dataset_id == dataset_id, Document.cache_key == cache_key)
+        .order_by(Document.created_at.desc())
+        .limit(1)
+    )
+
+
+def add_document(
+    db: Session, dataset_id: uuid.UUID, *, cache_key: str, content: str, meta: dict | None = None
+) -> Document:
+    """Append one row outside the batch `Run` path — a live tool call landing a
+    single result, not a pull filling hundreds of thousands.
+
+    The dataset row is locked for the write's duration, which is what lets
+    concurrent callers land in the same dataset without racing `ordinal` or
+    leaving `document_count`/`byte_size` to be recomputed from scratch the way
+    `finish_dataset` does for a batch.
+    """
+    dataset = db.get(Dataset, dataset_id, with_for_update=True)
+    if dataset is None:
+        raise ValueError(f"no such dataset: {dataset_id}")
+
+    byte_size = len(content.encode("utf-8"))
+    row = Document(
+        dataset_id=dataset_id,
+        ordinal=dataset.document_count,
+        cache_key=cache_key,
+        content=content,
+        meta=meta,
+        byte_size=byte_size,
+    )
+    db.add(row)
+    dataset.document_count += 1
+    dataset.byte_size += byte_size
+    dataset.updated_at = _now()
+    db.flush()
+    return row
 
 
 def list_runs(db: Session, limit: int) -> list[Run]:

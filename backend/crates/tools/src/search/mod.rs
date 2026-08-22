@@ -8,13 +8,14 @@
 mod brave;
 mod searxng;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::config::Config;
 use crate::error::{Result, ToolError};
-use crate::{markup, Tool};
+use crate::{markup, SearchCache, Tool};
 
 /// How much of one result reaches the prompt. Long enough to carry a fact,
 /// short enough that two or three fit the budget below rather than one — for a
@@ -47,6 +48,11 @@ pub struct WebSearch {
     provider: Box<dyn Provider>,
     results: usize,
     budget: usize,
+    /// Where a result can be found without asking the provider again — see
+    /// `SearchCache`. `None` means every call runs live, exactly as before
+    /// the cache existed; nothing else here changes shape without one.
+    cache: Option<Arc<dyn SearchCache>>,
+    cache_max_age: Duration,
 }
 
 impl WebSearch {
@@ -55,7 +61,7 @@ impl WebSearch {
     /// A named instance wins over a key: standing up SearXNG is a deliberate
     /// act, where an API key can be left over in an environment from something
     /// else entirely.
-    pub fn from_config(config: &Config) -> Option<WebSearch> {
+    pub fn from_config(config: &Config, cache: Option<Arc<dyn SearchCache>>) -> Option<WebSearch> {
         let provider: Box<dyn Provider> = match (&config.search_url, &config.search_api_key) {
             (Some(url), _) => Box::new(searxng::SearxNG::new(url, config)?),
             (None, Some(key)) => Box::new(brave::Brave::new(key, config)?),
@@ -65,6 +71,8 @@ impl WebSearch {
             provider,
             results: config.search_results,
             budget: config.search_budget_chars,
+            cache,
+            cache_max_age: config.search_cache_max_age,
         })
     }
 
@@ -88,9 +96,44 @@ impl Tool for WebSearch {
             return Ok(markup::warning("That search was too long to run."));
         }
 
-        let found = self.provider.find(query, self.results).await?;
-        Ok(render(found, self.results, self.budget))
+        let key = normalize_key(query);
+
+        // A cache miss and a stale hit take the same path below — both fetch
+        // live — but a stale hit is worth keeping around: if the live fetch
+        // then fails, it is a better answer than none.
+        let mut stale: Option<String> = None;
+        if let Some(cache) = &self.cache {
+            if let Some((body, age)) = cache.get(&key).await {
+                if age <= self.cache_max_age {
+                    return Ok(body);
+                }
+                stale = Some(body);
+            }
+        }
+
+        match self.provider.find(query, self.results).await {
+            Ok(found) => {
+                let body = render(found, self.results, self.budget);
+                if let Some(cache) = &self.cache {
+                    cache.put(&key, &body).await;
+                }
+                Ok(body)
+            }
+            // The same principle `fit` already applies to a budget too small
+            // for a whole result: something beats nothing. A search that once
+            // found something and cannot be reached again should still say
+            // what it found, not that it failed.
+            Err(e) => stale.map(Ok).unwrap_or(Err(e)),
+        }
     }
+}
+
+/// The form a query is looked up and stored under — same phrase, same key,
+/// regardless of spacing or case. Not fuzzy: "capital of France" and "what's
+/// the capital of France" are still two different keys. Just immune to the
+/// variation that costs nothing to fold together.
+fn normalize_key(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
 fn render(hits: Vec<Hit>, limit: usize, budget: usize) -> String {
@@ -275,25 +318,176 @@ mod tests {
             search_api_key: Some("stale".to_string()),
             ..Config::default()
         };
-        let search = WebSearch::from_config(&both).expect("configured");
+        let search = WebSearch::from_config(&both, None).expect("configured");
         assert!(search.origin().contains("localhost:8888"));
     }
 
     #[test]
     fn neither_configured_is_no_tool_at_all() {
-        assert!(WebSearch::from_config(&Config::default()).is_none());
+        assert!(WebSearch::from_config(&Config::default(), None).is_none());
     }
 
     #[tokio::test]
     async fn a_query_long_enough_to_be_a_runaway_is_never_sent() {
-        let search = WebSearch::from_config(&Config {
-            search_api_key: Some("k".to_string()),
-            ..Config::default()
-        })
+        let search = WebSearch::from_config(
+            &Config { search_api_key: Some("k".to_string()), ..Config::default() },
+            None,
+        )
         .expect("a key is all it needs");
 
         let runaway = "x".repeat(MAX_QUERY_CHARS + 1);
         assert!(search.run(&runaway).await.expect("refused, not errored").contains("<|warn|>"));
         assert!(search.run("   ").await.expect("refused, not errored").contains("<|warn|>"));
+    }
+
+    // ── the cache wrap ──────────────────────────────────────────────────────
+    //
+    // Constructed by struct literal rather than `from_config`, which only ever
+    // builds a real SearXNG/Brave provider — these need a provider that can be
+    // told what to return, and a cache that can be told what it holds.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    struct StubProvider {
+        calls: Arc<AtomicUsize>,
+        outcome: Mutex<Option<Result<Vec<Hit>>>>,
+    }
+
+    impl StubProvider {
+        fn ok(hits: Vec<Hit>) -> (StubProvider, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            (StubProvider { calls: calls.clone(), outcome: Mutex::new(Some(Ok(hits))) }, calls)
+        }
+
+        fn failing() -> (StubProvider, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let outcome = Mutex::new(Some(Err(ToolError::Timeout)));
+            (StubProvider { calls: calls.clone(), outcome }, calls)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for StubProvider {
+        fn origin(&self) -> String {
+            "stub".to_string()
+        }
+
+        async fn find(&self, _query: &str, _limit: usize) -> Result<Vec<Hit>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.outcome.lock().unwrap().take().expect("stub provider called more than once")
+        }
+    }
+
+    struct StubCache {
+        entry: Mutex<Option<(String, Duration)>>,
+        puts: Mutex<Vec<(String, String)>>,
+    }
+
+    impl StubCache {
+        fn holding(body: &str, age: Duration) -> StubCache {
+            StubCache { entry: Mutex::new(Some((body.to_string(), age))), puts: Mutex::new(vec![]) }
+        }
+
+        fn empty() -> StubCache {
+            StubCache { entry: Mutex::new(None), puts: Mutex::new(vec![]) }
+        }
+    }
+
+    #[async_trait]
+    impl SearchCache for StubCache {
+        async fn get(&self, _key: &str) -> Option<(String, Duration)> {
+            self.entry.lock().unwrap().clone()
+        }
+
+        async fn put(&self, key: &str, body: &str) {
+            self.puts.lock().unwrap().push((key.to_string(), body.to_string()));
+        }
+    }
+
+    fn search(provider: StubProvider, cache: Option<Arc<dyn SearchCache>>) -> WebSearch {
+        WebSearch {
+            provider: Box::new(provider),
+            results: 5,
+            budget: WIDE,
+            cache,
+            cache_max_age: Duration::from_secs(7 * 86_400),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_hit_is_returned_without_touching_the_provider() {
+        let (provider, calls) = StubProvider::ok(vec![hit("Elbrus", "5,642 m")]);
+        let cache = Arc::new(StubCache::holding("cached answer", Duration::from_secs(60)));
+        let tool = search(provider, Some(cache));
+
+        let body = tool.run("elbrus").await.unwrap();
+
+        assert_eq!(body, "cached answer");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stale_hit_is_replaced_by_a_live_fetch() {
+        let (provider, calls) = StubProvider::ok(vec![hit("Elbrus", "5,642 m")]);
+        let cache = Arc::new(StubCache::holding("old answer", Duration::from_secs(30 * 86_400)));
+        let tool = search(provider, Some(cache.clone()));
+
+        let body = tool.run("elbrus").await.unwrap();
+
+        assert!(body.contains("Elbrus"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_miss_fetches_live_and_writes_the_result_back() {
+        let (provider, calls) = StubProvider::ok(vec![hit("Elbrus", "5,642 m")]);
+        let cache = Arc::new(StubCache::empty());
+        let tool = search(provider, Some(cache.clone()));
+
+        let body = tool.run("elbrus").await.unwrap();
+
+        assert!(body.contains("Elbrus"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let puts = cache.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0], ("elbrus".to_string(), body));
+    }
+
+    #[tokio::test]
+    async fn a_live_failure_falls_back_to_a_stale_entry_instead_of_erroring() {
+        let (provider, _) = StubProvider::failing();
+        let cache = Arc::new(StubCache::holding("old answer", Duration::from_secs(30 * 86_400)));
+        let tool = search(provider, Some(cache));
+
+        let body = tool.run("elbrus").await.expect("stale beats nothing");
+
+        assert_eq!(body, "old answer");
+    }
+
+    #[tokio::test]
+    async fn a_live_failure_with_nothing_stale_still_errors() {
+        let (provider, _) = StubProvider::failing();
+        let tool = search(provider, Some(Arc::new(StubCache::empty())));
+
+        assert!(tool.run("elbrus").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn no_cache_wired_in_runs_exactly_as_before_the_cache_existed() {
+        let (provider, calls) = StubProvider::ok(vec![hit("Elbrus", "5,642 m")]);
+        let tool = search(provider, None);
+
+        let body = tool.run("elbrus").await.unwrap();
+
+        assert!(body.contains("Elbrus"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_cache_key_folds_case_and_spacing_but_not_wording() {
+        assert_eq!(normalize_key("Tallest   Mountain"), normalize_key("tallest mountain"));
+        assert_ne!(normalize_key("capital of France"), normalize_key("capital of Germany"));
     }
 }
