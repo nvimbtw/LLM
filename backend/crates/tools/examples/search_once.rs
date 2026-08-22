@@ -22,7 +22,7 @@ async fn main() {
     let query = if query.is_empty() { "how tall is mount elbrus".to_string() } else { query };
 
     let config = Config::from_env();
-    let registry = Registry::with_config(&config);
+    let registry = Registry::with_config(&config, None);
 
     match registry.origins() {
         [] => {

@@ -415,6 +415,7 @@ dependencies = [
  "actix-test",
  "actix-web",
  "actix-ws",
+ "async-trait",
  "auth",
  "awc",
  "chrono",

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -63,6 +64,10 @@ class DatasetOrigin(str, enum.Enum):
     huggingface = "huggingface"
     #: Produced by running a pipeline over another dataset here.
     derived = "derived"
+    #: Captured as a side effect of a tool call — a `web-search` today —
+    #: rather than pulled in bulk or processed from something that was. See
+    #: `store.queries.cache_dataset`.
+    search = "search"
 
 
 class DatasetStatus(str, enum.Enum):
@@ -163,6 +168,10 @@ class Document(Base):
             "(content IS NULL) <> (messages IS NULL)",
             name="ck_documents_content_xor_messages",
         ),
+        # What a cache lookup filters on. Composite rather than a bare index on
+        # `cache_key` alone because every cache row lives in one dataset today,
+        # but nothing here should assume that stays true.
+        Index("ix_documents_dataset_id_cache_key", "dataset_id", "cache_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
@@ -177,6 +186,15 @@ class Document(Base):
     #: through processing untouched so a filter can be written against it later.
     meta: Mapped[dict | None] = mapped_column(Json)
     byte_size: Mapped[int] = mapped_column(Integer, default=0)
+    #: When this row was written. Every document has one, not only a cached
+    #: search's — nothing here carried a timestamp before, and every other
+    #: table in this schema already does; the cache is just the first reader
+    #: that needs it, to answer "how old is this."
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: The normalized key a cache write is found by (a web-search query,
+    #: today). Null on anything pulled from the Hub or produced by a
+    #: pipeline — those are found by dataset and ordinal, never by content.
+    cache_key: Mapped[str | None] = mapped_column(String(500))
 
     dataset: Mapped[Dataset] = relationship(back_populates="documents")
 

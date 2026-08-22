@@ -42,7 +42,7 @@ fn instance(status: &'static str, body: &'static str) -> (String, Receiver<Strin
 }
 
 fn registry(url: String) -> Registry {
-    Registry::with_config(&Config { search_url: Some(url), ..Config::default() })
+    Registry::with_config(&Config { search_url: Some(url), ..Config::default() }, None)
 }
 
 const A_PAGE: &str = r#"{

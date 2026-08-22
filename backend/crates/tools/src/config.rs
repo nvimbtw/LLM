@@ -24,6 +24,15 @@ const DEFAULT_BUDGET_CHARS: usize = 320;
 /// latency the person is watching.
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
+/// How long a cached search result is trusted before `web-search` re-fetches
+/// it live. A week by default — the thing most likely to change about "the
+/// tallest mountain in Europe" in a week is nothing — tunable per deployment
+/// and, being read at startup like everything else here, by a restart rather
+/// than a redeploy.
+const DEFAULT_CACHE_MAX_AGE_DAYS: u64 = 7;
+
+const SECONDS_PER_DAY: u64 = 86_400;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     /// A self-hosted SearXNG instance, e.g. `http://localhost:8888`.
@@ -38,6 +47,11 @@ pub struct Config {
     /// A ceiling on the whole rendered result, not on one line of it.
     pub search_budget_chars: usize,
     pub timeout: Duration,
+    /// How old a cached result may be and still be handed back instead of a
+    /// live fetch. Not what gates whether caching happens at all — that is
+    /// whether a `SearchCache` was wired in at startup, which this config
+    /// knows nothing about.
+    pub search_cache_max_age: Duration,
 }
 
 impl Default for Config {
@@ -48,6 +62,7 @@ impl Default for Config {
             search_results: DEFAULT_RESULTS,
             search_budget_chars: DEFAULT_BUDGET_CHARS,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            search_cache_max_age: Duration::from_secs(DEFAULT_CACHE_MAX_AGE_DAYS * SECONDS_PER_DAY),
         }
     }
 }
@@ -65,6 +80,9 @@ impl Config {
             timeout: parse_env("TOOL_TIMEOUT_SECS")
                 .map(Duration::from_secs)
                 .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
+            search_cache_max_age: parse_env("SEARCH_CACHE_MAX_AGE_DAYS")
+                .map(|days: u64| Duration::from_secs(days * SECONDS_PER_DAY))
+                .unwrap_or(Duration::from_secs(DEFAULT_CACHE_MAX_AGE_DAYS * SECONDS_PER_DAY)),
         }
     }
 }

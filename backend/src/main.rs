@@ -45,7 +45,8 @@ async fn main() -> std::io::Result<()> {
         ),
     }
 
-    let registry = tools::Registry::from_env();
+    let search_cache = std::sync::Arc::new(api::search_cache::DataEngineCache::new(data_proxy.clone()));
+    let registry = tools::Registry::from_env(Some(search_cache));
     match registry.origins() {
         [] => println!("no tools configured — replies that call one get a caveat back"),
         origins => println!("tools ready: {}", origins.join(", ")),

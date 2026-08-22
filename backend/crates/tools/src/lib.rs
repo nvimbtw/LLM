@@ -36,6 +36,36 @@ pub trait Tool: Send + Sync {
     async fn run(&self, argument: &str) -> Result<String>;
 }
 
+/// Where a tool that fetches the same thing twice can go instead of fetching
+/// it twice — a persistent store this crate does not own or know the shape
+/// of. `WebSearch` is the one caller today: `key` is a normalized query, the
+/// stored value its rendered result.
+///
+/// A trait rather than a concrete type because the store lives behind the
+/// data engine, and `tools` stays the leaf it is documented as — it knows
+/// about the outside world and the marker vocabulary, nothing about this
+/// project's other services. The concrete implementation is wired in from
+/// `api`, which already depends on both.
+#[async_trait]
+pub trait SearchCache: Send + Sync {
+    /// The freshest entry under `key` and how long ago it was written, or
+    /// `None` for a miss.
+    ///
+    /// Age rather than a timestamp: the only question a caller ever asks is
+    /// "is this fresh enough," and answering in age keeps every
+    /// implementation's clock — and clock skew between this process and
+    /// wherever the store lives — out of the question entirely.
+    async fn get(&self, key: &str) -> Option<(String, std::time::Duration)>;
+
+    /// Record `body` under `key`.
+    ///
+    /// Best-effort by convention: a caller that cannot reach the store should
+    /// swallow the failure rather than fail the tool call over it — the
+    /// search itself already succeeded, and a person must not see a warning
+    /// because a cache write did not land.
+    async fn put(&self, key: &str, body: &str);
+}
+
 #[derive(Clone)]
 pub struct Registry {
     tools: HashMap<&'static str, Arc<dyn Tool>>,
@@ -55,14 +85,17 @@ impl Registry {
     /// A tool whose credentials are missing is left out entirely rather than
     /// registered and failing: chat has to work on a checkout with no API keys,
     /// and `answer` turns the resulting `Unknown` into a caveat the model reads.
-    pub fn from_env() -> Registry {
-        Registry::with_config(&Config::from_env())
+    ///
+    /// `cache` is `web-search`'s, if the caller has one wired up — `None` runs
+    /// every search live, exactly as before the cache existed.
+    pub fn from_env(cache: Option<Arc<dyn SearchCache>>) -> Registry {
+        Registry::with_config(&Config::from_env(), cache)
     }
 
-    pub fn with_config(config: &Config) -> Registry {
+    pub fn with_config(config: &Config, cache: Option<Arc<dyn SearchCache>>) -> Registry {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         let mut origins = Vec::new();
-        if let Some(search) = WebSearch::from_config(config) {
+        if let Some(search) = WebSearch::from_config(config, cache) {
             origins.push(format!("{} ({})", search.name(), search.origin()));
             tools.push(Arc::new(search));
         }
@@ -121,16 +154,16 @@ mod tests {
 
     #[test]
     fn a_registry_with_no_key_registers_no_search() {
-        let empty = Registry::with_config(&Config::default());
+        let empty = Registry::with_config(&Config::default(), None);
         assert!(empty.names().is_empty());
     }
 
     #[test]
     fn a_key_is_all_web_search_needs_to_appear() {
-        let configured = Registry::with_config(&Config {
-            search_api_key: Some("k".to_string()),
-            ..Config::default()
-        });
+        let configured = Registry::with_config(
+            &Config { search_api_key: Some("k".to_string()), ..Config::default() },
+            None,
+        );
         assert_eq!(configured.names(), vec!["web-search"]);
     }
 

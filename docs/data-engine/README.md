@@ -69,7 +69,7 @@ demanding a server.
 
 | Table | Holds |
 | --- | --- |
-| `datasets` | One named body of documents: pulled from the Hub, or derived by cleaning one that was. |
+| `datasets` | One named body of documents: pulled from the Hub, derived by cleaning one that was, or captured by a tool call (the search cache). |
 | `documents` | The content itself — `content` for prose, `messages` for conversations. |
 | `runs` | A pull or a processing pass, with its config, progress and outcome. |
 
@@ -87,7 +87,36 @@ Invariants the types do not express:
   is no recipe table: processors are code, versioned with the repo, and a saved
   recipe that drifted from the run it describes would be a lie.
 - **The counters on `datasets` are recomputed at the end of a run**, never
-  accumulated by the writer. A cancelled pull must still report what it kept.
+  accumulated by the writer, for a dataset a `Run` fills — a cancelled pull
+  must still report what it kept. The one exception is the search cache
+  (below), whose writes are single rows outside the `Run` path entirely; it
+  bumps its counters incrementally instead, under a lock on the dataset row.
+- **`documents.created_at` is real on every row**, not only a cached
+  search's. Nothing here carried a per-document timestamp before this table
+  needed one to answer "how old is this."
+- **`documents.cache_key`** is null on anything pulled from the Hub or
+  produced by a pipeline — those are found by dataset and ordinal, never by
+  content. Non-null only on a row the search cache wrote.
+
+### The search cache
+
+`web-search-cache` (`origin = search`, `owner_id = NULL`) is where the
+backend's `web-search` tool lands a result instead of re-fetching it live
+every time — see
+[`../decisions/search-result-cache.md`](../decisions/search-result-cache.md)
+and [`../backend/README.md`](../backend/README.md)'s "The search cache". It
+is a dataset like any other pulled from the Hub — created `ready` the moment
+anything is written to it, since there is no batch to wait out — which is
+what makes it trainable later with zero work here: `store.queries.cache_dataset`
+finds or creates the reserved row, `add_document` appends under a lock on it,
+and `latest_by_key` is the read a re-fetch decides freshness against.
+
+A re-fetch **appends rather than overwrites** — the same shape a re-pulled
+Hub dataset already has — so the newest row under a key is the one a lookup
+answers, and nothing here is ever mutated in place. Freshness itself is not
+this service's decision: `POST /search-cache/lookup` returns the newest
+match and when it was written, and the caller (`WebSearch::run`, in the
+backend) decides whether that is fresh enough.
 
 ### Content in Postgres
 
@@ -121,6 +150,8 @@ polls.
 | `POST /preview` | A pipeline's before/after over the first *n* documents. |
 | `GET /runs` · `GET /runs/{id}` · `POST /runs/{id}/cancel` | The queue. |
 | `GET /runs/{id}/events` | SSE, replayed from the start. |
+| `POST /search-cache/lookup` | The newest result under a key, or an empty hit. See "The search cache". |
+| `POST /search-cache` | Record a result under a key, creating the cache dataset on first use. |
 
 **`/datasets/{id}/documents` is the seam the LLM engine reads**, through the
 backend's `/internal` routes — it stopped scanning a directory and now trains on
