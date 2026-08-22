@@ -375,6 +375,40 @@ The two tool frames bracket the wait: `tool_call` the moment the marker closes
 streaming), `tool_result` once the backend has run it. `body` is in the marker
 vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
 
+A fast model streams straight through at whatever rate it generates —
+`onToken` appends to `messages` on every frame, no artificial pacing. What has
+to keep up with that is the thread's own scroll, next.
+
+### Following the bottom
+
+`chat-thread.tsx` keeps the thread pinned to the bottom while a reply streams
+in, without fighting a reader who scrolls up mid-turn to check something
+earlier. Two refs carry the state a re-render shouldn't own:
+
+- **`stickRef`** — whether to follow at all. Set by the user's own wheel/touch
+  gestures (`trackStickIntent`), not by where the scroll happens to sit: it
+  reads live `scrollTop` only on a genuine gesture, so a programmatic scroll
+  this component just made never reads as the user asking to unstick.
+  Re-engages the moment a gesture lands within `STICK_TO_BOTTOM_THRESHOLD_PX`
+  of the bottom — scrolling back down by hand resumes following, no separate
+  "jump to latest" affordance needed.
+- **`lastHeightRef`** — the last measured `scrollHeight`, so the follow effect
+  only fires on genuine growth (a new line) and not on every token mutating
+  text within the line that's already on screen.
+
+**The scroll itself is always instant (`behavior: "auto"`), never
+`"smooth"`.** It used to glide during streaming, and a fast model breaks
+exactly that: a line wrapping is a new `scrollTo` call, a fast enough model
+wraps a line every render, and each call retargets a `smooth` animation that
+hadn't finished chasing the *previous* target. The visible position ends up
+permanently trailing the true bottom rather than catching up — which is what
+"the text disappears behind the composer" actually was: not a rendering
+slowdown, a scroll animation that can't keep pace with how often it's being
+retargeted. Snapping on every growth event keeps the view exactly pinned
+regardless of arrival rate; the growth events are themselves small (one
+wrapped line at a time), which is what keeps this reading as a glide rather
+than a jump even though nothing is animating.
+
 ### Attachments
 
 A file is uploaded **when it is picked**, not when the turn is sent

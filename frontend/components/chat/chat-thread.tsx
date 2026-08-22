@@ -128,18 +128,25 @@ export function ChatThread({ chatId }: { chatId: string }) {
   }, [chatId])
 
   // Follow the bottom as content arrives — but only on genuine growth (a new
-  // line, not an in-place token edit) and only while following. Streaming
-  // glides smoothly; history loads and freshly-sent messages snap instantly.
+  // line, not an in-place token edit) and only while following.
+  //
+  // Always instant, never `behavior: "smooth"`. Streaming used to glide, and a
+  // fast model breaks exactly that: a line wrapping is a new `scrollTo` call,
+  // a fast enough model wraps a line every render, and each call retargets an
+  // animation that hadn't finished chasing the last target — so the visible
+  // position permanently trails the true bottom instead of catching up, and
+  // the newest text sits behind the composer until generation pauses long
+  // enough for the animation to land. Snapping every growth event keeps the
+  // view exactly pinned regardless of how fast content arrives; the growth
+  // events are themselves small (one wrapped line), which is what keeps this
+  // reading as a glide rather than a jump.
   React.useEffect(() => {
     const el = scrollRef.current
     if (!el || !stickRef.current) return
     const grew = el.scrollHeight > lastHeightRef.current
     lastHeightRef.current = el.scrollHeight
     if (!grew) return
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: isSending ? "smooth" : "auto",
-    })
+    el.scrollTo({ top: el.scrollHeight, behavior: "auto" })
   }, [messages, isSending])
 
   return (
