@@ -629,16 +629,23 @@ counted in `/usage`. What changes is what a *future* turn is built from.
 
 The mechanism is deliberately stateless on the engine's side. `GET
 /chats/{id}/context-floor?model_name=...` is a pure read — it answers "where
-would the cut land under this model's own `ctx_window`," using the identical
+would the cut land under *this* model's own `ctx_window`," using the identical
 walk `build_prompt` already runs, and writes nothing down. `lib/context-floor.ts`
-is what remembers the answer: a message id kept in `localStorage`, per chat, at
-the same durability tier as every other chat setting in this file — lost on a
-cleared browser or a different device, same as your temperature would reset.
-Every `ask` after that resends it as `history_floor`, and the engine slices its
-own stored history against it before `build_prompt` ever runs (`_floored` in
-`api/routes/chats.py`) — a stale or unrecognised floor falls back to the full
-history rather than erroring, since a client's memory of a prune is a
-convenience, not something a turn should fail over.
+is what remembers the answer: a message id **and the model it was cut for**,
+kept in `localStorage`, per chat, at the same durability tier as every other
+chat setting in this file — lost on a cleared browser or a different device,
+same as your temperature would reset.
+
+**A floor is only ever resent to the model it was computed for.** `ctx_window`
+is a property of the model, not the chat, so a cut sized to one model doesn't
+mean anything for another — `sendMessage` in `use-chat.ts` compares the stored
+`modelId` against the model the turn is actually going to and sends
+`history_floor` only on a match; switching models makes a stale floor inert
+rather than wrong, without discarding it, so switching back makes it live
+again with no extra round trip. The engine's own fallback (a stale or
+unrecognised floor is treated as no floor rather than erroring, `_floored` in
+`api/routes/chats.py`) is what makes "inert" safe to fall back to: a client's
+memory of a prune is a convenience, not something a turn should fail over.
 
 If a prune ever needs to survive a lost `localStorage` or a second device, this
 is the point to reconsider: persist the floor against the chat server-side
@@ -654,7 +661,11 @@ excludes from the model's view of it.
 window under a raised multiplier, one reads `+190% ×4` — how far over the
 trained size you are, and what's letting you get away with it. Once `/prune`
 succeeds, a second badge appears beside it: `62% unseen`, how much of this chat
-the model can no longer see. They are independent facts shown independently,
+the model can no longer see. `use-chat.ts` reports this as 0 — same as never
+having pruned — the moment the stored floor stops matching the selected model,
+so switching models doesn't leave a stale "unseen" figure claiming a cut that
+isn't actually being applied to what's being asked now. They are independent
+facts shown independently,
 not two views of one state — pruning brings usage back under the trained
 window the instant it runs, but the conversation can grow past that window
 again afterwards, at which point both are true at once (some of the chat is

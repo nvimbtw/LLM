@@ -19,6 +19,7 @@ import { parseMessage, textContent, toolOf } from "@/lib/message-parser"
 import type { ToolAnswer } from "@/components/chat/trace"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
+import { useComposerChoice } from "@/components/chat/composer-choice-provider"
 import { useSettings } from "@/components/settings/settings-provider"
 import type { ThinkBudget } from "@/components/chat/budget-selector"
 
@@ -158,6 +159,10 @@ function parseToolRow(content: string): ToolAnswer {
 export function useChat(chatId: string) {
   const { takePendingMessage, refresh: refreshChats } = useChats()
   const { settings } = useSettings()
+  // The model actually answering right now — a stored floor sized to a
+  // different model's `ctx_window` doesn't apply to this one. See the note
+  // on `StoredFloor` and where `historyFloor` is computed in `sendMessage`.
+  const { model: currentModel } = useComposerChoice()
   // Read the system prompt at send time via a ref, so changing it (or any other
   // setting) doesn't churn sendMessage's identity and re-fire the send effects.
   const systemRef = React.useRef(settings.systemPrompt)
@@ -194,16 +199,23 @@ export function useChat(chatId: string) {
     setFloorChatId(chatId)
     setFloor(getContextFloor(chatId))
   }
-  const historyFloorRef = React.useRef<string | null>(null)
+  // The ref `sendMessage` actually reads — a plain `useCallback` closing over
+  // `floor` would go stale for the lifetime of one render, and this is read on
+  // every turn.
+  const floorRef = React.useRef<StoredFloor | null>(null)
   React.useEffect(() => {
-    historyFloorRef.current = floor?.messageId ?? null
+    floorRef.current = floor
   }, [floor])
 
   const pruneContext = React.useCallback(
     async (modelId: string) => {
       const found = await fetchContextFloor(chatId, modelId)
       if (found.prunedTurns > 0 && found.floorMessageId) {
-        const stored = { messageId: found.floorMessageId, prunedTokens: found.prunedTokens }
+        const stored = {
+          messageId: found.floorMessageId,
+          prunedTokens: found.prunedTokens,
+          modelId,
+        }
         setContextFloor(chatId, stored)
         setFloor(stored)
       }
@@ -402,6 +414,14 @@ export function useChat(chatId: string) {
       let answering = false
       let elapsedSecs = 0
 
+      // A stored floor was cut to fit *some* model's `ctx_window` — resending
+      // it to a different one would prune this turn's history at a point
+      // sized for a model that isn't the one answering it. Only trust it while
+      // it's still for the model this turn is actually going to.
+      const activeFloor = floorRef.current
+      const historyFloor =
+        activeFloor?.modelId === modelId ? activeFloor.messageId : null
+
       return new Promise<void>((resolve) => {
         cancelRef.current = streamChat(
           chatId,
@@ -410,7 +430,7 @@ export function useChat(chatId: string) {
           systemRef.current,
           budget,
           samplingRef.current,
-          historyFloorRef.current,
+          historyFloor,
           {
             onToken: (value: string) => {
               setQueuedAhead(0)
@@ -567,8 +587,11 @@ export function useChat(chatId: string) {
     // Tokens `/prune` has excluded from this chat's own future turns — the
     // footer subtracts this from the lifetime total it would otherwise show.
     // See `lib/context-floor.ts` for why this is a subtraction and not a
-    // second server-reported total.
-    prunedTokens: floor?.prunedTokens ?? 0,
+    // second server-reported total. 0 (not just absent, but for the wrong
+    // model) whenever the stored floor isn't the current model's own — a
+    // badge claiming tokens are excluded when nothing is actually being cut
+    // from *this* model's prompt would be a worse lie than showing none.
+    prunedTokens: floor?.modelId === currentModel ? floor.prunedTokens : 0,
     pruneContext,
   }
 }

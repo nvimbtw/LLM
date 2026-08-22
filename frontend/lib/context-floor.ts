@@ -34,10 +34,17 @@ export async function fetchContextFloor(
 
 /** What's remembered between turns once `/prune` has run once. Just enough to
  *  resend the floor (`messageId`) and to shrink the composer's own token
- *  count by the right amount (`prunedTokens`) without a second round trip. */
+ *  count by the right amount (`prunedTokens`) without a second round trip.
+ *
+ *  `modelId` is the model the cut was computed against — a floor sized to one
+ *  model's `ctx_window` doesn't mean anything for another, so `use-chat.ts`
+ *  only trusts a stored floor while it still matches the model currently
+ *  selected, and otherwise treats the chat as unpruned until `/prune` runs
+ *  again under the model that's actually answering now. */
 export interface StoredFloor {
   messageId: string
   prunedTokens: number
+  modelId: string
 }
 
 const STORAGE_PREFIX = "context-floor:"
