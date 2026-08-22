@@ -38,6 +38,10 @@ pub async fn run(
     registry: &Registry,
     caller: &auth::Caller,
     path: &str,
+    // The chat this turn belongs to, handed to every tool as its session key.
+    // The sandboxed shell keeps a filesystem under it, so a file written in one
+    // round is still there in the next; `tools` never learns what the key means.
+    chat: &str,
     mut ask: Value,
 ) {
     let settings = ask.clone();
@@ -52,7 +56,9 @@ pub async fn run(
         };
 
         let last_round = round + 1 == MAX_TOOL_ROUNDS;
-        let Some(pending) = relay(session, registry, frames, last_round).await else { return };
+        let Some(pending) = relay(session, registry, chat, frames, last_round).await else {
+            return;
+        };
         if pending.is_empty() {
             return;
         }
@@ -75,6 +81,7 @@ pub async fn run(
 async fn relay(
     session: &mut actix_ws::Session,
     registry: &Registry,
+    chat: &str,
     frames: impl Stream<Item = engine::Result<Frame>>,
     last_round: bool,
 ) -> Option<Vec<Pending>> {
@@ -85,7 +92,7 @@ async fn relay(
         let message = match frame {
             Ok(frame) => {
                 if frame.kind == "tool_call" {
-                    pending.push(start(registry, frame.data.clone()));
+                    pending.push(start(registry, chat, frame.data.clone()));
                 }
                 // Safe to decide here: a `tool_call` always precedes the `done`
                 // of the round that made it.
@@ -105,13 +112,14 @@ async fn relay(
     Some(pending)
 }
 
-fn start(registry: &Registry, call: Value) -> Pending {
+fn start(registry: &Registry, chat: &str, call: Value) -> Pending {
     let registry = registry.clone();
     let name = string_at(&call, "tool");
     let argument = string_at(&call, "argument");
+    let chat = chat.to_string();
     Pending {
         call,
-        work: actix_web::rt::spawn(async move { registry.answer(&name, &argument).await }),
+        work: actix_web::rt::spawn(async move { registry.answer(&name, &argument, &chat).await }),
     }
 }
 

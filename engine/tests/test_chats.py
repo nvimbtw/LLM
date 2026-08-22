@@ -240,7 +240,8 @@ async def test_a_tool_result_is_a_turn_of_its_own(acting):
     stored = (await acting.get(f"/chats/{chat_id}")).json()["messages"]
     assert [m["role"] for m in stored] == ["user", "assistant", "tool", "assistant"]
     assert stored[2]["content"] == (
-        "<|web-search|>where the cat sat<|/web-search|><|par|>on the mat<|/par|>"
+        '<|tool-call|>{"tool": "web-search", "argument": "where the cat sat"}<|/tool-call|>'
+        "<|par|>on the mat<|/par|>"
     )
 
 

@@ -247,11 +247,12 @@ forward past it rather than trying to pull the call back in.
 
 ## Tools
 
-A tool call is a leaf block inside an assistant turn, spelled with the tool's own
-marker pair:
+A tool call is a leaf block inside an assistant turn. Every tool is called
+through the same marker pair, with the tool named in the JSON body:
 
 ```
-<|web-search|>tallest mountain in europe<|/web-search|>
+<|tool-call|>{"tool": "web-search", "argument": "tallest mountain in europe"}<|/tool-call|>
+<|tool-call|>{"tool": "bash", "argument": "grep -rn cat . | head -3"}<|/tool-call|>
 ```
 
 Its answer comes back as a block of its own, between that assistant turn and the
@@ -260,14 +261,26 @@ front of a conversation. The result repeats the call it answers, which is what
 tells the model which of its calls it is being handed:
 
 ```
-<|tool-result|><|web-search|>tallest mountain in europe<|/web-search|>
+<|tool-result|><|tool-call|>{"tool": "web-search", "argument": "tallest mountain in europe"}<|/tool-call|>
                <|list|><|item|>Mount Elbrus — 5,642 m<|/item|><|/list|><|/tool-result|>
 ```
 
-**A marker per tool, not a generic `<|tool|>name:args`.** A model this size
-cannot be trusted to spell a tool name and then an argument in one string, and a
-dedicated marker is one embedding row the grammar can police. See
-[`../decisions/tool-calls.md`](../decisions/tool-calls.md).
+**One marker for every tool, not a pair each.** Adding a tool is a row in
+`llm/chat/tools.py` and no vocabulary change at all, which is what lets a model
+trained in March call a tool invented in August. It costs the grammar's ability
+to refuse a name — that check moved to `tools.parse`, after the fact — and it
+asks the model to keep a small JSON object balanced. Both costs, and why they
+were taken, are in
+[`../decisions/generic-tool-calls.md`](../decisions/generic-tool-calls.md);
+[`../decisions/tool-calls.md`](../decisions/tool-calls.md) is still the record
+of why a turn that calls one runs twice.
+
+**A body that names no tool is not a call.** `tools.parse` reads the argument
+under any of `argument`/`query`/`command`/`input`/`text`, nested in `args` or
+not, because that is what a small model writes — but a mangled object, or one
+naming a tool this build does not have, makes `_ToolCalls.observe` return None.
+No frame is emitted, nothing runs, and the reply stands as written. That is the
+one failure mode the grammar can no longer prevent, so it is made cheap.
 
 Three invariants, each enforced somewhere different:
 

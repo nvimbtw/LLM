@@ -2,6 +2,12 @@
 
 - **Date**: 2026-08-19
 - **Status**: Implemented (web search; the seam is built for more)
+- **Partly superseded** by
+  [`generic-tool-calls.md`](generic-tool-calls.md) (2026-08-22): decision 1
+  below, and the rejection of a generic marker, no longer describe this repo.
+  Every tool is now called through one `<|tool-call|>` marker carrying a JSON
+  object. The rest of this record — the round loop, who executes, why a turn
+  runs twice — is unchanged and still the reason the seam looks like this.
 
 ## Context
 
@@ -25,6 +31,10 @@ conversation.**
    being the tool's name on the wire. Declared once in `engine/llm/chat/tools.py`;
    the grammar, the generation loop and the SFT renderer all read that table, so
    a new tool is two reserved slots and one row.
+   *(Superseded. One `<|tool-call|>` marker for every tool, with the name inside
+   it, so a new tool is a row and no vocabulary change at all — see
+   [`generic-tool-calls.md`](generic-tool-calls.md). The retired markers keep
+   their reserved slots so no id moves.)*
 2. **The result is a third role**, sitting between the assistant turn that
    called and the one that uses it — the position the system block occupies at
    the front of a conversation. Stored as a `tool` message, never a training
@@ -47,6 +57,15 @@ conversation.**
   with a dedicated pair, `Rules` can refuse a call inside a code block and
   refuse a tool that does not exist, before either reaches the backend. One
   embedding row per tool beats a name the model has to compose from merges.
+
+  *This was reversed on 2026-08-22, once a second tool made the tool table
+  something that wants to grow. The objections above were not found to be
+  wrong: the grammar really did lose the ability to police the name, and the
+  model really does have to keep a JSON object balanced. What changed is the
+  weighting — a tool table that lives in the vocabulary makes every new tool a
+  per-checkpoint migration. See
+  [`generic-tool-calls.md`](generic-tool-calls.md), which records what the
+  reversal costs as well as what it buys.*
 
 - **The backend scanning the token stream for markers.** This was the first
   design, and it is what the marker *looks* like it invites. Rejected because
@@ -95,5 +114,5 @@ conversation.**
   now has two frame kinds to emit.
 - A tool's answer is text a stranger wrote going into a prompt. Every tool runs
   it through `tools::markup::neutralize`; the Python scraper's equivalent needed
-  `-` added to its marker pattern, without which `<|web-search|>` in a scraped
+  `-` added to its marker pattern, without which `<|tool-call|>` in a scraped
   page would have tokenized as a real marker.

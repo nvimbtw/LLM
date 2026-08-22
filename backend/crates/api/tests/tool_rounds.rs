@@ -22,8 +22,8 @@ const SERVICE_SECRET: &str = "tool-rounds-test-service-secret";
 
 /// A round the stub engine plays: SSE frames, in order.
 const CALLS_A_TOOL: &str = concat!(
-    "event: token\ndata: {\"token\": \"<|web-search|>\"}\n\n",
-    "event: token\ndata: {\"token\": \"elbrus height\"}\n\n",
+    "event: token\ndata: {\"token\": \"<|tool-call|>\"}\n\n",
+    "event: token\ndata: {\"token\": \"{\\\"tool\\\": \\\"web-search\\\", \\\"argument\\\": \\\"elbrus height\\\"}\"}\n\n",
     "event: tool_call\ndata: {\"tool\": \"web-search\", \"argument\": \"elbrus height\"}\n\n",
     "event: done\ndata: {\"message_id\": \"m1\", \"content\": \"asked\"}\n\n",
 );

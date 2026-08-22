@@ -32,7 +32,7 @@ async fn main() {
         origins => println!("{}\n", origins.join(", ")),
     }
 
-    let (body, failure) = registry.answer("web-search", &query).await;
+    let (body, failure) = registry.answer("web-search", &query, "example").await;
     if let Some(e) = failure {
         eprintln!("failed: {e}\n");
     }

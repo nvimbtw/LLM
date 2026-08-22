@@ -38,16 +38,55 @@ const TOKEN_NAME_MAP: Record<string, string> = {
 }
 
 /**
- * Tool-call markers, which are deliberately *not* in TOKEN_NAME_MAP: a tool's
- * marker stem is its name on the wire (`<|web-search|>` is the tool
- * `web-search`), so renaming it here would put a second spelling in play. One
- * entry per tool in `engine/llm/chat/tools.py`.
+ * Every tool is called through one marker, `<|tool-call|>`, whose body is a
+ * JSON object naming the tool. Deliberately *not* in TOKEN_NAME_MAP: it is not
+ * a rendered block, it is a call the trace reads.
  */
-const TOOL_NAMES = new Set(["web-search"])
+export const TOOL_CALL_TYPE = "tool-call"
+export const TOOL_CALL_CLOSE = `<|/${TOOL_CALL_TYPE}|>`
 
-/** The tool this node is a call to, or null if it is not one. */
-export function toolOf(node: MNode): string | null {
-  return !isText(node) && TOOL_NAMES.has(node.type) ? node.type : null
+export interface ToolCall {
+  tool: string
+  argument: string
+}
+
+/**
+ * Keys an argument may arrive under. `engine/llm/chat/tools.py::parse` is the
+ * source of truth and is more forgiving than this — it is what decides whether
+ * a call *runs*. This only decides how one is captioned, so it reads the same
+ * keys and shrugs at anything stranger.
+ */
+const ARGUMENT_KEYS = ["argument", "query", "command", "input", "text"]
+
+/** The call this node makes, or null if it is not one. */
+export function callOf(node: MNode): ToolCall | null {
+  if (isText(node) || node.type !== TOOL_CALL_TYPE) return null
+
+  const body = textContent(node).trim()
+  let payload: unknown
+  try {
+    payload = JSON.parse(body)
+  } catch {
+    // A call the model mangled. The engine did not run it either, and showing
+    // the broken text is more honest than hiding that the model tried.
+    return { tool: "", argument: body }
+  }
+  if (typeof payload !== "object" || payload === null) {
+    return { tool: "", argument: body }
+  }
+
+  const fields = payload as Record<string, unknown>
+  const nested = fields.args ?? fields.arguments ?? fields.parameters
+  const source =
+    typeof nested === "object" && nested !== null
+      ? (nested as Record<string, unknown>)
+      : fields
+  const key = ARGUMENT_KEYS.find((k) => typeof source[k] === "string")
+
+  return {
+    tool: typeof fields.tool === "string" ? fields.tool : String(fields.name ?? ""),
+    argument: key ? String(source[key]) : "",
+  }
 }
 
 function mapTokenName(name: string): string {

@@ -17,7 +17,8 @@ import { ChatMessageBubble } from "./chat-message"
 import { Throbber } from "@/components/ui/throbber"
 import { LoadError } from "@/components/ui/error-state"
 import { ThinkingLabel } from "./thinking-label"
-import { isCalling } from "./trace"
+import { callInFlight } from "./trace"
+import { ToolLabel } from "./tool-label"
 
 export function ChatThread({ chatId }: { chatId: string }) {
   const {
@@ -87,8 +88,13 @@ export function ChatThread({ chatId }: { chatId: string }) {
   // A call in flight outranks both. It is the one phase where the wait is not
   // the model's at all — nothing is being generated while a search runs — so
   // saying "Generating…" over it would be a plain lie.
-  const searching =
-    streaming && isCalling(lastMessage.working, lastMessage.toolAnswers ?? [])
+  //
+  // The call itself, not just the fact of one: the row names the tool and shows
+  // what it was asked, the same way the thinking state names what it is doing.
+  const call = streaming
+    ? callInFlight(lastMessage.working, lastMessage.toolAnswers ?? [])
+    : null
+  const searching = call !== null
   const inThinking = streaming && isInThinkingBlock(lastMessage.content)
   const showThinking =
     streaming &&
@@ -260,10 +266,9 @@ export function ChatThread({ chatId }: { chatId: string }) {
                   }
                 />
                 {/* A fixed word rather than the rotating ThinkingLabel: that one
-                  guesses at what a model might be doing, and here we know. */}
-                {searching && (
-                  <span className="text-shimmer font-medium">Searching…</span>
-                )}
+                  guesses at what a model might be doing, and here we know —
+                  down to which tool and what it was handed. */}
+                {call && <ToolLabel call={call} />}
                 {waiting && (
                   <span className="text-muted-foreground">
                     Queued — {queuedAhead} {queuedAhead === 1 ? "job" : "jobs"}{" "}

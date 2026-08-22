@@ -69,6 +69,13 @@ pub fn warning(text: &str) -> String {
     format!("<|warn|>{}<|/warn|>", neutralize(text))
 }
 
+/// Terminal output, in the block the model has read code and shell output
+/// inside through its whole pretraining. Newlines are kept — a listing that
+/// arrives as one line is a different listing.
+pub fn code_block(text: &str) -> String {
+    format!("<|codeblock|>{}<|/codeblock|>", neutralize(text))
+}
+
 pub fn list(items: impl IntoIterator<Item = String>) -> String {
     let mut out = String::from("<|list|>");
     for item in items {

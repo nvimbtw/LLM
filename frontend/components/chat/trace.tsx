@@ -7,9 +7,9 @@ import { cn } from "@/lib/utils"
 import {
   isText,
   parseMessage,
-  textContent,
-  toolOf,
+  callOf,
   type MNode,
+  type ToolCall,
 } from "@/lib/message-parser"
 import { TraceStep } from "./trace-step"
 
@@ -161,7 +161,9 @@ function Summary({
   const parts: string[] = []
   if (calls > 0 && elapsedSecs != null)
     parts.push(`${Math.round(elapsedSecs)}s`)
-  if (calls > 0) parts.push(calls === 1 ? "1 search" : `${calls} searches`)
+  // "call", not "search": a turn can now run a shell as well, and the header
+  // counts steps of every kind. Which tool each one was is the step's own line.
+  if (calls > 0) parts.push(calls === 1 ? "1 call" : `${calls} calls`)
   if (calls === 0) parts.push(`${words.toLocaleString()} words`)
 
   return (
@@ -219,20 +221,25 @@ type Step =
  * the state mid-stream.
  */
 /**
- * Whether a call in `working` is still waiting on its answer.
+ * The call in `working` that is still waiting on its answer, if there is one.
  *
- * Exported so the thread's status row can say "Searching…" off the same reading
- * the trace's own live tick uses — two answers to that question would show as
- * one warm mark beside a throbber claiming the model was still writing.
+ * Exported so the thread's status row can name what is running off the same
+ * reading the trace's own live tick uses — two answers to that question would
+ * show as one warm mark beside a throbber claiming the model was still writing.
+ * The *first* unanswered call, because answers are consumed positionally and
+ * that is the one the backend is working on.
  */
-export function isCalling(
+export function callInFlight(
   working: string | undefined,
   answers: ToolAnswer[]
-): boolean {
-  if (working === undefined) return false
-  return stepsOf(working, answers).some(
+): ToolCall | null {
+  if (working === undefined) return null
+  const step = stepsOf(working, answers).find(
     (s) => s.kind === "tool" && s.body === null
   )
+  return step?.kind === "tool"
+    ? { tool: step.tool, argument: step.argument }
+    : null
 }
 
 function stepsOf(working: string, answers: ToolAnswer[]): Step[] {
@@ -248,13 +255,13 @@ function stepsOf(working: string, answers: ToolAnswer[]): Step[] {
   }
 
   for (const node of parseMessage(working).children) {
-    const tool = toolOf(node)
-    if (tool) {
+    const call = callOf(node)
+    if (call) {
       const answer = answers[answered++]
       steps.push({
         kind: "tool",
-        tool,
-        argument: textContent(node).trim(),
+        tool: call.tool,
+        argument: call.argument,
         body: answer?.body ?? null,
       })
       continue

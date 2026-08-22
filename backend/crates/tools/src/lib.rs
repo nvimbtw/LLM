@@ -1,13 +1,16 @@
 //! What a model can reach for, and what comes back.
 //!
-//! A tool is named by the marker the model emits: `<|web-search|>query<|/web-search|>`
-//! is the tool named `web-search`, and the engine reports the call under that
-//! name. Nothing here parses markers — by the time a call arrives it is already
-//! a `(name, argument)` pair.
+//! A tool is named inside the call the model emits —
+//! `<|tool-call|>{"tool": "web-search", "argument": "…"}<|/tool-call|>` is the
+//! tool named `web-search`. Nothing here parses markers or JSON: by the time a
+//! call arrives the engine has already made it a `(name, argument)` pair, and a
+//! body it could not read never became a call at all.
 //!
-//! Adding a tool is one `impl Tool` and one line in `Registry::from_env`, plus
-//! the two reserved slots the engine needs to spell it (`llm/chat/tools.py`).
+//! Adding a tool is one `impl Tool` and one line in `Registry::with_config`,
+//! plus the two reserved slots the engine needs to spell it
+//! (`llm/chat/tools.py`).
 
+mod bash;
 pub mod config;
 pub mod error;
 pub mod markup;
@@ -18,6 +21,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+pub use bash::Bash;
 pub use config::Config;
 pub use search::WebSearch;
 pub use error::{Result, ToolError};
@@ -33,7 +37,14 @@ pub trait Tool: Send + Sync {
     /// engine adds the delimiters and repeats the call above it. Everything a
     /// tool puts here has been through `markup::neutralize`, because it is text
     /// from outside going into a prompt.
-    async fn run(&self, argument: &str) -> Result<String>;
+    ///
+    /// `session` is an opaque key for "the conversation this call belongs to",
+    /// and most tools ignore it: a search is the same search whoever asked. A
+    /// sandboxed shell is not — a reply that writes a file in one round has to
+    /// find it there in the next — so the key is passed to every tool rather
+    /// than bolted onto the one that needs it. It is a key and not a chat: what
+    /// conversation it stands for, and who owns it, stays in `api`.
+    async fn run(&self, argument: &str, session: &str) -> Result<String>;
 }
 
 /// Where a tool that fetches the same thing twice can go instead of fetching
@@ -99,6 +110,10 @@ impl Registry {
             origins.push(format!("{} ({})", search.name(), search.origin()));
             tools.push(Arc::new(search));
         }
+        if let Some(bash) = Bash::from_config(config) {
+            origins.push(format!("{} ({})", bash.name(), bash.origin()));
+            tools.push(Arc::new(bash));
+        }
         Registry { tools: tools.iter().map(|t| (t.name(), t.clone())).collect(), origins }
     }
 
@@ -115,9 +130,9 @@ impl Registry {
         &self.origins
     }
 
-    pub async fn run(&self, name: &str, argument: &str) -> Result<String> {
+    pub async fn run(&self, name: &str, argument: &str, session: &str) -> Result<String> {
         match self.tools.get(name) {
-            Some(tool) => tool.run(argument).await,
+            Some(tool) => tool.run(argument, session).await,
             None => Err(ToolError::Unknown(name.to_string())),
         }
     }
@@ -128,8 +143,13 @@ impl Registry {
     /// the person never sees because a search 429'd is a worse outcome than one
     /// that says the search failed. The caller gets a body either way; the error
     /// is returned alongside it so it can still be logged.
-    pub async fn answer(&self, name: &str, argument: &str) -> (String, Option<ToolError>) {
-        match self.run(name, argument).await {
+    pub async fn answer(
+        &self,
+        name: &str,
+        argument: &str,
+        session: &str,
+    ) -> (String, Option<ToolError>) {
+        match self.run(name, argument, session).await {
             Ok(body) => (body, None),
             Err(e) => (markup::warning(&e.to_string()), Some(e)),
         }
@@ -147,7 +167,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "stub"
         }
-        async fn run(&self, argument: &str) -> Result<String> {
+        async fn run(&self, argument: &str, _session: &str) -> Result<String> {
             Err(ToolError::Status { code: 429, detail: argument.to_string() })
         }
     }
@@ -167,10 +187,27 @@ mod tests {
         assert_eq!(configured.names(), vec!["web-search"]);
     }
 
+    #[test]
+    fn each_tool_appears_on_its_own_configuration_and_not_the_others() {
+        let sandbox_only = Registry::with_config(&Config {
+            bash_url: Some("http://localhost:8899".to_string()),
+            ..Config::default()
+        });
+        assert_eq!(sandbox_only.names(), vec!["bash"]);
+
+        let both = Registry::with_config(&Config {
+            search_api_key: Some("k".to_string()),
+            bash_url: Some("http://localhost:8899".to_string()),
+            ..Config::default()
+        });
+        assert_eq!(both.names(), vec!["bash", "web-search"]);
+        assert_eq!(both.origins().len(), 2);
+    }
+
     #[tokio::test]
     async fn a_tool_that_is_not_there_is_a_caveat_rather_than_a_lost_reply() {
         let registry = Registry::new(vec![]);
-        let (body, failure) = registry.answer("web-search", "anything").await;
+        let (body, failure) = registry.answer("web-search", "anything", "chat").await;
         assert!(body.starts_with("<|warn|>"));
         assert!(matches!(failure, Some(ToolError::Unknown(_))));
     }
@@ -178,7 +215,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_reaches_the_model_as_markup_it_can_read() {
         let registry = Registry::new(vec![Arc::new(Stub)]);
-        let (body, failure) = registry.answer("stub", "why").await;
+        let (body, failure) = registry.answer("stub", "why", "chat").await;
         assert!(body.contains("429"));
         assert!(matches!(failure, Some(ToolError::Status { code: 429, .. })));
     }

@@ -81,6 +81,7 @@ cargo run
 | `BACKEND_SERVICE_SECRET` | Authenticates the engine→backend hop, the one that runs toward the backend. Unset leaves `/internal` open, and it says so at startup. |
 | `DATA_ENGINE_*` | The same set as `ENGINE_*`, for the data engine. Port defaults to 8002. |
 | `SEARCH_URL` | A SearXNG instance for the `web-search` tool. Optional — unset, no tool is registered and chat works exactly as before. |
+| `BASH_URL` | A just-bash sandbox for the `bash` tool. Optional, and the same bargain: unset, the tool is not registered. |
 
 **The frontend:**
 
@@ -93,8 +94,8 @@ bun run dev
 That is the whole sequence — `cargo run` spawns both Python services as child
 processes and health-checks each before reporting ready, so you do not normally
 start them yourself. The UI is on **:3000**, the backend on **:8080**, the
-engine on **:8001**, the data engine on **:8002**, and the optional search
-instance below on **:8888**.
+engine on **:8001**, the data engine on **:8002**, and the two optional tool
+services below on **:8888** (search) and **:8899** (the shell sandbox).
 
 To run either standalone instead, set its `*_AUTOSTART=false` and:
 
@@ -103,19 +104,26 @@ cd engine      && DATA_DIR=./data .venv/bin/uvicorn main:app --port 8001 --reloa
 cd data-engine && .venv/bin/uvicorn main:app --port 8002 --reload
 ```
 
-**Web search (optional).** Replies can call `<|web-search|>`, which the backend
-executes. Self-hosted, so it needs no key and no account:
+**Tools (optional).** A reply can call one, as
+`<|tool-call|>{"tool": …, "argument": …}<|/tool-call|>`, and the backend runs
+it. Both are self-hosted — no key, no account, nothing metered:
 
 ```sh
-cd deploy/searxng && ./run.sh        # or: docker compose up -d
+cd deploy/searxng   && ./run.sh      # web search  (or: docker compose up -d)
+cd deploy/just-bash && ./run.sh      # a sandboxed shell
 ```
 
-Then `SEARCH_URL=http://localhost:8888` in `backend/.env`. Leave it unset and
-the tool simply is not registered — see
-[`docs/backend/README.md`](docs/backend/README.md) for the two SearXNG settings
-that must be right, and
+Then `SEARCH_URL=http://localhost:8888` and `BASH_URL=http://localhost:8899` in
+`backend/.env`. Leave either unset and that tool simply is not registered. The
+shell is a *simulation* — a virtual filesystem in a Node process, no `execve`
+anywhere under it — which is what makes it safe to point a language model at.
+
+See [`docs/backend/README.md`](docs/backend/README.md) for the two SearXNG
+settings that must be right and what the sandbox can and cannot run,
 [`docs/decisions/tool-calls.md`](docs/decisions/tool-calls.md) for why a turn
-that calls one runs twice.
+that calls one runs twice, and
+[`docs/decisions/generic-tool-calls.md`](docs/decisions/generic-tool-calls.md)
+for why every tool shares one marker.
 
 ### Tests
 

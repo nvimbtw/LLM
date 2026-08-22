@@ -36,14 +36,17 @@ export default function MarkupPage() {
               vocabulary has not been extended for them.
             </p>
             <p>
-              The last two turns are <span className="italic">traces</span> — a
-              reply that called <code className="text-xs">web-search</code> and
+              The last three turns are <span className="italic">traces</span> —
+              a reply that called <code className="text-xs">tool-call</code> and
               came back for a second round with what it found. The whole working
               phase folds into one panel above the answer, tool calls ticked off
               the same rail the reasoning runs against, and{" "}
               <span className="font-medium text-foreground">Show markup</span>{" "}
-              prints all three rounds a turn like that actually was. The second
-              of them is the failure path: a search that found nothing.
+              prints all three rounds a turn like that actually was. One of them
+              is the failure path — a search that found nothing — and the last
+              calls <code className="text-xs">bash</code> through the same
+              marker, which is what carrying the tool name inside the call
+              buys.
             </p>
             <p>
               Thinking blocks follow the{" "}

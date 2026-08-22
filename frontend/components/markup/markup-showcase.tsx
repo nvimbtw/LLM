@@ -45,7 +45,7 @@ interface Turn {
 }
 
 /** The two markers a tool call is spelled with, for the legend. */
-const TOOL_TOKENS = ["web-search", "tool-result"]
+const TOOL_TOKENS = ["tool-call", "tool-result"]
 
 const CONVERSATION: Turn[] = [
   {
@@ -182,9 +182,9 @@ const CONVERSATION: Turn[] = [
       "compare them, and the answer is the comparison rather than either " +
       "number. Worth checking both.<|/thinking|>" +
       "<|par|>Let me look up both figures.<|/par|>" +
-      "<|web-search|>height of mount elbrus<|/web-search|>" +
+      '<|tool-call|>{"tool": "web-search", "argument": "height of mount elbrus"}<|/tool-call|>' +
       "<|par|>And the other one.<|/par|>" +
-      "<|web-search|>height of denali<|/web-search|>",
+      '<|tool-call|>{"tool": "web-search", "argument": "height of denali"}<|/tool-call|>',
     toolAnswers: [
       {
         tool: "web-search",
@@ -229,7 +229,7 @@ const CONVERSATION: Turn[] = [
     // rather than inventing an answer.
     working:
       "<|par|>I can try, though I doubt this is something the web knows.<|/par|>" +
-      "<|web-search|>what did my neighbour have for breakfast<|/web-search|>",
+      '<|tool-call|>{"tool": "web-search", "argument": "what did my neighbour have for breakfast"}<|/tool-call|>',
     toolAnswers: [
       {
         tool: "web-search",
@@ -242,6 +242,35 @@ const CONVERSATION: Turn[] = [
       "<|par|>Nothing came back, which is the honest answer here — that is not " +
       "something anyone has written down. If you tell me what they said, I can " +
       "help with whatever you were going to do with it.<|/par|>",
+  },
+  {
+    id: "m13",
+    role: "user",
+    content: "How many CSV rows are in the sample I saved?",
+    covers: [],
+  },
+  {
+    id: "m14",
+    role: "assistant",
+    covers: TOOL_TOKENS,
+    // The other tool. Same marker, same trace, different name inside the call —
+    // which is the whole point of one <|tool-call|> for everything. Its answer
+    // is a <|codeblock|> rather than a <|list|>, so the trace shows terminal
+    // output a line at a time.
+    working:
+      "<|par|>I can count them.<|/par|>" +
+      '<|tool-call|>{"tool": "bash", "argument": "wc -l sample.csv"}<|/tool-call|>',
+    toolAnswers: [
+      {
+        tool: "bash",
+        argument: "wc -l sample.csv",
+        body: "<|codeblock|>1043 sample.csv<|/codeblock|>",
+      },
+    ],
+    elapsedSecs: 4,
+    content:
+      "<|par|>1,043 lines, so <|bold|>1,042 rows<|/bold|> once the header is taken " +
+      "off.<|/par|>",
   },
 ]
 
@@ -266,7 +295,10 @@ function sourceOf(turn: Turn): string {
     turn.working,
     ...(turn.toolAnswers ?? []).map(
       (a) =>
-        `<|tool-result|><|${a.tool}|>${a.argument}<|/${a.tool}|>${a.body}<|/tool-result|>`
+        `<|tool-result|><|tool-call|>${JSON.stringify({
+          tool: a.tool,
+          argument: a.argument,
+        })}<|/tool-call|>${a.body}<|/tool-result|>`
     ),
     turn.content,
   ]

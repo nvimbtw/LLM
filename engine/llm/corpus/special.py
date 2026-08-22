@@ -63,12 +63,22 @@ SPECIAL_TOKENS: list[str] = [
     # claiming to have been told something it was not.
     "<|tool-result|>",
     "<|/tool-result|>",
-    # One pair per tool, the marker stem being the tool's name on the wire. A
-    # dedicated marker rather than a generic `<|tool|>name:argument|>`: the
-    # grammar can then police *which* tool was called, and a model this size
-    # gets one embedding row per tool instead of having to spell its name.
+    # Retired, and deliberately still here. Web search was called through its
+    # own marker pair before tool calls were standardised on `<|tool-call|>`
+    # below. The slots stay occupied because an id is the one thing that may
+    # never move: a vocabulary saved while these were named still carries them,
+    # and `corpus.relabel` refuses a slot holding a marker it did not expect.
+    # Nothing emits them — they are in no table in `chat.markup`, so the grammar
+    # forbids the model from writing one.
     "<|web-search|>",
     "<|/web-search|>",
+    # Every tool call, whatever the tool. The body is a JSON object naming the
+    # tool and its argument (`chat.tools`), which is what makes the tool table
+    # a property of the *build* rather than of the vocabulary: a model trained
+    # today can be served a tool invented next month without its tokenizer
+    # knowing anything about it.
+    "<|tool-call|>",
+    "<|/tool-call|>",
 ]
 
 # The document separator, baked between documents in the packed corpus.

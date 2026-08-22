@@ -87,7 +87,7 @@ impl Tool for WebSearch {
         "web-search"
     }
 
-    async fn run(&self, argument: &str) -> Result<String> {
+    async fn run(&self, argument: &str, _session: &str) -> Result<String> {
         let query = argument.trim();
         if query.is_empty() {
             return Ok(markup::warning("The search was empty, so there was nothing to look up."));
@@ -336,8 +336,8 @@ mod tests {
         .expect("a key is all it needs");
 
         let runaway = "x".repeat(MAX_QUERY_CHARS + 1);
-        assert!(search.run(&runaway).await.expect("refused, not errored").contains("<|warn|>"));
-        assert!(search.run("   ").await.expect("refused, not errored").contains("<|warn|>"));
+        assert!(search.run(&runaway, "chat").await.expect("refused, not errored").contains("<|warn|>"));
+        assert!(search.run("   ", "chat").await.expect("refused, not errored").contains("<|warn|>"));
     }
 
     // ── the cache wrap ──────────────────────────────────────────────────────

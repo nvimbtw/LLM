@@ -11,8 +11,8 @@ responses are where the model learns to format; a user's `**bold**` is a
 quoted word, not a style instruction, and rewriting it would change the
 question. The protected-region split skips: fenced code blocks, inline code
 spans, already-rendered `<|...|>` markers (so a run after `convert-smoltalk`
-keeps its `<|web-search|>` and `<|par|>` blocks intact), and `web-search` /
-`tool-result` blocks whose contents are a query or a result, not prose.
+keeps its `<|tool-call|>` and `<|par|>` blocks intact), and `tool-call` /
+`tool-result` blocks whose contents are a JSON call or a result, not prose.
 
 Emphasis must be flanked by non-space (CommonMark's rule), so `2 * 3` and
 `base ** 2` survive; and underscore emphasis must sit between non-word
@@ -31,7 +31,7 @@ SFT = (DatasetKind.sft,)
 #: marker tokens themselves (their bodies stay open — a `<|par|>` may wrap text
 #: that still wants converting). One capture group, so `re.split` lays the
 #: protected regions at the odd indices.
-_LEAF = r"<\|(?:web-search|tool-result|code|codeblock)\|>.*?<\|/(?:web-search|tool-result|code|codeblock)\|>"
+_LEAF = r"<\|(?:tool-call|tool-result|code|codeblock)\|>.*?<\|/(?:tool-call|tool-result|code|codeblock)\|>"
 _PROTECTED = re.compile(
     rf"({_LEAF}|```.*?```|`[^`\n]+`|<\|/?[a-zA-Z0-9-]+\|>)",
     re.DOTALL,

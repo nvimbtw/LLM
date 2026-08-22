@@ -13,6 +13,7 @@ import torch
 from tokenizers import Tokenizer
 
 from llm import storage
+from llm.chat import tools
 from llm.chat.markup import OpenBlocks, Rules
 from llm.chat.template import Role, ThinkBudget, Turn, build_prompt, context_floor
 from llm.config import ChatConfig, ChatTurn
@@ -49,18 +50,34 @@ class _ToolCalls:
 
     def observe(self, token_id: int, produced: list[int]) -> dict | None:
         """The call `token_id` just completed, or None. `produced` must already
-        include `token_id`, so the argument is everything between the two."""
-        if token_id in self.rules.tool_open_for:
+        include `token_id`, so the body is everything between the two.
+
+        A body that is not a JSON object naming a tool this build has is not a
+        call: it is reported as nothing and the reply carries on. That is the
+        cost of one marker for every tool — the grammar guarantees the *shape*
+        of a call and can no longer guarantee that a tool by that name exists —
+        and it is why this returns None rather than raising. A model that
+        mangles its JSON has written a sentence nobody acts on, which is a far
+        better failure than a turn that dies.
+        """
+        if self.rules.tool_call is None:
+            return None
+        opener, closer = self.rules.tool_call
+
+        if token_id == opener:
             self._opened_at = len(produced)
             return None
-
-        name = self.rules.tool_close_for.get(token_id)
-        if name is None or self._opened_at is None:
+        if token_id != closer or self._opened_at is None:
             return None
 
-        argument = bpe.decode(self.tokenizer, produced[self._opened_at : -1])
+        body = bpe.decode(self.tokenizer, produced[self._opened_at : -1])
         self._opened_at = None
-        call = {"tool": name, "argument": argument.strip()}
+        named = tools.parse(body)
+        if named is None:
+            return None
+
+        name, argument = named
+        call = {"tool": name, "argument": argument}
         self.made.append(call)
         return call
 
@@ -70,11 +87,11 @@ class _ToolCalls:
         Applied after the grammar's own mask rather than inside it, because this
         is a budget the caller set and not a statement about well-formedness.
         """
-        if len(self.made) < MAX_TOOL_CALLS_PER_TURN:
+        if len(self.made) < MAX_TOOL_CALLS_PER_TURN or self.rules.tool_call is None:
             return
-        for token_id in self.rules.tool_open_for:
-            if token_id < logits.numel():
-                logits[token_id] = float("-inf")
+        opener = self.rules.tool_call[0]
+        if opener < logits.numel():
+            logits[opener] = float("-inf")
 
 _CACHE: dict = {}
 

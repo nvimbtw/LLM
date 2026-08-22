@@ -34,10 +34,11 @@ from llm.corpus import special
 MAX_DEPTH = 6
 
 # The document-markup pairs the model is allowed to use. Anything in
-# SPECIAL_TOKENS not named here, not standalone and not a tool in `chat.tools`
-# is forbidden, so adding a marker fails closed: the model cannot emit it until
-# one of those tables says how it nests. `<|tool-result|>` is deliberately in
-# none of them — the model reads results, it does not write them.
+# SPECIAL_TOKENS not named here, not standalone and not the tool-call pair is
+# forbidden, so adding a marker fails closed: the model cannot emit it until one
+# of those tables says how it nests. `<|tool-result|>` is deliberately in none of
+# them — the model reads results, it does not write them — and so are the
+# retired per-tool markers in `corpus.special`.
 PAIRS: list[tuple[str, str]] = [
     ("<|par|>", "<|/par|>"),
     ("<|code|>", "<|/code|>"),
@@ -58,22 +59,24 @@ PAIRS: list[tuple[str, str]] = [
 STANDALONE = ["<|divider|>"]
 
 
-def _resolvable_tools(tokenizer: Tokenizer) -> list[tuple[tools.Tool, int, int]]:
-    """Each tool this vocabulary can spell, with its opener and closer ids.
+def _tool_call_ids(tokenizer: Tokenizer) -> tuple[int, int] | None:
+    """The `<|tool-call|>` pair's ids, or None if this vocabulary predates them.
 
-    A tool whose markers are absent is dropped rather than raised on, which is
-    the one place tools differ from document markup. A model trained before a
-    tool existed carries a tokenizer that predates it; that model cannot call
-    the tool, but it can still serve — whereas a missing `<|par|>` means a
-    vocabulary that was never built for this repo at all.
+    Absent is dropped rather than raised on, which is the one place tool markers
+    differ from document markup. A model trained before tool calls existed
+    carries a tokenizer that predates them; that model cannot call anything, but
+    it can still serve — whereas a missing `<|par|>` means a vocabulary that was
+    never built for this repo at all.
+
+    *Which* tools exist is no longer a question the vocabulary can answer: the
+    name lives inside the call. `chat.tools.parse` is what refuses one this
+    build does not have, after the fact.
     """
-    resolved = []
-    for tool in tools.TOOLS:
-        open_id = tokenizer.token_to_id(tool.open)
-        close_id = tokenizer.token_to_id(tool.close)
-        if open_id is not None and close_id is not None:
-            resolved.append((tool, open_id, close_id))
-    return resolved
+    open_id = tokenizer.token_to_id(tools.TOOL_CALL_OPEN)
+    close_id = tokenizer.token_to_id(tools.TOOL_CALL_CLOSE)
+    if open_id is None or close_id is None:
+        return None
+    return open_id, close_id
 
 
 @dataclass(frozen=True)
@@ -90,17 +93,17 @@ class Rules:
     requires_parent: dict[int, int]
     # An open block admitting only one kind of opener directly inside it.
     only_child: dict[int, int]
-    # Blocks whose content is not markup — a tool call's argument is a query
-    # string — so no opener is legal inside them.
+    # Blocks whose content is not markup — a tool call's body is a JSON object —
+    # so no opener is legal inside them.
     leaf: frozenset[int]
     # Openers legal only outside every block. The mirror of `requires_parent`:
     # that one demands a specific parent, this one demands none.
     top_level: frozenset[int]
-    # Opener and closer id -> the tool whose call they bracket. The generation
-    # loop needs both: the opener to start the span, the closer to end it and
-    # name what was called.
-    tool_open_for: dict[int, str]
-    tool_close_for: dict[int, str]
+    # The `<|tool-call|>` pair, or None for a vocabulary that predates it. The
+    # generation loop needs both ends: the opener to start the span, the closer
+    # to end it and read the JSON between them. Which tool was called is in that
+    # JSON and not in either id — one marker serves every tool.
+    tool_call: tuple[int, int] | None
     marker_ids: tuple[int, ...]
     end_of_assistant: int
     end_of_text: int
@@ -125,10 +128,10 @@ class Rules:
             closer_for[open_id] = close_id
             opener_for[close_id] = open_id
 
-        callable_tools = _resolvable_tools(tokenizer)
-        for _, open_id, close_id in callable_tools:
-            closer_for[open_id] = close_id
-            opener_for[close_id] = open_id
+        tool_call = _tool_call_ids(tokenizer)
+        if tool_call is not None:
+            closer_for[tool_call[0]] = tool_call[1]
+            opener_for[tool_call[1]] = tool_call[0]
 
         named = set(closer_for) | set(closer_for.values())
         named |= {marker_id(m) for m in STANDALONE}
@@ -154,7 +157,7 @@ class Rules:
             if tid not in named and tid not in (end_of_assistant, end_of_text)
         )
 
-        tool_openers = frozenset(open_id for _, open_id, _ in callable_tools)
+        tool_openers = frozenset([tool_call[0]] if tool_call is not None else [])
         return cls(
             closer_for=closer_for,
             opener_for=opener_for,
@@ -163,8 +166,7 @@ class Rules:
             only_child={marker_id("<|list|>"): marker_id("<|item|>")},
             leaf=tool_openers,
             top_level=tool_openers,
-            tool_open_for={open_id: tool.name for tool, open_id, _ in callable_tools},
-            tool_close_for={close: tool.name for tool, _, close in callable_tools},
+            tool_call=tool_call,
             marker_ids=tuple(marker_ids),
             end_of_assistant=end_of_assistant,
             end_of_text=end_of_text,

@@ -6,11 +6,13 @@ function calls are embedded in the assistant's text as
 `<tool_call>[{"name": ..., "arguments": {...}}]</tool_call>`, with the
 conversation ending on the call and no tool-role turn to follow it.
 
-This project has exactly one tool — `web-search` — so a call is rendered as
-`<|web-search|>…<|/web-search|>`. The query is the user's own question: the
-backend searches the marker's argument literally, so JSON-serialised arguments
-would be a query a provider would choke on. Rephrasing the question is a real
-system's job, not a cleaning script's — the honest text is what was asked.
+Every tool here is called through one marker with the tool named inside it, so
+a call is rendered as
+`<|tool-call|>{"tool": "web-search", "argument": …}<|/tool-call|>` — the layout
+`engine/llm/chat/tools.py` owns. The argument is the user's own question: the
+backend searches it literally, so the source's own JSON arguments would be a
+query a provider would choke on. Rephrasing the question is a real system's
+job, not a cleaning script's — the honest text is what was asked.
 
 Assistant prose is wrapped in `<|par|>` so the model learns the answer markup
 from its first SFT run instead of meeting it cold at serving time. A system
@@ -42,6 +44,15 @@ from store.schema import DatasetKind
 
 SFT = (DatasetKind.sft,)
 
+#: The one marker every tool is called through. Written out rather than
+#: imported: the data engine and the engine are separate services with separate
+#: virtualenvs, and `engine/llm/chat/tools.py` is the source of truth for the
+#: layout either way.
+TOOL_CALL_OPEN = "<|tool-call|>"
+TOOL_CALL_CLOSE = "<|/tool-call|>"
+
+WEB_SEARCH = "web-search"
+
 #: SmolTalk's function calls, embedded in the assistant's text. Lazy enough to
 #: tolerate the occasional unclosed tag as plain text instead of eating the
 #: rest of the turn.
@@ -72,11 +83,13 @@ def _arguments_of(call: dict) -> str:
 
 
 def _render_call(raw: str, query: str = "") -> str | None:
-    """One `<tool_call>` body as web-search markers.
+    """One `<tool_call>` body as a web-search call.
 
-    The body is `[{name, arguments}]` or a single such dict. The name is
-    dropped — this corpus's only tool is `web-search`, and keeping the source
-    name would leave an undeclared marker in the text.
+    The body is `[{name, arguments}]` or a single such dict. The source's name
+    is dropped and replaced with `web-search`: the names in this corpus are
+    invented per sample (`get_role_ids`, `calculate_bmi`) and nothing in this
+    project can run any of them, so keeping one would train a call to a tool
+    that will never exist.
 
     The query is what the search backend will *literally* run against the
     provider, so it must be natural language, never a JSON blob. The most
@@ -99,8 +112,16 @@ def _render_call(raw: str, query: str = "") -> str | None:
         if not isinstance(call, dict):
             return None
         arguments = _arguments_of(call)
-        blocks.append(f"<|web-search|>{query or arguments}<|/web-search|>")
+        blocks.append(_web_search(query or arguments))
     return "".join(blocks)
+
+
+def _web_search(argument: str) -> str:
+    """One call, rendered exactly as `llm.chat.tools.call` renders it."""
+    payload = json.dumps(
+        {"tool": WEB_SEARCH, "argument": argument.strip()}, ensure_ascii=False
+    )
+    return f"{TOOL_CALL_OPEN}{payload}{TOOL_CALL_CLOSE}"
 
 
 def _assistant(content: str, wrap: bool, query: str) -> str | None:
@@ -171,7 +192,7 @@ PROCESSORS = (
         name="convert-smoltalk",
         title="Convert SmolTalk",
         description=(
-            "SmolTalk's <tool_call> blocks become <|web-search|> calls, assistant "
+            "SmolTalk's <tool_call> blocks become <|tool-call|> web-search calls, assistant "
             "replies are wrapped in <|par|>, and tool-format system prompts are dropped."
         ),
         applies_to=SFT,

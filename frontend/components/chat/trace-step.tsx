@@ -9,6 +9,7 @@ import {
   type MElement,
   type MNode,
 } from "@/lib/message-parser"
+import { toolWords } from "@/lib/tools"
 
 /**
  * One tool call inside a `Trace`: what was asked, and what came back.
@@ -23,7 +24,7 @@ import {
  * it found, and the results appear on a click.
  */
 export interface TraceStepProps {
-  /** The tool's wire name — `web-search`. */
+  /** The tool's wire name — `web-search`, `bash`. */
   tool: string
   argument: string
   /** The result in the marker vocabulary, or null while the call is running. */
@@ -33,11 +34,14 @@ export interface TraceStepProps {
 }
 
 /**
- * How a completed call is announced. Past tense, because by the time the trace
- * is read it has happened. A tool with no entry here falls back to its own name,
- * so adding one is not a prerequisite for it working.
+ * What the disclosure counts. A search comes back as a list of findings worth
+ * counting; a shell comes back as output, where "3 results" would be a lie
+ * about what the lines are.
  */
-const TOOL_VERBS: Record<string, string> = { "web-search": "Searched" }
+function summaryOf(tool: string, count: number): string {
+  if (tool !== "web-search") return "output"
+  return count === 1 ? "1 result" : `${count} results`
+}
 
 export function TraceStep({
   tool,
@@ -49,7 +53,10 @@ export function TraceStep({
   const { items, failed } = React.useMemo(() => resultsOf(body), [body])
   const [open, setOpen] = React.useState(false)
 
-  const verb = running ? "Searching" : (TOOL_VERBS[tool] ?? tool)
+  // `lib/tools.ts` owns how a tool is said, so the tick and the thread's status
+  // row cannot end up calling the same call two different things.
+  const words = toolWords(tool)
+  const verb = running ? words.running : words.done
   // A call that failed is never folded away. Its caveat is one line, and the
   // count that would replace it — "1 result" over a search that found nothing —
   // would say the opposite of what happened.
@@ -99,7 +106,7 @@ export function TraceStep({
               ·
             </span>{" "}
             <span className="text-[0.72em] tabular-nums">
-              {items.length === 1 ? "1 result" : `${items.length} results`}
+              {summaryOf(tool, items.length)}
             </span>
           </span>
         )}
@@ -153,8 +160,10 @@ function Tick({ running }: { running: boolean }) {
 /**
  * What the tool came back with, read out of the marker vocabulary it rendered.
  *
- * A search that worked is a `<|list|>` of items; one that did not — no matches,
- * no API key, a refusal from the provider — is a `<|warn|>` holding the reason.
+ * A search that worked is a `<|list|>` of items; a shell command is a
+ * `<|codeblock|>`, one line per row so the output reads like the terminal it
+ * came from; one that did not work — no matches, no sandbox, a refusal from the
+ * provider — is a `<|warn|>` holding the reason.
  * Anything else is flattened to its text rather than dropped: a body this does
  * not recognise is still something the model was told, and hiding it would make
  * the trace a lie about what the reply had to work with.
@@ -165,6 +174,12 @@ function resultsOf(body: string | null): { items: string[]; failed: boolean } {
   const items: string[] = []
   let failed = false
   const walk = (node: MNode) => {
+    if (node.type === "code block") {
+      for (const line of textContent(node).split("\n")) {
+        if (line.trim()) items.push(line)
+      }
+      return
+    }
     if (node.type === "item" || node.type === "warn") {
       const text = textContent(node).trim()
       if (text) items.push(text)

@@ -143,7 +143,9 @@ async fn chat_session(
     let Some(ask) = next_json(&mut stream).await else { return };
 
     let path = format!("/chats/{chat_id}/messages/stream");
-    turn::run(&mut session, &engine, &registry, &caller, &path, ask).await;
+    // The chat id is the tools' session key: it is stable for the whole
+    // conversation, which is exactly the lifetime a sandbox filesystem wants.
+    turn::run(&mut session, &engine, &registry, &caller, &path, &chat_id.to_string(), ask).await;
     let _ = session.close(None).await;
 }
 

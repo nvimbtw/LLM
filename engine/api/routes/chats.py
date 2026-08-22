@@ -271,10 +271,9 @@ def _new_turn(body: Ask) -> tuple[Role, str]:
         )
 
     result = body.tool_result
-    tool = tools.by_name(result.tool)
-    if tool is None:
+    if tools.by_name(result.tool) is None:
         raise HTTPException(status_code=400, detail=f"unknown tool {result.tool!r}")
-    return Role.tool, tools.render_result(tool, result.argument, result.body)
+    return Role.tool, tools.render_result(result.tool, result.argument, result.body)
 
 
 def _floored(messages: list[Message], floor: uuid.UUID | None) -> list[Message]:

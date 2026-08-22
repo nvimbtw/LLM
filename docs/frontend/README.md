@@ -597,6 +597,16 @@ nothing has no trace and renders exactly as it always did, reasoning inline.
 
 `/markup` carries two fixture traces, including the failure path.
 
+While a call is in flight the thread's status row names it —
+`Search: tallest mountain in europe`, `Bash: ls -l /etc` — off the same reading
+the live tick uses (`Trace::callInFlight`, the first call with no answer yet).
+How a tool is said in English is `lib/tools.ts` and nowhere else: a noun for
+the status row, a present and a past verb for the trace, and a fallback to the
+tool's own wire name so a new tool reads acceptably before anyone has written
+words for it. That table is the frontend's only knowledge of which tools exist
+— the vocabulary stopped carrying one marker per tool, so nothing else here can
+tell `bash` from `web-search`.
+
 `budget` is the composer's thinking-budget dropdown
 (`components/chat/budget-selector.tsx`) — `"low" | "med" | "high"`, matching the
 labels the SFT corpus is tagged with, since the string sent becomes the marker
@@ -895,7 +905,7 @@ and a figure with one parameter cannot tell eight states apart.
 So use it only where a figure belongs — somewhere the waiting *is* the subject, with
 room for it:
 
-- the chat thread (loading, and the thinking/generating status row),
+- the chat thread (loading, and the thinking/tool/generating status row),
 - the training hero corner (`TrainingHero`),
 - the queue's now-band,
 - the benchmark empty state.

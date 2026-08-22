@@ -1,5 +1,7 @@
 """What each processor does to a document, and what a pipeline does to a stream."""
 
+import json
+
 import pytest
 
 import processors
@@ -163,7 +165,7 @@ def test_convert_smoltalk_keeps_the_system_message():
     assert after["messages"][0] == {"role": "system", "content": "You are a concise assistant."}
 
 
-def test_convert_smoltalk_turns_a_tool_call_into_web_search():
+def test_convert_smoltalk_turns_a_tool_call_into_a_web_search_call():
     doc = {
         "messages": [
             {"role": "user", "content": "When was the Eiffel Tower finished?"},
@@ -179,7 +181,10 @@ def test_convert_smoltalk_turns_a_tool_call_into_web_search():
 
     after = apply("convert-smoltalk", doc)
 
-    assert after["messages"][1]["content"] == "<|web-search|>When was the Eiffel Tower finished?<|/web-search|>"
+    assert after["messages"][1]["content"] == (
+        '<|tool-call|>{"tool": "web-search", "argument": '
+        '"When was the Eiffel Tower finished?"}<|/tool-call|>'
+    )
 
 
 def test_convert_smoltalk_queries_what_the_user_asked_not_json_arguments():
@@ -198,9 +203,9 @@ def test_convert_smoltalk_queries_what_the_user_asked_not_json_arguments():
 
     after = apply("convert-smoltalk", doc)
 
-    assert (
-        after["messages"][1]["content"]
-        == "<|web-search|>Retrieve the role IDs for document 654321.<|/web-search|>"
+    assert after["messages"][1]["content"] == (
+        '<|tool-call|>{"tool": "web-search", "argument": '
+        '"Retrieve the role IDs for document 654321."}<|/tool-call|>'
     )
     assert '"document_id"' not in after["messages"][1]["content"]
 
@@ -221,8 +226,9 @@ def test_convert_smoltalk_renders_each_call_in_a_list():
 
     after = apply("convert-smoltalk", doc)
 
+    call = '<|tool-call|>{"tool": "web-search", "argument": "two things"}<|/tool-call|>'
     assert after["messages"][1]["content"] == (
-        "<|web-search|>two things<|/web-search|><|web-search|>two things<|/web-search|>"
+        call + call
     )
 
 
@@ -243,7 +249,7 @@ def test_convert_smoltalk_leaves_prose_around_a_call_bare():
     after = apply("convert-smoltalk", doc)
 
     assert after["messages"][1]["content"] == (
-        "Let me check.<|web-search|>a thing<|/web-search|>"
+        'Let me check.<|tool-call|>{"tool": "web-search", "argument": "a thing"}<|/tool-call|>'
     )
 
 
@@ -347,14 +353,16 @@ def test_markdown_emphasis_leaves_code_fences_and_inline_code_alone():
 
 
 def test_markdown_emphasis_does_not_touch_existing_markers():
-    content = "Answer in <|par|>a **b** c<|/par|> was searched via <|web-search|>q ** 2<|/web-search|>"
+    content = (
+        "Answer in <|par|>a **b** c<|/par|> was searched via "
+        '<|tool-call|>{"tool": "web-search", "argument": "q ** 2"}<|/tool-call|>'
+    )
 
     after = _md([{"role": "assistant", "content": content}])
 
-    assert (
-        after["messages"][0]["content"]
-        == "Answer in <|par|>a <|bold|>b<|/bold|> c<|/par|> was searched via "
-        "<|web-search|>q ** 2<|/web-search|>"
+    assert after["messages"][0]["content"] == (
+        "Answer in <|par|>a <|bold|>b<|/bold|> c<|/par|> was searched via "
+        '<|tool-call|>{"tool": "web-search", "argument": "q ** 2"}<|/tool-call|>'
     )
 
 
@@ -392,3 +400,363 @@ def test_markdown_emphasis_following_convert_smoltalk_is_stable():
     again = apply("markdown-emphasis", once)
 
     assert again == once
+
+
+HERMES_SYSTEM = (
+    "You are a function calling AI model. Here are the available tools:\n"
+    '<tools>[{"type": "function", "function": {"name": "terminal"}}]</tools>\n'
+    "Each function call should be enclosed within <tool_call> </tool_call> XML tags."
+)
+
+
+def _hermes_turn(name: str, arguments: dict) -> str:
+    return f'<tool_call>\n{json.dumps({"name": name, "arguments": arguments})}\n</tool_call>'
+
+
+def _hermes_response(name: str, content: dict) -> str:
+    body = {"tool_call_id": f"functions.{name}:0", "name": name, "content": content}
+    return f"<tool_response>\n{json.dumps(body)}\n</tool_response>"
+
+
+HERMES = {
+    "messages": [
+        {"role": "system", "content": HERMES_SYSTEM},
+        {"role": "human", "content": "List the yaml files."},
+        {
+            "role": "gpt",
+            "content": (
+                "<think>\nThey want the yaml files. I should run ls.\n</think>\n"
+                "Let me look:\n" + _hermes_turn("terminal", {"command": "ls *.yaml"})
+            ),
+        },
+        {
+            "role": "tool",
+            "content": _hermes_response(
+                "terminal", {"output": "deploy.yaml\n", "exit_code": 0, "error": ""}
+            ),
+        },
+        {"role": "gpt", "content": "<think>\nOne file.\n</think>\nThere is one: deploy.yaml."},
+    ]
+}
+
+
+def _bash_call(command: str) -> str:
+    return f'<|tool-call|>{json.dumps({"tool": "bash", "argument": command})}<|/tool-call|>'
+
+
+def test_convert_hermes_keeps_a_terminal_call_as_a_bash_call():
+    after = apply("convert-hermes-agent", HERMES)
+
+    assert [m["role"] for m in after["messages"]] == ["user", "assistant", "tool", "assistant"]
+    assert after["messages"][1]["content"].endswith(_bash_call("ls *.yaml"))
+    assert after["messages"][2]["content"] == (
+        _bash_call("ls *.yaml") + "<|codeblock|>deploy.yaml<|/codeblock|>"
+    )
+
+
+def test_convert_hermes_translates_a_file_read_into_the_command_for_it():
+    """`read_file` is `cat`, and `cat` is the name the model already knows."""
+    doc = {
+        "messages": [
+            {"role": "human", "content": "what is in it?"},
+            {"role": "gpt", "content": _hermes_turn("read_file", {"path": "a b.txt"})},
+            {
+                "role": "tool",
+                "content": _hermes_response("read_file", {"content": "hello", "total_lines": 1}),
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][1]["content"] == _bash_call("cat 'a b.txt'")
+    assert after["messages"][2]["content"].endswith("<|codeblock|>hello<|/codeblock|>")
+
+
+def test_convert_hermes_writes_a_file_with_a_quoted_heredoc():
+    """Unquoted, `$HOME` in a config file would be expanded on the way in."""
+    doc = {
+        "messages": [
+            {"role": "human", "content": "write it"},
+            {
+                "role": "gpt",
+                "content": _hermes_turn("write_file", {"path": "run.sh", "content": "echo $HOME"}),
+            },
+            {
+                "role": "tool",
+                "content": _hermes_response("write_file", {"bytes_written": 11, "dirs_created": 0}),
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][1]["content"] == _bash_call("cat > run.sh <<'EOF'\necho $HOME\nEOF")
+    # Nothing on stdout, which is what a shell says when a write worked.
+    assert after["messages"][2]["content"].endswith(
+        "<|warn|>The command finished with no output.<|/warn|>"
+    )
+
+
+def test_convert_hermes_searches_for_files_or_in_them_depending_on_the_target():
+    for target, command in (
+        ("files", "find . -name '*.py'"),
+        ("content", "rg '*.py' ."),
+    ):
+        doc = {
+            "messages": [
+                {"role": "human", "content": "find it"},
+                {
+                    "role": "gpt",
+                    "content": _hermes_turn(
+                        "search_files", {"pattern": "*.py", "target": target, "path": "."}
+                    ),
+                },
+                {
+                    "role": "tool",
+                    "content": _hermes_response("search_files", {"files": ["a.py"], "total_count": 1}),
+                },
+            ]
+        }
+
+        after = apply("convert-hermes-agent", doc)
+
+        assert after["messages"][1]["content"] == _bash_call(command)
+
+
+def test_convert_hermes_drops_a_call_the_sandbox_cannot_make_with_its_result():
+    """A browser is not a shell at any level, and just-bash has no `patch`."""
+    doc = {
+        "messages": [
+            {"role": "human", "content": "go"},
+            {
+                "role": "gpt",
+                "content": "<think>\nlook at the page\n</think>\nOpening it:"
+                + _hermes_turn("browser_navigate", {"url": "https://github.com/trending"}),
+            },
+            {
+                "role": "tool",
+                "content": _hermes_response("browser_navigate", {"success": True, "title": "x"}),
+            },
+            {"role": "gpt", "content": "Done."},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert [m["role"] for m in after["messages"]] == ["user", "assistant"]
+    assert "tool-call" not in after["messages"][1]["content"]
+    # The turns either side of the dropped call are one stretch of the model
+    # talking once the call between them is gone.
+    assert after["messages"][1]["content"] == (
+        "<|thinking|><|par|>look at the page<|/par|><|/thinking|>"
+        "<|par|>Opening it:<|/par|><|par|>Done.<|/par|>"
+    )
+
+
+def test_convert_hermes_keeps_one_call_per_turn_because_the_runtime_answers_one():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "look everywhere"},
+            {
+                "role": "gpt",
+                "content": _hermes_turn("terminal", {"command": "ls"})
+                + _hermes_turn("terminal", {"command": "pwd"}),
+            },
+            {
+                "role": "tool",
+                "content": _hermes_response("terminal", {"output": "a", "exit_code": 0})
+                + _hermes_response("terminal", {"output": "/tmp", "exit_code": 0}),
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    calls = [m for m in after["messages"] if "<|tool-call|>" in m["content"]]
+    assert all(m["content"].count("<|tool-call|>") == 1 for m in calls)
+    assert after["messages"][1]["content"] == _bash_call("ls")
+    assert "pwd" not in json.dumps(after["messages"])
+
+
+def test_convert_hermes_names_a_failure_before_it_shows_the_output():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "run it"},
+            {"role": "gpt", "content": _hermes_turn("terminal", {"command": "cat nope"})},
+            {
+                "role": "tool",
+                "content": _hermes_response(
+                    "terminal", {"output": "", "exit_code": 1, "error": "cat: nope: not found"}
+                ),
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][2]["content"].endswith(
+        "<|warn|>The command exited 1.<|/warn|>"
+        "<|codeblock|>cat: nope: not found<|/codeblock|>"
+    )
+
+
+def test_convert_hermes_cuts_output_the_model_has_no_room_for():
+    listing = "".join(f"file-{i}.txt\n" for i in range(200))
+    doc = {
+        "messages": [
+            {"role": "human", "content": "list"},
+            {"role": "gpt", "content": _hermes_turn("terminal", {"command": "ls"})},
+            {
+                "role": "tool",
+                "content": _hermes_response("terminal", {"output": listing, "exit_code": 0}),
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc, {"max_output_chars": 60})
+    body = after["messages"][2]["content"]
+
+    assert "file-0.txt" in body and "file-199.txt" not in body
+    assert body.endswith("<|warn|>The output was longer and has been cut.<|/warn|>")
+
+
+def test_convert_hermes_drops_a_command_too_long_to_keep_rather_than_cutting_it():
+    """Half a heredoc writes a different file than the one the trace wrote."""
+    doc = {
+        "messages": [
+            {"role": "human", "content": "write it"},
+            {
+                "role": "gpt",
+                "content": _hermes_turn("write_file", {"path": "big.py", "content": "x" * 5000}),
+            },
+            {
+                "role": "tool",
+                "content": _hermes_response("write_file", {"bytes_written": 5000}),
+            },
+            {"role": "gpt", "content": "Written."},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert "<|tool-call|>" not in json.dumps(after["messages"])
+    assert after["messages"][1]["content"] == "<|par|>Written.<|/par|>"
+
+
+def test_convert_hermes_drops_a_call_nobody_answered():
+    """A call with no result would teach the model to expect an answer that the
+    conversation never contains."""
+    doc = {
+        "messages": [
+            {"role": "human", "content": "go"},
+            {"role": "gpt", "content": "Trying:" + _hermes_turn("terminal", {"command": "ls"})},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][1]["content"] == "<|par|>Trying:<|/par|>"
+
+
+def test_convert_hermes_drops_the_tool_format_system_prompt_by_default():
+    after = apply("convert-hermes-agent", HERMES)
+
+    assert all(m["role"] != "system" for m in after["messages"])
+
+
+def test_convert_hermes_keeps_the_tool_system_prompt_when_asked():
+    after = apply("convert-hermes-agent", HERMES, {"keep_tool_system": True})
+
+    assert after["messages"][0] == {"role": "system", "content": HERMES_SYSTEM}
+
+
+def test_convert_hermes_keeps_a_system_prompt_that_is_not_a_tool_inventory():
+    doc = {
+        "messages": [
+            {"role": "system", "content": "You are a concise assistant."},
+            {"role": "human", "content": "hi"},
+            {"role": "gpt", "content": "hello"},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][0] == {"role": "system", "content": "You are a concise assistant."}
+
+
+def test_convert_hermes_keeps_fenced_code_verbatim():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "show me"},
+            {
+                "role": "gpt",
+                "content": "Here:\n\n```python\ndef f():\n\n    return 1\n```\n\nThat is it.",
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][1]["content"] == (
+        "<|par|>Here:<|/par|>"
+        "<|codeblock|>def f():\n\n    return 1<|/codeblock|>"
+        "<|par|>That is it.<|/par|>"
+    )
+
+
+def test_convert_hermes_neutralises_markers_in_quoted_text():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "what is <|endoftext|>?"},
+            {"role": "gpt", "content": "A separator: <|endoftext|>."},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert "<|endoftext|>" not in after["messages"][0]["content"]
+    assert "<|endoftext|>" not in after["messages"][1]["content"]
+
+
+def test_convert_hermes_closes_an_unterminated_block_at_the_turn():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "go"},
+            {"role": "gpt", "content": "<think>\nstill thinking"},
+            {"role": "gpt", "content": '<tool_call>{"name": "terminal"'},
+            {"role": "gpt", "content": "Done."},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert after["messages"][1]["content"] == (
+        "<|thinking|><|par|>still thinking<|/par|><|/thinking|><|par|>Done.<|/par|>"
+    )
+
+
+def test_convert_hermes_drops_a_trailing_question_nobody_answered():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "go"},
+            {"role": "gpt", "content": "Done."},
+            {"role": "human", "content": "and now?"},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert [m["role"] for m in after["messages"]] == ["user", "assistant"]
+
+
+def test_convert_hermes_drops_a_conversation_that_is_only_tool_noise():
+    doc = {
+        "messages": [
+            {"role": "human", "content": "go"},
+            {"role": "gpt", "content": _hermes_turn("browser_close", {})},
+            {"role": "tool", "content": _hermes_response("browser_close", {"success": True})},
+        ]
+    }
+
+    assert apply("convert-hermes-agent", doc) is None

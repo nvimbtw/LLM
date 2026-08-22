@@ -15,7 +15,7 @@ import {
   type Attachment,
   type AttachmentWire,
 } from "@/lib/attachments"
-import { parseMessage, textContent, toolOf } from "@/lib/message-parser"
+import { callOf, parseMessage, TOOL_CALL_CLOSE } from "@/lib/message-parser"
 import type { ToolAnswer } from "@/components/chat/trace"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
@@ -136,20 +136,20 @@ function groupTurns(rows: MessageWire[]): ChatMessage[] {
 /**
  * A stored tool row back into the call it answered and the answer.
  *
- * The row opens by repeating the call — `<|web-search|>query<|/web-search|>`
- * then the result — which is what tells the model which of its calls it is
- * being handed (see `engine/llm/chat/tools.py`). Reading it back here is the
- * same fact used the other way round.
+ * The row opens by repeating the call —
+ * `<|tool-call|>{"tool": …, "argument": …}<|/tool-call|>` then the result —
+ * which is what tells the model which of its calls it is being handed (see
+ * `engine/llm/chat/tools.py`). Reading it back here is the same fact used the
+ * other way round.
  */
 function parseToolRow(content: string): ToolAnswer {
   for (const node of parseMessage(content).children) {
-    const tool = toolOf(node)
-    if (!tool) continue
-    const at = content.indexOf(`<|/${tool}|>`)
+    const call = callOf(node)
+    if (!call) continue
+    const at = content.indexOf(TOOL_CALL_CLOSE)
     return {
-      tool,
-      argument: textContent(node).trim(),
-      body: at === -1 ? content : content.slice(at + `<|/${tool}|>`.length),
+      ...call,
+      body: at === -1 ? content : content.slice(at + TOOL_CALL_CLOSE.length),
     }
   }
   // A row that names no call is still something the model was told.
