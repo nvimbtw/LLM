@@ -98,6 +98,20 @@ the shared map. Keeping them true is cheaper than everyone guessing.
 # Running it
 
 ```sh
+cp .env.example .env && docker compose up    # everything, hot-reloading
+```
+
+`docker compose restart <service>` restarts one without disturbing the rest.
+The images build with `SQLX_OFFLINE=true` against the checked-in `.sqlx/`, so
+**a change to a query or a migration must be followed by
+`cargo sqlx prepare --workspace` in the same change** — otherwise the container
+build fails while `cargo run` on the host still succeeds. Why several containers
+rather than one:
+[`docs/decisions/one-command-development.md`](docs/decisions/one-command-development.md).
+
+Natively, which is still the better loop for engine work:
+
+```sh
 cd engine      && .venv/bin/uvicorn main:app --port 8001   # or let the backend spawn it
 cd data-engine && .venv/bin/uvicorn main:app --port 8002   # or let the backend spawn it
 cd backend     && cargo run                                 # needs DATABASE_URL, JWT_SECRET

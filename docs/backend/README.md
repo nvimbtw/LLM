@@ -16,6 +16,21 @@ in `engine/`, and this side forwards to them.
   `CARGO_MANIFEST_DIR`, so the directory and the `"./migrations"` literal must
   move together — mismatching them still compiles and fails at runtime.
 
+`query_as!`/`query!` check against a live schema at **compile** time, so a build
+needs either `DATABASE_URL` pointing at a migrated database or the checked-in
+`.sqlx/` cache and `SQLX_OFFLINE=true`. The container images use the second —
+a build stage has no route to the `postgres` service. **Regenerate the cache in
+the same change as any query or migration edit:**
+
+```sh
+cargo sqlx prepare --workspace
+```
+
+Cargo fingerprints `.rs` files and not `migrations/`, so a migration edit alone
+does not force the crate whose queries it invalidates to rebuild. A stale
+`.sqlx/` shows up as a container build failing while `cargo run` on the host
+still succeeds.
+
 ## Crates
 
 ```
@@ -141,7 +156,14 @@ deleting them stay a person's, under `/data`.
 
 `BACKEND_SERVICE_SECRET` unset leaves `/internal` open and the server says so at
 startup — the same bargain each Python service strikes with its own secret unset,
-and the same trust boundary, since this server binds loopback only.
+and the same trust boundary, since this server binds loopback by default.
+
+**That default is what makes the bargain safe, so a container cannot strike it.**
+`BIND_ADDR` overrides the binding and `docker-compose.yml` sets it to `0.0.0.0`,
+because a published port cannot reach a loopback binding. Which is why the same
+file *requires* `BACKEND_SERVICE_SECRET` and both service secrets rather than
+letting them default to unset — see
+[`../decisions/one-command-development.md`](../decisions/one-command-development.md).
 
 ## Adding a service
 
@@ -343,6 +365,7 @@ runs toward this server:
 | Variable | Default | Meaning |
 |---|---|---|
 | `BACKEND_SERVICE_SECRET` | unset | Shared with the engine, which signs `aud: backend` tokens with it. Unset leaves `/internal` open |
+| `BIND_ADDR` | `127.0.0.1` | What the server listens on. `0.0.0.0` in a container, where a published port cannot reach a loopback binding |
 
 It has no `DATA_DIR`: its datasets are rows in `slate_data`, not a tree. That
 variable is the engine's and is injected by `crates/engine` alone — and it now

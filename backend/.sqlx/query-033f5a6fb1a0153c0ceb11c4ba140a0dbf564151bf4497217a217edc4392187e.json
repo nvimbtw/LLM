@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET settings = $2 WHERE id_user = $1\n           RETURNING settings as \"settings: Value\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "settings: Value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "033f5a6fb1a0153c0ceb11c4ba140a0dbf564151bf4497217a217edc4392187e"
+}

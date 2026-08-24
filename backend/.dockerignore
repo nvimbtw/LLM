@@ -1,0 +1,7 @@
+# Artifacts for a different libc than the image's, and the largest thing in the
+# directory by far. The dev stage keeps its own in a named volume.
+target/
+
+# Secrets and machine-local paths. Compose supplies the environment instead;
+# ENGINE_DIR and friends name host paths that mean nothing inside a container.
+.env

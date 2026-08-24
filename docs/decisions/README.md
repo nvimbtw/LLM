@@ -14,3 +14,4 @@ what was weighed, chosen, and rejected, dated once.
 | 2026-08-19 | [The engine stopped owning training data](datasets-out-of-the-engine.md) | Corpora moved to the data engine and a run reads them by page through the backend — the one hop that runs toward it |
 | 2026-08-20 | [Attachments are stored, not read](attachments-are-stored-not-read.md) | Uploads live beside the messages they hang off, in the engine's database — and reach no prompt, enforced rather than assumed |
 | 2026-08-21 | [Voice input uses the browser's recogniser](voice-input-uses-the-browser.md) | Dictation is `SpeechRecognition`, not a model of ours — what streaming bought, what it costs in privacy, and what is done about that |
+| 2026-08-24 | [One command to start everything](one-command-development.md) | `docker compose up` replaces four manual starts — why several containers rather than one, and the three implicit facts it forced into the open |

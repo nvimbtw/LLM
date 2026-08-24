@@ -1,12 +1,20 @@
 use actix_cors::Cors;
 use actix_web::{App, HttpServer, web};
 
+/// Loopback unless told otherwise, because `/internal` is left open when
+/// `BACKEND_SERVICE_SECRET` is unset and the binding is the only thing keeping
+/// it private. A container has to bind `0.0.0.0` for its published port to
+/// reach anything, which is why `docker-compose.yml` sets the secrets too.
+const DEFAULT_BIND_ADDR: &str = "127.0.0.1";
+const PORT: u16 = 8080;
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string());
 
     let pool = db::create_pool(&database_url)
         .await
@@ -72,7 +80,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(registry.clone()))
             .configure(api::configure)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind((bind_addr.as_str(), PORT))?
     .run()
     .await?;
 
