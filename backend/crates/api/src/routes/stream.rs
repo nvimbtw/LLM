@@ -20,6 +20,7 @@ async fn run_socket(
     body: web::Payload,
     run_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
+    bench: web::Data<bench_engine::Proxy>,
     secret: web::Data<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, stream) = actix_ws::handle(&req, body)?;
@@ -27,6 +28,7 @@ async fn run_socket(
         session,
         stream,
         engine.get_ref().clone(),
+        bench.get_ref().clone(),
         run_id.into_inner(),
         secret.get_ref().clone(),
     ));
@@ -103,6 +105,7 @@ async fn run_session(
     mut session: actix_ws::Session,
     mut stream: actix_ws::MessageStream,
     engine: Proxy,
+    bench: bench_engine::Proxy,
     run_id: Uuid,
     secret: String,
 ) {
@@ -112,11 +115,18 @@ async fn run_session(
     let control = actix_web::rt::spawn(watch_for_cancel(
         stream,
         engine.clone(),
+        bench.clone(),
         run_id,
         matches!(claims.access_level, AccessLevel::Admin),
     ));
 
-    match engine.events(&caller, &format!("/runs/{run_id}/events")).await {
+    // Try engine first, then bench-engine for benchmark jobs
+    let frames = match engine.events(&caller, &format!("/runs/{run_id}/events")).await {
+        Ok(f) => Ok(f),
+        Err(service::Error::Status { code: 404, .. }) => bench.events(&caller, &format!("/runs/{run_id}/events")).await,
+        Err(e) => Err(e),
+    };
+    match frames {
         Ok(frames) => relay(&mut session, frames).await,
         Err(e) => {
             let _ = session.text(ws::error_frame(&e.to_string())).await;
@@ -213,6 +223,7 @@ async fn relay(
 async fn watch_for_cancel(
     mut stream: actix_ws::MessageStream,
     engine: Proxy,
+    bench: bench_engine::Proxy,
     run_id: Uuid,
     is_admin: bool,
 ) {
@@ -225,7 +236,11 @@ async fn watch_for_cancel(
             .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned));
         if asked.as_deref() == Some("cancel") && is_admin {
             let path = format!("/runs/{run_id}/cancel");
-            let _ = engine.post(&auth::Caller::System, &path, Value::Null).await;
+            // Try engine first, then bench
+            let res = engine.post(&auth::Caller::System, &path, Value::Null).await;
+            if matches!(res, Err(service::Error::Status { code: 404, .. })) {
+                let _ = bench.post(&auth::Caller::System, &path, Value::Null).await;
+            }
         }
     }
 }

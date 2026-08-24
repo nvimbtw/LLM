@@ -1,0 +1,114 @@
+Algebra
+
+Algebra (from Arabic: الجبر‎, transliterated "al-jabr", meaning "reunion of broken parts") is a part of mathematics. It uses variables to represent a value that is not yet known or can be replaced with any value. When an equals sign (=) is used, this is called an equation. A very simple equation using a variable is: . In this example, , or it could also be said that " equals five". This is called solving for .
+
+Besides equations, there are inequalities (less than and greater than). A special type of equation is called the function. This is often used in making graphs because it always turns one input into one output.
+
+Algebra can be used to solve real problems because the rules of algebra work in real life and numbers can be used to represent the values of real things. Physics, engineering and computer programming are areas that use algebra all the time. It is also useful to know in surveying, construction and business, especially accounting.
+
+People who do algebra use the rules of numbers and mathematical operations used on numbers. The simplest are adding, subtracting, multiplying, and dividing. More advanced operations involve exponents, starting with squares and square roots.
+
+Algebra was first used to solve equations and inequalities. Two examples are linear equations (the equation of a straight line,  or ) and quadratic equations, which has variables that are squared (multiplied by itself, for example: , , or ).
+
+History 
+Early forms of algebra were developed by the Babylonians and Greek geometers such as Hero of Alexandria. However the word "algebra" is a Latin form of the Arabic word Al-Jabr ("casting") and comes from a mathematics book Al-Maqala fi Hisab-al Jabr wa-al-Muqabilah, ("Essay on the Computation of Casting and Equation") written in the 9th century by a Persian mathematician, Muhammad ibn Mūsā al-Khwārizmī, who was a Muslim born in Khwarizm in Uzbekistan. He flourished under Al-Ma'moun in Baghdad, Iraq through 813-833 CE, and died around 840 CE. The book was brought into Europe and translated into Latin in the 12th century. The book was then given the name "Algebra". (The ending of the mathematician's name, al-Khwarizmi, was changed into a word easier to say in Latin, and became the English word algorithm).
+
+Examples
+
+Here is a simple example of an algebra problem:
+
+Sue has 12 candies, and Ann has 24 candies. They decide to share so that they have the same number of candies. How many candies will each have?
+
+These are the steps you can use to solve the problem:
+
+ To have the same number of candies, Ann has to give some to Sue. Let  represent the number of candies Ann gives to Sue.
+ Sue's candies, plus , must be the same as Ann's candies minus . This is written as: 
+ Subtract 12 from both sides of the equation. This gives: . (What happens on one side of the equal sign must happen on the other side too, for the equation to still be true. So in this case when 12 was subtracted from both sides, there was a middle step of . After a person is comfortable with this, the middle step is not written down.)
+ Add  to both sides of the equation. This gives: 
+ Divide both sides of the equation by 2. This gives . The answer is six. This mean that if Ann gives Sue 6 candies, they will have the same number of candies.
+ To check this, put 6 back into the original equation wherever  was: 
+ This gives , which is true. They each now have 18 candies.
+
+With practice, algebra can be used when faced with a problem that is too hard to solve any other way. Problems such as building a freeway, designing a cell phone, or finding the cure for a disease all require algebra.
+
+Writing algebra 
+As in most parts of mathematics, adding  to  (or  plus ) is written as ;
+
+subtracting  from  (or  minus ) is written as ;
+
+and dividing  by  (or  over ) is written as  or .
+
+In algebra, multiplying  by  (or  times ) can be written in 3 different ways: ,  or just . All of these notations mean the same thing:  times . The symbol "" used in arithmetic is not used in algebra, because it looks too much like the letter , which is often used as a variable.
+
+When we multiply a number and a variable in algebra, we can simply write the number in front of the letter: . When the number is 1, then it is not written because 1 times any number is that number () and so it is not needed. And when it is 0, we can completely remove the terms, because 0 times any number is zero ().
+
+As a side note, you do not have to use the letters  or  in algebra. Variables are just symbols that mean some unknown number or value, so you can use any letter for a variable (except  (Euler's number) and  (Imaginary unit), because these are mathematical constants).  and  are the most common, though.
+
+Functions and Graphs 
+
+An important part of algebra is the study of functions, since they often appear in equations that we are trying to solve. A function is like a machine you can put a number (or numbers) into and get a certain number (or numbers) out. When using functions, graphs can be powerful tools in helping us to study the solutions to equations.
+
+A graph is a picture that shows all the values of the variables that make the equation or inequality true. Usually this is easy to make when there are only one or two variables. The graph is often a line, and if the line does not bend or go straight up-and-down it can be described by the basic formula . The variable  is the y-intercept of the graph (where the line crosses the vertical axis) and  is the slope or steepness of the line. This formula applies to the coordinates of a graph, where each point on the line is written .
+
+In some math problems like the equation for a line, there can be more than one variable ( and  in this case). To find points on the line, one variable is changed. The variable that is changed is called the "independent" variable. Then the math is done to make a number. The number that is made is called the "dependent" variable. Most of the time the independent variable is written as  and the dependent variable is written as , for example, in . This is often put on a graph, using an  axis (going left and right) and a  axis (going up and down). It can also be written in function form: . So in this example, we could put in 5 for  and get . Put in 2 for  would get . And 0 for  would get . So there would be a line going through the points , , and  as seen in the graph to the right.
+
+If  has a power of 1, it is a straight line. If it is squared or some other power, it will be curved. If it uses an inequality ( or ), then usually part of the graph is shaded, either above or below the line.
+
+Rules 
+In algebra, there are a few rules that can be used for further understanding of equations. These are called the rules of algebra. While these rules may seem senseless or obvious, it is wise to understand that these properties do not hold throughout all branches of mathematics. Therefore, it will be useful to know how these axiomatic rules are declared, before taking them for granted. Before going on to the rules, reflect on two definitions that will be given.
+ Opposite: the opposite of  is .
+ Reciprocal: the reciprocal of  is .
+
+Commutative property of addition 
+Commutative means that a function has the same result if the numbers are swapped around. In other words, the order of the terms in an equation does not matter. When two terms (addends) are being added, the commutative property of addition is applicable. In algebraic terms, this gives .
+
+Note that this does not apply for subtraction (i.e.  except if ).
+
+Commutative property of multiplication 
+When two terms (factors) are being multiplied, the commutative property of multiplication is applicable. In algebraic terms, this gives .
+
+Note that this does not apply for division (i.e. , when  and , except if ).
+
+Associative property of addition 
+Associative refers to the grouping of numbers. The associative property of addition implies that, when adding three or more terms, it doesn't matter how these terms are grouped. Algebraically, this gives . Note that this does not hold for subtraction, e.g.  (see distributive property).
+
+Associative property of multiplication 
+The associative property of multiplication implies that, when multiplying three or more terms, it doesn't matter how these terms are grouped. Algebraically, this gives . Note that this does not hold for division, e.g. .
+
+Distributive property 
+The distributive property states that the multiplication of a term by another term can be distributed. For instance: . (Do not confuse this with the associative properties! For instance: .)
+
+Additive identity 
+Identity refers to the property of a number that it is equal to itself. In other words, there exists an operation of two numbers so that it equals the variable of the sum. The additive identity property states that any number plus 0 is that number: . This also holds for subtraction: .
+
+Multiplicative identity 
+The multiplicative identity property states that any number times 1 is that number: . This also holds for division: .
+
+Additive inverse property 
+The additive inverse property is somewhat like the inverse of the additive identity. When we add a number and its opposite, the result is 0. Algebraically, it states the following: , which is the same as . For example, the additive inverse (or opposite) of 1 is -1.
+
+Multiplicative inverse property 
+The multiplicative inverse property means that when we multiply a number and its reciprocal, the result is 1. Algebraically, it states the following: , which is the same as . For example, the multiplicative inverse (or reciprocal) of 2 is 1/2. To get the reciprocal of a fraction, switch the numerator and the denominator: the reciprocal of  is .
+
+Advanced Algebra
+In addition to "elementary algebra", or basic algebra, there are advanced forms of algebra, taught in colleges and universities, such as abstract algebra, linear algebra, and universal algebra. This includes how to use a matrix to solve many linear equations at once. Abstract algebra is the study of things that are found in equations, going beyond numbers to the more abstract with groups of numbers.
+
+Many math problems are about physics and engineering. In many of these physics problems time is a variable. The letter used for time is . Using the basic ideas in algebra can help reduce a math problem to its simplest form making it easier to solve difficult problems. Energy is , force is , mass is , acceleration is  and speed of light is sometimes . This is used in some famous equations, like  and  (although more complex math beyond algebra was needed to come up with that last equation).
+
+Related pages
+ List of mathematics topics
+ Order of operations
+ Parabola
+ Computer Algebra System
+
+References
+
+Other websites 
+
+ Khan Academy: Algebra theory and practice
+ algebrarules.com: A free place to learn the basics of Algebra
+ Khan Academy: Origins of Algebra, free online micro lectures
+
+Algebra
+
+<|endoftext|>

@@ -37,8 +37,33 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to start the data engine");
     println!("data engine ready at {}", data.base_url());
 
+    let bench_config = bench_engine::config();
+    let bench_secret = bench_config.service_secret.clone();
+    let bench = match service::Supervisor::start(bench_config).await {
+        Ok(s) => {
+            println!("bench engine ready at {}", s.base_url());
+            Some(s)
+        }
+        Err(e) => {
+            eprintln!("bench engine not available: {e} — benchmarks will return 503 until it is up");
+            eprintln!("to fix: ensure slate_bench exists: docker exec slate-postgres-1 psql -U ${{POSTGRES_USER:-slate}} -c \"CREATE DATABASE slate_bench;\"  or recreate volume with docker compose down -v");
+            eprintln!("and then: docker compose up bench-engine --build");
+            None
+        }
+    };
+
     let proxy = engine::Proxy::new(engine.base_url(), engine_secret);
     let data_proxy = data_engine::Proxy::new(data.base_url(), data_secret);
+    let bench_proxy = {
+        let bench_secret_clone = bench_secret.clone();
+        match &bench {
+            Some(s) => bench_engine::Proxy::new(s.base_url(), bench_secret_clone),
+            None => {
+                let cfg = bench_engine::config();
+                bench_engine::Proxy::new(cfg.base_url(), bench_secret_clone)
+            }
+        }
+    };
 
     // The reverse hop: the engine asks for the documents a run has reached the
     // point of needing. Said out loud for the reason the services say it — an
@@ -76,6 +101,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(jwt_secret.clone()))
             .app_data(web::Data::new(proxy.clone()))
             .app_data(web::Data::new(data_proxy.clone()))
+            .app_data(web::Data::new(bench_proxy.clone()))
             .app_data(web::Data::new(inbound.clone()))
             .app_data(web::Data::new(registry.clone()))
             .configure(api::configure)
@@ -88,5 +114,8 @@ async fn main() -> std::io::Result<()> {
     // leaving them holding the ports the next boot needs.
     engine.shutdown();
     data.shutdown();
+    if let Some(b) = bench {
+        b.shutdown();
+    }
     Ok(())
 }

@@ -45,6 +45,28 @@ services:
       timeout: 3s
       retries: 30
 
+  bench-engine:
+    build:
+      context: ./bench-engine
+      target: dev
+    command: >
+      sh -c "python ensure_db.py &&
+             alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8003 --reload"
+    environment:
+      BENCH_ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_bench
+      BENCH_ENGINE_SERVICE_SECRET: ${BENCH_ENGINE_SERVICE_SECRET:?set it in .env}
+      DATA_DIR: /app/engine-data
+    volumes:
+      - ./bench-engine:/app
+      - ./engine/data:/app/engine-data:ro
+      - ./bench-engine/eval_data:/app/eval_data
+    ports:
+      - "127.0.0.1:8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   data-engine:
     build:
       context: ./data-engine
@@ -125,6 +147,9 @@ services:
       DATA_ENGINE_AUTOSTART: "false"
       DATA_ENGINE_HOST: data-engine
       DATA_ENGINE_SERVICE_SECRET: ${DATA_ENGINE_SERVICE_SECRET:?set it in .env}
+      BENCH_ENGINE_AUTOSTART: "false"
+      BENCH_ENGINE_HOST: bench-engine
+      BENCH_ENGINE_SERVICE_SECRET: ${BENCH_ENGINE_SERVICE_SECRET:?set it in .env}
       BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
       SEARCH_URL: http://searxng:8080
     volumes:
@@ -144,6 +169,8 @@ services:
       engine:
         condition: service_started
       data-engine:
+        condition: service_started
+      bench-engine:
         condition: service_started
 
   frontend:

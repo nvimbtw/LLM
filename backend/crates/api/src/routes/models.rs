@@ -22,9 +22,24 @@ async fn get_one(user: AuthUser, model_id: web::Path<Uuid>, engine: web::Data<Pr
 async fn benchmarks(
     user: AuthUser,
     model_id: web::Path<Uuid>,
+    bench: web::Data<bench_engine::Proxy>,
     engine: web::Data<Proxy>,
 ) -> Answer {
-    answer(engine.get(&caller(&user), &format!("/models/{model_id}/benchmarks")).await?)
+    let caller = caller(&user);
+    let path = format!("/models/{model_id}/benchmarks");
+    // New benchmarks live in bench-engine; fall back to engine for old rows
+    match bench.get(&caller, &path).await {
+        Ok(v) => answer(v),
+        Err(service::Error::Status { code: 404, .. }) => answer(engine.get(&caller, &path).await?),
+        Err(e) if matches!(e, service::Error::Transport(_) | service::Error::Decode(_)) => {
+            // Bench-engine down — try engine's old data
+            match engine.get(&caller, &path).await {
+                Ok(v) => answer(v),
+                Err(_) => Err(e.into()),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[patch("/{model_id}")]

@@ -1,0 +1,41 @@
+CONTINUATIONS = [
+    "The old man walked down to the river and",
+    "She opened the letter and read it slowly. It said",
+    "In the morning the town was quiet, because",
+    "There was once a small house at the edge of the",
+    "He could not remember where he had left the",
+    "The children ran across the field toward",
+    "It had been raining for three days when",
+    "The door opened and a woman came in. She was",
+    "Nobody in the village had ever seen anything like",
+    "After dinner they sat by the fire and talked about",
+    "The book was old, and its pages were",
+    "When the train finally arrived, the platform was",
+    "The scientist looked at the results and realized",
+    "He had spent years trying to understand why",
+    "The city at night was different from",
+    "She asked him what he meant, and he replied",
+    "They had been walking for hours when they finally",
+    "The news spread quickly through the town that",
+    "He knew he should not have said it, but",
+    "In the summer they used to go to",
+    "The letter had been written many years ago, when",
+    "She had never imagined that one day she would",
+    "The storm had passed, and in its wake",
+    "He looked out the window and saw",
+]
+EXPOSITORY = [
+    "Explain why the sky appears blue during the day.",
+    "Describe how plants make their own food.",
+    "What causes earthquakes and how do they happen?",
+    "Explain the difference between weather and climate.",
+    "Why do we have seasons on Earth?",
+    "How does a bicycle stay balanced while moving?",
+    "What is gravity and how does it work?",
+    "Why does ice float on water?",
+]
+CONSTRAINED = [
+    ("Write a short paragraph about the ocean in about 50 words:", 50),
+    ("Write a short paragraph about a forest in about 100 words:", 100),
+]
+ALL_PROMPTS = CONTINUATIONS + EXPOSITORY
