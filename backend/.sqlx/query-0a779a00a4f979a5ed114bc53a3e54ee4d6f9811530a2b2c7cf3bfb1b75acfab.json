@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT composer_choice as \"composer_choice: Value\" FROM users WHERE id_user = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "composer_choice: Value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0a779a00a4f979a5ed114bc53a3e54ee4d6f9811530a2b2c7cf3bfb1b75acfab"
+}

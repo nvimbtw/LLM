@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET composer_choice = $2 WHERE id_user = $1\n           RETURNING composer_choice as \"composer_choice: Value\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "composer_choice: Value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "455e6bfa09353d7940ee1eb190034f64f07e97d50d8a05586f988773de4f4f41"
+}

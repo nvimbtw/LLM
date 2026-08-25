@@ -1,0 +1,176 @@
+# One command for the whole stack:
+#
+#   docker compose up
+#
+# Every service hot-reloads from the source tree bind-mounted into it, so this
+# is the development setup and not a deployment artifact — `cargo watch` for the
+# backend, `next dev` for the frontend, `uvicorn --reload` for both Python
+# services. Restart one without touching the rest:
+#
+#   docker compose restart backend
+#   docker compose logs -f engine
+#
+# The ports are the ones the root README's port map names, so a browser and a
+# host-side `curl` see exactly what they saw before any of this existed. The one
+# exception is Postgres, on 5433, because a developer machine usually already
+# has one on 5432.
+
+name: slate
+
+# SearXNG is defined once, in the directory that also holds the config it
+# mounts. Included rather than repeated, so the standalone `deploy/searxng/`
+# workflow and this file cannot drift apart.
+include:
+  - deploy/searxng/docker-compose.yml
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-slate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slate}
+      # The backend's. deploy/postgres/init.sql adds the two the Python
+      # services own; it runs once, on an empty volume.
+      POSTGRES_DB: llm
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      # Named explicitly: without -U the check runs as `root` and fails on a
+      # server that has no such role, long after the server is actually up.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-slate} -d llm"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  data-engine:
+    build:
+      context: ./data-engine
+      target: dev
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8002 --reload"
+    environment:
+      DATA_ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_data
+      DATA_ENGINE_SERVICE_SECRET: ${DATA_ENGINE_SERVICE_SECRET:?set it in .env}
+    volumes:
+      - ./data-engine:/app
+    ports:
+      - "127.0.0.1:8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  engine:
+    build:
+      context: ./engine
+      target: dev
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8001 --reload"
+    environment:
+      ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_engine
+      ENGINE_SERVICE_SECRET: ${ENGINE_SERVICE_SECRET:?set it in .env}
+      # The hop that runs toward the backend: the engine reads, through it, the
+      # datasets the data engine owns.
+      BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
+      BACKEND_URL: http://backend:8080
+      DATA_DIR: /app/data
+    volumes:
+      - ./engine:/app
+      # Corpora, vocabularies and weights: hundreds of MB that belong to the
+      # host tree, not to a container that gets recreated.
+      - ./engine/data:/app/data
+      # torch.compile's Inductor cache. Without it every first training step
+      # after a `docker compose up` pays full compilation cost again.
+      - engine-torch-cache:/root/.cache
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Uncomment on a machine with an NVIDIA GPU, which also needs
+    # nvidia-container-toolkit installed on the host. Without it the engine runs
+    # on CPU: inference on a small model is bearable, training is not.
+    #
+    # Left commented because the reservation is not a preference — Compose
+    # refuses to start the service at all when no such device exists.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/llm
+      JWT_SECRET: ${JWT_SECRET:?set it in .env}
+      # A container's published port cannot reach a loopback binding. This is
+      # why the three service secrets above are required rather than optional:
+      # unset, they leave the service hops and /internal open, and the loopback
+      # binding is no longer there to make that private.
+      BIND_ADDR: 0.0.0.0
+      # Both Python services are their own containers here, so the supervisor
+      # attaches to them instead of spawning them as children.
+      ENGINE_AUTOSTART: "false"
+      ENGINE_HOST: engine
+      ENGINE_SERVICE_SECRET: ${ENGINE_SERVICE_SECRET:?set it in .env}
+      DATA_ENGINE_AUTOSTART: "false"
+      DATA_ENGINE_HOST: data-engine
+      DATA_ENGINE_SERVICE_SECRET: ${DATA_ENGINE_SERVICE_SECRET:?set it in .env}
+      BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
+      SEARCH_URL: http://searxng:8080
+    volumes:
+      # Carries backend/.env in with it, which `dotenvy` will read. That is
+      # harmless — dotenvy does not overwrite a variable already in the
+      # environment, so everything set above wins — but it means a stray key
+      # there that compose does *not* set still reaches the process.
+      - ./backend:/app
+      # A named volume, so an incremental rebuild survives a container restart
+      # and the host's target/ — artifacts for a different libc — stays out.
+      - backend-target:/app/target
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      engine:
+        condition: service_started
+      data-engine:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    volumes:
+      - ./frontend:/app
+      # Masks the host's node_modules: bun resolves some packages per platform,
+      # and a tree installed on a macOS host is not loadable in this container.
+      - /app/node_modules
+      # And masks the host's .next, which is not merely redundant: a tree built
+      # natively has the host's absolute paths written into
+      # required-server-files.json, and Turbopack resolving against them reports
+      # the package it cannot find as missing rather than as misplaced.
+      # `.dockerignore` does not cover this — a bind mount bypasses it.
+      - frontend-next:/app/.next
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Bind mounts do not deliver inotify events on macOS or Windows, so the
+      # dev server has to poll to notice an edit. Costs idle CPU; harmless and
+      # unnecessary on Linux, where you can set this to false.
+      WATCHPACK_POLLING: ${WATCHPACK_POLLING:-true}
+
+volumes:
+  postgres-data:
+  backend-target:
+  engine-torch-cache:
+  frontend-next:

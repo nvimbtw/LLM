@@ -18,7 +18,50 @@ data-engine/  acquiring datasets from Hugging Face and cleaning them — FastAPI
 
 ## Getting it running
 
-**You will need** Rust (stable), Python 3.11+, [Bun](https://bun.sh), and
+```sh
+cp .env.example .env    # then fill in the secrets it names
+docker compose up
+```
+
+That is the whole thing: Postgres, both Python services, the Rust backend, the
+UI and a SearXNG instance, on the ports the map below names. Every service
+hot-reloads from the source tree, so an edit lands the same way it does natively
+— and one can be restarted without disturbing the others:
+
+```sh
+docker compose restart backend
+docker compose logs -f engine
+```
+
+The only prerequisites are Docker and the Compose plugin. It comes up CPU-only:
+**to train, uncomment the `deploy:` block on the `engine` service** in
+`docker-compose.yml` and install
+[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+on the host. That block is commented out rather than the other way around
+because the reservation is not a preference — Compose refuses to start the
+service at all on a machine with no such device.
+
+Three things worth knowing before the first run:
+
+- **The engine image is several GB** — torch resolves to a `+cuXXX` build and
+  pulls the CUDA wheels with it, whether or not the machine has a GPU. It is
+  built once. Everything else is small.
+- **Budget ~10 GB free wherever Docker stores images**, which is not always
+  where you think. With the containerd image store — `docker info` saying
+  `Storage Driver: overlayfs` — layers live under `/var/lib/containerd`, and
+  Docker's own `data-root` setting does not move them.
+- **Postgres publishes on 5433**, not 5432, because a development machine
+  usually already has a server there. Inside the compose network it is 5432.
+
+Why several containers rather than one running everything:
+[`docs/decisions/one-command-development.md`](docs/decisions/one-command-development.md).
+
+### Running it natively
+
+Still supported, and still the better loop if you are working on the engine
+itself.
+
+**You will need** Rust (stable), Python 3.13+, [Bun](https://bun.sh), and
 PostgreSQL. A CUDA GPU if you intend to train anything; inference on a small
 model is bearable without one.
 
@@ -106,10 +149,11 @@ cd data-engine && .venv/bin/uvicorn main:app --port 8002 --reload
 
 **Tools (optional).** A reply can call one, as
 `<|tool-call|>{"tool": …, "argument": …}<|/tool-call|>`, and the backend runs
-it. Both are self-hosted — no key, no account, nothing metered:
+it. Both are self-hosted — no key, no account, nothing metered. `docker
+compose up` already starts search; the shell sandbox is native-only for now:
 
 ```sh
-cd deploy/searxng   && ./run.sh      # web search  (or: docker compose up -d)
+cd deploy/searxng   && ./run.sh      # web search  (or: docker compose up -d searxng)
 cd deploy/just-bash && ./run.sh      # a sandboxed shell
 ```
 

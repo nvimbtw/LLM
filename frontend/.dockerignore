@@ -1,0 +1,6 @@
+# Installed inside the image instead: these are resolved per platform, and a
+# tree built on the host is not necessarily loadable in the container.
+node_modules/
+
+.next/
+tsconfig.tsbuildinfo
