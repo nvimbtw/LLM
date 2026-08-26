@@ -1,8 +1,10 @@
 """The curated set of transformations a dataset can be cleaned with.
 
-One registry, assembled from the three modules that group them by what they do
-to a document: `text` rewrites prose, `filter` decides what to keep, `chat`
-reshapes conversations.
+One registry, assembled from the modules that group them by what they do to a
+document: `text` rewrites prose, `filter` decides what to keep, `chat` reshapes
+and renders conversations, `markdown` converts inline emphasis, and `hermes` and
+`smoltalk` convert one named source each. `markup` holds no processors — it is
+the block renderer the converters share.
 """
 
 from processors.chat import PROCESSORS as CONVERSATION

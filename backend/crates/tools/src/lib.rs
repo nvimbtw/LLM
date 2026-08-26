@@ -189,17 +189,20 @@ mod tests {
 
     #[test]
     fn each_tool_appears_on_its_own_configuration_and_not_the_others() {
-        let sandbox_only = Registry::with_config(&Config {
-            bash_url: Some("http://localhost:8899".to_string()),
-            ..Config::default()
-        });
+        let sandbox_only = Registry::with_config(
+            &Config { bash_url: Some("http://localhost:8899".to_string()), ..Config::default() },
+            None,
+        );
         assert_eq!(sandbox_only.names(), vec!["bash"]);
 
-        let both = Registry::with_config(&Config {
-            search_api_key: Some("k".to_string()),
-            bash_url: Some("http://localhost:8899".to_string()),
-            ..Config::default()
-        });
+        let both = Registry::with_config(
+            &Config {
+                search_api_key: Some("k".to_string()),
+                bash_url: Some("http://localhost:8899".to_string()),
+                ..Config::default()
+            },
+            None,
+        );
         assert_eq!(both.names(), vec!["bash", "web-search"]);
         assert_eq!(both.origins().len(), 2);
     }

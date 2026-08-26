@@ -78,6 +78,13 @@ services:
       BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
       BACKEND_URL: http://backend:8080
       DATA_DIR: /app/data
+      # Lets the caching allocator grow and shrink one segment instead of
+      # stranding blocks it cannot merge. Training allocates a few distinct
+      # shapes over and over, and the odd one out — a diagnostics pass, a longer
+      # final batch — otherwise leaves a hole nothing else fits in. Not a
+      # substitute for `loop.release_device`: that hands memory back between
+      # runs, this keeps a single run from needing as much.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
       - ./engine:/app
       # Corpora, vocabularies and weights: hundreds of MB that belong to the
@@ -91,19 +98,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Uncomment on a machine with an NVIDIA GPU, which also needs
-    # nvidia-container-toolkit installed on the host. Without it the engine runs
-    # on CPU: inference on a small model is bearable, training is not.
-    #
-    # Left commented because the reservation is not a preference — Compose
-    # refuses to start the service at all when no such device exists.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # Needs nvidia-container-toolkit installed on the host. Without it the
+    # engine runs on CPU: inference on a small model is bearable, training is
+    # not. Left commented out normally because the reservation is not a
+    # preference — Compose refuses to start the service at all when no such
+    # device exists.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   backend:
     build:

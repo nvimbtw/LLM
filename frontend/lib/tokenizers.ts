@@ -10,6 +10,17 @@ import type { DatasetSelection } from "./training"
 // Building one is a job (`queueTokenizer` in `lib/jobs.ts`); this is the reading
 // half.
 
+/** One corpus a vocabulary was learned from, as the engine records it
+ *  (`corpus.remote.Selected.record`): what was asked for — the cap, null for
+ *  every document — beside what answered at build time. */
+export interface TokenizerDataset {
+  id: string
+  name: string
+  count: number | null
+  documents: number
+  updated_at: string
+}
+
 export interface TokenizerInfo {
   id: string
   name: string
@@ -19,8 +30,7 @@ export interface TokenizerInfo {
   vocabSize: number | null
   merges: number | null
   maxVocab: number | null
-  // The corpora it learned from, as `[name, cap]` — cap null meaning every file.
-  datasets: [string, number | null][]
+  datasets: TokenizerDataset[]
   files: number | null
   bytes: number
   builtAt: string | null
@@ -43,7 +53,7 @@ interface RawTokenizer {
   vocab_size: number | null
   merges: number | null
   max_vocab: number | null
-  datasets: [string, number | null][]
+  datasets: TokenizerDataset[]
   files: number | null
   bytes: number
   built_at: string | null
@@ -87,6 +97,6 @@ export async function deleteTokenizer(id: string): Promise<number> {
 export function describeDatasets(tokenizer: TokenizerInfo): string {
   if (tokenizer.datasets.length === 0) return "—"
   return tokenizer.datasets
-    .map(([name, cap]) => (cap ? `${name} (${cap})` : name))
+    .map(({ name, count }) => (count ? `${name} (${count})` : name))
     .join(", ")
 }

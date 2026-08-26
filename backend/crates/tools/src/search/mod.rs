@@ -421,7 +421,7 @@ mod tests {
         let cache = Arc::new(StubCache::holding("cached answer", Duration::from_secs(60)));
         let tool = search(provider, Some(cache));
 
-        let body = tool.run("elbrus").await.unwrap();
+        let body = tool.run("elbrus", "test-chat").await.unwrap();
 
         assert_eq!(body, "cached answer");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -433,7 +433,7 @@ mod tests {
         let cache = Arc::new(StubCache::holding("old answer", Duration::from_secs(30 * 86_400)));
         let tool = search(provider, Some(cache.clone()));
 
-        let body = tool.run("elbrus").await.unwrap();
+        let body = tool.run("elbrus", "test-chat").await.unwrap();
 
         assert!(body.contains("Elbrus"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -446,7 +446,7 @@ mod tests {
         let cache = Arc::new(StubCache::empty());
         let tool = search(provider, Some(cache.clone()));
 
-        let body = tool.run("elbrus").await.unwrap();
+        let body = tool.run("elbrus", "test-chat").await.unwrap();
 
         assert!(body.contains("Elbrus"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -461,7 +461,7 @@ mod tests {
         let cache = Arc::new(StubCache::holding("old answer", Duration::from_secs(30 * 86_400)));
         let tool = search(provider, Some(cache));
 
-        let body = tool.run("elbrus").await.expect("stale beats nothing");
+        let body = tool.run("elbrus", "test-chat").await.expect("stale beats nothing");
 
         assert_eq!(body, "old answer");
     }
@@ -471,7 +471,7 @@ mod tests {
         let (provider, _) = StubProvider::failing();
         let tool = search(provider, Some(Arc::new(StubCache::empty())));
 
-        assert!(tool.run("elbrus").await.is_err());
+        assert!(tool.run("elbrus", "test-chat").await.is_err());
     }
 
     #[tokio::test]
@@ -479,7 +479,7 @@ mod tests {
         let (provider, calls) = StubProvider::ok(vec![hit("Elbrus", "5,642 m")]);
         let tool = search(provider, None);
 
-        let body = tool.run("elbrus").await.unwrap();
+        let body = tool.run("elbrus", "test-chat").await.unwrap();
 
         assert!(body.contains("Elbrus"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);

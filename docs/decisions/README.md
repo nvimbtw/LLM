@@ -16,3 +16,4 @@ what was weighed, chosen, and rejected, dated once.
 | 2026-08-21 | [Voice input uses the browser's recogniser](voice-input-uses-the-browser.md) | Dictation is `SpeechRecognition`, not a model of ours — what streaming bought, what it costs in privacy, and what is done about that |
 | 2026-08-22 | [One marker for every tool](generic-tool-calls.md) | `<|tool-call|>` carrying JSON replaces a marker pair per tool, so the tool table stops being part of the vocabulary — and what the grammar gives up for it |
 | 2026-08-24 | [One command to start everything](one-command-development.md) | `docker compose up` replaces four manual starts — why several containers rather than one, and the three implicit facts it forced into the open |
+| 2026-08-25 | [The GPU's memory is handed back](gpu-memory-is-handed-back.md) | The pool is released at run boundaries and diagnostics record off the training path — why a run's ceiling was set by the step that measures it |

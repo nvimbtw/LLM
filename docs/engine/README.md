@@ -339,6 +339,33 @@ The renamed row is at its original init until an SFT run touches it, which
   The mtime is in the key so that an SFT run saving its vocabulary over the base
   model's is picked up rather than served from the copy read before it moved —
   `tests/test_vocabulary_cache.py` is what notices.
+- **A finished run's memory is reserved, not leaked, and something has to hand
+  it back.** Torch's caching allocator keeps freed blocks reserved, and that
+  pool is what `nvidia-smi` reports — so in a process that never exits (the
+  runner trains on a thread of the uvicorn that serves chat) a run's high-water
+  mark reads as an occupied card forever. `loop.release_device()` is the release,
+  called from `Runner._execute`'s `finally` in `api/runner.py` so a failed run —
+  which leaves the largest pool of all — is covered too. Allocated memory returns
+  on its own; only the reservation needs this. Alongside it, the engine service
+  sets `PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True` so the allocator
+  resizes a segment rather than stranding blocks it cannot merge — that one is in
+  `docker-compose.yml` only, so **export it yourself when running the engine
+  natively**, which is still the better loop for engine work.
+- **Diagnostics record in a pass of their own, and must stay that way.**
+  `Collector.observe` is a `no_grad` forward over `DIAGNOSTIC_ROWS` rows, taken
+  immediately before the step it describes. Folded back into the training forward
+  — which is where it started — the explicit softmax's `[batch, heads, seq, seq]`
+  fp32 matrices are retained by autograd for a backward pass that discards them,
+  and the diagnosed step becomes the largest step in the run: 1.4x an ordinary
+  one at ctx512 and 2.1x at ctx1024, quadratic in sequence length. Combined with
+  the pool never being released, the first diagnosed step set the run's memory
+  ceiling for good. See
+  [`../decisions/gpu-memory-is-handed-back.md`](../decisions/gpu-memory-is-handed-back.md).
+- **The chat cache holds a model until something evicts it.**
+  `orchestrate/chat.py`'s `_CACHE` keeps one model resident per process and only
+  ever replaces it when a later chat names a different one. One device means that
+  is memory a run cannot have, so `api/runner.py` calls `chat.evict()` before
+  starting one and the next chat reloads.
 - **Anything asking "which ids are markers?" must use `special.block_names()`,
   not `token_list()`.** A vocabulary older than a marker still calls that slot
   `<|reserved_N|>`, and matching only the current spelling drops those ids out

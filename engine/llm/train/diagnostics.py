@@ -47,6 +47,22 @@ _SAMPLE_BLOCKS = 32
 ACT_HIST_BINS = 24
 ACT_HIST_RANGE = 4.0
 
+# How many rows of the training batch the recording forward runs over.
+#
+# The attention readout is a mean over heads and query rows, and one row already
+# averages `ctx_window` of them per head — so the batch dimension buys precision
+# the chart cannot show. It costs a great deal: the recorded attention matrix is
+# [rows, heads, seq, seq] in fp32 (softmax is on autocast's fp32 list), so every
+# row is another `heads * seq^2 * 4` bytes per layer, and seq^2 is what makes a
+# longer context unaffordable rather than merely expensive.
+#
+# Two rather than one because the second row is nearly free now that the pass is
+# no_grad, and it measurably tightens the reading: against the eight-row version
+# this replaced, the largest per-head deviation at 512d/8h/6L/ctx512 was 0.032
+# at one row and 0.019 at two, on a 0-1 scale. Raise it if a future reading needs
+# to be tighter still — the cost is linear in it.
+DIAGNOSTIC_ROWS = 2
+
 
 @dataclass
 class Diagnostics:
@@ -279,11 +295,15 @@ def _activation_histogram(residual: torch.Tensor) -> list[float]:
 
 
 class Collector:
-    """Turns diagnostics on for one step, then reads them back off.
+    """Turns diagnostics on for one forward, then reads them back off.
 
     Recording changes the attention path (an explicit softmax instead of the
     fused kernel) and holds activations alive, so it is scoped tightly: enabled
-    immediately before the measured step and disabled straight after.
+    for exactly the forward pass `observe` runs and disabled straight after.
+
+    That forward is **not** the training step. See `observe` — it is a separate
+    no-grad pass over a slice of the batch, and the separation is what keeps a
+    diagnosed step from setting the memory ceiling for the whole run.
 
     Constructing one is not free — the tracked tokens have to come from
     somewhere — so `loop.run` builds it on the first measured step rather than at
@@ -323,6 +343,39 @@ class Collector:
     def __exit__(self, *_) -> None:
         self._set_recording(False)
 
+    def observe(self, inputs: torch.Tensor) -> None:
+        """Record activations and attention for `inputs`, off the training path.
+
+        A no-grad forward over the first `DIAGNOSTIC_ROWS` rows, run immediately
+        before the training step it describes — same weights, same batch, so it
+        reports the step it is filed under.
+
+        It used to be the training forward itself, with recording flipped on. That
+        read the same numbers and cost far more than it looks:
+
+        - **Autograd retained every attention matrix.** The explicit softmax
+          materializes `[batch, heads, seq, seq]` in fp32 where the fused kernel
+          materializes nothing, and each one was kept alive for a backward pass
+          that did not need it. No-grad frees them as the forward walks past.
+        - **It ran the whole batch**, for a mean over rows. See `DIAGNOSTIC_ROWS`.
+        - **It forced the uncompiled callable**, which put cross-entropy back in
+          eager and with it the second fp32 copy of the logits that `loop.step_fn`
+          exists to avoid.
+
+        Measured at 512d/8h/6L/ctx512/bs8, the diagnosed step's peak fell from
+        1704 to 1110 MiB against a 1003 MiB ordinary step; at ctx1024, from 4169
+        to 2020 against 1612. The old peak was not transient — nothing hands a
+        CUDA pool back, so the first diagnosed step raised the run's floor for
+        good. `loop.release_device` is the other half of that story.
+
+        A quieter consequence: the training step is now the *same* step on every
+        iteration. A diagnosed step used to train through the explicit-softmax
+        path, so one step in every `interval * diag_interval` differed
+        numerically from the rest — on exactly the steps being measured.
+        """
+        with torch.no_grad(), self:
+            self.model(inputs[:DIAGNOSTIC_ROWS])
+
     def before_step(self) -> tuple[float, list[float], float]:
         """Read the gradients and snapshot the weights, between backward and step."""
         self.snapshot = snapshot_weights(self.model)
@@ -340,7 +393,18 @@ class Collector:
                 ratios.append(float((after - before).norm() / weight_norm))
 
         activations = [b.last_input for b in self.model.blocks if b.last_input is not None]
-        attention = [b.attn.last_attention for b in self.model.blocks]
+
+        # Released as it is consumed, rather than gathered into a list first.
+        # `_entropy` allocates two more tensors the size of the one it is reading,
+        # so holding every layer's matrix alive across the walk made the peak
+        # scale with depth on top of the seq^2 each one already costs.
+        entropy: list[list[float]] = []
+        for block in self.model.blocks:
+            weights = block.attn.last_attention
+            if weights is None:
+                continue
+            entropy.append(_entropy(weights))
+            block.attn.last_attention = None
 
         diagnostics = Diagnostics(
             step=step,
@@ -350,7 +414,7 @@ class Collector:
             grad_unembed=embedding,
             update_ratio_layers=ratios,
             act_rms_layers=[float(a.float().pow(2).mean().sqrt()) for a in activations],
-            attn_entropy=[_entropy(w) for w in attention if w is not None],
+            attn_entropy=entropy,
             attn_temperature=[
                 block.attn.log_temperature.detach().exp().float().cpu().tolist()
                 for block in self.model.blocks

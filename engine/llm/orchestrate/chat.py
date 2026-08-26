@@ -19,7 +19,7 @@ from llm.chat.template import Role, ThinkBudget, Turn, build_prompt, context_flo
 from llm.config import ChatConfig, ChatTurn
 from llm.corpus import bpe
 from llm.model import checkpoint, sample
-from llm.train.loop import pick_device
+from llm.train.loop import pick_device, release_device
 
 # Headroom left for the reply before the prompt starts evicting its own freshest
 # tokens. The prompt is truncated oldest-first to leave this much room.
@@ -96,6 +96,24 @@ class _ToolCalls:
 _CACHE: dict = {}
 
 
+def evict() -> None:
+    """Drop the cached model and give its device memory back.
+
+    There is one GPU and one process, so a model parked here is memory a training
+    run cannot have — and a cached model is never asked to leave on its own: it
+    sits there until some later chat happens to name a different one. On an 8 GB
+    card that is the difference between a run that fits and a run that does not,
+    which is why `api/runner.py` calls this before it starts one.
+
+    The cost is a reload on the next chat, and it is worth paying in this
+    direction only: a run is minutes to hours, a reload is under a second.
+    """
+    if not _CACHE:
+        return
+    _CACHE.clear()
+    release_device()
+
+
 def load(model_name: str):
     """The model + tokenizer for `model_name`, loaded once per process.
 
@@ -103,6 +121,10 @@ def load(model_name: str):
     short generation.
     """
     if _CACHE.get("name") != model_name:
+        # Dropped *before* the replacement is built, not overwritten by it: for
+        # the moment both are referenced, the card holds two models, and the one
+        # being replaced is exactly the size of the one arriving.
+        evict()
         device = pick_device()
         model, _ = checkpoint.load(storage.weights_path(model_name), device)
         tokenizer = bpe.load(storage.model_dir(model_name))

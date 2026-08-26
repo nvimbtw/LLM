@@ -64,14 +64,20 @@ import json
 import re
 import shlex
 
+from processors.markup import (
+    CODEBLOCK_CLOSE,
+    CODEBLOCK_OPEN,
+    blocks,
+    neutralise,
+    reply_markup,
+    split_thinking,
+    strip_control,
+)
 from processors.spec import Document, Param, Processor, State
 from store.schema import DatasetKind
 
 SFT = (DatasetKind.sft,)
 
-THINKING_OPEN, THINKING_CLOSE = "<|thinking|>", "<|/thinking|>"
-PAR_OPEN, PAR_CLOSE = "<|par|>", "<|/par|>"
-CODEBLOCK_OPEN, CODEBLOCK_CLOSE = "<|codeblock|>", "<|/codeblock|>"
 WARN_OPEN, WARN_CLOSE = "<|warn|>", "<|/warn|>"
 
 #: The one marker every tool is called through. Written out rather than
@@ -79,18 +85,6 @@ WARN_OPEN, WARN_CLOSE = "<|warn|>", "<|/warn|>"
 #: virtualenvs. `engine/llm/chat/tools.py` owns the layout.
 TOOL_CALL_OPEN, TOOL_CALL_CLOSE = "<|tool-call|>", "<|/tool-call|>"
 BASH = "bash"
-
-#: The source's own reasoning tag — `<think>`, not `<|thinking|>`. Closed at the
-#: end of the turn if the trace never closed it (one turn in the sample did
-#: not), so an unterminated block becomes reasoning rather than leaking its tag
-#: into the reply as prose.
-_SOURCE_THINK = re.compile(r"<think>(.*?)(?:</think>|\Z)", re.DOTALL)
-
-#: A `<think>` or `</think>` the pass above could not pair off — the one
-#: unbalanced turn in the sample opened the block twice, and the inner opener
-#: lands inside the captured body. Dropped, so no turn carries a reasoning tag
-#: through as text.
-_STRAY_THINK = re.compile(r"</?think>")
 
 #: One call and one response, matched by their tags. Unclosed, either takes the
 #: rest of the turn — the only reading that cannot leave half a JSON object
@@ -100,48 +94,6 @@ _TOOL_RESPONSE = re.compile(r"<tool_response>(.*?)(?:</tool_response>|\Z)", re.D
 
 #: Hermes' system prompt, recognised by the tool inventory it carries.
 _TOOL_SYSTEM = "<tools>"
-
-#: Fenced code, one capture group so `re.split` lays the bodies at the odd
-#: indices. Split out before paragraphs are: a blank line inside a fence is part
-#: of the code, not a paragraph break, and this corpus is mostly code.
-_FENCE = re.compile(r"```[^\n]*\n(.*?)(?:^[ \t]*```[ \t]*$|\Z)", re.DOTALL | re.MULTILINE)
-
-_BLANK_LINE = re.compile(r"\n[ \t]*\n")
-
-#: Any literal marker in the source text, broken the same way (and with the same
-#: zero-width space) as `scripts/corpus_shards.py::neutralize` — agent traces
-#: quote chat templates and tokenizer configs, and a `<|endoftext|>` inside a
-#: quoted YAML file would otherwise tokenize as a real document boundary.
-#: Underscores are matched here where that pattern omits them, because
-#: `<|reserved_7|>` is a real name for a real slot in `corpus.special`.
-_MARKER = re.compile(r"<\|(/?[a-zA-Z0-9:_-]+)\|>")
-
-
-def _neutralise(text: str) -> str:
-    return _MARKER.sub("<|\\1|​>", text)
-
-
-def _blocks(text: str) -> str:
-    """Prose as markup: paragraphs `<|par|>`, fenced code `<|codeblock|>`.
-
-    Whitespace inside a paragraph is collapsed and preserved inside a code
-    block, which is the whole reason the two are told apart here. Inline
-    markdown is left alone — that is `markdown-emphasis`'s job, run after this
-    one, and it knows to skip what is inside a `<|codeblock|>`.
-    """
-    out: list[str] = []
-    for index, chunk in enumerate(_FENCE.split(text)):
-        if index % 2:
-            code = _neutralise(chunk).strip("\n")
-            if code.strip():
-                out.append(f"{CODEBLOCK_OPEN}{code}{CODEBLOCK_CLOSE}")
-            continue
-        for paragraph in _BLANK_LINE.split(chunk):
-            body = " ".join(_neutralise(paragraph).split())
-            if body:
-                out.append(f"{PAR_OPEN}{body}{PAR_CLOSE}")
-    return "".join(out)
-
 
 def _quote(value: str) -> str:
     """A path or pattern as one shell word.
@@ -267,15 +219,23 @@ def _result_body(output: str, exit_code: int, max_output_chars: int) -> str:
     if not body:
         return out or f"{WARN_OPEN}The command finished with no output.{WARN_CLOSE}"
 
-    out += f"{CODEBLOCK_OPEN}{_neutralise(body)}{CODEBLOCK_CLOSE}"
+    out += f"{CODEBLOCK_OPEN}{neutralise(body)}{CODEBLOCK_CLOSE}"
     if cut:
         out += f"{WARN_OPEN}The output was longer and has been cut.{WARN_CLOSE}"
     return out
 
 
 def _call_markup(command: str) -> str:
-    """One call, rendered exactly as `llm.chat.tools.call` renders it."""
-    payload = json.dumps({"tool": BASH, "argument": command.strip()}, ensure_ascii=False)
+    """One call, rendered exactly as `llm.chat.tools.call` renders it.
+
+    Control-stripped and not marker-neutralised: the argument is a command, and
+    a `write_file` heredoc carries a file body that came out of the same decoded
+    JSON as any result — but it is JSON-encoded into the payload here, so a
+    marker inside it cannot end the call early the way one in prose could.
+    """
+    payload = json.dumps(
+        {"tool": BASH, "argument": strip_control(command).strip()}, ensure_ascii=False
+    )
     return f"{TOOL_CALL_OPEN}{payload}{TOOL_CALL_CLOSE}"
 
 
@@ -286,8 +246,7 @@ def _split_gpt(content: str) -> tuple[str, str, list[dict]]:
     to do on the other: the `<think>` bodies, the turn with its thinking and
     calls cut out, and the calls themselves parsed.
     """
-    reasoning = "\n\n".join(m.group(1) for m in _SOURCE_THINK.finditer(content))
-    body = _SOURCE_THINK.sub("", content)
+    reasoning, body = split_thinking(content)
 
     calls: list[dict] = []
     for match in _TOOL_CALL.finditer(body):
@@ -298,8 +257,7 @@ def _split_gpt(content: str) -> tuple[str, str, list[dict]]:
         if isinstance(parsed, dict):
             calls.append(parsed)
 
-    reply = _TOOL_CALL.sub("", body)
-    return _STRAY_THINK.sub("", reasoning), _STRAY_THINK.sub("", reply), calls
+    return reasoning, _TOOL_CALL.sub("", body), calls
 
 
 def _responses(content: str) -> list[dict]:
@@ -346,9 +304,7 @@ def _assistant(run: list[str]) -> str:
         if reply.strip():
             replies.append(reply)
 
-    thinking = _blocks("\n\n".join(reasoning))
-    body = _blocks("\n\n".join(replies))
-    return (f"{THINKING_OPEN}{thinking}{THINKING_CLOSE}" if thinking else "") + body
+    return reply_markup("\n\n".join(reasoning), "\n\n".join(replies))
 
 
 def _convert_hermes(doc: Document, params: dict, state: State) -> Document | None:
@@ -398,12 +354,12 @@ def _convert_hermes(doc: Document, params: dict, state: State) -> Document | Non
         if role == "system":
             if params["keep_tool_system"] or _TOOL_SYSTEM not in content:
                 if content.strip():
-                    messages.append({"role": "system", "content": _neutralise(content)})
+                    messages.append({"role": "system", "content": neutralise(content)})
             continue
 
         if role == "human":
             if content.strip():
-                messages.append({"role": "user", "content": _neutralise(content)})
+                messages.append({"role": "user", "content": neutralise(content)})
             continue
 
         # An unrecognised role drops the conversation rather than being guessed

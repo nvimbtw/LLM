@@ -11,6 +11,11 @@
 FROM python:3.14-slim AS base
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
+# torch.compile's Inductor backend shells out to a C compiler to build the
+# wrapper code around every Triton kernel — needed even for a GPU-only
+# workload. The slim image has none; a native run never noticed because the
+# host already has one.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

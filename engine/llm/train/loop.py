@@ -7,7 +7,6 @@ kernels, host/device synchronization) is autograd and torch.optim here.
 
 import math
 import time
-from contextlib import contextmanager
 from threading import Event
 
 import numpy as np
@@ -30,6 +29,28 @@ MIN_LR_RATIO = 0.1
 
 def pick_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def release_device() -> None:
+    """Hand the caching allocator's pool back to the driver.
+
+    Torch never does this on its own: a freed block stays reserved so the next
+    allocation of that size does not have to ask the driver again, which is the
+    right trade inside a run and the wrong one between them. The engine is a
+    long-lived process — `api/runner.py` runs training on a thread of the same
+    uvicorn that serves chat — so without this a run's high-water mark is what
+    the GPU reports as occupied until the process exits, and the next run starts
+    against a card that looks full.
+
+    What it is *not* is a fix for a leak, because there is not one: measured
+    across two runs in one process, allocated memory returns to 16 MiB while
+    reserved stays at the peak. This releases the difference.
+
+    Cheap (a few ms, once per run) and a no-op off CUDA, so callers do not have
+    to know which device the run they just finished was on.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def autocast_dtype(precision: str, device: str) -> torch.dtype | None:
@@ -149,14 +170,11 @@ def run(
         torch.backends.cudnn.allow_tf32 = cfg.allow_tf32
 
     amp_dtype = autocast_dtype(cfg.precision, device)
-    # Diagnostic steps run the *uncompiled* callable. Recording swaps the
-    # attention implementation (an explicit softmax for the entropy readout),
-    # which is a different graph — routing it through the compiled one would
-    # trigger a recompile on the way in and another on the way out, every single
-    # time. Both close over the same module, so this is a dispatch choice rather
-    # than a copy of anything.
-    eager = step_fn(model, model.vocab)
-    fast = compiled(eager, cfg.compile_model and device == "cuda")
+    # One callable for every step, diagnosed or not. Recording swaps the attention
+    # implementation, so it used to need the uncompiled graph and a diagnosed step
+    # trained through it — see `Collector.observe`, which now records in a pass of
+    # its own and leaves this one alone.
+    forward = compiled(step_fn(model, model.vocab), cfg.compile_model and device == "cuda")
 
     # One kernel for the whole update instead of one per tensor: a few hundred
     # launches a step saved, which matters at a size where launch overhead is a
@@ -302,21 +320,22 @@ def run(
             for group in optimizer.param_groups:
                 group["lr"] = lr
 
-            # Diagnostics change the attention path and retain activations, so
-            # they are scoped to exactly the step that is measured.
             measuring = on_progress is not None and (step + 1) % interval == 0
             # Diagnostics are sampled across the reports, not taken on each one.
             diagnosing = measuring and ((step + 1) // interval) % diag_interval == 0
-            context = collector() if diagnosing else _nothing()
 
-            with context:
-                forward = eager if diagnosing else fast
-                with torch.autocast(
-                    device_type="cuda", dtype=amp_dtype, enabled=amp_dtype is not None
-                ):
-                    # Cross-entropy is on autocast's fp32 list, so the softmax and
-                    # its gradient run in full precision regardless of amp_dtype.
-                    loss = forward(x, y, w)
+            with torch.autocast(
+                device_type="cuda", dtype=amp_dtype, enabled=amp_dtype is not None
+            ):
+                # Under the same autocast as the step it describes, so it reports
+                # the arithmetic the model is actually training in. It runs first
+                # and under no_grad: the training step below is then untouched by
+                # the fact that this one is measured.
+                if diagnosing:
+                    collector().observe(x)
+                # Cross-entropy is on autocast's fp32 list, so the softmax and
+                # its gradient run in full precision regardless of amp_dtype.
+                loss = forward(x, y, w)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -355,12 +374,6 @@ def run(
 
     log.flush()
     return _summary(step, total_steps, log.values, started, cancelled=False)
-
-
-@contextmanager
-def _nothing():
-    """A no-op stand-in for the collector on unmeasured steps."""
-    yield
 
 
 class _LazyCollector:

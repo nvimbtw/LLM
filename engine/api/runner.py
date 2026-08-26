@@ -22,6 +22,8 @@ import store
 from api import chain
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
+from llm.orchestrate import chat as chat_pipeline
+from llm.train.loop import release_device
 from llm.train.progress import Progress, Tokenize
 from store import queries as q
 from store.schema import RunKind, RunStatus
@@ -142,6 +144,10 @@ class Runner:
         live = self._registry.adopt(str(run_id), kind.value, config)
         progress = _ThrottledProgress(self._registry, live, run_id)
 
+        # One device, so a model parked in the chat cache is memory this run
+        # cannot have. It is reloaded on the next chat; see `chat.evict`.
+        chat_pipeline.evict()
+
         try:
             result = await asyncio.to_thread(handler, config, progress, live.cancel, owner)
         except Exception as e:
@@ -162,6 +168,10 @@ class Runner:
                 )
         finally:
             self._current = None
+            # In `finally` because a run that failed is the one that most needs
+            # it: an OOM leaves the largest pool of all behind, and the next run
+            # would meet a card that is still holding it.
+            release_device()
 
     def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> None:
         with store.session() as db:

@@ -644,6 +644,56 @@ def test_convert_hermes_drops_a_command_too_long_to_keep_rather_than_cutting_it(
     assert after["messages"][1]["content"] == "<|par|>Written.<|/par|>"
 
 
+def test_convert_hermes_strips_control_bytes_a_recorded_result_carried():
+    """`cat` on a binary file, which this corpus really does.
+
+    The escape is inert in the corpus and inert in the source dataset; it only
+    becomes a real NUL when `json.loads` reads the response here, and Postgres
+    `jsonb` refuses to store one — the insert takes the whole batch and the run
+    down with it, hundreds of documents from the row that carried it.
+    """
+    doc = {
+        "messages": [
+            {"role": "human", "content": "read the index"},
+            {"role": "gpt", "content": _hermes_turn("terminal", {"command": "cat .git/index"})},
+            {
+                "role": "tool",
+                "content": _hermes_response(
+                    "terminal", {"output": "DIRC\x00\x01Test User\x07", "exit_code": 0}
+                ),
+            },
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+    rendered = json.dumps(after["messages"])
+
+    assert not any(c in rendered for c in ("\x00", "\x01", "\x07"))
+    assert after["messages"][2]["content"].endswith("<|codeblock|>DIRCTest User<|/codeblock|>")
+
+
+def test_convert_hermes_strips_control_bytes_from_a_command_too():
+    """A `write_file` body reaches the heredoc without passing through
+    `_neutralise`, so it needs the same guard on its own way out."""
+    doc = {
+        "messages": [
+            {"role": "human", "content": "write it"},
+            {
+                "role": "gpt",
+                "content": _hermes_turn(
+                    "write_file", {"path": "blob.bin", "content": "head\x00tail"}
+                ),
+            },
+            {"role": "tool", "content": _hermes_response("write_file", {"bytes_written": 9})},
+        ]
+    }
+
+    after = apply("convert-hermes-agent", doc)
+
+    assert "\x00" not in json.dumps(after["messages"])
+    assert after["messages"][1]["content"] == _bash_call("cat > blob.bin <<'EOF'\nheadtail\nEOF")
+
+
 def test_convert_hermes_drops_a_call_nobody_answered():
     """A call with no result would teach the model to expect an answer that the
     conversation never contains."""
@@ -760,3 +810,120 @@ def test_convert_hermes_drops_a_conversation_that_is_only_tool_noise():
     }
 
     assert apply("convert-hermes-agent", doc) is None
+
+
+def test_convert_chat_renders_a_reply_as_paragraphs_and_leaves_the_question_alone():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "What are two things to do in London?"},
+            {"role": "assistant", "content": "Sure!\n\n1. The British Museum.\n\n2. Borough Market."},
+        ]
+    }
+
+    after = apply("convert-chat", doc)
+
+    assert after["messages"][0]["content"] == "What are two things to do in London?"
+    assert after["messages"][1]["content"] == (
+        "<|par|>Sure!<|/par|><|par|>1. The British Museum.<|/par|><|par|>2. Borough Market.<|/par|>"
+    )
+
+
+def test_convert_chat_turns_source_reasoning_into_a_thinking_block():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "<think>Add them.</think>It is 4."},
+        ]
+    }
+
+    after = apply("convert-chat", doc)
+
+    assert after["messages"][1]["content"] == (
+        "<|thinking|><|par|>Add them.<|/par|><|/thinking|><|par|>It is 4.<|/par|>"
+    )
+
+
+def test_convert_chat_discards_reasoning_when_asked_and_keeps_the_reply():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "<think>Add them.</think>It is 4."},
+        ]
+    }
+
+    after = apply("convert-chat", doc, {"reasoning": "strip"})
+
+    assert after["messages"][1]["content"] == "<|par|>It is 4.<|/par|>"
+
+
+def test_convert_chat_keeps_fenced_code_out_of_a_paragraph():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "show me"},
+            {"role": "assistant", "content": "Like so:\n\n```py\nx = 1\n\ny = 2\n```"},
+        ]
+    }
+
+    after = apply("convert-chat", doc)
+
+    assert "<|codeblock|>x = 1\n\ny = 2<|/codeblock|>" in after["messages"][1]["content"]
+
+
+def test_convert_chat_neutralises_a_marker_the_source_wrote():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "what does <|endoftext|> mean?"},
+            {"role": "assistant", "content": "It ends a document."},
+        ]
+    }
+
+    after = apply("convert-chat", doc)
+
+    assert "<|endoftext|>" not in after["messages"][0]["content"]
+    assert "endoftext" in after["messages"][0]["content"]
+
+
+def test_convert_chat_drops_a_trailing_question_nobody_answered():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Hi."},
+            {"role": "user", "content": "and?"},
+        ]
+    }
+
+    after = apply("convert-chat", doc)
+
+    assert [m["role"] for m in after["messages"]] == ["user", "assistant"]
+
+
+def test_convert_chat_refuses_a_conversation_that_uses_tools():
+    doc = {
+        "messages": [
+            {"role": "user", "content": "search it"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "tool", "content": "result"},
+        ]
+    }
+
+    assert apply("convert-chat", doc) is None
+
+
+def test_convert_chat_refuses_roles_normalise_roles_has_not_mapped_yet():
+    doc = {"messages": [{"role": "human", "content": "hi"}, {"role": "gpt", "content": "hello"}]}
+
+    assert apply("convert-chat", doc) is None
+
+
+def test_drop_tool_calls_removes_a_conversation_in_either_spelling():
+    source = {"messages": [{"role": "assistant", "content": "<tool_call>{}</tool_call>"}]}
+    converted = {"messages": [{"role": "assistant", "content": '<|tool-call|>{"tool": "bash"}<|/tool-call|>'}]}
+
+    assert apply("drop-tool-calls", source) is None
+    assert apply("drop-tool-calls", converted) is None
+
+
+def test_drop_tool_calls_keeps_a_conversation_that_only_talks_about_tools():
+    doc = {"messages": [{"role": "assistant", "content": "A shell is a tool for running commands."}]}
+
+    assert apply("drop-tool-calls", doc) is not None

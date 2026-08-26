@@ -93,6 +93,20 @@ def _write(
     return written, cancel.is_set()
 
 
+def _condemn(dataset_id: uuid.UUID) -> None:
+    """Mark a half-written dataset failed, on its own session.
+
+    Its own because the session that raised is gone and its transaction with it,
+    and a best effort because this runs while an exception is in flight: failing
+    to record the failure must not replace the error that caused it.
+    """
+    try:
+        with store.session() as db:
+            q.finish_dataset(db, dataset_id, DatasetStatus.failed)
+    except Exception as e:
+        print(f"handlers: could not condemn {dataset_id}: {type(e).__name__}: {e}")
+
+
 def _commit(dataset_id: uuid.UUID, start: int, batch: list[dict]) -> int:
     if not batch:
         return 0
@@ -119,7 +133,11 @@ def pull(config: dict, report: Report, cancel: threading.Event) -> dict:
     rows = hub.iter_rows(repo, shards, wanted)
 
     documents = _documents_from(rows, kind, named)
-    written, cancelled = _write(documents, dataset_id, cap, report, cancel, "pulling")
+    try:
+        written, cancelled = _write(documents, dataset_id, cap, report, cancel, "pulling")
+    except Exception:
+        _condemn(dataset_id)
+        raise
 
     with store.session() as db:
         q.finish_dataset(
@@ -223,9 +241,18 @@ def process(config: dict, report: Report, cancel: threading.Event) -> dict:
 
     # The cap is the source's own size: a pipeline cannot invent documents, so
     # this bounds nothing in practice and keeps one write path for both kinds.
-    written, cancelled = _write(
-        cleaned(), target_id, max(total, 1), report, cancel, "processing"
-    )
+    try:
+        written, cancelled = _write(
+            cleaned(), target_id, max(total, 1), report, cancel, "processing"
+        )
+    except Exception:
+        # A dataset left in `pulling` is a dataset that never stops: the row is
+        # what the page reads, and nothing else ever comes back to close it. The
+        # run is marked failed by the runner and carries the traceback; this is
+        # only so the dataset says so too, with a count of what actually landed
+        # rather than the zero it was created with.
+        _condemn(target_id)
+        raise
 
     with store.session() as db:
         q.finish_dataset(
