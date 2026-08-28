@@ -276,7 +276,7 @@ def micro(args) -> None:
 
         t0 = time.perf_counter()
         try:
-            inputs, targets, weights = next(batches)
+            inputs, targets, weights, _ = next(batches)
         except StopIteration:
             break
         if measuring:
@@ -500,7 +500,7 @@ def check(args) -> None:
     matched = 0
     identical = True
     first = None
-    for (a, b, e), (c, d, f) in zip(fresh, reference):
+    for (a, b, e, _), (c, d, f) in zip(fresh, reference):
         if first is None:
             first = (a.copy(), b.copy())
         identical &= np.array_equal(a, c) and np.array_equal(b, d) and np.array_equal(e, f)

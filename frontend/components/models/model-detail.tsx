@@ -27,6 +27,7 @@ import { useAuth } from "@/hooks/use-auth"
 import { useModel } from "@/hooks/use-model"
 import { useModels } from "@/hooks/use-models"
 import { LoadError } from "@/components/ui/error-state"
+import { AttentionViewer } from "./attention-viewer"
 import { ModelBenchmarks } from "./model-benchmarks"
 import { ModelSizeMeter } from "./model-glyph"
 import { ModelEditSheet } from "./model-edit-sheet"
@@ -377,6 +378,19 @@ export function ModelDetail({ modelId }: { modelId: string }) {
         {/* What it is, then how well it does it. Admin-only because the benchmark
             API is: a normal session would collect a 403 per model page. */}
         {isAdmin && <ModelBenchmarks modelId={modelId} />}
+
+        {/* Not admin-gated, unlike the benchmarks above: the route behind it is
+            `AuthUser`, and anyone who can hold a conversation with this model
+            can already ask it for a forward pass. The panel needs the layer and
+            head counts to offer a choice, so a model whose meta.json predates
+            them simply has no viewer rather than an empty one. */}
+        {c?.layers && c?.heads && (
+          <AttentionViewer
+            modelId={modelId}
+            layers={c.layers}
+            heads={c.heads}
+          />
+        )}
       </div>
 
       {isAdmin && (

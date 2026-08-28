@@ -23,6 +23,12 @@ MIN_FREQUENCY = 2
 # corpus is.
 BYTE_ALPHABET = 256
 
+# The id of the first merge learned. The trainer lays a vocabulary out as the
+# reserved block, then the byte alphabet, then one id per merge *in the order it
+# learned them* — which is what makes the merge sequence readable off the
+# vocabulary rather than out of the saved merge list.
+FIRST_MERGE_ID = BYTE_ALPHABET + len(special.token_list())
+
 # How much text a vocabulary is learned from, however much was selected.
 #
 # This is the ceiling that was missing. The trainer holds a count for every
@@ -225,7 +231,55 @@ def merge_count(tok: Tokenizer) -> int:
     Derived rather than read back out of the saved merge list, which means
     parsing the whole tokenizer file to count its lines.
     """
-    return max(0, vocab_size(tok) - BYTE_ALPHABET - len(special.token_list()))
+    return max(0, vocab_size(tok) - FIRST_MERGE_ID)
+
+
+#: How many merges `merge_sequence` reports. The head is the part that carries
+#: the story — the first merges are the language's own bigrams — and the frame
+#: this rides on is a WebSocket message, not a file.
+MERGE_SEQUENCE_HEAD = 256
+
+
+def merge_sequence(
+    tok: Tokenizer, counts=None, limit: int = MERGE_SEQUENCE_HEAD
+) -> list[dict]:
+    """The first `limit` merges, in the order BPE learned them.
+
+    `counts` is the packed corpus's own token histogram, so `count` is how often
+    the merged token occurs in the corpus this vocabulary encoded. That is
+    **not** the pair frequency that earned the merge: the trainer keeps that
+    count only while it is choosing, and the `tokenizers` library exposes
+    neither it nor a callback to observe it, so recovering it would mean
+    reimplementing BPE training beside the library that does it. The corpus
+    frequency is the honest thing that can be had for nothing — every id is
+    already counted on the way to disk.
+
+    The tokens are decoded rather than spelled the way the vocabulary spells
+    them: byte-level BPE writes a leading space as `Ġ`, and a reader should not
+    have to know that.
+    """
+    end = min(vocab_size(tok), FIRST_MERGE_ID + limit)
+    return [
+        {
+            "token": token_text(tok, tid),
+            **({"count": int(counts[tid])} if counts is not None else {}),
+        }
+        for tid in range(FIRST_MERGE_ID, end)
+    ]
+
+
+def token_text(tok: Tokenizer, tid: int) -> str:
+    """How one token is spelled on its own, for a reader looking at it.
+
+    Byte-level BPE learns merges that are *half* of a multi-byte character, and
+    decoding one of those alone yields U+FFFD — which reads as "this token is
+    broken" rather than "this token is a fragment". The vocabulary's own
+    spelling (`Ã©`, `Ġthe`) is ugly and true, so it wins in exactly that case.
+    """
+    text = decode(tok, [tid])
+    if text and "�" not in text:
+        return text
+    return tok.id_to_token(tid) or ""
 
 
 def token_id(tok: Tokenizer, token: str) -> int:

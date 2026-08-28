@@ -18,7 +18,12 @@ import {
   lossStageColor,
   yAxisProps,
 } from "@/components/training/chart-theme"
-import { Figure, FigurePlaceholder } from "@/components/training/stat-run"
+import { BuildMetrics } from "@/components/training/build-metrics"
+import {
+  compact,
+  Figure,
+  FigurePlaceholder,
+} from "@/components/training/stat-run"
 import { cn } from "@/lib/utils"
 import type { BatchPoint, LossPoint } from "@/hooks/use-training"
 import type {
@@ -27,11 +32,6 @@ import type {
   TokenizeStats,
   TrainStats,
 } from "@/lib/training"
-
-function compact(n: number | undefined | null): string {
-  if (n == null) return "—"
-  return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
-}
 
 const epochKey = (epoch: number) => `e${epoch}`
 
@@ -109,6 +109,7 @@ function PhaseOneFigure({
   ): "done" | "active" | "todo" =>
     measured ? "done" : previous ? "active" : "todo"
 
+  const collected = tokenize.documents ?? tokenize.files
   const steps = isSft
     ? [
         {
@@ -132,9 +133,12 @@ function PhaseOneFigure({
       ]
     : [
         {
-          label: "Source files collected",
-          value: compact(tokenize.files),
-          state: state(tokenize.files != null, true),
+          // `documents`, not `files`: the text is read from the data engine a
+          // page at a time and there are no files. `files` is what a run queued
+          // before that move reported, and its frames still render here.
+          label: "Documents collected",
+          value: compact(tokenize.documents ?? tokenize.files),
+          state: state(collected != null, true),
         },
         {
           label: "Tokenizer trained",
@@ -142,7 +146,7 @@ function PhaseOneFigure({
             tokenize.vocab != null
               ? `${compact(tokenize.vocab)} vocab · ${compact(tokenize.merges)} merges`
               : "—",
-          state: state(tokenize.vocab != null, tokenize.files != null),
+          state: state(tokenize.vocab != null, collected != null),
         },
         {
           label: "Corpus packed",
@@ -173,6 +177,10 @@ export interface TelemetryProps {
   // The run's curriculum stages (empty for a plain single-pass run), for the
   // per-stage colouring of the loss overlay and its legend.
   curriculum: CurriculumStage[]
+  // The window the run trains at, which the build's document-length histogram is
+  // measured against. It is a property of the run rather than of the build, so it
+  // comes from the config and not from the phase-1 frame.
+  ctxWindow: number
 }
 
 /**
@@ -191,6 +199,7 @@ export function Telemetry({
   loss,
   batchSeries,
   curriculum,
+  ctxWindow,
 }: TelemetryProps) {
   // The training figure is the hero from the moment training starts through done.
   const trainPhase = status != null && status !== "tokenizing"
@@ -378,6 +387,13 @@ export function Telemetry({
           />
         </Figure>
       )}
+
+      {/* What the build measured. Not part of the phase-1 slot above: these are
+          facts about the corpus this run trains on, and they stay readable once
+          the loss overlay has taken the hero position — a finished run's page is
+          where they are actually read. Renders nothing for a fine-tune, whose
+          phase 1 measures none of them. */}
+      <BuildMetrics tokenize={tokenize} ctxWindow={ctxWindow} />
 
       {/* Secondary figure — intra-batch spread (training only). Reserves its slot. */}
       {trainPhase && (

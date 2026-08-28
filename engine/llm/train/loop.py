@@ -18,7 +18,7 @@ from llm.config import TrainConfig
 from llm.model import checkpoint
 from llm.model.transformer import Transformer
 from llm.train import plan as plan_mod
-from llm.train.diagnostics import Collector
+from llm.train.diagnostics import Collector, Probes, diagnostic_rows
 from llm.train.plan import DataPlan
 from llm.train.progress import Progress, ProgressCallback, diagnose_every, report_every
 
@@ -154,12 +154,19 @@ def run(
     cancel: Event | None = None,
     mask: np.ndarray | None = None,
     token_counts: list[int] | None = None,
+    probes: Probes | None = None,
 ) -> dict:
     """Train `model` in place. Returns a summary; True in `cancelled` means the
     run stopped at a step boundary with its weights intact.
 
     `token_counts` is the histogram the corpus build recorded, forwarded to the
     diagnostics so they never have to derive it from the corpus.
+
+    `probes` are the fixed batches a fine-tune is measured against — see
+    `diagnostics.Probes`. This function does not build them: what a base model
+    is, and where its corpus and the held-out chat live, is `orchestrate/sft.py`'s
+    to know. Nothing here is retained past the return, so the reference model
+    (when one was asked for) is collectable before `release_device` runs.
     """
     model.to(device)
     model.train()
@@ -215,7 +222,7 @@ def run(
             f"batches. Add data, or lower either setting."
         )
 
-    collector = _LazyCollector(model, corpus, token_counts)
+    collector = _LazyCollector(model, corpus, token_counts, probes)
 
     # Cadence follows the run's length, so a 200-step run and a 200k-step run
     # both draw a curve rather than a line or a flood.
@@ -296,7 +303,7 @@ def run(
         steps_this_epoch = stage_steps[stage_index]
         stream = plan_mod.EpochStream(corpus, data_plan, epoch, mask, stage.documents)
 
-        for inputs, targets, weights in plan_mod.iter_batches(
+        for inputs, targets, weights, offset in plan_mod.iter_batches(
             stream, cfg.ctx_window, cfg.batch_size, mask is not None, staging
         ):
             # Cooperative cancellation at a step boundary: the weights are
@@ -332,7 +339,7 @@ def run(
                 # and under no_grad: the training step below is then untouched by
                 # the fact that this one is measured.
                 if diagnosing:
-                    collector().observe(x)
+                    collector().observe(x, y, w, _diagnosed_documents(stream, offset, cfg, w))
                 # Cross-entropy is on autocast's fp32 list, so the softmax and
                 # its gradient run in full precision regardless of amp_dtype.
                 loss = forward(x, y, w)
@@ -391,14 +398,36 @@ class _LazyCollector:
     cost is off the critical path either way.
     """
 
-    def __init__(self, model: Transformer, corpus: np.ndarray, counts: list[int] | None):
-        self._args = (model, corpus, counts)
+    def __init__(
+        self,
+        model: Transformer,
+        corpus: np.ndarray,
+        counts: list[int] | None,
+        probes: Probes | None = None,
+    ):
+        self._args = (model, corpus, counts, probes)
         self._collector: Collector | None = None
 
     def __call__(self) -> Collector:
         if self._collector is None:
             self._collector = Collector(*self._args)
         return self._collector
+
+
+def _diagnosed_documents(stream, offset: int, cfg: TrainConfig, weights) -> np.ndarray | None:
+    """Which conversation each position of the diagnosed rows came from.
+
+    None without a mask: a pretrain corpus has documents too, but per-document
+    loss is a question about a *curated* dataset, and walking the span table on
+    a pretrain run would be cost for a chart that run does not draw.
+
+    Only the rows `Collector.observe` actually runs over — the walk is over the
+    window, not the batch, and the arrays have to be the same length.
+    """
+    if weights is None:
+        return None
+    rows = diagnostic_rows(cfg.batch_size)
+    return stream.document_starts(offset, offset + rows * cfg.ctx_window)
 
 
 class _LossLog:

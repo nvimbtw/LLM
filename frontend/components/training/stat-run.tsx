@@ -2,6 +2,14 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+// A figure's number: compact, or an em dash for one nothing measured. Shared by
+// every training figure so a count reads the same in all of them — and so "not
+// measured" is one spelling rather than each caller's own.
+export function compact(n: number | undefined | null): string {
+  if (n == null) return "—"
+  return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
+}
+
 // A single figure in the stat run: a big tabular value over a muted label. No
 // box, no fill of its own — the hairline rules between cells do the separating,
 // so the numbers read like a figure's data line, not a grid of cards.

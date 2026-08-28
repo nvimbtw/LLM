@@ -123,12 +123,14 @@ class EpochStream:
     def __len__(self) -> int:
         return int(self.offsets[-1])
 
-    def gather(self, lo: int, hi: int, tokens: np.ndarray, weights: np.ndarray | None = None):
-        """Copy the epoch's [lo, hi) into `tokens`, and its mask into `weights`.
+    def _runs(self, lo: int, hi: int):
+        """Walk the epoch's [lo, hi) as (at, take, source, document) runs.
 
-        Writes into caller-owned buffers rather than allocating: the caller reuses
-        one pinned pair for the whole run, and an allocation per batch would undo
-        the point of pinning it.
+        `source` is where the run begins in the *corpus* and `document` where the
+        document containing it does; both are -1 for the separator that joins two
+        documents. One walk, because `gather` and `document_starts` read the same
+        shuffled table the same way and a second copy of this arithmetic would
+        misalign the two the first time either moved.
         """
         doc = int(np.searchsorted(self.offsets, lo, side="right")) - 1
         at = 0
@@ -136,24 +138,52 @@ class EpochStream:
             within = lo + at - self.offsets[doc]
             length = self.lengths[doc]
             if within < length:
-                # Inside a document: copy as much of it as still fits.
+                # Inside a document: as much of it as still fits.
                 take = int(min(length - within, hi - lo - at))
-                src = int(self.starts[doc] + within)
-                tokens[at : at + take] = self.corpus[src : src + take]
-                if weights is not None:
-                    weights[at : at + take] = (
-                        self.mask[src : src + take] if self.mask is not None else 1
-                    )
+                origin = int(self.starts[doc])
+                yield at, take, origin + int(within), origin
             else:
                 # The separator that joins this document to the next. Scaffold,
                 # so it is never a trainable target.
                 take = 1
+                yield at, 1, -1, -1
+                doc += 1
+            at += take
+
+    def gather(self, lo: int, hi: int, tokens: np.ndarray, weights: np.ndarray | None = None):
+        """Copy the epoch's [lo, hi) into `tokens`, and its mask into `weights`.
+
+        Writes into caller-owned buffers rather than allocating: the caller reuses
+        one pinned pair for the whole run, and an allocation per batch would undo
+        the point of pinning it.
+        """
+        for at, take, src, _ in self._runs(lo, hi):
+            if src < 0:
                 tokens[at] = self.eot_id
                 if weights is not None:
                     weights[at] = 0
-                doc += 1
-            at += take
+                continue
+            tokens[at : at + take] = self.corpus[src : src + take]
+            if weights is not None:
+                weights[at : at + take] = (
+                    self.mask[src : src + take] if self.mask is not None else 1
+                )
         return tokens
+
+    def document_starts(self, lo: int, hi: int) -> np.ndarray:
+        """Which document each of the epoch's [lo, hi) tokens came from, named by
+        the document's own offset in the corpus. -1 marks a separator.
+
+        The corpus offset rather than a row index because the row order is this
+        epoch's permutation: the same conversation is a different row next epoch,
+        and a per-conversation reading has to be the same conversation across the
+        whole run to be worth taking. Only the diagnostics call this, and only on
+        a diagnosed step — it is a walk over the window, not over the epoch.
+        """
+        out = np.empty(hi - lo, dtype=np.int64)
+        for at, take, _, document in self._runs(lo, hi):
+            out[at : at + take] = document
+        return out
 
 
 def batch_count(stream_len: int, ctx_window: int, batch_size: int) -> int:
@@ -169,7 +199,13 @@ def iter_batches(
     weighted: bool = False,
     allocate=None,
 ):
-    """Yield (inputs, targets, weights) as arrays of [batch, ctx_window].
+    """Yield (inputs, targets, weights, offset) — arrays of [batch, ctx_window],
+    and where the batch starts in the epoch.
+
+    `offset` exists for the diagnostics: attributing a loss to the conversation
+    it came from needs `EpochStream.document_starts` over exactly this window,
+    and the position of a batch within the epoch is not recoverable downstream
+    once windows start being skipped.
 
     Targets are inputs shifted one token left — the next-token objective. The
     trailing partial batch is dropped rather than padded: padding would train the
@@ -206,4 +242,5 @@ def iter_batches(
             tokens[:span].reshape(batch_size, ctx_window),
             tokens[1:].reshape(batch_size, ctx_window),
             weights[:span].reshape(batch_size, ctx_window) if weights is not None else None,
+            offset,
         )

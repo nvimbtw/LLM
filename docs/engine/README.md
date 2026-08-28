@@ -125,6 +125,52 @@ A build packed before the table moved out of `segments.json` carries its rows
 inline there. Those are read, not invalidated — a repacked corpus is hours of
 work, and `spans.from_sidecar` takes either shape.
 
+### What phase 1 measures, and why it is measured where it is
+
+`train.Tokenize` is the phase-1 frame, and its field names are the frontend's
+`TokenizeStats` verbatim — a rename anywhere between here and the panel arrives
+as `undefined`. A field a phase does not measure is **omitted, not zeroed**, so
+"—" means nobody measured rather than "none".
+
+Beyond the counters, a pretrain build reports what the tokenization and the
+packing actually produced: `fertility` (chars per token, per source),
+`dead_vocab` (ids the corpus never uses — tied embeddings make each one a row
+paid for in every forward pass), `merge_sequence` (the head of the merge list in
+learned order), `boundary_straddle` (the share of `ctx_window` windows holding an
+`<|endoftext|>`) and `doc_length_hist`/`docs_over_ctx` (document lengths against
+the window). Three constraints shape where each is computed:
+
+- **Nothing gets a second pass over the corpus.** Corpora reach 4.17B tokens.
+  Fertility is two counters per dataset in the pack's existing stream; dead vocab
+  and the merge counts read the histogram the pack already records
+  (`diagnostics.dead_ids`); the straddle and the length histogram are
+  `spans.window_fit` over the document table, blocked at `MEASURE_BLOCK` rows so
+  peak memory is ~42 MB whatever the build weighs. Measured at the 5B-token,
+  8.3M-document scale: 0.25 s for `window_fit`, 1.3 s for the per-document
+  counters spread across the whole pack, and milliseconds for the rest.
+- **A metric that only a fresh build could report would read as missing on every
+  reused one**, which is the same lie as a zero. So the per-dataset counters go
+  into `segments.json` beside the histogram, and `train._phase_one` builds the
+  closing frame off the corpus on disk for a fresh build and a reused one alike.
+- **`ctx_window` is not part of the corpus key**, so nothing measured against it
+  belongs in the sidecar — the same build is legitimately trained at two window
+  sizes. `window_fit` therefore runs at report time, not at pack time.
+
+The merge sequence's `count` is how often the merged token occurs in the packed
+corpus, **not** the pair frequency that earned the merge: the `tokenizers`
+trainer keeps that only while it is choosing and exposes neither it nor a
+callback, so having it would mean reimplementing BPE training beside the library
+that does it. Read the sequence's *order* as the tokenizer's story and the count
+as what the corpus made of it.
+
+### What a training run reports
+
+`llm/train/progress.py` and `llm/train/diagnostics.py` — the frames a run
+publishes, the sampling budget they live inside, and the fine-tuning telemetry
+that is present on an SFT run and absent on a pretrain one. Field names are
+identical from the loop to the chart, and anything unmeasured is **absent, not
+zero**. See [`telemetry.md`](telemetry.md).
+
 ## Schema
 
 Database: `ENGINE_DATABASE_URL`, default `postgresql+psycopg://localhost/slate_engine`,
@@ -245,6 +291,46 @@ answer would leave a `<|tool-result|>` naming no call — see the tool section
 below for why that shape is never allowed to exist. `context_floor` shifts
 forward past it rather than trying to pull the call back in.
 
+### Reading a head's attention
+
+`POST /models/{model_name}/attention` takes `{text, layer, head}` and answers
+with that one head's attention matrix and the token strings on both axes — the
+labels are most of the value; an unlabelled matrix is a grey square.
+`api/routes/attention.py` is the route, `llm/orchestrate/attention.py` the work.
+
+**Nothing is recorded by default and this endpoint is the only thing that ever
+changes that.** `Attention.record_attention` — the same flag the diagnostics
+collector uses, not a second mechanism — is flipped on for the asked-for block
+alone, for one `no_grad` forward, and off again in a `finally` so a pass that
+raises cannot leave the process off the fused kernel. Every other layer keeps
+`scaled_dot_product_attention` for that forward, and so does the whole model
+after it.
+
+Three constraints shape the rest of it:
+
+- **On demand, never streamed.** At 512d/8h/6L/ctx512 the full tensor is ~8 MiB
+  a layer and ~50 MiB a sample, so recording a run would carry ~1.5 GiB. One
+  `(layer, head)` matrix at ctx 512 is 512×512 fp32 — exactly 1 MiB — and is
+  affordable precisely because a request is what brings it into existence.
+- **The sequence is bounded**, at `min(MAX_SEQUENCE, model.ctx_window)` with
+  `MAX_SEQUENCE = 512`. The matrix is quadratic in that number, so it is the
+  number that has to be capped rather than a byte size: 512 tokens is 1 MiB of
+  fp32, 1024 is 4, 4096 would be 64 out of a route any signed-in person can
+  call. Longer text is a 400 naming both the count and the ceiling, not a
+  truncation — a silently shortened text answers a question nobody asked.
+- **The matrix travels as base64 fp32, row-major**, not as JSON numbers. 1 MiB
+  of weights is 1.33 MiB base64 against 2.5–3 MiB printed to six decimals and
+  ~5 MiB unrounded, and it needs no decision about how much precision to discard.
+  fp16 would halve it again and was not taken: no browser has a native half
+  decoder, and it would put "the rows sum to 1" inside a tolerance instead of at
+  the exactness the model computed it to.
+
+The model is the one `orchestrate/chat.py` caches, so a chat generating in
+another thread during the window takes the explicit-softmax path for one block.
+That is the same arithmetic (`bench.py` pins the two paths to 1e-5) and it is
+slower; the alternative is a second resident copy of the weights, which is the
+cost that cache exists to avoid.
+
 ## Tools
 
 A tool call is a leaf block inside an assistant turn. Every tool is called
@@ -361,6 +447,10 @@ The renamed row is at its original init until an SFT run touches it, which
   the pool never being released, the first diagnosed step set the run's memory
   ceiling for good. See
   [`../decisions/gpu-memory-is-handed-back.md`](../decisions/gpu-memory-is-handed-back.md).
+  The corollary is that **everything a diagnostic wants must ride that one
+  pass**: the SFT loss splits are re-weightings of the softmax it already
+  computed, not a second forward. [`telemetry.md`](telemetry.md) has the
+  measured numbers.
 - **The chat cache holds a model until something evicts it.**
   `orchestrate/chat.py`'s `_CACHE` keeps one model resident per process and only
   ever replaces it when a later chat names a different one. One device means that

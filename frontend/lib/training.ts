@@ -112,12 +112,93 @@ export type RunPhase =
   | "cancelled"
   | "failed"
 
+// One source's share of the packed corpus. Fertility is per source because it is
+// uneven across sources — code encodes at ~2 chars a token where prose runs at ~4
+// — and that unevenness is how the context budget is really being spent.
+export interface Fertility {
+  dataset: string
+  chars_per_token: number
+  tokens: number
+}
+
+// One learned merge. `count` is how often the merged token occurs in the packed
+// corpus, NOT the pair frequency that earned the merge — the tokenizers library
+// keeps that only while it is choosing. See the engine's `bpe.merge_sequence`.
+export interface Merge {
+  token: string
+  count?: number
+}
+
+// One document's presence inside one sampled training window. `start`/`length`
+// are tokens from the window's first slot, clipped to it — so the window's own
+// width is what places them, and that width is the run's `ctx_window` rather than
+// anything on the frame (one packed corpus is legitimately trained at two).
+//
+// `opens`/`closes` are what the clipping loses: whether the document's own first
+// and last token are in this window. An edge that is neither is the window's edge
+// and not a boundary the model attends across — drawing the two alike is what
+// turns one book into nine unrelated documents.
+export interface RibbonSegment {
+  dataset: number
+  start: number
+  length: number
+  opens: boolean
+  closes: boolean
+}
+
+// `overflow` is the documents past the engine's per-window cap. Non-zero means
+// `segments` stops short of the window's width on purpose: the tail is real and
+// too fine to draw as bars.
+export interface RibbonWindow {
+  index: number
+  segments: RibbonSegment[]
+  overflow: number
+}
+
+// The concrete picture behind `boundary_straddle`. `datasets` is the name table
+// `RibbonSegment.dataset` indexes. Bounded by two engine-side constants
+// (`RIBBON_WINDOWS` × `RIBBON_SEGMENTS`), never by the size of the corpus.
+export interface Ribbon {
+  datasets: string[]
+  windows: RibbonWindow[]
+}
+
 export interface TokenizeStats {
   // Pretrain phase-1 stats (BPE tokenizer + corpus build).
+  //
+  // `documents` rather than `files`: the text arrives from the data engine a page
+  // at a time and there are no files to count. `files` is kept for a run queued
+  // before that, whose stored frames still have to render.
+  documents: number
   files: number
   chars: number
   vocab: number
   merges: number
+  // What the build produced, as opposed to how much of it there was. Every one is
+  // measured off the packed corpus and its document table, so a run that reused a
+  // build reports them exactly as the run that made it did.
+  //
+  // Most tokens first, and bounded by the engine.
+  fertility: Fertility[]
+  // Token ids the corpus never uses. The embedding table is tied, so each one is a
+  // row read in every forward pass and trained by nothing — read against `vocab`.
+  dead_vocab: number
+  // The head of the merge list, in the order BPE learned it.
+  merge_sequence: Merge[]
+  // The fraction of `ctx_window` training windows holding an <|endoftext|>: how
+  // often the model attends across a document boundary. A packing measure, and
+  // the only direct one there is.
+  boundary_straddle: number
+  // Document lengths against `ctx_window` — fixed-width bins reaching two windows,
+  // as fractions summing to ~1, the last bin absorbing everything beyond — plus
+  // the share of documents no single window can hold. The pretrain counterpart of
+  // `skipped_too_long`, except nothing is skipped: the document is split across
+  // windows instead.
+  doc_length_hist: number[]
+  docs_over_ctx: number
+  // A sample of actual training windows, each broken into the documents inside
+  // it — what `boundary_straddle` looks like rather than what it measures.
+  span_ribbon: Ribbon
   // SFT phase-1 stats (chat dataset build). The backend reuses the `tokenize`
   // frame for SFT's "build dataset" phase but emits these fields instead of the
   // pretrain ones; their presence is how the panel tells the two modes apart.
@@ -163,6 +244,35 @@ export interface DiagPoint {
   // 3-D PCA projection of the same tokens ([x, y, z] per token, same principal axes
   // as `emb_pca`) — the vertices of the rotating embedding globe.
   emb_pca3: [number, number, number][]
+
+  // ── Fine-tuning ───────────────────────────────────────────────────────────
+  // Every field below is OPTIONAL because the engine omits what it did not
+  // measure rather than sending a zero (see `Diagnostics.as_dict`): a pretrain
+  // run carries none of them, and an SFT run carries only the ones it could
+  // reach. `undefined` means "not measured" and must render as an absent figure,
+  // never as a point at 0 — a zero here reads as a perfect loss.
+
+  // Cross-entropy on a fixed batch of the base model's pretraining text, which
+  // an SFT run never trains on. Climbing is catastrophic forgetting; this is the
+  // number that says when to stop.
+  pretrain_loss?: number
+  // The diagnosed window's loss split by the SFT mask: the assistant tokens the
+  // run takes gradient on, and the prompt region it only conditions on.
+  loss_masked?: number
+  loss_unmasked?: number
+  // Mean trainable-token loss per equal slice of the context window, front to
+  // back. A fixed 16 buckets whatever `ctx_window` the run trains at; a bucket
+  // with no trainable token in the window is null.
+  loss_by_position?: (number | null)[]
+  // The hardest conversations in the diagnosed window, loss-descending, paired
+  // index-for-index with the corpus offset that names each. The same
+  // conversation is the same offset for the whole run.
+  conversation_loss?: number[]
+  conversation_start?: number[]
+  // Mean KL(base ‖ tuned) in nats per token on a fixed held-out chat batch —
+  // how far the tune has moved from the model it started as. Present only when
+  // the run opted in: it keeps a second copy of the base model resident.
+  base_kl?: number
 }
 
 export interface TrainStats {

@@ -114,6 +114,16 @@ in `engine/api/routes/attachments.py`. What the engine does with them —
 and, more to the point, what it does not — is
 [`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
 
+**One proxy route is `AuthUser` where its neighbours on the same resource are
+`AdminUser`.** `POST /models/{id}/attention` forwards to the engine's attention
+endpoint, and it is not admin work: it is one forward pass over a model anyone
+signed in can already hold a conversation with, and reading where one of its
+heads looks is strictly less than that. Editing or deleting a model next door
+stays admin, because those change what everyone else sees. What keeps a
+quadratic response off an open route is the engine's own bound on the sequence
+(see [`../engine/README.md`](../engine/README.md)) — a long text comes back as a
+400, so nothing here has to restate a ceiling it would then have to keep in step.
+
 **Two routes are spelled almost alike and are not the same thing.**
 `POST /runs/tokenize` queues a vocabulary *build* — minutes of CPU, admin work,
 a job with a page. `POST /tokenize/count` measures a string under a model's

@@ -63,6 +63,7 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
         loss={run.loss}
         batchSeries={run.batchSeries}
         curriculum={config?.curriculum ?? []}
+        ctxWindow={config?.ctx_window ?? 0}
       />
 
       <DiagnosticsPanel diag={run.diag} />

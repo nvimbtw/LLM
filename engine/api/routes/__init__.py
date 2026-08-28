@@ -2,6 +2,7 @@
 
 from api.routes import (
     attachments,
+    attention,
     benchmarks,
     chats,
     inference,
@@ -16,6 +17,7 @@ ROUTERS = [
     attachments.router,
     chats.router,
     models.router,
+    attention.router,
     tokenizers.router,
     benchmarks.router,
     inference.router,

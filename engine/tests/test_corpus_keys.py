@@ -12,7 +12,9 @@ import pytest
 from llm import storage
 from llm.config import CurriculumStage, TrainConfig
 from llm.corpus import pack, remote, vocab
+from llm.corpus.spans import LENGTH_HIST_BINS
 from llm.orchestrate import train as train_pipeline
+from llm.train.progress import Tokenize
 from tests.fixtures.tiny_env import TINY_DATASET, TINY_DATASET_ID, selected
 
 
@@ -261,3 +263,41 @@ def test_a_reused_corpus_still_reports_which_markers_it_contained(data_root, tra
     assert second["dataset"]["reused"] is True
     assert second["dataset"]["special_ids_seen"] == first["dataset"]["special_ids_seen"]
     assert sft._base_special_ids(trained_id) == first["dataset"]["special_ids_seen"]
+
+
+def test_a_reused_corpus_measures_the_same_as_the_build_that_made_it(data_root, trained_id):
+    """Every phase-1 measurement is taken off the corpus on disk rather than off
+    the pack that wrote it, so reuse reports the same numbers. A metric only a
+    fresh build could report would read as "never measured" on every cached run,
+    which is precisely what the omission convention is meant to mean."""
+    cfg = TrainConfig(
+        model_name=trained_id,
+        datasets=[TINY_DATASET_ID],
+        max_vocab=512,
+        dimensions=16,
+        heads=2,
+        layers=1,
+        ctx_window=16,
+        batch_size=2,
+        epochs=1,
+    )
+
+    fresh = _last_build_frame(cfg)
+    reused = _last_build_frame(cfg)
+
+    assert fresh.fertility and fresh.merge_sequence
+    assert fresh.dead_vocab is not None
+    assert fresh.boundary_straddle is not None
+    assert len(fresh.doc_length_hist) == LENGTH_HIST_BINS
+    assert vars(reused) == vars(fresh)
+
+
+def _last_build_frame(cfg: TrainConfig) -> Tokenize:
+    frames: list[Tokenize] = []
+    train_pipeline.run(
+        cfg,
+        on_progress=lambda frame: (
+            frames.append(frame) if isinstance(frame, Tokenize) else None
+        ),
+    )
+    return frames[-1]

@@ -35,7 +35,13 @@ export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
       >
         <div className="space-y-5">
           <dl className="grid grid-cols-3 gap-x-8 gap-y-5 border-y border-border py-4">
-            <Figure label="Files" value={count(tokenize.files)} />
+            {/* `documents`, not `files`: a vocabulary is learned from documents
+                the data engine serves. `files` is what a run queued before that
+                move reported, and its stored frames still render here. */}
+            <Figure
+              label="Documents"
+              value={count(tokenize.documents ?? tokenize.files)}
+            />
             <Figure label="Vocab" value={count(tokenize.vocab)} />
             <Figure label="Merges" value={count(tokenize.merges)} />
           </dl>

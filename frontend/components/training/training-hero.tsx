@@ -65,11 +65,13 @@ function describe(
           ? tokenize.conversations != null
             ? `${compact(tokenize.conversations)} conversations rendered`
             : "Rendering chat conversations into a masked dataset…"
-          : tokenize.vocab != null
-            ? `Tokenizer trained — packing ${compact(tokenize.files)} file(s)`
-            : tokenize.files != null
-              ? `${compact(tokenize.files)} file(s) collected — training the tokenizer…`
-              : "Collecting source files…",
+          : // `documents`, not `files`: the text comes from the data engine a page
+            // at a time. `files` is what a run queued before that move reported.
+            tokenize.vocab != null
+            ? `Tokenizer trained — packing ${compact(tokenize.documents ?? tokenize.files)} document(s)`
+            : (tokenize.documents ?? tokenize.files) != null
+              ? `${compact(tokenize.documents ?? tokenize.files)} document(s) collected — training the tokenizer…`
+              : "Collecting documents…",
       }
     case "training": {
       const stage = train.stage_name?.trim()

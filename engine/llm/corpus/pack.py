@@ -69,6 +69,11 @@ KEY_SLUG_DATASETS = 2
 KEY_FINGERPRINT_CHARS = 8
 KEY_DIGEST_CHARS = 10
 
+#: How many datasets the reported fertility names, most tokens first. A
+#: selection is a handful, and the cap is what keeps a fifty-stage curriculum
+#: from putting a list nobody reads on every phase-1 frame.
+FERTILITY_DATASETS = 12
+
 #: One curriculum stage as the corpus knows it: what it was called, and which
 #: datasets it drew from, each resolved against the data engine. Epochs are
 #: absent on purpose — see `corpus_key`.
@@ -105,6 +110,15 @@ class PackStats:
     # small trained embedding is indistinguishable from an untrained one) and not
     # from corpus.bin, which the next pretrain overwrites.
     special_ids_seen: list[int] = field(default_factory=list)
+    # Characters read and tokens written, per dataset: `[{dataset, chars, tokens}]`.
+    #
+    # Their ratio is fertility, and it is per source because it is uneven across
+    # sources — code encodes at ~2 chars a token where prose runs at ~4, so a
+    # selection's mix decides how much text a context window actually holds, and
+    # how large a vocabulary is worth paying for. Neither number survives the
+    # pack: the text is dropped as it is encoded, and the tokens are a flat
+    # stream with only the span table to say which document they came from.
+    fertility: list[dict] = field(default_factory=list)
 
 
 def resolve(client, stages) -> list[StageSelection]:
@@ -186,6 +200,11 @@ def pack(
     seen: set[int] = set()
     chars = 0
     corpus_len = 0
+    # Two counters per dataset rather than per document: a handful of entries
+    # whatever the corpus is, and the only moment the text and its encoding are
+    # both in hand.
+    read_chars: dict[str, int] = {}
+    written_tokens: dict[str, int] = {}
 
     storage.ensure_dir(storage.pretrain_dataset_dir(key))
 
@@ -238,6 +257,11 @@ def pack(
                 buffer.extend(ids)
                 buffer.append(eot_id)
                 corpus_len += len(ids) + 1
+                # The document's own tokens, as `spans` records them — the
+                # separator belongs to the packing, not to the source.
+                written_tokens[source.dataset] = (
+                    written_tokens.get(source.dataset, 0) + len(ids)
+                )
                 seen.update(marker_ids.intersection(ids))
 
                 if len(buffer) >= FLUSH_TOKENS:
@@ -249,6 +273,7 @@ def pack(
 
         for source in documents_in:
             chars += len(source.text)
+            read_chars[source.dataset] = read_chars.get(source.dataset, 0) + len(source.text)
             seen_datasets.add(source.dataset)
             batch.append(source)
             texts.append(source.text)
@@ -264,6 +289,10 @@ def pack(
 
     partial.replace(corpus)
 
+    per_dataset = [
+        {"dataset": name, "chars": count, "tokens": written_tokens.get(name, 0)}
+        for name, count in read_chars.items()
+    ]
     spans = documents.build()
     spans.save(storage.pretrain_spans_path(key))
 
@@ -280,6 +309,11 @@ def pack(
                 "stages": stages or [],
                 "special_ids_seen": sorted(seen),
                 "token_counts": counts.tolist(),
+                # Beside the build rather than only in the run that made it: a
+                # reused corpus reports what it is from here, and a metric that
+                # existed only on a fresh build would read as missing on every
+                # cached one.
+                "fertility": per_dataset,
                 # The rows themselves are in spans.npy; what stays here is the
                 # count a person reads and the name table those rows index into.
                 "documents": len(spans),
@@ -297,6 +331,7 @@ def pack(
         corpus_len=corpus_len,
         documents=len(spans),
         special_ids_seen=sorted(seen),
+        fertility=per_dataset,
     )
 
 
@@ -334,12 +369,40 @@ def load_segments(key: str) -> tuple[int, Spans, dict]:
         # Per-token frequencies, for the training loop's diagnostics. None on a
         # build that predates them, and then the corpus is sampled instead.
         "token_counts": raw.get("token_counts"),
+        # Characters read and tokens written per dataset. Absent on a build made
+        # before it was recorded — see `fertility`.
+        "fertility": raw.get("fertility"),
     }
     return (
         raw["eot_id"],
         spans_mod.from_sidecar(storage.pretrain_spans_path(key), raw),
         info,
     )
+
+
+def fertility(info: dict) -> list[dict] | None:
+    """Chars per token by source, from what `load_segments` read.
+
+    None for a build packed before the counters existed, which is the difference
+    between "this corpus has no uneven sources" and "nobody measured" — the same
+    distinction `special_ids_seen` draws, and for the same reason.
+
+    A dataset that encoded to nothing is dropped rather than divided by zero: it
+    contributed no context budget, so it has no fertility to report.
+    """
+    recorded = info.get("fertility")
+    if not recorded:
+        return None
+    measured = [one for one in recorded if one.get("tokens")]
+    measured.sort(key=lambda one: one["tokens"], reverse=True)
+    return [
+        {
+            "dataset": one["dataset"],
+            "chars_per_token": one["chars"] / one["tokens"],
+            "tokens": one["tokens"],
+        }
+        for one in measured[:FERTILITY_DATASETS]
+    ] or None
 
 
 def is_built(key: str, stages: list[StageSelection], fingerprint: str) -> bool:

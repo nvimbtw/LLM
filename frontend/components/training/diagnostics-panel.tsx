@@ -4,6 +4,7 @@ import * as React from "react"
 import { Pause, Play } from "lucide-react"
 import {
   Area,
+  Bar,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -32,10 +33,12 @@ import {
   axisProps,
   EMB_COLOR,
   embRankColor,
+  finetuneColors,
   gridProps,
   headColor,
   layerColor,
   MUTED_SERIES,
+  positionColor,
   yAxisProps,
 } from "@/components/training/chart-theme"
 import { EmbeddingGlobe } from "@/components/training/embedding-globe"
@@ -50,6 +53,12 @@ const pos = (v: number): number | null =>
 
 // A finite reading for a linear axis (activations, entropy): non-finite → null.
 const fin = (v: number): number | null => (Number.isFinite(v) ? v : null)
+
+// The same, for a reading the engine may not have taken at all. The fine-tuning
+// fields are absent rather than zero when unmeasured (see `DiagPoint`), and the
+// whole point of that convention is lost if `undefined` becomes 0 here.
+const opt = (v: number | null | undefined): number | null =>
+  v != null && Number.isFinite(v) ? v : null
 
 // Compact axis/tooltip number: scientific for the very small/large (grad norms,
 // ratios span decades), otherwise a short fixed form.
@@ -246,6 +255,63 @@ function ActivationHeatmap({ diag }: { diag: DiagPoint[] }) {
         ))}
       </div>
     </div>
+  )
+}
+
+// The conversations costing the fine-tune most, in the window the latest report
+// was taken over. Horizontal because the labels are corpus offsets, which do not
+// fit under a tick — otherwise the same recharts + chart-theme idiom as every
+// other figure here. A label is an offset because that is what identifies a
+// conversation for the whole run; a row index would be a different conversation
+// each epoch.
+function HardestConversations({ latest }: { latest: DiagPoint }) {
+  const rows = React.useMemo(
+    () =>
+      (latest.conversation_start ?? []).map((start, i) => ({
+        conversation: `@${start.toLocaleString()}`,
+        loss: opt(latest.conversation_loss?.[i]),
+      })),
+    [latest]
+  )
+
+  if (rows.length === 0) {
+    return (
+      <FigurePlaceholder className="h-64">
+        No conversation had a trainable token in the diagnosed window…
+      </FigurePlaceholder>
+    )
+  }
+
+  return (
+    <ChartContainer
+      config={{ loss: { label: "Loss", color: ACCENT_COLOR } } satisfies ChartConfig}
+      className="aspect-auto h-72 w-full"
+    >
+      <ComposedChart
+        data={rows}
+        layout="vertical"
+        margin={{ left: 4, right: 12, top: 4 }}
+      >
+        <CartesianGrid horizontal={false} />
+        <XAxis type="number" {...axisProps} tickFormatter={sci} />
+        <YAxis
+          type="category"
+          dataKey="conversation"
+          {...yAxisProps}
+          width={88}
+          minTickGap={0}
+        />
+        <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
+        <Bar
+          dataKey="loss"
+          name="Loss"
+          fill={ACCENT_COLOR}
+          fillOpacity={0.75}
+          radius={2}
+          isAnimationActive={false}
+        />
+      </ComposedChart>
+    </ChartContainer>
   )
 }
 
@@ -613,6 +679,63 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     mean: { label: "Mean cosine", color: EMB_COLOR },
   } satisfies ChartConfig
 
+  // ── fine-tuning: present only on a run that measured them ───────────────────
+  // An SFT run sends these keys and a pretrain run sends none, so their presence
+  // *is* how the panel tells the two modes apart — there is no mode flag on a
+  // frame, and there does not need to be one.
+  const fineTuned = diag.some((d) => d.loss_masked !== undefined)
+  const forgetting = diag.some((d) => d.pretrain_loss !== undefined)
+  const anchored = diag.some((d) => d.base_kl !== undefined)
+  const bucketCount = last?.loss_by_position?.length ?? 0
+
+  const finetuneRows = React.useMemo(
+    () =>
+      diag.map((d) => ({
+        step: d.step,
+        masked: opt(d.loss_masked),
+        unmasked: opt(d.loss_unmasked),
+        pretrain: opt(d.pretrain_loss),
+        kl: opt(d.base_kl),
+      })),
+    [diag]
+  )
+  const finetuneTraces: Trace[] = [
+    { key: "masked", name: "Assistant tokens", color: finetuneColors.masked, width: 2 },
+    {
+      key: "unmasked",
+      name: "Prompt tokens",
+      color: finetuneColors.unmasked,
+      dash: "3 3",
+    },
+    ...(forgetting
+      ? [
+          {
+            key: "pretrain",
+            name: "Held-out pretrain",
+            color: finetuneColors.pretrain,
+          },
+        ]
+      : []),
+  ]
+
+  const positionRows = React.useMemo(
+    () =>
+      diag.map((d) => {
+        const row: Record<string, number | null> = { step: d.step }
+        d.loss_by_position?.forEach((v, i) => (row[`p${i}`] = opt(v)))
+        return row
+      }),
+    [diag]
+  )
+  const positionTraces: Trace[] = Array.from(
+    { length: bucketCount },
+    (_, i) => ({
+      key: `p${i}`,
+      name: `Bucket ${i}`,
+      color: positionColor(i, bucketCount),
+    })
+  )
+
   const ready = diag.length > 1
   const ramp = (
     <RampLegend
@@ -639,6 +762,49 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
         </FigurePlaceholder>
       ) : (
         <div className="space-y-8">
+          {fineTuned && (
+            <>
+              <Figure caption="Fine-tuning loss — the assistant tokens trained on, the prompt only conditioned on, and held-out pretraining text">
+                <TraceChart rows={finetuneRows} traces={finetuneTraces} />
+              </Figure>
+
+              <Figure
+                caption="Loss by position in the context window — front to back, trainable tokens only"
+                aside={
+                  <RampLegend
+                    from={positionColor(0, bucketCount)}
+                    to={positionColor(bucketCount - 1, bucketCount)}
+                    label="position"
+                  />
+                }
+              >
+                <TraceChart rows={positionRows} traces={positionTraces} />
+              </Figure>
+
+              <Figure caption="Hardest conversations in the latest diagnosed window, by mean loss on their assistant tokens (labelled by corpus offset)">
+                {last ? (
+                  <HardestConversations latest={last} />
+                ) : (
+                  <FigurePlaceholder className="h-64">
+                    Waiting for a diagnosed window…
+                  </FigurePlaceholder>
+                )}
+              </Figure>
+
+              {anchored && (
+                <Figure caption="KL from the base model — nats per token on a fixed held-out chat batch">
+                  <TraceChart
+                    rows={finetuneRows}
+                    traces={[
+                      { key: "kl", name: "KL(base ‖ tuned)", color: EMB_COLOR },
+                    ]}
+                    domain={[0, "auto"]}
+                  />
+                </Figure>
+              )}
+            </>
+          )}
+
           <Figure
             caption="Gradient L2 norm — per layer, global, and the shared tables (log scale)"
             aside={ramp}

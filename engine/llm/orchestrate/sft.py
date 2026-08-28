@@ -14,20 +14,24 @@ import json
 import time
 from threading import Event
 
+import numpy as np
+
 from llm import storage
+from llm.chat import template
 from llm.chat.template import Reasoning
 from llm.config import SftConfig, TrainConfig
-from llm.corpus import bpe, remote, sft as sft_corpus, special
+from llm.corpus import bpe, pack, remote, sft as sft_corpus, special
+from llm.eval import chat as chat_eval
 from llm.model import checkpoint
 from llm.train import loop
+from llm.train.diagnostics import DIAGNOSTIC_ROWS, Probes
 from llm.train.plan import DataPlan
 from llm.train.progress import ProgressCallback, Tokenize, log_progress
 from llm.train.warm_start import untrained_marker_ids, warm_start_embeddings
 
 
-def _base_special_ids(base_model: str) -> list[int] | None:
-    """Which markers the base model was trained on, or None when that was never
-    recorded (a model trained before the field existed).
+def _base_run(base_model: str) -> dict:
+    """What the run that produced the base model recorded about itself.
 
     Two meta.json shapes are in circulation and both are live, because two
     writers produce them. A run driven straight through the engine keeps what
@@ -35,28 +39,150 @@ def _base_special_ids(base_model: str) -> list[int] | None:
     has its meta *rewritten* on the way out by `training::write_meta`, which
     stores this whole result dict under the key `"dataset"` instead.
 
-    So the run result is `result` or `dataset`, and the corpus stats are the
-    `dataset` *inside* it either way. Reading only the first spelling made this
-    return None for every backend-launched run — `untrained_marker_ids` then saw
-    "unknown" and reset nothing, and the ~28 chat-scaffold markers the pretrain
-    never contained entered SFT at random init. That is exactly the failure
+    Reading only the first spelling made `_base_special_ids` return None for
+    every backend-launched run — `untrained_marker_ids` then saw "unknown" and
+    reset nothing, and the ~28 chat-scaffold markers the pretrain never contained
+    entered SFT at random init. That is exactly the failure
     `llm/train/warm_start.py` exists to prevent, and it was silent: the only
     sign was `warm_started: 0` on a base that had plainly never seen a chat
     template.
     """
     path = storage.meta_path(base_model)
     if not path.is_file():
-        return None
+        return {}
     meta = json.loads(path.read_text(encoding="utf-8"))
     run = meta.get("result")
     if not isinstance(run, dict):
         run = meta.get("dataset")
-    if not isinstance(run, dict):
-        return None
-    dataset = run.get("dataset")
+    return run if isinstance(run, dict) else {}
+
+
+def _base_special_ids(base_model: str) -> list[int] | None:
+    """Which markers the base model was trained on, or None when that was never
+    recorded (a model trained before the field existed).
+
+    The corpus stats are the `dataset` *inside* the run record either way — see
+    `_base_run` for the two shapes that record comes in.
+    """
+    dataset = _base_run(base_model).get("dataset")
     if not isinstance(dataset, dict):
         return None
     return dataset.get("special_ids_seen")
+
+
+def _pretrain_probe(base_model: str, ctx_window: int, vocab: int) -> np.ndarray | None:
+    """A fixed batch of the base model's own pretraining text, or None.
+
+    Reachable because a pretrain run records `corpus_key` in its meta.json and
+    the key names a directory under `datasets/pretrain/` — so an SFT run that has
+    already read that file for `special_ids_seen` can read the corpus the base
+    model was built from without the backend, the data engine, or a second
+    tokenizer being involved. The ids are the base tokenizer's on both sides,
+    which is the property that makes this legitimate at all.
+
+    It is held out from *this* run — SFT trains on conversations and never on
+    prose — but it is not held out from pretraining, so the number is a drift
+    signal and not an absolute measure of generalization: read whether it is
+    climbing, not what it is.
+
+    Rows are drawn at evenly spaced offsets rather than off the front, because
+    `corpus.bin` is laid out in dataset and stage order and a probe taken from
+    the head would measure whichever dataset happened to be packed first.
+    """
+    key = _base_run(base_model).get("corpus_key")
+    if not isinstance(key, str) or not storage.pretrain_corpus_path(key).is_file():
+        return None
+
+    corpus = pack.load_corpus(key)
+    window = ctx_window + 1
+    rows = DIAGNOSTIC_ROWS
+    if len(corpus) < rows * window:
+        return None
+
+    stride = (len(corpus) - window) // (rows - 1) if rows > 1 else 0
+    probe = np.stack(
+        [np.asarray(corpus[i * stride : i * stride + window], dtype=np.int64) for i in range(rows)]
+    )
+    # A corpus packed under a different vocabulary would index past the embedding
+    # table and take the run down thousands of steps in. The key should make that
+    # impossible; this is two thousand comparisons to be sure it is.
+    return probe if int(probe.max()) < vocab else None
+
+
+def _chat_probe(tokenizer, ctx_window: int, reasoning: Reasoning) -> np.ndarray | None:
+    """A fixed batch of held-out conversations, rendered as SFT renders them.
+
+    `eval/chat/` is the one chat corpus in the tree that no run may select, so
+    the KL anchor is measured somewhere the fine-tune has genuinely not been.
+    """
+    ids: list[int] = []
+    for conversation in chat_eval.load(storage.eval_dir() / "chat"):
+        turns = _turns_of(conversation)
+        if turns is None:
+            continue
+        rendered, _ = template.build_training_example(
+            conversation.get("system"), turns, tokenizer, None, reasoning
+        )
+        ids.extend(rendered)
+
+    rows = min(DIAGNOSTIC_ROWS, len(ids) // ctx_window)
+    if rows < 1:
+        return None
+    return np.asarray(ids[: rows * ctx_window], dtype=np.int64).reshape(rows, ctx_window)
+
+
+def _turns_of(conversation: dict) -> list[template.Turn] | None:
+    """The conversation's turns, or None if any role is one SFT does not render.
+
+    Refused rather than guessed at, for the reason `eval/chat.py` refuses it: an
+    unknown role shifts the loss mask onto the wrong tokens.
+    """
+    turns = []
+    for turn in conversation.get("turns", []):
+        if turn.get("role") not in ("user", "assistant"):
+            return None
+        turns.append(template.Turn(role=template.Role(turn["role"]), text=turn.get("text", "")))
+    return turns or None
+
+
+def _probes(
+    cfg: SftConfig,
+    tokenizer,
+    vocab: int,
+    ctx_window: int,
+    reasoning: Reasoning,
+    device: str,
+) -> Probes:
+    """The fixed batches this fine-tune will be measured against.
+
+    Built before the first step and never rebuilt: a probe that moved between
+    reports would be a different question asked each time, and the whole value of
+    these is that the same batch is scored against changing weights.
+
+    Each part is independently optional, and a part that could not be resolved is
+    left absent so it reaches the panel as "not measured" rather than as a zero —
+    the base model's corpus may have been repacked or deleted, and `eval/chat/`
+    may be empty. Both cases say so out loud: a silently missing forgetting
+    signal is worse than none, because a flat chart reads as good news.
+    """
+    pretrain = _pretrain_probe(cfg.base_model, ctx_window, vocab)
+    if pretrain is None:
+        print("      no held-out pretrain loss: the base model names no corpus on disk")
+
+    chat = _chat_probe(tokenizer, ctx_window, reasoning) if cfg.measure_base_kl else None
+    if cfg.measure_base_kl and chat is None:
+        print(f"      no base KL: eval/chat/ holds under {ctx_window} tokens of conversation")
+        return Probes(pretrain=pretrain)
+
+    reference = None
+    if chat is not None:
+        # A second full copy of the weights, which is why this is opt-in. Frozen
+        # and in eval mode: it is the fixed thing the tune is measured against.
+        reference, _ = checkpoint.load(storage.weights_path(cfg.base_model), device)
+        reference.eval()
+        reference.requires_grad_(False)
+
+    return Probes(pretrain=pretrain, chat=chat, reference=reference)
 
 
 def run(
@@ -181,6 +307,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
     )
 
     print(f"[4/5] Fine-tuning {cfg.epochs} epoch(s) at lr {cfg.lr:g}")
+    probes = _probes(cfg, tokenizer, model.vocab, arch["ctx_window"], reasoning, device)
     summary = loop.run(
         model,
         corpus,
@@ -191,7 +318,13 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         cancel,
         mask,
         token_counts=info.get("token_counts"),
+        probes=probes,
     )
+    # The reference model is a second full copy of the weights, and this is the
+    # last frame holding one. `release_device` (from `api/runner.py`'s finally)
+    # hands back the *allocator's* pool, not memory something still points at, so
+    # dropping it here is what makes the opt-in KL anchor releasable at all.
+    probes.reference = None
 
     print("[5/5] Saving")
     model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))

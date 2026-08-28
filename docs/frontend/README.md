@@ -828,6 +828,28 @@ The same fields are rendered two ways, and neither may drift from the other:
 Both take their field list, their derived figures and their validation from
 `components/training/run-config.ts`, which holds no JSX. A rule about what a
 run may be belongs there, never in a layout.
+#### Reading a run back — the diagnostics panel
+
+`components/training/diagnostics-panel.tsx` renders `DiagPoint[]`
+(`lib/training.ts`), which is the engine's `Diagnostics` dataclass **verbatim**
+— nothing between the training loop and the chart renames a field, so a rename
+on either side arrives as `undefined`. The engine's side is documented in
+[`../engine/telemetry.md`](../engine/telemetry.md).
+
+- **An optional field means "not measured", and must never render as 0.** The
+  engine drops what it did not measure instead of sending a zero, because a zero
+  reads as a real measurement. Every fine-tuning field on `DiagPoint` is
+  therefore optional; `opt()` in the panel maps `undefined` to `null` so recharts
+  drops the point rather than plotting it at the bottom of the axis.
+- **The fine-tuning figures are their own presence check.** A frame carries no
+  mode flag: an SFT run sends `loss_masked` and a pretrain run sends nothing, so
+  `diag.some(d => d.loss_masked !== undefined)` is what gates them. A pretrain
+  run must show no empty SFT charts at all.
+- **Every figure is `Figure` + recharts + `chart-theme.ts`.** Colour is chosen
+  by what the series *is*: per-layer, per-head and by-position are magnitudes by
+  index and take a single-hue sequential ramp; the three fine-tuning losses are
+  categories and take distinct hues. Do not add a palette to a component.
+
 - **The board polls.** It moves when a run is queued, starts or ends — rare
   enough that a 3s refetch of `GET /runs` says the same thing a nudge would,
   without a second live connection to keep alive across sleeps and restarts.
@@ -854,6 +876,98 @@ run may be belongs there, never in a layout.
   how a running job says what it is. Give **one** instance a changing `mode` so
   it morphs between them as the queue advances rather than cutting. `NowBand` is
   that instance.
+
+#### What a training run's phase 1 shows
+
+`components/training/telemetry.tsx` holds the phase-1 checklist — which build
+step is running, and what each produced — and under it
+`components/training/build-metrics.tsx`, what the build actually *produced*:
+characters per token by source, how much of the vocabulary the corpus never
+uses, the share of training windows that span a document boundary and a ribbon of
+what those windows actually look like, document lengths against the window, and
+the head of the merge list in the order BPE learned it.
+
+Three things about it are load-bearing:
+
+- **It outlives phase 1.** The checklist is replaced by the loss overlay the
+  moment training starts; these stay, because they are facts about the corpus the
+  run is training on, and a finished run's page is where they are read.
+- **An absent field is "—", never 0.** The engine omits what a phase did not
+  measure (see [`../engine/README.md`](../engine/README.md)), and a corpus packed
+  before a metric existed reports none of it. Drawing that as a zero would be a
+  number that reads as a real count of nothing.
+- **`ctx_window` comes from the run's config, not from the frame.** The window is
+  a property of the run, and one packed corpus can be trained at two of them —
+  which is also why the engine measures the length histogram at report time
+  rather than baking it into the build.
+
+##### The span ribbon
+
+`components/training/span-ribbon.tsx` is the picture behind the straddle stat,
+rendered directly under it: a sample of the run's actual training windows, one
+bar each, split into the documents inside it and coloured by dataset. The number
+cannot tell a corpus of books (a window sitting mid-chapter) from a corpus of
+tweets (forty unrelated things per window), and those want opposite decisions.
+The engine's half — the sampling strategy, the frame bound, the cost — is in
+[`../engine/telemetry.md`](../engine/telemetry.md).
+
+- **SVG, not canvas2d, and the element count is not why.** The engine caps the
+  frame at `RIBBON_WINDOWS × RIBBON_SEGMENTS` rects, which either would draw
+  without noticing. What decides it is that the fills are the theme's own values
+  applied as attributes (canvas would need `getComputedStyle` and a redraw on
+  every theme switch), a per-window tooltip is a `<title>` child rather than a
+  hit-test, and the file needs no `'use client'`, no ref and no effect — a canvas
+  is a client component by construction (R14). Lifting the cap is the signal to
+  revisit this, and nothing else is.
+- **A bar's own edges are not document boundaries.** The hairlines are drawn only
+  where a document actually ends inside the window (`closes`), never at the
+  window's edge. Drawing the two alike is what turns one book into nine unrelated
+  documents, which is precisely the reading the figure exists to correct.
+- **The elided tail is drawn thin and muted, never at bar height.** A window past
+  the engine's per-window cap reports `overflow` and stops short; filling that
+  space at full height would claim one long document where there are dozens of
+  short ones.
+- **A dataset is a category, so it takes a hue and not a ramp** — the same wheel
+  `lossStageColor` uses (`datasetColor` in `chart-theme.ts`), because a dataset
+  and the curriculum stage it was packed into are one subject seen twice. As
+  everywhere else here: do not add a palette to a component.
+
+### The attention viewer
+
+`components/models/attention-viewer.tsx` on `/models/[id]`: pick a layer and a
+head, give it a text, get that head's attention matrix back. `lib/attention.ts`
+is the wire (base64 fp32 in, a `Float32Array` out), `hooks/use-attention.ts` the
+state, `components/models/attention-canvas.tsx` the figure. The engine side —
+including why nothing records attention until someone asks — is
+[`../engine/README.md`](../engine/README.md).
+
+- **Canvas2d, and measured rather than assumed.** One backing pixel per cell,
+  filled through a 256-entry ramp into one `ImageData`, one `putImageData`, and
+  CSS scales the element up with `image-rendering: pixelated`. A cell is a pixel
+  and not a shape, so a `fillRect` per cell would be 262,144 draw calls for
+  something the compositor does as a blit. Measured in headless Chromium with
+  **no GPU at all** (software raster, the pessimistic case): 512×512 — the
+  largest matrix the engine will return — **median 6.3 ms, p95 12.7 ms**;
+  256×256 1.6 ms; 128×128 0.3 ms. That is a one-off cost per fetched matrix,
+  behind a network round trip and a forward pass that each cost more, and
+  hovering redraws nothing. Canvas2d is comfortably enough here and there is no
+  case for a GPU path; the panel reports its own last draw time so the next
+  person can check that on their own machine rather than take this on trust.
+- **The crosshair is not drawn on the canvas.** Two absolutely-positioned rules
+  at a percentage offset, so following the pointer costs a style recalculation
+  instead of a redraw of the matrix.
+- **Colour lives in `components/models/attention-ramp.ts`, not in
+  `chart-theme.ts`.** A weight is a magnitude, so it takes that file's
+  single-hue sequential rule — but a *cell* at t=0 has to vanish into the
+  surface where a *line* at t=0 still has to be visible, which inverts the
+  bottom of the ramp. One hue at varying alpha, so the panel's own surface
+  carries the low end and the figure is theme-aware without sampling a token or
+  keeping a second dark-mode ladder. The hue is chart-theme's per-head violet,
+  because attention entropy in the diagnostics panel is per head too.
+- **The ramp is gamma'd (0.4) and the readout is not.** Rows sum to 1 over up to
+  512 keys, so a linear ramp draws a diffuse head as an empty square. The figure
+  is a display transform; the hovered cell always states the exact weight, and
+  the tokens on both axes, which is the whole point of labelling them.
 
 ### Throbber or dot
 

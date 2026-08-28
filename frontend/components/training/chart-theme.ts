@@ -100,6 +100,16 @@ export function headColor(head: number, totalHeads: number): string {
   return sequential(280, 40, t)
 }
 
+// ── Fine-tuning figures ─────────────────────────────────────────────────────
+// Position within the context window is an *order* (front → back), so it takes a
+// sequential ramp like everything else that is a magnitude by index. Rose, kept
+// clear of the teal layers, violet heads and blue loss so a position series can
+// never be misread as one of those.
+export function positionColor(bucket: number, totalBuckets: number): string {
+  const t = totalBuckets > 1 ? bucket / (totalBuckets - 1) : 0
+  return sequential(338, 46, t)
+}
+
 // Accent for an aggregate line drawn over a per-layer ramp (the global grad norm)
 // or a reference marker — the site's curated amber `--chart-1`.
 export const ACCENT_COLOR = "var(--chart-1)"
@@ -111,6 +121,31 @@ export const MUTED_SERIES = "var(--muted-foreground)"
 // Embedding-anisotropy figure: one blue hue (`--chart-3`) for the mean line and
 // its p5–p95 band fill.
 export const EMB_COLOR = "var(--chart-3)"
+
+// ── Phase-one build figures ─────────────────────────────────────────────────
+// The document-length histogram and the per-dataset fertility bars are two views
+// of one subject — the corpus this run was built from — so they share one colour
+// rather than each taking a hue. Phase 1 has no series to tell apart: every bar
+// in both figures is the same quantity measured at a different place.
+export const BUILD_COLOR = "var(--chart-1)"
+
+// The tail of the length histogram: documents no single window can hold. Set
+// apart because it is the one bin that is a *cost* rather than a reading, and in
+// the catalogue's own rejection colour rather than a new one, which is the same
+// polarity argument `verdictColors` makes below.
+export const BUILD_OVERFLOW_COLOR = "var(--chart-rejected)"
+
+// The three cross-entropy readings a fine-tune is judged on are *categories*, not
+// a progression — the tokens trained on, the prompt merely conditioned on, and
+// held-out prose from before the tune — so they take distinct hues rather than a
+// ramp. Amber leads because the masked loss is the one the run optimizes; muted
+// grey for the prompt, which is a reference rather than a target; the loss blue
+// for pretrain, tying it to the loss chart it should be read beside.
+export const finetuneColors = {
+  masked: ACCENT_COLOR,
+  unmasked: MUTED_SERIES,
+  pretrain: EMB_COLOR,
+} as const
 
 // ── Preference catalogue figures ────────────────────────────────────────────
 // Approved vs rejected is the one *polarity* pair in the app: two opposed classes,
@@ -156,6 +191,28 @@ export const tierColors: Record<"low" | "med" | "high", string> = {
   low: "var(--tier-low)",
   med: "var(--tier-med)",
   high: "var(--tier-high)",
+}
+
+// ── The span ribbon ─────────────────────────────────────────────────────────
+// A ribbon segment is a *dataset*, which is identity rather than magnitude — the
+// same kind of thing a curriculum stage is, so it takes the same hue wheel rather
+// than a second one. A dataset and the stage it was packed into are one subject
+// seen twice, and giving them separate palettes would make one corpus read as two
+// unrelated figures.
+//
+// Held at a fixed mid-lightness across the cycle, unlike `lossStageColor`, because
+// a ribbon has no second dimension to sweep: every segment is one document, so a
+// lightness that varied would read as a magnitude that isn't there. Mid rather
+// than light or dark so the same value carries on the warm paper and on the
+// dragon ground — a ribbon is a solid fill, and it is read for its hue.
+const DATASET_LIGHTNESS = 0.5
+
+export function datasetColor(dataset: number): string {
+  const [hue, sat] =
+    STAGE_HUES[
+      ((dataset % STAGE_HUES.length) + STAGE_HUES.length) % STAGE_HUES.length
+    ]
+  return sequential(hue, sat, DATASET_LIGHTNESS)
 }
 
 // Rank ramp for the PCA biplot's token arrows: the same blue family swept by

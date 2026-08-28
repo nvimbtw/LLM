@@ -189,6 +189,143 @@ def test_eval_needs_weights():
         eval_pipeline.run(EvalConfig(model_name="no-such-model", suite="language"))
 
 
+def test_sft_diagnostics_split_the_loss_by_mask_position_and_conversation(sft_config):
+    """The three readings a fine-tune needs that a pretrain run does not, all
+    taken off the one recording forward `Collector.observe` already ran."""
+    from llm.train.diagnostics import POSITION_BUCKETS
+
+    sampled = _diagnostics(sft_config)
+    assert sampled
+
+    split = [d for d in sampled if d.get("loss_masked") is not None]
+    assert split, "no diagnosed window carried a trainable token"
+    for diag in split:
+        # The prompt region is not optimized, so the two are different numbers —
+        # equal would mean the mask never reached the split.
+        assert diag["loss_masked"] != diag["loss_unmasked"]
+        assert len(diag["loss_by_position"]) == POSITION_BUCKETS
+        assert len(diag["conversation_loss"]) == len(diag["conversation_start"])
+        assert diag["conversation_loss"] == sorted(diag["conversation_loss"], reverse=True)
+        # Every conversation is a real offset into the corpus; -1 is the
+        # separator between two of them and belongs to neither.
+        assert all(start >= 0 for start in diag["conversation_start"])
+
+
+def test_a_conversation_is_named_by_its_offset_in_the_corpus(sft_config, data_client):
+    """Offsets, not row indices. The epoch is reshuffled every pass, so a row
+    index would name a different conversation each epoch and a ranking built from
+    it would be an average over the whole dataset.
+    """
+    sampled = _diagnostics(sft_config.model_copy(update={"epochs": 2}))
+
+    key = sft_corpus.dataset_key(
+        sft_corpus.resolve(data_client, sft_config.datasets), Reasoning.KEEP
+    )
+    _, documents, _ = sft_corpus.load_segments(key)
+    starts = set(documents.starts.tolist())
+
+    seen = {start for d in sampled for start in d.get("conversation_start", [])}
+    assert seen and seen <= starts
+
+
+def test_the_base_model_probes_are_absent_when_they_cannot_be_reached(sft_config):
+    """The fixture base has no meta.json, so no corpus_key names a pretrain
+    corpus and the run never asked for the KL anchor. Both stay out of the frame
+    rather than arriving as a zero that reads as a real measurement."""
+    for diag in _diagnostics(sft_config):
+        assert "pretrain_loss" not in diag
+        assert "base_kl" not in diag
+
+
+def test_the_pretrain_probe_comes_from_the_base_model_s_own_corpus(
+    sft_config, monkeypatch
+):
+    """The reachability this whole diagnostic rests on: a pretrain run records
+    `corpus_key`, the key names a directory, and the fine-tune reads the corpus
+    the base was built from without asking anything outside the engine."""
+    import numpy as np
+
+    from llm import storage
+    from llm.corpus import pack
+    from llm.train.diagnostics import DIAGNOSTIC_ROWS
+
+    key = "probe-fixture"
+    storage.ensure_dir(storage.pretrain_dataset_dir(key))
+    # Ids inside the base model's vocabulary, and long enough for both rows.
+    tokens = (np.arange(4096, dtype=np.int64) % 300).astype(pack.CORPUS_DTYPE)
+    storage.pretrain_corpus_path(key).write_bytes(tokens.tobytes())
+    monkeypatch.setattr(sft_pipeline, "_base_run", lambda _: {"corpus_key": key})
+
+    probe = sft_pipeline._pretrain_probe(sft_config.base_model, ctx_window=128, vocab=320)
+
+    assert probe is not None
+    assert probe.shape == (DIAGNOSTIC_ROWS, 129)
+    # Spread across the corpus, not taken twice off the front: `corpus.bin` is
+    # laid out in dataset order and a probe from the head measures one dataset.
+    assert not np.array_equal(probe[0], probe[-1])
+
+    # And it reaches the frame, which is the only reason to have built it.
+    sampled = _diagnostics(sft_config)
+    assert sampled and all(d["pretrain_loss"] > 0.0 for d in sampled)
+
+
+def test_the_pretrain_probe_refuses_a_corpus_from_another_vocabulary(
+    sft_config, monkeypatch
+):
+    """An id past the embedding table would take the run down thousands of steps
+    in, on a forward nothing is waiting on."""
+    import numpy as np
+
+    from llm import storage
+    from llm.corpus import pack
+
+    key = "probe-wrong-vocab"
+    storage.ensure_dir(storage.pretrain_dataset_dir(key))
+    tokens = np.full(4096, 511, dtype=pack.CORPUS_DTYPE)
+    storage.pretrain_corpus_path(key).write_bytes(tokens.tobytes())
+    monkeypatch.setattr(sft_pipeline, "_base_run", lambda _: {"corpus_key": key})
+
+    assert sft_pipeline._pretrain_probe(sft_config.base_model, 128, vocab=320) is None
+
+
+def test_the_kl_anchor_is_reported_only_when_the_run_asks_for_it(sft_config):
+    """It keeps a second copy of the base model resident, so it is opt-in — and
+    when it is on, it is measured against held-out chat the run never trains on."""
+    assert all("base_kl" not in d for d in _diagnostics(sft_config))
+
+    anchored = _diagnostics(sft_config.model_copy(update={"measure_base_kl": True}))
+    assert anchored and all(d["base_kl"] >= 0.0 for d in anchored)
+
+
+def test_an_unmeasured_diagnostic_is_absent_from_the_frame(sft_config):
+    """The contract the panel depends on: a pretrain run's frames carry none of
+    the fine-tuning keys at all, so the panel can tell the two modes apart."""
+    from llm.train.diagnostics import Diagnostics
+
+    frame = Diagnostics(step=7).as_dict()
+
+    assert frame["step"] == 7
+    for key in (
+        "pretrain_loss",
+        "loss_masked",
+        "loss_unmasked",
+        "loss_by_position",
+        "conversation_loss",
+        "conversation_start",
+        "base_kl",
+    ):
+        assert key not in frame
+
+
+def _diagnostics(cfg) -> list[dict]:
+    """Every diagnostics sample an SFT run emits."""
+    from llm.train.progress import Progress
+
+    frames: list = []
+    sft_pipeline.run(cfg, on_progress=frames.append)
+    return [f.diag for f in frames if isinstance(f, Progress) and f.diag]
+
+
 def _evaluate(suite: str) -> dict:
     return eval_pipeline.run(
         EvalConfig(model_name=TINY_MODEL, suite=suite, max_tokens=16, seed=5)

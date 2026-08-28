@@ -26,10 +26,10 @@ from tokenizers import Tokenizer
 
 from llm import storage
 from llm.config import TrainConfig
-from llm.corpus import bpe, pack, remote, vocab
+from llm.corpus import bpe, pack, remote, spans as spans_mod, vocab
 from llm.model import checkpoint
 from llm.model.transformer import Transformer
-from llm.train import loop
+from llm.train import diagnostics, loop
 from llm.train.plan import DataPlan, Stage
 from llm.train.progress import ProgressCallback, Tokenize, log_progress
 
@@ -104,16 +104,50 @@ def build_dataset(
         f"      {stats.corpus_len:,} tokens, {stats.documents:,} documents, "
         f"vocab {stats.vocab_size:,}"
     )
-    report(
-        documents=stats.documents,
-        chars=stats.chars,
-        vocab=stats.vocab_size,
-        merges=merges,
-        total_tokens=stats.corpus_len,
+    # The frame that closes phase 1 is `_phase_one`'s, not this function's: what
+    # a fresh build produced is measured off the corpus it wrote, by the same
+    # code that measures one it is reusing.
+    return stats
+
+
+def _phase_one(cfg, tokenizer, dataset, corpus, documents, info) -> Tokenize:
+    """The frame that closes phase 1, for a fresh build and a reused one alike.
+
+    One function for both branches because a measurement that only a fresh build
+    made reads as missing on every cached one, which is the lie the "omit what
+    was not measured" convention exists to prevent. What actually differs is only
+    whether a count came from the pack that just ran or from the sidecar it left
+    behind — and everything below is a property of the corpus on disk.
+
+    A build packed before these were recorded answers None for the ones it cannot
+    reconstruct, which is the honest reading: nobody measured.
+    """
+    counts = info.get("token_counts")
+    fit = spans_mod.window_fit(documents, cfg.ctx_window, len(corpus))
+    ribbon = spans_mod.span_ribbon(documents, cfg.ctx_window, len(corpus))
+    return Tokenize(
+        documents=len(documents) or None,
+        chars=dataset.chars if dataset else _chars(info),
+        vocab=bpe.vocab_size(tokenizer),
+        merges=bpe.merge_count(tokenizer),
+        total_tokens=len(corpus),
+        fertility=pack.fertility(info),
+        dead_vocab=diagnostics.dead_ids(counts) if counts else None,
+        merge_sequence=bpe.merge_sequence(tokenizer, counts) if counts else None,
+        boundary_straddle=fit.straddle if fit else None,
+        doc_length_hist=fit.length_hist if fit else None,
+        docs_over_ctx=fit.over_ctx if fit else None,
+        span_ribbon=ribbon.as_dict() if ribbon else None,
         progress=1.0,
         done=True,
     )
-    return stats
+
+
+def _chars(info: dict) -> int | None:
+    """How much text a corpus was packed from, summed back out of the per-dataset
+    counters — so a reused build answers this rather than leaving it unmeasured."""
+    recorded = info.get("fertility")
+    return sum(one["chars"] for one in recorded) if recorded else None
 
 
 def _documents(client, selection: list[pack.StageSelection]):
@@ -219,19 +253,8 @@ def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -
     eot_id, documents, info = pack.load_segments(key)
     stage_meta = info.get("stages", [])
 
-    if dataset is None and on_progress is not None:
-        # A reused corpus is still the data this run trains on, so phase 1 reports
-        # what is on disk rather than nothing. Files and characters belong to the
-        # build that is not happening, and stay unmeasured.
-        on_progress(
-            Tokenize(
-                vocab=bpe.vocab_size(tokenizer),
-                merges=bpe.merge_count(tokenizer),
-                total_tokens=len(corpus),
-                progress=1.0,
-                done=True,
-            )
-        )
+    if on_progress is not None:
+        on_progress(_phase_one(cfg, tokenizer, dataset, corpus, documents, info))
 
     if documents:
         # Stage *membership* comes from the sidecar: the corpus on disk decides

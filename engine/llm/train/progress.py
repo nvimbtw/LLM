@@ -61,6 +61,33 @@ class Tokenize:
     chars: int | None = None
     vocab: int | None = None
     merges: int | None = None
+    # What the tokenization and the packing actually produced, as opposed to how
+    # much of it there was. Measured off the packed corpus and its document
+    # table, so a reused build reports them exactly as a fresh one does.
+    #
+    # `[{dataset, chars_per_token, tokens}]`, most tokens first. Fertility is per
+    # source because it is uneven across sources, and that unevenness is how the
+    # context budget is really being spent.
+    fertility: list[dict] | None = None
+    # Token ids the packed corpus never uses. Tied embeddings make each one a row
+    # paid for in every forward pass — see `llm.train.diagnostics.dead_ids`.
+    dead_vocab: int | None = None
+    # `[{token, count}]` — the head of the merge list in the order BPE learned
+    # it, with how often each merged token occurs in the corpus. See
+    # `llm.corpus.bpe.merge_sequence` for what that count is and is not.
+    merge_sequence: list[dict] | None = None
+    # The fraction of `ctx_window` training windows that hold an <|endoftext|>,
+    # i.e. how often the model attends across a document boundary.
+    boundary_straddle: float | None = None
+    # Document lengths against `ctx_window`: fixed-width bins reaching
+    # `llm.corpus.spans.LENGTH_HIST_SPAN` windows, as fractions, plus the share
+    # of documents no single window can hold.
+    doc_length_hist: list[float] | None = None
+    docs_over_ctx: float | None = None
+    # `llm.corpus.spans.SpanRibbon` as a dict: a sample of training windows, each
+    # broken into the documents inside it. The straddle above says how often a
+    # window crosses a boundary; this is what those windows look like.
+    span_ribbon: dict | None = None
     # Fine-tune: chat conversations rendered into a masked dataset.
     conversations: int | None = None
     total_tokens: int | None = None
@@ -122,13 +149,26 @@ class Progress:
 ProgressCallback = Callable[[Progress | Tokenize], None]
 
 
+def _reading(value) -> str:
+    """One measurement on a log line. A distribution is summarised by its width:
+    the merge sequence is hundreds of entries and the frame it rides is where it
+    is meant to be read."""
+    if isinstance(value, list):
+        return f"[{len(value):,}]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{k} {_reading(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return f"{value:,}"
+
+
 def log_progress(progress: Progress | Tokenize) -> None:
     """The default sink: one line per report."""
     if isinstance(progress, Tokenize):
         measured = {k: v for k, v in vars(progress).items() if v is not None}
         measured.pop("progress")
         measured.pop("done")
-        print("  " + ", ".join(f"{k} {v:,}" for k, v in measured.items()), flush=True)
+        print("  " + ", ".join(f"{k} {_reading(v)}" for k, v in measured.items()), flush=True)
         return
 
     print(

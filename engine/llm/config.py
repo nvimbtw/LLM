@@ -254,6 +254,14 @@ class SftConfig(BaseModel):
     seed: int = 0
     rebuild_dataset: bool = False
 
+    # Report KL(base || tuned) on a held-out chat batch, on diagnosed steps.
+    #
+    # Off by default because it is the one diagnostic that costs *memory* rather
+    # than time: it keeps the unmodified base model resident beside the one being
+    # trained, so a run that can just fit its weights cannot afford it. Everything
+    # else in `Diagnostics` is a reading off a pass that was happening anyway.
+    measure_base_kl: bool = False
+
     _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 
 
