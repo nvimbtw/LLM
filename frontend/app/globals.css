@@ -558,6 +558,11 @@
   --throbber-base-light: var(--kanagawa-lotus-blue4-deeper);
   --throbber-base-dark: var(--kanagawa-dragon-blue2-deep);
 
+  --text-glow-light: var(--kanagawa-lotus-ink-soft);
+  --text-glow-dark: var(--kanagawa-dragon-gray);
+  --text-material-mid-light: color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 85%, black 15%);
+  --text-material-mid-dark: color-mix(in oklab, var(--kanagawa-dragon-white) 85%, white 15%);
+
   /* The sidebar. Both modes now sit it a step *under* the page, so the chrome
      frames the content by tone instead of by a line — the light mode used to
      take the page's own values and separate from it by the hairline alone.
@@ -799,7 +804,7 @@
   }
 }
 
-/* Streamed words ease in as they arrive. */
+/* Streamed words ease in as they arrive — now with ink-light. */
 @keyframes word-fade-in {
   from {
     opacity: 0;
@@ -810,6 +815,35 @@
 }
 .word-fade {
   animation: word-fade-in 0.4s ease both;
+}
+
+@keyframes word-glow-in {
+  0% {
+    color: color-mix(in oklab, var(--background) 88%, var(--foreground) 12%);
+    opacity: 1;
+    filter: blur(2px);
+  }
+  42% {
+    color: color-mix(in oklab, var(--background) 32%, var(--foreground) 68%);
+    opacity: 1;
+    filter: blur(0.6px);
+  }
+  100% {
+    color: var(--foreground);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+.word-glow {
+  display: inline-block;
+  animation: word-glow-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: filter;
+}
+@media (prefers-reduced-motion: reduce) {
+  .word-glow {
+    animation: none !important;
+    filter: none !important;
+  }
 }
 
 /* An upload in flight, under its tile in the composer's attachment strip. A

@@ -101,14 +101,10 @@ interface Ctx {
 // Block containers where whitespace between children is just formatting noise.
 const BLOCK_CONTAINERS = new Set(["root", "ordered list", "list"])
 
-// While streaming, wrap each visible word in a one-shot fade so newly-arrived
-// words ease in. Already-rendered words stay mounted, so they don't re-animate.
 function fadeWords(value: string): React.ReactNode {
   return value.split(/(\s+)/).map((part, i) =>
-    part.trim() === "" ? (
-      part
-    ) : (
-      <span key={i} className="word-fade">
+    part.trim() === "" ? part : (
+      <span key={i} className="word-glow">
         {part}
       </span>
     )
