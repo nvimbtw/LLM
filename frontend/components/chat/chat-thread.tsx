@@ -19,7 +19,6 @@ import { LoadError } from "@/components/ui/error-state"
 import { ThinkingLabel } from "./thinking-label"
 import { callInFlight } from "./trace"
 import { ToolLabel } from "./tool-label"
-import { StreamGlowCanvas } from "./stream-glow-canvas"
 
 export function ChatThread({ chatId }: { chatId: string }) {
   const {
@@ -157,8 +156,11 @@ export function ChatThread({ chatId }: { chatId: string }) {
   }, [messages, isSending])
 
   return (
+    // A row, so opening a file narrows the thread rather than covering it. The
+    // conversation column is centred in whatever width is left, which is what
+    // makes it drift left as the panel comes in — no second layout, and nothing
+    // to put back when it closes.
     <div className="flex flex-1 overflow-hidden">
-      <StreamGlowCanvas />
       <div
         className={cn(
           "flex min-w-0 flex-1 flex-col overflow-hidden",

@@ -101,10 +101,15 @@ interface Ctx {
 // Block containers where whitespace between children is just formatting noise.
 const BLOCK_CONTAINERS = new Set(["root", "ordered list", "list"])
 
-function fadeWords(value: string): React.ReactNode {
+// While streaming, wrap each visible word in a one-shot animation so newly-
+// arrived words resolve in. Already-rendered words stay mounted, so they don't
+// re-animate.
+function inkWords(value: string): React.ReactNode {
   return value.split(/(\s+)/).map((part, i) =>
-    part.trim() === "" ? part : (
-      <span key={i} className="word-glow">
+    part.trim() === "" ? (
+      part
+    ) : (
+      <span key={i} className="word-ink">
         {part}
       </span>
     )
@@ -129,7 +134,7 @@ function renderChildren(node: MElement, ctx: Ctx): React.ReactNode {
 }
 
 function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
-  if (isText(node)) return ctx.streaming ? fadeWords(node.value) : node.value
+  if (isText(node)) return ctx.streaming ? inkWords(node.value) : node.value
 
   const el = node
   const kids = renderChildren(el, ctx)

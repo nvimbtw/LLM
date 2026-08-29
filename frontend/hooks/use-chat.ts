@@ -82,6 +82,20 @@ interface MessageWire {
  *
  * Rows arrive in creation order, which is the order this depends on.
  */
+/**
+ * One round's markup added to the working so far.
+ *
+ * Separated by a space rather than concatenated flush: the two are independent
+ * pieces of markup, and a round ending in `</|par|>` against one opening in
+ * `<|thinking|>` parses either way, but a round ending mid-sentence against the
+ * next one's first word does not read as two.
+ */
+function joinWorking(working: string | undefined, round: string): string {
+  if (working === undefined) return round
+  if (!round) return working
+  return working ? `${working} ${round}` : round
+}
+
 function groupTurns(rows: MessageWire[]): ChatMessage[] {
   const grouped: ChatMessage[] = []
 
@@ -92,7 +106,12 @@ function groupTurns(rows: MessageWire[]): ChatMessage[] {
       // A tool row with no assistant before it cannot be placed. It should not
       // exist; dropping it is better than inventing a turn to hang it on.
       if (previous?.role !== "assistant") continue
-      previous.working ??= previous.content
+      // Appended, not assigned once. A turn can take several rounds, and every
+      // round before the one that finally answers is working — so the second
+      // tool row has a round of its own to fold in, not just the first. `??=`
+      // here dropped it: `working` was already set, and clearing `content`
+      // below then lost that round's reasoning and its call outright.
+      previous.working = joinWorking(previous.working, previous.content)
       previous.toolAnswers = [
         ...(previous.toolAnswers ?? []),
         parseToolRow(row.content),
@@ -374,6 +393,29 @@ export function useChat(chatId: string) {
           return next
         })
 
+      /**
+       * A later round called again, so what streamed as the answer was working
+       * after all. Fold it back and let the trace keep growing.
+       *
+       * Without this the turn reads as two chains: the trace, then a loose
+       * reasoning block and a bare call underneath it — which is what the reader
+       * sees the moment a model looks at a tool result and decides to try
+       * something else, i.e. whenever it is actually working.
+       */
+      const resumeWorking = () =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === "assistant" && last.working !== undefined) {
+            next[next.length - 1] = {
+              ...last,
+              working: joinWorking(last.working, last.content),
+              content: "",
+            }
+          }
+          return next
+        })
+
       const recordAnswer = (answer: ToolAnswer) =>
         setMessages((prev) => {
           const next = [...prev]
@@ -450,6 +492,15 @@ export function useChat(chatId: string) {
               // The markup spelling the call has already streamed into the
               // reply, so there is nothing to add — this only marks where the
               // working phase begins.
+              //
+              // A call arriving while `answering` means a later round decided to
+              // call rather than answer: what has streamed since the last result
+              // belongs to the working, not to the answer. Only the round that
+              // stops calling ends the turn.
+              if (answering) {
+                resumeWorking()
+                answering = false
+              }
               working = true
               beginWorking()
             },

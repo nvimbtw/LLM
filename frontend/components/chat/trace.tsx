@@ -17,10 +17,15 @@ import { TraceStep } from "./trace-step"
  * The working of one turn: everything the model did before the answer.
  *
  * A turn is not always one generation. The models here are too small to stop at
- * a tool call, so a reply that searches runs as *two* rounds — the reply that
- * called, the tool's answer, then the reply that uses it — and the whole of the
- * first round plus what came back is the working. This panel is that phase, in
- * the order it happened; the answer renders beneath it as an ordinary message.
+ * a tool call, so a reply that searches runs as several rounds — the reply that
+ * called, the tool's answer, then a reply that either uses it or calls again —
+ * and every round up to the one that stops calling is the working, together with
+ * what each call came back with. This panel is that phase, in the order it
+ * happened; the answer renders beneath it as an ordinary message.
+ *
+ * It is one chain however many rounds it took. A round that calls again is not a
+ * new trace under the old one: the reader asked one question, and the model
+ * reconsidering after a failed command is the same piece of work continuing.
  *
  * ## The rail is the timeline
  *

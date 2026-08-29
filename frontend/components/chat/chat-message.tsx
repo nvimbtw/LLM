@@ -107,7 +107,8 @@ export function ChatMessageBubble({
           a left edge with the byline under them and the status row below the
           thread, so the short ones don't wander. */}
       {/* A turn that reached for a tool ran as more than one generation, and
-          the whole of the first plus what came back is its working. It sits
+          every round before the one that answered — with what each call came
+          back with — is its working. It sits
           above the answer at the same measure, so the two share a left edge and
           the trace reads as a note in the margin of the reply rather than as a
           second reply. A turn that called nothing has no `working` and renders

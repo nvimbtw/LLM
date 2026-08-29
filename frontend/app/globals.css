@@ -558,11 +558,6 @@
   --throbber-base-light: var(--kanagawa-lotus-blue4-deeper);
   --throbber-base-dark: var(--kanagawa-dragon-blue2-deep);
 
-  --text-glow-light: var(--kanagawa-lotus-ink-soft);
-  --text-glow-dark: var(--kanagawa-dragon-gray);
-  --text-material-mid-light: color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 85%, black 15%);
-  --text-material-mid-dark: color-mix(in oklab, var(--kanagawa-dragon-white) 85%, white 15%);
-
   /* The sidebar. Both modes now sit it a step *under* the page, so the chrome
      frames the content by tone instead of by a line — the light mode used to
      take the page's own values and separate from it by the hairline alone.
@@ -804,45 +799,40 @@
   }
 }
 
-/* Streamed words ease in as they arrive — now with ink-light. */
-@keyframes word-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.word-fade {
-  animation: word-fade-in 0.4s ease both;
-}
+/* Streamed words as ink soaking into paper: each arriving word resolves out of
+   the page rather than sliding or popping in.
 
-@keyframes word-glow-in {
+   Opacity and blur only — both composited, which is what makes this affordable
+   when a fast model puts a few hundred of these on screen at once. The obvious
+   alternative, ramping `color` from `--background` to `--foreground`, paints on
+   the main thread every frame to produce the same pixels: text drawn at 12%
+   opacity over a surface *is* 12% ink mixed into that surface. Opacity is also
+   the only one of the two that stays right on a surface that isn't the page —
+   a code block or a quote, where a mix against `--background` is a mix against
+   the wrong colour. */
+@keyframes word-ink-in {
   0% {
-    color: color-mix(in oklab, var(--background) 88%, var(--foreground) 12%);
-    opacity: 1;
+    opacity: 0.12;
     filter: blur(2px);
   }
   42% {
-    color: color-mix(in oklab, var(--background) 32%, var(--foreground) 68%);
-    opacity: 1;
+    opacity: 0.68;
     filter: blur(0.6px);
   }
   100% {
-    color: var(--foreground);
     opacity: 1;
     filter: blur(0);
   }
 }
-.word-glow {
-  display: inline-block;
-  animation: word-glow-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
-  will-change: filter;
+.word-ink {
+  animation: word-ink-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+/* Inline, not inline-block: a long URL or identifier — which a model emits
+   often — has to stay breakable, and an inline-block word overflows its column
+   instead of wrapping. */
 @media (prefers-reduced-motion: reduce) {
-  .word-glow {
-    animation: none !important;
-    filter: none !important;
+  .word-ink {
+    animation: none;
   }
 }
 
