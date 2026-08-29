@@ -25,6 +25,7 @@ import {
 } from "@/components/training/run-config"
 import { Input } from "@/components/ui/input"
 import { PresetControls } from "@/components/training/preset-controls"
+import { ResumePicker } from "@/components/training/resume-picker"
 import { useDatasets } from "@/hooks/use-datasets"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { useModels } from "@/hooks/use-models"
@@ -336,6 +337,19 @@ export function ParamsRail({
                 ))}
               </SelectContent>
             </Select>
+          </Row>
+        )}
+
+        {!isSft && (
+          <Row label="Continue from">
+            <ResumePicker
+              value={cfg.resume_from}
+              onChange={(resume_from) => onChange({ ...cfg, resume_from })}
+              models={models}
+              modelsLoading={modelsLoading}
+              disabled={disabled}
+              compact
+            />
           </Row>
         )}
 

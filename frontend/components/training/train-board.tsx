@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
 import { PresetControls } from "@/components/training/preset-controls"
+import { ResumePicker } from "@/components/training/resume-picker"
 import { BuildSheet } from "@/components/training/build-sheet"
 import { CurriculumBuilder } from "@/components/training/curriculum-builder"
 import {
@@ -224,6 +225,25 @@ export function TrainBoard({
                     </Select>
                   </label>
                 )}
+
+                {/* A `div` and not a `label`: two controls under one caption,
+                    and a label may only name one. */}
+                {!isSft && (
+                  <div className="space-y-1.5">
+                    <FieldLabel hint="Carry on from a model, or one of its checkpoints">
+                      Continue from
+                    </FieldLabel>
+                    <ResumePicker
+                      value={cfg.resume_from}
+                      onChange={(resume_from) =>
+                        onChange({ ...cfg, resume_from })
+                      }
+                      models={models}
+                      modelsLoading={modelsLoading}
+                      disabled={disabled}
+                    />
+                  </div>
+                )}
               </div>
 
             </div>
@@ -287,6 +307,7 @@ export function TrainBoard({
           <BuildSheet
             cfg={effective}
             baseName={models.find((m) => m.id === baseModelId)?.name}
+            resumeName={models.find((m) => m.id === cfg.resume_from)?.name}
             datasets={datasets}
             errors={errors}
             disabled={disabled}

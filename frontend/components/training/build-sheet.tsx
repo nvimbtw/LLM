@@ -22,6 +22,12 @@ export interface BuildSheetProps {
   cfg: TrainConfig
   /** The base model's display name, once the picker has loaded it. */
   baseName?: string
+  /**
+   * The display name of what a pretrain is continuing from, when that is a
+   * finished model. Absent for a checkpoint: those are not in the model list,
+   * by design, and the sheet says which run position it is instead.
+   */
+  resumeName?: string
   /** The catalogue, for resolving a selection into a document count. */
   datasets: DatasetInfo[]
   errors: string[]
@@ -31,6 +37,7 @@ export interface BuildSheetProps {
 export function BuildSheet({
   cfg,
   baseName,
+  resumeName,
   datasets,
   errors,
   disabled,
@@ -65,10 +72,25 @@ export function BuildSheet({
       <dl className="divide-y divide-border/50">
         {isSft && <Spec label="Base" value={baseName ?? "—"} />}
         {!isSft && (
-          <Spec
-            label="Tokenizer"
-            value={cfg.tokenizer_id ? "Named build" : "Learned with the run"}
-          />
+          <>
+            {/* First of the pretrain rows, because it qualifies the ones under
+                it: a run that continues from a state takes its architecture
+                from that state, and a request restating it differently is
+                refused rather than silently overridden. */}
+            <Spec
+              label="Starts from"
+              value={
+                !cfg.resume_from
+                  ? "Random weights"
+                  : (resumeName ?? "A checkpoint")
+              }
+              muted={!cfg.resume_from}
+            />
+            <Spec
+              label="Tokenizer"
+              value={cfg.tokenizer_id ? "Named build" : "Learned with the run"}
+            />
+          </>
         )}
 
         <Spec

@@ -100,6 +100,21 @@ export interface TrainConfig {
   // KTO only: strength of the KL anchor holding the tune near the base model.
   // Higher keeps it closer. Ignored by the other two modes.
   beta?: number
+  // A model to carry on from — a finished model or any of its checkpoints, since
+  // both are a directory of the same shape and the difference is only whether a
+  // `train_state.pt` sits in it.
+  //
+  // Two behaviours from one field, and the run reports which it took: a matching
+  // corpus and schedule restores the optimizer, the RNG and the data order and
+  // fast-forwards to the saved step; anything else carries the weights and the
+  // moments onto this run's own schedule. Architecture comes from the state, and
+  // a request that restates it differently is refused rather than overridden —
+  // which is why the composer leaves the architecture fields alone rather than
+  // rewriting them to the resumed model's.
+  //
+  // Pretrain only. `SftConfig` names a `base_model` instead and simply does not
+  // have this field, the same way it has no `tokenizer_id` or `curriculum`.
+  resume_from?: string
 }
 
 // Where a run is *within itself*. Deliberately not the same thing as the job's

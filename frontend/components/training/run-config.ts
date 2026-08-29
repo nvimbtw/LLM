@@ -31,6 +31,7 @@ export const STRING_FIELDS = new Set<keyof TrainConfig>([
   "model_name",
   "base_model_id",
   "tokenizer_id",
+  "resume_from",
 ])
 
 export const ARCH_FIELDS: Field[] = [
@@ -115,6 +116,16 @@ export function isPowerOfTwo(n: number) {
 // every run made before vocabulary builds existed. Mapped back to `undefined`
 // on the way out, which is what the config means by it.
 export const LEARN_WITH_RUN = "learn-with-run"
+
+// "Start from random weights", for the same reason `LEARN_WITH_RUN` exists: it
+// is a real choice — the one every run made before checkpoints could be picked
+// up — and the empty string is how a Select says *nothing is selected*. Mapped
+// back to `undefined` on the way out, which is what the config means by it.
+export const FROM_SCRATCH = "from-scratch"
+
+// "The finished weights", as opposed to one of the model's intermediate saves.
+// Selecting it means `resume_from` is the parent model's own id.
+export const FINISHED_WEIGHTS = "finished-weights"
 
 // Name is a display label only (weights live under the model's UUID), so spaces
 // and dots like "Opal 1.1" are allowed — just no surrounding whitespace or

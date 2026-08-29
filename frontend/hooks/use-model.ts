@@ -19,6 +19,16 @@ export interface ModelDetail extends Model {
   estimatedParams: number
   config: RawModelConfig | null
   dataset: RawModelResult | null
+  /**
+   * Which of its run's saves this is, and where in the run it was taken — null
+   * on an ordinary model. A non-null `checkpointIndex` is the whole definition
+   * of "this row is an intermediate", and the page says so rather than
+   * presenting a checkpoint as a peer of the model it is an intermediate of.
+   */
+  checkpointIndex: number | null
+  checkpointStep: number | null
+  /** The finished model this is an intermediate of, when it is one. */
+  parentId: string | null
 }
 
 function mapDetail(raw: RawModel): ModelDetail {
@@ -28,6 +38,9 @@ function mapDetail(raw: RawModel): ModelDetail {
     estimatedParams: estimateParams(raw),
     config: raw.parameters?.config ?? null,
     dataset: raw.parameters?.result ?? null,
+    checkpointIndex: raw.checkpoint_index,
+    checkpointStep: raw.checkpoint_step,
+    parentId: raw.parent_id,
   }
 }
 

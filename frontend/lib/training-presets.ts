@@ -166,6 +166,10 @@ export function toTrainConfig(
     mode,
     base_model_id:
       typeof b.base_model_id === "string" ? b.base_model_id : undefined,
+    // An id and not a shape, so there is nothing to coerce — but it is carried
+    // rather than dropped, because a preset for "carry on from the model we keep
+    // extending" is exactly the preset somebody saves.
+    resume_from: typeof b.resume_from === "string" ? b.resume_from : undefined,
   }
 }
 

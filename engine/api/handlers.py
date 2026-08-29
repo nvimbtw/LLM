@@ -129,6 +129,26 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
             parent_id=_model_id(config.get("model_name")),
             checkpoint_step=checkpoint.step,
             checkpoint_index=checkpoint.index,
+            # The row carries where in the run this was taken and what the loss
+            # was there, because nothing else can answer it. The same numbers are
+            # in the checkpoint's own `meta.json`, but the listing serves only
+            # that file's `config` half — and sourcing them from the run instead
+            # would lose them the moment the run row is pruned, which is the very
+            # reason `run_id` is not a foreign key.
+            parameters={
+                "config": config,
+                "result": {
+                    "checkpoint": {
+                        "index": checkpoint.index,
+                        "step": checkpoint.step,
+                        "total_steps": checkpoint.total_steps,
+                        "epoch": checkpoint.epoch,
+                        "stage": checkpoint.stage,
+                        "stage_name": checkpoint.stage_name,
+                        "loss": checkpoint.loss,
+                    }
+                },
+            },
         )
     return model_id
 
