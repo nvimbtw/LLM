@@ -1,0 +1,59 @@
+# The sandboxed shell behind the backend's `bash` tool, as a service.
+#
+#   cd deploy/just-bash
+#   docker compose up -d
+#   curl -s localhost:8899/health            # {"ok":true,"sessions":0}
+#
+# `run.sh` beside this file does the same thing as a bare Node process on the
+# host, and is still the better loop when the backend is running natively. This
+# file exists for the case that one cannot serve: a backend inside a container,
+# where `localhost` is the container and not the machine. Defined here rather
+# than in the root compose file, and included from it, for the reason SearXNG is
+# — so the standalone workflow and the whole-stack one cannot drift apart.
+#
+# Why this is a container at all, when docs/backend/README.md says just-bash
+# needs none: it still doesn't. The library *is* the sandbox — bash simulated
+# over a virtual filesystem, no `execve` under any of it — so there is nothing
+# here for a container to isolate, and that argument is unchanged. What a
+# container buys is an *address*: a name on the compose network the backend can
+# actually resolve.
+
+services:
+  just-bash:
+    image: node:22-alpine
+    container_name: slate-just-bash
+    restart: unless-stopped
+    working_dir: /app
+    # Installs on first start, exactly as `run.sh` does, so a fresh clone needs
+    # no host-side npm. `--silent` because the install log is noise on every
+    # `up` and the failure still prints.
+    command: sh -c "npm install --silent && node server.mjs"
+    environment:
+      # 0.0.0.0 *inside the container*, which is not the loosening it looks
+      # like. server.mjs binds loopback by default because an unauthenticated
+      # command endpoint has no business on a host's public interface; here the
+      # container's network namespace is that boundary, and the published port
+      # below is still loopback-only. Binding 127.0.0.1 in a container would
+      # mean nothing outside it — including the backend — could ever connect.
+      BASH_HOST: 0.0.0.0
+      BASH_PORT: "8899"
+    ports:
+      # Loopback only, like SearXNG's, and for the same reason. Published at all
+      # so `curl localhost:8899/health` works from the host and so a natively
+      # run backend can use this container instead of its own Node process.
+      - "127.0.0.1:${BASH_PORT:-8899}:8899"
+    volumes:
+      - .:/app
+      # Masks the host's node_modules the way the frontend service masks its
+      # own: a tree installed on the host is not necessarily loadable in this
+      # image, and a named volume means the install survives a restart instead
+      # of running on every `up`.
+      - just-bash-modules:/app/node_modules
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+volumes:
+  just-bash-modules:

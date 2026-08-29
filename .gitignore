@@ -38,3 +38,6 @@ engine/data/
 
 # SearXNG writes its cache here, and takes ownership of config/ on start.
 deploy/searxng/data/
+
+# Agent scratch, and the git worktrees it creates inside the repo.
+.claude/

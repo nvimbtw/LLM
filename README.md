@@ -150,15 +150,19 @@ cd data-engine && .venv/bin/uvicorn main:app --port 8002 --reload
 **Tools (optional).** A reply can call one, as
 `<|tool-call|>{"tool": …, "argument": …}<|/tool-call|>`, and the backend runs
 it. Both are self-hosted — no key, no account, nothing metered. `docker
-compose up` already starts search; the shell sandbox is native-only for now:
+compose up` starts both, and points the backend at them itself. To run either
+beside a natively run backend instead:
 
 ```sh
 cd deploy/searxng   && ./run.sh      # web search  (or: docker compose up -d searxng)
-cd deploy/just-bash && ./run.sh      # a sandboxed shell
+cd deploy/just-bash && ./run.sh      # a sandboxed shell (or: … up -d just-bash)
 ```
 
 Then `SEARCH_URL=http://localhost:8888` and `BASH_URL=http://localhost:8899` in
-`backend/.env`. Leave either unset and that tool simply is not registered. The
+`backend/.env` — the host addresses, which is what a native backend needs. A
+containerised one cannot use them (its `localhost` is itself), so compose sets
+both to service names and those win. Leave either unset and that tool simply is
+not registered. The
 shell is a *simulation* — a virtual filesystem in a Node process, no `execve`
 anywhere under it — which is what makes it safe to point a language model at.
 

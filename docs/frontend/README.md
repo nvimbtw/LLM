@@ -582,12 +582,21 @@ string: editing the same message twice has to load it twice.
 
 ### The trace
 
-A turn's working — the first round's reply plus what each call came back with —
-renders as one panel above the answer (`components/chat/trace.tsx`), not as the
-three messages it is stored as. `hooks/use-chat.ts::groupTurns` does the folding:
-`assistant → tool → assistant` is the right shape for the *model*, whose next
-prompt has to contain all three, and the wrong shape for a reader who asked one
-question.
+A turn's working — every round before the one that answered, plus what each call
+came back with — renders as one panel above the answer
+(`components/chat/trace.tsx`), not as the rows it is stored as.
+`hooks/use-chat.ts::groupTurns` does the folding: `assistant → tool → assistant`
+is the right shape for the *model*, whose next prompt has to contain all three,
+and the wrong shape for a reader who asked one question.
+
+**However many rounds it took.** A turn is not capped at one call and one answer
+— the backend allows `MAX_TOOL_ROUNDS` of them, and a model that reads a failed
+command and tries something else is the normal case, not the exception. Both the
+folding and the live stream accumulate: `groupTurns` appends each round's markup
+to `working` rather than assigning it once, and the streaming path folds the
+answer-so-far back into the working when a later round calls again. Getting
+either wrong shows up immediately — as a second reasoning block and a bare call
+hanging under the trace, or, in the stored view, as a middle round vanishing.
 
 The panel's rail is its timeline. Reasoning is prose against it, a tool call is a
 tick off it (`components/chat/trace-step.tsx`), and the whole thing is

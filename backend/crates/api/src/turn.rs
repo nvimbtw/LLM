@@ -20,10 +20,27 @@ use crate::ws;
 
 /// How many times a reply may be handed tool output and asked to continue.
 ///
-/// Two: the reply that calls, and the one that answers with what came back.
-/// Without a bound, a model that has learned to open a search in every reply
-/// never terminates — and each round is a fresh generation the person waits on.
-const MAX_TOOL_ROUNDS: usize = 2;
+/// Default six. It was two — the reply that calls and the one that answers with
+/// what came back — which assumed the second round is prose. A model doing real
+/// work does not oblige: it looks at the output, learns the path was wrong, and
+/// calls again. At two rounds that second call is parsed, spawned, and then
+/// dropped on the floor when the loop runs out, leaving the reply ending in a
+/// call nothing ever answered. Six lets a model actually converge on something.
+///
+/// Still bounded, and the reason is unchanged: without one, a model that has
+/// learned to open a search in every reply never terminates, and each round is a
+/// fresh generation the person waits on. Raise `MAX_TOOL_ROUNDS` to let a model
+/// work for longer, at that cost.
+const DEFAULT_TOOL_ROUNDS: usize = 6;
+
+fn max_tool_rounds() -> usize {
+    // At least one, or a turn would generate nothing at all.
+    std::env::var("MAX_TOOL_ROUNDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_TOOL_ROUNDS)
+}
 
 /// One `tool_call` the engine reported, and the work started for it.
 struct Pending {
@@ -46,7 +63,8 @@ pub async fn run(
 ) {
     let settings = ask.clone();
 
-    for round in 0..MAX_TOOL_ROUNDS {
+    let rounds = max_tool_rounds();
+    for round in 0..rounds {
         let frames = match engine.stream(caller, path, ask).await {
             Ok(frames) => frames,
             Err(e) => {
@@ -55,7 +73,7 @@ pub async fn run(
             }
         };
 
-        let last_round = round + 1 == MAX_TOOL_ROUNDS;
+        let last_round = round + 1 == rounds;
         let Some(pending) = relay(session, registry, chat, frames, last_round).await else {
             return;
         };

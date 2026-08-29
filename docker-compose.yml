@@ -17,11 +17,12 @@
 
 name: slate
 
-# SearXNG is defined once, in the directory that also holds the config it
-# mounts. Included rather than repeated, so the standalone `deploy/searxng/`
-# workflow and this file cannot drift apart.
+# Each is defined once, in the directory that also holds what it needs, and
+# included rather than repeated — so the standalone `deploy/<service>/` workflow
+# and this file cannot drift apart.
 include:
   - deploy/searxng/docker-compose.yml
+  - deploy/just-bash/docker-compose.yml
 
 services:
   postgres:
@@ -133,6 +134,12 @@ services:
       DATA_ENGINE_SERVICE_SECRET: ${DATA_ENGINE_SERVICE_SECRET:?set it in .env}
       BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
       SEARCH_URL: http://searxng:8080
+      # Set here and not left to backend/.env, which is bind-mounted in and says
+      # `http://localhost:8899` — true when the backend runs on the host, and a
+      # connection to the container itself when it does not. dotenvy does not
+      # overwrite a variable already in the environment, so this wins and the
+      # native value stays correct for `cargo run`.
+      BASH_URL: http://just-bash:8899
     volumes:
       # Carries backend/.env in with it, which `dotenvy` will read. That is
       # harmless — dotenvy does not overwrite a variable already in the
