@@ -20,6 +20,8 @@ exist anywhere", which is why a run could train on data nobody asked for.
 
 import json
 import time
+import uuid
+from dataclasses import dataclass, replace
 from threading import Event
 
 from tokenizers import Tokenizer
@@ -28,10 +30,159 @@ from llm import storage
 from llm.config import TrainConfig
 from llm.corpus import bpe, pack, remote, spans as spans_mod, vocab
 from llm.model import checkpoint
+from llm.model.checkpoint import TrainState
 from llm.model.transformer import Transformer
 from llm.train import diagnostics, loop
 from llm.train.plan import DataPlan, Stage
-from llm.train.progress import ProgressCallback, Tokenize, log_progress
+from llm.train.progress import Checkpoint, ProgressCallback, Tokenize, log_progress
+
+#: Architecture a `TrainConfig` can state. A resumed run takes these from the
+#: checkpoint; the point of the list is which ones a *request* is then compared
+#: against, because pydantic cannot tell "unset" from "set to the default" any
+#: other way than `model_fields_set`.
+_ARCHITECTURE = frozenset(
+    {"dimensions", "heads", "layers", "ff_multiplier", "ctx_window", "rope_base",
+     "learned_temperature"}
+)
+
+
+class CheckpointWriter:
+    """What a checkpoint *directory* is — the half of checkpointing the loop
+    does not own.
+
+    A checkpoint is a model. It gets a uuid of its own and a directory laid out
+    exactly like a finished model's — `model.pt`, `tokenizer.json`, `meta.json` —
+    plus the `train_state.pt` a later run picks it up from. Identical in shape is
+    the entire point: chatting with a checkpoint, benchmarking one, and
+    fine-tuning from one all fall out of the code that already loads a model,
+    and none of those paths learns what a checkpoint is.
+
+    Used by `orchestrate/sft.py` as well as by this module. It is here rather
+    than in a module of its own because the two orchestrators differ only in what
+    they know to record, which is exactly what they hand the constructor.
+    """
+
+    def __init__(self, *, tokenizer, config: dict, provenance: dict, state_extra: dict):
+        self.tokenizer = tokenizer
+        self.config = config
+        self.provenance = provenance
+        self.state_extra = state_extra
+        self.index = 0
+
+    def __call__(
+        self,
+        model,
+        optimizer,
+        *,
+        step: int,
+        total_steps: int,
+        epoch: int,
+        stage: int,
+        stage_name: str | None,
+        loss: float | None,
+    ) -> Checkpoint:
+        self.index += 1
+        model_id = str(uuid.uuid4())
+        directory = storage.ensure_dir(storage.model_dir(model_id))
+
+        checkpoint.save(model, storage.weights_path(model_id))
+        self.tokenizer.save(str(storage.tokenizer_file(directory)))
+        state = checkpoint.save_state(
+            storage.train_state_path(model_id),
+            model=model,
+            optimizer=optimizer,
+            step=step,
+            epoch=epoch,
+            stage=stage,
+            total_steps=total_steps,
+            rng=checkpoint.rng_state(),
+            extra={**self.state_extra, "config": self.config, "loss": loss},
+        )
+        storage.meta_path(model_id).write_text(
+            json.dumps(
+                {
+                    "config": self.config,
+                    "result": {
+                        "model_name": model_id,
+                        **self.provenance,
+                        "checkpoint": {
+                            "index": self.index,
+                            "step": step,
+                            "total_steps": total_steps,
+                            "epoch": epoch,
+                            "stage": stage,
+                            "loss": loss,
+                        },
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return Checkpoint(
+            model_id=model_id,
+            index=self.index,
+            step=step,
+            total_steps=total_steps,
+            epoch=epoch,
+            stage=stage,
+            stage_name=stage_name,
+            path=str(state),
+            loss=loss,
+        )
+
+
+def resume_state(model_id: str | None) -> TrainState | None:
+    """The training state a run was told to carry on from, or None.
+
+    One id covers both a finished model and one of its checkpoints: they are the
+    same directory shape and the difference is only whether a `train_state.pt`
+    is in it. So resuming from a finished model works, and it starts AdamW cold —
+    which is `load_state` reading a plain weights file, not a branch here.
+    """
+    if not model_id:
+        return None
+    state_file = storage.train_state_path(model_id)
+    if state_file.is_file():
+        return checkpoint.load_state(state_file)
+    weights = storage.weights_path(model_id)
+    if weights.is_file():
+        return checkpoint.load_state(weights)
+    raise FileNotFoundError(
+        f"Nothing to resume from at {storage.model_dir(model_id)} — `resume_from` "
+        f"names a model id, finished or a checkpoint of one"
+    )
+
+
+def resumed_architecture(cfg: TrainConfig, state: TrainState, vocab_size: int) -> dict:
+    """The shape a resumed run trains at, which is the checkpoint's.
+
+    A request may restate it, and then the two have to agree. Letting the request
+    win is not on the table — the weights would win regardless, silently, and the
+    run would report an architecture it did not train. Refusing is the same rule
+    `SftConfig`'s docstring states for a fine-tune, applied to the other way of
+    starting from existing weights.
+
+    Only fields the request actually set are compared: a resume naming nothing
+    but `resume_from` is asking for the checkpoint's shape, not for the defaults
+    pydantic filled in behind it.
+    """
+    arch = dict(state.arch)
+    disagreements = [
+        f"{name} {getattr(cfg, name)} against the checkpoint's {arch[name]}"
+        for name in sorted(_ARCHITECTURE & cfg.model_fields_set)
+        if name in arch and arch[name] != getattr(cfg, name)
+    ]
+    if arch["vocab"] != vocab_size:
+        disagreements.append(
+            f"a vocabulary of {vocab_size} tokens against the checkpoint's {arch['vocab']}"
+        )
+    if disagreements:
+        raise ValueError(
+            f"Cannot resume from {cfg.resume_from}: the architecture comes from the "
+            f"checkpoint and this request asks for " + "; ".join(disagreements)
+        )
+    return arch
 
 
 def build_dataset(
@@ -299,19 +450,11 @@ def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -
         data_plan = DataPlan.whole_corpus(len(corpus))
 
     device = loop.pick_device()
-    model = Transformer(
-        vocab=bpe.vocab_size(tokenizer),
-        dimensions=cfg.dimensions,
-        heads=cfg.heads,
-        layers=cfg.layers,
-        ff_multiplier=cfg.ff_multiplier,
-        ctx_window=cfg.ctx_window,
-        rope_base=cfg.rope_base,
-        learned_temperature=cfg.learned_temperature,
-    )
+    state = resume_state(cfg.resume_from)
+    model = _model(cfg, state, bpe.vocab_size(tokenizer))
     print(
         f"[4/6] Model: {model.parameter_count():,} parameters, "
-        f"{cfg.layers}L/{cfg.heads}H/{cfg.dimensions}d on {device}"
+        f"{model.layers}L/{model.heads}H/{model.dimensions}d on {device}"
     )
 
     plan_stages = data_plan.ordered_stages(cfg.epochs)
@@ -321,28 +464,8 @@ def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -
             f"{st.name or 'all'} x{st.epochs} ({len(st.documents)} docs)" for st in plan_stages
         )
     )
-    summary = loop.run(
-        model,
-        corpus,
-        data_plan,
-        cfg,
-        device,
-        on_progress,
-        cancel,
-        token_counts=info.get("token_counts"),
-    )
 
-    print("[6/6] Saving")
-    model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))
-    checkpoint.save(model, storage.weights_path(cfg.model_name))
-
-    # A copy of the tokenizer beside the weights, so inference loads both from
-    # one directory and a later retrain cannot leave a model paired with a
-    # tokenizer it was never trained against.
-    tokenizer.save(str(storage.tokenizer_file(model_dir)))
-
-    result = {
-        "model_name": cfg.model_name,
+    provenance = {
         "parameters": model.parameter_count(),
         "device": device,
         # Recorded because they change throughput by ~2.5x and precision changes
@@ -373,6 +496,44 @@ def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -
                 "special_ids_seen": info.get("special_ids_seen"),
             }
         ),
+    }
+    continuation = _continuation(cfg, state, corpus, data_plan, key)
+
+    summary = loop.run(
+        model,
+        corpus,
+        data_plan,
+        cfg,
+        device,
+        on_progress,
+        cancel,
+        token_counts=info.get("token_counts"),
+        on_checkpoint=CheckpointWriter(
+            tokenizer=tokenizer,
+            config=cfg.model_dump(),
+            provenance=provenance,
+            state_extra={
+                "corpus_key": key,
+                "tokenizer_id": tokenizer_id,
+                "tokenizer_fingerprint": fingerprint,
+            },
+        ),
+        resume=continuation.state,
+    )
+
+    print("[6/6] Saving")
+    model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))
+    checkpoint.save(model, storage.weights_path(cfg.model_name))
+
+    # A copy of the tokenizer beside the weights, so inference loads both from
+    # one directory and a later retrain cannot leave a model paired with a
+    # tokenizer it was never trained against.
+    tokenizer.save(str(storage.tokenizer_file(model_dir)))
+
+    result = {
+        "model_name": cfg.model_name,
+        **provenance,
+        **continuation.record,
         **summary,
         "total_secs": round(time.time() - started, 1),
     }
@@ -382,3 +543,72 @@ def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -
         encoding="utf-8",
     )
     return result
+
+
+def _model(cfg: TrainConfig, state: TrainState | None, vocab_size: int) -> Transformer:
+    """The model this run trains: the request's architecture, or the state's."""
+    if state is None:
+        return Transformer(
+            vocab=vocab_size,
+            dimensions=cfg.dimensions,
+            heads=cfg.heads,
+            layers=cfg.layers,
+            ff_multiplier=cfg.ff_multiplier,
+            ctx_window=cfg.ctx_window,
+            rope_base=cfg.rope_base,
+            learned_temperature=cfg.learned_temperature,
+        )
+    model = Transformer(**resumed_architecture(cfg, state, vocab_size))
+    model.load_state_dict(state.state_dict)
+    return model
+
+
+@dataclass
+class _Continuation:
+    """What the loop is handed, and what the run records about having been one."""
+
+    state: TrainState | None
+    record: dict
+
+
+def _continuation(cfg, state, corpus, data_plan, corpus_key: str) -> _Continuation:
+    """Which of the two things `resume_from` means, decided once.
+
+    **Resumed** — the state was taken from a run over this corpus on this
+    schedule, so the position, the optimizer and the generators are all still
+    meaningful and the continuation is deterministic: it arrives where the
+    uninterrupted run would have.
+
+    **Continued** — anything else. The weights and the moments carry over and
+    nothing else does, because nothing else still refers to the same thing: a
+    step index into a different schedule is not a position, and a generator
+    restored mid-way through data this run will never see is not an order. Same
+    relationship a fine-tune has to its base model.
+
+    Which of the two it was is recorded, because after the fact the two are
+    indistinguishable from the weights and produce very different curves.
+    """
+    if state is None:
+        return _Continuation(None, {})
+
+    _, total_steps = loop.step_plan(corpus, data_plan, cfg)
+    resumed = (
+        state.step > 0
+        and state.total_steps == total_steps
+        and state.extra.get("corpus_key") == corpus_key
+    )
+    print(
+        f"      {'Resuming' if resumed else 'Continuing'} from {cfg.resume_from}"
+        + (f" at step {state.step}/{total_steps}" if resumed else " with fresh data and schedule")
+    )
+    return _Continuation(
+        state if resumed else replace(state, step=0, rng={}),
+        {
+            "resume": {
+                "model": cfg.resume_from,
+                "mode": "resumed" if resumed else "continued",
+                "step": state.step if resumed else 0,
+                "optimizer": state.optimizer is not None,
+            }
+        },
+    )

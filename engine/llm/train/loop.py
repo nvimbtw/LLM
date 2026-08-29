@@ -8,19 +8,34 @@ kernels, host/device synchronization) is autograd and torch.optim here.
 import math
 import time
 from threading import Event
+from typing import Callable
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from llm import storage
 from llm.config import TrainConfig
 from llm.model import checkpoint
+from llm.model.checkpoint import TrainState
 from llm.model.transformer import Transformer
 from llm.train import plan as plan_mod
 from llm.train.diagnostics import Collector, Probes, diagnostic_rows
 from llm.train.plan import DataPlan
-from llm.train.progress import Progress, ProgressCallback, diagnose_every, report_every
+from llm.train.progress import (
+    Checkpoint,
+    Progress,
+    ProgressCallback,
+    checkpoint_every,
+    diagnose_every,
+    report_every,
+)
+
+#: What the loop asks of a checkpoint writer. It decides *when*; the writer
+#: decides what a checkpoint directory is and answers with the frame describing
+#: the one it just wrote — which is why it is told the run's shape as well as the
+#: moment: `total_steps` and `stage_name` are fields of that frame and nothing
+#: below the orchestrator knows them.
+CheckpointWriter = Callable[..., Checkpoint]
 
 # The floor of the cosine decay, as a fraction of the peak. Training all the way
 # to zero wastes the tail of the run on steps that barely move the weights.
@@ -144,6 +159,134 @@ def lr_at(step: int, total_steps: int, cfg: TrainConfig) -> float:
     return cfg.lr * scale
 
 
+def step_plan(
+    corpus: np.ndarray,
+    data_plan: DataPlan,
+    cfg: TrainConfig,
+    mask: np.ndarray | None = None,
+) -> tuple[list[int], int]:
+    """Batches per epoch of each stage, and the run's total across all of them.
+
+    Out here rather than buried in `run` because a run that names `resume_from`
+    has to compare this number against the one its saved state was taken under
+    before it decides whether it is continuing that run or starting a new one
+    from its weights — and that question is answered before anything is trained.
+    """
+    stages = data_plan.ordered_stages(cfg.epochs)
+    per_stage = [
+        plan_mod.batch_count(
+            len(plan_mod.EpochStream(corpus, data_plan, 0, mask, stage.documents)),
+            cfg.ctx_window,
+            cfg.batch_size,
+        )
+        for stage in stages
+    ]
+    return per_stage, sum(n * st.epochs for n, st in zip(per_stage, stages))
+
+
+class _Checkpoints:
+    """When a run takes one, and the bookkeeping that keeps it to once each.
+
+    Three rules ask for a checkpoint and they overlap on purpose: the interval,
+    the end of every epoch, and the last step of the run. `checkpoint_every`
+    snaps the interval onto a step that is already reporting, so an epoch ending
+    on one is the common case rather than the rare one — and written twice that
+    would be the same weights under two ids, two directories and two rows.
+    """
+
+    def __init__(
+        self,
+        write: CheckpointWriter | None,
+        publish: ProgressCallback | None,
+        interval: int,
+        total_steps: int,
+    ):
+        self.write = write
+        self.publish = publish
+        self.interval = interval
+        self.total_steps = total_steps
+        self.index = 0
+        self.last = -1
+
+    def _due(self, step: int, epoch_end: bool) -> bool:
+        # A zero interval is `checkpoint_target=0`, which means none at all — the
+        # epoch and final-step rules are what a cadence is *made of*, not
+        # exceptions to it, so they go quiet with it. The run's own model is
+        # still saved; that has never been this class's business.
+        if self.write is None or not self.interval or step == self.last:
+            return False
+        return epoch_end or step >= self.total_steps or step % self.interval == 0
+
+    def at(
+        self,
+        model: Transformer,
+        optimizer: torch.optim.Optimizer,
+        *,
+        step: int,
+        epoch: int,
+        stage: int,
+        stage_name: str | None,
+        loss: Callable[[], float],
+        epoch_end: bool = False,
+    ) -> str | None:
+        """Write one if this step calls for it, and answer with its state file.
+
+        `loss` is a callable and not a number because reading one drains the
+        device-side loss buffer — a host sync, on the training path, which a run
+        taking no checkpoints must not start paying for the ones it is not
+        taking.
+
+        The frame goes out on the progress callback because that is the seam a
+        run already has for things it must say while it is still running. The
+        path is returned as well: `Progress.checkpoint_path` is what the run
+        appendix reads, and it has read it since before this frame existed.
+        """
+        if not self._due(step, epoch_end):
+            return None
+
+        self.last = step
+        self.index += 1
+        frame = self.write(
+            model,
+            optimizer,
+            step=step,
+            total_steps=self.total_steps,
+            epoch=epoch,
+            stage=stage,
+            stage_name=stage_name,
+            loss=loss(),
+        )
+        if self.publish is not None:
+            self.publish(frame)
+        return frame.path
+
+
+def _resume(
+    model: Transformer,
+    optimizer: torch.optim.Optimizer,
+    state: TrainState | None,
+) -> int:
+    """Put the optimizer and the generators back, and answer with the step to
+    re-enter at.
+
+    Applied literally: whatever `state` carries is restored and the run
+    fast-forwards to `state.step`. A continuation that means to keep the moments
+    but not the position hands over a state whose step is 0 — which of the two a
+    request meant is the orchestrator's to decide, because it is the only layer
+    that knows whether the corpus and the schedule are the same ones.
+
+    The weights are not loaded here. A resumed run's architecture comes from the
+    state, so the model was built from it and already holds them by the time this
+    runs; loading them again here would make that silently optional.
+    """
+    if state is None:
+        return 0
+    if state.optimizer:
+        optimizer.load_state_dict(state.optimizer)
+    checkpoint.restore_rng(state.rng)
+    return state.step
+
+
 def run(
     model: Transformer,
     corpus: np.ndarray,
@@ -155,6 +298,8 @@ def run(
     mask: np.ndarray | None = None,
     token_counts: list[int] | None = None,
     probes: Probes | None = None,
+    on_checkpoint: CheckpointWriter | None = None,
+    resume: TrainState | None = None,
 ) -> dict:
     """Train `model` in place. Returns a summary; True in `cancelled` means the
     run stopped at a step boundary with its weights intact.
@@ -167,6 +312,17 @@ def run(
     is, and where its corpus and the held-out chat live, is `orchestrate/sft.py`'s
     to know. Nothing here is retained past the return, so the reference model
     (when one was asked for) is collectable before `release_device` runs.
+
+    `on_checkpoint` is called at the moments `_Checkpoints` decides. Without one
+    a run takes none at all, which is what `bench.py` and the tests want.
+
+    `resume` restarts inside the schedule rather than at the top of it — see
+    `_resume` for the division of labour, and note that the position is a *batch*
+    ordinal: a masked run drops windows with nothing trainable in them, so its
+    step count and its batch count differ by however many it dropped. That is the
+    same approximation `total_steps` above already makes, and a fine-tune that
+    resumes therefore re-enters within a few windows of where it stopped rather
+    than exactly on it.
     """
     model.to(device)
     model.train()
@@ -210,11 +366,7 @@ def run(
     )
 
     stages = data_plan.ordered_stages(cfg.epochs)
-    stage_steps = []
-    for stage in stages:
-        length = len(plan_mod.EpochStream(corpus, data_plan, 0, mask, stage.documents))
-        stage_steps.append(plan_mod.batch_count(length, cfg.ctx_window, cfg.batch_size))
-    total_steps = sum(n * st.epochs for n, st in zip(stage_steps, stages))
+    stage_steps, total_steps = step_plan(corpus, data_plan, cfg, mask)
     if total_steps == 0:
         raise ValueError(
             f"Corpus of {len(corpus)} tokens is too small for ctx_window "
@@ -228,9 +380,17 @@ def run(
     # both draw a curve rather than a line or a flood.
     interval = report_every(total_steps)
     diag_interval = diagnose_every(max(1, total_steps // interval))
+    total_epochs = sum(st.epochs for st in stages)
+    checkpoints = _Checkpoints(
+        on_checkpoint,
+        on_progress,
+        checkpoint_every(total_steps, total_epochs, cfg.checkpoint_target),
+        total_steps,
+    )
 
     started = time.time()
-    step = 0
+    resumed_at = _resume(model, optimizer, resume)
+    step = resumed_at
     staging = staging_allocator(device)
     log = _LossLog(interval, device)
     grad = None
@@ -257,9 +417,12 @@ def run(
         elapsed = time.time() - started
         # Projected from the rate achieved so far rather than from the last
         # window: a single slow batch should not swing the estimate a person is
-        # reading off the screen.
+        # reading off the screen. Off the steps *this* process has taken, so a
+        # resumed run does not divide its few seconds by the whole run's step
+        # count and promise to finish immediately.
         remaining = max(0, total_steps - step)
-        eta = (elapsed / step * remaining) if step else 0.0
+        taken = step - resumed_at
+        eta = (elapsed / taken * remaining) if taken else 0.0
 
         on_progress(
             Progress(
@@ -289,22 +452,36 @@ def run(
                 diag=collector().after_step(grad, step).as_dict() if (grad and not done) else None,
             )
         )
-    storage.ensure_dir(storage.checkpoints_dir(cfg.model_name))
+
+    def current_loss() -> float:
+        """The number the frame accompanying this checkpoint will carry."""
+        log.flush()
+        return float(np.mean(log.values[-interval:] or [0.0]))
 
     epochs_done = 0
-    total_epochs = sum(st.epochs for st in stages)
+    # Epochs already behind the step being resumed at are skipped whole, by
+    # subtraction rather than by iterating them: `EpochStream` is addressable, so
+    # neither the skipped epochs nor the skipped head of the one being re-entered
+    # is ever gathered.
+    to_skip = resumed_at
 
     for stage_index, stage in enumerate(stages):
       for stage_epoch in range(stage.epochs):
         epoch = epochs_done + stage_epoch
+        steps_this_epoch = stage_steps[stage_index]
+        if to_skip >= steps_this_epoch:
+            to_skip -= steps_this_epoch
+            continue
+
+        start_batch, to_skip = to_skip, 0
         epoch_started = time.time()
         log.start_epoch()
-        chunk = 0
-        steps_this_epoch = stage_steps[stage_index]
+        chunk = start_batch
         stream = plan_mod.EpochStream(corpus, data_plan, epoch, mask, stage.documents)
 
         for inputs, targets, weights, offset in plan_mod.iter_batches(
-            stream, cfg.ctx_window, cfg.batch_size, mask is not None, staging
+            stream, cfg.ctx_window, cfg.batch_size, mask is not None, staging,
+            start_batch=start_batch,
         ):
             # Cooperative cancellation at a step boundary: the weights are
             # consistent here, mid-backward they are not.
@@ -327,7 +504,8 @@ def run(
             for group in optimizer.param_groups:
                 group["lr"] = lr
 
-            measuring = on_progress is not None and (step + 1) % interval == 0
+            reporting = (step + 1) % interval == 0
+            measuring = on_progress is not None and reporting
             # Diagnostics are sampled across the reports, not taken on each one.
             diagnosing = measuring and ((step + 1) // interval) % diag_interval == 0
 
@@ -359,24 +537,37 @@ def run(
             step += 1
             chunk += 1
 
+            # The interval is a multiple of the report interval, so a checkpoint
+            # always lands on a step that is publishing a frame anyway and rides
+            # that frame's `checkpoint_path` out.
+            saved = (
+                checkpoints.at(
+                    model, optimizer,
+                    step=step, epoch=epoch + 1, stage=stage_index,
+                    stage_name=stage.name, loss=current_loss,
+                )
+                if reporting
+                else None
+            )
+
             if measuring:
                 report(epoch, stage_index, stage, chunk, steps_this_epoch,
-                       lr, epoch_started)
+                       lr, epoch_started, checkpoint_path=saved)
                 # Hands the GIL to the event loop so the frame just published actually
                 # goes out. Without it a tight loop holds the GIL and every frame flushes
                 # at once when the run ends, which looks exactly like broken streaming.
                 # `sleep(0)` does not release it.
                 time.sleep(0.002)
 
-        saved = checkpoint.save(
-            model,
-            storage.checkpoints_dir(cfg.model_name) / f"epoch{epoch + 1:03d}.pt",
-            epoch=epoch + 1,
+        saved = checkpoints.at(
+            model, optimizer,
+            step=step, epoch=epoch + 1, stage=stage_index, stage_name=stage.name,
+            loss=current_loss, epoch_end=True,
         )
         if on_progress:
             grad = None
             report(epoch, stage_index, stage, chunk, steps_this_epoch,
-                   lr, epoch_started, done=True, checkpoint_path=str(saved))
+                   lr, epoch_started, done=True, checkpoint_path=saved)
       epochs_done += stage.epochs
 
     log.flush()

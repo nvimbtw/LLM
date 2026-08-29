@@ -9,7 +9,8 @@ held out from training and therefore not training data.
     datasets/pretrain/<key>/     one packed corpus per (vocabulary x selection)
     datasets/sft/<key>/          one built SFT dataset per selection (see below)
     artifacts/tokenizers/<id>/   one built vocabulary, and what it was built from
-    artifacts/models/<id>/       weights, a copy of the tokenizer, meta.json
+    artifacts/models/<id>/       weights, a copy of the tokenizer, meta.json,
+                                 and train_state.pt where the run left one
 
     datasets/corpus.bin          the pre-keyed singletons, left where they are
     datasets/segments.json       (see `legacy_pretrain_paths`)
@@ -191,8 +192,16 @@ def meta_path(model_name: str) -> Path:
     return model_dir(model_name) / "meta.json"
 
 
-def checkpoints_dir(model_name: str) -> Path:
-    return model_dir(model_name) / "checkpoints"
+def train_state_path(model_name: str) -> Path:
+    """The optimizer moments, the RNG and the position a run stopped at.
+
+    Inside the model directory rather than in a `checkpoints/` subtree of the run
+    that produced it, because a checkpoint *is* a model: its own id, its own
+    directory, and this one extra file. That replaced a per-epoch
+    `checkpoints/epochNNN.pt` holding weights alone — which nothing could resume
+    from, chat with, or benchmark.
+    """
+    return model_dir(model_name) / "train_state.pt"
 
 
 def ensure_dir(path: Path) -> Path:

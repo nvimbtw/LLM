@@ -133,6 +133,24 @@ class TrainConfig(BaseModel):
     grad_clip: float = 1.0
     weight_decay: float = 0.1
 
+    # ── Continuation ────────────────────────────────────────────────────────
+    resume_from: str | None = Field(
+        default=None,
+        description="a model id to carry on from — a finished model or one of its "
+        "checkpoints, either works. When this run's corpus and schedule match the "
+        "state's, the optimizer, the RNG and the data order are restored and training "
+        "picks up at the saved step; otherwise the weights and the moments carry over "
+        "and the schedule is this run's. Architecture comes from the state, and a "
+        "request that restates it differently is refused",
+    )
+    checkpoint_target: int | None = Field(
+        default=None,
+        ge=0,
+        description="roughly how many intermediate checkpoints to leave behind; null is "
+        "`progress.TARGET_CHECKPOINTS` and 0 is none at all. Each one is a whole model "
+        "plus the optimizer moments, so this is a disk budget as much as a cadence",
+    )
+
     # ── Data ────────────────────────────────────────────────────────────────
     datasets: list[DatasetSelection] = Field(
         default_factory=list,
