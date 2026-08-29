@@ -50,118 +50,12 @@ with cannot drift apart if there is only one of them.
 `llm/storage.py` is the authoritative map of the data tree; its module docstring
 is kept true and nothing else states a path.
 
-### Where the text comes from
+### Where the text comes from, and what a pack is made of
 
-`llm/corpus/remote.py` is the client side of the one hop that runs toward the
-backend. The engine owns no corpora: what a run trains on is a dataset in the
-*data* engine's database, and the two Python services never speak, so a run asks
-the backend and the backend re-mints toward the other service carrying the same
-acting caller. The seam itself is documented in
-[`../backend/README.md`](../backend/README.md).
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `BACKEND_URL` | `http://127.0.0.1:8080` | |
-| `BACKEND_SERVICE_SECRET` | unset | Shared with the backend. Unset signs the token anyway, because `act` still has to travel |
-
-Three properties, and each of them is a decision rather than an implementation
-detail:
-
-- **Nothing is written down.** A page is fetched, encoded and dropped. A cache or
-  a staging directory would be the engine owning a corpus again.
-- **Pages, not the export stream.** The data engine can serve a whole dataset as
-  one NDJSON response; a connection dropped forty minutes into a pack would then
-  cost the whole pack, where a page costs one retry.
-- **A page is sized in bytes.** `limit` counts documents and a thousand books is
-  not a thousand snippets, so the last page's measured weight sets the next
-  one's limit. The data engine's own ceiling of 200 rows is what binds for small
-  documents; the byte target is what binds for large ones.
-
-All three build paths read through it: the pretrain pack, the vocabulary's
-strided sample, and the SFT render. Nothing in `llm/` opens a corpus file any
-more.
-
-**A selection is a dataset id, not a name.** `{"id": ..., "count": N}` caps to
-the first N *documents* by `ordinal` — where it used to mean the first N files
-sorted by name, which was reproducible only by accident of how a listing sorted.
-A name is carried for readability and for the span tag; the data engine's own
-name wins.
-
-**There is no "everything".** An empty selection used to mean every corpus under
-`input/`, which is reasonable for a directory one person curated. A shared
-database anyone can pull into is not that, and a run that silently widened to
-whatever was added last week would key apart every time somebody else worked. A
-run names its datasets or it is refused.
-
-**A corpus key includes what answered, not only what was asked.** A dataset
-pulled again holds more documents under the same id, so the key carries the
-document count and `updated_at` alongside the id and the cap. Without them a run
-reuses a corpus packed from less data and reports success. A dataset's *name* is
-deliberately not in the digest — but it is in the readable slug, and the slug is
-part of the path, so a rename does re-pack. That is the price of a directory
-listing a person can read, paid knowingly.
-
-**A conversation arrives as `[{role, content}]`** and is rendered from
-`{system?, turns: [{role, text}]}`. `sft._conversation` bridges the two, and the
-part that matters is that a **system message is not a turn**: left in the list it
-reaches `_turns` as an unknown role and drops the whole conversation — every
-conversation, for a dataset that has them.
-
-### What a packed corpus is made of
-
-A build directory holds the tokens (`corpus.bin`, plus `mask.bin` for SFT), the
-**document table** (`spans.npy`), and a sidecar (`segments.json`) recording what
-the build was made from. The three are keyed together — see `corpus_key` and
-`dataset_key` for what a key is a function of.
-
-The table is separate from the sidecar, and columnar, because it is the one part
-that scales with the *number* of documents rather than with their size: 22 bytes
-a row against 145 for an object, and no JSON encoding of the whole table held in
-memory to write it. That is affordable at one span per shard and is not at one
-span per document, which is the granularity a corpus fetched from the data
-engine has. `llm/corpus/spans.py` carries the measurements.
-
-A build packed before the table moved out of `segments.json` carries its rows
-inline there. Those are read, not invalidated — a repacked corpus is hours of
-work, and `spans.from_sidecar` takes either shape.
-
-### What phase 1 measures, and why it is measured where it is
-
-`train.Tokenize` is the phase-1 frame, and its field names are the frontend's
-`TokenizeStats` verbatim — a rename anywhere between here and the panel arrives
-as `undefined`. A field a phase does not measure is **omitted, not zeroed**, so
-"—" means nobody measured rather than "none".
-
-Beyond the counters, a pretrain build reports what the tokenization and the
-packing actually produced: `fertility` (chars per token, per source),
-`dead_vocab` (ids the corpus never uses — tied embeddings make each one a row
-paid for in every forward pass), `merge_sequence` (the head of the merge list in
-learned order), `boundary_straddle` (the share of `ctx_window` windows holding an
-`<|endoftext|>`) and `doc_length_hist`/`docs_over_ctx` (document lengths against
-the window). Three constraints shape where each is computed:
-
-- **Nothing gets a second pass over the corpus.** Corpora reach 4.17B tokens.
-  Fertility is two counters per dataset in the pack's existing stream; dead vocab
-  and the merge counts read the histogram the pack already records
-  (`diagnostics.dead_ids`); the straddle and the length histogram are
-  `spans.window_fit` over the document table, blocked at `MEASURE_BLOCK` rows so
-  peak memory is ~42 MB whatever the build weighs. Measured at the 5B-token,
-  8.3M-document scale: 0.25 s for `window_fit`, 1.3 s for the per-document
-  counters spread across the whole pack, and milliseconds for the rest.
-- **A metric that only a fresh build could report would read as missing on every
-  reused one**, which is the same lie as a zero. So the per-dataset counters go
-  into `segments.json` beside the histogram, and `train._phase_one` builds the
-  closing frame off the corpus on disk for a fresh build and a reused one alike.
-- **`ctx_window` is not part of the corpus key**, so nothing measured against it
-  belongs in the sidecar — the same build is legitimately trained at two window
-  sizes. `window_fit` therefore runs at report time, not at pack time.
-
-The merge sequence's `count` is how often the merged token occurs in the packed
-corpus, **not** the pair frequency that earned the merge: the `tokenizers`
-trainer keeps that only while it is choosing and exposes neither it nor a
-callback, so having it would mean reimplementing BPE training beside the library
-that does it. Read the sequence's *order* as the tokenizer's story and the count
-as what the corpus made of it.
+The engine owns no corpora: `llm/corpus/remote.py` fetches pages through the
+backend, a build directory holds the tokens, the document table and a sidecar
+recording what it was made from, and phase 1 reports what the tokenization
+actually produced. See [`corpus.md`](corpus.md).
 
 ### What a training run reports
 
@@ -171,10 +65,84 @@ that is present on an SFT run and absent on a pretrain one. Field names are
 identical from the loop to the chart, and anything unmeasured is **absent, not
 zero**. See [`telemetry.md`](telemetry.md).
 
+## Checkpoints
+
+**A checkpoint is a model, not a lesser artifact.** It gets its own uuid, its
+own `artifacts/models/<uuid>/` laid out exactly like a finished model's —
+weights, a copy of the tokenizer, `meta.json` — plus the `train_state.pt` a
+later run picks it up from, and its own `models` row. That sameness is the whole
+design: chatting with a checkpoint, benchmarking one and fine-tuning from one
+fall out of the code that already loads a model, and **no consumer of a model
+knows what a checkpoint is**. What was weighed against it, and what it costs, is
+[`../decisions/checkpoints-are-models.md`](../decisions/checkpoints-are-models.md).
+
+A checkpoint row is `published=False`, so an intermediate is never offered in
+chat until somebody publishes it, and it is named `<the run's name> #n` — a hash
+and not the ` (n)` that `_free_model_name` spells a name collision with, because
+the two mean opposite things and a reader who cannot tell them apart is worse
+off than one who has never seen either.
+
+**Cadence** (`llm/train/progress.py::checkpoint_every`): roughly
+`TARGET_CHECKPOINTS` per run, and never fewer than one per epoch — an epoch
+boundary is what a person reaches back to by name, so a forty-epoch run keeping
+ten would have thrown away three quarters of the points anyone asks for. The
+interval is snapped **up** to a multiple of `report_every`, so a checkpoint
+always lands on a step that is already publishing a frame. The end of every
+epoch and the last step of the run also take one, deduplicated against the
+interval so the same weights never land under two ids.
+`TrainConfig.checkpoint_target` overrides the count; `0` means none at all, and
+the epoch and final-step rules go quiet with it because they are what the
+cadence is *made of*, not exceptions to it. The run's own finished model is saved regardless —
+that has never been the cadence's business.
+
+**The cost is why the count is a number and not "every epoch".** A
+`train_state.pt` is the weights again plus AdamW's two moments per parameter,
+about 3x a `model.pt`; the directory holds both, so a checkpoint is ~4x a
+finished model's weights on disk and ten of them ~40x. `checkpoint_target` is a
+disk budget as much as a cadence.
+
+**The layering did not move for this** — `llm/` has still never heard of the
+database — and `TrainConfig.resume_from` picks a checkpoint back up in one of
+two ways the run reports by name. Both are in
+[`checkpoints.md`](checkpoints.md).
+
 ## Schema
 
 Database: `ENGINE_DATABASE_URL`, default `postgresql+psycopg://localhost/slate_engine`,
 migrated with `alembic upgrade head`.
+
+`models` is the index; the weights are on disk under `artifacts/models/<id>/`,
+which is why the id and not the name is stable. Four nullable columns carry a
+run's intermediates, and every pre-existing row keeps them null — which is
+exactly what being a finished model means:
+
+- **`checkpoint_index`** — the 1-based ordinal within the run, and the `#n` the
+  name ends with. **`checkpoint_index IS NOT NULL` is the whole definition of
+  "this row is an intermediate"**, and there is deliberately no boolean beside
+  it that could disagree. Every listing filters on it.
+- **`checkpoint_step`** — the global step it was saved at, and the order
+  siblings are read back in; `created_at` ties between two checkpoints of a fast
+  run.
+- **`run_id`** — the run that produced it, carried by the intermediates *and* by
+  the finished model, so a run's whole output groups by one value. The finished
+  model is credited after the fact (`handlers.attach_run`), because the pipeline
+  is handed a config and never a run id.
+- **`parent_id`** — the finished model an intermediate belongs to; null on a
+  finished model, which is the parent.
+
+**Neither uuid is a foreign key, and for two different reasons.** `run_id` is
+not one because run rows are prunable and the grouping has to outlive them — the
+same reason `runs.ref_id` is a bare uuid. `parent_id` is not one because the
+parent row does not exist yet when a run's first checkpoint lands: the
+constraint would refuse the very insert it exists to describe. Both are indexed;
+`checkpoint_index` is not, because it is only ever tested for null on a column
+that is null for almost every row.
+
+Two consequences that are not in the types. Deleting a model deletes its
+checkpoint rows in `queries.delete_model` rather than by cascade, and their
+**directories** are the caller's to remove — `store/` has never heard of the
+disk. And **which checkpoint a resumed run started from gets no column**: it
+lives in `parameters.config.resume_from`, one string nothing joins on.
 
 `messages.role` is a Postgres enum of `user | assistant | tool`. A tool's answer
 is stored as a message of its own, between the assistant turn that called for it
@@ -207,129 +175,9 @@ column, so listing a conversation's files does not load them.
 
 ## Routes
 
-Every route is behind `Depends(auth.require_service)`; the backend signs a
-short-lived token naming who it acts for (`ENGINE_SERVICE_SECRET` on both sides,
-unset leaves the engine open and it says so at startup).
-
-`/attachments` is the one route family whose payload is not JSON: `POST` takes a
-multipart file, `GET /attachments/{id}` answers with the bytes and the headers
-that say what they are, and `DELETE` discards a staged one. All three are scoped
-by the acting caller, like everything else here.
-
-`POST /chats/{id}/messages/stream` is the one with a protocol rather than a
-payload. It takes **exactly one** of `text` (a person asking) and `tool_result`
-(a tool answering a call the last reply made) — both is a caller that has lost
-track of which, neither is nothing to answer, and either is a 400.
-
-It answers as SSE, in three event kinds:
-
-```
-event: token      data: {"token": "..."}                      (repeated)
-event: tool_call  data: {"tool": "...", "argument": "..."}     (a call closed)
-event: done       data: {…message, "usage": {…, "tool_calls": [...]}}
-event: error      data: {"error": "..."}
-```
-
-`tool_call` fires the moment the closing marker is sampled, not at the end of the
-turn, so the caller can start the work while the rest of the reply is still
-generating. The row is written when the last token lands, so a dropped
-connection loses the reply rather than storing half of one.
-
-### Context extension (NTK-aware RoPE)
-
-`ChatConfig.context_multiplier` (default `1.0`) stretches a turn's context past
-the model's trained `ctx_window`. `Transformer.extended_rope` builds a fresh
-`(cos, sin)` table at `round(ctx_window * context_multiplier)`, scaling the RoPE
-base by the length ratio raised to `head_dim / (head_dim - 2)` — the tables the
-model trained on stay exact, and only the extrapolated tail stretches. `orchestrate/chat.py`
-passes that table into every `Transformer.forward` call for the turn via the
-`rope=` override, and uses the stretched length everywhere `ctx_window` used to
-bound the prompt and the generation loop.
-
-Two things keep this from touching what SFT and pretrain already guard:
-
-- **Nothing is written into the model's own `rope_cos`/`rope_sin` buffers.** They
-  are shared by every request against a cached model (see `orchestrate/chat.py`'s
-  `_CACHE`), and mutating them would race two concurrent turns extending to
-  different lengths against each other.
-- **It never reaches the checkpoint.** `ctx_window` and `rope_base` still come
-  from `arch`, exactly as `SftConfig`'s docstring insists — this is a per-turn
-  inference parameter, not an architecture change. It buys headroom against
-  silent truncation (`build_prompt` in `llm/chat/template.py` evicts oldest
-  turns first), not the quality of a model actually trained at the longer
-  length.
-
-### `/prune`'s floor: `context_floor`, and why nothing is written down
-
-`GET /chats/{id}/context-floor` answers "where would this chat's history be cut
-if it were fitting the model's own `ctx_window` rather than whatever
-`context_multiplier` extends it to" — `llm.chat.template.context_floor` runs the
-identical newest-to-oldest walk `build_prompt` already does (`_fit_history`,
-factored out so the two cannot disagree), just with the un-multiplied allowance.
-It is read-only: nothing is stored, on either side of the call.
-
-The frontend is what remembers the answer — a message id, kept in
-`localStorage` per chat (`lib/context-floor.ts`) — and resends it as
-`Ask.history_floor` on every later turn. `_floored` in `api/routes/chats.py`
-slices `q.messages_of(...)` against it before `ChatConfig.turns` is built, so
-history before the floor never reaches `build_prompt` at all, regardless of how
-wide a raised `context_multiplier` would otherwise let it reach. A floor that
-doesn't match any stored message — a stale id, another chat's — falls back to
-the full history rather than erroring: a client's memory of a prune is a
-convenience the turn it's answering should not fail over.
-
-This buys the whole feature without a migration: no chat gains a column, no
-message is ever deleted, and a lost `localStorage` (a cleared browser, a second
-device) just means the next turn falls back to full history — the same
-durability every other chat setting in this app already has. If a prune ever
-needs to survive that, this is the point to reconsider: persist the floor
-against the chat instead of trusting the client to keep resending it.
-
-**Snapped past a lone `Role.TOOL` turn.** A naive cut can land exactly on a
-tool's answer, and dropping the assistant turn that called it while keeping the
-answer would leave a `<|tool-result|>` naming no call — see the tool section
-below for why that shape is never allowed to exist. `context_floor` shifts
-forward past it rather than trying to pull the call back in.
-
-### Reading a head's attention
-
-`POST /models/{model_name}/attention` takes `{text, layer, head}` and answers
-with that one head's attention matrix and the token strings on both axes — the
-labels are most of the value; an unlabelled matrix is a grey square.
-`api/routes/attention.py` is the route, `llm/orchestrate/attention.py` the work.
-
-**Nothing is recorded by default and this endpoint is the only thing that ever
-changes that.** `Attention.record_attention` — the same flag the diagnostics
-collector uses, not a second mechanism — is flipped on for the asked-for block
-alone, for one `no_grad` forward, and off again in a `finally` so a pass that
-raises cannot leave the process off the fused kernel. Every other layer keeps
-`scaled_dot_product_attention` for that forward, and so does the whole model
-after it.
-
-Three constraints shape the rest of it:
-
-- **On demand, never streamed.** At 512d/8h/6L/ctx512 the full tensor is ~8 MiB
-  a layer and ~50 MiB a sample, so recording a run would carry ~1.5 GiB. One
-  `(layer, head)` matrix at ctx 512 is 512×512 fp32 — exactly 1 MiB — and is
-  affordable precisely because a request is what brings it into existence.
-- **The sequence is bounded**, at `min(MAX_SEQUENCE, model.ctx_window)` with
-  `MAX_SEQUENCE = 512`. The matrix is quadratic in that number, so it is the
-  number that has to be capped rather than a byte size: 512 tokens is 1 MiB of
-  fp32, 1024 is 4, 4096 would be 64 out of a route any signed-in person can
-  call. Longer text is a 400 naming both the count and the ceiling, not a
-  truncation — a silently shortened text answers a question nobody asked.
-- **The matrix travels as base64 fp32, row-major**, not as JSON numbers. 1 MiB
-  of weights is 1.33 MiB base64 against 2.5–3 MiB printed to six decimals and
-  ~5 MiB unrounded, and it needs no decision about how much precision to discard.
-  fp16 would halve it again and was not taken: no browser has a native half
-  decoder, and it would put "the rows sum to 1" inside a tolerance instead of at
-  the exactness the model computed it to.
-
-The model is the one `orchestrate/chat.py` caches, so a chat generating in
-another thread during the window takes the explicit-softmax path for one block.
-That is the same arithmetic (`bench.py` pins the two paths to 1e-5) and it is
-slower; the alternative is a second resident copy of the weights, which is the
-cost that cache exists to avoid.
+The full surface — auth, the SSE chat protocol, the model listing and its
+checkpoint filter, context extension, the prune floor and the attention readout
+— is in [`api.md`](api.md).
 
 ## Tools
 
