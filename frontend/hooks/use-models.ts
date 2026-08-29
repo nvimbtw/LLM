@@ -33,12 +33,26 @@ export interface RawModelConfig {
   epochs?: number
 }
 
+// What one intermediate save recorded about itself, as the engine's
+// `CheckpointWriter` writes it — the run position it was taken at, and the loss
+// there. Every field is optional because it is only present on a checkpoint, and
+// only for a checkpoint whose row carries its `parameters` at all.
+export interface RawCheckpointResult {
+  index?: number
+  step?: number
+  total_steps?: number
+  epoch?: number
+  stage?: number
+  loss?: number | null
+}
+
 export interface RawModelResult {
   files?: number
   chars?: number
   vocab_size?: number
   merges?: number
   corpus_len?: number
+  checkpoint?: RawCheckpointResult
 }
 
 export interface RawModel {
@@ -54,6 +68,14 @@ export interface RawModel {
   published: boolean
   has_weights: boolean
   created_at: string | null
+  // The run that produced this model, and — on an intermediate save — the
+  // finished model it is an intermediate of and where in the run it was taken.
+  // `checkpoint_index` being non-null is the whole definition of "this is a
+  // checkpoint"; all four are null on an ordinary model.
+  run_id: string | null
+  parent_id: string | null
+  checkpoint_step: number | null
+  checkpoint_index: number | null
 }
 
 // Rough transformer parameter count from the training config — enough for a
@@ -115,6 +137,13 @@ export async function deleteModel(id: string): Promise<void> {
 // `refreshKey` re-fetches the model list whenever it changes — pass a value that
 // advances when a new model is registered (e.g. after a training run finishes) so
 // the just-trained model appears without a page reload.
+//
+// This is the only place the model list is fetched, and it asks for `/models`
+// bare. That matters: the engine leaves a run's ~10 intermediate checkpoints out
+// unless a request sets `checkpoints=true`, and nothing here ever should — one
+// run would otherwise outnumber every finished model in the grid, the chat
+// picker and the benchmark composer at once. A checkpoint is offered from the
+// one place it belongs to, its parent's page (`useCheckpoints`).
 export function useModels(refreshKey?: unknown) {
   const [models, setModels] = React.useState<Model[]>([])
   const [isLoading, setIsLoading] = React.useState(true)

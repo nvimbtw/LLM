@@ -21,10 +21,12 @@ import {
   defaultLrFor,
   derived,
   fieldsFor,
+  inheritsArchitecture,
   validate,
 } from "@/components/training/run-config"
 import { Input } from "@/components/ui/input"
 import { PresetControls } from "@/components/training/preset-controls"
+import { ResumePicker } from "@/components/training/resume-picker"
 import { useDatasets } from "@/hooks/use-datasets"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { useModels } from "@/hooks/use-models"
@@ -339,6 +341,19 @@ export function ParamsRail({
           </Row>
         )}
 
+        {!isSft && (
+          <Row label="Continue from">
+            <ResumePicker
+              value={cfg.resume_from}
+              onChange={(resume_from) => onChange({ ...cfg, resume_from })}
+              models={models}
+              modelsLoading={modelsLoading}
+              disabled={disabled}
+              compact
+            />
+          </Row>
+        )}
+
         {isSft && !followUp && (
           <Row label="Tokenizer">
             <span className="text-sm text-muted-foreground">
@@ -392,7 +407,9 @@ export function ParamsRail({
             value={cfg.datasets ?? []}
             disabled={disabled}
             emptyHint={
-              <>No conversation datasets yet. Pull one from the Data view first.</>
+              <>
+                No conversation datasets yet. Pull one from the Data view first.
+              </>
             }
             onChange={(datasets) => onChange({ ...cfg, datasets })}
           />
@@ -461,10 +478,18 @@ export function ParamsRail({
         </div>
       )}
 
-      {isSft ? (
+      {inheritsArchitecture(cfg) ? (
         <p className="text-xs text-muted-foreground">
-          Architecture (dimensions, context, heads, layers) is inherited from
-          the base model — only the run knobs above apply.
+          Architecture (dimensions, context, heads, layers) is inherited from{" "}
+          {isSft ? "the base model" : "the checkpoint"} — only the run knobs
+          above apply.
+          {!isSft && (
+            <>
+              {" "}
+              Its vocabulary has to match too, so continue against the tokenizer
+              the run was trained with.
+            </>
+          )}
           {isKto && (
             <>
               {" "}

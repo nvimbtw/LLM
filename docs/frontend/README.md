@@ -741,6 +741,21 @@ back to the first available one, the same effect that already handled "no
 choice yet"; that's the one place with the list, so it's the one place that
 needs to know.
 
+**The stored id may also name a checkpoint**, which is in no model list by
+design, and so is indistinguishable from a stale one until asked about.
+`hooks/use-checkpoint-parent.ts` is what asks — one request, cached against the
+id it answered for — and the correction above waits on it, or every checkpoint
+choice would be discarded the moment it was made. It also supplies the model a
+checkpoint belongs to, which is what the trigger names and what the list marks
+as active. The second step is `components/chat/checkpoint-selector.tsx`: a
+sibling control, rendered only for a model whose run left intermediates, listing
+its finished weights and each checkpoint by index and step. Sibling and not a
+flyout off the model list, so that list stays a list of models — the same
+two-step, and the same reasoning, as the trainer's `ResumePicker`, which shares
+the hook. Nothing on the chat path ever learned what a checkpoint is: it is a
+model id and a directory, exactly like the finished weights
+([`../decisions/checkpoints-are-models.md`](../decisions/checkpoints-are-models.md)).
+
 ### Slash commands & fuzzy finder
 
 Typing a leading `/` in the composer brings up the floating fuzzy finder popover
@@ -837,6 +852,18 @@ The same fields are rendered two ways, and neither may drift from the other:
 Both take their field list, their derived figures and their validation from
 `components/training/run-config.ts`, which holds no JSX. A rule about what a
 run may be belongs there, never in a layout.
+
+**A run that continues from a checkpoint states no architecture at all.** The
+engine takes the shape from the state it resumes and *refuses* a request that
+restates it differently — it cannot let the request win, because the weights
+would win anyway and the run would report an architecture it did not train. So
+`RESUMED_ARCH_FIELDS` (`lib/training.ts`) is dropped from the payload in
+`lib/jobs.ts`, exactly as a fine-tune's `base_model_id` is translated there, and
+the same list is what `fieldsFor` hides and `validate` skips. Hiding without
+dropping is the failure mode to watch for: pydantic reads a field left at the
+form's default as one the request *stated*, so a control nobody can see is still
+enough to have the run rejected.
+
 #### Reading a run back — the diagnostics panel
 
 `components/training/diagnostics-panel.tsx` renders `DiagPoint[]`
@@ -866,6 +893,14 @@ on either side arrives as `undefined`. The engine's side is documented in
   durable row plus whatever it is broadcasting. **Panels render from the row
   first and treat live state as an enrichment**, because a queued or finished
   job has no frames at all.
+- **The appendix's checkpoint list is built from `checkpoint` frames**, not from
+  `TrainStats.checkpoint_path`. A checkpoint interval is a multiple of the report
+  interval, so the epoch-boundary save is usually deduplicated against the
+  interval one and its frame carries no path — reading the path listed almost
+  nothing, and nothing at all on a single-epoch run. The frame is the engine's
+  `Checkpoint` dataclass verbatim (`CheckpointFrame` in `lib/training.ts`) and
+  announces every save as its weights land, so the list is complete and each row
+  can say where in the run it was taken.
 - Composers live at `/jobs/new/*` and are *only* forms: submitting queues a run
   and hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>`
   seeds a composer from a previous run's stored config.

@@ -132,7 +132,8 @@ def pull(config: dict, report: Report, cancel: threading.Event) -> dict:
     wanted = [named] if named else None
     rows = hub.iter_rows(repo, shards, wanted)
 
-    documents = _documents_from(rows, kind, named)
+    tally: dict = {}
+    documents = _documents_from(rows, kind, named, tally)
     try:
         written, cancelled = _write(documents, dataset_id, cap, report, cancel, "pulling")
     except Exception:
@@ -149,10 +150,13 @@ def pull(config: dict, report: Report, cancel: threading.Event) -> dict:
         "documents": written,
         "cancelled": cancelled,
         "shards": len(shards),
+        "nul_stripped": tally.get("nul_stripped", 0),
     }
 
 
-def _documents_from(rows: Iterator[dict], kind: DatasetKind, named: str | None) -> Iterator[dict]:
+def _documents_from(
+    rows: Iterator[dict], kind: DatasetKind, named: str | None, tally: dict
+) -> Iterator[dict]:
     """Shape Hub rows into documents, resolving the content column from the first
     row that has one.
 
@@ -177,7 +181,7 @@ def _documents_from(rows: Iterator[dict], kind: DatasetKind, named: str | None) 
                 if looked_at >= COLUMN_PATIENCE:
                     raise _no_column(kind, named, row)
                 continue
-        document = hub.as_document(row, kind, column)
+        document = hub.as_document(row, kind, column, tally)
         if document is not None:
             yield document
 

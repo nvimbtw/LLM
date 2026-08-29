@@ -147,9 +147,11 @@ def build(preset: str, steps: int, **overrides) -> tuple[Transformer, np.ndarray
 def scratch_storage():
     """Point `storage` at a throwaway tree for the duration.
 
-    `loop.run` saves a checkpoint per epoch like any run. The fixture is already
-    in memory by the time this opens, so the corpus still comes from the real
-    data directory and only the writes are diverted.
+    A timed run passes no checkpoint writer, so `loop.run` itself writes nothing
+    any more — this is now insurance against a saved model rather than the
+    per-epoch weights it was added for. The fixture is already in memory by the
+    time this opens, so the corpus still comes from the real data directory and
+    only the writes are diverted.
     """
     os.environ["DATA_DIR"] = str(SCRATCH)
     SCRATCH.mkdir(parents=True, exist_ok=True)

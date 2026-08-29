@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
 import { PresetControls } from "@/components/training/preset-controls"
+import { ResumePicker } from "@/components/training/resume-picker"
 import { BuildSheet } from "@/components/training/build-sheet"
 import { CurriculumBuilder } from "@/components/training/curriculum-builder"
 import {
@@ -13,6 +14,7 @@ import {
   STRING_FIELDS,
   defaultLrFor,
   fieldsFor,
+  inheritsArchitecture,
   validate,
   type Field,
 } from "@/components/training/run-config"
@@ -84,7 +86,9 @@ export function TrainBoard({
   // The base id is derived: with none explicitly picked, default to the first
   // available model, keeping the select controlled and the submit correct.
   const baseModelId = cfg.base_model_id || models[0]?.id
-  const effective: TrainConfig = isSft ? { ...cfg, base_model_id: baseModelId } : cfg
+  const effective: TrainConfig = isSft
+    ? { ...cfg, base_model_id: baseModelId }
+    : cfg
   const errors = validate(effective)
 
   const set = (key: keyof TrainConfig, value: string) =>
@@ -157,7 +161,9 @@ export function TrainBoard({
                     <Select
                       value={baseModelId ?? ""}
                       onValueChange={(v) => set("base_model_id", v ?? "")}
-                      disabled={disabled || modelsLoading || models.length === 0}
+                      disabled={
+                        disabled || modelsLoading || models.length === 0
+                      }
                     >
                       <SelectTrigger className="h-10 w-full">
                         <SelectValue
@@ -224,8 +230,26 @@ export function TrainBoard({
                     </Select>
                   </label>
                 )}
-              </div>
 
+                {/* A `div` and not a `label`: two controls under one caption,
+                    and a label may only name one. */}
+                {!isSft && (
+                  <div className="space-y-1.5">
+                    <FieldLabel hint="Carry on from a model, or one of its checkpoints">
+                      Continue from
+                    </FieldLabel>
+                    <ResumePicker
+                      value={cfg.resume_from}
+                      onChange={(resume_from) =>
+                        onChange({ ...cfg, resume_from })
+                      }
+                      models={models}
+                      modelsLoading={modelsLoading}
+                      disabled={disabled}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </Panel>
 
@@ -270,10 +294,18 @@ export function TrainBoard({
               onText={set}
               onNumber={setNumber}
             />
-            {isSft && (
+            {inheritsArchitecture(cfg) && (
               <p className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
-                Dimensions, context, heads and layers come from the base model —
-                only these apply.
+                Dimensions, context, heads and layers come from{" "}
+                {isSft ? "the base model" : "the checkpoint"} — only these
+                apply.
+                {!isSft && (
+                  <>
+                    {" "}
+                    Its vocabulary has to match too, so continue against the
+                    tokenizer the run was trained with.
+                  </>
+                )}
               </p>
             )}
           </Panel>
@@ -287,6 +319,7 @@ export function TrainBoard({
           <BuildSheet
             cfg={effective}
             baseName={models.find((m) => m.id === baseModelId)?.name}
+            resumeName={models.find((m) => m.id === cfg.resume_from)?.name}
             datasets={datasets}
             errors={errors}
             disabled={disabled}
@@ -306,11 +339,9 @@ function FieldLabel({
 }) {
   return (
     <span className="block">
-      <span className="eyebrow text-muted-foreground">
-        {children}
-      </span>
+      <span className="eyebrow text-muted-foreground">{children}</span>
       {hint && (
-        <span className="mt-0.5 block text-xs normal-case text-muted-foreground/80">
+        <span className="mt-0.5 block text-xs text-muted-foreground/80 normal-case">
           {hint}
         </span>
       )}
@@ -423,7 +454,6 @@ function ModeToggle({
   )
 }
 
-
 /**
  * What the run learns from: the picker, plus the two switches that decide how
  * its documents are ordered.
@@ -474,7 +504,9 @@ function DataSection({
           value={cfg.datasets ?? []}
           disabled={disabled}
           emptyHint={
-            <>No conversation datasets yet. Pull one from the Data view first.</>
+            <>
+              No conversation datasets yet. Pull one from the Data view first.
+            </>
           }
           onChange={(next) => onChange({ ...cfg, datasets: next })}
         />

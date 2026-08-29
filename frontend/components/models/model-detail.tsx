@@ -29,6 +29,7 @@ import { useModels } from "@/hooks/use-models"
 import { LoadError } from "@/components/ui/error-state"
 import { AttentionViewer } from "./attention-viewer"
 import { ModelBenchmarks } from "./model-benchmarks"
+import { ModelCheckpoints } from "./model-checkpoints"
 import { ModelSizeMeter } from "./model-glyph"
 import { ModelEditSheet } from "./model-edit-sheet"
 import {
@@ -261,6 +262,33 @@ export function ModelDetail({ modelId }: { modelId: string }) {
         }
         description={
           <>
+            {/* Said before anything else about the model, because it changes
+                what everything after it means: these are the weights partway
+                through a run, not a model somebody trained and named. */}
+            {model.checkpointIndex !== null && (
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-foreground">
+                  Checkpoint #{model.checkpointIndex}
+                </span>
+                {model.checkpointStep !== null && (
+                  <>
+                    <Dot />
+                    <span>step {formatNumber(model.checkpointStep)}</span>
+                  </>
+                )}
+                {model.parentId && (
+                  <>
+                    <Dot />
+                    <Link
+                      href={`/models/${model.parentId}`}
+                      className="underline underline-offset-4 hover:text-foreground"
+                    >
+                      of its finished model
+                    </Link>
+                  </>
+                )}
+              </p>
+            )}
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
               {/* The family is left exactly as it was typed — it is a name, and
                   `sft` is not `Sft`. The tier is one of ours, stored lowercase,
@@ -374,6 +402,13 @@ export function ModelDetail({ modelId }: { modelId: string }) {
           <SpecPanel title="Architecture" specs={architecture} />
           <SpecPanel title="Training data" specs={training} />
         </div>
+
+        {/* What the run left behind on the way here. Not admin-gated — the route
+            is `AuthUser`, on the same reasoning the attention viewer below is:
+            a checkpoint is a model, and reading which ones exist is less than
+            reading this page already is. Only the continuation is an admin's,
+            because queueing a run is. */}
+        <ModelCheckpoints modelId={modelId} canContinue={isAdmin} />
 
         {/* What it is, then how well it does it. Admin-only because the benchmark
             API is: a normal session would collect a 403 per model page. */}

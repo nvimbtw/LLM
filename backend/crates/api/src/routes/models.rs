@@ -1,16 +1,19 @@
 //! Trained models. A model is shared, so changing one is admin work.
 
-use actix_web::{delete, get, patch, post, web};
+use actix_web::{HttpRequest, delete, get, patch, post, web};
 use engine::Proxy;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{Answer, answer, caller};
+use crate::upstream::{Answer, answer, caller, with_query};
 
+/// The query string rides through so `?checkpoints=true` reaches the engine,
+/// which leaves a run's intermediates out unless asked. Nothing here restates
+/// that default: the engine owns it, and a second copy could disagree with it.
 #[get("")]
-async fn list(user: AuthUser, engine: web::Data<Proxy>) -> Answer {
-    answer(engine.get(&caller(&user), "/models").await?)
+async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
+    answer(engine.get(&caller(&user), &with_query("/models", &req)).await?)
 }
 
 #[get("/{model_id}")]
@@ -25,6 +28,18 @@ async fn benchmarks(
     engine: web::Data<Proxy>,
 ) -> Answer {
     answer(engine.get(&caller(&user), &format!("/models/{model_id}/benchmarks")).await?)
+}
+
+/// A model's intermediate checkpoints, in the order the run took them.
+///
+/// `AuthUser`, like the model detail and the attention pass next door and unlike
+/// the edit and delete below: a checkpoint is a model, and reading which ones a
+/// run left behind reveals nothing an ordinary session cannot already read off
+/// the model itself. Admin is for the two routes that change what everyone else
+/// sees.
+#[get("/{model_id}/checkpoints")]
+async fn checkpoints(user: AuthUser, model_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
+    answer(engine.get(&caller(&user), &format!("/models/{model_id}/checkpoints")).await?)
 }
 
 /// One head's attention over the caller's own text, materialized by the engine
@@ -65,6 +80,7 @@ async fn remove(_admin: AdminUser, model_id: web::Path<Uuid>, engine: web::Data<
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(list);
     cfg.service(benchmarks);
+    cfg.service(checkpoints);
     cfg.service(get_one);
     cfg.service(attention);
     cfg.service(edit);

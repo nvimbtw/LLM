@@ -17,3 +17,4 @@ what was weighed, chosen, and rejected, dated once.
 | 2026-08-22 | [One marker for every tool](generic-tool-calls.md) | `<|tool-call|>` carrying JSON replaces a marker pair per tool, so the tool table stops being part of the vocabulary — and what the grammar gives up for it |
 | 2026-08-24 | [One command to start everything](one-command-development.md) | `docker compose up` replaces four manual starts — why several containers rather than one, and the three implicit facts it forced into the open |
 | 2026-08-25 | [The GPU's memory is handed back](gpu-memory-is-handed-back.md) | The pool is released at run boundaries and diagnostics record off the training path — why a run's ceiling was set by the step that measures it |
+| 2026-08-29 | [A checkpoint is a model](checkpoints-are-models.md) | A run's intermediates get a uuid, a directory and a row like any other model, so chat, benchmarking and SFT need no second path — and what the disk pays for it |

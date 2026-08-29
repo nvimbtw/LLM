@@ -29,10 +29,13 @@ class ModelEdit(BaseModel):
 
 
 @router.get("/models")
-def list_models(include_private: bool = True):
-    directories = {d.name: d for d in _weight_dirs()}
+def list_models(include_private: bool = True, checkpoints: bool = False):
     with store.session() as db:
-        rows = {m.id: m for m in q.list_models(db, include_private=include_private)}
+        rows = {
+            m.id: m
+            for m in q.list_models(db, include_private=include_private, checkpoints=checkpoints)
+        }
+        directories = _joinable_dirs(db, checkpoints)
         listed = [_model(db, _row_for(rows, name), d) for name, d in directories.items()]
         listed += [_model(db, m, None) for m in rows.values() if str(m.id) not in directories]
     return {"models": listed}
@@ -66,14 +69,41 @@ def edit_model(model_id: uuid.UUID, body: ModelEdit):
 
 @router.delete("/models/{model_id}", status_code=200)
 def delete_model(model_id: uuid.UUID, weights: bool = True, _=Depends(auth.require_service)):
-    """Drop the row, and by default the weights with it — a model kept only on
-    disk is one nothing can find again."""
+    """Drop the row and its checkpoints', and by default the weights with them —
+    a model kept only on disk is one nothing can find again."""
     with store.session() as db:
+        # Read before the delete takes them: afterwards nothing is left to say
+        # which directories on disk were this model's intermediates.
+        intermediates = [c.id for c in q.checkpoints_of(db, model_id)]
         name = q.delete_model(db, model_id)
     if name is None:
         raise HTTPException(status_code=404, detail=f"no model {model_id}")
     removed = _remove_weights(model_id) if weights else False
-    return {"model_id": str(model_id), "name": name, "weights_removed": removed}
+    if weights:
+        for checkpoint_id in intermediates:
+            _remove_weights(checkpoint_id)
+    return {
+        "model_id": str(model_id),
+        "name": name,
+        "weights_removed": removed,
+        "checkpoints_removed": len(intermediates),
+    }
+
+
+@router.get("/models/{model_id}/checkpoints")
+def list_checkpoints(model_id: uuid.UUID):
+    """One model's intermediates, in the order they were taken.
+
+    Its own route rather than a flag on the detail: a model detail is loaded on
+    every chat, and a run's ten extra rows are wanted on exactly one page.
+    """
+    with store.session() as db:
+        found = q.checkpoints_of(db, model_id)
+        return {
+            "checkpoints": [
+                _model(db, c, storage.model_dir(str(c.id))) for c in found
+            ]
+        }
 
 
 @router.get("/models/{model_id}/benchmarks")
@@ -97,6 +127,21 @@ def _weight_dirs() -> list:
     return sorted((p for p in storage.models_dir().glob("*") if p.is_dir()), key=lambda p: p.name)
 
 
+def _joinable_dirs(db, checkpoints: bool) -> dict:
+    """The weights directories this listing is the join against.
+
+    A checkpoint's directory is laid out exactly like a finished model's, so
+    filtering only the *rows* would let every one of them straight back in
+    through the other half of the join — reported as a directory with no row,
+    which is how a model trained outside the queue is offered.
+    """
+    directories = {d.name: d for d in _weight_dirs()}
+    if checkpoints:
+        return directories
+    hidden = {str(i) for i in q.checkpoint_ids(db)}
+    return {name: d for name, d in directories.items() if name not in hidden}
+
+
 def _row_for(rows: dict[uuid.UUID, Model], directory_name: str) -> Model | None:
     try:
         return rows.get(uuid.UUID(directory_name))
@@ -114,6 +159,10 @@ def _model(db, model: Model | None, directory) -> dict:
         "family": model.family if model else None,
         "context": _context(db, model, meta),
         "published": model.published if model else False,
+        "run_id": str(model.run_id) if model and model.run_id else None,
+        "parent_id": str(model.parent_id) if model and model.parent_id else None,
+        "checkpoint_step": model.checkpoint_step if model else None,
+        "checkpoint_index": model.checkpoint_index if model else None,
         "parameters": model.parameters if model else None,
         "created_at": model.created_at.isoformat() if model and model.created_at else None,
         "has_weights": bool(directory and (directory / "model.pt").is_file()),

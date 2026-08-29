@@ -6,6 +6,7 @@ import type { BatchPoint, LossPoint } from "@/hooks/use-training"
 import { cancelJob, getJob, type Job } from "@/lib/jobs"
 import { attachJob, type Attachment } from "@/lib/jobs-socket"
 import type {
+  CheckpointFrame,
   DiagPoint,
   TokenizeStats,
   TrainConfig,
@@ -62,7 +63,7 @@ export function useJob(idJob: string) {
   const [loss, setLoss] = React.useState<LossPoint[]>([])
   const [batchSeries, setBatchSeries] = React.useState<BatchPoint[]>([])
   const [diag, setDiag] = React.useState<DiagPoint[]>([])
-  const [checkpoints, setCheckpoints] = React.useState<string[]>([])
+  const [checkpoints, setCheckpoints] = React.useState<CheckpointFrame[]>([])
   const [log, setLog] = React.useState<string[]>([])
   const [runConfig, setRunConfig] = React.useState<TrainConfig | null>(null)
 
@@ -170,12 +171,23 @@ export function useJob(idJob: string) {
             return [...base, point]
           })
         }
-        if (s.epoch_done && s.checkpoint_path) {
-          const path = s.checkpoint_path
-          setCheckpoints((prev) =>
-            prev.includes(path) ? prev : [...prev, path]
-          )
-        }
+        break
+      }
+      case "checkpoint": {
+        // The run announcing a model it has just written. Read from its own
+        // frame rather than off `TrainStats.checkpoint_path`, which only ever
+        // carried the ones that landed on an epoch boundary — and a checkpoint
+        // interval is a multiple of the report interval, so the boundary save is
+        // usually the *deduplicated* one and the path arrives on a mid-epoch
+        // frame instead. The appendix listed almost nothing, and on a
+        // single-epoch run it listed nothing at all.
+        const cp = frame as unknown as CheckpointFrame
+        // The run's own finished model is announced through here too. It is not
+        // an intermediate and the page names it elsewhere.
+        if (cp.final) break
+        setCheckpoints((prev) =>
+          prev.some((c) => c.model_id === cp.model_id) ? prev : [...prev, cp]
+        )
         break
       }
       case "progress":

@@ -70,6 +70,12 @@ def _strip_boilerplate(doc: Document, params: dict, state: State) -> Document | 
     return _rewrite(doc, "\n".join(kept))
 
 
+def _join_broken_lines(doc: Document, params: dict, state: State) -> Document | None:
+    text = (doc.get("content") or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line for line in text.split("\n") if line.strip()]
+    return _rewrite(doc, "\n".join(lines))
+
+
 PROCESSORS = (
     Processor(
         name="strip-html",
@@ -132,5 +138,17 @@ PROCESSORS = (
         description="Drop whole lines that are navigation furniture, not prose.",
         applies_to=PRETRAIN,
         apply=_strip_boilerplate,
+    ),
+    Processor(
+        name="join-broken-lines",
+        title="Join broken lines",
+        description=(
+            "Drop every blank line and pull the surviving lines together. For plain-text "
+            "dumps — Gutenberg's is one — that put a blank line after every line rather "
+            "than only between paragraphs, so a document reads as one line per line "
+            "instead of one sentence per blank-separated fragment."
+        ),
+        applies_to=PRETRAIN,
+        apply=_join_broken_lines,
     ),
 )

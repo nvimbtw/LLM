@@ -25,6 +25,14 @@ TARGET_REPORTS = 150
 # across the reports rather than taken on every one.
 TARGET_DIAG_SAMPLES = 30
 
+# Roughly how many checkpoints a run should leave behind, whatever its length.
+#
+# A checkpoint is a whole model — weights, vocabulary, and the optimizer moments
+# that let it be trained further — so it costs about three times a `model.pt` and
+# ten of them cost thirty. That is the trade this number is: enough of the run
+# kept to go back to, few enough that a model list is still a list.
+TARGET_CHECKPOINTS = 10
+
 
 def report_every(total_steps: int) -> int:
     """Steps between report frames for a run of this length."""
@@ -34,6 +42,29 @@ def report_every(total_steps: int) -> int:
 def diagnose_every(total_reports: int) -> int:
     """Reports between diagnostics samples."""
     return max(1, total_reports // TARGET_DIAG_SAMPLES)
+
+
+def checkpoint_every(total_steps: int, total_epochs: int, target: int | None = None) -> int:
+    """Steps between checkpoints for a run of this length and this shape.
+
+    Two numbers decide it, because "ten per run" alone is wrong at both ends. A
+    one-epoch run wants roughly `TARGET_CHECKPOINTS` of them spread across it. A
+    forty-epoch run wants at least one per epoch — an epoch boundary is where a
+    person reaches back to, and a run that kept ten of forty would have thrown
+    away three quarters of the points anybody asks for by name.
+
+    Snapped up to a multiple of `report_every`, so a checkpoint always lands on a
+    step that is already publishing a frame rather than on one that has to
+    invent one.
+
+    `target` of 0 means no intermediate checkpoints at all; the run's own final
+    save is not this function's business.
+    """
+    if target == 0:
+        return 0
+    wanted = max(target or TARGET_CHECKPOINTS, total_epochs, 1)
+    interval = report_every(total_steps)
+    return max(interval, -(-max(1, total_steps // wanted) // interval) * interval)
 
 
 @dataclass
@@ -154,7 +185,40 @@ class Progress:
         return self.step / self.total_steps if self.total_steps else 0.0
 
 
-ProgressCallback = Callable[[Progress | Tokenize], None]
+@dataclass
+class Checkpoint:
+    """One saved training state, announced as it lands.
+
+    A checkpoint is a *model*: its own id, its own directory laid out exactly
+    like a finished model's, and its own row. This frame is how the row gets
+    written — `llm/` has never heard of the database, so the id is minted here
+    and the queue turns it into a row when the frame reaches it.
+
+    It travels the progress callback rather than a seam of its own because it is
+    the same thing that seam already carries: something the run has to say while
+    it is still running. What it must not inherit is the throttle — a progress
+    bar can miss a frame, a model cannot.
+    """
+
+    #: uuid4, minted by whoever wrote the directory. It *is* the directory name.
+    model_id: str
+    #: 1-based ordinal within the run — the numbered suffix a person reads.
+    index: int
+    #: Global step, 1-based, matching what `Progress.step` reported.
+    step: int
+    total_steps: int
+    epoch: int
+    stage: int
+    stage_name: str | None
+    #: The training state, which is the file a later run resumes from.
+    path: str
+    loss: float | None = None
+    #: The run's own finished model rather than an intermediate. Recorded by the
+    #: handler that was going to write that row anyway, so it carries no index.
+    final: bool = False
+
+
+ProgressCallback = Callable[[Progress | Tokenize | Checkpoint], None]
 
 
 def _reading(value) -> str:

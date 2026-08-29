@@ -23,6 +23,7 @@ from llm.config import SftConfig, TrainConfig
 from llm.corpus import bpe, pack, remote, sft as sft_corpus, special
 from llm.eval import chat as chat_eval
 from llm.model import checkpoint
+from llm.orchestrate import train as train_pipeline
 from llm.train import loop
 from llm.train.diagnostics import DIAGNOSTIC_ROWS, Probes
 from llm.train.plan import DataPlan
@@ -308,33 +309,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
 
     print(f"[4/5] Fine-tuning {cfg.epochs} epoch(s) at lr {cfg.lr:g}")
     probes = _probes(cfg, tokenizer, model.vocab, arch["ctx_window"], reasoning, device)
-    summary = loop.run(
-        model,
-        corpus,
-        data_plan,
-        train_cfg,
-        device,
-        on_progress,
-        cancel,
-        mask,
-        token_counts=info.get("token_counts"),
-        probes=probes,
-    )
-    # The reference model is a second full copy of the weights, and this is the
-    # last frame holding one. `release_device` (from `api/runner.py`'s finally)
-    # hands back the *allocator's* pool, not memory something still points at, so
-    # dropping it here is what makes the opt-in KL anchor releasable at all.
-    probes.reference = None
-
-    print("[5/5] Saving")
-    model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))
-    checkpoint.save(model, storage.weights_path(cfg.model_name))
-    # The base tokenizer travels with the fine-tuned weights, so inference loads
-    # both from one directory.
-    tokenizer.save(str(storage.tokenizer_file(model_dir)))
-
-    result = {
-        "model_name": cfg.model_name,
+    provenance = {
         "base_model": cfg.base_model,
         "parameters": model.parameter_count(),
         "device": device,
@@ -358,6 +333,49 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         },
         "trainable_tokens": int(mask.sum()),
         "total_tokens": len(corpus),
+    }
+    base = _base_run(cfg.base_model)
+    summary = loop.run(
+        model,
+        corpus,
+        data_plan,
+        train_cfg,
+        device,
+        on_progress,
+        cancel,
+        mask,
+        token_counts=info.get("token_counts"),
+        probes=probes,
+        # A fine-tune's checkpoints are models exactly as a pretrain's are, and
+        # the writer is the pretrain's — what differs is only what each run knows
+        # to record about itself.
+        on_checkpoint=train_pipeline.CheckpointWriter(
+            tokenizer=tokenizer,
+            config=cfg.model_dump(),
+            provenance=provenance,
+            state_extra={
+                "corpus_key": key,
+                "tokenizer_id": base.get("tokenizer_id"),
+                "tokenizer_fingerprint": base.get("tokenizer_fingerprint"),
+            },
+        ),
+    )
+    # The reference model is a second full copy of the weights, and this is the
+    # last frame holding one. `release_device` (from `api/runner.py`'s finally)
+    # hands back the *allocator's* pool, not memory something still points at, so
+    # dropping it here is what makes the opt-in KL anchor releasable at all.
+    probes.reference = None
+
+    print("[5/5] Saving")
+    model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))
+    checkpoint.save(model, storage.weights_path(cfg.model_name))
+    # The base tokenizer travels with the fine-tuned weights, so inference loads
+    # both from one directory.
+    tokenizer.save(str(storage.tokenizer_file(model_dir)))
+
+    result = {
+        "model_name": cfg.model_name,
+        **provenance,
         **summary,
         "total_secs": round(time.time() - started, 1),
     }

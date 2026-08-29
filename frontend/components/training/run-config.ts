@@ -5,7 +5,12 @@
 // be able to disagree with the other about what a learning rate may be.
 
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
-import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
+import {
+  RESUMED_ARCH_FIELDS,
+  isFineTune,
+  type TrainConfig,
+  type TrainMode,
+} from "@/lib/training"
 
 // Numeric fields split by which mode they apply to. Architecture + dataset knobs
 // only make sense for a fresh pretrain; a fine-tune inherits the base model's
@@ -31,6 +36,7 @@ export const STRING_FIELDS = new Set<keyof TrainConfig>([
   "model_name",
   "base_model_id",
   "tokenizer_id",
+  "resume_from",
 ])
 
 export const ARCH_FIELDS: Field[] = [
@@ -46,7 +52,12 @@ export const ARCH_FIELDS: Field[] = [
     hint: "Tokens the model sees at once",
     pow2: true,
   },
-  { key: "heads", label: "Heads", hint: "Attention heads per layer", pow2: true },
+  {
+    key: "heads",
+    label: "Heads",
+    hint: "Attention heads per layer",
+    pow2: true,
+  },
   { key: "layers", label: "Layers", hint: "Transformer blocks, stacked" },
   {
     key: "ff_multiplier",
@@ -66,7 +77,12 @@ export const ARCH_FIELDS: Field[] = [
 
 export const RUN_FIELDS: Field[] = [
   { key: "epochs", label: "Epochs", hint: "Passes over the corpus" },
-  { key: "lr", label: "Learning rate", hint: "Step size at each update", step: 0.001 },
+  {
+    key: "lr",
+    label: "Learning rate",
+    hint: "Step size at each update",
+    step: 0.001,
+  },
 ]
 
 // SFT wants a much lower learning rate than a from-scratch run — the base model
@@ -116,6 +132,16 @@ export function isPowerOfTwo(n: number) {
 // on the way out, which is what the config means by it.
 export const LEARN_WITH_RUN = "learn-with-run"
 
+// "Start from random weights", for the same reason `LEARN_WITH_RUN` exists: it
+// is a real choice — the one every run made before checkpoints could be picked
+// up — and the empty string is how a Select says *nothing is selected*. Mapped
+// back to `undefined` on the way out, which is what the config means by it.
+export const FROM_SCRATCH = "from-scratch"
+
+// "The finished weights", as opposed to one of the model's intermediate saves.
+// Selecting it means `resume_from` is the parent model's own id.
+export const FINISHED_WEIGHTS = "finished-weights"
+
 // Name is a display label only (weights live under the model's UUID), so spaces
 // and dots like "Opal 1.1" are allowed — just no surrounding whitespace or
 // control characters. Shared by both modes.
@@ -157,31 +183,39 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
     return errs
   }
 
-  const positives: [keyof TrainConfig, string][] = [
-    ["dimensions", "Dimensions"],
-    ["ctx_window", "Context window"],
-    ["heads", "Heads"],
-    ["layers", "Layers"],
-    ["epochs", "Epochs"],
-    ["ff_multiplier", "FF multiplier"],
-  ]
-  for (const [k, label] of positives) {
-    const v = cfg[k] as number
-    if (!Number.isFinite(v) || v <= 0) errs.push(`${label} must be positive.`)
+  if (!Number.isFinite(cfg.epochs) || cfg.epochs <= 0)
+    errs.push("Epochs must be positive.")
+
+  // A resumed run's architecture is the checkpoint's and is not sent at all
+  // (`RESUMED_ARCH_FIELDS`), so validating what the form is still holding would
+  // refuse a run over numbers nobody is going to read.
+  if (!cfg.resume_from) {
+    const positives: [keyof TrainConfig, string][] = [
+      ["dimensions", "Dimensions"],
+      ["ctx_window", "Context window"],
+      ["heads", "Heads"],
+      ["layers", "Layers"],
+      ["ff_multiplier", "FF multiplier"],
+    ]
+    for (const [k, label] of positives) {
+      const v = cfg[k] as number
+      if (!Number.isFinite(v) || v <= 0) errs.push(`${label} must be positive.`)
+    }
+
+    if (!isPowerOfTwo(cfg.dimensions))
+      errs.push("Dimensions must be a power of two (16, 32, 64, 128…).")
+    if (!isPowerOfTwo(cfg.ctx_window))
+      errs.push("Context window must be a power of two (16, 32, 64, 128…).")
+    if (
+      Number.isFinite(cfg.dimensions) &&
+      cfg.heads > 0 &&
+      cfg.dimensions % cfg.heads !== 0
+    )
+      errs.push(
+        `Heads must divide dimensions evenly. ${cfg.dimensions} ÷ ${cfg.heads} isn't whole.`
+      )
   }
 
-  if (!isPowerOfTwo(cfg.dimensions))
-    errs.push("Dimensions must be a power of two (16, 32, 64, 128…).")
-  if (!isPowerOfTwo(cfg.ctx_window))
-    errs.push("Context window must be a power of two (16, 32, 64, 128…).")
-  if (
-    Number.isFinite(cfg.dimensions) &&
-    cfg.heads > 0 &&
-    cfg.dimensions % cfg.heads !== 0
-  )
-    errs.push(
-      `Heads must divide dimensions evenly. ${cfg.dimensions} ÷ ${cfg.heads} isn't whole.`
-    )
   if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
     errs.push("Learning rate must be positive.")
   if (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
@@ -217,6 +251,18 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
   return errs
 }
 
+/**
+ * Whether this run's architecture is somebody else's to state.
+ *
+ * True for a fine-tune, which inherits the base model's, and true for a pretrain
+ * continuing from a checkpoint, which inherits the state's. The composer shows
+ * no control for a number it does not get to choose — offering one is offering a
+ * decision the engine will refuse the run for having made.
+ */
+export function inheritsArchitecture(cfg: TrainConfig): boolean {
+  return isFineTune(cfg.mode) || Boolean(cfg.resume_from)
+}
+
 /** The numeric fields a mode actually shows, in the order they are rendered. */
 export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
@@ -228,16 +274,31 @@ export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
   if (cfg.mode === "kto") {
     return {
       arch: [],
-      run: [...RUN_FIELDS, { key: "beta", label: "Beta (KL anchor)", hint: "How hard the KL anchor pulls", step: 0.05 }],
+      run: [
+        ...RUN_FIELDS,
+        {
+          key: "beta",
+          label: "Beta (KL anchor)",
+          hint: "How hard the KL anchor pulls",
+          step: 0.05,
+        },
+      ],
     }
   }
   if (isFineTune(cfg.mode)) return { arch: [], run: RUN_FIELDS }
 
-  // A named vocabulary carries its own size, so the field would be a control
-  // wired to nothing — the engine ignores `max_vocab` whenever one is named.
+  // Two fields drop out for the same reason — a control wired to a number this
+  // run does not decide. A named vocabulary carries its own size, so `max_vocab`
+  // is ignored whenever one is named; and a resumed run's shape is the
+  // checkpoint's, so restating it is not an override but a refusal.
+  const resuming = Boolean(cfg.resume_from)
   return {
     arch: ARCH_FIELDS.filter(
-      (f) => !(f.key === "max_vocab" && cfg.tokenizer_id)
+      (f) =>
+        !(f.key === "max_vocab" && cfg.tokenizer_id) &&
+        !(
+          resuming && (RESUMED_ARCH_FIELDS as readonly string[]).includes(f.key)
+        )
     ),
     run,
   }

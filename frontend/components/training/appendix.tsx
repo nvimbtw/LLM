@@ -4,6 +4,7 @@ import * as React from "react"
 import { ChevronRight } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import type { CheckpointFrame } from "@/lib/training"
 
 // The one place progressive-disclosure detail lives: the tokenizer/build log and
 // the saved checkpoints, framed as an article's appendix at the foot of the main
@@ -15,7 +16,7 @@ export function Appendix({
   checkpoints,
 }: {
   log: string[]
-  checkpoints: string[]
+  checkpoints: CheckpointFrame[]
 }) {
   const [open, setOpen] = React.useState(false)
   const logEndRef = React.useRef<HTMLDivElement>(null)
@@ -64,10 +65,16 @@ export function Appendix({
                 No checkpoints yet.
               </span>
             ) : (
+              /* Where the run was when it saved, not where the file went: a
+                 checkpoint is a model, and the step and the loss are what a
+                 person picks one by. The path stays as the row's title, for the
+                 times the question really is which file on disk. */
               <ul className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-xs text-muted-foreground">
                 {checkpoints.map((cp) => (
-                  <li key={cp} className="truncate">
-                    {cp}
+                  <li key={cp.model_id} className="truncate" title={cp.path}>
+                    #{cp.index} · step {cp.step}/{cp.total_steps} · epoch{" "}
+                    {cp.epoch}
+                    {cp.loss === null ? "" : ` · loss ${cp.loss.toFixed(3)}`}
                   </li>
                 ))}
               </ul>

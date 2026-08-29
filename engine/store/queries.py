@@ -38,11 +38,37 @@ def _now() -> datetime:
 # ── models ──────────────────────────────────────────────────────────────────
 
 
-def list_models(db: Session, *, include_private: bool) -> list[Model]:
+def list_models(db: Session, *, include_private: bool, checkpoints: bool = False) -> list[Model]:
+    """Models, newest first. Intermediates are left out unless asked for: a run
+    takes ten of them and they would otherwise outnumber the finished models in
+    every list in the product."""
     stmt = select(Model).order_by(Model.created_at.desc())
     if not include_private:
         stmt = stmt.where(Model.published.is_(True))
+    if not checkpoints:
+        stmt = stmt.where(Model.checkpoint_index.is_(None))
     return list(db.scalars(stmt))
+
+
+def checkpoints_of(db: Session, model_id: uuid.UUID) -> list[Model]:
+    """One model's intermediates, in the order they were taken.
+
+    Ordered by step and not by `created_at`, which two checkpoints of a fast run
+    can share to the resolution the column stores.
+    """
+    return list(
+        db.scalars(
+            select(Model)
+            .where(Model.parent_id == model_id, Model.checkpoint_index.is_not(None))
+            .order_by(Model.checkpoint_step)
+        )
+    )
+
+
+def checkpoint_ids(db: Session) -> set[uuid.UUID]:
+    """Every intermediate's id, for callers filtering something keyed by it —
+    the weights directories, which carry no marking of their own."""
+    return set(db.scalars(select(Model.id).where(Model.checkpoint_index.is_not(None))))
 
 
 def get_model(db: Session, model_id: uuid.UUID) -> Model | None:
@@ -108,11 +134,21 @@ def _free_model_name(db: Session, name: str, model_id: uuid.UUID) -> str:
 
 
 def delete_model(db: Session, model_id: uuid.UUID) -> str | None:
-    """Remove a model, returning its name to confirm it existed."""
+    """Remove a model and its checkpoints, returning its name to confirm it
+    existed.
+
+    The intermediates go with the parent because nothing can reach them once it
+    is gone: they are kept out of every listing, and the only way to one is
+    `checkpoints_of` on the row being deleted. Their *directories* are the
+    caller's to remove — `store/` has never heard of the disk — and
+    `checkpoints_of`, read before this, is what names them.
+    """
     model = db.get(Model, model_id)
     if model is None:
         return None
     name = model.name
+    for checkpoint in checkpoints_of(db, model_id):
+        db.delete(checkpoint)
     db.delete(model)
     db.flush()
     return name

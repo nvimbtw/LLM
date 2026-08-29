@@ -198,6 +198,7 @@ def iter_batches(
     batch_size: int,
     weighted: bool = False,
     allocate=None,
+    start_batch: int = 0,
 ):
     """Yield (inputs, targets, weights, offset) — arrays of [batch, ctx_window],
     and where the batch starts in the epoch.
@@ -224,6 +225,12 @@ def iter_batches(
     yielded are views into them — valid until the next batch, which is exactly
     as long as the training loop needs them. `allocate(n, dtype)` lets the caller
     place them in pinned memory, where the copy to the device is faster.
+
+    `start_batch` skips to the nth batch of the epoch — what a resumed run needs.
+    It costs nothing, and that is the whole reason `EpochStream` is addressable
+    rather than materialized: a batch's span is `start * ctx_window`, so entering
+    an epoch halfway is a different first index and not a walk over the half
+    being skipped.
     """
     allocate = allocate or (lambda n, dtype: np.empty(n, dtype))
     windows = (len(stream) - 1) // ctx_window
@@ -235,7 +242,7 @@ def iter_batches(
     tokens = allocate(span + 1, np.int64)
     weights = allocate(span + 1, np.float32) if weighted else None
 
-    for start in range(0, usable, batch_size):
+    for start in range(start_batch * batch_size, usable, batch_size):
         offset = start * ctx_window
         stream.gather(offset, offset + span + 1, tokens, weights)
         yield (

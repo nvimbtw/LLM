@@ -19,12 +19,12 @@ from dataclasses import asdict
 from typing import Any
 
 import store
-from api import chain
+from api import chain, handlers
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
 from llm.orchestrate import chat as chat_pipeline
 from llm.train.loop import release_device
-from llm.train.progress import Progress, Tokenize
+from llm.train.progress import Checkpoint, Progress, Tokenize
 from store import queries as q
 from store.schema import RunKind, RunStatus
 
@@ -159,11 +159,14 @@ class Runner:
                 self._finish(run_id, RunStatus.cancelled, result=result)
             else:
                 self._registry.finish(live, "completed", result=result)
+                produced = _produced(result)
+                if kind is RunKind.train and produced is not None:
+                    handlers.attach_run(run_id, produced)
                 self._finish(
                     run_id,
                     RunStatus.done,
                     result=result,
-                    ref_id=_produced(result),
+                    ref_id=produced,
                     progress=1.0,
                 )
         finally:
@@ -213,6 +216,13 @@ class _ThrottledProgress:
         kind, frame = _frame(payload)
         self._registry.publish(self._live, Event(kind, frame))
 
+        if isinstance(payload, Checkpoint):
+            # Written now, not on the timer below. That throttle exists so a
+            # progress bar does not cost a row per step; a checkpoint frame it
+            # swallowed would be weights on disk that nothing can name.
+            handlers.record_checkpoint(self._run_id, payload)
+            return
+
         now = time.monotonic()
         if now - self._last_write < PROGRESS_WRITE_SECS:
             return
@@ -256,7 +266,9 @@ def _frame(payload: Any) -> tuple[str, dict]:
     from the loop to the chart untranslated. Folding it into the generic
     `progress` frame is what left a run with no statistics and no diagnostics —
     the payload became the dataclass's `repr` and every field arrived undefined.
-    A `Tokenize` is the same arrangement for the phase that builds the data.
+    A `Tokenize` is the same arrangement for the phase that builds the data, and
+    a `Checkpoint` is the announcement of a model the run has already written to
+    disk — the one frame whose consumer is a database row rather than a chart.
 
     Everything else already reports a plain dict — a stage line — and keeps
     `progress`.
@@ -266,6 +278,8 @@ def _frame(payload: Any) -> tuple[str, dict]:
     if isinstance(payload, Tokenize):
         # A field this phase does not measure is absent, not zero — see `Tokenize`.
         return "tokenize", {k: v for k, v in asdict(payload).items() if v is not None}
+    if isinstance(payload, Checkpoint):
+        return "checkpoint", asdict(payload)
     if isinstance(payload, dict):
         return "progress", payload
     return "log", {"line": str(payload)}

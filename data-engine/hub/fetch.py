@@ -34,6 +34,11 @@ _TURN_KEYS = (("role", "content"), ("from", "value"))
 #: How much of a stray string column is worth keeping alongside a document.
 MAX_META_CHARS = 500
 
+#: PostgreSQL cannot represent this byte in `text` or in a `jsonb` string. Not a
+#: length or an encoding limit — the character is simply unstorable, and psycopg
+#: refuses the whole batch before the server sees it.
+NUL = "\x00"
+
 
 def shards_under(repo: str, prefix: str | None) -> list[str]:
     """The parquet shards of a repo, sorted, optionally under one directory.
@@ -94,11 +99,48 @@ def pick_column(row: dict, named: str | None, candidates: tuple[str, ...]) -> st
     return next((c for c in candidates if c in row), None)
 
 
-def as_document(row: dict, kind: DatasetKind, column: str) -> dict | None:
-    """One Hub row as a document, or `None` if it carries nothing usable."""
-    if kind == DatasetKind.pretrain:
-        return _prose(row, column)
-    return _conversation(row, column)
+def as_document(
+    row: dict, kind: DatasetKind, column: str, tally: dict | None = None
+) -> dict | None:
+    """One Hub row as a document, or `None` if it carries nothing usable.
+
+    NUL bytes are removed here and not left to the `normalise-unicode` processor,
+    which would otherwise be the one thing in the repository that strips them: a
+    processor only ever runs over a dataset that already landed, and a corpus
+    carrying NULs cannot land. Sources that were scanned or OCR'd carry strays —
+    Gutenberg does — so this is the difference between pulling them and not.
+
+    Before the document is shaped rather than after, so `byte_size` counts what
+    was actually stored. `tally`, when given, gets a count of the documents that
+    needed it, because a pull that silently rewrites its input should say so.
+    """
+    row, stripped = _scrub(row)
+    document = _prose(row, column) if kind == DatasetKind.pretrain else _conversation(row, column)
+    if document is not None and stripped and tally is not None:
+        tally["nul_stripped"] = tally.get("nul_stripped", 0) + 1
+    return document
+
+
+def _scrub(value: Any) -> tuple[Any, bool]:
+    """`value` with every NUL removed, and whether there were any.
+
+    Recursive because the payload is not always a string: a conversation column
+    arrives as a list of turn dicts, and a NUL inside one of those breaks the
+    `jsonb` insert exactly as one in `content` breaks the `text` insert. So does
+    a NUL in a metadata column nothing will ever read.
+    """
+    if isinstance(value, str):
+        return (value.replace(NUL, ""), True) if NUL in value else (value, False)
+    if isinstance(value, list):
+        scrubbed = [_scrub(item) for item in value]
+        return [item for item, _ in scrubbed], any(found for _, found in scrubbed)
+    if isinstance(value, dict):
+        scrubbed = {key: _scrub(item) for key, item in value.items()}
+        return (
+            {key: item for key, (item, _) in scrubbed.items()},
+            any(found for _, found in scrubbed.values()),
+        )
+    return value, False
 
 
 def _prose(row: dict, column: str) -> dict | None:

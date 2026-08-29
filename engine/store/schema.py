@@ -97,7 +97,15 @@ class Feedback(str, enum.Enum):
 
 class Model(Base):
     """A trained model. The row is the index; the weights are on disk under
-    `artifacts/models/<id>/`, which is why the id and not the name is stable."""
+    `artifacts/models/<id>/`, which is why the id and not the name is stable.
+
+    A training run's intermediate checkpoints are rows here too, laid out on
+    disk exactly like this one: that is what makes chatting with a checkpoint,
+    benchmarking it or continuing from it fall out of the code that already
+    exists rather than each needing a second path. `checkpoint_index IS NOT
+    NULL` is the whole definition of "this row is an intermediate" — there is
+    deliberately no boolean beside it that could disagree.
+    """
 
     __tablename__ = "models"
 
@@ -110,6 +118,20 @@ class Model(Base):
     context: Mapped[int | None] = mapped_column(Integer)
     #: Private until published, so a half-trained model is not offered in chat.
     published: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: The run that produced it, carried by a checkpoint and by the finished
+    #: model alike so a run's whole output groups by one value. Not a foreign
+    #: key, for the reason `Run.ref_id` is not one: run rows are prunable and the
+    #: grouping has to outlive them.
+    run_id: Mapped[uuid.UUID | None] = mapped_column(Key, index=True)
+    #: The finished model this is an intermediate of. Also not a foreign key,
+    #: but for a different reason: the parent row does not exist yet when the
+    #: first checkpoint of a run lands. Null on a finished model — it is the
+    #: parent.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(Key, index=True)
+    #: The global step it was saved at. Null means this row is a finished model.
+    checkpoint_step: Mapped[int | None] = mapped_column(Integer)
+    #: 1-based ordinal within the run, and the `#n` its name ends with.
+    checkpoint_index: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     benchmarks: Mapped[list["Benchmark"]] = relationship(

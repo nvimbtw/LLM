@@ -14,12 +14,17 @@ from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import tokenize as tokenize_pipeline
 from llm.orchestrate import train as train_pipeline
+from llm.train.progress import Checkpoint
 from store import queries as q
 from store.schema import BenchmarkStatus, RunKind, Suite
 
 #: A model's weights live at `artifacts/models/<id>/`, so the pipeline's
 #: `model_name` is the id and `display_name` is what a person calls it.
 DISPLAY_NAME = "display_name"
+
+#: Room reserved for the ` #n` a checkpoint's name ends with, so composing one
+#: cannot push the row past `Model.name`'s width.
+SUFFIX_ROOM = 8
 
 
 def train(config: dict, progress, cancel, owner: str | None = None) -> dict:
@@ -85,6 +90,121 @@ def _record_derived_vocabulary(db, result: dict) -> None:
         fingerprint=result.get("tokenizer_fingerprint"),
         implicit=True,
     )
+
+
+def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | None:
+    """Register one intermediate save as a model of its own.
+
+    A checkpoint is a model — its own id, its own directory, its own row — which
+    is what lets it be chatted with, benchmarked and continued from without any
+    of those growing a second code path. What it is not is a row anybody should
+    meet by accident: `published=False` keeps it out of chat, and
+    `checkpoint_index` is what every listing filters on.
+
+    `final` frames announce the run's own finished model, whose row `train`
+    writes when the pipeline returns; there is nothing to do with one here.
+
+    **Nothing is raised.** This runs on the progress callback of a run that is
+    still training, and that callback is called from inside the training loop
+    with nothing between the two — so an exception here does not fail a
+    checkpoint, it fails the run, after the weights it is about to lose were
+    already written to disk. An unregistered checkpoint costs one row; a raise
+    costs everything computed since the run began.
+
+    The broad catch is the point rather than a shortcut around a known error:
+    what is being guaranteed is that no fault of the database's, in any shape,
+    reaches the loop. It says so on stdout, which is the run's log.
+    """
+    if checkpoint.final:
+        return None
+    try:
+        model_id = uuid.UUID(checkpoint.model_id)
+    except ValueError:
+        return None
+
+    try:
+        with store.session() as db:
+            run = db.get(store.Run, run_id)
+            if run is None:
+                return None
+            config = run.config or {}
+            q.upsert_model(
+                db,
+                model_id=model_id,
+                name=_checkpoint_name(config, run.label, checkpoint.index),
+                published=False,
+                run_id=run_id,
+                parent_id=_model_id(config.get("model_name")),
+                checkpoint_step=checkpoint.step,
+                checkpoint_index=checkpoint.index,
+                # The row carries where in the run this was taken and what the
+                # loss was there, because nothing else can answer it. The same
+                # numbers are in the checkpoint's own `meta.json`, but the
+                # listing serves only that file's `config` half — and sourcing
+                # them from the run instead would lose them the moment the run
+                # row is pruned, which is the very reason `run_id` is not a
+                # foreign key.
+                parameters={
+                    "config": config,
+                    "result": {
+                        "checkpoint": {
+                            "index": checkpoint.index,
+                            "step": checkpoint.step,
+                            "total_steps": checkpoint.total_steps,
+                            "epoch": checkpoint.epoch,
+                            "stage": checkpoint.stage,
+                            "stage_name": checkpoint.stage_name,
+                            "loss": checkpoint.loss,
+                        }
+                    },
+                },
+            )
+    except Exception as error:  # noqa: BLE001 — see the docstring
+        # First line only: a driver error carries the statement, its parameters
+        # and a documentation link, and this is going into a running run's log
+        # between two loss reports.
+        reason = str(error).splitlines()[0] if str(error) else type(error).__name__
+        print(
+            f"  checkpoint #{checkpoint.index} at step {checkpoint.step} was written to "
+            f"{checkpoint.path} but could not be registered: {reason}",
+            flush=True,
+        )
+        return None
+    return model_id
+
+
+def _checkpoint_name(config: dict, label: str, index: int) -> str:
+    """`<the run's name> #n`.
+
+    A hash and not the ` (n)` `_free_model_name` spells a collision with: the
+    two mean opposite things — one is the third checkpoint of a run, the other
+    is the third model somebody gave the same name — and a reader who cannot
+    tell them apart is worse off than one who has never seen either.
+    """
+    display = config.get(DISPLAY_NAME) or config.get("model_name") or label
+    return f"{str(display)[: q.NAME_LIMIT - SUFFIX_ROOM].rstrip()} #{index}"
+
+
+def attach_run(run_id: uuid.UUID, model_id: uuid.UUID) -> None:
+    """Credit a finished model to the run that produced it.
+
+    Here rather than in `train`, which is handed a config and never a run id. It
+    is the same value the run's checkpoints carry, so a run's whole output — the
+    intermediates and the model they led to — groups by one column.
+    """
+    with store.session() as db:
+        model = q.get_model(db, model_id)
+        if model is not None:
+            model.run_id = run_id
+
+
+def _model_id(value) -> uuid.UUID | None:
+    """A run's `model_name` as an id, or nothing for a run queued before ids
+    were minted at enqueue — those name a directory nothing can parse."""
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def tokenize(config: dict, progress, cancel, owner: str | None = None) -> dict:

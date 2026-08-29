@@ -150,6 +150,13 @@ function train(config: TrainConfig | null): Recap | null {
   if (!fineTune) {
     // Which vocabulary, before how large: a run that names one ignores
     // `max_vocab` entirely, since the size belongs to the build.
+    // What it started from, before what it started with: a run that continued
+    // from a state took its architecture from there, so the rows above are the
+    // request rather than the last word on it.
+    rows.push([
+      "Starts from",
+      config.resume_from ? "A saved state" : "Random weights",
+    ])
     rows.push([
       "Tokenizer",
       config.tokenizer_id ? "A built vocabulary" : "Learned with the run",

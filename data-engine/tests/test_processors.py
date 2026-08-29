@@ -28,6 +28,18 @@ def test_collapse_whitespace_squeezes_runs_and_trims():
     assert after["content"] == "a b\n\nc"
 
 
+def test_join_broken_lines_drops_every_blank_line():
+    after = apply("join-broken-lines", {"content": "line1\n\nline2\n\nline3"})
+
+    assert after["content"] == "line1\nline2\nline3"
+
+
+def test_join_broken_lines_handles_runs_of_blank_lines_and_crlf():
+    after = apply("join-broken-lines", {"content": "line1\r\n\r\n\r\nline2\n   \nline3"})
+
+    assert after["content"] == "line1\nline2\nline3"
+
+
 def test_min_length_drops_below_the_bound_and_keeps_at_it():
     assert apply("min-length", {"content": "abcd"}, {"characters": 5}) is None
     assert apply("min-length", {"content": "abcde"}, {"characters": 5}) is not None
