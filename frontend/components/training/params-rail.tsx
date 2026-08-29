@@ -21,6 +21,7 @@ import {
   defaultLrFor,
   derived,
   fieldsFor,
+  inheritsArchitecture,
   validate,
 } from "@/components/training/run-config"
 import { Input } from "@/components/ui/input"
@@ -406,7 +407,9 @@ export function ParamsRail({
             value={cfg.datasets ?? []}
             disabled={disabled}
             emptyHint={
-              <>No conversation datasets yet. Pull one from the Data view first.</>
+              <>
+                No conversation datasets yet. Pull one from the Data view first.
+              </>
             }
             onChange={(datasets) => onChange({ ...cfg, datasets })}
           />
@@ -475,10 +478,18 @@ export function ParamsRail({
         </div>
       )}
 
-      {isSft ? (
+      {inheritsArchitecture(cfg) ? (
         <p className="text-xs text-muted-foreground">
-          Architecture (dimensions, context, heads, layers) is inherited from
-          the base model — only the run knobs above apply.
+          Architecture (dimensions, context, heads, layers) is inherited from{" "}
+          {isSft ? "the base model" : "the checkpoint"} — only the run knobs
+          above apply.
+          {!isSft && (
+            <>
+              {" "}
+              Its vocabulary has to match too, so continue against the tokenizer
+              the run was trained with.
+            </>
+          )}
           {isKto && (
             <>
               {" "}

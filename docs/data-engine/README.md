@@ -212,6 +212,16 @@ trips are not what a pack spends its time on.
 - Roles arrive from the Hub as the source wrote them (`human`, `gpt`). Mapping
   them is the `normalise-roles` processor's job — doing it during the fetch
   would hide from the user that it happened.
+- **NUL bytes are stripped during the fetch, not by a processor.** This is the
+  one cleanup `hub/fetch.py` does, and it is the exception to the rule above.
+  PostgreSQL cannot represent `0x00` in `text` or in a `jsonb` string at all, so
+  a single stray one — Gutenberg dumps are full of them — fails the insert for
+  its whole `WRITE_BATCH`, leaving a half-written dataset marked `failed`.
+  `normalise-unicode` would remove them, but a processor only ever runs over a
+  dataset that already landed, and this is precisely a corpus that cannot land.
+  Content, turns and metadata are all scrubbed, before `byte_size` is measured
+  so the recorded size is of what was actually stored, and the pull's result
+  carries `nul_stripped` — the count of documents it rewrote.
 
 ## Running it
 

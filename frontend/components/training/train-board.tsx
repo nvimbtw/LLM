@@ -14,6 +14,7 @@ import {
   STRING_FIELDS,
   defaultLrFor,
   fieldsFor,
+  inheritsArchitecture,
   validate,
   type Field,
 } from "@/components/training/run-config"
@@ -85,7 +86,9 @@ export function TrainBoard({
   // The base id is derived: with none explicitly picked, default to the first
   // available model, keeping the select controlled and the submit correct.
   const baseModelId = cfg.base_model_id || models[0]?.id
-  const effective: TrainConfig = isSft ? { ...cfg, base_model_id: baseModelId } : cfg
+  const effective: TrainConfig = isSft
+    ? { ...cfg, base_model_id: baseModelId }
+    : cfg
   const errors = validate(effective)
 
   const set = (key: keyof TrainConfig, value: string) =>
@@ -158,7 +161,9 @@ export function TrainBoard({
                     <Select
                       value={baseModelId ?? ""}
                       onValueChange={(v) => set("base_model_id", v ?? "")}
-                      disabled={disabled || modelsLoading || models.length === 0}
+                      disabled={
+                        disabled || modelsLoading || models.length === 0
+                      }
                     >
                       <SelectTrigger className="h-10 w-full">
                         <SelectValue
@@ -245,7 +250,6 @@ export function TrainBoard({
                   </div>
                 )}
               </div>
-
             </div>
           </Panel>
 
@@ -290,10 +294,18 @@ export function TrainBoard({
               onText={set}
               onNumber={setNumber}
             />
-            {isSft && (
+            {inheritsArchitecture(cfg) && (
               <p className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
-                Dimensions, context, heads and layers come from the base model —
-                only these apply.
+                Dimensions, context, heads and layers come from{" "}
+                {isSft ? "the base model" : "the checkpoint"} — only these
+                apply.
+                {!isSft && (
+                  <>
+                    {" "}
+                    Its vocabulary has to match too, so continue against the
+                    tokenizer the run was trained with.
+                  </>
+                )}
               </p>
             )}
           </Panel>
@@ -327,11 +339,9 @@ function FieldLabel({
 }) {
   return (
     <span className="block">
-      <span className="eyebrow text-muted-foreground">
-        {children}
-      </span>
+      <span className="eyebrow text-muted-foreground">{children}</span>
       {hint && (
-        <span className="mt-0.5 block text-xs normal-case text-muted-foreground/80">
+        <span className="mt-0.5 block text-xs text-muted-foreground/80 normal-case">
           {hint}
         </span>
       )}
@@ -444,7 +454,6 @@ function ModeToggle({
   )
 }
 
-
 /**
  * What the run learns from: the picker, plus the two switches that decide how
  * its documents are ordered.
@@ -495,7 +504,9 @@ function DataSection({
           value={cfg.datasets ?? []}
           disabled={disabled}
           emptyHint={
-            <>No conversation datasets yet. Pull one from the Data view first.</>
+            <>
+              No conversation datasets yet. Pull one from the Data view first.
+            </>
           }
           onChange={(next) => onChange({ ...cfg, datasets: next })}
         />

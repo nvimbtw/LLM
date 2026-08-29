@@ -1,4 +1,3 @@
-
 // The shape of a training run: its config, and the frames it reports while it
 // executes.
 //
@@ -115,6 +114,44 @@ export interface TrainConfig {
   // Pretrain only. `SftConfig` names a `base_model` instead and simply does not
   // have this field, the same way it has no `tokenizer_id` or `curriculum`.
   resume_from?: string
+}
+
+// The architecture a resumed run takes from the checkpoint instead of from the
+// request — the engine's `_ARCHITECTURE` (`llm/orchestrate/train.py`), less the
+// two fields the composer has never offered (`rope_base`, `learned_temperature`).
+//
+// Refused rather than overridden, and pydantic tells a *stated* field from a
+// defaulted one by `model_fields_set` — so one of these left at whatever the form
+// happened to be showing is not a harmless extra in the payload, it is the run
+// being rejected before it starts. Hence one list: the composer reads it to know
+// what not to show, `lib/jobs.ts` reads it to know what not to send.
+export const RESUMED_ARCH_FIELDS = [
+  "dimensions",
+  "ctx_window",
+  "heads",
+  "layers",
+  "ff_multiplier",
+] as const satisfies readonly (keyof TrainConfig)[]
+
+// One checkpoint, announced as its weights land: the engine's `Checkpoint`
+// frame (`llm/train/progress.py`), arriving on the job socket as `checkpoint`.
+//
+// A whole model, so `model_id` is a model id like any other — it is what makes a
+// listed checkpoint something you can resume from, chat with or benchmark.
+export interface CheckpointFrame {
+  model_id: string
+  /** 1-based ordinal within the run — the numbered suffix a person reads. */
+  index: number
+  step: number
+  total_steps: number
+  epoch: number
+  stage: number
+  stage_name: string | null
+  /** The training state file, which is what a later run resumes from. */
+  path: string
+  loss: number | null
+  /** The run's own finished model rather than an intermediate. */
+  final: boolean
 }
 
 // Where a run is *within itself*. Deliberately not the same thing as the job's
@@ -318,6 +355,9 @@ export interface TrainStats {
   elapsed_secs: number
   epoch_done: boolean
   epoch_duration_secs: number
+  // The state file written on this step, when one was. Not a run's list of
+  // checkpoints: a save deduplicated against another rule leaves its frame with
+  // nothing here, so `CheckpointFrame` is what a listing reads.
   checkpoint_path: string | null
   step: number
   // Diagnostics sampled on this report frame, or null on epoch-boundary frames.

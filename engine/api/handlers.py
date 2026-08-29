@@ -104,9 +104,16 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
     `final` frames announce the run's own finished model, whose row `train`
     writes when the pipeline returns; there is nothing to do with one here.
 
-    Nothing is raised on a run this cannot resolve. This is called from the
-    progress callback of a run that is still training, and losing the run over
-    an unregisterable checkpoint would cost the weights still being computed.
+    **Nothing is raised.** This runs on the progress callback of a run that is
+    still training, and that callback is called from inside the training loop
+    with nothing between the two — so an exception here does not fail a
+    checkpoint, it fails the run, after the weights it is about to lose were
+    already written to disk. An unregistered checkpoint costs one row; a raise
+    costs everything computed since the run began.
+
+    The broad catch is the point rather than a shortcut around a known error:
+    what is being guaranteed is that no fault of the database's, in any shape,
+    reaches the loop. It says so on stdout, which is the run's log.
     """
     if checkpoint.final:
         return None
@@ -115,41 +122,54 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
     except ValueError:
         return None
 
-    with store.session() as db:
-        run = db.get(store.Run, run_id)
-        if run is None:
-            return None
-        config = run.config or {}
-        q.upsert_model(
-            db,
-            model_id=model_id,
-            name=_checkpoint_name(config, run.label, checkpoint.index),
-            published=False,
-            run_id=run_id,
-            parent_id=_model_id(config.get("model_name")),
-            checkpoint_step=checkpoint.step,
-            checkpoint_index=checkpoint.index,
-            # The row carries where in the run this was taken and what the loss
-            # was there, because nothing else can answer it. The same numbers are
-            # in the checkpoint's own `meta.json`, but the listing serves only
-            # that file's `config` half — and sourcing them from the run instead
-            # would lose them the moment the run row is pruned, which is the very
-            # reason `run_id` is not a foreign key.
-            parameters={
-                "config": config,
-                "result": {
-                    "checkpoint": {
-                        "index": checkpoint.index,
-                        "step": checkpoint.step,
-                        "total_steps": checkpoint.total_steps,
-                        "epoch": checkpoint.epoch,
-                        "stage": checkpoint.stage,
-                        "stage_name": checkpoint.stage_name,
-                        "loss": checkpoint.loss,
-                    }
+    try:
+        with store.session() as db:
+            run = db.get(store.Run, run_id)
+            if run is None:
+                return None
+            config = run.config or {}
+            q.upsert_model(
+                db,
+                model_id=model_id,
+                name=_checkpoint_name(config, run.label, checkpoint.index),
+                published=False,
+                run_id=run_id,
+                parent_id=_model_id(config.get("model_name")),
+                checkpoint_step=checkpoint.step,
+                checkpoint_index=checkpoint.index,
+                # The row carries where in the run this was taken and what the
+                # loss was there, because nothing else can answer it. The same
+                # numbers are in the checkpoint's own `meta.json`, but the
+                # listing serves only that file's `config` half — and sourcing
+                # them from the run instead would lose them the moment the run
+                # row is pruned, which is the very reason `run_id` is not a
+                # foreign key.
+                parameters={
+                    "config": config,
+                    "result": {
+                        "checkpoint": {
+                            "index": checkpoint.index,
+                            "step": checkpoint.step,
+                            "total_steps": checkpoint.total_steps,
+                            "epoch": checkpoint.epoch,
+                            "stage": checkpoint.stage,
+                            "stage_name": checkpoint.stage_name,
+                            "loss": checkpoint.loss,
+                        }
+                    },
                 },
-            },
+            )
+    except Exception as error:  # noqa: BLE001 — see the docstring
+        # First line only: a driver error carries the statement, its parameters
+        # and a documentation link, and this is going into a running run's log
+        # between two loss reports.
+        reason = str(error).splitlines()[0] if str(error) else type(error).__name__
+        print(
+            f"  checkpoint #{checkpoint.index} at step {checkpoint.step} was written to "
+            f"{checkpoint.path} but could not be registered: {reason}",
+            flush=True,
         )
+        return None
     return model_id
 
 

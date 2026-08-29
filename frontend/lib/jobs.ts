@@ -1,7 +1,7 @@
 import { apiFetch } from "./api"
 import type { BenchmarkSuite } from "./benchmark"
 import type { TokenizerBuild } from "./tokenizers"
-import { isFineTune, type TrainConfig } from "./training"
+import { RESUMED_ARCH_FIELDS, isFineTune, type TrainConfig } from "./training"
 
 // The GPU queue. The engine calls these runs and so does the wire; the UI has
 // always called them jobs, and `fromRow` is where the two names meet.
@@ -258,11 +258,22 @@ const FINE_TUNE_PATH = "/runs/sft"
  * `curriculum`, …), which is exactly right: a fine-tune that restated the
  * architecture could disagree with the weights it starts from, and the weights
  * would win, silently.
+ *
+ * A **resuming pretrain** is the same statement in the one place the engine did
+ * not get to drop the fields for us. It takes its architecture from the state it
+ * continues, and restating it is refused — so the fields are dropped here rather
+ * than sent at whatever the form was showing, which is a 400 for every resume
+ * whose shape differs from the composer's defaults. See `RESUMED_ARCH_FIELDS`.
  */
 function forEngine(config: TrainConfig): Record<string, unknown> {
-  if (!isFineTune(config.mode)) return { ...config }
-  const { base_model_id, ...rest } = config
-  return { ...rest, base_model: base_model_id }
+  if (isFineTune(config.mode)) {
+    const { base_model_id, ...rest } = config
+    return { ...rest, base_model: base_model_id }
+  }
+  if (!config.resume_from) return { ...config }
+  const rest: Record<string, unknown> = { ...config }
+  for (const key of RESUMED_ARCH_FIELDS) delete rest[key]
+  return rest
 }
 
 async function queue(

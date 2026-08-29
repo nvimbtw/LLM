@@ -238,8 +238,10 @@ class _Checkpoints:
 
         The frame goes out on the progress callback because that is the seam a
         run already has for things it must say while it is still running. The
-        path is returned as well: `Progress.checkpoint_path` is what the run
-        appendix reads, and it has read it since before this frame existed.
+        path is returned as well, and the accompanying `Progress` carries it —
+        but only the frame is a complete account of the run's checkpoints: a
+        boundary save deduplicated against an interval one leaves its epoch-end
+        frame carrying no path at all, so anything listing them reads the frames.
         """
         if not self._due(step, epoch_end):
             return None

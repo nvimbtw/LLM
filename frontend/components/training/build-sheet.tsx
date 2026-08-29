@@ -48,7 +48,10 @@ export function BuildSheet({
   const documents = selection.reduce((sum, one) => {
     const info = datasets.find((d) => d.id === one.id)
     if (!info) return sum
-    return sum + (one.count > 0 ? Math.min(one.count, info.documents) : info.documents)
+    return (
+      sum +
+      (one.count > 0 ? Math.min(one.count, info.documents) : info.documents)
+    )
   }, 0)
 
   const stages = cfg.curriculum?.length ?? 0
@@ -95,7 +98,9 @@ export function BuildSheet({
 
         <Spec
           label="Datasets"
-          value={selection.length === 0 ? "None picked" : String(selection.length)}
+          value={
+            selection.length === 0 ? "None picked" : String(selection.length)
+          }
           muted={selection.length === 0}
         />
         {documents > 0 && (
@@ -103,21 +108,31 @@ export function BuildSheet({
         )}
         {stages > 0 && <Spec label="Stages" value={String(stages)} />}
 
-        {!isSft && (
-          <>
-            <Spec
-              label="Shape"
-              value={`${cfg.layers}L · ${cfg.heads}H · ${cfg.dimensions}d`}
-            />
-            <Spec label="Context" value={`${cfg.ctx_window} tokens`} />
-            <Spec
-              label="Head size"
-              value={headDim ? String(headDim) : "Uneven"}
-              muted={!headDim}
-            />
-            <Spec label="FF hidden" value={dFf ? dFf.toLocaleString() : "—"} />
-          </>
-        )}
+        {/* Stated only when this run is the one deciding it. A resumed run trains
+            at the checkpoint's shape whatever the form last held, and printing
+            the form's numbers here would be the sheet's one job — saying what
+            the run *is* — done wrong. */}
+        {!isSft &&
+          (cfg.resume_from ? (
+            <Spec label="Shape" value="From the checkpoint" muted />
+          ) : (
+            <>
+              <Spec
+                label="Shape"
+                value={`${cfg.layers}L · ${cfg.heads}H · ${cfg.dimensions}d`}
+              />
+              <Spec label="Context" value={`${cfg.ctx_window} tokens`} />
+              <Spec
+                label="Head size"
+                value={headDim ? String(headDim) : "Uneven"}
+                muted={!headDim}
+              />
+              <Spec
+                label="FF hidden"
+                value={dFf ? dFf.toLocaleString() : "—"}
+              />
+            </>
+          ))}
 
         {stages === 0 && <Spec label="Epochs" value={String(cfg.epochs)} />}
         <Spec label="Learning rate" value={format(cfg.lr)} />
@@ -194,6 +209,7 @@ function selected(cfg: TrainConfig) {
  */
 function format(n: number): string {
   if (!Number.isFinite(n)) return "—"
-  if (n !== 0 && Math.abs(n) < 0.001) return n.toExponential(0).replace("e-", "e−")
+  if (n !== 0 && Math.abs(n) < 0.001)
+    return n.toExponential(0).replace("e-", "e−")
   return String(n)
 }

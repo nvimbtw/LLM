@@ -13,10 +13,10 @@ import {
   FINISHED_WEIGHTS,
   FROM_SCRATCH,
 } from "@/components/training/run-config"
+import { useCheckpointParent } from "@/hooks/use-checkpoint-parent"
 import { useCheckpoints } from "@/hooks/use-checkpoints"
-import { apiFetch } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import type { Model, RawModel } from "@/hooks/use-models"
+import type { Model } from "@/hooks/use-models"
 
 /**
  * What a pretrain starts from: nothing, a finished model, or one of that
@@ -58,53 +58,16 @@ export function ResumePicker({
 }: ResumePickerProps) {
   const size = compact ? "sm" : "default"
   const triggerClassName = compact ? "h-8 w-44" : "h-10 w-full"
-  // Whose checkpoint `value` is, for the one case the answer is not already in
-  // hand: an id the model list does not hold, arriving from a deep link off its
-  // parent's page or typed into the bar. Keyed by the id it was resolved for, so
-  // a stale answer can never be read against a different one — and written on a
-  // failure too, since the alternative is asking again on every render.
-  const [resolved, setResolved] = React.useState<{
-    id: string
-    parent: string
-  } | null>(null)
-
-  // Which model's intermediates the second select offers. Derived, not held: the
-  // first select's value *is* `resume_from` whenever it names a whole model, and
-  // a second copy of that could only ever disagree with it.
-  const namesAModel = Boolean(value) && models.some((m) => m.id === value)
-  const parentId = !value
-    ? ""
-    : namesAModel
-      ? value
-      : resolved?.id === value
-        ? resolved.parent
-        : ""
+  // Which model's intermediates the second select offers, for the one case the
+  // answer is not already in hand: an id the model list does not hold, arriving
+  // from a deep link off its parent's page or typed into the bar. An id that
+  // resolves to nothing leaves the second select unopened — the config still
+  // carries it, and the engine is the one entitled to refuse a run for it.
+  const { parentId, record } = useCheckpointParent(value, models)
 
   const { checkpoints, isLoading: checkpointsLoading } = useCheckpoints(
     parentId || null
   )
-
-  React.useEffect(() => {
-    if (!value || namesAModel || resolved?.id === value) return
-    // An empty list is "not loaded yet", not "no such model" — asking now would
-    // spend a request to learn nothing.
-    if (models.length === 0) return
-    let active = true
-    apiFetch(`/models/${value}`)
-      .then((res) => (res.ok ? (res.json() as Promise<RawModel>) : null))
-      .then((raw) => {
-        if (active) setResolved({ id: value, parent: raw?.parent_id ?? "" })
-      })
-      .catch(() => {
-        // An id that resolves to nothing leaves the second select unopened. The
-        // config still carries it, and the engine is the one entitled to refuse
-        // a run for it.
-        if (active) setResolved({ id: value, parent: "" })
-      })
-    return () => {
-      active = false
-    }
-  }, [value, namesAModel, resolved, models])
 
   const pickParent = (next: string | null) => {
     onChange(!next || next === FROM_SCRATCH ? undefined : next)
@@ -116,9 +79,9 @@ export function ResumePicker({
       return
     }
     // Recorded rather than looked up: this is the one moment the pairing is known
-    // for certain, and writing it here is what stops the effect above spending a
+    // for certain, and writing it here is what stops the hook above spending a
     // request to re-learn what was just clicked.
-    setResolved({ id: next, parent: parentId })
+    record(next, parentId)
     onChange(next)
   }
 

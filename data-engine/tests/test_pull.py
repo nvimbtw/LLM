@@ -176,6 +176,82 @@ def test_a_repo_with_no_shards_is_an_error_not_an_empty_pull(monkeypatch, datase
         run_pull(dataset, limit_rows=5)
 
 
+@pytest.fixture
+def nul_shard(tmp_path, monkeypatch):
+    """A shard carrying NUL bytes in both its text and its metadata column.
+
+    Not hypothetical: Gutenberg dumps are full of them, and every document in a
+    batch containing one is refused by Postgres, not just the offending row.
+    """
+    table = pa.table(
+        {
+            "text": ["clean text here", "text with a \x00 in it", "another \x00\x00 one"],
+            "url": ["https://example.invalid/a", "https://example.invalid/\x00b", ""],
+        }
+    )
+    path = tmp_path / "train-00000.parquet"
+    pq.write_table(table, path)
+    monkeypatch.setattr(hub.fetch, "hf_hub_download", lambda *a, **k: str(path))
+
+    class Api:
+        def list_repo_files(self, repo, repo_type=None):
+            return ["data/train-00000.parquet"]
+
+    monkeypatch.setattr("huggingface_hub.HfApi", Api)
+
+
+def test_nul_bytes_are_stripped_from_content(nul_shard, dataset):
+    """SQLite would store these happily; Postgres cannot represent them at all.
+
+    So this asserts the invariant rather than reproducing the `DataError` — the
+    dialect that raises is the one the test database is not.
+    """
+    run_pull(dataset, limit_rows=3)
+
+    with store.session() as db:
+        rows = q.documents(db, dataset, offset=0, limit=10)
+
+    assert [r.content for r in rows] == [
+        "clean text here",
+        "text with a  in it",
+        "another  one",
+    ]
+
+
+def test_nul_bytes_are_stripped_from_metadata_too(nul_shard, dataset):
+    """A `jsonb` column refuses them exactly as a `text` one does, so a corpus
+    with a clean body and a dirty metadata column must not fail either."""
+    run_pull(dataset, limit_rows=3)
+
+    with store.session() as db:
+        rows = q.documents(db, dataset, offset=0, limit=10)
+
+    assert rows[1].meta["url"] == "https://example.invalid/b"
+
+
+def test_a_stripped_document_reports_the_size_it_was_stored_at(nul_shard, dataset):
+    run_pull(dataset, limit_rows=3)
+
+    with store.session() as db:
+        rows = q.documents(db, dataset, offset=0, limit=10)
+
+    assert all(r.byte_size == len(r.content.encode("utf-8")) for r in rows)
+
+
+def test_a_pull_says_how_many_documents_it_rewrote(nul_shard, dataset):
+    """Silently changing what the source said is the part worth surfacing; two of
+    these three rows were altered on the way in."""
+    result, _ = run_pull(dataset, limit_rows=3)
+
+    assert result["nul_stripped"] == 2
+
+
+def test_a_clean_pull_rewrites_nothing(stub_hub, dataset):
+    result, _ = run_pull(dataset, limit_rows=5)
+
+    assert result["nul_stripped"] == 0
+
+
 def test_conversations_are_shaped_from_a_messages_column(monkeypatch, tmp_path, store_session):
     table = pa.table(
         {
@@ -210,3 +286,35 @@ def test_conversations_are_shaped_from_a_messages_column(monkeypatch, tmp_path, 
     assert first.content is None
     # Roles arrive as the source wrote them; mapping them is a processor's job.
     assert [m["role"] for m in first.messages] == ["human", "gpt"]
+
+
+def test_nul_bytes_are_stripped_from_inside_a_turn(monkeypatch, tmp_path, store_session):
+    """The payload is a list of dicts here, so a scrub that only looked at the
+    top level of the row would walk straight past this one."""
+    table = pa.table(
+        {"conversations": [[{"from": "human", "value": "hi\x00 there"}]] * 2}
+    )
+    path = tmp_path / "sft-00000.parquet"
+    pq.write_table(table, path)
+    monkeypatch.setattr(hub.fetch, "hf_hub_download", lambda *a, **k: str(path))
+
+    class Api:
+        def list_repo_files(self, repo, repo_type=None):
+            return ["data/sft-00000.parquet"]
+
+    monkeypatch.setattr("huggingface_hub.HfApi", Api)
+
+    with store.session() as db:
+        row = q.create_dataset(
+            db, name="chat", kind=DatasetKind.sft,
+            origin=DatasetOrigin.huggingface, owner_id=None,
+        )
+        dataset_id = row.id
+
+    result, _ = run_pull(dataset_id, kind="sft", limit_rows=2)
+
+    with store.session() as db:
+        first = q.documents(db, dataset_id, offset=0, limit=1)[0]
+
+    assert first.messages[0]["content"] == "hi there"
+    assert result["nul_stripped"] == 2
