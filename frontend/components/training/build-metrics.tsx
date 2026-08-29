@@ -52,7 +52,7 @@ const fertilityConfig = {
   chars_per_token: { label: "Chars / token", color: BUILD_COLOR },
 } satisfies ChartConfig
 
-export function BuildMetrics({ tokenize, ctxWindow }: BuildMetricsProps) {
+export function BuildMetrics({ tokenize, ctxWindow: fromConfig }: BuildMetricsProps) {
   const {
     fertility,
     dead_vocab: dead,
@@ -61,8 +61,15 @@ export function BuildMetrics({ tokenize, ctxWindow }: BuildMetricsProps) {
     doc_length_hist: hist,
     docs_over_ctx: over,
     span_ribbon: ribbon,
+    ctx_window: measuredAt,
     vocab,
   } = tokenize
+
+  // The frame first. The window these figures were measured against is a fact
+  // about the report, and the config the caller offers is absent for every
+  // training job — so preferring the config left both figures sized against
+  // zero, which draws the histogram empty and the ribbon not at all.
+  const ctxWindow = measuredAt ?? fromConfig
 
   const bars = React.useMemo(() => {
     if (!hist?.length || !ctxWindow) return []
@@ -88,7 +95,10 @@ export function BuildMetrics({ tokenize, ctxWindow }: BuildMetricsProps) {
       {/* Directly under the straddle it explains, and above the length
           histogram: the number, then what it looks like, then the distribution
           behind both. */}
-      {ribbon && (
+      {/* Both conditions, because `SpanRibbon` draws nothing without a window:
+          guarding only on the frame left a caption standing over an empty box,
+          describing a figure that was not there. */}
+      {ribbon && ctxWindow > 0 && (
         <Figure
           caption={`${ribbon.windows.length} training windows sampled evenly across the corpus, top to bottom in packing order — each bar is one ${ctxWindow}-token window, split by the documents inside it`}
           aside={

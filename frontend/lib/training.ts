@@ -185,6 +185,11 @@ export interface TokenizeStats {
   dead_vocab: number
   // The head of the merge list, in the order BPE learned it.
   merge_sequence: Merge[]
+  // The window the three fields below were measured against, carried with them.
+  // Not read from the run's config: a training job's run row has no config for
+  // the panel to read, so that source is always absent and every window-relative
+  // figure silently sized itself against zero.
+  ctx_window: number
   // The fraction of `ctx_window` training windows holding an <|endoftext|>: how
   // often the model attends across a document boundary. A packing measure, and
   // the only direct one there is.

@@ -134,6 +134,10 @@ def _phase_one(cfg, tokenizer, dataset, corpus, documents, info) -> Tokenize:
         fertility=pack.fertility(info),
         dead_vocab=diagnostics.dead_ids(counts) if counts else None,
         merge_sequence=bpe.merge_sequence(tokenizer, counts) if counts else None,
+        # Only when something was actually measured against it. On its own it
+        # describes the run and not the build, and the panel reads a present
+        # `ctx_window` as "these window-relative numbers are real".
+        ctx_window=cfg.ctx_window if fit or ribbon else None,
         boundary_straddle=fit.straddle if fit else None,
         doc_length_hist=fit.length_hist if fit else None,
         docs_over_ctx=fit.over_ctx if fit else None,

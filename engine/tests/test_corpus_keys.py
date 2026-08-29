@@ -289,6 +289,11 @@ def test_a_reused_corpus_measures_the_same_as_the_build_that_made_it(data_root, 
     assert fresh.dead_vocab is not None
     assert fresh.boundary_straddle is not None
     assert len(fresh.doc_length_hist) == LENGTH_HIST_BINS
+    # The window the three fields above were measured against travels with them.
+    # Nothing downstream can reconstruct it — a training job's run row carries no
+    # config — so a frame that omits it leaves every window-relative figure
+    # sizing itself against zero, which is how this was found.
+    assert fresh.ctx_window == cfg.ctx_window
     assert vars(reused) == vars(fresh)
 
 

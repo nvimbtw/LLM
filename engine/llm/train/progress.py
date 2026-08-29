@@ -76,6 +76,14 @@ class Tokenize:
     # it, with how often each merged token occurs in the corpus. See
     # `llm.corpus.bpe.merge_sequence` for what that count is and is not.
     merge_sequence: list[dict] | None = None
+    # The window every field below was measured against. Sent with them rather
+    # than left for the reader to find: `ctx_window` is a property of the run and
+    # not of the corpus — deliberately, since one build is legitimately trained
+    # at two of them — so the only place it and these numbers are known to agree
+    # is the frame that carries both. The panel needs it to label an axis and to
+    # size a window, and the run row it used to read has no config field for a
+    # training job.
+    ctx_window: int | None = None
     # The fraction of `ctx_window` training windows that hold an <|endoftext|>,
     # i.e. how often the model attends across a document boundary.
     boundary_straddle: float | None = None
