@@ -10,16 +10,18 @@ in front of it, a Next.js UI in front of that.
 ```
 engine/       training, inference, evaluation — PyTorch, FastAPI.
 data-engine/  acquiring datasets and cleaning them — FastAPI, huggingface_hub.
+gyms/         tasks, a sandboxed shell, and what a model scored — FastAPI.
 backend/      people, sessions, and the seam to the services — Rust, Actix, sqlx.
-frontend/     chat, the job board, model, data and benchmark views — Next.js.
+frontend/     chat, the job board, model, data, benchmark and gym views — Next.js.
 ```
 
 Each module owns a database. The engine owns models, conversations, runs and
 scores; the data engine owns datasets and the documents in them — including the
-text every model is trained on; the backend owns users and presets. A request
-flows frontend → backend → a service and back the same way.
+text every model is trained on; the gyms service owns gym runs and the
+trajectories in them; the backend owns users and presets. A request flows
+frontend → backend → a service and back the same way.
 
-**The two Python services never speak to each other.** Everything either knows
+**The Python services never speak to each other.** Everything either knows
 about the other arrives through the Rust backend. That is why the engine, which
 trains on data it does not own, reads it *through* the backend: the one hop in
 this system that runs toward the backend rather than away from it. See
@@ -29,7 +31,7 @@ this system that runs toward the backend rather than away from it. See
 
 | | |
 | --- | --- |
-| [`docs/engine/`](docs/engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
+| [`docs/engine/`](docs/engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/gyms/`](docs/gyms/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
 | [`docs/conventions.md`](docs/conventions.md) | The coding rules (R1–R21) every change is judged against. |
 | [`docs/decisions/`](docs/decisions/) | Decision records — what was weighed and rejected, dated, once. |
 | [`docs/README.md`](docs/README.md) | The spec for the docs themselves: shape of a module directory, what belongs in one. |
@@ -114,12 +116,13 @@ Natively, which is still the better loop for engine work:
 ```sh
 cd engine      && .venv/bin/uvicorn main:app --port 8001   # or let the backend spawn it
 cd data-engine && .venv/bin/uvicorn main:app --port 8002   # or let the backend spawn it
+cd gyms        && .venv/bin/uvicorn main:app --port 8003   # or let the backend spawn it
 cd backend     && cargo run                                 # needs DATABASE_URL, JWT_SECRET
 cd frontend    && bun run dev
 ```
 
-The backend spawns both Python services as children unless `ENGINE_AUTOSTART` /
-`DATA_ENGINE_AUTOSTART` is false, and health-checks each before reporting ready.
+The backend spawns the Python services as children unless `ENGINE_AUTOSTART` /
+`DATA_ENGINE_AUTOSTART` / `GYMS_AUTOSTART` is false, and health-checks each before reporting ready.
 Set `ENGINE_SERVICE_SECRET` and `DATA_ENGINE_SERVICE_SECRET` on both sides to
 authenticate the hops; unset leaves a service open and it says so at startup. A
 token is addressed to one service by name and is refused by the other.
@@ -128,14 +131,16 @@ reading, through the backend, datasets the data engine owns — and behaves the
 same way when unset.
 
 Each Python service needs its own database, migrated with `alembic upgrade head`:
-`ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_engine`) and
-`DATA_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_data`).
+`ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_engine`),
+`DATA_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_data`)
+and `GYMS_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`).
 
 # Tests
 
 ```sh
 cd engine      && .venv/bin/python -m pytest tests/   # incl. the dataflow trace
 cd data-engine && .venv/bin/python -m pytest tests/   # incl. the migration drift check
+cd gyms        && .venv/bin/python -m pytest tests/   # no Docker, no Postgres
 cd backend     && cargo test --workspace              # needs DATABASE_URL
 cd frontend    && bun run typecheck && bun run lint
 ```

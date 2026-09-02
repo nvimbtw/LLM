@@ -210,8 +210,16 @@ def _result_body(output: str, exit_code: int, max_output_chars: int) -> str:
     this is training data for a model that will be served by that function, and
     a corpus whose results are laid out differently from the ones the server
     produces teaches a format the model then never sees.
+    `contracts/shell-observation.json` is what stops that from being a promise
+    only this docstring makes — both suites render the same vectors.
+
+    The `strip` mirrors what Rust does in `merge`, before it clamps. `_output_of`
+    already strips everything it returns, so this changes nothing today; without
+    it the mirror is true only because of what the single caller happens to do,
+    and a second caller passing a trailing newline would produce a code block
+    with blank lines in it that the live tool never emits.
     """
-    body, cut = _truncated(output, max_output_chars)
+    body, cut = _truncated(output.strip(), max_output_chars)
 
     out = ""
     if exit_code != 0:

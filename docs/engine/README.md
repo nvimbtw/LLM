@@ -209,6 +209,15 @@ were taken, are in
 [`../decisions/tool-calls.md`](../decisions/tool-calls.md) is still the record
 of why a turn that calls one runs twice.
 
+**There is exactly one renderer of that block, and callers holding their own
+conversation use it.** A `ChatTurn` on `/chat` and `/chat/stream` may name the
+`tool` and `argument` its text answers, and `orchestrate/chat.py::_history`
+renders it through `tools.render_result`; leaving them out means the text is
+already rendered, which is how a tool message read back from a stored chat
+arrives. The backend's gym driver takes the first path — a second copy of this
+layout in Rust would be free to drift into a shape the model was never trained
+on. See [`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md).
+
 **A body that names no tool is not a call.** `tools.parse` reads the argument
 under any of `argument`/`query`/`command`/`input`/`text`, nested in `args` or
 not, because that is what a small model writes — but a mangled object, or one

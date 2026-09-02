@@ -37,6 +37,22 @@ turn, so the caller can start the work while the rest of the reply is still
 generating. The row is written when the last token lands, so a dropped
 connection loses the reply rather than storing half of one.
 
+## Refusing the shell for a turn: `max_tool_calls`
+
+`ChatConfig.max_tool_calls` is the ceiling on how many tool calls one turn may
+open; absent leaves `MAX_TOOL_CALLS_PER_TURN`. **`0` is a real value and not
+"unset"** — it masks the tool-call opener out of the grammar before the first
+token, so the turn can only answer in prose.
+
+That zero is the whole of a gym episode's terminal round. The alternative was
+telling the model to stop searching and answer, which a model this size does not
+reliably do: 22 of 30 episodes in the first measured gym runs ended with the
+model still calling the shell. The mask is enforcement where an instruction was
+a suggestion, and it costs nothing at any other budget — the check
+(`_ToolCalls.mask`) was already there for the per-turn budget and now reads a
+field instead of a constant. See
+[`../decisions/reinforcement-learning-in-the-engine.md`](../decisions/reinforcement-learning-in-the-engine.md).
+
 ## Listing models, and keeping a run's intermediates out of the way
 
 `GET /models` is the join of two authorities — a directory under
@@ -93,6 +109,17 @@ Two things keep this from touching what SFT and pretrain already guard:
   headroom against silent truncation (`build_prompt` in `llm/chat/template.py`
   evicts oldest turns first), not the quality of a model actually trained at the
   longer length.
+
+**The last resort is a hard cut, and it is a cut rather than a crash.** Evicting
+whole turns cannot save a conversation whose *latest* turn alone busts the
+window, because that turn is the one that must be kept — so `_hard_cut` brings
+the rendered ids under the allowance directly. The trailing `<|assistant|>` is
+never cut (a prompt missing it has not asked the model to speak), the system
+block goes only once the body has nothing left to give, and the freshest end of
+the turn is what survives. Until this existed the oversized prompt was handed to
+`Transformer.forward` as it stood and came back as
+`position N exceeds context window M` — a crash where the docstring promised a
+truncation, reachable by any model with a small window and a long question.
 
 ## `/prune`'s floor: `context_floor`, and why nothing is written down
 

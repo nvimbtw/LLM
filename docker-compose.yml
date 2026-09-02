@@ -46,6 +46,30 @@ services:
       timeout: 3s
       retries: 30
 
+  gyms:
+    build:
+      context: ./gyms
+      target: dev
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8003 --reload"
+    environment:
+      GYMS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_gyms
+      GYMS_SERVICE_SECRET: ${GYMS_SERVICE_SECRET:?set it in .env}
+      BASH_URL: http://just-bash:8899
+    volumes:
+      - ./gyms:/app
+    ports:
+      - "127.0.0.1:8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Not only at startup: creating a run seeds a workspace per episode, and
+      # a sandbox that is not up yet turns that into a 502 the moment someone
+      # presses the button.
+      just-bash:
+        condition: service_started
+
   data-engine:
     build:
       context: ./data-engine
@@ -124,6 +148,9 @@ services:
       # unset, they leave the service hops and /internal open, and the loopback
       # binding is no longer there to make that private.
       BIND_ADDR: 0.0.0.0
+      GYMS_SERVICE_SECRET: ${GYMS_SERVICE_SECRET:?set it in .env}
+      GYMS_HOST: gyms
+      GYMS_AUTOSTART: "false"
       # Both Python services are their own containers here, so the supervisor
       # attaches to them instead of spawning them as children.
       ENGINE_AUTOSTART: "false"

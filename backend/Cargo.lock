@@ -423,6 +423,7 @@ dependencies = [
  "db",
  "engine",
  "futures-util",
+ "gyms",
  "jsonwebtoken",
  "serde",
  "serde_json",
@@ -560,6 +561,7 @@ dependencies = [
  "db",
  "dotenvy",
  "engine",
+ "gyms",
  "service",
  "tools",
 ]
@@ -1443,6 +1445,13 @@ dependencies = [
  "ff",
  "rand_core 0.6.4",
  "subtle",
+]
+
+[[package]]
+name = "gyms"
+version = "0.1.0"
+dependencies = [
+ "service",
 ]
 
 [[package]]

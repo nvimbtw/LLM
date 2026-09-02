@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tools::Registry;
 use uuid::Uuid;
 
-use crate::{turn, ws};
+use crate::{gym, turn, ws};
 use auth::AccessLevel;
 use auth::token::Claims;
 
@@ -76,6 +76,27 @@ async fn data_run_session(
     }
 
     let _ = session.close(None).await;
+}
+
+#[get("/gyms/runs/{run_id}")]
+async fn gym_socket(
+    req: HttpRequest,
+    body: web::Payload,
+    run_id: web::Path<Uuid>,
+    engine: web::Data<Proxy>,
+    gyms: web::Data<gyms::Proxy>,
+    secret: web::Data<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let (response, session, stream) = actix_ws::handle(&req, body)?;
+    actix_web::rt::spawn(gym_session(
+        session,
+        stream,
+        engine.get_ref().clone(),
+        gyms.get_ref().clone(),
+        run_id.into_inner(),
+        secret.get_ref().clone(),
+    ));
+    Ok(response)
 }
 
 #[get("/chats/{chat_id}")]
@@ -146,6 +167,32 @@ async fn chat_session(
     // The chat id is the tools' session key: it is stable for the whole
     // conversation, which is exactly the lifetime a sandbox filesystem wants.
     turn::run(&mut session, &engine, &registry, &caller, &path, &chat_id.to_string(), ask).await;
+    let _ = session.close(None).await;
+}
+
+/// A gym run, episode by episode. Admin only, like every other gym route: a run
+/// names a model and spends a GPU for as long as it takes.
+async fn gym_session(
+    mut session: actix_ws::Session,
+    mut stream: actix_ws::MessageStream,
+    engine: Proxy,
+    gyms: gyms::Proxy,
+    run_id: Uuid,
+    secret: String,
+) {
+    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
+    if !matches!(claims.access_level, AccessLevel::Admin) {
+        let _ = session.text(ws::error_frame("admin only")).await;
+        let _ = session.close(None).await;
+        return;
+    }
+    let caller = auth::Caller::User(claims.sub);
+
+    // The sampling the client chose, if any. Unlike a chat there is no question
+    // in it — the run already holds the model and the tasks.
+    let Some(ask) = next_json(&mut stream).await else { return };
+
+    gym::run(&mut session, &engine, &gyms, &caller, run_id, &ask).await;
     let _ = session.close(None).await;
 }
 
@@ -243,6 +290,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // Before `/runs/{run_id}`, which would otherwise try to read "data" as a
     // run id and fail the path extractor.
     cfg.service(data_run_socket);
+    cfg.service(gym_socket);
     cfg.service(run_socket);
     cfg.service(chat_socket);
 }

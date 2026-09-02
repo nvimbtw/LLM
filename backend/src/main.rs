@@ -40,6 +40,14 @@ async fn main() -> std::io::Result<()> {
     let proxy = engine::Proxy::new(engine.base_url(), engine_secret);
     let data_proxy = data_engine::Proxy::new(data.base_url(), data_secret);
 
+    let gyms_config = gyms::config();
+    let gyms_secret = gyms_config.service_secret.clone();
+    let gyms_svc = service::Supervisor::start(gyms_config)
+        .await
+        .expect("failed to start the gyms service");
+    println!("gyms ready at {}", gyms_svc.base_url());
+    let gyms_proxy = gyms::Proxy::new(gyms_svc.base_url(), gyms_secret);
+
     // The reverse hop: the engine asks for the documents a run has reached the
     // point of needing. Said out loud for the reason the services say it — an
     // unauthenticated seam should be a thing you were told about, not a thing
@@ -76,6 +84,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(jwt_secret.clone()))
             .app_data(web::Data::new(proxy.clone()))
             .app_data(web::Data::new(data_proxy.clone()))
+            .app_data(web::Data::new(gyms_proxy.clone()))
             .app_data(web::Data::new(inbound.clone()))
             .app_data(web::Data::new(registry.clone()))
             .configure(api::configure)
@@ -88,5 +97,6 @@ async fn main() -> std::io::Result<()> {
     // leaving them holding the ports the next boot needs.
     engine.shutdown();
     data.shutdown();
+    gyms_svc.shutdown();
     Ok(())
 }

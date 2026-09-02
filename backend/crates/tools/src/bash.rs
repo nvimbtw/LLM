@@ -131,6 +131,33 @@ impl Tool for Bash {
     }
 }
 
+/// What the model is shown for a command somebody else ran.
+///
+/// The gym runs its shell through the gyms service rather than through this
+/// tool — the episode's filesystem is that service's to seed and to record —
+/// but what the model *reads* has to be the same text either way, or a model
+/// trained in the gym has been trained on a layout serving never shows it. So
+/// the rendering is exported and the execution is not.
+pub fn observation(ran: Output, budget: usize) -> String {
+    render(
+        Ran {
+            stdout: ran.stdout,
+            stderr: ran.stderr,
+            exit_code: ran.exit_code,
+            timed_out: ran.timed_out,
+        },
+        budget,
+    )
+}
+
+/// One finished command, from wherever it was run.
+pub struct Output {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub timed_out: bool,
+}
+
 /// What the model is shown: the output, and the exit status when it is news.
 ///
 /// A shell says nothing when it succeeds, and that silence is the answer to
@@ -215,6 +242,31 @@ mod tests {
     use super::*;
 
     const WIDE: usize = 100_000;
+
+    #[test]
+    fn a_gym_step_reads_exactly_as_the_chat_tool_would() {
+        // The whole reason the loop that drives a gym lives in the backend: an
+        // episode's observation has to be the same text a chat round would have
+        // shown, down to the caveat on a non-zero exit.
+        let output = Output {
+            stdout: "a.txt\nb.txt".to_string(),
+            stderr: String::new(),
+            exit_code: 1,
+            timed_out: false,
+        };
+        assert_eq!(
+            observation(output, WIDE),
+            render(
+                Ran {
+                    stdout: "a.txt\nb.txt".to_string(),
+                    stderr: String::new(),
+                    exit_code: 1,
+                    timed_out: false,
+                },
+                WIDE,
+            )
+        );
+    }
 
     fn ran(stdout: &str, exit_code: i32) -> Ran {
         Ran {
@@ -322,5 +374,60 @@ mod tests {
         let runaway = "x".repeat(MAX_COMMAND_CHARS + 1);
         assert!(bash.run(&runaway, "chat").await.expect("refused, not errored").contains("<|warn|>"));
         assert!(bash.run("  ", "chat").await.expect("refused, not errored").contains("<|warn|>"));
+    }
+}
+
+/// The shell-result layout, verified against the same vector the data engine
+/// checks.
+///
+/// This function is the authority on what a model reads back from a command —
+/// it is what serves — and `data-engine/processors/hermes.py::_result_body`
+/// reimplements it in Python because that service cannot call into Rust. Two
+/// implementations of one format drift silently, and this one drifts worse than
+/// a token seam does: nothing fails, the corpus looks fine, and the symptom is a
+/// fine-tuned model reading a block it was never trained on.
+///
+/// `contracts/shell-observation.json` was generated from here. Regenerating it
+/// after a deliberate change is the point; changing it to make a test pass is
+/// not.
+#[cfg(test)]
+mod contract {
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        output: String,
+        exit_code: i32,
+        budget: usize,
+        expected: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Vector {
+        cases: Vec<Case>,
+    }
+
+    #[test]
+    fn every_shared_case_renders_as_the_vector_says() {
+        let path = format!("{}/../../../contracts/shell-observation.json", env!("CARGO_MANIFEST_DIR"));
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let vector: Vector = serde_json::from_str(&raw).expect("valid contract fixture");
+        assert!(!vector.cases.is_empty(), "a vector with no cases pins nothing");
+
+        for case in &vector.cases {
+            let rendered = observation(
+                Output {
+                    stdout: case.output.clone(),
+                    stderr: String::new(),
+                    // Rust-only, and deliberately outside the shared domain:
+                    // nothing in a recorded trace ever timed out.
+                    exit_code: case.exit_code,
+                    timed_out: false,
+                },
+                case.budget,
+            );
+            assert_eq!(rendered, case.expected, "case {:?}", case.name);
+        }
     }
 }

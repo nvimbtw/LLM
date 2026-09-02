@@ -3,6 +3,7 @@ pub mod auth;
 pub mod benchmarks;
 pub mod chats;
 pub mod data;
+pub mod gym;
 pub mod health;
 pub mod internal;
 pub mod models;
@@ -42,4 +43,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // Not for a browser: the engine reading the data engine's documents, the one
     // hop that runs toward the backend rather than away from it.
     cfg.service(web::scope("/internal").configure(internal::configure));
+
+    // Ephemeral gyms: one DB, one just-bash session per episode. Admin only.
+    cfg.service(web::scope("/gym").configure(gym::configure));
 }

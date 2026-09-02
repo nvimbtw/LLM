@@ -14,6 +14,7 @@ members = [
     "crates/data-engine",
     "crates/db",
     "crates/engine",
+    "crates/gyms",
     "crates/service",
     "crates/tools",
 ]
@@ -28,6 +29,7 @@ api = { path = "crates/api" }
 data-engine = { path = "crates/data-engine" }
 db = { path = "crates/db" }
 engine = { path = "crates/engine" }
+gyms = { path = "crates/gyms" }
 service = { path = "crates/service" }
 tools = { path = "crates/tools" }
 actix-cors = "0.7.1"

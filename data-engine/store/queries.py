@@ -8,6 +8,7 @@ Nothing here returns a whole dataset. A corpus-sized table is read by page or
 streamed; the functions that touch `documents` all take a bound.
 """
 
+import json
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -254,6 +255,89 @@ def add_document(
     dataset.updated_at = _now()
     db.flush()
     return row
+
+
+def gym_dataset(db: Session, name: str, description: str, steps: list) -> Dataset:
+    """The dataset a gym's demonstrations land in, created on first write.
+
+    Named by the caller rather than reserved as a constant the way the search
+    cache is: there is one cache, and there are as many demonstration sets as
+    there are task types and difficulties worth training on separately. A second
+    request under the same name **appends**, which is what makes a set growable
+    without a re-pull — and what makes `updated_at` and `document_count`
+    load-bearing, since the engine's corpus key reads both.
+
+    Immediately `ready`. Every row is complete when it is written; there is no
+    batch to wait out, so there is no interval where calling this half-written
+    would be true.
+    """
+    row = dataset_by_name(db, name)
+    if row is not None:
+        return row
+    try:
+        with db.begin_nested():
+            return create_dataset(
+                db,
+                name=name,
+                kind=DatasetKind.sft,
+                origin=DatasetOrigin.gym,
+                # A demonstration is a fact about a task, not about whoever
+                # asked for it — the same reasoning the search cache uses.
+                owner_id=None,
+                description=description,
+                steps=steps,
+                status=DatasetStatus.ready,
+            )
+    except IntegrityError:
+        # Lost a race with another writer creating the same row; its commit is
+        # the one that landed.
+        row = dataset_by_name(db, name)
+        if row is None:
+            raise
+        return row
+
+
+def add_conversations(db: Session, dataset_id: uuid.UUID, rows: list[dict]) -> int:
+    """Append conversations outside the batch `Run` path, numbering from the end.
+
+    The batched sibling of `add_document`, and it holds the same lock for the
+    same reason: `ordinal` is assigned from `document_count`, so two concurrent
+    writers without it would hand out the same ordinals and silently interleave
+    two demonstration sets. `finish_dataset`'s recompute is not available here —
+    there is no run to end — so the counters are bumped in place.
+    """
+    if not rows:
+        return 0
+
+    dataset = db.get(Dataset, dataset_id, with_for_update=True)
+    if dataset is None:
+        raise ValueError(f"no such dataset: {dataset_id}")
+
+    start = dataset.document_count
+    payload = []
+    written = 0
+    for offset, row in enumerate(rows):
+        messages = row["messages"]
+        byte_size = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+        payload.append(
+            {
+                "id": uuid.uuid4(),
+                "dataset_id": dataset_id,
+                "ordinal": start + offset,
+                "content": None,
+                "messages": messages,
+                "meta": row.get("meta"),
+                "byte_size": byte_size,
+            }
+        )
+        written += byte_size
+
+    db.execute(Document.__table__.insert(), payload)
+    dataset.document_count += len(payload)
+    dataset.byte_size += written
+    dataset.updated_at = _now()
+    db.flush()
+    return len(payload)
 
 
 def list_runs(db: Session, limit: int) -> list[Run]:

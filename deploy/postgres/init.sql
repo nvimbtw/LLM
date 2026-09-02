@@ -9,3 +9,4 @@
 -- POSTGRES_DB creates the backend's, so only the other two are named here.
 CREATE DATABASE slate_engine;
 CREATE DATABASE slate_data;
+CREATE DATABASE slate_gyms;

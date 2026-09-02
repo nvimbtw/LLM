@@ -11,6 +11,7 @@ and the spec for what goes in one.
 | [`data-engine/`](data-engine/) | Acquiring datasets and cleaning them, before they are training data | `data-engine/` |
 | [`backend/`](backend/) | People, sessions, the seam to the engine | `backend/` |
 | [`frontend/`](frontend/) | Chat, job board, model and benchmark views | `frontend/` |
+| [`gyms/`](gyms/) | Where a model is put to work: generated tasks, a sandboxed shell, and the score | `gyms/` |
 | [`decisions/`](decisions/) | Decision records — findings that cost real time | — |
 | [`conventions.md`](conventions.md) | The coding rules (R1–R21) every change is judged against | — |
 

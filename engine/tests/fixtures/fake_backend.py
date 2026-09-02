@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 #: runs of the suite and a failure names the same dataset every time.
 TINY_DATASET_ID = "11111111-1111-4111-8111-111111111111"
 TINY_CHAT_ID = "22222222-2222-4222-8222-222222222222"
+TINY_GYM_ID = "33333333-3333-4333-8333-333333333333"
 
 #: The data engine's own cap on a page (`MAX_PAGE` in its datasets router). The
 #: stand-in enforces it too — a client that asked for more would get a 422 from
@@ -74,6 +75,48 @@ def chat_documents(conversations: list[list[dict]]) -> list[dict]:
         }
         for i, messages in enumerate(conversations)
     ]
+
+
+def demonstration_documents(count: int) -> list[dict]:
+    """Gym demonstrations as the data engine holds them, which is *not* how the
+    other chat fixtures are shaped.
+
+    A tool turn here names the call it answers and carries the body alone —
+    `POST /datasets/demonstrations` stores exactly this — where a converted Hub
+    corpus carries the whole rendered block and names nothing. Both reach
+    `sft._turns`, and only one of them is rendered there. A fixture that used
+    the pre-rendered shape for both would never exercise that branch.
+
+    **The assistant turn before it names the same call**, which is the shape
+    that decides whether these demonstrations teach tool use at all: SFT trains
+    assistant turns and masks tool turns, so a command stored only on the tool
+    turn is a command the model gets no gradient on. This fixture used to omit
+    it, which is how the corpus went a whole release teaching a model to narrate
+    a search and then close its turn.
+    """
+    conversations = []
+    for i in range(count):
+        needle = f"ANSWER_{i:06x}"
+        conversations.append(
+            [
+                {"role": "system", "content": "You have a shell."},
+                {"role": "user", "content": f"Which file contains {needle}?"},
+                {
+                    "role": "assistant",
+                    "content": "<|par|>Searching the files.<|/par|>",
+                    "tool": "bash",
+                    "argument": f"grep -rn {needle} .",
+                },
+                {
+                    "role": "tool",
+                    "tool": "bash",
+                    "argument": f"grep -rn {needle} .",
+                    "content": f"<|codeblock|>./notes{i}.txt:3:{needle}<|/codeblock|>",
+                },
+                {"role": "assistant", "content": f"notes{i}.txt"},
+            ]
+        )
+    return chat_documents(conversations)
 
 
 class FakeBackend:

@@ -68,6 +68,11 @@ class DatasetOrigin(str, enum.Enum):
     #: rather than pulled in bulk or processed from something that was. See
     #: `store.queries.cache_dataset`.
     search = "search"
+    #: Expert demonstrations played through a gym's sandbox and written here by
+    #: the backend. Not pulled, not derived from anything in this database, and
+    #: not a recording of a model — the gym's own generator holds the ground
+    #: truth, so it can demonstrate itself. `docs/gyms/demonstrations.md`.
+    gym = "gym"
 
 
 class DatasetStatus(str, enum.Enum):

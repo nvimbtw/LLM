@@ -180,7 +180,7 @@ fn panicked(e: tokio::task::JoinError) -> tools::ToolError {
 }
 
 /// A payload flattened onto the `type` field the client switches on.
-fn envelope(kind: &str, data: &Value) -> Value {
+pub fn envelope(kind: &str, data: &Value) -> Value {
     let mut payload = json!({ "type": kind });
     if let (Some(target), Some(source)) = (payload.as_object_mut(), data.as_object()) {
         for (key, value) in source {
@@ -202,7 +202,7 @@ fn stamped(frame: &Frame, is_final: bool) -> String {
     payload.to_string()
 }
 
-fn string_at(value: &Value, key: &str) -> String {
+pub fn string_at(value: &Value, key: &str) -> String {
     value.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 

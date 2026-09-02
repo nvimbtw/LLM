@@ -43,17 +43,18 @@ backend/
     ├── service/       spawning a Python service, and the hops both ways → auth
     ├── engine/        names the LLM engine: audience, port, DATA_DIR → service
     ├── data-engine/   names the data engine                          → service
+    ├── gyms/          names the gyms service                            → service
     ├── tools/         what a model can reach for, and the answer  → (nothing)
-    └── api/           routes + extractors + sockets   → service, engine, data-engine, tools, db, auth
+    └── api/           routes + extractors + sockets   → service, engine, data-engine, gyms, tools, db, auth
 ```
 
 `tools` is a leaf like `auth`: it knows about the outside world and about the
 marker vocabulary, and nothing about this project's users, sessions or the engine
 process.
 
-`service` names no service. `engine` and `data-engine` are ~40 lines each — an
-audience, a set of defaults, and a `Proxy` newtype — and do **not** depend on
-each other: the two Python processes are siblings that never speak.
+`service` names no service. `engine`, `data-engine` and `gyms` are ~40 lines
+each — an audience, a set of defaults, and a `Proxy` newtype — and do **not**
+depend on each other: the three Python processes are siblings that never speak.
 
 The database holds three tables: `users`, `training_presets`, and sqlx's own
 migration ledger. Everything else moved to the engine.
@@ -132,6 +133,11 @@ composer's context meter asks it on every pause in typing
 ([`../frontend/README.md`](../frontend/README.md)). Gating the second one behind
 `AdminUser` by analogy with the first would leave every ordinary session's meter
 collecting 403s.
+
+**One family of proxy routes has a driver behind it.** `/gym/*`
+(`routes/gym.rs`, admin only) forwards to the gyms service like any other, but a
+gym *run* is not a request — it is a loop, and `api/src/gym.rs` is where that
+loop lives. See [the gym socket](#the-gym-socket) below.
 
 The one thing this side decides is **who is asking**: `upstream::caller` turns
 the verified user token into the `act` claim of a short-lived service token, and
@@ -404,6 +410,65 @@ said rather than shown as an empty block, and the whole thing held to
 `BASH_BUDGET_CHARS`. A command that overruns is cut at a line boundary and told
 so, because a model that needs the end can say `| tail` — which is the habit
 worth teaching anyway.
+
+**That rendering is exported, and it is the reason the gym is driven from
+here.** `tools::observation` is the same function, called with the fields the
+gyms service reports for a command it ran; a second renderer in Python would
+mean a model practising against a shell it is never actually served. See
+[the gym socket](#the-gym-socket).
+
+## The gym socket
+
+`/ws/gyms/runs/{id}` (`routes/stream.rs::gym_socket`, admin only) drives a whole
+gym run: every episode in it, in order, each one generate → run the command →
+generate again until the model stops calling the shell.
+
+`api/src/gym.rs` is the loop. It differs from `turn.rs` in the two places a
+chat turn and a gym episode genuinely differ, and is a separate function for
+exactly that reason:
+
+- **Where an answer comes from.** A chat call goes to `tools::Registry`; a gym
+  call goes to `POST /gym/episodes/{id}/step` on the gyms proxy, which runs it
+  in *that episode's* filesystem and records it with its reward. What comes back
+  is rendered by `tools::observation`, so the two are the same text.
+- **How the next round is asked.** A chat turn is stored by the engine and comes
+  back as history, so a round sends one `tool_result`. An episode has no chat:
+  the conversation is held in the loop and handed whole to the engine's
+  stateless `/chat/stream` every round, with tool turns naming their call so the
+  engine renders the `<|tool-result|>` block (`ChatTurn.tool`/`argument`).
+
+Frames are the chat vocabulary plus four: `episode_start`, `episode_done`,
+`run_done`, and the engine's `done` relayed as **`round_done`** — an episode
+takes a round per command, and a client counting `done` would see an episode end
+every time the model ran `ls`. Every frame carries the `episode_id` it belongs
+to, so a run of twenty tasks is one socket.
+
+Bounded by `MAX_GYM_ROUNDS` (env, default 8). A model still calling when the
+budget runs out has its last reply graded anyway rather than the episode being
+dropped: an unscored episode would let a model that never stops looking around
+be judged on the one task it happened to finish.
+
+A dropped socket abandons the run — graded episodes stand, the rest are never
+run — which is the bargain a chat turn already makes. Why the loop is here at
+all rather than in the engine, where RL will want it, is
+[`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md).
+
+**`POST /gym/demonstrations` is the other route that is not a pass-through**, and
+for the same reason as the socket. It asks the gyms service for expert
+trajectories, renders each observation with `tools::observation` — the same call
+a live round makes — and writes the result to the *data engine* as an ordinary
+`sft` dataset, which the LLM engine then fine-tunes on with no reader it does not
+already have. Three services and one job, and the assembly is here because this
+is the only process where all three are reachable: the two Python services never
+speak.
+
+`api/src/demonstrations.rs` is that conversion, and the line it holds is worth
+stating. The observation **body** is rendered here, because that is what serving
+renders it with. The `<|tool-call|>` header around it is **not** — the stored
+turn carries `tool` and `argument` beside the body, and the engine's
+`render_result` adds the header at build time. Spelling it here would be a
+fourth copy of a layout this side has no reason to own. See
+[`../gyms/demonstrations.md`](../gyms/demonstrations.md).
 
 ```sh
 cargo run -p tools --example bash_once -- 'echo hello > f.txt; ls -l'

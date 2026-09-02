@@ -247,7 +247,7 @@ def build_prompt(
     scaffold and always kept; only history turns are dropped, always at whole-
     turn boundaries so the prompt never begins mid-sentence. The most recent
     turn is kept even if it alone busts the budget — better a hard-cut latest
-    message than nothing.
+    message than nothing — and `_hard_cut` is where that cut actually happens.
     """
     system_str = _system_block(system)
     budget_str = _budget_marker(budget)
@@ -266,7 +266,40 @@ def build_prompt(
     # ids exactly match a single pass (no cross-turn BPE-merge surprises).
     rendered = system_str + "".join(_format_turn(t) for t in history[start:])
     rendered += budget_str + ASSISTANT_OPEN
-    return bpe.encode(tokenizer, rendered)
+    ids = bpe.encode(tokenizer, rendered)
+    if len(ids) <= allowance:
+        return ids
+    return _hard_cut(ids, bpe.encode(tokenizer, system_str),
+                     bpe.encode(tokenizer, budget_str + ASSISTANT_OPEN), allowance)
+
+
+def _hard_cut(ids: list[int], head: list[int], tail: list[int], allowance: int) -> list[int]:
+    """`ids` brought under `allowance`, keeping both ends of the scaffold.
+
+    Reached only when a single turn is longer than the whole window — dropping
+    whole turns cannot help, because the one that busts it is the one that must
+    be kept. Until this existed the oversized prompt was returned as it stood
+    and `Transformer.forward` raised `position N exceeds context window M`,
+    which is a crash where the docstring above promises a truncation. A model
+    with a 64-token window and a long question is not an error; it is a model
+    that will answer badly, and that is the caller's to see.
+
+    **The trailing `<|assistant|>` is never cut.** It is what asks the model to
+    speak, and a prompt missing it is not a short prompt but a different one.
+    The system block goes next, from its own front, and only once the body has
+    nothing left to give.
+
+    The freshest end of the body survives: it is nearest the question, and it is
+    the direction every other eviction here already runs.
+    """
+    room = allowance - len(head) - len(tail)
+    if room > 0:
+        body = ids[len(head) : len(ids) - len(tail)]
+        return head + body[-room:] + tail
+    # No room for the body at all: the scaffold alone is the window. Keep the
+    # tail whole and take what is left of the system block from its end, so the
+    # part nearest the conversation is the part that survives.
+    return head[len(head) - max(0, allowance - len(tail)) :] + tail
 
 
 def context_floor(history: list[Turn], tokenizer: Tokenizer, ctx_window: int, reserve_for_reply: int) -> int:
