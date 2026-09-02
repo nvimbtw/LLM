@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 data-engine = { path = "../data-engine" }
 engine = { path = "../engine" }
+gyms = { path = "../gyms" }
 service = { path = "../service" }
 auth = { path = "../auth" }
 db = { path = "../db" }

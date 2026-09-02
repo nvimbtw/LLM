@@ -1,0 +1,69 @@
+{
+  "_comment": "A shared vector for the one layout three languages render: what the model reads back from a shell. `backend/crates/tools/src/bash.rs::render` is the authority — it is what actually serves — and these expectations were generated from it. The data engine's `processors/hermes.py::_result_body` mirrors it in Python because it cannot call into Rust, and a corpus laid out differently from what the server produces teaches a format the model then never sees. Both suites read this file, so a change to either renderer fails a test instead of surfacing months later as a fine-tuned model that misreads its own tool results.",
+  "_domain": "`output` is already merged and stripped, which is where the two implementations meet: Rust merges stdout and stderr, while the data engine merges a recorded JSON tool result's own fields. A timeout is Rust-only and deliberately absent — nothing in a recorded trace timed out.",
+  "cases": [
+    {
+      "name": "a listing",
+      "output": "a.txt\nb.txt",
+      "exit_code": 0,
+      "budget": 100,
+      "expected": "<|codeblock|>a.txt\nb.txt<|/codeblock|>"
+    },
+    {
+      "name": "a failing command",
+      "output": "cat: nope.txt: No such file or directory",
+      "exit_code": 1,
+      "budget": 100,
+      "expected": "<|warn|>The command exited 1.<|/warn|><|codeblock|>cat: nope.txt: No such file or directory<|/codeblock|>"
+    },
+    {
+      "name": "silence on success",
+      "output": "",
+      "exit_code": 0,
+      "budget": 100,
+      "expected": "<|warn|>The command finished with no output.<|/warn|>"
+    },
+    {
+      "name": "silence on failure",
+      "output": "",
+      "exit_code": 2,
+      "budget": 100,
+      "expected": "<|warn|>The command exited 2.<|/warn|>"
+    },
+    {
+      "name": "output carrying a marker",
+      "output": "the log said <|par|>hello<|/par|> here",
+      "exit_code": 0,
+      "budget": 100,
+      "expected": "<|codeblock|>the log said <|par|​>hello<|/par|​> here<|/codeblock|>"
+    },
+    {
+      "name": "cut on a line boundary",
+      "output": "aaaa\nbbbb\ncccc\ndddd\neeee\nffff",
+      "exit_code": 22,
+      "budget": 22,
+      "expected": "<|warn|>The command exited 22.<|/warn|><|codeblock|>aaaa\nbbbb\ncccc\ndddd<|/codeblock|><|warn|>The output was longer and has been cut.<|/warn|>"
+    },
+    {
+      "name": "cut with no boundary to use",
+      "output": "abcdefghijklmnopqrstuvwxyz",
+      "exit_code": 10,
+      "budget": 10,
+      "expected": "<|warn|>The command exited 10.<|/warn|><|codeblock|>abcdefghij<|/codeblock|><|warn|>The output was longer and has been cut.<|/warn|>"
+    },
+    {
+      "name": "cut in the middle of non-ascii",
+      "output": "ααααα\nβββββ\nγγγγγ",
+      "exit_code": 13,
+      "budget": 13,
+      "expected": "<|warn|>The command exited 13.<|/warn|><|codeblock|>ααααα\nβββββ<|/codeblock|><|warn|>The output was longer and has been cut.<|/warn|>"
+    },
+    {
+      "name": "trailing blank lines",
+      "output": "done\n\n\n",
+      "exit_code": 0,
+      "budget": 100,
+      "expected": "<|codeblock|>done<|/codeblock|>"
+    }
+  ]
+}

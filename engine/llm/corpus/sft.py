@@ -31,7 +31,7 @@ import numpy as np
 from tokenizers import Tokenizer
 
 from llm import storage
-from llm.chat import template
+from llm.chat import template, tools
 from llm.chat.template import Reasoning, Role, ThinkBudget, Turn
 from llm.corpus import bpe, remote, spans as spans_mod, special
 from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS
@@ -124,6 +124,12 @@ def _conversation(messages: list) -> dict:
     data engine's `normalise-roles` processor, deliberately, so that it is
     visible in a dataset's provenance that it happened. An unmapped role still
     reaches `_turns` and is refused there.
+
+    A `tool` message may name the call it answers, and an `assistant` message
+    may name the call it *makes*; `tool`/`argument` are carried through for
+    both — the same two ways `ChatTurn` accepts a tool turn, for the same
+    reason. See `_turns` for which side renders, and which of the two positions
+    a marker ends up in.
     """
     system: str | None = None
     turns = []
@@ -135,7 +141,11 @@ def _conversation(messages: list) -> dict:
         if role == "system":
             system = text if system is None else f"{system}\n{text}"
             continue
-        turns.append({"role": role, "text": text})
+        turn = {"role": role, "text": text}
+        if role in ("tool", "assistant") and message.get("tool") and message.get("argument") is not None:
+            turn["tool"] = message["tool"]
+            turn["argument"] = message["argument"]
+        turns.append(turn)
 
     return {"system": system, "turns": turns}
 
@@ -143,16 +153,51 @@ def _conversation(messages: list) -> dict:
 def _turns(raw: dict) -> list[Turn] | None:
     """Parse a conversation's turns, or None if it is not trainable.
 
-    A conversation must end on an assistant reply — that reply is the entire
-    training signal, and one ending on a user turn or a tool result contributes
-    a mask of all zeros while still costing context.
+    A conversation must end on an assistant reply. Every assistant turn is
+    trained, not only the last (`template.training_segments`), but a
+    conversation trailing off on a user turn or a tool result ends on tokens
+    nothing is trained on — so it costs context to teach no ending, which for a
+    demonstration is the one thing it exists to teach.
+
+    **A tool turn that names its call is rendered here**, by the same
+    `render_result` the live path uses — this mirrors `orchestrate.chat._history`
+    deliberately, and the docstring on `render_result` is why: two renderers of
+    that block would train the model on a layout it is never served. A turn that
+    names no call is text that was already rendered, which is the form
+    `hermes-agent-reasoning-traces-clean` and every other converted corpus
+    arrives in, and it passes through untouched.
+
+    An unknown tool drops the conversation rather than raising, unlike the chat
+    path. A malformed row in a corpus of hundreds of thousands should cost that
+    row and not the fine-tune, which is the bargain `read_conversations` already
+    strikes with a document that carries no messages.
     """
     turns: list[Turn] = []
     for turn in raw.get("turns", []):
         role = turn.get("role", "").lower()
         if role not in ("user", "assistant", "tool"):
             return None
-        turns.append(Turn(role=Role(role), text=turn.get("text", "")))
+        text = turn.get("text", "")
+        name, argument = turn.get("tool"), turn.get("argument")
+        if name is not None and argument is not None:
+            if tools.by_name(name) is None:
+                return None
+            # The same call, rendered into whichever of its two positions this
+            # turn is. An assistant turn *made* the call, so the marker goes
+            # after its text, exactly where the model emits it and — since
+            # `training_segments` trains an assistant turn whole — inside the
+            # region that carries gradient. A tool turn *answers* one, so the
+            # marker opens the result block, where it is context and masked.
+            #
+            # Getting this backwards is not a cosmetic error: a corpus that
+            # stores every call on the tool turn alone teaches a model to
+            # narrate and then close its turn, having never once been trained
+            # to reach for a tool.
+            if role == "assistant":
+                text = f"{text}{tools.call(name, argument)}"
+            else:
+                text = tools.render_result(name, argument, text)
+        turns.append(Turn(role=Role(role), text=text))
 
     if not turns or turns[-1].role is not Role.ASSISTANT:
         return None

@@ -62,6 +62,30 @@ part that matters is that a **system message is not a turn**: left in the list i
 reaches `_turns` as an unknown role and drops the whole conversation — every
 conversation, for a dataset that has them.
 
+**A `tool` turn arrives in one of two shapes, and they must not be confused.**
+The same two `ChatTurn` accepts, for the same reason:
+
+- **It names its call** (`tool` + `argument`), and `content` is the answer's
+  body alone. `_turns` renders it with `chat.tools.render_result` — the single
+  renderer for the live path and the SFT data both.
+- **It names no call**, and `content` is the whole rendered block already. It
+  passes through untouched.
+
+Rendering the second shape again nests one `<|tool-call|>` block inside another;
+leaving the first unrendered trains the model on a result whose call it cannot
+see. Neither is visible until a fine-tuned model meets the real thing, which is
+why `tests/test_sft_tool_turns.py` pins the rendered turn against
+`orchestrate.chat._history` rather than against a literal.
+
+Every converted corpus in the data engine arrives in the second shape — all
+138,110 tool turns of `hermes-agent-reasoning-traces-clean` are pre-rendered by
+`processors/hermes.py`, which can call neither into Rust nor into this package.
+The first shape is what a source with a *live* renderer behind it can use: the
+observation body comes from `tools::observation` in Rust, and the call header
+from `render_result` here, so neither is copied. An unknown tool drops the
+conversation rather than raising — the chat path can tell a caller it was wrong,
+a build over hundreds of thousands of rows cannot.
+
 ## What a packed corpus is made of
 
 A build directory holds the tokens (`corpus.bin`, plus `mask.bin` for SFT), the

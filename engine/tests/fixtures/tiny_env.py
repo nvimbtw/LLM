@@ -21,6 +21,7 @@ TINY_CHAT = "TinyChat"
 #: a stand-in data engine and a selection is an id — see `fake_backend`.
 TINY_DATASET_ID = fake_backend.TINY_DATASET_ID
 TINY_CHAT_ID = fake_backend.TINY_CHAT_ID
+TINY_GYM_ID = fake_backend.TINY_GYM_ID
 
 # Repetitive enough for BPE to find merges in a corpus this small.
 SOURCE_TEXT = (
@@ -92,6 +93,12 @@ def datasets() -> list[fake_backend.Dataset]:
                     for i in range(24)
                 ]
             ),
+        ),
+        fake_backend.Dataset(
+            TINY_GYM_ID,
+            "tiny-gym-demonstrations",
+            "sft",
+            fake_backend.demonstration_documents(24),
         ),
     ]
 

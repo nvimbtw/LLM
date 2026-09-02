@@ -310,8 +310,33 @@ class TokenizerConfig(BaseModel):
 
 
 class ChatTurn(BaseModel):
+    """One turn of a conversation a caller is holding.
+
+    A `tool` turn can be given two ways, and the difference is who renders it.
+    **Naming `tool` and `argument` hands the rendering to the engine**
+    (`llm.chat.tools.render_result` wraps `text` in the call it answers), which
+    is what a caller holding its own conversation should do: that layout is the
+    one SFT teaches, and a caller spelling `<|tool-call|>…<|/tool-call|>` itself
+    would be a second copy of it, free to drift into a shape the model was never
+    trained on. Leaving them out means `text` is already the rendered inner
+    content — which is how a turn read back from a stored chat arrives, because
+    that is the form it was written in.
+    """
+
     role: str
     text: str
+    #: Given together or not at all, and only on a `tool` turn: which call
+    #: `text` answers.
+    tool: str | None = None
+    argument: str | None = None
+
+    @model_validator(mode="after")
+    def _tool_turns_name_their_call(self) -> "ChatTurn":
+        if (self.tool is None) != (self.argument is None):
+            raise ValueError("a tool and its argument are given together or not at all")
+        if self.role != "tool" and self.tool is not None:
+            raise ValueError("only a tool turn carries a tool and argument")
+        return self
 
 
 class ChatConfig(BaseModel):
@@ -331,6 +356,15 @@ class ChatConfig(BaseModel):
     top_k: int = 40
     top_p: float = 0.95
     seed: int | None = None
+
+    max_tool_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description="how many tool calls this turn may open; absent means the "
+        "engine's own per-turn budget. 0 masks the tool-call marker out of the "
+        "grammar entirely, so the turn can only answer in prose — which is what "
+        "a gym episode's last round asks for",
+    )
 
     context_multiplier: float = Field(
         default=1.0,

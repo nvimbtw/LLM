@@ -45,6 +45,10 @@ class _ToolCalls:
 
     rules: Rules
     tokenizer: Tokenizer
+    #: How many calls this turn may open. `0` is a real value and not "unset":
+    #: it refuses the opener from the first token, which is how a caller asks
+    #: for an answer rather than another command.
+    budget: int = MAX_TOOL_CALLS_PER_TURN
     made: list[dict] = field(default_factory=list)
     _opened_at: int | None = None
 
@@ -86,8 +90,14 @@ class _ToolCalls:
 
         Applied after the grammar's own mask rather than inside it, because this
         is a budget the caller set and not a statement about well-formedness.
+
+        At a budget of zero this fires before the first token, which is the
+        whole mechanism behind a gym episode's terminal round: masking the
+        opener is the only way to make a model *stop searching and answer*, and
+        it is a mask rather than an instruction because a model this size does
+        not reliably follow one.
         """
-        if len(self.made) < MAX_TOOL_CALLS_PER_TURN or self.rules.tool_call is None:
+        if len(self.made) < self.budget or self.rules.tool_call is None:
             return
         opener = self.rules.tool_call[0]
         if opener < logits.numel():
@@ -132,6 +142,35 @@ def load(model_name: str):
     return _CACHE["model"], _CACHE["tokenizer"], _CACHE["device"]
 
 
+def _history(turns: list[ChatTurn]) -> list[Turn]:
+    """The conversation as the template reads it.
+
+    A tool turn that named its call is rendered here rather than by whoever sent
+    it — see `ChatTurn` for why there is exactly one renderer of that block. An
+    unnamed one is text that was already rendered, which is how a stored chat's
+    tool message comes back, and it passes through untouched.
+
+    There is no role branch here, and there is one in `corpus.sft._turns`, which
+    is worth stating because the two are otherwise mirrors. An **assistant**
+    turn can also name a call — the one it made rather than the one it answers,
+    with the marker after its text — and that is how a gym demonstration is
+    stored. It cannot reach here: `ChatTurn` refuses the pairing on anything but
+    a tool turn, and a live assistant reply needs no naming anyway, because the
+    engine stores it as the raw text the model produced with its markers already
+    in it. A corpus row has no validator to refuse it, which is why the other
+    function has to decide by role and this one does not.
+    """
+    rendered: list[Turn] = []
+    for turn in turns:
+        text = turn.text
+        if turn.tool is not None and turn.argument is not None:
+            if tools.by_name(turn.tool) is None:
+                raise ValueError(f"unknown tool {turn.tool!r}")
+            text = tools.render_result(turn.tool, turn.argument, turn.text)
+        rendered.append(Turn(role=Role(turn.role), text=text))
+    return rendered
+
+
 @torch.inference_mode()
 def stream(cfg: ChatConfig):
     """Yield `(kind, data)` frames of the assistant turn, then return a summary.
@@ -144,7 +183,7 @@ def stream(cfg: ChatConfig):
     started = time.time()
     model, tokenizer, device = load(cfg.model_name)
 
-    history = [Turn(role=Role(t.role), text=t.text) for t in cfg.turns]
+    history = _history(cfg.turns)
     budget = ThinkBudget.parse(cfg.budget) if cfg.budget else None
 
     # NTK-scaled tables computed fresh per turn, never written into the cached
@@ -162,7 +201,8 @@ def stream(cfg: ChatConfig):
 
     rules = Rules.build(tokenizer)
     blocks = OpenBlocks(rules)
-    calls = _ToolCalls(rules, tokenizer)
+    budget = MAX_TOOL_CALLS_PER_TURN if cfg.max_tool_calls is None else cfg.max_tool_calls
+    calls = _ToolCalls(rules, tokenizer, budget)
 
     generator = torch.Generator(device=device).manual_seed(cfg.seed) if cfg.seed else None
 
@@ -250,7 +290,7 @@ def history_floor(model_name: str, turns: list[ChatTurn]) -> int:
     model like `stream` does (cached the same way), because `ctx_window` is
     architecture and lives on the checkpoint, not in the tokenizer alone."""
     model, tokenizer, _ = load(model_name)
-    history = [Turn(role=Role(t.role), text=t.text) for t in turns]
+    history = _history(turns)
     reserve = min(RESERVE_FOR_REPLY, max(1, model.ctx_window // 2))
     return context_floor(history, tokenizer, model.ctx_window, reserve)
 

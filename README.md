@@ -216,6 +216,14 @@ none of what the engine owns. It stores an id and asks.
   languages by [`contracts/service-token.json`](contracts/service-token.json),
   so the Rust side and the Python side cannot drift apart silently.
 
+`contracts/` is where anything two languages both implement gets pinned, and the
+token is not the only one. [`contracts/shell-observation.json`](contracts/shell-observation.json)
+pins what a model reads back from a shell: the backend renders it live, and the
+data engine renders it again in Python when it converts a recorded agent corpus
+into training data. That one drifts worse than the token does — a token
+mismatch is a 401, where a layout mismatch is a fine-tuned model quietly reading
+a block it was never trained on.
+
 A module is therefore roughly: a crate that configures, supervises and proxies;
 a service that accepts the signed token and enforces it; a database it alone
 migrates; and routes on the backend that forward rather than reimplement.

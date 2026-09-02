@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Brain,
   Database,
+  Dumbbell,
   Gauge,
   Loader,
   MessageSquareCode,
@@ -58,6 +59,13 @@ const WORKBENCH: Destination[] = [
     icon: Gauge,
     blurb:
       "Held-out perplexity, minimal-pair grammar and surface metrics. History and analysis; runs start from the queue.",
+  },
+  {
+    title: "Gyms",
+    href: "/gyms",
+    icon: Dumbbell,
+    blurb:
+      "Put a model to work: generated tasks, a sandboxed shell, and the score. Watch a run task by task.",
   },
 ]
 

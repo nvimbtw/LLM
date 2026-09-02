@@ -16,6 +16,7 @@ __pycache__/
 # requirements.txt.
 engine/.venv/
 data-engine/.venv/
+gyms/.venv/
 
 # The engine owns the corpora, models and datasets. They arrive via the fetch
 # scripts and are regenerated, not versioned. This also covers what a fetch

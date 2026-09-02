@@ -284,3 +284,25 @@ def test_a_new_tool_costs_a_row_and_no_vocabulary_at_all(relabelled):
         tools.TOOLS.remove(invented)
 
     assert all("weather" not in marker for marker in special.SPECIAL_TOKENS)
+
+
+def test_a_budget_of_zero_refuses_the_opener_before_the_first_token(relabelled):
+    """The terminal round of a gym episode: masked rather than instructed,
+    because a small model does not reliably follow "stop and answer" — and an
+    episode that never answers scores zero for a reason that says nothing about
+    whether it found the answer. See
+    `docs/decisions/reinforcement-learning-in-the-engine.md`.
+    """
+    rules = Rules.build(relabelled)
+    opener = rules.tool_call[0]
+
+    spent = chat._ToolCalls(rules, relabelled, budget=0)
+    logits = torch.zeros(relabelled.get_vocab_size())
+    spent.mask(logits)
+    assert logits[opener] == float("-inf")
+
+    # The default budget leaves it reachable on a turn that has called nothing.
+    fresh = chat._ToolCalls(rules, relabelled)
+    logits = torch.zeros(relabelled.get_vocab_size())
+    fresh.mask(logits)
+    assert logits[opener] == 0.0

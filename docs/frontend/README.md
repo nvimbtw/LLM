@@ -24,6 +24,7 @@ frontend/
 │   │   ├── chat/[id]/ · conversations/ · models/ · usage/ · profile/
 │   │   ├── jobs/        [id] and new/{train,benchmark}; the bare path redirects
 │   │   ├── benchmark/ · tokenizers/
+│   │   ├── gyms/        the catalogue, [gym] to start a run, [gym]/runs/[id] live
 │   │   └── markup/ · throbber/   fixture pages, no data behind them
 │   ├── (auth)/      login, signup — outside the signed-in chrome
 │   └── docs/        the markdown in docs/, rendered
@@ -34,6 +35,7 @@ frontend/
 │   ├── chat/
 │   ├── conversations/
 │   ├── data/        the Hub, the datasets stored, the cleaning workbench
+│   ├── gyms/        the run form, the scoreboard, one episode's transcript
 │   ├── jobs/
 │   ├── models/
 │   ├── profile/
@@ -52,6 +54,8 @@ frontend/
 │   │                    — and the training rail's dataset list, since a run
 │   │                    selects from here by id
 │   ├── benchmark.ts     scores and the reports behind them
+│   ├── gyms.ts          gyms, runs, episodes: types and REST
+│   ├── gym-socket.ts    one socket per run, driving every episode in it
 │   ├── message-parser.ts
 │   ├── user-parser.ts
 │   └── utils.ts          cn() and other small helpers
@@ -378,6 +382,52 @@ vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
 A fast model streams straight through at whatever rate it generates —
 `onToken` appends to `messages` on every frame, no artificial pacing. What has
 to keep up with that is the thread's own scroll, next.
+
+### Stream protocol (a gym run)
+
+One socket per run, opened at `/ws/gyms/runs/{id}` (`lib/gym-socket.ts`), and
+deliberately the chat vocabulary with four frames added:
+
+```
+server → { type: "episode_start", episode_id, index, task_type, prompt }
+server → { type: "round_done",   episode_id, text, usage }
+server → { type: "episode_done", episode_id, score, correct, answer, ground_truth }
+server → { type: "run_done",     score, correct, graded, episode_count }
+```
+
+Two differences from chat, and both are the reason it is a socket of its own.
+The engine's `done` arrives as **`round_done`**, because an episode takes a
+round per command and a client counting `done` would see an episode end every
+time the model ran `ls`. And every frame carries its `episode_id`, so a run of
+twenty tasks is one connection rather than twenty.
+
+The socket carries only the sampling — the model and the tasks were fixed when
+the run was created — and **closing it abandons the run**: episodes already
+graded are stored, the rest are never run.
+
+`context_multiplier` is in that sampling for a reason particular to gyms: a task
+plus its system block is ~70 tokens before the shell has answered anything, and
+half the window is reserved for the reply, so a model trained under 256 cannot
+hold a task unless the window is stretched. `RunForm` says so before a run is
+started rather than after it scores zero.
+
+### Reading a gym episode
+
+`components/gyms/episode-transcript.tsx` renders an episode with
+`components/chat/trace.tsx` and `components/chat/rich-message.tsx`, composed the
+way `chat-message.tsx` composes them: the task is a user bubble, the rounds that
+called the shell are the trace, the round that stopped calling is the reply.
+
+That reuse is the point rather than a saving. What a gym shows has to be what
+the model actually produced — the same markup, the same reasoning panel, the
+same command output in the same code block — because the model is doing in the
+gym exactly what it does in a conversation. A renderer of its own here would be
+a second opinion about that, and the first time the two disagreed the gym would
+be the one lying.
+
+`hooks/use-gym-run.ts` is what makes a live run and a reloaded one the same
+shape: it builds a `Transcript` from frames while they arrive and from stored
+steps on a reload, so the page below never learns which it is looking at.
 
 ### Following the bottom
 

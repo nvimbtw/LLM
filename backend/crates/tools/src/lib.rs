@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-pub use bash::Bash;
+pub use bash::{Bash, Output, observation};
 pub use config::Config;
 pub use search::WebSearch;
 pub use error::{Result, ToolError};
