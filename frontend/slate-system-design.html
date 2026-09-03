@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slate — system design & UX direction</title>
+  <style>
+    :root {
+      --bg: #f5f1e1; --paper: #fdfbf5; --under: #eee9d8; --ink: #4f4f58;
+      --muted: #66645f; --line: #b6b3aa; --line-strong: #8c897c;
+      --accent: #4d699b; --accent-soft: #e6e2d0; --green: #4e6733;
+      --violet: #655a80; --orange: #86582a; --danger: #c43b4f;
+      --shadow: 0 14px 30px rgba(79,79,88,.12); --display: Georgia, serif;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    [data-theme="dark"] { --bg:#181616; --paper:#232221; --under:#12120f; --ink:#c5c9c5;
+      --muted:#a6a69c; --line:#514d4c; --line-strong:#68625f; --accent:#8ba4b0;
+      --accent-soft:#333130; --green:#8fb08f; --violet:#ada0ae; --orange:#c2a184;
+      --danger:#d97145; --shadow:inset 0 1px 0 rgba(197,201,197,.06), 0 16px 32px rgba(13,12,12,.65); }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:var(--bg); font:15px/1.65 var(--sans); }
+    a { color:var(--accent); text-decoration-thickness:1px; text-underline-offset:3px; }
+    button { font:inherit; color:inherit; }
+    .shell { display:grid; grid-template-columns:260px minmax(0,1fr); min-height:100vh; }
+    aside { position:sticky; top:0; height:100vh; padding:22px 18px; background:var(--under); border-right:1px solid var(--line); }
+    .brand { padding:4px 10px 22px; border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent); }
+    .brand strong { display:block; font:600 26px/1 var(--display); letter-spacing:-.04em; }
+    .eyebrow { color:var(--muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
+    nav { padding-top:22px; } nav a { display:flex; gap:11px; align-items:center; padding:7px 10px; color:var(--ink); text-decoration:none; border-left:2px solid transparent; }
+    nav a:hover, nav a.active { background:var(--accent-soft); border-left-color:var(--accent); }
+    .nav-num { width:18px; color:var(--muted); font:11px var(--mono); }
+    main { max-width:1180px; width:100%; padding:64px clamp(24px,6vw,88px) 100px; margin:auto; }
+    .toolbar { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:72px; }
+    .toolbar button { padding:7px 12px; border:1px solid var(--line); border-radius:3px; background:var(--paper); cursor:pointer; }
+    .hero { max-width:850px; padding-bottom:56px; border-bottom:1px solid var(--line); }
+    h1,h2,h3 { font-family:var(--display); font-weight:600; letter-spacing:-.045em; line-height:1.05; }
+    h1 { max-width:800px; margin:14px 0 20px; font-size:clamp(48px,8vw,96px); }
+    h2 { margin:0 0 16px; font-size:clamp(30px,4vw,48px); } h3 { margin:0 0 8px; font-size:24px; }
+    .lede { max-width:650px; margin:0; color:var(--muted); font-size:18px; }
+    section { scroll-margin-top:28px; padding-top:88px; }
+    .section-head { display:flex; justify-content:space-between; gap:28px; align-items:baseline; margin-bottom:26px; }
+    .section-head p { max-width:460px; margin:0; color:var(--muted); }
+    .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:16px; }
+    .card { grid-column:span 4; min-height:100%; padding:22px; background:var(--paper); border:1px solid color-mix(in srgb,var(--line) 55%,transparent); box-shadow:var(--shadow); }
+    .card.wide { grid-column:span 8; } .card.full { grid-column:1/-1; }
+    .card p { margin:8px 0 0; color:var(--muted); } .card ul { margin:12px 0 0; padding-left:19px; }
+    .tag { display:inline-block; margin-bottom:13px; color:var(--accent); font:11px var(--mono); letter-spacing:.08em; text-transform:uppercase; }
+    .flow { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:24px; background:var(--under); border-block:1px solid var(--line); }
+    .node { padding:13px 15px; min-width:135px; background:var(--paper); border:1px solid var(--line); text-align:center; }
+    .arrow { color:var(--accent); font:20px var(--mono); }
+    .swatches { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+    .swatch { min-height:100px; padding:10px; display:flex; flex-direction:column; justify-content:end; border:1px solid color-mix(in srgb,var(--line) 50%,transparent); }
+    .swatch small { font:10px var(--mono); overflow-wrap:anywhere; } .s-paper{background:#f5f1e1}.s-sheet{background:#fdfbf5}.s-ink{background:#4f4f58;color:#fdfbf5}.s-blue{background:#4d699b;color:#fdfbf5}.s-warm{background:#c43b4f;color:#fdfbf5}
+    [data-theme="dark"] .s-paper{background:#181616}.s-sheet{background:var(--paper)} [data-theme="dark"] .s-ink{background:#c5c9c5;color:#181616} [data-theme="dark"] .s-blue{background:#8ba4b0;color:#181616}
+    table { width:100%; border-collapse:collapse; } th,td { padding:14px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; } th { color:var(--muted); font:10px var(--mono); letter-spacing:.1em; text-transform:uppercase; }
+    .priority { white-space:nowrap; color:var(--accent); font:11px var(--mono); } .quote { padding:24px; margin:0; border-left:3px solid var(--accent); background:var(--accent-soft); font:20px/1.4 var(--display); }
+    .footer { margin-top:100px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+    @media (max-width:800px) { .shell{display:block} aside{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--line)} nav{display:flex;overflow:auto;padding-top:12px} nav a{white-space:nowrap} main{padding-top:32px}.toolbar{margin-bottom:48px}.card,.card.wide{grid-column:1/-1}.swatches{grid-template-columns:repeat(2,1fr)}.section-head{display:block}.section-head p{margin-top:10px}.flow{align-items:stretch;flex-direction:column}.arrow{text-align:center;transform:rotate(90deg)} }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand"><strong>Slate</strong><span class="eyebrow">System design / 2026</span></div>
+      <nav aria-label="Document sections">
+        <a class="active" href="#thesis"><span class="nav-num">01</span>Product thesis</a>
+        <a href="#architecture"><span class="nav-num">02</span>Architecture</a>
+        <a href="#visual"><span class="nav-num">03</span>Visual system</a>
+        <a href="#surfaces"><span class="nav-num">04</span>Surface map</a>
+        <a href="#upgrades"><span class="nav-num">05</span>UX upgrades</a>
+        <a href="#roadmap"><span class="nav-num">06</span>Roadmap</a>
+      </nav>
+    </aside>
+    <main>
+      <div class="toolbar"><span class="eyebrow">A working design document</span><button id="theme" type="button">Switch to dark</button></div>
+      <header class="hero" id="thesis">
+        <span class="eyebrow">System design / product direction</span>
+        <h1>An LLM workspace with the quietness of a notebook.</h1>
+        <p class="lede">Slate is an end-to-end environment for talking to models, training them, preparing data, benchmarking results, and putting models through task gyms. Its strongest design idea is editorial restraint: make the work legible, make live state visible, and let the content carry the weight.</p>
+      </header>
+
+      <section id="architecture">
+        <div class="section-head"><h2>Architecture</h2><p>The frontend is a Next.js App Router application. Server components define the route surface; client components are reserved for browser state, editors, streaming, and interactive data views.</p></div>
+        <div class="flow"><div class="node"><b>Browser</b><br><span class="eyebrow">Next.js UI</span></div><span class="arrow">→</span><div class="node"><b>Rust backend</b><br><span class="eyebrow">auth · sessions · seam</span></div><span class="arrow">→</span><div class="node"><b>Python services</b><br><span class="eyebrow">engine · data · gyms</span></div><span class="arrow">→</span><div class="node"><b>Owned stores</b><br><span class="eyebrow">models · data · runs</span></div></div>
+        <div class="grid" style="margin-top:16px">
+          <article class="card wide"><span class="tag">Durable state</span><h3>REST through a single seam</h3><p><code>lib/api.ts</code> centralizes auth headers and configured requests. Domain modules such as <code>models.ts</code>, <code>data.ts</code>, <code>jobs.ts</code>, <code>benchmark.ts</code>, and <code>gyms.ts</code> describe their HTTP shapes. Hooks own loading, error, refresh, and polling behavior.</p></article>
+          <article class="card"><span class="tag">Live state</span><h3>One socket per stream</h3><p>Chat replies, job runs, and gym runs each have a dedicated socket helper. Frames are translated into typed callbacks before reaching UI state.</p></article>
+          <article class="card"><span class="tag">Composition</span><h3>Primitives before pages</h3><p>PageShell, PageHeader, Panel, Card, tabs, dialogs, inputs, and status primitives establish a shared vocabulary. Feature components compose those primitives by domain.</p></article>
+          <article class="card"><span class="tag">Boundary</span><h3>Data ownership is explicit</h3><p>The frontend does not make Python services talk to one another. The backend remains the seam, while each service keeps its own database and domain authority.</p></article>
+        </div>
+      </section>
+
+      <section id="visual">
+        <div class="section-head"><h2>Visual system</h2><p>“Marble light/dark” is a customized Kanagawa lineage: warm paper and softened violet ink in light mode; Dragon blacks, lifted surfaces, and cool pale accents in dark mode.</p></div>
+        <div class="grid">
+          <article class="card wide"><span class="tag">Color roles</span><h3>Palette → theme → active mode</h3><p>Hex values belong to the palette layer. Semantic roles choose the light/dark value. Components only read active roles such as background, foreground, card, primary, border, chart, tier, and sidebar.</p><div class="swatches" style="margin-top:20px"><div class="swatch s-paper"><small>paper<br>#f5f1e1</small></div><div class="swatch s-sheet"><small>sheet<br>#fdfbf5</small></div><div class="swatch s-ink"><small>ink<br>#4f4f58</small></div><div class="swatch s-blue"><small>primary<br>#4d699b</small></div><div class="swatch s-warm"><small>signal<br>#c43b4f</small></div></div></article>
+          <article class="card"><span class="tag">Typography</span><h3>Display contrast</h3><p>Fraunces carries mastheads and figures. Geist carries interface copy. Geist Mono is reserved for tags, metrics, and technical traces. Eyebrows are uppercase, tracked, and quiet.</p></article>
+          <article class="card"><span class="tag">Depth</span><h3>Sheets and furniture</h3><p>Actionable surfaces are sheets: card fill, a hairline edge, and theme-aware elevation. Summaries are furniture: ruled ledgers with no enclosing box. The distinction creates hierarchy without visual noise.</p></article>
+          <article class="card full"><span class="tag">Shape and rhythm</span><h3>Hard edges around soft writing</h3><p>Sheets and controls use restrained 2–3px radii. The composer and chat bubbles are the exception, with pinned, softer radii so the place to write feels distinct from a form field. Spacing follows a 4px unit with semantic roles for sheet, section, stack, inline, and ledger rhythm.</p></article>
+        </div>
+      </section>
+
+      <section id="surfaces">
+        <div class="section-head"><h2>Surface map</h2><p>Navigation makes the system’s jobs visible. The app’s current page set already suggests a useful mental model: create, observe, inspect, and govern.</p></div>
+        <table><thead><tr><th>Area</th><th>Current responsibility</th><th>Primary user question</th><th>Live behavior</th></tr></thead><tbody>
+          <tr><td><b>Chat</b></td><td>New conversations, rich composer, model and thinking-budget choice, attachments, voice input.</td><td>Can I get a useful answer quickly?</td><td>Streaming reply over chat socket.</td></tr>
+          <tr><td><b>Models</b></td><td>Published model directory, model details, checkpoints, attention views, benchmark links.</td><td>Which model should I use or inspect?</td><td>REST; checkpoint refresh after runs.</td></tr>
+          <tr><td><b>Jobs / Admin</b></td><td>Train, tokenize, benchmark, queue, active progress, job detail, follow-ups.</td><td>What is running, and what can I do next?</td><td>Queue provider plus job socket.</td></tr>
+          <tr><td><b>Data</b></td><td>Acquire datasets, inspect documents, preview processors, run cleaning workflows.</td><td>What actually entered the training corpus?</td><td>REST with status polling while active.</td></tr>
+          <tr><td><b>Benchmark / Gyms</b></td><td>Measure model behavior and run models in scored environments with transcripts.</td><td>Does this model work, not just sound good?</td><td>REST; gym run socket for episodes.</td></tr>
+          <tr><td><b>Usage / Conversations</b></td><td>Cost and token reporting; archive-level conversation browsing.</td><td>What have I used, and what did I learn?</td><td>REST summaries and history.</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="upgrades">
+        <div class="section-head"><h2>UX / UI upgrades</h2><p>These are extensions of the current system, not a visual reset. The goal is to make state, intent, and next actions easier to see while keeping the editorial tone quiet.</p></div>
+        <div class="grid">
+          <article class="card wide"><span class="tag">P0 · orientation</span><h3>Turn the sidebar into a workspace index</h3><p>Keep the current compact rail, but add a persistent “workspace pulse” above the footer: active run count, last completed job, and a single “Resume” link. Add keyboard focus and a command/search entry point that can jump to models, chats, jobs, datasets, or actions.</p><p><b>Why:</b> the current navigation is excellent at naming destinations, but live work is split between Admin, Active, and recent conversations.</p></article>
+          <article class="card"><span class="tag">P0 · state</span><h3>Make async state a first-class language</h3><p>Standardize queued, running, paused, failed, and completed across jobs, data pulls, benchmark runs, and gym runs. Pair color with a label, icon, and progress context. Every live surface gets “last updated” and “what happens next.”</p></article>
+          <article class="card"><span class="tag">P0 · chat</span><h3>Give the composer a clearer contract</h3><p>Group model, budget, attachments, and voice under a single “response setup” affordance. Show context usage as a calm meter with a plain-language warning before the limit. Preserve the soft composer shape and frosted treatment.</p></article>
+          <article class="card"><span class="tag">P1 · compare</span><h3>Add compare mode for evidence</h3><p>On Models and Benchmark, let users pin two or three models and compare context, parameter estimate, loss, held-out metrics, and gym scores in one ruled ledger. Keep charts optional; the table is the editorial anchor.</p></article>
+          <article class="card"><span class="tag">P1 · data</span><h3>Show the data journey as a thread</h3><p>Replace the mental jump between Hub, stored dataset, documents, processors, and runs with a breadcrumb-like lineage rail: source → snapshot → cleaned version → training job. Make each stage deep-linkable and expose counts at the transitions.</p></article>
+          <article class="card"><span class="tag">P1 · responsive</span><h3>Design mobile as a bottom-sheet workflow</h3><p>On narrow screens, collapse navigation into a sheet with the same sections and preserve the active-run pulse. Let job configuration and chat settings open as sheets rather than shrinking dense desktop rails into unusable columns.</p></article>
+          <article class="card"><span class="tag">P2 · trust</span><h3>Improve recovery and reversibility</h3><p>For destructive model/chat actions, show impact summaries and offer a short undo window where backend semantics allow it. For failed streams, preserve the transcript and offer retry, reconnect, or copy diagnostics without losing context.</p></article>
+          <article class="card wide"><span class="tag">P2 · accessibility</span><h3>Make the quiet interface more explicit</h3><p>Audit every icon-only action for an accessible name, ensure live socket updates announce meaningful milestones rather than token noise, add reduced-motion defaults to progress effects, and keep focus rings visible in both themes. Editorial minimalism should remove decoration, not information.</p></article>
+        </div>
+      </section>
+
+      <section id="roadmap">
+        <div class="section-head"><h2>Suggested sequence</h2><p>Ship the changes in the order that reduces uncertainty for users and avoids a large visual migration.</p></div>
+        <table><thead><tr><th>Phase</th><th>Deliverable</th><th>Success signal</th></tr></thead><tbody>
+          <tr><td class="priority">01 / ORIENT</td><td>Workspace pulse, unified status vocabulary, keyboard command/search.</td><td>Users can find an active job or recent artifact without visiting Admin first.</td></tr>
+          <tr><td class="priority">02 / EVIDENCE</td><td>Model compare ledger and dataset lineage rail.</td><td>Model and data decisions happen with fewer page hops and less memory.</td></tr>
+          <tr><td class="priority">03 / RECOVER</td><td>Stream recovery, undo where possible, failure diagnostics.</td><td>Interrupted work is resumed instead of abandoned.</td></tr>
+          <tr><td class="priority">04 / POLISH</td><td>Mobile sheets, announcement strategy, focus and contrast audit.</td><td>Core workflows remain legible across input methods and screen sizes.</td></tr>
+        </tbody></table>
+        <blockquote class="quote" style="margin-top:28px">The design principle to protect: every page should answer “where am I?”, “what is this for?”, and “what is the next useful action?” without adding a second visual language.</blockquote>
+      </section>
+      <div class="footer">Prepared from the frontend source tree and frontend module documentation. The HTML is intentionally standalone: open <code>frontend/slate-system-design.html</code> directly in a browser.</div>
+    </main>
+  </div>
+  <script>
+    const root = document.documentElement;
+    const button = document.getElementById('theme');
+    button.addEventListener('click', () => {
+      const dark = root.dataset.theme === 'dark';
+      root.dataset.theme = dark ? 'light' : 'dark';
+      button.textContent = dark ? 'Switch to dark' : 'Switch to light';
+    });
+  </script>
+</body>
+</html>

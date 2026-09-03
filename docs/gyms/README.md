@@ -40,8 +40,32 @@ run       one model against N generated tasks       gym_runs
 
 A run exists because one episode says almost nothing: these tasks are pass or
 fail, so ability is only visible across a batch. Episode *i* is generated from
-`seed_base + i`, so a run is reproducible from its row alone — the same model,
-seed and task type produce the same tasks every time.
+`seed_base + i // group_size`, so a run is reproducible from its row alone — the
+same model, seed and task type produce the same tasks every time.
+
+**`group_size` is what makes a run its own GRPO batch.** At 1 — the default, and
+what every run made before it existed is — a run is `count` distinct tasks,
+which is what an evaluation wants. Above 1, consecutive episodes are repeated
+attempts at *one* task: the group index moves the seed and cycles the task
+types, so `group_size` 8 over four types is eight rollouts of a `bash_grep`
+task, then eight of a `bash_csv` one, and so on.
+
+Both halves have to key off the group or a "group" is G different questions with
+G different answers, which is a baseline over nothing — an advantage is how much
+better a rollout did than its *siblings*, and siblings are attempts at the same
+task. A count that would leave a partial group is refused rather than truncated:
+the remainder would be a group whose baseline came from fewer samples than every
+other, and at the limit a group of one, which contributes exactly zero gradient
+and is the case `group_size` exists to prevent.
+
+Identical tasks are still not a shared workspace — the episode id is the sandbox
+key, so eight siblings get eight filesystems and cannot see each other's work.
+
+Two things make a grouped run meaningless and neither is visible in its row:
+**temperature above zero**, or the rollouts are one rollout counted G times, and
+**no sampler seed** — `ChatConfig.seed` pins the draw. Sampling reaches a run
+from the browser socket (`gym.rs`) and is not recorded anywhere, so that is a
+property of how a run was produced and not something the record can check.
 
 **`gym_runs.model_name` holds the model's id, not its name.** The field is
 named after the engine's own, which has always carried the id: weights live at
@@ -139,14 +163,14 @@ under `/gym`.
 | | |
 | --- | --- |
 | `GET /gyms` | the registry: gyms and the task types each generates. The frontend's catalogue. |
-| `POST /gym/runs` `{gym_id, model_name, task_types[], count, seed_base?}` | creates the run, generates the tasks, seeds a workspace per episode. 502 if the sandbox could not be filled. |
+| `POST /gym/runs` `{gym_id, model_name, task_types[], count, seed_base?, group_size?}` | creates the run, generates the tasks, seeds a workspace per episode. `group_size` defaults to 1 and must divide `count` — 400 otherwise. 502 if the sandbox could not be filled. |
 | `GET /gym/runs`, `GET /gym/runs/{id}` | the record. |
 | `GET /gym/episodes/{id}` | one episode with its steps. |
 | `POST /gym/episodes/{id}/step` `{command, reply?}` | runs one command, records it with its shaping reward. |
 | `POST /gym/episodes/{id}/finish` `{reply}` | grades the reply that ended the episode. |
 | `POST /gym/episodes/{id}/close` | abandon: ran out of rounds, or the run went away. |
 | `POST /gym/runs/{id}/status` | what the driver says is happening to the run it holds. |
-| `POST /gym/trajectories` `{task_types[], count, seed_base?}` | expert demonstrations. Not a run, and nothing is stored **here** — the backend renders them and writes them to the data engine as an `sft` dataset. |
+| `POST /gym/trajectories` `{task_types[], count, seed_base?}` | expert demonstrations. Not a run, and nothing is stored **here** — the backend renders them and writes them to the data engine as an `sft` dataset. Up to 5,000 per request. |
 
 `finish` takes the whole reply rather than an extracted answer, because
 extraction is part of grading and a caller that did it first would be a second

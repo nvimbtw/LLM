@@ -69,7 +69,17 @@ export default function GymRunPage() {
     <PageShell>
       <PageHeader
         title={modelLabel(models, run.model_name)}
-        description={`${run.task_types.join(" · ")} · ${run.episode_count} tasks · seeds from ${run.seed_base}`}
+        // "tasks" stops being the episode count once a run has groups: the
+        // episodes are `group_size` attempts at each of `episode_count /
+        // group_size` tasks, and reading the run as that many distinct tasks
+        // overstates what it covered.
+        description={[
+          run.task_types.join(" · "),
+          run.group_size > 1
+            ? `${run.episode_count / run.group_size} tasks × ${run.group_size} rollouts`
+            : `${run.episode_count} tasks`,
+          `seeds from ${run.seed_base}`,
+        ].join(" · ")}
         back={{ href: `/gyms/${gym}`, label: "Runs" }}
         action={
           isRunning ? (

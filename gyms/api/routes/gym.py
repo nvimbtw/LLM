@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 import store
 from gyms.bash import expert
+from gyms.bash.grade import mutation_matches
 from gyms.bash.rewards import Earned, Step, step_reward
 from gyms.registry import REGISTRY
 from gyms.sandbox import WORKSPACE, SandboxError, clear, seed
@@ -32,11 +33,11 @@ router = APIRouter()
 #: the sandbox holds until it expires, and the sandbox keeps 64 of them.
 MAX_EPISODES = 32
 
-#: What one demonstration request may ask for. Far above `MAX_EPISODES` and for
-#: a reason that is not generosity: these all share **one** workspace, cleared
-#: between tasks, so the number costs sandbox time rather than sandbox
-#: filesystems. Behaviour cloning wants thousands, and a caller pages.
-MAX_TRAJECTORIES = 200
+#: What one demonstration request may ask for. These all share **one** workspace,
+#: cleared between tasks, so the number costs sandbox time rather than sandbox
+#: filesystems. A large ceiling makes a multi-thousand SFT corpus one request;
+#: callers should still use smaller batches when they need progress visibility.
+MAX_TRAJECTORIES = 5_000
 
 
 class NewRun(BaseModel):
@@ -45,8 +46,14 @@ class NewRun(BaseModel):
     task_types: list[str] = Field(min_length=1)
     count: int = Field(ge=1, le=MAX_EPISODES)
     #: Absent means a fresh draw. Given, a run is reproducible: episode *i* is
-    #: generated from `seed_base + i`.
+    #: generated from `seed_base + i // group_size`.
     seed_base: int | None = None
+    #: Rollouts per task. 1 is an evaluation — `count` distinct tasks, which is
+    #: what a person watching wants. Above 1 the run is its own GRPO batch:
+    #: `count // group_size` tasks, each attempted `group_size` times, because
+    #: an advantage is measured against a *group's* own mean and a group of one
+    #: has no mean to be better than.
+    group_size: int = Field(default=1, ge=1, le=MAX_EPISODES)
 
 
 class NewTrajectories(BaseModel):
@@ -93,6 +100,16 @@ def create_run(body: NewRun) -> dict:
                 status_code=400, detail=f"{task_type!r} is not a task type of {body.gym_id!r}"
             )
 
+    # A trailing partial group is refused rather than truncated or allowed. It
+    # would be a group whose baseline is drawn from fewer siblings than every
+    # other — and at the limit a group of one, which contributes exactly zero
+    # advantage and is the degenerate case `group_size` exists to prevent.
+    if body.count % body.group_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"count {body.count} is not a multiple of group_size {body.group_size}",
+        )
+
     seed_base = body.seed_base if body.seed_base is not None else uuid.uuid4().int % 1_000_000
     with store.session() as db:
         run = GymRun(
@@ -100,25 +117,33 @@ def create_run(body: NewRun) -> dict:
             model_name=body.model_name,
             task_types=list(body.task_types),
             seed_base=seed_base,
+            group_size=body.group_size,
             episode_count=body.count,
         )
         db.add(run)
         db.flush()
         episodes = [
-            _prepare(db, run, index, body.task_types[index % len(body.task_types)])
+            _prepare(db, run, index, body.task_types)
             for index in range(body.count)
         ]
         return {**_run_json(run), "episodes": [_episode_json(e, db) for e in episodes]}
 
 
-def _prepare(db, run: GymRun, index: int, task_type: str) -> GymEpisode:
+def _prepare(db, run: GymRun, index: int, task_types: list[str]) -> GymEpisode:
     """One episode: generated, stored, and its workspace filled.
 
     The row is written before the sandbox is touched so the episode id exists to
     key the filesystem by; a seeding failure then rolls the whole run back with
     it, which is why this raises rather than marking the episode failed.
+
+    **The group, not the episode, is what cycles the task types and moves the
+    seed.** Both have to be keyed off `index // group_size` or a "group" is G
+    different tasks with G different answers, which is a baseline over nothing.
+    At `group_size` 1 this is the arithmetic it has always been.
     """
-    task = REGISTRY.generate(task_type, run.seed_base + index)
+    group = index // run.group_size
+    task_type = task_types[group % len(task_types)]
+    task = REGISTRY.generate(task_type, run.seed_base + group)
     episode = GymEpisode(
         run_id=run.id,
         index=index,
@@ -275,6 +300,11 @@ def finish(episode_id: uuid.UUID, body: Finish) -> dict:
             raise HTTPException(status_code=409, detail="episode is already graded")
         ground_truth = episode.task_config.get("answer", "")
         score, answer = REGISTRY.grade(episode.task_type, body.reply, ground_truth)
+        mutation = episode.task_config.get("mutation")
+        if score >= 1.0 and mutation:
+            checked = run_command(str(episode.id), f"cat {mutation['path']}")
+            if not mutation_matches(checked.stdout, checked.exit_code, mutation["contains"]):
+                score = 0.0
         queries.grade_episode(db, episode, reply=body.reply, answer=answer, score=score)
         return {
             "episode_id": str(episode.id),
@@ -320,6 +350,7 @@ def _run_json(run: GymRun) -> dict:
         "model_name": run.model_name,
         "task_types": run.task_types,
         "seed_base": run.seed_base,
+        "group_size": run.group_size,
         "episode_count": run.episode_count,
         "status": run.status.value,
         "score": run.score,

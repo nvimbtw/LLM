@@ -35,6 +35,7 @@ Two rules keep these honest as training data:
 from dataclasses import dataclass
 
 from gyms.bash.tasks import Task
+from gyms.bash.composed import GENERATORS as COMPOSED_GENERATORS
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,7 @@ def solve(task: Task) -> Trajectory:
     *measures* — a task type without one is still a task type, it simply cannot
     be cloned from.
     """
-    build = _MOVES.get(task.task_type)
+    build = _MOVES.get(task.task_type) or _COMPOSED_MOVES.get(task.task_type)
     if build is None:
         raise ValueError(f"no expert trajectory for {task.task_type!r}")
     return Trajectory(task=task, moves=build(task), answer=task.answer)
@@ -188,3 +189,26 @@ _MOVES = {
     "bash_read_easy": _read_moves,
     "bash_read_medium": _pairs_moves,
 }
+
+
+def _composed_moves(task: Task) -> tuple[Move, ...]:
+    """Return the seeded task's complete shell program as one model call."""
+    extra = task.extra
+    if task.task_type == "bash_write_easy":
+        return (Move("Writing the requested file.", f"printf '%s\\n' '{extra['value']}' > {task.answer}"),)
+    if task.task_type == "bash_pipe_find_medium":
+        return (Move("Finding the matching file.", f"find . -type f | grep '{task.target}'"),)
+    if task.task_type == "bash_pipe_extract_medium":
+        return (Move("Selecting the requested value.", f"grep '^{extra['key']}=' {extra['file']} | cut -d= -f2"),)
+    if task.task_type == "bash_pipe_write_medium":
+        return (Move("Filtering the entry into the output file.", f"grep '^{extra['key']}=' {extra['source']} | tee {extra['output']}"),)
+    if task.task_type == "bash_pipe_search_hard":
+        return (Move("Searching and reducing the matching paths.", f"grep -rn '{task.target}' . | cut -d: -f1 | sort -u"),)
+    if task.task_type == "bash_pipe_transform_hard":
+        return (Move("Extracting and writing the requested value.", f"cat {extra['source']} | grep '^{extra['key']}=' | cut -d= -f2 | tee {extra['output']}"),)
+    if task.task_type == "bash_pipe_discover_edit_hard":
+        return (Move("Finding and copying the marked line.", f"find . -type f | grep '{extra['needle']}' | xargs grep '{extra['marker']}' | tee {extra['output']}"),)
+    raise ValueError(f"no composed trajectory for {task.task_type!r}")
+
+
+_COMPOSED_MOVES = {task_type: _composed_moves for task_type in COMPOSED_GENERATORS}

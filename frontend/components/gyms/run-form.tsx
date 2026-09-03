@@ -63,6 +63,7 @@ export function RunForm({ gym }: { gym: Gym }) {
     return (easy.length > 0 ? easy : gym.task_types).map((t) => t.id)
   })
   const [count, setCount] = React.useState(DEFAULT_EPISODES)
+  const [groupSize, setGroupSize] = React.useState(1)
   const [seed, setSeed] = React.useState("")
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
@@ -88,7 +89,10 @@ export function RunForm({ gym }: { gym: Gym }) {
   }, [gym.task_types])
 
   const modelId = chosenId || models[0]?.id || ""
-  const ready = modelId && taskTypes.length > 0 && count > 0
+  // The service refuses a count that leaves a partial group, so the form does
+  // too rather than letting a 400 be the way anyone finds out.
+  const partialGroup = count % groupSize !== 0
+  const ready = modelId && taskTypes.length > 0 && count > 0 && !partialGroup
   const chosen = models.find((model) => model.id === modelId)
   const cramped =
     chosen !== undefined && chosen.contextWindow > 0 && chosen.contextWindow < MIN_CONTEXT
@@ -106,6 +110,8 @@ export function RunForm({ gym }: { gym: Gym }) {
         modelName: modelId,
         taskTypes,
         count,
+        // 1 is an ordinary evaluation and is left off the wire entirely.
+        ...(groupSize > 1 ? { groupSize } : {}),
         // A blank seed is a fresh draw; a given one makes the run repeatable.
         ...(seed.trim() === "" ? {} : { seedBase: Number(seed) }),
       })
@@ -125,7 +131,7 @@ export function RunForm({ gym }: { gym: Gym }) {
       description={`${gym.name} — one sandbox per task, seeded before anything runs.`}
     >
       <div className="space-y-5">
-        <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_8rem_8rem]">
+        <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_6rem]">
           <Field label="Model">
             <Select value={modelId} onValueChange={(value) => setChosenId(value ?? "")}>
               <SelectTrigger disabled={isLoading || models.length === 0}>
@@ -157,6 +163,16 @@ export function RunForm({ gym }: { gym: Gym }) {
               max={MAX_EPISODES}
               value={count}
               onChange={(e) => setCount(clamp(e.target.valueAsNumber))}
+            />
+          </Field>
+
+          <Field label="Rollouts" hint="attempts per task">
+            <Input
+              type="number"
+              min={1}
+              max={MAX_EPISODES}
+              value={groupSize}
+              onChange={(e) => setGroupSize(clamp(e.target.valueAsNumber))}
             />
           </Field>
 
@@ -209,6 +225,27 @@ export function RunForm({ gym }: { gym: Gym }) {
             ))}
           </div>
         </Field>
+
+        {groupSize > 1 && (
+          <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <span className="text-foreground">
+              {count / groupSize || 0} task{count / groupSize === 1 ? "" : "s"},
+              each attempted {groupSize} times.
+            </span>{" "}
+            A group of repeated attempts at one task is the baseline a policy
+            gradient measures a rollout against — so this only means anything at
+            a temperature above zero and with no sampler seed, or the attempts
+            are one attempt counted {groupSize} times.
+          </p>
+        )}
+
+        {partialGroup && (
+          <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {count} tasks does not divide into groups of {groupSize}. The last
+            group would be smaller than the rest, and a group of one has no
+            siblings to be better than.
+          </p>
+        )}
 
         {cramped && (
           <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">

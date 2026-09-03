@@ -58,10 +58,19 @@ class GymRun(Base):
     gym_id: Mapped[str] = mapped_column(String(60))
     model_name: Mapped[str] = mapped_column(String(200))
     #: The task types drawn from, in the order the episodes cycle through them.
+    #: A *group* cycles them, not an episode — see `group_size`.
     task_types: Mapped[list] = mapped_column(Json)
-    #: Episode *i* is generated from `seed_base + i`, so a run is reproducible
-    #: from this row alone.
+    #: Episode *i* is generated from `seed_base + i // group_size`, so a run is
+    #: reproducible from this row alone. Both fields are needed to say that: the
+    #: arithmetic changed when groups arrived, and a row without `group_size`
+    #: cannot tell you which formula drew it.
     seed_base: Mapped[int] = mapped_column(Integer)
+    #: How many consecutive episodes are rollouts of the *same* task. 1 — the
+    #: default and every run made before groups existed — is a run of distinct
+    #: tasks, which is what an evaluation wants. Above 1 the run is its own
+    #: GRPO batch: a group is the baseline an advantage is measured against, so
+    #: it has to be G attempts at one task rather than G different ones.
+    group_size: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     episode_count: Mapped[int] = mapped_column(Integer)
     status: Mapped[RunStatus] = mapped_column(
         Enum(RunStatus, name="gym_run_status"), default=RunStatus.pending

@@ -8,9 +8,15 @@ whether they all failed or all succeeded. What matters is not the mean score but
 **how many groups have any variance at all**.
 
 Runs are grouped by `(task_type, seed)` across every run sharing a `seed_base`,
-which is what makes the gate cost no schema: eight ordinary 20-episode runs at
-one seed base *are* twenty groups of eight, because episode *i* draws
-`seed_base + i` in every one of them.
+so the groups can be produced either way. **One run with `group_size` 8 is
+eight rollouts of each of its tasks** — the direct way, and the one that cannot
+be got wrong. Eight ordinary 20-episode runs at one seed base are also twenty
+groups of eight, because episode *i* draws `seed_base + i` in every one of them;
+that is what the gate was written against and it still reads.
+
+`sizes` in the output is the check on whichever route was taken: all-1 means no
+grouping happened at all, and every group of one is reported as all-pass or
+all-fail because that is what a single rollout always is.
 
     .venv/bin/python -m scripts.gate --seed-base 12345
 

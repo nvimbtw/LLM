@@ -33,9 +33,9 @@ router = APIRouter(tags=["demonstrations"])
 
 #: One request's worth. A demonstration batch is generated, not collected, so a
 #: caller wanting more can simply ask again into the same name — which appends.
-#: The ceiling is here so one request cannot hold the dataset row's lock for an
-#: unbounded time, which would stall every other writer.
-MAX_CONVERSATIONS = 500
+#: The ceiling bounds validation and the dataset row lock while still allowing
+#: a multi-thousand expert batch to land in one request.
+MAX_CONVERSATIONS = 5_000
 
 #: Matches `datasets.name`'s column width.
 MAX_NAME_CHARS = 120

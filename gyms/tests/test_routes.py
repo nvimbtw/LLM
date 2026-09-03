@@ -44,6 +44,66 @@ async def test_a_run_is_reproducible_from_its_seed(a_run):
     assert first["episodes"][0]["prompt"] == second["episodes"][0]["prompt"]
 
 
+async def test_a_group_is_repeated_attempts_at_one_task(a_run, sandbox):
+    """What `group_size` is for. GRPO's advantage is how much better a rollout
+    did than its *siblings*, so the siblings have to be attempts at the same
+    task — same type, same seed, same prompt — and a run of distinct tasks is a
+    baseline over nothing.
+    """
+    run = await a_run(count=4, group_size=4, task_types=["bash_grep"], seed_base=100)
+
+    episodes = run["episodes"]
+    assert {e["seed"] for e in episodes} == {100}
+    assert len({e["prompt"] for e in episodes}) == 1
+    # Identical tasks, and still four filesystems: the episode id is the sandbox
+    # key, so siblings cannot see each other's work.
+    assert len({e["id"] for e in episodes}) == 4
+    assert {e["id"] for e in episodes} <= set(sandbox.files)
+
+
+async def test_groups_cycle_the_task_types_and_the_seed_moves_per_group(a_run):
+    """The seed and the task type both key off the group, or a group is G
+    different questions."""
+    run = await a_run(
+        count=6, group_size=2, task_types=["bash_grep", "bash_csv", "bash_code"], seed_base=50
+    )
+
+    episodes = run["episodes"]
+    assert [e["task_type"] for e in episodes] == [
+        "bash_grep", "bash_grep", "bash_csv", "bash_csv", "bash_code", "bash_code",
+    ]
+    assert [e["seed"] for e in episodes] == [50, 50, 51, 51, 52, 52]
+
+
+async def test_a_count_that_leaves_a_partial_group_is_refused(client):
+    """A trailing group of one contributes exactly zero advantage, which is the
+    thing `group_size` exists to prevent — so it is a 400 rather than a run that
+    looks fine and teaches less than it claims."""
+    response = await client.post(
+        "/gym/runs",
+        json={
+            "gym_id": "bash",
+            "model_name": "tiny",
+            "task_types": ["bash_grep"],
+            "count": 5,
+            "group_size": 2,
+        },
+    )
+    assert response.status_code == 400
+    assert "group_size" in response.json()["detail"]
+
+
+async def test_an_ungrouped_run_draws_the_seeds_it_always_did(a_run):
+    """`group_size` defaults to 1, and at 1 the arithmetic is the old
+    `seed_base + i` — every run on record was drawn that way and stays
+    reproducible from its row."""
+    run = await a_run(count=3, task_types=["bash_grep", "bash_csv"], seed_base=7)
+
+    assert run["group_size"] == 1
+    assert [e["seed"] for e in run["episodes"]] == [7, 8, 9]
+    assert [e["task_type"] for e in run["episodes"]] == ["bash_grep", "bash_csv", "bash_grep"]
+
+
 async def test_seeding_that_fails_is_an_error_not_a_healthy_run(a_run, sandbox, client):
     """The failure this whole module exists to prevent: a run handed back over
     an empty filesystem, where every episode looks like a model that found

@@ -95,3 +95,8 @@ def grade(reply: str, ground_truth: str) -> tuple[float, str]:
     if re.search(rf"(?:^|[\s/]){re.escape(truth)}$", answer):
         return 1.0, answer
     return 0.0, answer
+
+
+def mutation_matches(stdout: str, exit_code: int, expected: str) -> bool:
+    """Whether a post-answer file check proves the requested edit landed."""
+    return exit_code == 0 and expected in stdout

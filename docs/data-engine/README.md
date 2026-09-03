@@ -142,7 +142,7 @@ polls.
 | `GET /runs/{id}/events` | SSE, replayed from the start. |
 | `POST /search-cache/lookup` | The newest result under a key, or an empty hit. See [`backend-written.md`](backend-written.md). |
 | `POST /search-cache` | Record a result under a key, creating the cache dataset on first use. |
-| `POST /datasets/demonstrations` | Append a batch of gym demonstrations to a named `sft` set, creating it on first use. See [`backend-written.md`](backend-written.md). |
+| `POST /datasets/demonstrations` | Append up to 5,000 gym demonstrations to a named `sft` set, creating it on first use. See [`backend-written.md`](backend-written.md). |
 
 **`/datasets/{id}/documents` is the seam the LLM engine reads**, through the
 backend's `/internal` routes — it stopped scanning a directory and now trains on

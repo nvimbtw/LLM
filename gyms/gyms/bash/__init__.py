@@ -12,6 +12,15 @@ from gyms.bash.tasks import (
     generate_read_easy,
     generate_read_medium,
 )
+from gyms.bash.composed import (
+    generate_pipe_discover_edit_hard,
+    generate_pipe_extract_medium,
+    generate_pipe_find_medium,
+    generate_pipe_search_hard,
+    generate_pipe_transform_hard,
+    generate_pipe_write_medium,
+    generate_write_easy,
+)
 
 __all__ = [
     "SYSTEM_PROMPT",
@@ -26,4 +35,11 @@ __all__ = [
     "generate_ls_medium",
     "generate_read_easy",
     "generate_read_medium",
+    "generate_pipe_discover_edit_hard",
+    "generate_pipe_extract_medium",
+    "generate_pipe_find_medium",
+    "generate_pipe_search_hard",
+    "generate_pipe_transform_hard",
+    "generate_pipe_write_medium",
+    "generate_write_easy",
 ]

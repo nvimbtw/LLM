@@ -53,6 +53,12 @@ export interface GymRun {
   model_name: string
   task_types: string[]
   seed_base: number
+  /**
+   * Rollouts per task. 1 is an evaluation — `episode_count` distinct tasks.
+   * Above 1 the run is its own GRPO batch: consecutive episodes are repeated
+   * attempts at one task, which is the group an advantage is measured against.
+   */
+  group_size: number
   episode_count: number
   status: RunStatus
   /** Mean score over the graded episodes, or null before any is graded. */
@@ -108,6 +114,8 @@ export interface NewRun {
   count: number
   /** Given, the run is reproducible; omitted, one is drawn. */
   seedBase?: number
+  /** Rollouts per task — see `GymRun.group_size`. Must divide `count`. */
+  groupSize?: number
 }
 
 export async function listGyms(): Promise<Gym[]> {
@@ -135,6 +143,7 @@ export async function createGymRun(run: NewRun): Promise<GymRunDetail> {
       task_types: run.taskTypes,
       count: run.count,
       ...(run.seedBase === undefined ? {} : { seed_base: run.seedBase }),
+      ...(run.groupSize === undefined ? {} : { group_size: run.groupSize }),
     }),
   })
   if (!res.ok) throw new Error(await detail(res, "create the run"))

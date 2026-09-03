@@ -12,7 +12,7 @@ a second gym will share none of them.
 from dataclasses import dataclass
 from typing import Callable
 
-from gyms.bash import tasks
+from gyms.bash import composed, tasks
 from gyms.bash.grade import grade
 from gyms.bash.tasks import Task
 
@@ -157,6 +157,70 @@ BASH = Gym(
             grade=grade,
             level="hard",
             family="find",
+        ),
+        # ---- composition: commands are chained inside one shell call. ----
+        TaskType(
+            id="bash_write_easy",
+            label="Write a file",
+            description="Create a named file with one redirection primitive.",
+            generate=composed.generate_write_easy,
+            grade=grade,
+            level="easy",
+            family="compose",
+        ),
+        TaskType(
+            id="bash_pipe_find_medium",
+            label="Pipe a file search",
+            description="Find and filter paths with exactly one pipe.",
+            generate=composed.generate_pipe_find_medium,
+            grade=grade,
+            level="medium",
+            family="compose",
+        ),
+        TaskType(
+            id="bash_pipe_extract_medium",
+            label="Pipe an extraction",
+            description="Read, select and extract a value with exactly one pipe.",
+            generate=composed.generate_pipe_extract_medium,
+            grade=grade,
+            level="medium",
+            family="compose",
+        ),
+        TaskType(
+            id="bash_pipe_write_medium",
+            label="Pipe into a file",
+            description="Filter a record and write it with exactly one pipe.",
+            generate=composed.generate_pipe_write_medium,
+            grade=grade,
+            level="medium",
+            family="compose",
+        ),
+        TaskType(
+            id="bash_pipe_search_hard",
+            label="Reduce search results",
+            description="Search, extract paths and deduplicate with three commands.",
+            generate=composed.generate_pipe_search_hard,
+            grade=grade,
+            level="hard",
+            family="compose",
+        ),
+        TaskType(
+            id="bash_pipe_transform_hard",
+            label="Transform into a file",
+            description="Read, filter, extract and write with three pipeline stages.",
+            generate=composed.generate_pipe_transform_hard,
+            grade=grade,
+            level="hard",
+            family="compose",
+        ),
+        TaskType(
+            id="bash_pipe_discover_edit_hard",
+            label="Discover and edit",
+            description="Find a file, extract a line and write it through a pipeline.",
+            generate=composed.generate_pipe_discover_edit_hard,
+            grade=grade,
+            level="hard",
+            family="compose",
         ),
     ),
 )

@@ -106,3 +106,17 @@ memory, which reads afterwards as a model that solved the gym.
 `tests/test_tasks.py` pins a floor on the distinct prompts a type produces, and
 holds every phrasing to the same ~80-character budget for the reason the system
 block is short.
+
+## Composition and mutation
+
+The compositional task types leave the historical generators unchanged. The
+new write primitive uses one redirection command; medium tasks use exactly one
+pipe; hard tasks use three or more pipeline stages. Names, markers, values,
+layouts and prompt fragments are generated from the seed, rather than selected
+from a small scenario list, so repeated SFT batches can use fresh seed ranges.
+
+Edit tasks store a mutation expectation in the task configuration. The episode
+grader performs a post-answer `cat` and requires the expected content to be
+present, so a correct final answer without the requested file change scores
+zero. Pipelines run inside one shell call because just-bash starts a fresh shell
+for every gym step; a pipe cannot span two steps.
