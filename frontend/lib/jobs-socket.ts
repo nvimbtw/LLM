@@ -63,6 +63,19 @@ export function attachJob(
         break
     }
     handlers.onFrame(msg)
+    // A terminal frame ends the run's stream for good, same as `final` does on the
+    // chat socket. Closing here — rather than only on unmount/detach — means a job
+    // page left open after its run finishes stops listening immediately instead of
+    // staying attached (and able to keep writing state) for as long as the page
+    // happens to stay mounted.
+    if (msg.type === "done" || msg.type === "error" || msg.type === "cancelled") {
+      closed = true
+      try {
+        ws.close()
+      } catch {
+        // already closing
+      }
+    }
   }
 
   ws.onerror = () => {
