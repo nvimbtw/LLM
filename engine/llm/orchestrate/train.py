@@ -135,6 +135,11 @@ class CheckpointWriter:
             stage_name=stage_name,
             path=str(state),
             loss=loss,
+            # Off the model being saved rather than out of `self.config`, so it
+            # cannot disagree with the `arch` in the file written two lines
+            # above — and so it is right for a resumed run, whose config states
+            # no architecture at all.
+            architecture={name: getattr(model, name) for name in ARCHITECTURE_SUMMARY_FIELDS},
         )
 
 

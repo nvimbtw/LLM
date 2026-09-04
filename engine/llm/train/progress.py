@@ -5,7 +5,7 @@ today a log line, later a WebSocket. The seam exists now because retrofitting it
 means changing every signature between here and the route.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 # Roughly how many report frames a run should produce, whatever its length.
@@ -213,6 +213,13 @@ class Checkpoint:
     #: The training state, which is the file a later run resumes from.
     path: str
     loss: float | None = None
+    #: The shape the weights were saved at, read off the model rather than off
+    #: the config that asked for one: a resumed run's request states no
+    #: architecture — inheriting the checkpoint's is what saying nothing means —
+    #: so the row this frame writes has nowhere else to learn it from, and
+    #: `context` on it would otherwise be empty or a default nobody chose.
+    #: Empty from a producer that does not measure it, never zeroes.
+    architecture: dict[str, int] = field(default_factory=dict)
     #: The run's own finished model rather than an intermediate. Recorded by the
     #: handler that was going to write that row anyway, so it carries no index.
     final: bool = False

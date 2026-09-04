@@ -121,7 +121,8 @@ that on purpose (see its docstring) and a *resumed* pretrain states none
 either — saying nothing is how a resume asks for the checkpoint's shape. So
 both pipelines record the resolved five under `result.architecture`, which is
 where `architectureOf` and the model row's `context` read it from, and where a
-resumed run's real shape is the only place it can be found. `result.base_model`
+resumed run's real shape is the only place it can be found. A checkpoint row
+answers there too, off its own frame — see [`checkpoints.md`](checkpoints.md). `result.base_model`
 carries the same fine-tune's ancestry, mirroring `config.base_model`. Four
 nullable columns carry a run's intermediates, and every pre-existing row keeps
 them null — which is exactly what being a finished model means:

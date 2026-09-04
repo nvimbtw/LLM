@@ -23,6 +23,11 @@ database:
 - A `Checkpoint` frame rides the existing `ProgressCallback` — the seam a run
   already has for things it must say while still running — and
   `api/handlers.py::record_checkpoint` is the only place that becomes a row.
+  The frame carries the **shape** as well, measured off the model whose weights
+  were just written rather than read off the run's config: a resumed run states
+  no architecture at all, so a row sourced from the config advertised pydantic's
+  defaults as the checkpoint's shape and served a `context` nobody had chosen.
+  It lands on the row as `result.architecture` and as the `context` column.
   It writes **immediately, bypassing `PROGRESS_WRITE_SECS`**: that throttle
   exists so a progress bar does not cost a row per step, and a checkpoint frame
   it swallowed would be weights on disk that nothing can name. It also never

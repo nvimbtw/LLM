@@ -153,6 +153,13 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
                 parent_id=_model_id(config.get("model_name")),
                 checkpoint_step=checkpoint.step,
                 checkpoint_index=checkpoint.index,
+                # The shape comes off the frame, which read it off the weights
+                # it had just saved. The run's config cannot answer for a
+                # resumed run — it states no architecture, because inheriting
+                # the checkpoint's is what saying nothing means — so a row
+                # sourced from it advertised the request's defaults as this
+                # model's shape, and served a `context` nobody had chosen.
+                context=checkpoint.architecture.get("ctx_window"),
                 # The row carries where in the run this was taken and what the
                 # loss was there, because nothing else can answer it. The same
                 # numbers are in the checkpoint's own `meta.json`, but the
@@ -163,6 +170,13 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
                 parameters={
                     "config": config,
                     "result": {
+                        # Absent from a producer that does not measure it, the
+                        # way every unmeasured figure is absent here.
+                        **(
+                            {"architecture": checkpoint.architecture}
+                            if checkpoint.architecture
+                            else {}
+                        ),
                         "checkpoint": {
                             "index": checkpoint.index,
                             "step": checkpoint.step,

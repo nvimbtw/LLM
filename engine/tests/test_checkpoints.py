@@ -27,6 +27,17 @@ from store.schema import RunKind
 from tests.test_migrations import scratch_database  # noqa: F401
 
 
+#: What the frame says the weights were saved at — deliberately nothing like a
+#: `TrainConfig`'s defaults, since telling the two apart is the point.
+ARCHITECTURE = {
+    "dimensions": 512,
+    "heads": 8,
+    "layers": 16,
+    "ff_multiplier": 4,
+    "ctx_window": 1024,
+}
+
+
 def checkpoint(index: int, *, model_id: str, step: int, final: bool = False) -> Checkpoint:
     return Checkpoint(
         model_id=model_id,
@@ -38,8 +49,32 @@ def checkpoint(index: int, *, model_id: str, step: int, final: bool = False) -> 
         stage_name=None,
         path=f"{model_id}/train_state.pt",
         loss=1.25,
+        architecture=dict(ARCHITECTURE),
         final=final,
     )
+
+
+def test_a_checkpoint_row_carries_the_shape_the_frame_measured(store_session):
+    """The run's config cannot answer this. A resumed run states no
+    architecture — inheriting the checkpoint's is what saying nothing means — so
+    a row sourced from the config advertised pydantic's defaults as this model's
+    shape, and served a `context` nobody had chosen. The frame reads it off the
+    weights it just saved instead."""
+    parent_id = uuid.uuid4()
+    with store.session() as db:
+        run_id = q.enqueue(
+            db,
+            kind=RunKind.train,
+            label="t",
+            config={"model_name": str(parent_id), "resume_from": "somewhere"},
+        ).id
+
+    made = handlers.record_checkpoint(run_id, checkpoint(1, model_id=str(uuid.uuid4()), step=10))
+
+    with store.session() as db:
+        model = q.get_model(db, made)
+        assert model.parameters["result"]["architecture"] == ARCHITECTURE
+        assert model.context == ARCHITECTURE["ctx_window"]
 
 
 # ── the migration ───────────────────────────────────────────────────────────
