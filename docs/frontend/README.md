@@ -961,6 +961,33 @@ dropping is the failure mode to watch for: pydantic reads a field left at the
 form's default as one the request *stated*, so a control nobody can see is still
 enough to have the run rejected.
 
+**The tokenizer is inherited the same way, on its own list.** `resumed_tokenizer`
+in the engine refuses a resumed run's *stated* `tokenizer_id` exactly as
+`resumed_architecture` refuses a disagreeing shape, so the composer offers no
+Tokenizer selector once `resume_from` is set (`run-config.ts::hidesTokenizer`,
+read by both `train-board.tsx` and `params-rail.tsx`), and `RESUMED_TOKENIZER_FIELDS`
+(`lib/training.ts`) is dropped from the payload alongside `RESUMED_ARCH_FIELDS`
+in `lib/jobs.ts`. It is a list of its own rather than folded into
+`RESUMED_ARCH_FIELDS` because neither field on it is an architecture field and
+`tokenizer_id` is not rendered through `ARCH_FIELDS` — the two are read together
+everywhere a resume's payload is stripped. The note under the Optimization panel
+says so as well, so a person picking "Continue from" is told once, in prose, that
+the vocabulary is not theirs to choose either.
+
+**`max_vocab` is on that list too, and it is the one to keep an eye on.** It is
+neither refused nor honoured: the engine's `tokenizer_for` returns the
+checkpoint's vocabulary and returns *before* `max_vocab` is read, so a stated
+ceiling is silently ignored — which is why it survived the pass that hid the
+architecture knobs. A field that is quietly dropped on the engine's side is
+worse than one that is refused, not better: nothing fails, and the run is stored
+and recapped carrying a number it never used. It renders through `ARCH_FIELDS`,
+so `fieldsFor` had been hiding it only when a *built* vocabulary was named —
+a condition a resume never meets, because `hidesTokenizer` means `tokenizer_id`
+is never set. `validate` skips it on a resume for the same reason it skips the
+shape, and `jobs/config-recap.tsx` prints "Tokenizer — The checkpoint's" instead
+of a max-vocab row rather than reporting the engine's default back as a
+decision.
+
 #### Reading a run back — the diagnostics panel
 
 `components/training/diagnostics-panel.tsx` renders `DiagPoint[]`

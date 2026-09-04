@@ -69,9 +69,11 @@ export interface TrainConfig {
   // every run did before builds existed — and `max_vocab` is ignored whenever one
   // is named, since a vocabulary's size belongs to the build.
   //
-  // Pretrain only: a fine-tune loads the base model's own tokenizer, because
-  // weights meeting token ids they were never trained on produce confident
-  // nonsense.
+  // Pretrain only, and only when starting from scratch: a fine-tune loads the
+  // base model's own tokenizer, and a resumed pretrain (`resume_from` set)
+  // loads the checkpoint's — both for the reason weights meeting token ids they
+  // were never trained on produce confident nonsense, and both the composer's
+  // to leave alone rather than to state (see `RESUMED_TOKENIZER_FIELDS`).
   tokenizer_id?: string
   // Which data-engine datasets to train on, each with how many of its documents
   // to take (0 = all of that dataset). Pretrain only.
@@ -131,6 +133,25 @@ export const RESUMED_ARCH_FIELDS = [
   "heads",
   "layers",
   "ff_multiplier",
+] as const satisfies readonly (keyof TrainConfig)[]
+
+// The vocabulary a resumed run inherits, the same way `RESUMED_ARCH_FIELDS`
+// covers the shape — the engine's `resumed_tokenizer` refuses a *stated*
+// `tokenizer_id` that disagrees with the checkpoint's rather than honouring
+// it, so the composer must neither show a control for this nor send it. Held
+// apart from `RESUMED_ARCH_FIELDS` because neither is an architecture field —
+// the composer renders `tokenizer_id` as its own Tokenizer selector, not
+// through `ARCH_FIELDS` — but the two lists are read together wherever a
+// resume's payload is stripped.
+//
+// `max_vocab` rides along because it is the *other* half of the same
+// inheritance and the worse-behaved half: the engine's `tokenizer_for` returns
+// the checkpoint's vocabulary before `max_vocab` is ever read, so a stated
+// ceiling is not refused the way a disagreeing `tokenizer_id` is — it is
+// silently ignored, then stored on the run and recapped as though it applied.
+export const RESUMED_TOKENIZER_FIELDS = [
+  "tokenizer_id",
+  "max_vocab",
 ] as const satisfies readonly (keyof TrainConfig)[]
 
 // One checkpoint, announced as its weights land: the engine's `Checkpoint`

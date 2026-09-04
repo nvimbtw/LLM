@@ -61,6 +61,31 @@ the defaults filled in behind it), and a disagreement, vocabulary size included,
 is refused rather than silently overridden: the weights would win regardless,
 and the run would report an architecture it did not train.
 
+**The tokenizer follows the same rule** (`train.py::resumed_tokenizer`), and it
+has to: a corpus packed under a different vocabulary than the checkpoint's would
+either index its embedding table out of bounds or, if the two vocabularies
+happen to be the same size, mean different tokens by the same ids without
+either failing at all. Before this, a resumed run with `tokenizer_id` left
+unset re-derived a *fresh* vocabulary from its own dataset selection the way a
+from-scratch pretrain does — plausible right up until it packed a corpus the
+checkpoint was never trained to read. `resumed_tokenizer` recovers the
+checkpoint's own id from `state.extra` (set by `CheckpointWriter` on every
+checkpoint this pipeline writes) and falls back to the model's own `meta.json`
+for a *finished* model, whose `train_state.pt` — a plain weights file — carries
+no `extra` at all; that fallback is the same provenance lookup
+`orchestrate/sft.py` uses to recover a base model's tokenizer
+(`train.run_record`, née `sft._base_run`, generalized so both orchestrators
+share it). A request that states a *disagreeing* `tokenizer_id` on a resume is
+refused exactly like a disagreeing architecture field; one that states none
+gets the checkpoint's silently, which is the point.
+
+`max_vocab` is the loose end of that rule: `tokenizer_for` returns the
+checkpoint's vocabulary before ever reading it, so a resumed run's stated
+ceiling is neither honoured nor refused — it is ignored, and then stored on the
+run as though it had applied. Nothing here needs it to fail; the composer does
+not send it (`RESUMED_TOKENIZER_FIELDS` in the frontend), which is why this is
+recorded rather than guarded against a second time.
+
 The resume position is a **batch** ordinal. On a masked corpus the loop drops
 windows with nothing trainable in them, so steps and batches differ by however
 many were dropped and such a resume would re-enter within a few windows of where

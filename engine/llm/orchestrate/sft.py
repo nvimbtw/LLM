@@ -31,41 +31,14 @@ from llm.train.progress import ProgressCallback, Tokenize, log_progress
 from llm.train.warm_start import untrained_marker_ids, warm_start_embeddings
 
 
-def _base_run(base_model: str) -> dict:
-    """What the run that produced the base model recorded about itself.
-
-    Two meta.json shapes are in circulation and both are live, because two
-    writers produce them. A run driven straight through the engine keeps what
-    `run` wrote here: `{"config", "result"}`. A run driven by the backend queue
-    has its meta *rewritten* on the way out by `training::write_meta`, which
-    stores this whole result dict under the key `"dataset"` instead.
-
-    Reading only the first spelling made `_base_special_ids` return None for
-    every backend-launched run — `untrained_marker_ids` then saw "unknown" and
-    reset nothing, and the ~28 chat-scaffold markers the pretrain never contained
-    entered SFT at random init. That is exactly the failure
-    `llm/train/warm_start.py` exists to prevent, and it was silent: the only
-    sign was `warm_started: 0` on a base that had plainly never seen a chat
-    template.
-    """
-    path = storage.meta_path(base_model)
-    if not path.is_file():
-        return {}
-    meta = json.loads(path.read_text(encoding="utf-8"))
-    run = meta.get("result")
-    if not isinstance(run, dict):
-        run = meta.get("dataset")
-    return run if isinstance(run, dict) else {}
-
-
 def _base_special_ids(base_model: str) -> list[int] | None:
     """Which markers the base model was trained on, or None when that was never
     recorded (a model trained before the field existed).
 
     The corpus stats are the `dataset` *inside* the run record either way — see
-    `_base_run` for the two shapes that record comes in.
+    `train_pipeline.run_record` for the two shapes that record comes in.
     """
-    dataset = _base_run(base_model).get("dataset")
+    dataset = train_pipeline.run_record(base_model).get("dataset")
     if not isinstance(dataset, dict):
         return None
     return dataset.get("special_ids_seen")
@@ -90,7 +63,7 @@ def _pretrain_probe(base_model: str, ctx_window: int, vocab: int) -> np.ndarray 
     `corpus.bin` is laid out in dataset and stage order and a probe taken from
     the head would measure whichever dataset happened to be packed first.
     """
-    key = _base_run(base_model).get("corpus_key")
+    key = train_pipeline.run_record(base_model).get("corpus_key")
     if not isinstance(key, str) or not storage.pretrain_corpus_path(key).is_file():
         return None
 
@@ -340,7 +313,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         "trainable_tokens": int(mask.sum()),
         "total_tokens": len(corpus),
     }
-    base = _base_run(cfg.base_model)
+    base = train_pipeline.run_record(cfg.base_model)
     summary = loop.run(
         model,
         corpus,

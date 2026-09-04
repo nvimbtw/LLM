@@ -14,6 +14,7 @@ import {
   STRING_FIELDS,
   defaultLrFor,
   fieldsFor,
+  hidesTokenizer,
   inheritsArchitecture,
   validate,
   type Field,
@@ -183,7 +184,7 @@ export function TrainBoard({
                       </SelectContent>
                     </Select>
                   </label>
-                ) : (
+                ) : !hidesTokenizer(cfg) ? (
                   <label className="space-y-1.5">
                     <FieldLabel hint="Reuse a build, or learn one as it packs">
                       Tokenizer
@@ -229,7 +230,7 @@ export function TrainBoard({
                       </SelectContent>
                     </Select>
                   </label>
-                )}
+                ) : null}
 
                 {/* A `div` and not a `label`: two controls under one caption,
                     and a label may only name one. */}
@@ -302,8 +303,9 @@ export function TrainBoard({
                 {!isSft && (
                   <>
                     {" "}
-                    Its vocabulary has to match too, so continue against the
-                    tokenizer the run was trained with.
+                    Its tokenizer comes with them, so there is no vocabulary
+                    to pick — the run trains against whatever it was trained
+                    with.
                   </>
                 )}
               </p>

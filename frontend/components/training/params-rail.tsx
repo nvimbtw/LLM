@@ -21,6 +21,7 @@ import {
   defaultLrFor,
   derived,
   fieldsFor,
+  hidesTokenizer,
   inheritsArchitecture,
   validate,
 } from "@/components/training/run-config"
@@ -301,7 +302,7 @@ export function ParamsRail({
           </Row>
         )}
 
-        {!isSft && (
+        {!isSft && !hidesTokenizer(cfg) && (
           <Row label="Tokenizer">
             <Select
               value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
@@ -486,8 +487,8 @@ export function ParamsRail({
           {!isSft && (
             <>
               {" "}
-              Its vocabulary has to match too, so continue against the tokenizer
-              the run was trained with.
+              Its tokenizer comes with them, so there is no vocabulary to
+              pick.
             </>
           )}
           {isKto && (

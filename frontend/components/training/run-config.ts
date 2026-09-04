@@ -7,6 +7,7 @@
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
 import {
   RESUMED_ARCH_FIELDS,
+  RESUMED_TOKENIZER_FIELDS,
   isFineTune,
   type TrainConfig,
   type TrainMode,
@@ -218,7 +219,13 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
 
   if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
     errs.push("Learning rate must be positive.")
-  if (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
+  // Not sent for a resume either (`RESUMED_TOKENIZER_FIELDS`), and for the same
+  // reason: the vocabulary is the checkpoint's, so a ceiling left over in the
+  // form is not a number this run gets to be refused over.
+  if (
+    !cfg.resume_from &&
+    (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
+  )
     errs.push("Max vocab must be at least 256.")
 
   // Curriculum runs supply their datasets per stage; a plain run uses the flat
@@ -263,6 +270,20 @@ export function inheritsArchitecture(cfg: TrainConfig): boolean {
   return isFineTune(cfg.mode) || Boolean(cfg.resume_from)
 }
 
+/**
+ * Whether the composer offers a tokenizer choice for this run.
+ *
+ * A fine-tune never showed a Tokenizer selector — it loads the base model's
+ * own — so the only case this hides one is a pretrain continuing from a
+ * checkpoint: the vocabulary comes from the checkpoint the same way the
+ * architecture does (the engine's `resumed_tokenizer`, alongside
+ * `resumed_architecture`), and offering a control for it would be offering a
+ * choice the engine refuses the run for having made.
+ */
+export function hidesTokenizer(cfg: TrainConfig): boolean {
+  return Boolean(cfg.resume_from)
+}
+
 /** The numeric fields a mode actually shows, in the order they are rendered. */
 export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
@@ -287,18 +308,21 @@ export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
   }
   if (isFineTune(cfg.mode)) return { arch: [], run: RUN_FIELDS }
 
-  // Two fields drop out for the same reason — a control wired to a number this
-  // run does not decide. A named vocabulary carries its own size, so `max_vocab`
-  // is ignored whenever one is named; and a resumed run's shape is the
-  // checkpoint's, so restating it is not an override but a refusal.
-  const resuming = Boolean(cfg.resume_from)
+  // Fields drop out for one reason — a control wired to a number this run does
+  // not decide. A named vocabulary carries its own size, so `max_vocab` is
+  // ignored whenever one is named; and a resumed run inherits both its shape and
+  // its vocabulary from the checkpoint, so restating either is at best ignored
+  // and at worst a refusal. The resume case reads the same two lists the payload
+  // is stripped against, so what the composer hides and what it declines to send
+  // cannot drift apart.
+  const inherited: readonly string[] = cfg.resume_from
+    ? [...RESUMED_ARCH_FIELDS, ...RESUMED_TOKENIZER_FIELDS]
+    : []
   return {
     arch: ARCH_FIELDS.filter(
       (f) =>
         !(f.key === "max_vocab" && cfg.tokenizer_id) &&
-        !(
-          resuming && (RESUMED_ARCH_FIELDS as readonly string[]).includes(f.key)
-        )
+        !inherited.includes(f.key)
     ),
     run,
   }

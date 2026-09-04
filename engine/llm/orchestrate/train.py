@@ -138,6 +138,31 @@ class CheckpointWriter:
         )
 
 
+def run_record(model_id: str) -> dict:
+    """What the run that produced a model recorded about itself.
+
+    Two meta.json shapes are in circulation and both are live, because two
+    writers produce them. A run driven straight through the engine keeps what
+    `run`/SFT's `run` wrote here: `{"config", "result"}`. A run driven by the
+    backend queue has its meta *rewritten* on the way out by
+    `training::write_meta`, which stores this whole result dict under the key
+    `"dataset"` instead.
+
+    Reading only the first spelling made `sft._base_special_ids` return None for
+    every backend-launched run — this is that same lookup, generalized so a
+    resumed pretrain can recover a checkpoint's `tokenizer_id` the same way an
+    SFT run recovers a base model's.
+    """
+    path = storage.meta_path(model_id)
+    if not path.is_file():
+        return {}
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    run = meta.get("result")
+    if not isinstance(run, dict):
+        run = meta.get("dataset")
+    return run if isinstance(run, dict) else {}
+
+
 def resume_state(model_id: str | None) -> TrainState | None:
     """The training state a run was told to carry on from, or None.
 
@@ -189,6 +214,44 @@ def resumed_architecture(cfg: TrainConfig, state: TrainState, vocab_size: int) -
             f"checkpoint and this request asks for " + "; ".join(disagreements)
         )
     return arch
+
+
+def resumed_tokenizer(cfg: TrainConfig, state: TrainState) -> str:
+    """The vocabulary a resumed run trains against, which is the checkpoint's.
+
+    The same rule as `resumed_architecture`, for the one shape fact it does not
+    cover: a corpus packed under a different vocabulary than the checkpoint's
+    embedding table would index into it out of bounds, or — worse, if the two
+    vocabularies happen to be the same size — quietly mean different tokens by
+    the same ids. Letting the request state a different one, or re-deriving one
+    from this run's own dataset selection the way a fresh pretrain does, both
+    lead there.
+
+    `state.extra` carries `tokenizer_id` when the checkpoint was written by this
+    pipeline's `CheckpointWriter`; resuming from a *finished* model — a plain
+    weights file, no `train_state.pt` — has no `extra` at all, so this falls
+    back to that model's own meta.json, the same provenance lookup
+    `orchestrate/sft.py` does for a base model's tokenizer (`run_record`).
+    """
+    tokenizer_id = state.extra.get("tokenizer_id") or run_record(cfg.resume_from).get(
+        "tokenizer_id"
+    )
+    if not tokenizer_id:
+        raise ValueError(
+            f"Cannot resume from {cfg.resume_from}: it recorded no tokenizer_id to "
+            f"continue from, so the vocabulary it was trained under cannot be "
+            f"recovered."
+        )
+    if (
+        "tokenizer_id" in cfg.model_fields_set
+        and cfg.tokenizer_id
+        and cfg.tokenizer_id != tokenizer_id
+    ):
+        raise ValueError(
+            f"Cannot resume from {cfg.resume_from}: the tokenizer comes from the "
+            f"checkpoint ({tokenizer_id}) and this request asks for {cfg.tokenizer_id}"
+        )
+    return tokenizer_id
 
 
 def build_dataset(
@@ -337,15 +400,26 @@ def _vocabulary(
     client,
     selection: list[pack.StageSelection],
     on_progress: ProgressCallback | None,
+    state: TrainState | None = None,
 ) -> str:
     """The id of the vocabulary this run trains against.
 
-    Either one a `tokenize` run built and this run named, or — when it named none
-    — one derived from this run's own selection. The derived id is a function of
-    those inputs rather than a fresh uuid, so two identical runs still share a
-    vocabulary and the corpus packed under it, which is what made skipping
-    tokenization worth having in the first place.
+    A resumed run (`state` is not None) is not a choice at all: it is the
+    checkpoint's own tokenizer, via `resumed_tokenizer` — never re-derived from
+    this run's dataset selection and never a stated `tokenizer_id` overriding it,
+    for the same reason `resumed_architecture` refuses a disagreeing shape.
+
+    Otherwise it is either one a `tokenize` run built and this run named, or —
+    when it named none — one derived from this run's own selection. The derived
+    id is a function of those inputs rather than a fresh uuid, so two identical
+    runs still share a vocabulary and the corpus packed under it, which is what
+    made skipping tokenization worth having in the first place.
     """
+    if state is not None:
+        tokenizer_id = resumed_tokenizer(cfg, state)
+        print(f"[1/6] Vocabulary {tokenizer_id} (inherited from {cfg.resume_from})")
+        return tokenizer_id
+
     if cfg.tokenizer_id:
         if vocab.info(cfg.tokenizer_id) is None:
             raise FileNotFoundError(
@@ -386,11 +460,16 @@ def run(
     # are read while the corpus is packed and never afterwards.
     with remote.Client(owner) as client:
         selection = pack.resolve(client, cfg.stages())
-        tokenizer_id = _vocabulary(cfg, client, selection, on_progress)
-        return _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started)
+        # Resolved once, ahead of the vocabulary: a resumed run's tokenizer is
+        # the checkpoint's own rather than anything derived from `selection`, and
+        # `_train` needs this same state again to build the model and decide
+        # resumed-vs-continued, so it is not resolved twice.
+        state = resume_state(cfg.resume_from)
+        tokenizer_id = _vocabulary(cfg, client, selection, on_progress, state)
+        return _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, started)
 
 
-def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -> dict:
+def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, started) -> dict:
     tokenizer = vocab.load(tokenizer_id)
     fingerprint = vocab.fingerprint(tokenizer_id)
 
@@ -456,7 +535,6 @@ def _train(cfg, client, selection, tokenizer_id, on_progress, cancel, started) -
         data_plan = DataPlan.whole_corpus(len(corpus))
 
     device = loop.pick_device()
-    state = resume_state(cfg.resume_from)
     model = _model(cfg, state, bpe.vocab_size(tokenizer))
     print(
         f"[4/6] Model: {model.parameter_count():,} parameters, "

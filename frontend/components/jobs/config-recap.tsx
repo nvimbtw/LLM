@@ -157,11 +157,20 @@ function train(config: TrainConfig | null): Recap | null {
       "Starts from",
       config.resume_from ? "A saved state" : "Random weights",
     ])
-    rows.push([
-      "Tokenizer",
-      config.tokenizer_id ? "A built vocabulary" : "Learned with the run",
-    ])
-    if (!config.tokenizer_id) rows.push(["Max vocab", String(config.max_vocab)])
+    // A resumed run states neither: the vocabulary is the checkpoint's, and
+    // `max_vocab` is never read. Both are stripped from what is sent and the
+    // stored config keeps only what was stated, so there is nothing here to
+    // report — and a default reported as a choice is a decision nobody made.
+    if (config.resume_from) {
+      rows.push(["Tokenizer", "The checkpoint's"])
+    } else {
+      rows.push([
+        "Tokenizer",
+        config.tokenizer_id ? "A built vocabulary" : "Learned with the run",
+      ])
+      if (!config.tokenizer_id)
+        rows.push(["Max vocab", String(config.max_vocab)])
+    }
     rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
   }
   // SFT only: pretrain always strips, and RAFT/KTO have no thinking to strip, so

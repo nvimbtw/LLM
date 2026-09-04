@@ -10,6 +10,7 @@ from llm.chat.template import Reasoning
 from llm.config import EvalConfig, SftConfig
 from llm.corpus import sft as sft_corpus
 from llm.orchestrate import evaluate as eval_pipeline
+from llm.orchestrate import train as train_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from tests.fixtures.tiny_env import TINY_CHAT_ID, TINY_DATASET_ID, TINY_MODEL
 
@@ -268,7 +269,7 @@ def test_the_pretrain_probe_comes_from_the_base_model_s_own_corpus(
     # Ids inside the base model's vocabulary, and long enough for both rows.
     tokens = (np.arange(4096, dtype=np.int64) % 300).astype(pack.CORPUS_DTYPE)
     storage.pretrain_corpus_path(key).write_bytes(tokens.tobytes())
-    monkeypatch.setattr(sft_pipeline, "_base_run", lambda _: {"corpus_key": key})
+    monkeypatch.setattr(train_pipeline, "run_record", lambda _: {"corpus_key": key})
 
     probe = sft_pipeline._pretrain_probe(sft_config.base_model, ctx_window=128, vocab=320)
 
@@ -297,7 +298,7 @@ def test_the_pretrain_probe_refuses_a_corpus_from_another_vocabulary(
     storage.ensure_dir(storage.pretrain_dataset_dir(key))
     tokens = np.full(4096, 511, dtype=pack.CORPUS_DTYPE)
     storage.pretrain_corpus_path(key).write_bytes(tokens.tobytes())
-    monkeypatch.setattr(sft_pipeline, "_base_run", lambda _: {"corpus_key": key})
+    monkeypatch.setattr(train_pipeline, "run_record", lambda _: {"corpus_key": key})
 
     assert sft_pipeline._pretrain_probe(sft_config.base_model, 128, vocab=320) is None
 

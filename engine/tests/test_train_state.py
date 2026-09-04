@@ -415,6 +415,58 @@ def test_a_vocabulary_the_checkpoint_was_not_trained_on_is_refused():
         train_pipeline.resumed_architecture(cfg, state_of(), VOCAB + 1)
 
 
+def test_a_stated_tokenizer_that_disagrees_is_refused():
+    cfg = TrainConfig(model_name="x", resume_from="somewhere", tokenizer_id="other-tok")
+
+    with pytest.raises(ValueError, match="tokenizer comes from the checkpoint"):
+        train_pipeline.resumed_tokenizer(
+            cfg, state_of(extra={"corpus_key": "test-corpus", "tokenizer_id": "ckpt-tok"})
+        )
+
+
+def test_a_stated_tokenizer_that_agrees_is_allowed():
+    cfg = TrainConfig(model_name="x", resume_from="somewhere", tokenizer_id="ckpt-tok")
+
+    assert (
+        train_pipeline.resumed_tokenizer(
+            cfg, state_of(extra={"corpus_key": "test-corpus", "tokenizer_id": "ckpt-tok"})
+        )
+        == "ckpt-tok"
+    )
+
+
+def test_a_request_that_restates_nothing_takes_the_checkpoints_tokenizer():
+    cfg = TrainConfig(model_name="x", resume_from="somewhere")
+
+    assert (
+        train_pipeline.resumed_tokenizer(
+            cfg, state_of(extra={"corpus_key": "test-corpus", "tokenizer_id": "ckpt-tok"})
+        )
+        == "ckpt-tok"
+    )
+
+
+def test_resuming_a_finished_model_falls_back_to_its_meta_json():
+    """A finished model's `train_state.pt` has no `extra` at all — its tokenizer
+    lives in meta.json instead, the same provenance lookup SFT uses for a base
+    model's (`run_record`)."""
+    model_id = "finished-model"
+    storage.ensure_dir(storage.model_dir(model_id))
+    storage.meta_path(model_id).write_text(
+        json.dumps({"config": {}, "result": {"tokenizer_id": "base-tok"}})
+    )
+    cfg = TrainConfig(model_name="x", resume_from=model_id)
+
+    assert train_pipeline.resumed_tokenizer(cfg, state_of(extra={})) == "base-tok"
+
+
+def test_resuming_with_no_recorded_tokenizer_anywhere_is_refused():
+    cfg = TrainConfig(model_name="x", resume_from="nowhere-recorded")
+
+    with pytest.raises(ValueError, match="recorded no tokenizer_id"):
+        train_pipeline.resumed_tokenizer(cfg, state_of(extra={}))
+
+
 def test_resuming_from_nothing_says_where_it_looked():
     with pytest.raises(FileNotFoundError, match="resume_from"):
         train_pipeline.resume_state(str(random.random()))
