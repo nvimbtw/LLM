@@ -245,6 +245,78 @@ async def test_a_tool_result_is_a_turn_of_its_own(acting):
     )
 
 
+async def test_an_interjection_rides_alongside_its_tool_result(acting):
+    """A message that arrived mid-turn is stored right after the tool result
+    it followed, and both are in the turns the model is prompted with."""
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={"model_name": TINY_MODEL, "text": "where did the cat sit?", "max_tokens": 4},
+    )
+
+    answered = await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "max_tokens": 4,
+            "tool_result": {
+                "tool": "web-search",
+                "argument": "where the cat sat",
+                "body": "<|par|>on the mat<|/par|>",
+            },
+            "interject": "actually, tell me about the dog instead",
+        },
+    )
+    assert answered.status_code == 201
+
+    stored = (await acting.get(f"/chats/{chat_id}")).json()["messages"]
+    assert [m["role"] for m in stored] == ["user", "assistant", "tool", "user", "assistant"]
+    assert stored[3]["content"] == "actually, tell me about the dog instead"
+
+
+async def test_a_continuation_with_only_a_tool_result_is_unchanged(acting):
+    """No `interject` on the request means exactly one new message, same as
+    before this field existed."""
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={"model_name": TINY_MODEL, "text": "where did the cat sit?", "max_tokens": 4},
+    )
+
+    answered = await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={
+            "model_name": TINY_MODEL,
+            "max_tokens": 4,
+            "tool_result": {
+                "tool": "web-search",
+                "argument": "where the cat sat",
+                "body": "<|par|>on the mat<|/par|>",
+            },
+        },
+    )
+    assert answered.status_code == 201
+
+    stored = (await acting.get(f"/chats/{chat_id}")).json()["messages"]
+    assert [m["role"] for m in stored] == ["user", "assistant", "tool", "assistant"]
+
+
+async def test_an_interjection_without_a_tool_result_is_refused(acting):
+    from tests.fixtures.tiny_env import TINY_MODEL
+
+    chat_id = await new_chat(acting)
+    response = await acting.post(
+        f"/chats/{chat_id}/messages",
+        json={"model_name": TINY_MODEL, "text": "hello", "interject": "wait"},
+    )
+    assert response.status_code == 400
+    assert "interject" in response.json()["detail"]
+
+
 async def test_a_turn_is_either_asked_or_answered_but_not_both(acting):
     from tests.fixtures.tiny_env import TINY_MODEL
 

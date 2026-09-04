@@ -118,6 +118,7 @@ export function ChatMessageBubble({
         <Trace
           working={message.working}
           answers={message.toolAnswers ?? []}
+          interjections={message.interjections}
           elapsedSecs={message.elapsedSecs}
           streaming={streaming}
           className="max-w-[68ch] text-base leading-relaxed"

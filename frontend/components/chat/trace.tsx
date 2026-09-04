@@ -52,11 +52,27 @@ export interface ToolAnswer {
   body: string
 }
 
+/**
+ * A message sent mid-turn and actually spliced into it — see the backend's
+ * `interjected` frame (`docs/backend/README.md`'s "Tool calls" section) and
+ * `hooks/use-chat.ts::groupTurns`, which folds a reloaded chat's interjected
+ * row into this the same way it folds a `tool` row into `toolAnswers`.
+ */
+export interface Interjection {
+  text: string
+  /** How many tool answers existed the moment this landed — places it right
+   * after the call whose answer is `answers[afterAnswers - 1]`, the same
+   * positional scheme `answers` itself uses against the calls in `working`. */
+  afterAnswers: number
+}
+
 export interface TraceProps {
   /** The first round's reply: reasoning, prose, and the calls it made. */
   working: string
   /** What each call came back with, in the order the calls closed. */
   answers: ToolAnswer[]
+  /** A person's steer, threaded in after the call it followed. */
+  interjections?: Interjection[]
   /** Seconds the whole turn took, summed across its rounds. */
   elapsedSecs?: number
   /** True while the turn is still running. A live trace is never collapsed. */
@@ -72,13 +88,14 @@ const LONG_TRACE_WORDS = 70
 export function Trace({
   working,
   answers,
+  interjections = [],
   elapsedSecs,
   streaming = false,
   className,
 }: TraceProps) {
   const steps = React.useMemo(
-    () => stepsOf(working, answers),
-    [working, answers]
+    () => stepsOf(working, answers, interjections),
+    [working, answers, interjections]
   )
   const words = React.useMemo(() => countWords(working), [working])
   const calls = steps.filter((s) => s.kind === "tool").length
@@ -136,6 +153,8 @@ export function Trace({
                 body={step.body}
                 running={step.body === null}
               />
+            ) : step.kind === "interject" ? (
+              <Interject key={i} text={step.text} />
             ) : (
               <Prose key={i} text={step.text} />
             )
@@ -209,9 +228,25 @@ function Prose({ text }: { text: string }) {
   )
 }
 
+/**
+ * A steer that actually reached the model mid-turn. Same achromatic register
+ * as a reasoning step — this is still the model's working, just with someone
+ * else's line in it — set apart only by the label, the same "who said this"
+ * device `queued-message.tsx` uses before it lands here.
+ */
+function Interject({ text }: { text: string }) {
+  return (
+    <div className="space-y-[0.35em]">
+      <span className="tag text-muted-foreground/60">you interjected</span>
+      <p className="text-[0.92em] leading-[1.7] text-muted-foreground">{text}</p>
+    </div>
+  )
+}
+
 type Step =
   | { kind: "prose"; text: string }
   | { kind: "tool"; tool: string; argument: string; body: string | null }
+  | { kind: "interject"; text: string }
 
 /**
  * The working, cut into steps in the order they happened.
@@ -247,7 +282,11 @@ export function callInFlight(
     : null
 }
 
-function stepsOf(working: string, answers: ToolAnswer[]): Step[] {
+function stepsOf(
+  working: string,
+  answers: ToolAnswer[],
+  interjections: Interjection[] = []
+): Step[] {
   const steps: Step[] = []
   let answered = 0
 
@@ -269,6 +308,13 @@ function stepsOf(working: string, answers: ToolAnswer[]): Step[] {
         argument: call.argument,
         body: answer?.body ?? null,
       })
+      // Placed the moment the count they were captured against is reached —
+      // several can land on the same call, in the order they arrived.
+      for (const interjection of interjections) {
+        if (interjection.afterAnswers === answered) {
+          steps.push({ kind: "interject", text: interjection.text })
+        }
+      }
       continue
     }
     pushProse(plainText(node))

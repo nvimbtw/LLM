@@ -3,7 +3,11 @@
 import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
-import { streamChat, type SamplingSettings } from "@/lib/chat-socket"
+import {
+  streamChat,
+  type ChatStreamHandle,
+  type SamplingSettings,
+} from "@/lib/chat-socket"
 import {
   fetchContextFloor,
   getContextFloor,
@@ -16,7 +20,7 @@ import {
   type AttachmentWire,
 } from "@/lib/attachments"
 import { callOf, parseMessage, TOOL_CALL_CLOSE } from "@/lib/message-parser"
-import type { ToolAnswer } from "@/components/chat/trace"
+import type { Interjection, ToolAnswer } from "@/components/chat/trace"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
 import { useComposerChoice } from "@/components/chat/composer-choice-provider"
@@ -35,6 +39,9 @@ export interface ChatMessage {
   working?: string
   /** What each call in `working` came back with, in the order they closed. */
   toolAnswers?: ToolAnswer[]
+  /** A person's message actually spliced into this turn, in the order they
+   * landed — see the `interjected` frame in `lib/chat-socket.ts`. */
+  interjections?: Interjection[]
   /** Seconds the whole turn took, summed across its rounds. */
   elapsedSecs?: number
   // Server id. Absent on a reply that is still streaming and on the optimistic
@@ -54,6 +61,19 @@ export interface ChatMessage {
   // Files sent with the question. Only ever on a user turn: the model is not
   // given them and so cannot answer with one.
   attachments?: Attachment[]
+}
+
+/**
+ * A message sent while a turn was already streaming, not yet spliced into it.
+ * Carries its own `modelId`/`budget` rather than reading the composer's
+ * current choice when it is finally sent — a choice changed after queuing
+ * should not retroactively change what an already-typed message asks.
+ */
+interface QueuedMessage {
+  id: string
+  content: string
+  modelId: string
+  budget: ThinkBudget
 }
 
 // What GET /chat/:id returns per message. Kept separate from ChatMessage because the
@@ -117,6 +137,25 @@ function groupTurns(rows: MessageWire[]): ChatMessage[] {
         parseToolRow(row.content),
       ]
       previous.content = ""
+      continue
+    }
+
+    // A `user` row is an ordinary new question — unless the turn ahead of it is
+    // still mid-flight (a tool answered and nothing has continued it yet), in
+    // which case it can only be an interjection that got spliced in: the same
+    // window `previous.content === ""` already marks for the tool branch
+    // above. Folded in rather than started as a new turn, exactly like a tool
+    // row folds into the working that came before it.
+    if (
+      row.role === "user" &&
+      previous?.role === "assistant" &&
+      previous.toolAnswers &&
+      !previous.content
+    ) {
+      previous.interjections = [
+        ...(previous.interjections ?? []),
+        { text: row.content, afterAnswers: previous.toolAnswers.length },
+      ]
       continue
     }
 
@@ -253,9 +292,49 @@ export function useChat(chatId: string) {
   const [queuedAhead, setQueuedAhead] = React.useState<number | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
-  // Stops the in-flight turn. Held in a ref rather than state because nothing
-  // renders from it — it only needs to survive between the send and the stop.
-  const cancelRef = React.useRef<(() => void) | null>(null)
+  // Messages sent while a turn is already streaming, waiting to be spliced in —
+  // rendered by `queued-message.tsx` rather than folded into `messages`, since
+  // they are not a turn of their own yet and may never become one over this
+  // socket (see the `onDone` fallback in `sendMessage` below).
+  const [queued, setQueued] = React.useState<QueuedMessage[]>([])
+
+  // The open socket for the turn in flight — stops it (`cancel`) and steers it
+  // (`interject`). Held in a ref rather than state because nothing renders
+  // from it; it only needs to survive between the send and whatever ends it.
+  const socketRef = React.useRef<ChatStreamHandle | null>(null)
+  // Mirrors `isSending` for `sendMessage`, which is called from the composer
+  // on every keystroke's worth of "can I send" logic and needs the *current*
+  // value at call time — a plain closure over state would see whatever was
+  // true when this render's callback was created, not whatever is true now.
+  //
+  // Written by hand at each of the three points that move it, rather than from
+  // an effect on `isSending`: `drainQueued` runs the moment a turn ends, and a
+  // ref caught up in an effect is still `true` then — passive effects flush
+  // after the drained send has already asked "is a turn running?" and been
+  // told yes. That answer is what silently re-queued the message it was
+  // draining, leaving it stuck in `queued` with nothing left to end.
+  const isSendingRef = React.useRef(false)
+  // The same list as `queued`, readable synchronously for the same reason —
+  // `drainQueued` has to take the head of it and send it in one go, and state
+  // it just set is not visible to it until the next render.
+  const queuedRef = React.useRef<QueuedMessage[]>([])
+  const putQueued = React.useCallback((next: QueuedMessage[]) => {
+    queuedRef.current = next
+    setQueued(next)
+  }, [])
+  // `sendMessage` calls itself (see the `onDone` drain below) to send a still-
+  // queued message as a fresh turn once this one closes with it unclaimed.
+  // Declared before `sendMessage` exists, for the same reason `onSendRef`
+  // exists in the composer: the closure that reads it runs long after this
+  // render, by which point the ref has been pointed at the real thing.
+  const sendMessageRef = React.useRef<
+    (
+      content: string,
+      modelId: string,
+      budget: ThinkBudget,
+      attachments?: Attachment[]
+    ) => Promise<void> | void
+  >(() => {})
 
   const fetchMessages = React.useCallback(async () => {
     const response = await apiFetch(`/chats/${chatId}`)
@@ -280,7 +359,19 @@ export function useChat(chatId: string) {
     setLoadedFor(chatId)
     setIsLoading(true)
     setLoadedOnce(false)
+    // A message queued against the chat being left has nowhere left to go —
+    // its socket belongs to the conversation this hook is about to stop
+    // representing. Its mirror `queuedRef` is cleared in the effect below
+    // instead of here — a ref written during render is a ref written during a
+    // render React may throw away.
+    setQueued([])
   }
+
+  // Keeps `queuedRef` in step with the reset above, which can only clear the
+  // state half of the pair. See `putQueued` for why the pair exists.
+  React.useEffect(() => {
+    queuedRef.current = []
+  }, [chatId])
 
   React.useEffect(() => {
     let active = true
@@ -305,6 +396,39 @@ export function useChat(chatId: string) {
     }
   }, [fetchMessages])
 
+  /**
+   * Queue a message against the turn already streaming: shown in `queued`
+   * rather than `messages`, and sent as an `interject` frame over that turn's
+   * own socket. No attachments — an interjection is text steering, not a new
+   * question with its own uploads, matching the engine's `Ask.interject`
+   * (`engine/api/routes/chats.py`) having none either.
+   */
+  const queueInterjection = React.useCallback(
+    (content: string, modelId: string, budget: ThinkBudget) => {
+      putQueued([
+        ...queuedRef.current,
+        { id: crypto.randomUUID(), content, modelId, budget },
+      ])
+      socketRef.current?.interject(content)
+    },
+    [putQueued]
+  )
+
+  /**
+   * The turn just ended and anything still in `queued` never got an
+   * `interjected` confirmation — the round it was waiting on never came. Sent
+   * as an ordinary new turn instead of dropped, one at a time: each call's own
+   * `onDone`/`onError` drains the next, so several queued in a row still land
+   * in the order they were typed rather than all firing over each other's
+   * socket at once.
+   */
+  const drainQueued = React.useCallback(() => {
+    const [next, ...rest] = queuedRef.current
+    if (!next) return
+    putQueued(rest)
+    void sendMessageRef.current(next.content, next.modelId, next.budget)
+  }, [putQueued])
+
   const sendMessage = React.useCallback(
     (
       content: string,
@@ -312,8 +436,18 @@ export function useChat(chatId: string) {
       budget: ThinkBudget,
       attachments: Attachment[] = []
     ) => {
+      // A turn is already streaming: this is a steer, not a new question. It
+      // goes over that turn's socket instead of opening one of its own — see
+      // `queueInterjection` — and is picked up again from `onDone` below if
+      // the turn ends before the backend ever gets to splice it in.
+      if (isSendingRef.current) {
+        queueInterjection(content, modelId, budget)
+        return Promise.resolve()
+      }
+
       setError(null)
       setIsSending(true)
+      isSendingRef.current = true
       // User message + an empty assistant message we fill as tokens arrive.
       // The question carries its attachments optimistically for the same reason
       // it carries its text: the refetch on `done` replaces both with the rows
@@ -429,6 +563,22 @@ export function useChat(chatId: string) {
           return next
         })
 
+      const recordInterjection = (text: string) =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last?.role === "assistant") {
+            next[next.length - 1] = {
+              ...last,
+              interjections: [
+                ...(last.interjections ?? []),
+                { text, afterAnswers: last.toolAnswers?.length ?? 0 },
+              ],
+            }
+          }
+          return next
+        })
+
       /**
        * Tokens arriving after the first call belong to the answer; the ones
        * before it have already been moved into `working`, and the markup of the
@@ -465,7 +615,7 @@ export function useChat(chatId: string) {
         activeFloor?.modelId === modelId ? activeFloor.messageId : null
 
       return new Promise<void>((resolve) => {
-        cancelRef.current = streamChat(
+        socketRef.current = streamChat(
           chatId,
           { text: content, attachmentIds: attachments.map((a) => a.id) },
           modelId,
@@ -508,6 +658,20 @@ export function useChat(chatId: string) {
               answering = true
               recordAnswer(result)
             },
+            onInterjected: (text: string) => {
+              // Out of the quiet queued list — the backend just proved it
+              // reached the model — and into the trace, at the point it
+              // actually landed: right after however many tool answers this
+              // turn has recorded so far, the same position `groupTurns` gives
+              // it on a reload (see the `role === "user"` branch there).
+              const at = queuedRef.current.findIndex((m) => m.content === text)
+              if (at !== -1)
+                putQueued([
+                  ...queuedRef.current.slice(0, at),
+                  ...queuedRef.current.slice(at + 1),
+                ])
+              recordInterjection(text)
+            },
             onDone: async (info) => {
               // A turn's elapsed time is the sum of the rounds it took, not the
               // last one's — the whole of it is what the reader waited.
@@ -549,22 +713,30 @@ export function useChat(chatId: string) {
               // than one frame after — that's the difference between a
               // number that settles and one that visibly dips first.
               await refreshChats()
+              isSendingRef.current = false
               setIsSending(false)
               setQueuedAhead(null)
+              drainQueued()
               resolve()
             },
             onError: (message: string) => {
               setError(message)
+              isSendingRef.current = false
               setIsSending(false)
               setQueuedAhead(null)
+              drainQueued()
               resolve()
             },
           }
         )
       })
     },
-    [chatId, fetchMessages, refreshChats]
+    [chatId, fetchMessages, refreshChats, queueInterjection, drainQueued, putQueued]
   )
+
+  React.useEffect(() => {
+    sendMessageRef.current = sendMessage
+  }, [sendMessage])
 
   // A chat just created from the home screen hands its first message off here;
   // stream the reply once the (empty) initial load has settled. takePendingMessage
@@ -575,7 +747,6 @@ export function useChat(chatId: string) {
     // Intentional: starting the first turn here is the whole point of the
     // handoff, and takePendingMessage is one-shot so it can't loop.
     if (pending) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       sendMessage(
         pending.content,
         pending.modelId,
@@ -622,15 +793,31 @@ export function useChat(chatId: string) {
   )
 
   const cancel = React.useCallback(() => {
-    cancelRef.current?.()
-    cancelRef.current = null
-  }, [])
+    socketRef.current?.cancel()
+    socketRef.current = null
+    // Settling the socket by hand fires neither `onDone` nor `onError`, so this
+    // is the only place a stopped turn's state gets put back — without it the
+    // Stop button never leaves, and, worse for the queue, `isSendingRef` stays
+    // true forever: every later message would be filed as a steer for a turn
+    // that ended, with nothing left to drain it.
+    isSendingRef.current = false
+    setIsSending(false)
+    setQueuedAhead(null)
+    // Anything queued behind the stopped turn is sent as a turn of its own,
+    // the same as when a turn simply ends with it unclaimed. Stopping is
+    // usually *why* there is a correction waiting; dropping the text here
+    // would lose it with nowhere to type it back from.
+    drainQueued()
+  }, [drainQueued])
 
   return {
     messages,
     isLoading,
     isSending,
     queuedAhead,
+    // Messages sent while this turn was streaming, not yet spliced into it —
+    // see `queued-message.tsx`.
+    queued,
     error,
     sendMessage,
     cancel,

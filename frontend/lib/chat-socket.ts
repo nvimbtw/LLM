@@ -1,5 +1,5 @@
 import { WS_URL, getToken, handleSessionExpired } from "./api"
-import type { ThinkBudget } from "@/components/chat/budget-selector"
+import type { ThinkBudget } from "@/lib/think-budget"
 
 // The backend's exact error frame for a bad/expired token (api/src/ws.rs).
 const AUTH_FAILED_MESSAGE = "authentication failed"
@@ -14,11 +14,24 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 //   server → { type: "tool_call", tool, argument } (the reply asked for something)
 //   server → { type: "done", message_id, content, usage }
 //   server → { type: "tool_result", tool, argument, body }
+//   client → { type: "interject", text }          (any time after the above)
+//   server → { type: "interjected", text }        (spliced into the next round)
 //   server → { type: "error", error }             (at any point)
 //
 // A turn that calls a tool runs more than one round, so `token` and `done` can
 // each arrive twice — the reply that called, then the reply that answers with
 // what came back. The two tool frames are not rendered yet.
+//
+// `interject` is the client's own addition to a turn already running: sent any
+// time after the opening question, over the same socket, while the composer
+// stays open for it (see `hooks/use-chat.ts`). The backend can only splice it
+// in between a round's tool result and the next round's request — the one
+// window where the next thing the model reads hasn't been decided yet — so it
+// is buffered until then and confirmed with `interjected` the moment it lands,
+// which is also the frontend's cue to move it out of the queued list and into
+// the turn's trace. A message that never gets picked up (the turn ends with no
+// further rounds) is not confirmed; the frontend sends it as an ordinary new
+// turn once the socket closes rather than losing it.
 //
 // `attachment_ids` names files already stored (see lib/attachments.ts). They are
 // bound to the message this turn writes and go no further: nothing about them
@@ -76,10 +89,26 @@ export interface ChatStreamHandlers {
     /** This round's generation time. A turn's total is the sum of its rounds. */
     elapsedSecs: number | null
   }) => void
+  /** A queued `interject` actually made it into the next round. */
+  onInterjected: (text: string) => void
   onError: (message: string) => void
 }
 
-/** Opens the stream and returns a cancel function. */
+/** What driving a turn hands back: how to stop it, and how to steer it. */
+export interface ChatStreamHandle {
+  /** Closing is the cancel: the reply is written when the last token lands, so
+   * a turn nobody is listening to writes nothing. */
+  cancel: () => void
+  /**
+   * Send a message over this turn's own socket rather than opening a new one.
+   * A no-op past the turn's end (the socket is already closing or closed) —
+   * the caller is expected to fall back to an ordinary new turn in that case,
+   * since there is no `interjected` coming back to confirm this one.
+   */
+  interject: (text: string) => void
+}
+
+/** Opens the stream and returns a handle to steer or stop it. */
 export function streamChat(
   chatId: string,
   question: Question,
@@ -94,7 +123,7 @@ export function streamChat(
   // per-chat, and this is the seam where the two meet.
   historyFloor: string | null,
   handlers: ChatStreamHandlers
-): () => void {
+): ChatStreamHandle {
   const ws = new WebSocket(`${WS_URL}/ws/chats/${chatId}`)
   let settled = false
 
@@ -125,6 +154,8 @@ export function streamChat(
       /** On a `done` frame: whether it ends the turn or only this round. */
       final?: boolean
       usage?: { elapsed_secs?: number }
+      /** On an `interjected` frame: the text that was just spliced in. */
+      text?: string
     }
     try {
       msg = JSON.parse(event.data)
@@ -185,6 +216,9 @@ export function streamChat(
           body: msg.body ?? "",
         })
         break
+      case "interjected":
+        handlers.onInterjected(msg.text ?? "")
+        break
       case "done": {
         // A turn that called a tool runs more than one round, and the engine
         // ends each of them with `done` — only the one the backend marks final
@@ -220,7 +254,17 @@ export function streamChat(
   ws.onerror = () => settle(() => handlers.onError("Connection error."))
   ws.onclose = () => settle(() => handlers.onError("Connection closed."))
 
-  // Closing is the cancel: the reply is written when the last token lands, so a
-  // turn nobody is listening to writes nothing.
-  return () => settle(() => {})
+  return {
+    // Closing is the cancel: the reply is written when the last token lands,
+    // so a turn nobody is listening to writes nothing.
+    cancel: () => settle(() => {}),
+    interject: (text: string) => {
+      // Settled means the socket is closing or already gone — nothing sent
+      // here would be read, and the caller (`hooks/use-chat.ts`) is what
+      // falls back to sending it as a fresh turn once this one's `onDone` or
+      // `onError` fires.
+      if (settled || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: "interject", text }))
+    },
+  }
 }

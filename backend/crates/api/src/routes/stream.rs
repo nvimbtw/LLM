@@ -163,11 +163,62 @@ async fn chat_session(
     // take several rounds through the engine if the reply calls a tool.
     let Some(ask) = next_json(&mut stream).await else { return };
 
+    // From here on the socket is read concurrently with the turn: a person may
+    // type and send again before this reply is done, and the only way to learn
+    // that is to keep reading. `stream` moves into this task for the rest of
+    // the turn's lifetime — `turn::run` never touches it directly, only the
+    // channel it feeds.
+    let (sender, interjections) = tokio::sync::mpsc::unbounded_channel();
+    let reader = actix_web::rt::spawn(read_interjections(stream, sender));
+
     let path = format!("/chats/{chat_id}/messages/stream");
     // The chat id is the tools' session key: it is stable for the whole
     // conversation, which is exactly the lifetime a sandbox filesystem wants.
-    turn::run(&mut session, &engine, &registry, &caller, &path, &chat_id.to_string(), ask).await;
+    turn::run(
+        &mut session,
+        &engine,
+        &registry,
+        &caller,
+        &path,
+        &chat_id.to_string(),
+        ask,
+        interjections,
+    )
+    .await;
+    reader.abort();
     let _ = session.close(None).await;
+}
+
+/// The client half of a chat socket once its turn has started: watches for
+/// `{ "type": "interject", "text": ... }` and forwards the text to `turn::run`.
+///
+/// No `attachment_ids` here, unlike the opening `ask` — see `Ask.interject` in
+/// `engine/api/routes/chats.py` for why an interjection is text-only. Anything
+/// else on the socket (a stray `ping`, garbage, another frame type) is ignored
+/// rather than closing the connection: this task has no way to answer back,
+/// and the turn it is feeding is the thing actually driving the socket.
+async fn read_interjections(
+    mut stream: actix_ws::MessageStream,
+    sender: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    use actix_ws::Message;
+
+    while let Some(Ok(message)) = stream.next().await {
+        let Message::Text(text) = message else { continue };
+        let Some(value) = serde_json::from_str::<Value>(&text).ok() else { continue };
+        if value.get("type").and_then(Value::as_str) != Some("interject") {
+            continue;
+        }
+        let Some(text) = value.get("text").and_then(Value::as_str) else { continue };
+        if text.is_empty() {
+            continue;
+        }
+        // The receiver is dropped once the turn ends, at which point sending
+        // fails silently — a message sent right as the last round closes has
+        // nowhere left to go, and the client resends it as a fresh turn (see
+        // `docs/frontend/README.md`'s "Stream protocol (chat)").
+        let _ = sender.send(text.to_string());
+    }
 }
 
 /// A gym run, episode by episode. Admin only, like every other gym route: a run

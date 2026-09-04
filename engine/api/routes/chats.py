@@ -58,11 +58,21 @@ class Ask(BaseModel):
     Exactly one of `text` and `tool_result` says what the new turn is: a person
     asking, or a tool answering a call the last reply made. Both is a caller
     that has lost track of which; neither is nothing to answer.
+
+    `interject` rides alongside `tool_result` only: a person's message that
+    arrived while the round was generating, spliced in by the backend right
+    after the tool result and before the model is asked to continue — see
+    `docs/backend/README.md`'s "Tool calls" section for where that buffering
+    happens. It has no `attachment_ids` of its own; an interjection is text
+    steering mid-turn, not a new question with its own uploads, and keeping
+    that off the wire keeps this side's contract to one attachment path
+    instead of two.
     """
 
     model_name: str
     text: str | None = None
     tool_result: ToolResult | None = None
+    interject: str | None = None
     #: Files already uploaded to `/attachments`, bound to the message this
     #: request stores. They are not rendered, not counted and not prompted with
     #: — the conversation carries them, the model never sees them. See
@@ -249,18 +259,27 @@ def forget_owner(owner_id: uuid.UUID, caller: str = Depends(auth.require_service
         return {"owner_id": str(owner_id), "chats_deleted": q.delete_chats_of(db, owner_id)}
 
 
-def _new_turn(body: Ask) -> tuple[Role, str]:
-    """The turn this request adds: a person asking, or a tool answering.
+def _new_turns(body: Ask) -> list[tuple[Role, str]]:
+    """The turn(s) this request adds: a person asking, or a tool answering —
+    optionally with a second, `user`-role turn right after it when the
+    request carries an `interject`.
 
     The "exactly one" rule lives here rather than in a validator so it sits
-    beside the branch that depends on it.
+    beside the branch that depends on it. Order matters for the second case:
+    the tool result must precede the interjection in the list this returns,
+    because that is the order both are stored in and the order the model
+    reads them in.
     """
     if (body.text is None) == (body.tool_result is None):
         raise HTTPException(
             status_code=400, detail="exactly one of text and tool_result is required"
         )
+    if body.interject is not None and body.tool_result is None:
+        raise HTTPException(
+            status_code=400, detail="interject is only valid alongside a tool_result"
+        )
     if body.text is not None:
-        return Role.user, body.text
+        return [(Role.user, body.text)]
 
     # A tool answering a call is not something a person attached a file to. The
     # backend's `carry_settings` already drops the field on a follow-up round;
@@ -273,7 +292,10 @@ def _new_turn(body: Ask) -> tuple[Role, str]:
     result = body.tool_result
     if tools.by_name(result.tool) is None:
         raise HTTPException(status_code=400, detail=f"unknown tool {result.tool!r}")
-    return Role.tool, tools.render_result(result.tool, result.argument, result.body)
+    turns = [(Role.tool, tools.render_result(result.tool, result.argument, result.body))]
+    if body.interject:
+        turns.append((Role.user, body.interject))
+    return turns
 
 
 def _floored(messages: list[Message], floor: uuid.UUID | None) -> list[Message]:
@@ -295,15 +317,20 @@ def _floored(messages: list[Message], floor: uuid.UUID | None) -> list[Message]:
 def _prepare(
     chat_id: uuid.UUID, owner: uuid.UUID, body: Ask
 ) -> tuple[ChatConfig, uuid.UUID | None]:
-    """Store the new turn and build the config that answers it.
+    """Store the new turn(s) and build the config that answers them.
 
-    Counting it first also proves the model is loadable, so an unknown one is a
-    404 rather than a chat left holding a question nothing answered.
+    Counting first also proves the model is loadable, so an unknown one is a
+    404 rather than a chat left holding a question nothing answered. There is
+    almost always exactly one new turn; a continuation carrying an `interject`
+    is the one case with two, and both are stored and prompted with, in order.
     """
-    role, content = _new_turn(body)
+    new_turns = _new_turns(body)
 
     try:
-        asked = chat_pipeline.count_tokens(body.model_name, content)["tokens"]
+        token_counts = [
+            chat_pipeline.count_tokens(body.model_name, text)["tokens"]
+            for _, text in new_turns
+        ]
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -314,15 +341,23 @@ def _prepare(
             ChatTurn(role=m.role.value, text=m.content)
             for m in _floored(q.messages_of(db, chat_id), body.history_floor)
         ]
-        asked_message = q.add_message(
-            db, chat_id=chat_id, role=role, content=content, tokens=asked
-        )
-        _bind(db, asked_message, owner, body.attachment_ids)
+        stored = [
+            q.add_message(db, chat_id=chat_id, role=role, content=content, tokens=tokens)
+            for (role, content), tokens in zip(new_turns, token_counts)
+        ]
+        # Only a plain `text` turn — the first and only entry on that path —
+        # can carry attachments; a tool result and any interjection beside it
+        # never do (checked in `_new_turns`).
+        if body.text is not None:
+            _bind(db, stored[0], owner, body.attachment_ids)
 
     return (
         ChatConfig(
             model_name=body.model_name,
-            turns=[*history, ChatTurn(role=role.value, text=content)],
+            turns=[
+                *history,
+                *(ChatTurn(role=role.value, text=content) for role, content in new_turns),
+            ],
             system=body.system,
             budget=body.budget,
             max_tokens=body.max_tokens,

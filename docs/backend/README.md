@@ -226,6 +226,34 @@ the generation loop has; the API key, the outbound HTTP and the round loop are
 all properties of the machine, which is this side. Each `done` is stamped
 `final` so the client can tell a round's end from the turn's.
 
+### Interjecting mid-turn
+
+A round is generated between a tool call and its result, and that gap is a real
+window: the client can send a message during it and have the backend thread it
+into the *running* turn instead of waiting for the turn to finish. `chat_session`
+(`routes/stream.rs`) spawns a task that keeps reading the browser's socket for
+the rest of the turn's life — `{ "type": "interject", "text": "..." }` — and
+forwards each one to `turn::run` over an unbounded channel. No `attachment_ids`
+on that frame: an interjection is text steering, not a new question, and giving
+it its own upload path would be a second attachment contract to keep in step
+with the first for a case that does not need one.
+
+`turn::run` drains that channel once per round, right after `answer()` has
+built the next round's `tool_result` payload — `drain_interjection` collects
+everything that arrived since the last drain (joined with a blank line if more
+than one landed), and `fold_interjection` writes it onto the payload as
+`interject`, the field `engine/api/routes/chats.py::Ask` stores as a second
+message immediately after the tool result. The instant it folds one in, the
+client is told with `{ "type": "interjected", "text": "..." }`, sent before the
+next round's request goes out — the frontend's cue to move that message out of
+its queued state and into the turn's trace, rather than guessing from timing.
+
+A message that arrives with no round left to catch it — the turn ends on this
+round, or the browser hangs up — is simply never drained; nothing here retries
+it. The frontend already resends anything still queued as an ordinary new turn
+once the socket closes, so nothing typed is lost, just re-homed to the next
+turn instead of this one.
+
 Adding a tool is an `impl Tool` and a line in `Registry::with_config`, plus a row
 in the engine's table (`engine/llm/chat/tools.py`). **No reserved slots**: every
 tool is called through one `<|tool-call|>` marker naming it in JSON, so the tool

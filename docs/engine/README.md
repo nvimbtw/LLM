@@ -218,6 +218,18 @@ arrives. The backend's gym driver takes the first path — a second copy of this
 layout in Rust would be free to drift into a shape the model was never trained
 on. See [`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md).
 
+**A continuation can carry a person's own words alongside the tool's.**
+`Ask.interject` on `POST /chats/{id}/messages(/stream)` rides beside
+`tool_result` only — refused if sent with `text`, since a continuation is not a
+question — and becomes a second stored message, `Role.user`, right after the
+tool result; both land in `ChatConfig.turns` in that order (tool result, then
+the interjection) before the model is asked to continue. It carries no
+`attachment_ids` of its own, the same rule a bare `tool_result` already follows:
+an interjection is text steering that arrived while the reply was still
+generating, not a new question with its own uploads. See
+`docs/backend/README.md`'s "Interjecting mid-turn" for where the backend
+buffers a person's message and folds it into the continuation request.
+
 **A body that names no tool is not a call.** `tools.parse` reads the argument
 under any of `argument`/`query`/`command`/`input`/`text`, nested in `args` or
 not, because that is what a small model writes — but a mangled object, or one

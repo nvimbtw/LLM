@@ -13,6 +13,7 @@
 use engine::{Frame, Proxy};
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tools::Registry;
 
@@ -49,6 +50,14 @@ struct Pending {
 }
 
 /// Drive a whole turn to its end, relaying everything to `session` as it happens.
+///
+/// `interjections` carries a person's mid-turn messages, sent over the same
+/// socket while this round generates — see `routes::stream::read_interjections`,
+/// which owns the client half of the socket for the turn's duration and is the
+/// only writer. Buffered rather than applied as they arrive: the only safe
+/// splice point is between a round's tool result and the next round's request,
+/// which is also the only window in which a person's message can still change
+/// what the model is about to be asked — see `drain_interjection`.
 pub async fn run(
     session: &mut actix_ws::Session,
     engine: &Proxy,
@@ -60,6 +69,7 @@ pub async fn run(
     // round is still there in the next; `tools` never learns what the key means.
     chat: &str,
     mut ask: Value,
+    mut interjections: mpsc::UnboundedReceiver<String>,
 ) {
     let settings = ask.clone();
 
@@ -83,8 +93,39 @@ pub async fn run(
 
         let Some(mut next) = answer(session, pending).await else { return };
         carry_settings(&settings, &mut next);
+        if let Some(text) = fold_interjection(&mut next, drain_interjection(&mut interjections)) {
+            let confirmed = json!({ "text": text });
+            if session.text(envelope("interjected", &confirmed).to_string()).await.is_err() {
+                return;
+            }
+        }
         ask = next;
     }
+}
+
+/// Every message buffered since the last time this was called, joined into one
+/// string — or `None` if nothing arrived. `try_recv` rather than awaiting: this
+/// is called once per round, right after the round's tool work has been
+/// joined, and a round with nothing queued must not block waiting for one.
+fn drain_interjection(interjections: &mut mpsc::UnboundedReceiver<String>) -> Option<String> {
+    let mut collected = Vec::new();
+    while let Ok(text) = interjections.try_recv() {
+        collected.push(text);
+    }
+    (!collected.is_empty()).then(|| collected.join("\n\n"))
+}
+
+/// Splice a buffered interjection into the next round's request, as the
+/// engine's `interject` field (`engine/api/routes/chats.py::Ask`). Returns the
+/// text when it folded one in, so the caller knows to confirm it to the
+/// client — `None` leaves `next` untouched, which is a round with nothing
+/// queued behaving exactly as it did before this existed.
+fn fold_interjection(next: &mut Value, text: Option<String>) -> Option<String> {
+    let text = text?;
+    if let Some(object) = next.as_object_mut() {
+        object.insert("interject".to_string(), json!(text));
+    }
+    Some(text)
 }
 
 /// Forward this round's frames, starting a tool the moment its call closes.
@@ -287,5 +328,31 @@ mod tests {
     fn a_call_missing_its_fields_is_read_as_empty_rather_than_panicking() {
         assert_eq!(string_at(&json!({}), "tool"), "");
         assert_eq!(string_at(&json!({ "tool": 7 }), "tool"), "");
+    }
+
+    #[test]
+    fn a_round_with_nothing_queued_folds_in_nothing() {
+        let mut next = json!({ "tool_result": { "tool": "web-search" } });
+        assert_eq!(fold_interjection(&mut next, None), None);
+        assert!(next.get("interject").is_none());
+    }
+
+    #[test]
+    fn a_queued_message_is_spliced_in_as_the_interject_field() {
+        let mut next = json!({ "tool_result": { "tool": "web-search" } });
+        let confirmed = fold_interjection(&mut next, Some("wait, also check the date".into()));
+        assert_eq!(confirmed.as_deref(), Some("wait, also check the date"));
+        assert_eq!(next["interject"], "wait, also check the date");
+    }
+
+    #[tokio::test]
+    async fn draining_joins_everything_sent_before_the_round_finished() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send("first".to_string()).unwrap();
+        tx.send("second".to_string()).unwrap();
+
+        assert_eq!(drain_interjection(&mut rx), Some("first\n\nsecond".to_string()));
+        // Drained once, so a round with nothing new sent since sees nothing.
+        assert_eq!(drain_interjection(&mut rx), None);
     }
 }

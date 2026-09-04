@@ -19,6 +19,7 @@ import { LoadError } from "@/components/ui/error-state"
 import { ThinkingLabel } from "./thinking-label"
 import { callInFlight } from "./trace"
 import { ToolLabel } from "./tool-label"
+import { QueuedMessage } from "./queued-message"
 
 export function ChatThread({ chatId }: { chatId: string }) {
   const {
@@ -26,6 +27,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
     isLoading,
     isSending,
     queuedAhead,
+    queued,
     error,
     sendMessage,
     cancel,
@@ -235,6 +237,14 @@ export function ChatThread({ chatId }: { chatId: string }) {
                 )
               })
             )}
+
+            {/* Sent while the turn above is still streaming, not yet part of
+              it — see `queued-message.tsx`. Below every real message and above
+              the status row, the same place a reply-in-progress's own next
+              word would land. */}
+            {queued.map((message) => (
+              <QueuedMessage key={message.id} text={message.content} />
+            ))}
 
             {/* One fixed-height slot for all throbber states, so the
               thinking → generating → idle swaps don't reflow the thread. */}

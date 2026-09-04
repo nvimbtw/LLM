@@ -360,6 +360,8 @@ server → { type: "token", token }             (repeated)
 server → { type: "tool_call", tool, argument } (the reply asked for something)
 server → { type: "done", message_id, content, tokens, usage, final }
 server → { type: "tool_result", tool, argument, body }
+client → { type: "interject", text }          (any time after the opening ask)
+server → { type: "interjected", text }        (spliced into the next round)
 server → { type: "error", error }
 ```
 
@@ -382,6 +384,34 @@ vocabulary — a `<|list|>` of findings, or a `<|warn|>` if the tool failed.
 A fast model streams straight through at whatever rate it generates —
 `onToken` appends to `messages` on every frame, no artificial pacing. What has
 to keep up with that is the thread's own scroll, next.
+
+**The composer stays live while a turn streams, and `interject` is what typing
+into it then does.** `hooks/use-chat.ts::sendMessage` checks whether a turn is
+already in flight; if so, the message goes into a small local `queued` list
+(rendered by `components/chat/queued-message.tsx`, deliberately not a bubble —
+muted text and a hairline rule rather than a fill, so it reads as *not sent
+yet*) and out over the open socket as `interject`, rather than opening a second
+one. `interject` has no `attachment_ids`: see the "Interjecting mid-turn"
+section of `docs/backend/README.md` for why the backend keeps that contract
+text-only.
+
+The backend can only splice an interjection in between a round's tool result
+and the next round's request — see the same section — so it is not
+instant. The `interjected` confirmation is the frontend's cue that it landed:
+`onInterjected` moves the message out of `queued` and into the turn's own
+trace, reusing `groupTurns`'s existing fold rather than a renderer of its own —
+a `user` row arriving while the previous assistant turn is still mid-flight
+(`toolAnswers` set, `content` still empty) can only be an interjection, the
+same test the `tool` row branch already uses to know a round hasn't finished.
+**A message still `queued` when the turn ends is sent as an ordinary new turn**
+rather than lost — the turn closing with no further rounds means the backend
+never got the chance to fold it in, not that it should be discarded. All three
+endings drain it: `done`, an error, and Stop, which settles the socket by hand
+and so has to put the turn's state back itself. The drain reads `isSending`
+and `queued` through refs written at those endings rather than through state,
+because it runs before React has re-rendered — a drain that asked state
+whether a turn was running would be told "yes" by the turn that just ended and
+quietly re-queue the message it was draining.
 
 ### Stream protocol (a gym run)
 
