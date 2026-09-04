@@ -736,6 +736,20 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     })
   )
 
+  // ── embedding PCA frames, for the biplot and the globe ──────────────────────
+  // Unlike every other derived array in this panel, these feed components whose
+  // own expensive work (`alignFrames`'s sign-matching, `EmbeddingGlobe`'s
+  // icosphere/convex-hull rebuild) is memoized on the *reference* of the array
+  // they're handed. Building it inline in JSX would create a new array on every
+  // render of this panel regardless of whether `diag` changed, silently
+  // defeating that memoization and re-running the full rebuild every time.
+  const embPcaFrames = React.useMemo(() => diag.map((d) => d.emb_pca), [diag])
+  const embSteps = React.useMemo(() => diag.map((d) => d.step), [diag])
+  const embPca3Frames = React.useMemo(
+    () => diag.map((d) => d.emb_pca3),
+    [diag]
+  )
+
   const ready = diag.length > 1
   const ramp = (
     <RampLegend
@@ -938,10 +952,7 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                 on wide screens and stack on narrow ones. */}
             <div className="grid gap-8 lg:grid-cols-2 lg:items-start">
               <div>
-                <EmbeddingBiplot
-                  frames={diag.map((d) => d.emb_pca)}
-                  steps={diag.map((d) => d.step)}
-                />
+                <EmbeddingBiplot frames={embPcaFrames} steps={embSteps} />
                 <p className="mx-auto mt-3 max-w-[440px] text-xs leading-relaxed text-muted-foreground">
                   Each arrow runs from the{" "}
                   <span className="text-foreground">mean embedding</span>{" "}
@@ -958,10 +969,7 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                 </p>
               </div>
               <div>
-                <EmbeddingGlobe
-                  frames={diag.map((d) => d.emb_pca3)}
-                  variant="full"
-                />
+                <EmbeddingGlobe frames={embPca3Frames} variant="full" />
                 <p className="mx-auto mt-3 max-w-[440px] text-xs leading-relaxed text-muted-foreground">
                   The same tokens as an{" "}
                   <span className="text-foreground">icosphere</span>, adding{" "}

@@ -935,6 +935,17 @@ on either side arrives as `undefined`. The engine's side is documented in
   by what the series *is*: per-layer, per-head and by-position are magnitudes by
   index and take a single-hue sequential ramp; the three fine-tuning losses are
   categories and take distinct hues. Do not add a palette to a component.
+- **Every array derived from `diag` is built in a `useMemo` keyed on `diag`,
+  with no exception for a one-off passed straight into JSX.** The embedding
+  biplot and globe key their own expensive work — `alignFrames`'s sign-matching
+  across every stored report, `EmbeddingGlobe`'s icosphere/convex-hull rebuild —
+  off the *reference* of the array they're handed, not its contents. A `diag.map(...)`
+  written inline in the render body hands them a new array on every render of
+  the panel regardless of whether `diag` itself changed, which silently defeats
+  that memoization: the full rebuild reruns on every render rather than once per
+  new report. A live run reports every few seconds and hides this; a finished
+  run — reloaded with its whole history already in state — does not, and a page
+  stuck re-running it on every render reads as frozen.
 
 - **The board polls.** It moves when a run is queued, starts or ends — rare
   enough that a 3s refetch of `GET /runs` says the same thing a nudge would,
