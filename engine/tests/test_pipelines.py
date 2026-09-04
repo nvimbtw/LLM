@@ -89,6 +89,20 @@ def test_sft_run_inherits_the_base_architecture(sft_config):
     assert tuned_arch == base_arch
 
 
+def test_sft_run_reports_its_own_architecture(sft_config):
+    """The base's shape has to reach the API somewhere, since SftConfig never
+    carries it — this is that somewhere, and it must agree with the checkpoint's
+    own arch dict rather than a copy that could drift from it."""
+    from llm import storage
+    from llm.model import checkpoint
+    from llm.orchestrate.train import ARCHITECTURE_SUMMARY_FIELDS
+
+    result = sft_pipeline.run(sft_config, on_progress=None)
+
+    _, base_arch = checkpoint.load(storage.weights_path(TINY_MODEL), "cpu")
+    assert result["architecture"] == {name: base_arch[name] for name in ARCHITECTURE_SUMMARY_FIELDS}
+
+
 def test_sft_run_changes_the_weights(sft_config):
     from llm import storage
     from llm.model import checkpoint

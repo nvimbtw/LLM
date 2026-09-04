@@ -112,9 +112,17 @@ Database: `ENGINE_DATABASE_URL`, default `postgresql+psycopg://localhost/slate_e
 migrated with `alembic upgrade head`.
 
 `models` is the index; the weights are on disk under `artifacts/models/<id>/`,
-which is why the id and not the name is stable. Four nullable columns carry a
-run's intermediates, and every pre-existing row keeps them null — which is
-exactly what being a finished model means:
+which is why the id and not the name is stable. `parameters` is `meta.json`
+verbatim — `{"config", "result"}` — and the two families disagree about which
+half carries the architecture. A pretrain's `TrainConfig` states dimensions,
+heads, layers, ff_multiplier and ctx_window itself, so they land under
+`config.*`; `SftConfig` states none of that on purpose — see its docstring —
+so `orchestrate/sft.py` reads the resolved shape off the base checkpoint's
+`arch` and records it under `result.architecture` instead, the one place
+either family's `parameters` answers "what shape is this". `result.base_model`
+carries the same fine-tune's ancestry, mirroring `config.base_model`. Four
+nullable columns carry a run's intermediates, and every pre-existing row keeps
+them null — which is exactly what being a finished model means:
 
 - **`checkpoint_index`** — the 1-based ordinal within the run, and the `#n` the
   name ends with. **`checkpoint_index IS NOT NULL` is the whole definition of

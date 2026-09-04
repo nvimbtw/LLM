@@ -314,6 +314,12 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         "parameters": model.parameter_count(),
         "device": device,
         "warm_started": reset,
+        # The one field both families answer "what shape is this" with, whatever
+        # their config happens to say: SFT states no architecture at all — it
+        # comes from the checkpoint by construction — and a *resumed* pretrain
+        # deliberately states none either. `train.py` records the same key from
+        # its own config for the same reason.
+        "architecture": {name: arch[name] for name in train_pipeline.ARCHITECTURE_SUMMARY_FIELDS},
         # What this model was actually fine-tuned on, which is the only durable
         # way to tell two runs from the same base model apart afterwards.
         "dataset": {

@@ -37,7 +37,17 @@ def pipelines(monkeypatch):
 
     def sft(cfg, on_progress, stop, owner=None):
         called["sft"] = cfg
-        return {"ctx_window": 64}
+        return {
+            "ctx_window": 64,
+            "base_model": cfg.base_model,
+            "architecture": {
+                "dimensions": 256,
+                "heads": 8,
+                "layers": 4,
+                "ff_multiplier": 4,
+                "ctx_window": 64,
+            },
+        }
 
     def tokenize(cfg, on_progress, stop, owner=None):
         called["tokenize"] = cfg
@@ -79,7 +89,20 @@ def test_a_fine_tune_is_told_apart_by_naming_a_base(store_session, pipelines, pr
 
     assert "sft" in pipelines and "train" not in pipelines
     with store.session() as db:
-        assert q.get_model(db, model_id).family == "sft"
+        model = q.get_model(db, model_id)
+        assert model.family == "sft"
+        # An SFT run's own config carries no architecture — it comes from the
+        # base checkpoint — so the API must be able to serve one back from
+        # `result` instead, the same place it now finds `base_model`.
+        stored = model.parameters["result"]
+        assert stored["base_model"] == config["base_model"]
+        assert stored["architecture"] == {
+            "dimensions": 256,
+            "heads": 8,
+            "layers": 4,
+            "ff_multiplier": 4,
+            "ctx_window": 64,
+        }
 
 
 def test_the_row_keeps_the_summary_without_its_series(

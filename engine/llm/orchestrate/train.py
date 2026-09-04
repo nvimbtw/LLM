@@ -45,6 +45,12 @@ _ARCHITECTURE = frozenset(
      "learned_temperature"}
 )
 
+#: The shape fields shown wherever a model's architecture is surfaced — a
+#: pretrain's live on its own `TrainConfig` under `config.*`; `sft.py` reads
+#: this same tuple off the base checkpoint's `arch` to report the same five
+#: for a fine-tune, which has no `TrainConfig` of its own to carry them.
+ARCHITECTURE_SUMMARY_FIELDS = ("dimensions", "heads", "layers", "ff_multiplier", "ctx_window")
+
 
 class CheckpointWriter:
     """What a checkpoint *directory* is — the half of checkpointing the loop
