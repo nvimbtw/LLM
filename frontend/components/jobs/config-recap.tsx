@@ -108,6 +108,10 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
     }
     case "chat":
       return null
+    // No recap yet: an RL config is composed by hand rather than by a form, so
+    // there is no set of fields this could claim to be summarising.
+    case "rl":
+      return null
   }
 }
 

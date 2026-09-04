@@ -227,6 +227,26 @@ async def test_a_closed_episode_is_absent_from_the_run_mean(a_run, client):
     assert scored["graded"] == 1
 
 
+async def test_a_training_batch_is_kept_off_the_board(a_run, client):
+    """`GET /gym/runs` is what a person reads to compare models, and a training
+    run creates one gym run per optimizer step. Without the filter the newest
+    fifty rows are all one run's batches and no evaluation is visible at all."""
+    await a_run(kind="rl")
+    evaluation = await a_run()
+
+    listed = (await client.get("/gym/runs")).json()
+    assert [run["id"] for run in listed] == [evaluation["id"]]
+
+    batches = (await client.get("/gym/runs", params={"kind": "rl"})).json()
+    assert [run["kind"] for run in batches] == ["rl"]
+
+
+async def test_a_run_is_an_evaluation_unless_it_says_otherwise(a_run):
+    """Every run made before the kind existed is one, and the default has to
+    keep saying so."""
+    assert (await a_run())["kind"] == "eval"
+
+
 async def test_a_task_type_from_another_gym_is_refused(client):
     response = await client.post(
         "/gym/runs",

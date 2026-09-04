@@ -60,13 +60,41 @@ def rope_tables(
 
 
 def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """Rotate adjacent dimension pairs of `x` [batch, heads, seq, head_dim]."""
+    """Rotate adjacent dimension pairs of `x` [batch, heads, seq, head_dim].
+
+    The tables are [seq, head_dim/2] when every row of the batch sits at the same
+    position, and [batch, seq, head_dim/2] when they do not — which is what a
+    batch of rollouts at different points in their own episodes looks like.
+    """
     even = x[..., 0::2]
     odd = x[..., 1::2]
-    cos = cos[None, None, :, :]
-    sin = sin[None, None, :, :]
+    cos = cos.unsqueeze(-3) if cos.dim() == 3 else cos[None, None]
+    sin = sin.unsqueeze(-3) if sin.dim() == 3 else sin[None, None]
     rotated = torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1)
     return rotated.flatten(-2)
+
+
+def attention_mask(seq: int, keys: int, key_mask: torch.Tensor) -> torch.Tensor:
+    """Which keys each query may attend to, [batch, 1, seq, keys]. True attends,
+    which is `scaled_dot_product_attention`'s own convention.
+
+    Built only when some keys are padding. Without `key_mask` the causal case is
+    `is_causal=True`, which is the fused kernel's fast path, and it stays that.
+
+    Query *t* is key `keys - seq + t` — a decode step's queries are the tail of
+    the cache — so the causal band is a `tril` shifted by that offset. **A
+    padding query is allowed to attend to itself**: a row masked everywhere
+    softmaxes to NaN, and that NaN reaches every later query through the cache,
+    so the one position whose output nobody reads has to stay finite.
+    """
+    device = key_mask.device
+    allowed = key_mask[:, None, None, :].expand(-1, 1, seq, -1).clone()
+    allowed &= torch.ones(seq, keys, dtype=torch.bool, device=device).tril(
+        diagonal=keys - seq
+    )
+    rows = torch.arange(seq, device=device)
+    allowed[:, :, rows, keys - seq + rows] = True
+    return allowed
 
 
 class Attention(nn.Module):
@@ -117,7 +145,7 @@ class Attention(nn.Module):
         for third in self.wqkv.weight.data.chunk(3, dim=0):
             nn.init.xavier_uniform_(third)
 
-    def forward(self, x, cos, sin, cache=None):
+    def forward(self, x, cos, sin, cache=None, key_mask=None):
         batch, seq, _ = x.shape
 
         # [batch, seq, 3d] -> 3 x [batch, heads, seq, head_dim]. The projection's
@@ -150,19 +178,24 @@ class Attention(nn.Module):
         # Causal only when attending over a fresh multi-token sequence. A cached
         # single-token decode step must attend to ALL of the past, so masking it
         # causally would hide every previous token from the one being generated.
+        mask = attention_mask(seq, k.shape[2], key_mask) if key_mask is not None else None
         if self.record_attention:
-            out = self._attention_recording(q, k, v)
+            out = self._attention_recording(q, k, v, mask)
         else:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=seq > 1)
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, is_causal=mask is None and seq > 1
+            )
 
         out = out.transpose(1, 2).contiguous().view(batch, seq, -1)
         return self.wo(out), cache
 
-    def _attention_recording(self, q, k, v):
+    def _attention_recording(self, q, k, v, mask=None):
         """The same attention, computed explicitly so the weights can be read."""
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         seq, keys = scores.shape[-2], scores.shape[-1]
-        if seq > 1:
+        if mask is not None:
+            scores = scores.masked_fill(~mask, float("-inf"))
+        elif seq > 1:
             causal = torch.ones(seq, keys, dtype=torch.bool, device=scores.device).tril(
                 diagonal=keys - seq
             )
@@ -216,12 +249,12 @@ class Block(nn.Module):
         self.record_activations = False
         self.last_input: torch.Tensor | None = None
 
-    def forward(self, x, cos, sin, cache=None):
+    def forward(self, x, cos, sin, cache=None, key_mask=None):
         # The residual stream as it enters this block. Kept detached and only
         # while diagnostics ask for it; see `Transformer.record_activations`.
         if self.record_activations:
             self.last_input = x.detach()
-        attended, cache = self.attn(self.ln_attn(x), cos, sin, cache)
+        attended, cache = self.attn(self.ln_attn(x), cos, sin, cache, key_mask)
         x = x + attended
         x = x + self.ff(self.ln_ff(x))
         return x, cache
@@ -289,7 +322,8 @@ class Transformer(nn.Module):
         cos, sin = rope_tables(self.head_dim, self.ctx_window, self.rope_base, target_len)
         return cos.to(self.rope_cos.device), sin.to(self.rope_cos.device)
 
-    def forward(self, idx, caches=None, pos_offset: int = 0, rope=None):
+    def forward(self, idx, caches=None, pos_offset: int = 0, rope=None, positions=None,
+                key_mask=None):
         """Logits for `idx` [batch, seq], plus the updated KV caches.
 
         `pos_offset` is where this chunk starts in the sequence, so a cached
@@ -298,20 +332,34 @@ class Transformer(nn.Module):
         `rope` overrides the trained `(cos, sin)` tables — with the pair
         `extended_rope` returns, a caller can run past `ctx_window` at whatever
         length it built those tables for.
+
+        `positions` [batch, seq] and `key_mask` [batch, keys] are what a **ragged
+        batch** needs, and are meaningless apart: rows padded to a common length
+        sit at different true positions and must not attend to each other's
+        padding. `pos_offset` cannot express that — it is one number for the
+        whole batch. Both default to None and every existing caller passes
+        neither, which is why this stays the arithmetic it was.
         """
         rope_cos, rope_sin = rope if rope is not None else (self.rope_cos, self.rope_sin)
         limit = rope_cos.shape[0]
         seq = idx.shape[1]
-        if pos_offset + seq > limit:
-            raise ValueError(f"position {pos_offset + seq} exceeds context window {limit}")
 
-        cos = rope_cos[pos_offset : pos_offset + seq]
-        sin = rope_sin[pos_offset : pos_offset + seq]
+        if positions is None:
+            if pos_offset + seq > limit:
+                raise ValueError(f"position {pos_offset + seq} exceeds context window {limit}")
+            cos = rope_cos[pos_offset : pos_offset + seq]
+            sin = rope_sin[pos_offset : pos_offset + seq]
+        else:
+            furthest = int(positions.max())
+            if furthest >= limit:
+                raise ValueError(f"position {furthest + 1} exceeds context window {limit}")
+            cos = rope_cos[positions]
+            sin = rope_sin[positions]
 
         x = self.embedding(idx)
         new_caches = []
         for i, block in enumerate(self.blocks):
-            x, cache = block(x, cos, sin, caches[i] if caches else None)
+            x, cache = block(x, cos, sin, caches[i] if caches else None, key_mask)
             new_caches.append(cache)
 
         x = self.ln_final(x)

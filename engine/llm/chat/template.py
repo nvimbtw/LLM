@@ -134,7 +134,7 @@ def strip_thinking(text: str) -> str:
     return "".join(out).strip()
 
 
-def _tool_block(turn: Turn) -> str:
+def tool_block(turn: Turn) -> str:
     """A tool's answer. Its text is the already-rendered inner content — the
     call it answers plus the answer — which `chat.tools.render_result` builds
     for both this path and the SFT data, so the two cannot lay it out
@@ -158,7 +158,7 @@ def _format_turn(turn: Turn) -> str:
     if turn.role is Role.USER:
         return f"<|user|>{turn.text.strip()}<|/user|>"
     if turn.role is Role.TOOL:
-        return _tool_block(turn)
+        return tool_block(turn)
     return f"{ASSISTANT_OPEN}{strip_thinking(turn.text)}{ASSISTANT_CLOSE}"
 
 
@@ -190,7 +190,7 @@ def render_conversation(
             continue
 
         if turn.role is Role.TOOL:
-            out.append(_tool_block(turn))
+            out.append(tool_block(turn))
             continue
 
         # Kept, the marker describes real content — and this is the path that
@@ -365,7 +365,7 @@ def training_segments(
         # something the caller hands the model, not something the model decides.
         # Training it would teach the model to invent search results.
         if turn.role is Role.TOOL:
-            segments.append((_tool_block(turn), False))
+            segments.append((tool_block(turn), False))
             continue
 
         # The opening marker is the cue the model conditions on (not a target);

@@ -3,7 +3,7 @@
 import Link from "next/link"
 
 import { cn } from "@/lib/utils"
-import { useModels } from "@/hooks/use-models"
+import { useModelNames } from "@/hooks/use-model-names"
 import { modelLabel, type GymRun } from "@/lib/gyms"
 
 /**
@@ -14,7 +14,7 @@ import { modelLabel, type GymRun } from "@/lib/gyms"
  * put a border between every comparison.
  */
 export function RunList({ runs }: { runs: GymRun[] }) {
-  const { models } = useModels()
+  const { names } = useModelNames()
 
   if (runs.length === 0) {
     return (
@@ -33,7 +33,7 @@ export function RunList({ runs }: { runs: GymRun[] }) {
             className="flex items-baseline gap-4 py-3 transition-colors hover:text-foreground"
           >
             <span className="min-w-0 flex-1 truncate font-medium">
-              {modelLabel(models, run.model_name)}
+              {modelLabel(names, run.model_name)}
             </span>
             <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
               {run.task_types.join(" · ")}

@@ -223,6 +223,32 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           { name: "Reply", blurb: "The turn streams into the conversation." },
         ],
       }
+    case "rl":
+      return {
+        title: "What it will repeat",
+        steps: [
+          {
+            name: "Roll out a batch",
+            blurb:
+              "One gym run: a handful of tasks, several attempts at each, every attempt in its own sandbox.",
+          },
+          {
+            name: "Grade and compare",
+            blurb:
+              "Each attempt is scored against its own siblings, so what is learned is which attempt was better — not that any of them were good.",
+          },
+          {
+            name: "Take one step",
+            blurb:
+              "Only the model's own words carry loss. What the shell printed is context, never a target.",
+          },
+          {
+            name: "Checkpoint",
+            blurb:
+              "Every iteration saves a model you can chat with, benchmark, or run the gym against on tasks it never trained on.",
+          },
+        ],
+      }
   }
 }
 

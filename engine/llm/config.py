@@ -283,6 +283,142 @@ class SftConfig(BaseModel):
     _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 
 
+class TaskWeight(BaseModel):
+    """One task type and how often a batch should draw it.
+
+    A bare string parses as weight 1, so `["bash_ls_easy"]` and
+    `[{"id": "bash_ls_easy"}]` are the same request — the shape
+    `DatasetSelection` already uses, for the same reason: the common case should
+    not have to be spelled out.
+
+    Weights exist for the run that spans several gyms. A flat list is dominated
+    by whichever gym registers the most task types, which is a property of the
+    registry and not a thing anybody meant to ask for.
+    """
+
+    id: str = Field(description="the gym's id for the task type")
+    weight: float = Field(default=1.0, gt=0.0)
+
+
+def _as_task_weights(value):
+    if not isinstance(value, list):
+        return value
+    return [{"id": item} if isinstance(item, str) else item for item in value]
+
+
+class RlConfig(BaseModel):
+    """Reinforcement learning against a gym, from a model that already scores.
+
+    Architecture is absent for the same reason `SftConfig` omits it: it comes
+    from the base model's checkpoint, and a request that could restate it is a
+    request that could disagree with the weights.
+
+    **A pass rate strictly between 0 and 1 is a precondition, not a result.**
+    These tasks are pass or fail, and a group of rollouts that all fail has a
+    zero gradient — exactly, not approximately. `gyms/scripts/gate.py` is what
+    asks whether a model is in that band before a run is worth starting.
+    """
+
+    model_config = _ALLOW_MODEL_PREFIX
+
+    model_name: str = Field(description="names the run's directory under artifacts/models/")
+    base_model: str = Field(description="the model to start from, and the frozen reference")
+
+    # ── The batch ───────────────────────────────────────────────────────────
+    gym_id: str = Field(
+        default="bash",
+        description="which gym the task types belong to",
+    )
+    task_types: list[TaskWeight] = Field(
+        default_factory=list,
+        min_length=1,
+        description="which task types to draw from; an id, or {id, weight}",
+    )
+    #: Rollouts per task, and therefore the size of the baseline an advantage is
+    #: measured against. A group of one contributes exactly zero gradient.
+    group_size: int = Field(default=8, ge=2, le=32)
+    #: Distinct tasks per iteration. `tasks_per_batch * group_size` is the whole
+    #: batch, and it is bounded by the gyms service's own ceiling on episodes per
+    #: run — which exists because just-bash holds a finite number of filesystems.
+    tasks_per_batch: int = Field(default=4, ge=1, le=32)
+    iterations: int = Field(default=50, ge=1)
+    max_rounds: int = Field(default=8, ge=1, le=32)
+
+    # ── The update ──────────────────────────────────────────────────────────
+    lr: float = 1e-6
+    #: How hard the run is held to the model it started from. Not a diagnostic:
+    #: without it a binary reward and a forgiving grader converge on a model that
+    #: ends every reply with a plausible-looking token and has forgotten how to
+    #: write a sentence.
+    beta: float = 0.02
+    grad_clip: float = 1.0
+    weight_decay: float = 0.0
+    #: How many rollouts are backwarded at once. The logits of a whole batch are
+    #: the largest tensor in the process, so this is a memory dial and not a
+    #: statement about the gradient — every micro-batch lands in the same step.
+    micro_batch: int = Field(default=4, ge=1)
+
+    # ── Sampling ────────────────────────────────────────────────────────────
+    #: **Temperature above zero or the group is one rollout counted G times.**
+    #: There is no sampler seed here for the same reason: pinning the draw would
+    #: make G siblings G copies, and a group with no variance in its returns has
+    #: no gradient in it.
+    temperature: float = Field(default=1.0, gt=0.0)
+    top_k: int = 40
+    top_p: float = 0.95
+    max_tokens: int = 256
+    context_multiplier: float = Field(default=1.0, ge=1.0)
+
+    # ── Seeds ───────────────────────────────────────────────────────────────
+    seed_base: int = Field(
+        default=0,
+        description="where the training batches start drawing tasks from",
+    )
+    #: Reserved for measuring this run, and never drawn during it. Held-out seeds
+    #: are the whole of the methodology — a seed that trained is a seed the model
+    #: may have memorised the answer to — and keeping them apart is a
+    #: subtraction rather than a feature.
+    holdout_base: int = Field(default=1_000_000)
+
+    checkpoint_target: int | None = None
+
+    _normalize_task_types = field_validator("task_types", mode="before")(_as_task_weights)
+
+    def lanes(self) -> list[tuple[str, list[TaskWeight]]]:
+        """The gyms this run draws from, and what it draws from each.
+
+        One today, and the whole of what running gyms *combined* will need is for
+        this to return more than one — every caller already treats a batch as
+        lanes concatenated. A run spanning gyms is several gym runs whose groups
+        are pooled before the optimizer step, rather than one run spanning gyms:
+        `POST /gym/runs` refuses task types from two gyms and should keep
+        refusing them, because a gym that has to know another exists is a gym
+        nobody can add.
+
+        Pooling is sound without any cross-gym normalization for one reason, and
+        it is worth stating because it is what makes the combined run cheap: an
+        advantage is standardized **inside a group** of rollouts of one seed, so
+        two gyms whose rewards live on different scales still contribute
+        advantages of the same size.
+
+        The flat spelling collapsing into the general one is what
+        `TrainConfig.stages()` already does for datasets.
+        """
+        return [(self.gym_id, self.task_types)]
+
+    @model_validator(mode="after")
+    def _holdout_is_disjoint(self) -> "RlConfig":
+        """A run cannot be measured on seeds it trained on, and the arithmetic
+        that would overlap them is not obvious from the two numbers."""
+        drawn = self.seed_base + self.iterations * self.tasks_per_batch
+        if self.seed_base <= self.holdout_base < drawn:
+            raise ValueError(
+                f"holdout_base {self.holdout_base} is inside the seeds this run will "
+                f"train on ({self.seed_base}..{drawn})"
+            )
+        return self
+
+
 class TokenizerConfig(BaseModel):
     """Learning one reusable vocabulary from a selection of corpora.
 

@@ -50,6 +50,12 @@ class RunKind(str, enum.Enum):
     #: run because it takes minutes and wants the queue's frames and cancel, and
     #: because building one while the device trains would fight it for the CPU.
     tokenize = "tokenize"
+    #: Reinforcement learning against a gym. A `train` run in every way that
+    #: matters — it writes checkpoints, produces a model, and can be chained
+    #: from — and a kind of its own because what it *reports* is a pass rate
+    #: rather than a loss curve, and nothing that reads a run's frames can tell
+    #: those apart from the numbers alone.
+    rl = "rl"
 
 
 class RunStatus(str, enum.Enum):

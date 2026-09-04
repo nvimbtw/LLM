@@ -25,7 +25,7 @@ from gyms.registry import REGISTRY
 from gyms.sandbox import WORKSPACE, SandboxError, clear, seed
 from gyms.sandbox import run as run_command
 from store import queries
-from store.schema import EpisodeStatus, GymEpisode, GymRun, RunStatus
+from store.schema import EpisodeStatus, GymEpisode, GymRun, RunKind, RunStatus
 
 router = APIRouter()
 
@@ -54,6 +54,10 @@ class NewRun(BaseModel):
     #: an advantage is measured against a *group's* own mean and a group of one
     #: has no mean to be better than.
     group_size: int = Field(default=1, ge=1, le=MAX_EPISODES)
+    #: `rl` keeps the run off the board `GET /gym/runs` serves. A training run
+    #: takes one of these per optimizer step, and they are batches rather than
+    #: measurements — see `store.schema.RunKind`.
+    kind: RunKind = RunKind.eval
 
 
 class NewTrajectories(BaseModel):
@@ -118,6 +122,7 @@ def create_run(body: NewRun) -> dict:
             task_types=list(body.task_types),
             seed_base=seed_base,
             group_size=body.group_size,
+            kind=body.kind,
             episode_count=body.count,
         )
         db.add(run)
@@ -162,9 +167,9 @@ def _prepare(db, run: GymRun, index: int, task_types: list[str]) -> GymEpisode:
 
 
 @router.get("/gym/runs")
-def list_runs() -> list[dict]:
+def list_runs(kind: RunKind = RunKind.eval) -> list[dict]:
     with store.session() as db:
-        return [_run_json(run) for run in queries.runs(db)]
+        return [_run_json(run) for run in queries.runs(db, kind=kind)]
 
 
 @router.get("/gym/runs/{run_id}")
@@ -351,6 +356,7 @@ def _run_json(run: GymRun) -> dict:
         "task_types": run.task_types,
         "seed_base": run.seed_base,
         "group_size": run.group_size,
+        "kind": run.kind.value,
         "episode_count": run.episode_count,
         "status": run.status.value,
         "score": run.score,

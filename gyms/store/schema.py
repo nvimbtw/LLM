@@ -41,6 +41,20 @@ class RunStatus(str, enum.Enum):
     failed = "failed"
 
 
+class RunKind(str, enum.Enum):
+    """What a run is for, and therefore who should be shown it.
+
+    A benchmark and a training batch are the same three tables and the same
+    sandbox, and the difference between them is not visible in any other column:
+    both are N episodes of a model against generated tasks. The kind is what
+    keeps an RL iteration — of which there is one per optimizer step, dozens per
+    training run — off the board a person reads to compare models.
+    """
+
+    eval = "eval"
+    rl = "rl"
+
+
 class EpisodeStatus(str, enum.Enum):
     pending = "pending"
     running = "running"
@@ -57,6 +71,9 @@ class GymRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
     gym_id: Mapped[str] = mapped_column(String(60))
     model_name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[RunKind] = mapped_column(
+        Enum(RunKind, name="gym_run_kind"), default=RunKind.eval, server_default="eval"
+    )
     #: The task types drawn from, in the order the episodes cycle through them.
     #: A *group* cycles them, not an episode — see `group_size`.
     task_types: Mapped[list] = mapped_column(Json)

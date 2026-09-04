@@ -15,7 +15,7 @@ import { CommandBox } from "@/components/gyms/command-box"
 import { EpisodeTranscript } from "@/components/gyms/episode-transcript"
 import { RewardChart } from "@/components/gyms/reward-chart"
 import { useGymRun } from "@/hooks/use-gym-run"
-import { useModels } from "@/hooks/use-models"
+import { useModelNames } from "@/hooks/use-model-names"
 import { modelLabel } from "@/lib/gyms"
 import { useSettings } from "@/components/settings/settings-provider"
 
@@ -34,7 +34,7 @@ import { useSettings } from "@/components/settings/settings-provider"
 export default function GymRunPage() {
   const { gym, id } = useParams<{ gym: string; id: string }>()
   const { settings } = useSettings()
-  const { models } = useModels()
+  const { names } = useModelNames()
   const { run, transcripts, live, isRunning, error, start, stop, open } = useGymRun(id)
   const [chosen, setChosen] = React.useState<string | null>(null)
 
@@ -68,7 +68,7 @@ export default function GymRunPage() {
   return (
     <PageShell>
       <PageHeader
-        title={modelLabel(models, run.model_name)}
+        title={modelLabel(names, run.model_name)}
         // "tasks" stops being the episode count once a run has groups: the
         // episodes are `group_size` attempts at each of `episode_count /
         // group_size` tasks, and reading the run as that many distinct tasks

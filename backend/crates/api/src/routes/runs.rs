@@ -28,6 +28,18 @@ async fn sft(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>)
     answer(engine.post(&started_by(&admin), "/sft", body.into_inner()).await?)
 }
 
+/// Practising against a gym: the run rolls episodes out, grades them, and takes
+/// a policy-gradient step on the tokens the model itself drew.
+///
+/// A route of its own rather than a flag on `/train` for the reason the engine
+/// gives it a run kind of its own — what it reports is a pass rate where a
+/// training run reports a loss, and nothing reading a run's frames could tell
+/// those apart from the numbers.
+#[post("/rl")]
+async fn rl(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
+    answer(engine.post(&started_by(&admin), "/rl", body.into_inner()).await?)
+}
+
 /// A vocabulary, built once and named by the runs that train against it.
 #[post("/tokenize")]
 async fn tokenize(admin: AdminUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
@@ -81,6 +93,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // The literal segments come first, so "/pause" is not read as a run id.
     cfg.service(train);
     cfg.service(sft);
+    cfg.service(rl);
     cfg.service(tokenize);
     cfg.service(benchmark);
     cfg.service(chain);

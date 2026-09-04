@@ -9,8 +9,9 @@ a pipeline.
 import uuid
 
 import store
-from llm.config import EvalConfig, SftConfig, TokenizerConfig, TrainConfig
+from llm.config import EvalConfig, RlConfig, SftConfig, TokenizerConfig, TrainConfig
 from llm.orchestrate import evaluate as eval_pipeline
+from llm.orchestrate import rl as rl_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import tokenize as tokenize_pipeline
 from llm.orchestrate import train as train_pipeline
@@ -315,8 +316,39 @@ def _summarize(result: dict) -> dict:
     return {k: v for k, v in result.items() if not isinstance(v, list)}
 
 
+def reinforce(config: dict, progress, cancel, owner: str | None = None) -> dict:
+    """Reinforcement learning against a gym, and the model it leaves behind.
+
+    The same shape as `train`: a pipeline runs, weights land under the id, and
+    this writes the row. `family` is `rl` so a listing can tell a model that was
+    *practised* from one that was fine-tuned — they are otherwise the same
+    artifact, which is the point.
+    """
+    cfg = RlConfig(**config)
+    result = rl_pipeline.run(cfg, progress, cancel, owner)
+
+    try:
+        model_id = uuid.UUID(cfg.model_name)
+    except ValueError:
+        raise ValueError(
+            f"model_name {cfg.model_name!r} is not a model id — queue the run again"
+        ) from None
+
+    with store.session() as db:
+        q.upsert_model(
+            db,
+            model_id=model_id,
+            name=config.get(DISPLAY_NAME) or cfg.model_name,
+            parameters={"config": config, "result": _summarize(result)},
+            context=_context(result, config),
+            family="rl",
+        )
+    return {**result, "model_id": str(model_id)}
+
+
 HANDLERS = {
     RunKind.train: train,
     RunKind.benchmark: benchmark,
     RunKind.tokenize: tokenize,
+    RunKind.rl: reinforce,
 }

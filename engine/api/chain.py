@@ -16,6 +16,7 @@ from store.schema import RunKind, RunStatus
 CONSUMES = {
     RunKind.train: "base_model",
     RunKind.benchmark: "model_name",
+    RunKind.rl: "base_model",
 }
 
 

@@ -47,7 +47,7 @@ use crate::turn;
 /// rather than threaded through: a demonstration that claimed some other tool
 /// would be dropped by the engine's build, which refuses a call it has no tool
 /// for.
-const TOOL: &str = "bash";
+const TOOL: &str = tools::Bash::NAME;
 
 /// One trajectory as a conversation, or `None` if it is not trainable.
 ///

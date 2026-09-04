@@ -22,6 +22,7 @@
   --color-kind-benchmark: var(--kind-benchmark);
   --color-kind-chat: var(--kind-chat);
   --color-kind-tokenize: var(--kind-tokenize);
+  --color-kind-rl: var(--kind-rl);
   --color-tier-low: var(--tier-low);
   --color-tier-med: var(--tier-med);
   --color-tier-high: var(--tier-high);
@@ -527,6 +528,11 @@
   --kind-chat-dark: var(--kanagawa-dragon-pink-light);
   --kind-tokenize-light: var(--kanagawa-lotus-orange-deep);
   --kind-tokenize-dark: var(--kanagawa-dragon-orange-light);
+  /* Teal, the one hue left that is not already a kind. Deliberately far from
+     `--kind-train`: a queue of RL iterations and a queue of fine-tunes are the
+     two things most often read on one screen. */
+  --kind-rl-light: var(--kanagawa-lotus-teal-vivid);
+  --kind-rl-dark: var(--kanagawa-dragon-aqua-light);
 
   /* Selected text. Both modes take Kanagawa's own `Visual` colour rather than
      something invented — waveBlue1 under Dragon, lotusViolet3 under Lotus —
@@ -696,6 +702,7 @@
   --kind-benchmark: var(--kind-benchmark-light);
   --kind-chat: var(--kind-chat-light);
   --kind-tokenize: var(--kind-tokenize-light);
+  --kind-rl: var(--kind-rl-light);
   --selection: var(--selection-light);
   --selection-foreground: var(--selection-foreground-light);
   --throbber-spark: var(--throbber-spark-light);
@@ -747,6 +754,7 @@
   --kind-benchmark: var(--kind-benchmark-dark);
   --kind-chat: var(--kind-chat-dark);
   --kind-tokenize: var(--kind-tokenize-dark);
+  --kind-rl: var(--kind-rl-dark);
   --selection: var(--selection-dark);
   --selection-foreground: var(--selection-foreground-dark);
   --throbber-spark: var(--throbber-spark-dark);

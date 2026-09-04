@@ -90,10 +90,17 @@ impl Bash {
     }
 }
 
+impl Bash {
+    /// The stem the model calls it by. A `const` as well as the trait method
+    /// because callers that route on the name — the gym drivers, the
+    /// demonstration assembler — have no instance to ask.
+    pub const NAME: &'static str = "bash";
+}
+
 #[async_trait]
 impl Tool for Bash {
     fn name(&self) -> &'static str {
-        "bash"
+        Bash::NAME
     }
 
     async fn run(&self, argument: &str, session: &str) -> Result<String> {

@@ -3,8 +3,8 @@
 The engine owns no corpora. What a run trains on is a dataset in the *data*
 engine's database, and the two Python services never speak — so a run asks the
 Rust backend, which re-mints toward the other service carrying the same acting
-caller. The hop is documented in `docs/backend/README.md`; this is the client
-side of it.
+caller. The hop is documented in `docs/backend/README.md`; `llm.backend` is the
+client side of it, and this is what packing a corpus asks it for.
 
 Three things shape everything here:
 
@@ -24,33 +24,25 @@ ceiling of 200 rows, which is what actually binds for small documents. Peak
 memory is one page, whatever the corpus turns out to be.
 """
 
-import json
-import os
 import time
-import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 import httpx
-import jwt
 
-#: This service's own name, as it appears in the `iss` claim of a token it mints.
-#: The same string is `AUDIENCE` in `api/auth.py` (what the backend addresses us
-#: by) and `engine::AUDIENCE` in Rust; `tests/test_remote.py` pins them together.
-SERVICE_NAME = "engine"
-
-#: Who the token is addressed to. The mirror of the backend's own audiences: a
-#: token minted here for the backend cannot open a service, and vice versa.
-AUDIENCE = "backend"
-
-#: Signs a token when there is no shared secret, exactly as the Rust proxy does
-#: in the other direction. The signature is then worthless, but `act` is not —
-#: without it the backend cannot scope the request to anyone.
-UNSIGNED = "unsigned"
-
-TOKEN_TTL_SECS = 60
-
-DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+from llm.backend import (  # noqa: F401  (re-exported: this was their address first)
+    AUDIENCE,
+    DEFAULT_BASE_URL,
+    REQUEST_TIMEOUT_SECS,
+    SERVICE_NAME,
+    TOKEN_TTL_SECS,
+    UNSIGNED,
+    Hop,
+    RemoteError,
+    base_url,
+    detail,
+    secret,
+)
 
 #: What a page should weigh. Matches `pack.ENCODE_BATCH_CHARS`, so one page is
 #: one encode batch and is released as soon as it has been encoded.
@@ -66,24 +58,11 @@ MAX_PAGE_DOCUMENTS = 200
 #: the first page of a corpus of books should not be the one that hurts.
 FIRST_PAGE_DOCUMENTS = 16
 
-#: Per page. A page is small and local, so a slow one is a wedged service rather
-#: than a big response.
-REQUEST_TIMEOUT_SECS = 30.0
-
 #: A dropped page is retried rather than losing the pack around it. Transport
 #: failures and 5xx only — a 404 means the dataset is gone and retrying it is
 #: just a slower way to fail.
 PAGE_ATTEMPTS = 3
 RETRY_BACKOFF_SECS = 0.5
-
-
-class RemoteError(RuntimeError):
-    """The backend refused or could not answer. Carries the status when there was
-    one, so a caller can tell "no such dataset" from "nothing is listening"."""
-
-    def __init__(self, message: str, status: int | None = None):
-        super().__init__(message)
-        self.status = status
 
 
 @dataclass(frozen=True)
@@ -215,60 +194,13 @@ def _selection(item) -> tuple[str, str, int | None]:
     return str(item.id), getattr(item, "name", "") or "", getattr(item, "count", None) or None
 
 
-def base_url() -> str:
-    return os.environ.get("BACKEND_URL") or DEFAULT_BASE_URL
-
-
-def secret() -> str | None:
-    return os.environ.get("BACKEND_SERVICE_SECRET") or None
-
-
-class Client:
+class Client(Hop):
     """One caller's view of the datasets it may read.
 
-    Built per run rather than shared, because `owner` is the person the run was
-    queued for and it is the whole of what the backend scopes by.
+    A `Hop` that retries. Everything it asks for is a read, so asking twice
+    costs a page — which is what buys back a whole pack when a connection drops
+    forty minutes in. Nothing that writes may inherit this.
     """
-
-    def __init__(
-        self,
-        owner: str | None = None,
-        *,
-        url: str | None = None,
-        service_secret: str | None = None,
-        timeout: float = REQUEST_TIMEOUT_SECS,
-    ):
-        self.owner = owner or "system"
-        self.base_url = (url or base_url()).rstrip("/")
-        self.secret = service_secret if service_secret is not None else secret()
-        self._http = httpx.Client(timeout=timeout)
-
-    def close(self) -> None:
-        self._http.close()
-
-    def __enter__(self) -> "Client":
-        return self
-
-    def __exit__(self, *_) -> None:
-        self.close()
-
-    # ── the seam ────────────────────────────────────────────────────────────
-
-    def token(self) -> str:
-        """Minted per request rather than cached: it lives for a minute, and a
-        cached one would need refreshing on a schedule to save one HMAC."""
-        return jwt.encode(
-            {
-                "iss": SERVICE_NAME,
-                "aud": AUDIENCE,
-                "act": self.owner,
-                "scope": [],
-                "jti": str(uuid.uuid4()),
-                "exp": int(time.time()) + TOKEN_TTL_SECS,
-            },
-            self.secret or UNSIGNED,
-            algorithm="HS256",
-        )
 
     def get(self, path: str, params: dict | None = None) -> tuple[dict, int]:
         """One call, with its response size. The size is what the next page is
@@ -290,11 +222,11 @@ class Client:
                 # fault is worth asking the same question again.
                 if response.status_code < 500:
                     raise RemoteError(
-                        f"{path}: {response.status_code} {_detail(response)}",
+                        f"{path}: {response.status_code} {detail(response)}",
                         response.status_code,
                     )
                 last = RemoteError(
-                    f"{path}: {response.status_code} {_detail(response)}",
+                    f"{path}: {response.status_code} {detail(response)}",
                     response.status_code,
                 )
 
@@ -453,12 +385,3 @@ def _clamp(limit: int) -> int:
     return max(1, min(int(limit), MAX_PAGE_DOCUMENTS))
 
 
-def _detail(response: httpx.Response) -> str:
-    """What the far side said, when it said anything intelligible."""
-    try:
-        body = response.json()
-    except (json.JSONDecodeError, ValueError):
-        return response.text[:200]
-    if isinstance(body, dict):
-        return str(body.get("error") or body.get("detail") or body)[:200]
-    return str(body)[:200]

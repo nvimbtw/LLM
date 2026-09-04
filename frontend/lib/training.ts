@@ -351,6 +351,36 @@ export interface DiagPoint {
   // how far the tune has moved from the model it started as. Present only when
   // the run opted in: it keeps a second copy of the base model resident.
   base_kl?: number
+
+  // ── Reinforcement learning ────────────────────────────────────────────────
+  // Present only on an `rl` run and absent — not zero — on every other, the same
+  // rule the fine-tuning fields above follow. A batch is a set of groups; a
+  // group is G rollouts of one task, and its advantage is how much better a
+  // rollout did than its siblings.
+
+  // Fraction of episodes that answered correctly. The number an RL run is read
+  // by, in place of a loss.
+  pass_rate?: number
+  // Fraction of groups that had ANY variance in their returns. A group whose
+  // rollouts all passed or all failed has an exactly zero gradient, so this —
+  // not the pass rate — is what says whether a run is learning or merely
+  // spending. A run whose signal is collapsing is stalled however good its
+  // pass rate looks.
+  signal?: number
+  groups?: number
+  skipped_groups?: number
+  // Mean episode return: the score plus its clipped shaping.
+  mean_return?: number
+  // KL(policy ‖ the model this run started from), in nats per drawn token. The
+  // anchor, not a diagnostic: without it a binary reward and a forgiving grader
+  // converge on a model that has forgotten how to write a sentence.
+  kl?: number
+  episodes?: number
+  // Episodes the driver gave up on — a wedged sandbox, not a model that failed.
+  // They are absent from the pass rate rather than counted as zeros.
+  abandoned?: number
+  episode_rounds?: number
+  policy_tokens?: number
 }
 
 export interface TrainStats {

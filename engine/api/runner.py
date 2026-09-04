@@ -160,7 +160,7 @@ class Runner:
             else:
                 self._registry.finish(live, "completed", result=result)
                 produced = _produced(result)
-                if kind is RunKind.train and produced is not None:
+                if kind in (RunKind.train, RunKind.rl) and produced is not None:
                     handlers.attach_run(run_id, produced)
                 self._finish(
                     run_id,
@@ -254,6 +254,8 @@ def _stage_label(kind: str, frame: dict) -> str | None:
         return name if isinstance(name, str) else "training"
     if kind == "tokenize":
         return "tokenizing"
+    if kind == "rl":
+        return "practising"
     stage = frame.get("stage")
     return stage if isinstance(stage, str) else None
 

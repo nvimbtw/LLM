@@ -8,12 +8,12 @@
 //! The socket that actually drives a run is not here: it is
 //! `routes/stream.rs::gym_socket`, on the `/ws` scope with the other two.
 
-use actix_web::{HttpResponse, get, post, web};
+use actix_web::{HttpRequest, HttpResponse, get, post, web};
 use serde_json::{Value, json};
 
 use crate::demonstrations;
 use crate::extractors::AdminUser;
-use crate::upstream::{Answer, admin_caller, answer};
+use crate::upstream::{Answer, admin_caller, answer, with_query};
 
 use gyms::Proxy;
 
@@ -27,9 +27,14 @@ async fn create_run(admin: AdminUser, body: web::Json<Value>, gyms: web::Data<Pr
     answer(gyms.post(&admin_caller(&admin), "/gym/runs", body.into_inner()).await?)
 }
 
+/// The board. `?kind=rl` reads back a training run's batches instead, which is
+/// the only way to see them: the default listing is evaluations, because a
+/// training run creates one gym run per optimizer step and would otherwise be
+/// the whole of it.
 #[get("/runs")]
-async fn runs(admin: AdminUser, gyms: web::Data<Proxy>) -> Answer {
-    answer(gyms.get(&admin_caller(&admin), "/gym/runs").await?)
+async fn runs(admin: AdminUser, req: HttpRequest, gyms: web::Data<Proxy>) -> Answer {
+    let path = with_query("/gym/runs", &req);
+    answer(gyms.get(&admin_caller(&admin), &path).await?)
 }
 
 #[get("/runs/{id}")]

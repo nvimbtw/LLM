@@ -304,5 +304,17 @@ def test_a_training_run_is_indexed_by_what_it_produced(
 
 
 def test_every_kind_the_queue_accepts_has_a_handler():
-    """A run with no handler fails, so the two lists have to agree."""
-    assert set(handlers.HANDLERS) == {RunKind.train, RunKind.benchmark, RunKind.tokenize}
+    """A run with no handler fails, so the two lists have to agree.
+
+    Stated as a subtraction rather than a roster: adding a kind that needs a
+    handler and forgetting to write one should fail here, which a hand-kept list
+    only does if somebody also remembers to extend the list.
+    """
+    assert set(handlers.HANDLERS) == set(RunKind) - {RunKind.chat}
+
+
+def test_a_chat_is_the_one_kind_with_no_handler():
+    """It is a row so a conversation shows up on the board beside the runs, and
+    nothing about it is queued — the reason the subtraction above has exactly one
+    term, and the thing that would otherwise make it look like an oversight."""
+    assert RunKind.chat not in handlers.HANDLERS

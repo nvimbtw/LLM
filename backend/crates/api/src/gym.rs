@@ -33,6 +33,10 @@ const DEFAULT_ROUNDS: usize = 8;
 /// so this is spent on the commands and the reasoning around them.
 const MAX_TOKENS: u32 = 256;
 
+/// The only tool this gym implements. Named here rather than matched inline so
+/// a second gym's tool is a row beside it and not a branch inside `play`.
+const BASH: &str = tools::Bash::NAME;
+
 fn max_rounds() -> usize {
     std::env::var("MAX_GYM_ROUNDS")
         .ok()
@@ -189,9 +193,10 @@ async fn step_through(
     let mut answer: Option<Value> = None;
     for call in &reply.calls {
         let argument = turn::string_at(call, "argument");
-        let body = execute(gyms, caller, episode_id, &argument, &reply.text, budget).await;
+        let tool = turn::string_at(call, "tool");
+        let body = execute(gyms, caller, episode_id, &tool, &argument, &reply.text, budget).await;
         let result = json!({
-            "tool": turn::string_at(call, "tool"),
+            "tool": tool,
             "argument": argument,
             "body": body,
             "episode_id": episode_id,
@@ -207,32 +212,68 @@ async fn step_through(
     answer
 }
 
+/// One tool call, run in the episode's workspace and recorded, with what the
+/// model reads back rendered under `observation`.
+///
+/// **Shared by both drivers**, and the rendering is the whole reason it is
+/// shared: the browser's socket loop below and the RL rollout in the engine
+/// reach this through `routes::internal`, and `tools::observation` is the same
+/// function the live chat `bash` tool renders with. A gym whose observations
+/// are a near-copy of the real ones trains a model for a shell it is never
+/// served — see `docs/decisions/gyms-are-driven-by-the-backend.md`.
+///
+/// The gyms service owns the episode's filesystem, its step record and its
+/// reward, so this cannot go through `Tool::run`: that reaches the *live*
+/// sandbox. What is shared with serving is the layout, and `render` below is
+/// where a second gym names its own.
+pub async fn play(
+    gyms: &gyms::Proxy,
+    caller: &auth::Caller,
+    episode_id: &str,
+    tool: &str,
+    argument: &str,
+    reply: &str,
+    budget: usize,
+) -> Result<Value, gyms::GymsError> {
+    if tool != BASH {
+        // A call to something this gym does not have is not a failed episode:
+        // the reply that made it is already generated, and the model reading
+        // "that did not work" is a far better round than a run that stops. It
+        // costs no step and earns no reward, because nothing ran.
+        let caveat = format!("There is no {tool} tool here. This gym has a shell.");
+        return Ok(json!({ "observation": tools::markup::warning(&caveat) }));
+    }
+
+    let path = format!("/gym/episodes/{episode_id}/step");
+    let mut ran = gyms.post(caller, &path, json!({ "command": argument, "reply": reply })).await?;
+    let observation = tools::observation(
+        tools::Output {
+            stdout: turn::string_at(&ran, "stdout"),
+            stderr: turn::string_at(&ran, "stderr"),
+            exit_code: ran["exit_code"].as_i64().unwrap_or_default() as i32,
+            timed_out: ran["timed_out"].as_bool().unwrap_or_default(),
+        },
+        budget,
+    );
+    merge(&mut ran, &json!({ "observation": observation }));
+    Ok(ran)
+}
+
 /// One command, run in the episode's workspace and rendered for the model.
 ///
-/// A call to anything but the shell, and a shell the gyms service could not
-/// reach, both come back as a caveat rather than as a failed episode: the reply
-/// that made the call is already generated, and the model reading "that did not
-/// work" is a far better round than a run that stops.
+/// A shell the gyms service could not reach comes back as a caveat rather than
+/// as a failed episode, for the same reason `render_empty` does.
 async fn execute(
     gyms: &gyms::Proxy,
     caller: &auth::Caller,
     episode_id: &str,
+    tool: &str,
     command: &str,
     reply: &str,
     budget: usize,
 ) -> String {
-    let path = format!("/gym/episodes/{episode_id}/step");
-    let body = json!({ "command": command, "reply": reply });
-    match gyms.post(caller, &path, body).await {
-        Ok(ran) => tools::observation(
-            tools::Output {
-                stdout: turn::string_at(&ran, "stdout"),
-                stderr: turn::string_at(&ran, "stderr"),
-                exit_code: ran["exit_code"].as_i64().unwrap_or_default() as i32,
-                timed_out: ran["timed_out"].as_bool().unwrap_or_default(),
-            },
-            budget,
-        ),
+    match play(gyms, caller, episode_id, tool, command, reply, budget).await {
+        Ok(ran) => turn::string_at(&ran, "observation"),
         Err(e) => tools::markup::warning(&format!("The shell could not be reached: {e}")),
     }
 }

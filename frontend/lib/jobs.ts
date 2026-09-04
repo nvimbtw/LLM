@@ -15,7 +15,7 @@ import {
 // order. `config` travels with each row, so a finished job can seed a new one
 // without a second request.
 
-export type JobKind = "train" | "benchmark" | "chat" | "tokenize"
+export type JobKind = "train" | "benchmark" | "chat" | "tokenize" | "rl"
 
 export type JobStatus =
   // Queued behind another job and not yet runnable: it consumes the model that job
@@ -240,6 +240,7 @@ const QUEUE_PATH: Record<Exclude<JobKind, "chat">, string> = {
   train: "/runs/train",
   benchmark: "/runs/benchmark",
   tokenize: "/runs/tokenize",
+  rl: "/runs/rl",
 }
 
 //: A fine-tune is the same *kind* of run as a pretrain — it produces a model and
@@ -322,6 +323,20 @@ export function queueTokenizer(config: TokenizerBuild): Promise<Job> {
   return queue("tokenize", config, [])
 }
 
+/**
+ * Queue a reinforcement-learning run against a gym.
+ *
+ * Typed as the engine's `RlConfig` rather than through a composer shape: there
+ * is no composer for one yet, and inventing a second name for every field would
+ * be the translation layer `queueTraining` documents the cost of.
+ */
+export function queueReinforcement(
+  config: Record<string, unknown>,
+  steps: FollowUp[] = []
+): Promise<Job> {
+  return queue("rl", config, steps)
+}
+
 export function queueBenchmark(
   modelId: string,
   suite: BenchmarkSuite = "language",
@@ -380,6 +395,7 @@ export const KIND_LABEL: Record<JobKind, string> = {
   benchmark: "Benchmark",
   chat: "Chat",
   tokenize: "Tokenizer",
+  rl: "Gym",
 }
 
 /**
@@ -398,6 +414,7 @@ export const KIND_CHIP: Record<JobKind, string> = {
   benchmark: "text-kind-benchmark bg-kind-benchmark/14",
   chat: "text-kind-chat bg-kind-chat/14",
   tokenize: "text-kind-tokenize bg-kind-tokenize/14",
+  rl: "text-kind-rl bg-kind-rl/14",
 }
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
@@ -432,6 +449,10 @@ export function throbberMode(
     // a picture of what a vocabulary build actually does.
     case "tokenize":
       return "tokenizing"
+    // Borrows training's, and should: it is a training run, and what separates
+    // it is what its frames carry rather than what the device is doing.
+    case "rl":
+      return "training"
   }
 }
 

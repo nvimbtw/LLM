@@ -1,11 +1,14 @@
 # Reinforcement learning runs in the engine, on rollouts the backend serves
 
 - **Date**: 2026-08-30
-- **Status**: Accepted, not implemented. The gate below was measured on
-  2026-08-29 and failed. Of the prerequisites it named, the **terminal round**,
-  the **reward fixes** and the **behaviour-cloning path** are now built; the
-  fine-tune has not been run and the gate has not been re-run. RL itself waits
-  on that re-run.
+- **Status**: Implemented, 2026-09-04. The fine-tune the 2026-08-29 gate was
+  blocked on has been run and the pass rate moved off zero — see *Re-reading the
+  gate* below. `llm/orchestrate/rl.py`, `llm/train/rollout.py`,
+  `llm/train/policy.py`, `RlConfig`, `RunKind.rl` and `/internal/gym/*` are
+  built, with the engine-side documentation in
+  [`../engine/rl.md`](../engine/rl.md). Two things in the design below are
+  wrong in the light of building it, and both are corrected in *What building it
+  changed*. No RL run has been trained to completion yet.
 
 ## Context
 
@@ -295,6 +298,57 @@ or the eight rollouts are one rollout counted eight times, and **no sampler
 seed** — `ChatConfig.seed` pins the draw, so eight runs would be eight copies.
 
 The number to read is `GROUPS WITH SIGNAL`, not the mean score.
+
+## Re-reading the gate — 2026-09-04
+
+The behaviour-cloning fine-tune landed and the gate's premise is gone. Over 237
+graded episodes: **62 correct**, against 0 of 85 on 2026-08-29. Only 48 of 237
+never answered, where 22 of 30 did before — the terminal round did what it was
+built to do. The per-family reading is what matters for a curriculum:
+`bash_ls_easy` 10/33, `bash_read_easy` 10/31, `bash_find_easy` 8/28.
+
+**The script's own verdict on that data is `BLOCKED`, and it is not evidence.**
+`sizes {1: 227, 10: 1}` — 227 of its 228 "groups" are a single rollout, and a
+single rollout is all-pass or all-fail by definition. The script says so itself,
+and it is the mistake it is easiest to make with it: those runs are ordinary
+evaluations, produced before `group_size` was routinely set, so the gate is
+reporting on grouping that never happened rather than on a model with no spread.
+
+The number the gate exists to produce still has to be produced, from runs made
+with `group_size` above 1 at temperature and without a sampler seed. What the
+pass rate above says in the meantime is that the *precondition* holds: at ~26%
+per rollout, a group of 8 has some spread about 91% of the time. That is the
+band GRPO wants, and it is why the phase-1 plan rather than the
+rejection-sampling fallback is what was built.
+
+## What building it changed
+
+Two claims in *The seams that have to move* were wrong, and cost is the reason
+to record them rather than quietly fix them.
+
+**The grammar objects did not need rewriting.** This record calls for "a row-wise
+version of each" of `sample.pick` and `_ToolCalls.mask`, and names it the single
+largest piece of engine work. Only the first was needed: `OpenBlocks` and
+`_ToolCalls` already mask a 1-D logit vector, so the rollout holds one of each
+per row and loops over at most a few dozen in Python per token. That is less
+machinery than a row-wise rewrite and no slower at these sizes.
+
+**The largest piece was the model, not the sampler.** `Transformer.forward` took
+a *scalar* `pos_offset` and had no key mask, so it could not describe a batch of
+rows at different points in their own episodes at all — the thing lockstep
+rollouts are made of. Two optional arguments (`positions`, `key_mask`) are what
+the batch actually needed, and neither is passed by any other caller, so training,
+chat and eval are the arithmetic they were. The subtle half is that a padding
+query must be allowed to attend to itself: a row masked everywhere softmaxes to
+NaN, and that NaN reaches every later query through the cache.
+
+A third thing this record did not anticipate, and it is the one that most
+changes the shape of the code: **the engine cannot render the caveat** the
+browser's driver hands a model when a step fails. Doing so would be a
+Python-rendered observation, which is the one thing this whole design exists to
+prevent. So an unreachable sandbox abandons the episode, and the episode is
+absent from the batch rather than a zero — which is the rule *Rejected* already
+states for a `closed` episode, arrived at from the other direction.
 
 ## Difficulty tiers, and what "easy" has to mean
 

@@ -13,16 +13,24 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from store.schema import EpisodeStatus, GymEpisode, GymRun, GymStep, RunStatus
+from store.schema import EpisodeStatus, GymEpisode, GymRun, GymStep, RunKind, RunStatus
 
 
 def run(db: Session, run_id: uuid.UUID) -> GymRun | None:
     return db.get(GymRun, run_id)
 
 
-def runs(db: Session, limit: int = 50) -> list[GymRun]:
+def runs(db: Session, limit: int = 50, kind: RunKind = RunKind.eval) -> list[GymRun]:
+    """The board. Filtered by kind, because a training run's iterations would
+    otherwise bury every evaluation anybody made — there is one of them per
+    optimizer step."""
     return list(
-        db.scalars(select(GymRun).order_by(GymRun.created_at.desc()).limit(limit))
+        db.scalars(
+            select(GymRun)
+            .where(GymRun.kind == kind)
+            .order_by(GymRun.created_at.desc())
+            .limit(limit)
+        )
     )
 
 

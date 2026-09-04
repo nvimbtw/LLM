@@ -15,7 +15,7 @@ import store
 from api import auth, sse
 from api.runner import RUNNER
 from api.runs import REGISTRY
-from llm.config import EvalConfig, SftConfig, TokenizerConfig, TrainConfig
+from llm.config import EvalConfig, RlConfig, SftConfig, TokenizerConfig, TrainConfig
 from store import queries as q
 from store.schema import Run, RunKind
 
@@ -55,6 +55,27 @@ async def sft(
     fine-tune is naming a base model to start from."""
     config = _identified(cfg.model_dump(), display_name)
     return await _queue(RunKind.train, _train_label(config), config, wait, owner)
+
+
+@router.post("/rl", status_code=202)
+async def rl(
+    cfg: RlConfig,
+    display_name: str | None = None,
+    wait: bool = False,
+    owner: str = Depends(auth.require_service),
+):
+    """Queue a reinforcement-learning run against a gym.
+
+    A kind of its own rather than a `train` run that names a gym, because what it
+    reports is a pass rate and not a loss curve — and a consumer that had to
+    guess which of those a frame carried would guess from the numbers.
+
+    `exclude_unset` for the reason `/train` documents: the run is queued now and
+    started later, and what the config *stated* is the whole of what the pipeline
+    is handed.
+    """
+    config = _identified(cfg.model_dump(exclude_unset=True), display_name)
+    return await _queue(RunKind.rl, _train_label(config), config, wait, owner)
 
 
 @router.post("/tokenize", status_code=202)

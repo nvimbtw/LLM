@@ -139,6 +139,13 @@ collecting 403s.
 gym *run* is not a request — it is a loop, and `api/src/gym.rs` is where that
 loop lives. See [the gym socket](#the-gym-socket) below.
 
+**And one gym loop has no socket at all.** `POST /runs/rl` queues an engine-side
+run that drives its own episodes through [the gym family](#the-gym-family) of
+`/internal`, with nobody watching. It is beside `/runs/train` and `/runs/sft`
+because it is the same thing to this side — a row in the queue that produces a
+model — and the only reason it is not `/runs/train` with a flag is that what it
+*reports* is a pass rate rather than a loss.
+
 The one thing this side decides is **who is asking**: `upstream::caller` turns
 the verified user token into the `act` claim of a short-lived service token, and
 the service scopes by that. A user token is never forwarded.
@@ -149,7 +156,9 @@ the service scopes by that. A user token is never forwarded.
 a **service** is the caller. The LLM engine reads documents there that the data
 engine owns — it cannot ask the data engine itself, because the two Python
 services never speak, and it cannot be handed them in advance, because a queued
-run needs them at a moment nothing on this side knows ahead of time.
+run needs them at a moment nothing on this side knows ahead of time. It drives
+gym episodes there for the same reason, and one more of its own: see
+*The gym family* below.
 
 Three things make that safe to have, each enforced somewhere different:
 
@@ -167,8 +176,37 @@ Three things make that safe to have, each enforced somewhere different:
   person who queued it could have read. `crates/service` names no service, so
   the crate that knows both is `api` and only `api`.
 
-The routes are reads only. A run consumes datasets; creating, cleaning and
-deleting them stay a person's, under `/data`.
+**The dataset routes are reads only.** A run consumes datasets; creating,
+cleaning and deleting them stay a person's, under `/data`.
+
+### The gym family
+
+`/internal/gym/*` is not read-only and cannot be — a rollout runs commands and
+grades answers — but every one of its writes lands in the gyms service's own
+record, which is the module that owns them. Nothing new is stored here.
+
+**The step route answers with the rendered observation, and that is the whole
+reason it exists.** `POST /internal/gym/episodes/{id}/step` takes
+`{tool, argument, reply}` and comes back with what the model should read,
+laid out by `tools::observation` — the same function the browser's gym socket
+and the live chat `bash` tool render with. `gym::play` is the shared body; the
+socket loop and this route differ only in what they do with the result.
+
+So the engine drives a rollout without ever laying an observation out, which is
+what reconciles two things that read like a contradiction:
+[`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md)
+rejected *the engine drives, calling the backend to render* — priced as a round
+trip taken purely to format a string — and
+[`../decisions/reinforcement-learning-in-the-engine.md`](../decisions/reinforcement-learning-in-the-engine.md)
+requires the engine to drive, because a policy gradient needs the token ids and
+log-probabilities the sampler drew and no HTTP frame carries them. The rejection
+priced a round trip the engine would otherwise not make. It makes this one
+anyway — the sandbox is behind this server — so the rendering rides a hop that
+already had to happen and costs nothing.
+
+The tool name is not decoration. `play` routes on it, and a call to a tool the
+gym does not implement comes back as a caveat rather than as a failed episode.
+That is where a second gym's renderer goes: a row beside `bash`, not a branch.
 
 `BACKEND_SERVICE_SECRET` unset leaves `/internal` open and the server says so at
 startup — the same bargain each Python service strikes with its own secret unset,

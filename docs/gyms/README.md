@@ -30,6 +30,20 @@ The service is spawned by the backend as a child (`GYMS_*`, port 8003) like
 [`just-bash`](../backend/README.md#the-sandboxed-shell) at `BASH_URL` and to nothing
 else.
 
+## Who a run is for
+
+`gym_runs.kind` is `eval` or `rl`, and `GET /gym/runs` serves the `eval` ones.
+The two are the same three tables, the same sandbox and the same grading — a
+training run's iteration is N episodes of a model against generated tasks,
+which is exactly what an evaluation is — and there is nothing else in the row
+that could tell them apart.
+
+The filter exists because **a training run creates one gym run per optimizer
+step**. Dozens of them, in minutes. Without the kind, the board a person reads
+to compare models is the last fifty batches of whichever run happens to be
+training, and every evaluation anybody made is off the bottom of it.
+`GET /gym/runs?kind=rl` is how the batches are read back.
+
 ## A run, an episode, a step
 
 ```
@@ -163,8 +177,8 @@ under `/gym`.
 | | |
 | --- | --- |
 | `GET /gyms` | the registry: gyms and the task types each generates. The frontend's catalogue. |
-| `POST /gym/runs` `{gym_id, model_name, task_types[], count, seed_base?, group_size?}` | creates the run, generates the tasks, seeds a workspace per episode. `group_size` defaults to 1 and must divide `count` — 400 otherwise. 502 if the sandbox could not be filled. |
-| `GET /gym/runs`, `GET /gym/runs/{id}` | the record. |
+| `POST /gym/runs` `{gym_id, model_name, task_types[], count, seed_base?, group_size?, kind?}` | creates the run, generates the tasks, seeds a workspace per episode. `group_size` defaults to 1 and must divide `count` — 400 otherwise. `kind` defaults to `eval`. 502 if the sandbox could not be filled. |
+| `GET /gym/runs?kind=`, `GET /gym/runs/{id}` | the record. The listing is one kind at a time, defaulting to `eval`. |
 | `GET /gym/episodes/{id}` | one episode with its steps. |
 | `POST /gym/episodes/{id}/step` `{command, reply?}` | runs one command, records it with its shaping reward. |
 | `POST /gym/episodes/{id}/finish` `{reply}` | grades the reply that ended the episode. |
@@ -175,6 +189,14 @@ under `/gym`.
 `finish` takes the whole reply rather than an extracted answer, because
 extraction is part of grading and a caller that did it first would be a second
 grader nobody versions.
+
+**A second driver reaches these through the backend's `/internal/gym/*`.** The
+engine rolls out a training batch there, and the difference between the two
+seams is one field: the internal step route answers with the *rendered*
+observation beside the raw output, so the engine never lays one out. Both
+renderings are the same call to `tools::observation` in
+`crates/api/src/gym.rs::play`. Nothing in this service knows which driver is
+asking.
 
 An episode that is closed rather than graded is **absent from the run's mean**
 rather than counted as zero: never answered is not the same as answered wrongly,

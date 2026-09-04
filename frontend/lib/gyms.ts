@@ -59,6 +59,12 @@ export interface GymRun {
    * attempts at one task, which is the group an advantage is measured against.
    */
   group_size: number
+  /**
+   * `eval` or `rl`. The listing serves `eval`; a training run's batches are
+   * `GET /gym/runs?kind=rl`, and they are kept apart because a run creates one
+   * of them per optimizer step and would bury every evaluation on the board.
+   */
+  kind: "eval" | "rl"
   episode_count: number
   status: RunStatus
   /** Mean score over the graded episodes, or null before any is graded. */
@@ -192,6 +198,6 @@ async function detail(res: Response, what: string): Promise<string> {
  * been deleted still happened, and the id is the only true thing left to say
  * about it.
  */
-export function modelLabel(models: { id: string; name: string }[], id: string): string {
-  return models.find((model) => model.id === id)?.name ?? id
+export function modelLabel(names: Map<string, string>, id: string): string {
+  return names.get(id) ?? id
 }

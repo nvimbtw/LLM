@@ -57,6 +57,21 @@ backend, a build directory holds the tokens, the document table and a sidecar
 recording what it was made from, and phase 1 reports what the tokenization
 actually produced. See [`corpus.md`](corpus.md).
 
+`llm/backend.py` is the hop itself — the token, the base URL, the failure —
+and `llm/corpus/remote.py` and `llm/gym/client.py` are its two consumers.
+There is one token minter because there is one seam. What each does with it
+differs in exactly one way and it is load-bearing: **a read may be retried and
+a write may not.** A dropped page costs a page to ask again; a re-sent gym step
+runs a command twice in a real filesystem, so `Hop` makes one attempt and the
+retry lives in the corpus client.
+
+### Practising against a gym
+
+`llm/orchestrate/rl.py` and the `llm/train/rollout.py` + `policy.py` pair — the
+rollout batch, the group-relative advantage, the two optional `Transformer.
+forward` arguments a ragged batch needs, and why the engine drives an episode
+without ever rendering one. See [`rl.md`](rl.md).
+
 ### What a training run reports
 
 `llm/train/progress.py` and `llm/train/diagnostics.py` — the frames a run
