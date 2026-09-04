@@ -32,8 +32,8 @@ import { useSettings } from "@/components/settings/settings-provider"
 import { useModels } from "@/hooks/use-models"
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition"
 import { useDraftTokens } from "@/hooks/use-draft-tokens"
-import { ModelSelector } from "./model-selector"
-import { BudgetSelector, type ThinkBudget } from "./budget-selector"
+import { ComposerPicker } from "./composer-picker"
+import type { ThinkBudget } from "@/lib/think-budget"
 import { useComposerChoice } from "./composer-choice-provider"
 import { SlashCommandMenu } from "./slash-command-menu"
 import { AttachMenu } from "./attach-menu"
@@ -169,6 +169,7 @@ const VOICE_TRANSACTION = "voiceTranscript"
 export function ChatComposer({
   onSend,
   disabled = false,
+  sending = false,
   onCancel,
   placeholder = "Message Slate…",
   title,
@@ -186,7 +187,15 @@ export function ChatComposer({
     // `lib/attachments.ts` for why they are stored before the turn exists.
     attachments: Attachment[]
   ) => Promise<void> | void
+  // Truly inert: nothing typed, nothing sent, nothing dictated. A chat mid-turn
+  // is not this — see `sending` below — so the only caller that still sets it
+  // is the home screen, which has no socket yet to send anything over.
   disabled?: boolean
+  // A reply is streaming, but the composer stays live: typing and sending now
+  // means steering the turn already running (an `interject` frame over its
+  // socket) rather than starting a second one. Only changes what Send does and
+  // whether Stop is offered beside it — everything `disabled` gates stays on.
+  sending?: boolean
   // Stops the turn in flight. A reply is a queued job now, so it can be waiting
   // behind a long run with nothing to watch — being able to take it back out of
   // the line matters more than it did when a turn started instantly.
@@ -821,7 +830,7 @@ export function ChatComposer({
     // Only the ones that made it. A failed upload is left visible rather than
     // sent as nothing — but `canSend` already keeps the button off while any is
     // in flight, so this drops nothing a person is still waiting on.
-    const sending: Attachment[] = attachments
+    const toSend: Attachment[] = attachments
       .filter((a) => a.status === "ready" && a.attachmentId)
       .map((a) => ({
         id: a.attachmentId as string,
@@ -834,7 +843,7 @@ export function ChatComposer({
     setIsEmpty(true)
     setEditorText("")
     releaseAttachments()
-    onSendRef.current(markdown, model, budget, sending)
+    onSendRef.current(markdown, model, budget, toSend)
   }, [
     editor,
     disabled,
@@ -1048,9 +1057,17 @@ export function ChatComposer({
         )}
 
         <div className="flex items-center gap-2 px-2.5 pb-2">
-          <AttachMenu onFiles={addFiles} disabled={disabled} />
-          <ModelSelector value={model} onValueChange={setModel} />
-          <BudgetSelector value={budget} onValueChange={setBudget} />
+          {/* Off while sending too, not just while disabled: an interjection
+              carries no attachments (see `Ask.interject` in
+              `engine/api/routes/chats.py`), so a file picked here while a turn
+              is mid-flight would upload and then have nowhere to go. */}
+          <AttachMenu onFiles={addFiles} disabled={disabled || sending} />
+          <ComposerPicker
+            model={model}
+            onModelChange={setModel}
+            budget={budget}
+            onBudgetChange={setBudget}
+          />
           {/* The two ways a message leaves this box, kept together at the
               right end of the row. The microphone is simply absent where the
               browser has no recogniser — a control that cannot work is worse
@@ -1065,20 +1082,30 @@ export function ChatComposer({
                 disabled={disabled}
               />
             )}
+            {/* A turn in flight can still be stopped outright — that has not
+                gone away, it has just moved beside Send rather than replacing
+                it, now that Send has its own job to do while sending (queue a
+                steer rather than start a second turn). Absent once disabled:
+                the home screen's composer has no turn yet to stop. */}
+            {sending && onCancel && !disabled && (
+              <Button
+                aria-label="Stop"
+                size="icon-sm"
+                variant="ghost"
+                className="rounded-full"
+                onClick={onCancel}
+              >
+                <Square className="fill-current size-3.5" />
+              </Button>
+            )}
             <Button
-              aria-label={disabled && onCancel ? "Stop" : "Send"}
+              aria-label="Send"
               size="icon-sm"
               className="rounded-full"
-              // While a turn is in flight the button becomes the way to stop it, so
-              // it stays live rather than going inert with a mark spinning on it.
-              disabled={disabled ? !onCancel : !canSend}
-              onClick={disabled ? onCancel : submit}
+              disabled={!canSend}
+              onClick={submit}
             >
-              {/* A stop glyph rather than a mark of activity: while a turn is in
-                  flight this button *is* the way to stop it, and its own label says so.
-                  What the model is doing is said once, by the throbber in the thread —
-                  it does not also need saying at 32px inside a control. */}
-              {disabled ? <Square className="fill-current" /> : <ArrowUp />}
+              <ArrowUp />
             </Button>
           </div>
         </div>

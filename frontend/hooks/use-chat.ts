@@ -21,7 +21,7 @@ import { setMessageFeedback, type Feedback } from "@/lib/feedback"
 import { useChats } from "@/components/chat/chats-provider"
 import { useComposerChoice } from "@/components/chat/composer-choice-provider"
 import { useSettings } from "@/components/settings/settings-provider"
-import type { ThinkBudget } from "@/components/chat/budget-selector"
+import type { ThinkBudget } from "@/lib/think-budget"
 
 export interface ChatMessage {
   role: "user" | "assistant"

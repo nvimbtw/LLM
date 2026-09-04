@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import type { ThinkBudget } from "./budget-selector"
+import type { ThinkBudget } from "@/lib/think-budget"
 import { apiFetch } from "@/lib/api"
 import { useAuth } from "@/hooks/use-auth"
 
@@ -21,13 +21,13 @@ const DEFAULT_BUDGET: ThinkBudget = "auto"
  * starting point for the *next* session — not folded into `lib/settings.ts`,
  * because it isn't rendered in the ⌘K modal and doesn't share that data's
  * write rhythm (see the provider body). A stored model id can go stale
- * between sessions if the model is deleted or unpublished; `ModelSelector`
+ * between sessions if the model is deleted or unpublished; `ComposerPicker`
  * already corrects an id that isn't in the loaded list, so that's handled
  * once, at the one place that has the list.
  */
 interface ComposerChoiceValue {
   /** Empty until the model list has loaded, or no model was ever chosen — see
-   *  `ModelSelector`. */
+   *  `ComposerPicker`. */
   model: string
   setModel: (id: string) => void
   budget: ThinkBudget

@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { FigureHorizon } from "@/components/ui/figure-horizon"
 import { useChats } from "./chats-provider"
 import { ChatComposer } from "./chat-composer"
-import type { ThinkBudget } from "./budget-selector"
+import type { ThinkBudget } from "@/lib/think-budget"
 import type { Attachment } from "@/lib/attachments"
 
 export function NewChat() {

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import type { ThinkBudget } from "./budget-selector"
+import type { ThinkBudget } from "@/lib/think-budget"
 
 import { apiFetch, getToken } from "@/lib/api"
 import type { Attachment } from "@/lib/attachments"

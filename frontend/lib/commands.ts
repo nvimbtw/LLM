@@ -25,7 +25,7 @@ import {
   type TextSetting,
 } from "@/lib/settings"
 import type { Model } from "@/hooks/use-models"
-import type { ThinkBudget } from "@/components/chat/budget-selector"
+import { THINK_BUDGETS, type ThinkBudget } from "@/lib/think-budget"
 
 export interface CommandContext {
   settings: Settings
@@ -361,13 +361,6 @@ export type SuggestionResult =
       data: ArgumentSuggestions
     }
 
-const BUDGETS: { value: ThinkBudget; label: string; hint: string }[] = [
-  { value: "auto", label: "Auto", hint: "Let the model decide" },
-  { value: "low", label: "Low", hint: "Answer straight away" },
-  { value: "med", label: "Medium", hint: "Weigh one alternative" },
-  { value: "high", label: "High", hint: "Work it through properly" },
-]
-
 const NUMBER_PRESETS: Record<string, { label: string; value: number }[]> = {
   temperature: [
     { label: "0.20 (Focused)", value: 0.2 },
@@ -518,7 +511,7 @@ export function getCommandSuggestions(
 
     case "budget": {
       const currentBudget = ctx.budget ?? "auto"
-      const options = BUDGETS.filter(
+      const options = THINK_BUDGETS.filter(
         (b) =>
           !argQuery ||
           b.value.includes(argQuery.toLowerCase()) ||
@@ -729,7 +722,7 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
 
       if (budget) {
         ctx.setBudget?.(budget)
-        const item = BUDGETS.find((b) => b.value === budget)
+        const item = THINK_BUDGETS.find((b) => b.value === budget)
         toast({
           title: "Thinking Budget",
           description: item ? `${item.label} — ${item.hint}` : budget,

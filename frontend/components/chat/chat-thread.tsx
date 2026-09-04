@@ -301,7 +301,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
           <div className="sticky bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pb-4">
             <ChatComposer
               onSend={sendMessage}
-              disabled={isSending}
+              sending={isSending}
               onCancel={cancel}
               title={chatSummary?.title ?? "New chat"}
               onRenameTitle={(next) => void renameChat(chatId, next)}

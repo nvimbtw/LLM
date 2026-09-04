@@ -666,10 +666,11 @@ words for it. That table is the frontend's only knowledge of which tools exist
 — the vocabulary stopped carrying one marker per tool, so nothing else here can
 tell `bash` from `web-search`.
 
-`budget` is the composer's thinking-budget dropdown
-(`components/chat/budget-selector.tsx`) — `"low" | "med" | "high"`, matching the
-labels the SFT corpus is tagged with, since the string sent becomes the marker
-the model was trained under. **"Auto" is the absence of a budget, not a fourth
+`budget` is the composer's thinking-budget choice, one section of
+`components/chat/composer-picker.tsx` (the type and its options live in
+`lib/think-budget.ts`, shared with `/thinking`'s argument list) — `"low" |
+"med" | "high"`, matching the labels the SFT corpus is tagged with, since the
+string sent becomes the marker the model was trained under. **"Auto" is the absence of a budget, not a fourth
 value**: it is omitted from the frame entirely, so the engine renders no marker
 and the model is prompted exactly as it always was. It rides through
 `PendingMessage` when a new chat navigates, same as `model` — see
@@ -786,7 +787,7 @@ whichever write lands second clobbering the other's field. Same
 account-not-browser reasoning, same derive-on-logout shape as `Settings` above.
 
 A persisted model id can go stale between sessions — the model got deleted or
-unpublished — so `ModelSelector` corrects an id that isn't in the loaded list
+unpublished — so `ComposerPicker` corrects an id that isn't in the loaded list
 back to the first available one, the same effect that already handled "no
 choice yet"; that's the one place with the list, so it's the one place that
 needs to know.
@@ -797,14 +798,30 @@ design, and so is indistinguishable from a stale one until asked about.
 id it answered for — and the correction above waits on it, or every checkpoint
 choice would be discarded the moment it was made. It also supplies the model a
 checkpoint belongs to, which is what the trigger names and what the list marks
-as active. The second step is `components/chat/checkpoint-selector.tsx`: a
-sibling control, rendered only for a model whose run left intermediates, listing
-its finished weights and each checkpoint by index and step. Sibling and not a
-flyout off the model list, so that list stays a list of models — the same
-two-step, and the same reasoning, as the trainer's `ResumePicker`, which shares
-the hook. Nothing on the chat path ever learned what a checkpoint is: it is a
+as active. Nothing on the chat path ever learned what a checkpoint is: it is a
 model id and a directory, exactly like the finished weights
 ([`../decisions/checkpoints-are-models.md`](../decisions/checkpoints-are-models.md)).
+
+**Model, checkpoint and thinking budget are one popover**,
+`components/chat/composer-picker.tsx`, replacing the footer's model trigger.
+Earlier this was two-to-three separate controls — a model dropdown, a
+checkpoint dropdown rendered as its sibling only when the model had
+intermediates, and a wholly separate thinking-budget dropdown — with the
+checkpoint control deliberately kept as "a sibling and not a flyout off the
+model list, so that list stays a list of models." **That rationale is
+superseded here, at the user's request**: the three are all answers to "what
+should this turn send with," and one control that opens to three legible
+sections reads better in the footer than several buttons in a row. The
+checkpoint section still only appears nested under the model it belongs to,
+and only when that model's run left intermediates, listing its finished
+weights and each checkpoint by index and step — the same list
+`components/training/resume-picker.tsx`'s `ResumePicker` shows, off the same
+`useCheckpoints` hook. The thinking-budget options are their own section,
+under a separator, rather than blended into the model list — a budget and a
+model are different kinds of choice and are shown as such. `ComposerPicker`
+owns none of the state itself: it composes `useModels`, `useCheckpointParent`
+and `useCheckpoints` exactly as before, and reads and writes `model` and
+`budget` through `useComposerChoice()` like everything else in this section.
 
 ### Slash commands & fuzzy finder
 
