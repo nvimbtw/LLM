@@ -149,6 +149,13 @@ is spending without learning however good its pass rate looks.
 POST /rl   # RlConfig; 202, queued like every other run
 ```
 
+From the app it is `/jobs/new/rl` — a composer, not the gym page. Starting a run
+from `/gyms/<id>` is one evaluation and always was; the loop is a queued job, and
+the two are separate doors on purpose. See the frontend doc's *Two doors to a
+gym*. The composer refuses `tasks_per_batch * group_size` above the gyms
+service's `MAX_EPISODES`, because that product is one gym run and a run over the
+ceiling fails on iteration one.
+
 Before it is worth starting, ask whether the model is in the band where a group
 can differ at all:
 

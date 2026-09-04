@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Play } from "lucide-react"
 
@@ -258,10 +259,27 @@ export function RunForm({ gym }: { gym: Gym }) {
           </p>
         )}
 
-        <Button onClick={submit} disabled={!ready || isSubmitting}>
-          <Play className="size-4" />
-          {isSubmitting ? "Preparing…" : "Create run"}
-        </Button>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Button onClick={submit} disabled={!ready || isSubmitting}>
+            <Play className="size-4" />
+            {isSubmitting ? "Preparing…" : "Create run"}
+          </Button>
+          {/* A run created here happens once: it measures the model as it is,
+              and nothing about it is fed back into the weights. The loop —
+              roll out, grade, step, checkpoint, again — is a queued job, and
+              this is the only place anyone would look for it. */}
+          <p className="text-xs text-muted-foreground">
+            This scores the model once.{" "}
+            <Link
+              href="/jobs/new/rl"
+              className="text-primary underline underline-offset-2"
+            >
+              Practise against this gym
+            </Link>{" "}
+            to keep going: every iteration is a run like this one, and what it
+            scores is fed back into the weights.
+          </p>
+        </div>
       </div>
     </Panel>
   )

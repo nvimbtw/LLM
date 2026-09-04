@@ -22,9 +22,9 @@ frontend/
 │   │                header bar — see the layout for why.
 │   │   ├── admin/       the admin panel — the queue, and the way to the rest
 │   │   ├── chat/[id]/ · conversations/ · models/ · usage/ · profile/
-│   │   ├── jobs/        [id] and new/{train,benchmark}; the bare path redirects
+│   │   ├── jobs/        [id] and new/{train,benchmark,rl}; the bare path redirects
 │   │   ├── benchmark/ · tokenizers/
-│   │   ├── gyms/        the catalogue, [gym] to start a run, [gym]/runs/[id] live
+│   │   ├── gyms/        the catalogue, [gym] to start one run, [gym]/runs/[id] live
 │   │   └── markup/ · throbber/   fixture pages, no data behind them
 │   ├── (auth)/      login, signup — outside the signed-in chrome
 │   └── docs/        the markdown in docs/, rendered
@@ -412,6 +412,22 @@ and `queued` through refs written at those endings rather than through state,
 because it runs before React has re-rendered — a drain that asked state
 whether a turn was running would be told "yes" by the turn that just ended and
 quietly re-queue the message it was draining.
+
+### Two doors to a gym, and only one of them is a loop
+
+`/gyms/<id>` starts **one** run: the browser drives it over the socket below,
+the episodes are graded, and it ends. Nothing it scores reaches the weights —
+it is a measurement.
+
+The loop is a **job**, composed at `/jobs/new/rl`
+(`components/jobs/rl-composer.tsx`) and watched on the job page like every other
+run. Each of its iterations is a gym run of its own, created by the engine
+rather than the browser and kept off the `/gyms/<id>` board (`kind: "rl"`), so a
+fifty-iteration run does not bury the evaluations anyone made.
+
+That distinction is invisible from the run form, which is why the form links to
+the composer in as many words: the shape of the question "why did my gym only
+run once" is someone standing at the first door looking for the second.
 
 ### Stream protocol (a gym run)
 

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { Dumbbell, Gauge, MessageSquare, Plus, Type } from "lucide-react"
+import { Dumbbell, Gauge, MessageSquare, Plus, Target, Type } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -28,6 +28,10 @@ const OPTIONS = [
   // list of what has been built, which is where you would be choosing anyway.
   { label: "Build a tokenizer", href: "/tokenizers", icon: Type },
   { label: "Benchmark a model", href: "/jobs/new/benchmark", icon: Gauge },
+  // Practising is a training run and belongs on this menu, even though the gym
+  // it practises against has a page of its own. Starting a run *there* evaluates
+  // a model once; this is the loop that keeps going, and a loop is a job.
+  { label: "Practise in a gym", href: "/jobs/new/rl", icon: Target },
   { label: "Chat", href: "/chat", icon: MessageSquare },
 ]
 
