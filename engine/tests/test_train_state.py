@@ -408,6 +408,29 @@ def test_a_request_that_restates_nothing_takes_the_checkpoints_shape():
     assert train_pipeline.resumed_architecture(cfg, state_of(), VOCAB) == state_of().arch
 
 
+def test_a_resumed_config_wears_the_checkpoints_shape():
+    """Not only the model is built from it. `ctx_window` is what the loop cuts
+    windows at and what every record the run leaves behind states, so a resume
+    that resolved the shape at `Transformer(...)` alone trained a wide
+    checkpoint on the request's narrow windows and then wrote the request's
+    numbers down as though they were what it had done."""
+    cfg = TrainConfig(model_name="x", resume_from="somewhere", epochs=4)
+
+    resolved = train_pipeline.resumed_config(cfg, state_of(), VOCAB)
+
+    assert resolved.ctx_window == ARCH["ctx_window"] != cfg.ctx_window
+    assert resolved.dimensions == ARCH["dimensions"] != cfg.dimensions
+    # Only the architecture moves: the schedule is this run's, which is what
+    # makes a continuation a run and not a replay.
+    assert resolved.epochs == 4
+
+
+def test_a_config_with_nothing_to_resume_from_is_left_alone():
+    cfg = TrainConfig(model_name="x", ctx_window=64)
+
+    assert train_pipeline.resumed_config(cfg, None, VOCAB) is cfg
+
+
 def test_a_vocabulary_the_checkpoint_was_not_trained_on_is_refused():
     cfg = TrainConfig(model_name="x", resume_from="somewhere")
 
@@ -500,3 +523,50 @@ def test_no_resume_records_nothing():
     )
 
     assert continuation.state is None and continuation.record == {}
+
+
+def test_a_resumed_run_trains_and_records_the_checkpoints_shape():
+    """End to end, the whole of the bug this rule exists for: a request that
+    states nothing but where to carry on from arrives carrying pydantic's
+    defaults, which are nothing like the model on disk.
+
+    Every number below used to come from those defaults — the windows the loop
+    cut, the `meta.json` beside the weights, the shape the API served back —
+    while the weights themselves were the checkpoint's.
+    """
+    import uuid
+
+    from tests.fixtures.tiny_env import TINY_DATASET_ID
+
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    train_pipeline.run(
+        TrainConfig(
+            model_name=first,
+            datasets=[TINY_DATASET_ID],
+            max_vocab=512,
+            batch_size=2,
+            epochs=1,
+            **ARCH,
+        ),
+        on_progress=None,
+    )
+
+    resumed = train_pipeline.run(
+        TrainConfig(
+            model_name=second,
+            datasets=[TINY_DATASET_ID],
+            resume_from=first,
+            batch_size=2,
+            epochs=1,
+        ),
+        on_progress=None,
+    )
+
+    _, before = checkpoint.load(storage.weights_path(first), "cpu")
+    _, after = checkpoint.load(storage.weights_path(second), "cpu")
+    assert after == before
+    assert resumed["architecture"] == {
+        name: ARCH[name] for name in train_pipeline.ARCHITECTURE_SUMMARY_FIELDS
+    }
+    recorded = json.loads(storage.meta_path(second).read_text())["config"]
+    assert recorded["ctx_window"] == ARCH["ctx_window"]

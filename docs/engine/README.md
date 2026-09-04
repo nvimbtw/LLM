@@ -113,13 +113,15 @@ migrated with `alembic upgrade head`.
 
 `models` is the index; the weights are on disk under `artifacts/models/<id>/`,
 which is why the id and not the name is stable. `parameters` is `meta.json`
-verbatim — `{"config", "result"}` — and the two families disagree about which
-half carries the architecture. A pretrain's `TrainConfig` states dimensions,
-heads, layers, ff_multiplier and ctx_window itself, so they land under
-`config.*`; `SftConfig` states none of that on purpose — see its docstring —
-so `orchestrate/sft.py` reads the resolved shape off the base checkpoint's
-`arch` and records it under `result.architecture` instead, the one place
-either family's `parameters` answers "what shape is this". `result.base_model`
+verbatim — `{"config", "result"}`. **`config` is what was asked for and
+`result.architecture` is what was built**, and only the second is always
+answerable: a from-scratch pretrain's `TrainConfig` states dimensions, heads,
+layers, ff_multiplier and ctx_window itself, but `SftConfig` states none of
+that on purpose (see its docstring) and a *resumed* pretrain states none
+either — saying nothing is how a resume asks for the checkpoint's shape. So
+both pipelines record the resolved five under `result.architecture`, which is
+where `architectureOf` and the model row's `context` read it from, and where a
+resumed run's real shape is the only place it can be found. `result.base_model`
 carries the same fine-tune's ancestry, mirroring `config.base_model`. Four
 nullable columns carry a run's intermediates, and every pre-existing row keeps
 them null — which is exactly what being a finished model means:

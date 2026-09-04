@@ -216,6 +216,29 @@ def resumed_architecture(cfg: TrainConfig, state: TrainState, vocab_size: int) -
     return arch
 
 
+def resumed_config(cfg: TrainConfig, state: TrainState | None, vocab_size: int) -> TrainConfig:
+    """The config this run actually trains under: the request, wearing the
+    checkpoint's shape.
+
+    Applied once, here, and *before* anything reads a number off it — because
+    the architecture is not only what the model is built from. `ctx_window` is
+    what the loop cuts its windows at and what phase 1 measures the corpus
+    against, and every record a run leaves behind (`meta.json`, each
+    checkpoint's config, the model row's `context`) is this config dumped. A
+    run that resolved the shape at `Transformer(...)` alone trained a 1024-token
+    checkpoint on 256-token windows and then wrote the request's numbers down as
+    though they were what it had done.
+
+    Only the architecture moves. Everything else about a resumed run — its
+    schedule, its data, its seed — is this request's, which is what makes a
+    continuation a run of its own rather than a replay.
+    """
+    if state is None:
+        return cfg
+    arch = resumed_architecture(cfg, state, vocab_size)
+    return cfg.model_copy(update={name: arch[name] for name in _ARCHITECTURE & arch.keys()})
+
+
 def resumed_tokenizer(cfg: TrainConfig, state: TrainState) -> str:
     """The vocabulary a resumed run trains against, which is the checkpoint's.
 
@@ -472,6 +495,8 @@ def run(
 def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, started) -> dict:
     tokenizer = vocab.load(tokenizer_id)
     fingerprint = vocab.fingerprint(tokenizer_id)
+    vocab_size = bpe.vocab_size(tokenizer)
+    cfg = resumed_config(cfg, state, vocab_size)
 
     key = pack.corpus_key(fingerprint, selection)
     if cfg.rebuild_dataset or not pack.is_built(key, selection, fingerprint):
@@ -535,7 +560,7 @@ def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, sta
         data_plan = DataPlan.whole_corpus(len(corpus))
 
     device = loop.pick_device()
-    model = _model(cfg, state, bpe.vocab_size(tokenizer))
+    model = _model(cfg, state, vocab_size)
     print(
         f"[4/6] Model: {model.parameter_count():,} parameters, "
         f"{model.layers}L/{model.heads}H/{model.dimensions}d on {device}"
@@ -552,6 +577,13 @@ def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, sta
     provenance = {
         "parameters": model.parameter_count(),
         "device": device,
+        # The shape this run trained at, recorded the same way `sft.py` records
+        # it and read back through the same `architectureOf`. A from-scratch
+        # pretrain also states it on `config.*`; a *resumed* one does not — the
+        # request it stored asked for the checkpoint's shape by saying nothing —
+        # so this is the only place either kind of continuation answers "what
+        # shape is this", and the model row takes its `context` from here.
+        "architecture": {name: getattr(cfg, name) for name in ARCHITECTURE_SUMMARY_FIELDS},
         # Recorded because they change throughput by ~2.5x and precision changes
         # numerics: two runs with the same config and very different curves or
         # wall-clocks are otherwise indistinguishable after the fact.
@@ -630,20 +662,24 @@ def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, sta
 
 
 def _model(cfg: TrainConfig, state: TrainState | None, vocab_size: int) -> Transformer:
-    """The model this run trains: the request's architecture, or the state's."""
-    if state is None:
-        return Transformer(
-            vocab=vocab_size,
-            dimensions=cfg.dimensions,
-            heads=cfg.heads,
-            layers=cfg.layers,
-            ff_multiplier=cfg.ff_multiplier,
-            ctx_window=cfg.ctx_window,
-            rope_base=cfg.rope_base,
-            learned_temperature=cfg.learned_temperature,
-        )
-    model = Transformer(**resumed_architecture(cfg, state, vocab_size))
-    model.load_state_dict(state.state_dict)
+    """The model this run trains, at the shape the config now states.
+
+    A resumed run's config already carries the checkpoint's architecture rather
+    than the request's — `resumed_config` put it there before anything read a
+    number off it — so there is one shape here and not two.
+    """
+    model = Transformer(
+        vocab=vocab_size,
+        dimensions=cfg.dimensions,
+        heads=cfg.heads,
+        layers=cfg.layers,
+        ff_multiplier=cfg.ff_multiplier,
+        ctx_window=cfg.ctx_window,
+        rope_base=cfg.rope_base,
+        learned_temperature=cfg.learned_temperature,
+    )
+    if state is not None:
+        model.load_state_dict(state.state_dict)
     return model
 
 

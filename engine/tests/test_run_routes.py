@@ -243,3 +243,28 @@ async def test_a_run_records_who_asked_for_it(engine_client):
             assert run.owner_id == owner
     finally:
         main.app.dependency_overrides.clear()
+
+
+async def test_a_queued_config_keeps_what_the_request_stated(client):
+    """The stored config is the request, not the request plus every default.
+
+    A run is queued now and started later, so this dict is the whole of what the
+    pipeline is handed — and `resumed_architecture` decides what a resume
+    inherits by asking pydantic which fields were set. Dumping the defaults in
+    alongside made every field "set" by the time the config was rebuilt, and a
+    resume from a checkpoint of any other shape was then refused for restating
+    an architecture nobody had typed.
+    """
+    resume = str(uuid.uuid4())
+    response = await client.post(
+        "/train", json={"model_name": str(uuid.uuid4()), "resume_from": resume, "epochs": 3}
+    )
+    assert response.status_code == 202
+
+    with store.session() as db:
+        config = db.get(store.Run, uuid.UUID(response.json()["run_id"])).config
+
+    assert config["resume_from"] == resume
+    assert config["epochs"] == 3
+    for field in ("dimensions", "heads", "layers", "ff_multiplier", "ctx_window"):
+        assert field not in config, f"{field} was filled in behind the request"

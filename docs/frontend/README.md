@@ -961,6 +961,18 @@ dropping is the failure mode to watch for: pydantic reads a field left at the
 form's default as one the request *stated*, so a control nobody can see is still
 enough to have the run rejected.
 
+Dropping a field only works while the far side leaves the gap open. It did not:
+`POST /train` stored the config as a full dump, defaults and all, so every field
+was "set" again by the time the pipeline read it and **every** resume from a
+checkpoint that was not the composer's default shape was refused, whatever this
+module sent — see [`../engine/checkpoints.md`](../engine/checkpoints.md). What
+that means here is that a resumed run's stored config carries no architecture
+and no vocabulary, so `components/jobs/config-recap.tsx` names whose shape it is
+("The checkpoint's") rather than printing five numbers nobody chose, and the
+resolved shape is read back off the model the run produces
+(`hooks/use-models.ts::architectureOf`, which falls through to
+`result.architecture`).
+
 **The tokenizer is inherited the same way, on its own list.** `resumed_tokenizer`
 in the engine refuses a resumed run's *stated* `tokenizer_id` exactly as
 `resumed_architecture` refuses a disagreeing shape, so the composer offers no

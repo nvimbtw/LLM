@@ -62,12 +62,28 @@ def train(config: dict, progress, cancel, owner: str | None = None) -> dict:
             model_id=model_id,
             name=config.get(DISPLAY_NAME) or cfg.model_name,
             parameters={"config": config, "result": _summarize(result)},
-            context=result.get("ctx_window") or config.get("ctx_window"),
+            # From what the run *trained*, not from what it asked for: a
+            # resumed run states no architecture (it inherits the
+            # checkpoint's) and a fine-tune has no `ctx_window` field at all,
+            # so both would land here with the column empty or, worse, holding
+            # a default nobody chose.
+            context=_context(result, config),
             family="sft" if fine_tune else "pretrain",
         )
         if not fine_tune and not config.get("tokenizer_id"):
             _record_derived_vocabulary(db, result)
     return {**result, "model_id": str(model_id)}
+
+
+def _context(result: dict, config: dict) -> int | None:
+    """How long a window this model was trained to read.
+
+    `result.architecture` is what the run actually built, recorded by both
+    pipelines; the config is the fallback for a row written before that field
+    existed.
+    """
+    architecture = result.get("architecture") or {}
+    return architecture.get("ctx_window") or result.get("ctx_window") or config.get("ctx_window")
 
 
 def _record_derived_vocabulary(db, result: dict) -> None:

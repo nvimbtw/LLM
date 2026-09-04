@@ -29,9 +29,18 @@ async def train(
     wait: bool = False,
     owner: str = Depends(auth.require_service),
 ):
-    """Queue a pretraining run."""
+    """Queue a pretraining run.
+
+    Stored as it was *stated*, not as it validates. A run is queued now and
+    started later, so this dict is the whole of what the pipeline is handed —
+    and `resumed_architecture` decides what a resume inherits by asking pydantic
+    which fields the request set. Dumping the defaults in alongside made every
+    field "set" by the time `handlers.train` rebuilt the config, so a resume
+    from any checkpoint that was not the composer's default shape was refused
+    for restating an architecture nobody had typed.
+    """
     _require_vocabulary(cfg.tokenizer_id)
-    config = _identified(cfg.model_dump(), display_name)
+    config = _identified(cfg.model_dump(exclude_unset=True), display_name)
     return await _queue(RunKind.train, _train_label(config), config, wait, owner)
 
 

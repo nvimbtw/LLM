@@ -61,6 +61,26 @@ the defaults filled in behind it), and a disagreement, vocabulary size included,
 is refused rather than silently overridden: the weights would win regardless,
 and the run would report an architecture it did not train.
 
+Two things follow, and both were missing:
+
+- **The shape is applied to the config, not only to the model**
+  (`train.py::resumed_config`, before phase 1 reads a number off it).
+  `ctx_window` is what the loop cuts windows at and what phase 1 measures the
+  corpus against, and every record a run leaves — `meta.json`, each
+  checkpoint's config, the model row's `context` — is that config dumped. A run
+  that resolved the shape at `Transformer(...)` alone trained a 1024-token
+  checkpoint on 256-token windows and wrote the request's numbers down as
+  though they were what it had done. What it *did* train at is recorded under
+  `result.architecture`, the same key SFT has always used.
+- **Statedness has to survive the queue.** A run is queued now and started
+  later, so `POST /train` stores `model_dump(exclude_unset=True)` — the request,
+  not the request plus every default. Dumping the defaults in alongside made
+  every field "set" by the time `handlers.train` rebuilt the config, and the
+  comparison above then refused **every** resume from a checkpoint that was not
+  the composer's default shape, for restating an architecture nobody had typed.
+  The stored config being the request is also what lets the job recap say "the
+  checkpoint's" instead of reporting a default as a decision.
+
 **The tokenizer follows the same rule** (`train.py::resumed_tokenizer`), and it
 has to: a corpus packed under a different vocabulary than the checkpoint's would
 either index its embedding table out of bounds or, if the two vocabularies

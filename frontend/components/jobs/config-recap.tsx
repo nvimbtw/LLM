@@ -137,16 +137,29 @@ function train(config: TrainConfig | null): Recap | null {
   // vocabulary for, and conversation order is always reshuffled. Listing them for a
   // fine-tune was the whole of the "why does it say 64 dimensions" problem: the
   // numbers came from a form the fine-tune composers never show.
-  const rows: [string, string][] = [
-    ["Mode", MODE_LABEL[config.mode]],
-    ["Dimensions", String(config.dimensions)],
-    ["Context", String(config.ctx_window)],
-    ["Heads", String(config.heads)],
-    ["Layers", String(config.layers)],
+  // A resumed pretrain states no architecture — it inherits the checkpoint's,
+  // and the composer neither shows a control for one nor sends a number — so
+  // the stored config has nothing under these keys and the form's hidden values
+  // are not what the run will train at. One honest row instead of five invented
+  // ones; the shape it resolved to is on the model the run produces.
+  const rows: [string, string][] = [["Mode", MODE_LABEL[config.mode]]]
+  if (config.resume_from) {
+    rows.push(["Architecture", "The checkpoint's"])
+  } else {
+    rows.push(
+      ["Dimensions", String(config.dimensions)],
+      ["Context", String(config.ctx_window)],
+      ["Heads", String(config.heads)],
+      ["Layers", String(config.layers)]
+    )
+  }
+  rows.push(
     ["Epochs", String(config.epochs)],
-    ["Learning rate", config.lr.toExponential(0)],
-    ["FF multiplier", `${config.ff_multiplier}×`],
-  ]
+    ["Learning rate", config.lr.toExponential(0)]
+  )
+  if (!config.resume_from) {
+    rows.push(["FF multiplier", `${config.ff_multiplier}×`])
+  }
   if (!fineTune) {
     // Which vocabulary, before how large: a run that names one ignores
     // `max_vocab` entirely, since the size belongs to the build.
@@ -188,22 +201,25 @@ function train(config: TrainConfig | null): Recap | null {
   // base apart. RAFT and KTO are not: their data is the model's own generations
   // and the rated catalogue, neither of which is chosen here.
   const picksDatasets = !fineTune || config.mode === "sft"
+  // Defaulted rather than read straight: the stored config is what the request
+  // *stated*, so a caller that named no curriculum has no key here at all.
+  const curriculum = config.curriculum ?? []
   const datasets = !picksDatasets
     ? ""
-    : config.curriculum.length > 0
-      ? config.curriculum
+    : curriculum.length > 0
+      ? curriculum
           .map((stage, i) => stage.name ?? `Stage ${i + 1}`)
           .join(" → ")
       : // Empty is not "none" — the engine resolves it to every set on disk, so
         // say that rather than showing a blank where a selection should be.
-        config.datasets.map((d) => d.name).join(", ") ||
+        (config.datasets ?? []).map((d) => d.name).join(", ") ||
         (config.mode === "sft" ? "Every set on disk" : "")
 
   return {
     description: fineTune ? "Inherited from the base" : "As queued",
     rows,
     blocks: datasets
-      ? [[config.curriculum.length > 0 ? "Curriculum" : "Datasets", datasets]]
+      ? [[curriculum.length > 0 ? "Curriculum" : "Datasets", datasets]]
       : [],
   }
 }
