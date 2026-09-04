@@ -7,6 +7,7 @@ export default function TokenizersPage() {
     <PageShell width="board">
       <PageHeader
         title="Tokenizers"
+        back={{ href: "/admin", label: "Admin" }}
         description={
           <p>
             A vocabulary is learned from the corpora you pick, then kept. Point

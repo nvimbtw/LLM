@@ -14,6 +14,7 @@ export default function MarkupPage() {
     <PageShell width="reading">
       <PageHeader
         title="Markup"
+        back={{ href: "/admin", label: "Admin" }}
         description={
           <>
             <p>

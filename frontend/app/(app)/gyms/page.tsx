@@ -29,6 +29,7 @@ export default function GymsPage() {
     <PageShell>
       <PageHeader
         title="Gyms"
+        back={{ href: "/admin", label: "Admin" }}
         description="Environments a model is put to work in. A run generates tasks, gives the model a shell, and scores what it comes back with."
       />
       {error ? (

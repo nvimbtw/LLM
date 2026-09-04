@@ -7,6 +7,7 @@ export default function DataPage() {
     <PageShell width="board">
       <PageHeader
         title="Data"
+        back={{ href: "/admin", label: "Admin" }}
         description={
           <p>
             Datasets before they are training data. Pull a slice of something

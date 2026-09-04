@@ -7,6 +7,7 @@ export default function BenchmarkPage() {
     <PageShell>
       <PageHeader
         title="Benchmark"
+        back={{ href: "/admin", label: "Admin" }}
         description="Held-out perplexity, minimal-pair grammar, and surface metrics — numbers instead of an impression of how close to English a model sounds."
       />
       <BenchmarkView />
