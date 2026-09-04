@@ -1123,6 +1123,64 @@ The engine's half — the sampling strategy, the frame bound, the cost — is in
   and the curriculum stage it was packed into are one subject seen twice. As
   everywhere else here: do not add a palette to a component.
 
+### A model's architecture, pretrain or SFT
+
+`hooks/use-models.ts` reads the engine's `parameters` two different ways
+depending on family — see [`../engine/README.md`](../engine/README.md) for why
+a pretrain states its shape under `config.*` and an SFT run cannot — and
+`architectureOf(raw)` is the one place that hides the difference: it tries
+`config.*` first and falls back to `result.architecture`, so `/models` (the
+grid card's description, via `mapModel`) and `/models/[id]` (`ModelDetail`'s
+architecture panel) render the same five figures through the same code path
+regardless of which family produced them. `baseModelOf(raw)` does the same for
+an SFT run's ancestry, and `model-detail.tsx` links it to the base model's own
+page — named, when that model is in the (uncapped) `/models` listing, and by
+id otherwise.
+
+### Lineage: how a model was constructed
+
+`components/models/model-lineage.tsx` on `/models/[id]`, beside the
+architecture and training-data panels: the chain of models a model was built
+from, and what each one actually trained on.
+
+**Two kinds of edge, and never more than one on a given model.** `baseModelOf`
+(a fine-tune's ancestry, unchanged from the section above) and
+`resumedFromOf(raw)` — new here, reading `parameters.config.resume_from`,
+present only on a pretrain that continued from a model or one of its
+checkpoints. A model states at most one of the two, because they belong to
+different `family` values: a resumed pretrain is still a pretrain, a fine-tune
+is never a pretrain. That is why the lineage is a **list, not a tree** —
+`hooks/use-model.ts::useModelLineage` walks it as one, never branching — and
+why plain flex markup draws it rather than SVG: there is nothing to lay out
+that a vertical stack of rows and a `↓` doesn't already say.
+
+**A checkpoint is deliberately not a node in this chain.** `parentId`/
+`checkpointIndex` (see `docs/decisions/checkpoints-are-models.md`) say "one of
+this run's own intermediate saves" — the same recipe, mid-run — not "a
+different recipe this model was built from," which is what this graph exists to
+show. Folding checkpoints in would draw a run's ten saves as though they were
+ten ancestors of equal standing with an actual base model or resume point.
+`ModelCheckpoints` already owns that relationship, on the same page.
+
+**Walked client-side, not through a new endpoint.** There is no route that
+returns a whole ancestry in one call; `useModelLineage` fetches the given
+model's own `baseModelId`/`resumedFromId` one `GET /models/{id}` hop at a time,
+stopping at the first ancestor with neither. A chain here is rarely more than a
+few hops — a training lineage isn't something people build ten deep — so a
+handful of small sequential requests reads more simply than adding a
+server-side walk (`_context()` in `engine/api/routes/models.py` is the existing
+precedent for one, if a future chain gets long enough to need it) for traffic
+this light. A `MAX_LINEAGE_HOPS` bound guards the walk against a cycle the
+system does not otherwise allow.
+
+**Dataset names are resolved, not shown as ids.** `datasetsOf(raw)` reads
+`config.datasets` (or `config.curriculum`'s stages, flattened and deduped by
+id, when the run was staged) — the same `{id, name, count}` shape on both
+`TrainConfig` and `SftConfig` — and the panel resolves each id against the data
+engine's own dataset list, falling back to the name stored with the selection
+at train time, then to the bare id: the same "named when we can" fallback
+`baseModelName` already uses one section up.
+
 ### The attention viewer
 
 `components/models/attention-viewer.tsx` on `/models/[id]`: pick a layer and a

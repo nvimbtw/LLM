@@ -30,6 +30,7 @@ import { LoadError } from "@/components/ui/error-state"
 import { AttentionViewer } from "./attention-viewer"
 import { ModelBenchmarks } from "./model-benchmarks"
 import { ModelCheckpoints } from "./model-checkpoints"
+import { ModelLineage } from "./model-lineage"
 import { ModelSizeMeter } from "./model-glyph"
 import { ModelEditSheet } from "./model-edit-sheet"
 import {
@@ -143,6 +144,13 @@ export function ModelDetail({ modelId }: { modelId: string }) {
       Array.from(new Set(models.map((m) => m.family).filter(Boolean))).sort(),
     [models]
   )
+  // Named when the base model is itself in the (uncapped) listing; falling
+  // back to the id keeps the link useful even when it isn't — an unpublished
+  // or deleted base, say.
+  const baseModelName = React.useMemo(
+    () => models.find((m) => m.id === model?.baseModelId)?.name,
+    [models, model?.baseModelId]
+  )
 
   const [editing, setEditing] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
@@ -222,14 +230,17 @@ export function ModelDetail({ modelId }: { modelId: string }) {
   const c = model.config
   const vocab = model.dataset?.vocab_size ?? c?.max_vocab
   // Parameters / Context / Vocabulary are surfaced in the hero strip; this panel
-  // carries the finer architectural shape.
+  // carries the finer architectural shape. `model.architecture` is resolved the
+  // same way for a pretrain and an SFT run — see `architectureOf` — so this is
+  // the one place either kind of model renders its shape.
+  const arch = model.architecture
   const architecture: { label: string; value: string }[] = []
-  if (c?.dimensions)
-    architecture.push({ label: "Dimensions", value: `${c.dimensions}` })
-  if (c?.layers) architecture.push({ label: "Layers", value: `${c.layers}` })
-  if (c?.heads) architecture.push({ label: "Heads", value: `${c.heads}` })
-  if (c?.ff_multiplier)
-    architecture.push({ label: "FF multiplier", value: `${c.ff_multiplier}×` })
+  if (arch) {
+    architecture.push({ label: "Dimensions", value: `${arch.dimensions}` })
+    architecture.push({ label: "Layers", value: `${arch.layers}` })
+    architecture.push({ label: "Heads", value: `${arch.heads}` })
+    architecture.push({ label: "FF multiplier", value: `${arch.ff_multiplier}×` })
+  }
 
   const d = model.dataset
   const training: { label: string; value: string }[] = []
@@ -303,6 +314,20 @@ export function ModelDetail({ modelId }: { modelId: string }) {
               </span>
               <Dot />
               <span>Created {formatDate(model.createdAt)}</span>
+              {model.baseModelId && (
+                <>
+                  <Dot />
+                  <span>
+                    Fine-tuned from{" "}
+                    <Link
+                      href={`/models/${model.baseModelId}`}
+                      className="underline underline-offset-4 hover:text-foreground"
+                    >
+                      {baseModelName ?? model.baseModelId}
+                    </Link>
+                  </span>
+                </>
+              )}
             </p>
             {model.description && <p>{model.description}</p>}
           </>
@@ -402,6 +427,12 @@ export function ModelDetail({ modelId }: { modelId: string }) {
           <SpecPanel title="Architecture" specs={architecture} />
           <SpecPanel title="Training data" specs={training} />
         </div>
+
+        {/* How it was constructed — the chain of models it came from, and what
+            each one trained on. Absent for a from-scratch pretrain with no
+            ancestry, the same way the panels above are absent when they have
+            nothing to show. */}
+        <ModelLineage model={model} />
 
         {/* What the run left behind on the way here. Not admin-gated — the route
             is `AuthUser`, on the same reasoning the attention viewer below is:
