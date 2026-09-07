@@ -9,6 +9,7 @@ Guidance for building and fixing the frontend half of the project.
 - **Styling**: Tailwind CSS v4 via `@tailwindcss/postcss`
 - **UI primitives**: shadcn/ui (`components/ui/`)
 - **Rich text**: Tiptap (prosemirror-based)
+- **Maths**: KaTeX
 - **Charts**: Recharts
 - **Package manager**: Bun (see `bun.lock`)
 
@@ -24,7 +25,8 @@ frontend/
 │   │   ├── chat/[id]/ · conversations/ · models/ · usage/ · profile/
 │   │   ├── jobs/        [id] and new/{train,benchmark,rl}; the bare path redirects
 │   │   ├── benchmark/ · tokenizers/
-│   │   ├── gyms/        the catalogue, [gym] to start one run, [gym]/runs/[id] live
+│   │   ├── gyms/        the catalogue (its cards open the practice composer),
+│   │   │                [gym] to start one run, [gym]/runs/[id] live
 │   │   └── markup/ · throbber/   fixture pages, no data behind them
 │   ├── (auth)/      login, signup — outside the signed-in chrome
 │   └── docs/        the markdown in docs/, rendered
@@ -58,6 +60,7 @@ frontend/
 │   ├── gym-socket.ts    one socket per run, driving every episode in it
 │   ├── message-parser.ts
 │   ├── user-parser.ts
+│   ├── math-parser.ts   $$…$$ and $…$ lifted out of a parsed tree
 │   └── utils.ts          cn() and other small helpers
 ├── public/
 └── next.config.ts
@@ -415,6 +418,15 @@ quietly re-queue the message it was draining.
 
 ### Two doors to a gym, and only one of them is a loop
 
+The math practice composer defaults to automatic progression across all rungs.
+Turning it off permits manual task selection, including which demonstrations
+to generate. Demonstrations create or append an SFT dataset; they never start
+a training job. A math episode has one response and no tools. The job page
+shows per-skill mastery, promotion/review evidence and fixed before/after test
+scores, read from the saved result after completion. Training pass rate is
+labelled separately because its difficulty changes. See
+[math practice](../engine/math-practice.md).
+
 `/gyms/<id>` starts **one** run: the browser drives it over the socket below,
 the episodes are graded, and it ends. Nothing it scores reaches the weights —
 it is a measurement.
@@ -428,6 +440,15 @@ fifty-iteration run does not bury the evaluations anyone made.
 That distinction is invisible from the run form, which is why the form links to
 the composer in as many words: the shape of the question "why did my gym only
 run once" is someone standing at the first door looking for the second.
+
+**The catalogue leads with the loop.** A card at `/gyms` opens
+`/jobs/new/rl?gym=<id>` — practising is what anyone comes to a gym for, and it
+is one click from the list. The evaluation door is the card's second, quieter
+link. The gym id travels as a search param read by the *page* (a server
+component) and handed to the composer as a prop, rather than `useSearchParams`
+inside it, which would put the page behind a Suspense boundary to learn one
+string; an id no gym answers to falls back to the first, since the value comes
+off a URL anyone can type.
 
 ### Stream protocol (a gym run)
 
@@ -676,6 +697,40 @@ prop — so the question can actually be changed, and so sending still happens o
 the one path that owns sending. The prop is keyed by object identity, not by the
 string: editing the same message twice has to load it twice.
 
+### Maths
+
+A reply's maths has **no special token**. The model writes it the way markdown
+does — `$$…$$` displayed, `$…$` inline — inside whatever `<|par|>` or list item
+it was already writing, so it reaches the frontend as ordinary text.
+
+`lib/math-parser.ts::splitMath` runs as the last step of *both* parsers, over
+the finished tree rather than inside either scanner, and replaces the TeX inside
+text nodes with `math block` / `math inline` nodes. One pass for both because
+`parseMessage` (model markup) and `parseUserMarkdown` (what a person types)
+build the same node vocabulary from different syntax, and the dollar rules are
+the same on both sides. It does not descend into `code block`, `code inline` or
+`tool-call`: a `$` in a shell snippet or in a call's JSON is a dollar sign.
+
+The inline rule is the one that has to be careful, because prose is full of
+prices. An opener may not follow a word character or precede whitespace, a
+closer may not follow whitespace or precede one, and a body may not contain a
+bare `$` or cross a blank line — which is what leaves "$5 and $10" alone and
+stops an unclosed `$` from swallowing the rest of a reply while it streams.
+
+`components/chat/math.tsx` typesets with KaTeX, synchronously, so an equation is
+in the HTML that first paints and never reflows the paragraph around it after
+the fact — which matters most on a surface where the text is still arriving.
+Results are cached by TeX source, since a streaming reply re-renders on every
+token and its finished equations do not change. TeX that KaTeX rejects falls
+back to its own source in the mono face rather than to KaTeX's red error text,
+which reads as the app failing rather than the equation being malformed.
+
+Three of KaTeX's own rules are overridden in `globals.css`, and they hang off
+the `.rich-math` wrapper rather than being written flat against `.katex` —
+both stylesheets are unlayered, so a flat rule would be settled by which
+`<link>` the bundler emitted last. The reasoning for each is written on it
+there. `/markup` carries both forms in the Mersenne answer.
+
 ### The trace
 
 A turn's working — every round before the one that answered, plus what each call
@@ -711,6 +766,86 @@ tool's own wire name so a new tool reads acceptably before anyone has written
 words for it. That table is the frontend's only knowledge of which tools exist
 — the vocabulary stopped carrying one marker per tool, so nothing else here can
 tell `bash` from `web-search`.
+
+The row reads mark, clock, count, label, ruled between: `◯ 1m 04s | ↓ 4.9k
+tokens | Thinking…` — time, then size, then what is being done. The clock
+(`components/chat/turn-clock.tsx`) is mounted only while a turn is in flight and
+starts from its own mount rather than being handed a start time, which is what
+keeps the second hand out of `ChatThread`: a clock owned up there would
+re-render every message in the conversation once a second, for the length of the
+reply, to move two characters. It measures the wait rather than the model — a
+turn queued behind three jobs on the GPU counts from when the question was
+asked, because that is the number the person watching is keeping.
+
+A finished turn keeps the clock and drops everything else: the mark goes to
+`idle` and the row reads `Worked for 2 minutes 5 seconds`, spelled out, because
+it is now a sentence about something finished rather than a readout of something
+happening, and the two states sit in the same row a second apart. It coarsens as
+it grows — the seconds inside an eleven minute turn are noise. The figure is
+`ChatMessage.elapsedSecs`, summed across the turn's rounds and never persisted,
+so a conversation reopened from history shows the resting mark alone.
+
+There is
+one figure and it is input *and* output — everything the conversation has cost,
+the context so far plus what this turn has written into it, which is what
+`contextTokensUsed` already is. It only ever climbs. Showing whichever half
+matched the phase was tried, and the changeover dropped the number to zero
+mid-turn and started again: two honest figures, and the sequence between them a
+lie, since nothing about that moment resets anything.
+
+So the arrow carries the phase instead (`components/chat/token-flow.tsx`).
+Queuing, a tool call, and the beat before the first token are the model being
+*given* something and point in; from the first token on it is writing, and they
+point out. Neither the context estimate nor the streamed tally is
+server-verified against the tokenizer — this is the composer footer's figure,
+not an accounting one. Generating carries no word beside its count — the tokens
+arriving *are* the message, already on screen — so the rule is drawn only when
+something stands on both sides of it.
+
+Both halves of the row move, and neither is decoration: how fast the count
+turns is how fast the tokens are coming. The figure is
+`components/ui/rolling-number.tsx`. Past a thousand it abbreviates — `11.3k`,
+`2.4M`, `1.1B`, truncated to the tenth rather than rounded, because a counter
+reading `12.0k` while the twelve thousandth token is still on its way is
+claiming tokens that have not arrived. The exact figure stays in the row's
+`title` and in what a screen reader is given. Abbreviating costs the movement
+something: the figure then turns on the hundred rather than on the unit, so the
+wheels go still between steps — which is the trade past the point where the last
+digits of a token count are noise. It is a column of wheels that only ever roll
+*upward*, nine to zero included — each column is two stacked runs of 0–9 and
+tracks a row rather than a digit, so it climbs into the second run and then
+drops back a whole ten with the transition off, between rows carrying the same
+glyph. The word is `ThinkingLabel`, and it types itself in a letter at a time
+and then walks into the next word in place: frame `i` is
+`next.slice(0, i) + previous.slice(i)`, so the two words meet at a boundary that
+travels left to right and the row is never blank — `Thinking… → Whinking. →
+Woinking.. → … → Working..`. Typing in is that same operation against an empty
+previous word, and the dots keep one count across all of it rather than
+restarting per word.
+
+A run starts slow and accelerates to its last letter, interpolated
+geometrically (these are speeds) and eased at both ends, as is the wheels' own
+roll: a movement that leaves at full tilt has arrived before you look at it, and
+only its settling is visible. The dots keep their own pace and it is a slow one
+— they are not part of the word's movement, which is a thing with a beginning
+and an end, where the dots only say that time is passing. Running them at the
+speed a word types at was tried, and it made the row twitch.
+
+The wheels have two speeds, because a count changes for two different reasons. A
+count of tokens being written climbs a few at a time and the turning *is* the
+stream, so it rolls at 220ms. A count that jumps because something was handed
+over whole — a message sent, a tool's answer coming back — has already happened
+by the time it is drawn, so it lands in 90ms (`swift`); every incoming figure is
+one of those. And a wheel mounts showing zero and rolls to its digit on the next
+frame rather than arriving already on it, which is what makes the count spin up
+when a message is sent, where the row and the number appear at the same instant.
+The figure behind an incoming arrow is the last *persisted* context — the
+message just typed has not been tokenized by anything yet — so it corrects
+itself when the turn is saved.
+
+Reduced motion keeps the rotation and the counting and drops only the
+per-character and per-wheel movement — the row still has to say the model is
+working.
 
 `budget` is the composer's thinking-budget choice, one section of
 `components/chat/composer-picker.tsx` (the type and its options live in
@@ -1086,19 +1221,21 @@ on either side arrives as `undefined`. The engine's side is documented in
 
 #### What a training run's phase 1 shows
 
-`components/training/telemetry.tsx` holds the phase-1 checklist — which build
-step is running, and what each produced — and under it
-`components/training/build-metrics.tsx`, what the build actually *produced*:
-characters per token by source, how much of the vocabulary the corpus never
-uses, the share of training windows that span a document boundary and a ribbon of
-what those windows actually look like, document lengths against the window, and
-the head of the merge list in the order BPE learned it.
+Two panels, answering two different questions.
+`components/training/build-progress.tsx` is **what the build is doing right
+now** — which step, how far into it, how fast, and which source that leaves it
+on — and `components/training/build-metrics.tsx` is what the build **produced**:
+characters per token by source, how much of the vocabulary the corpus never uses,
+the share of training windows that span a document boundary and a ribbon of what
+those windows actually look like, document lengths against the window, and the
+head of the merge list in the order BPE learned it.
 
 Three things about it are load-bearing:
 
-- **It outlives phase 1.** The checklist is replaced by the loss overlay the
-  moment training starts; these stay, because they are facts about the corpus the
-  run is training on, and a finished run's page is where they are read.
+- **It outlives phase 1.** The build panel is replaced by the loss overlay the
+  moment training starts; the metrics stay, because they are facts about the
+  corpus the run is training on, and a finished run's page is where they are
+  read.
 - **An absent field is "—", never 0.** The engine omits what a phase did not
   measure (see [`../engine/README.md`](../engine/README.md)), and a corpus packed
   before a metric existed reports none of it. Drawing that as a zero would be a
@@ -1107,6 +1244,39 @@ Three things about it are load-bearing:
   a property of the run, and one packed corpus can be trained at two of them —
   which is also why the engine measures the length histogram at report time
   rather than baking it into the build.
+
+##### While the build is running
+
+The step is read off the frame (`TokenizeStats.step`), never inferred from which
+counters have arrived. The panel used to infer it, which worked while every step
+reported something and read the longest step of the run — packing, which reported
+nothing — as a tokenizer that had already finished. The engine's half of that,
+including why a vocabulary build no longer closes the phase, is in
+[`../engine/telemetry.md`](../engine/telemetry.md).
+
+- **The elapsed clock is the page's, anchored to the engine's.** `BuildClock` is
+  remounted by its `key` whenever a frame lands and counts up from the reading
+  that frame carried, so a page attached halfway through reads the build's age
+  rather than its own and the two cannot drift. It exists because the frame
+  interval widens as a build runs and one step — learning the merges — cannot
+  report at all: for minutes at a time it is the only thing on the page still
+  moving, and a clock that has stopped is exactly what a hung build looks like.
+  A finished build's stops where it stopped, because one still running would be
+  claiming something still is.
+- **The throughput curve is rebuilt from the frames, not sent.** The engine
+  reports `tokens_per_sec` and not a series, so `use-job.ts` accumulates one — and
+  a page attaching to a build already in flight still gets the whole curve,
+  because a run's stream replays from the start. Only the frames that *carry* a
+  rate become points: a step boundary's frame has counts and no measurement of
+  speed, and drawing that as zero would put a stall into every one of them.
+- **A bar is drawn only for the step in flight.** A full bar on a finished step
+  says nothing and an empty one on a step that has not started says something
+  untrue.
+- **The source strip is a window, and says so.** The engine centres at most
+  `BUILD_SOURCES` rows on the source being read and sends `sources_total`; the
+  caption carries both, so a curriculum longer than the window is never mistaken
+  for one that fits. The stage label appears only on a run with more than one
+  stage, where it is not the same word on every row.
 
 ##### The span ribbon
 
@@ -1274,7 +1444,9 @@ Rules governing changes to it:
   change grows a new tree immediately rather than waiting out the pass in
   progress, because repeated growth is its whole language.
 
-The `/throbber` page shows every state side by side. Earlier candidates — a
+The `/throbber` page shows every state side by side, and the chat's status row
+with a live count behind it — the only place either of the row's movements can
+be watched without a GPU at the other end. Earlier candidates — a
 rule, a stanza of set text, a comb of stems, arcs over a baseline, a folded
 line, a causal-mask triangle, orbiting rings, a square lattice of cells — are
 recorded with their reasons in the git history of `components/throbber/`; the
