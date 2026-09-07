@@ -37,6 +37,7 @@ services:
       # mean nothing outside it — including the backend — could ever connect.
       BASH_HOST: 0.0.0.0
       BASH_PORT: "8899"
+      BASH_SESSIONS: "${BASH_SESSIONS:-256}"
     ports:
       # Loopback only, like SearXNG's, and for the same reason. Published at all
       # so `curl localhost:8899/health` works from the host and so a natively

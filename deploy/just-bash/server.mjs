@@ -30,7 +30,7 @@ const PORT = Number(process.env.BASH_PORT ?? 8899)
 // How many conversations keep a filesystem at once, and for how long after
 // their last command. A session is a chat: cheap, but not free, and a server
 // left running for a week should not hold every chat anyone ever had.
-const MAX_SESSIONS = Number(process.env.BASH_SESSIONS ?? 64)
+const MAX_SESSIONS = Number(process.env.BASH_SESSIONS ?? 256)
 const SESSION_TTL_MS = Number(process.env.BASH_SESSION_TTL_SECS ?? 3600) * 1000
 
 // The sandbox's own ceiling, when the caller names none. The backend sends one

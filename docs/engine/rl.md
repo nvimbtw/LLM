@@ -192,5 +192,5 @@ siblings, which is a baseline over two different questions.
 What is still owed when that lands: `TaskWeight.weight` actually consulted across
 lanes (a flat list is dominated by whichever gym registers the most task types),
 frames grouped by `(gym, family, level)` so a combined run cannot hide one gym
-sitting at zero, and the sandbox budget — just-bash holds 64 filesystems, so
+sitting at zero, and the sandbox budget — just-bash holds 256 filesystems, so
 `sum over lanes of tasks_per_batch * group_size` is bounded well under that.

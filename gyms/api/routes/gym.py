@@ -13,6 +13,7 @@ stops being able to help.
 """
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -30,8 +31,8 @@ from store.schema import EpisodeStatus, GymEpisode, GymRun, RunKind, RunStatus
 router = APIRouter()
 
 #: What one run may ask for. A ceiling because every episode seeds a filesystem
-#: the sandbox holds until it expires, and the sandbox keeps 64 of them.
-MAX_EPISODES = 32
+#: the sandbox holds until it expires, and the sandbox keeps 256 of them.
+MAX_EPISODES = 256
 
 #: What one demonstration request may ask for. These all share **one** workspace,
 #: cleared between tasks, so the number costs sandbox time rather than sandbox
@@ -58,9 +59,11 @@ class NewRun(BaseModel):
     #: takes one of these per optimizer step, and they are batches rather than
     #: measurements — see `store.schema.RunKind`.
     kind: RunKind = RunKind.eval
+    split: Literal["train", "validation", "test"] | None = None
 
 
 class NewTrajectories(BaseModel):
+    gym_id: str = "bash"
     task_types: list[str] = Field(min_length=1)
     count: int = Field(ge=1, le=MAX_TRAJECTORIES)
     seed_base: int = 0
@@ -115,6 +118,7 @@ def create_run(body: NewRun) -> dict:
         )
 
     seed_base = body.seed_base if body.seed_base is not None else uuid.uuid4().int % 1_000_000
+    seen: set[tuple[str, str]] = set()
     with store.session() as db:
         run = GymRun(
             gym_id=body.gym_id,
@@ -128,13 +132,14 @@ def create_run(body: NewRun) -> dict:
         db.add(run)
         db.flush()
         episodes = [
-            _prepare(db, run, index, body.task_types)
+            _prepare(db, run, index, body.task_types,
+                     body.split or ("train" if body.kind is RunKind.rl else "test"), seen)
             for index in range(body.count)
         ]
         return {**_run_json(run), "episodes": [_episode_json(e, db) for e in episodes]}
 
 
-def _prepare(db, run: GymRun, index: int, task_types: list[str]) -> GymEpisode:
+def _prepare(db, run: GymRun, index: int, task_types: list[str], split: str = "train", seen=None) -> GymEpisode:
     """One episode: generated, stored, and its workspace filled.
 
     The row is written before the sandbox is touched so the episode id exists to
@@ -148,7 +153,9 @@ def _prepare(db, run: GymRun, index: int, task_types: list[str]) -> GymEpisode:
     """
     group = index // run.group_size
     task_type = task_types[group % len(task_types)]
-    task = REGISTRY.generate(task_type, run.seed_base + group)
+    task = REGISTRY.generate(task_type, run.seed_base + group, split)
+    if run.gym_id == "math" and run.group_size == 1 and seen is not None:
+        task = _distinct(task, split, seen)
     episode = GymEpisode(
         run_id=run.id,
         index=index,
@@ -159,11 +166,25 @@ def _prepare(db, run: GymRun, index: int, task_types: list[str]) -> GymEpisode:
     )
     db.add(episode)
     db.flush()
-    try:
-        seed(str(episode.id), WORKSPACE, task.files)
-    except SandboxError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+    if "bash" in REGISTRY.gym(run.gym_id).tools:
+        try:
+            seed(str(episode.id), WORKSPACE, task.files)
+        except SandboxError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
     return episode
+
+
+def _distinct(task, split, seen):
+    # A validation count means different problems, not different samples of one.
+    # Bounded even when somebody requests more facts than this rung contains.
+    max_attempts = 10_000
+    for offset in range(max_attempts):
+        candidate = REGISTRY.generate(task.task_type, task.seed + offset, split)
+        key = (candidate.task_type, candidate.problem_key)
+        if key not in seen:
+            seen.add(key)
+            return candidate
+    raise HTTPException(status_code=400, detail="requested more distinct math problems than this rung can supply")
 
 
 @router.get("/gym/runs")
@@ -203,9 +224,18 @@ def trajectories(body: NewTrajectories) -> dict:
     layout would train a model for a shell it is never served. So this answers
     with what the shell said and the backend assembles the conversation.
     """
-    unknown = [t for t in body.task_types if REGISTRY.task_type(t) is None]
+    unknown = [t for t in body.task_types if REGISTRY.gym_of(t) != body.gym_id]
     if unknown:
         raise HTTPException(status_code=400, detail=f"unknown task types: {unknown}")
+
+    if body.gym_id == "math":
+        tasks = [REGISTRY.generate(body.task_types[i % len(body.task_types)], body.seed_base + i)
+                 for i in range(body.count)]
+        return {"trajectories": [
+            {**task.public(), "moves": [], "answer": task.solution,
+             "generator_version": task.generator_version, "split": task.split}
+            for task in tasks
+        ]}
 
     # One session for the whole batch, cleared between tasks — see
     # `sandbox.clear`. An episode may never do this; a demonstration must.
@@ -255,6 +285,8 @@ def step(episode_id: uuid.UUID, body: NewStep) -> dict:
         episode = _episode_or_404(db, episode_id)
         if episode.status in (EpisodeStatus.graded, EpisodeStatus.closed):
             raise HTTPException(status_code=409, detail="episode is closed")
+        if "bash" not in REGISTRY.gym(episode.gym_id).tools:
+            raise HTTPException(status_code=400, detail="this gym has no tools")
         try:
             ran = run_command(str(episode.id), body.command)
         except SandboxError as e:
@@ -301,7 +333,7 @@ def finish(episode_id: uuid.UUID, body: Finish) -> dict:
     """
     with store.session() as db:
         episode = _episode_or_404(db, episode_id)
-        if episode.status is EpisodeStatus.graded:
+        if episode.status in (EpisodeStatus.graded, EpisodeStatus.closed):
             raise HTTPException(status_code=409, detail="episode is already graded")
         ground_truth = episode.task_config.get("answer", "")
         score, answer = REGISTRY.grade(episode.task_type, body.reply, ground_truth)
@@ -380,6 +412,9 @@ def _episode_json(episode: GymEpisode, db, *, steps: bool = False) -> dict:
         "seed": episode.seed,
         "prompt": task.get("prompt", ""),
         "system": task.get("system", ""),
+        "tools": list(REGISTRY.gym(episode.gym_id).tools),
+        "split": task.get("split"),
+        "generator_version": task.get("generator_version"),
         "status": episode.status.value,
         "answer": episode.answer,
         "score": episode.score,

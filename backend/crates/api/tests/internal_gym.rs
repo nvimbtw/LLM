@@ -99,6 +99,22 @@ fn admin_token() -> String {
 }
 
 #[actix_web::test]
+async fn the_engine_can_read_the_catalogue_but_a_browser_token_cannot() {
+    let (gyms_url, served) = gyms_stub();
+    let server = server(gyms_url);
+    let response = server.get("/internal/gyms")
+        .insert_header(("Authorization", format!("Bearer {}", service_token())))
+        .send().await.expect("sent");
+    assert_eq!(response.status(), 200);
+    assert!(served.recv().expect("forwarded").contains("GET /gyms "));
+    let refused = server.get("/internal/gyms")
+        .insert_header(("Authorization", format!("Bearer {}", admin_token())))
+        .send().await.expect("sent");
+    assert_eq!(refused.status(), 401);
+    assert!(served.try_recv().is_err());
+}
+
+#[actix_web::test]
 async fn a_step_comes_back_rendered_so_the_engine_never_lays_one_out() {
     let (gyms_url, _served) = gyms_stub();
     let server = server(gyms_url);

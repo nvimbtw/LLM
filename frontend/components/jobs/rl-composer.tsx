@@ -21,17 +21,18 @@ import {
 import { useModels } from "@/hooks/use-models"
 import { listGyms, LEVELS, type Gym } from "@/lib/gyms"
 import { queueReinforcement } from "@/lib/jobs"
+import { DemonstrationsForm } from "@/components/gyms/demonstrations-form"
 
 /**
  * What one gym run may ask for — `MAX_EPISODES` in `gyms/api/routes/gym.py`,
  * which exists because every episode holds a sandbox filesystem and just-bash
- * keeps 64 of them.
+ * keeps 256 of them.
  *
  * An iteration *is* a gym run, so `tasks x rollouts` is bounded by it. The form
  * refuses a batch over the ceiling rather than letting a run queue happily and
  * then die on its first iteration with a 400 nobody is watching for.
  */
-const MAX_EPISODES = 32
+const MAX_EPISODES = 256
 
 /**
  * Composing a practice run: the loop the gym page does not have.
@@ -46,7 +47,7 @@ const MAX_EPISODES = 32
  * `queueReinforcement` gives: a second vocabulary for one form is a translation
  * layer to keep true forever.
  */
-export function RlComposer() {
+export function RlComposer({ gym: preselected }: { gym?: string }) {
   const router = useRouter()
   const { models, isLoading } = useModels()
   const [gyms, setGyms] = React.useState<Gym[] | null>(null)
@@ -54,7 +55,7 @@ export function RlComposer() {
 
   const [name, setName] = React.useState("")
   const [chosenBase, setChosenBase] = React.useState("")
-  const [chosenGym, setChosenGym] = React.useState("")
+  const [chosenGym, setChosenGym] = React.useState(preselected ?? "")
   // `null` is "nothing chosen yet", which is not the same as "nothing chosen":
   // an empty list has to survive, or unchecking the last box silently ticks the
   // defaults back on and the form disagrees with itself about being ready.
@@ -66,6 +67,8 @@ export function RlComposer() {
   const [lr, setLr] = React.useState("1e-6")
   const [beta, setBeta] = React.useState("0.02")
   const [temperature, setTemperature] = React.useState("1.0")
+  const [automatic, setAutomatic] = React.useState(true)
+  const [checkEvery, setCheckEvery] = React.useState(10)
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   React.useEffect(() => {
@@ -85,8 +88,13 @@ export function RlComposer() {
   // Only an explicit choice is stored; the default is derived from the list, so
   // neither select writes state from an effect the moment its data lands.
   const baseModel = chosenBase || models[0]?.id || ""
-  const gymId = chosenGym || gyms?.[0]?.id || ""
+  // A choice only counts once the list confirms it exists: `?gym=` comes off a
+  // URL anyone can type, and an id nothing answers to would otherwise leave the
+  // select showing "No gyms" with no way to pick another.
+  const known = (id: string) => gyms?.some((g) => g.id === id) ?? false
+  const gymId = (known(chosenGym) ? chosenGym : gyms?.[0]?.id) || ""
   const gym = gyms?.find((g) => g.id === gymId)
+  const adaptive = gymId === "math" && automatic
 
   // The easy rung of every family, for the reason the run form starts there: a
   // model that can list a directory and not read a file scores the same as one
@@ -99,7 +107,7 @@ export function RlComposer() {
     return (easy.length > 0 ? easy : gym.task_types).map((t) => t.id)
   }, [gym])
   const mine = new Set(gym?.task_types.map((t) => t.id) ?? [])
-  const selected = (taskTypes ?? defaults).filter((id) => mine.has(id))
+  const selected = (adaptive ? (gym?.task_types.map((t) => t.id) ?? []) : taskTypes ?? defaults).filter((id) => mine.has(id))
 
   const families = React.useMemo(() => {
     if (!gym) return []
@@ -150,7 +158,8 @@ export function RlComposer() {
         group_size: groupSize,
         tasks_per_batch: tasksPerBatch,
         iterations,
-        max_rounds: maxRounds,
+        max_rounds: gym?.tools.length === 0 ? 1 : maxRounds,
+        ...(adaptive ? { curriculum: { check_every: checkEvery } } : {}),
         lr: lrValue,
         beta: betaValue,
         temperature: temperatureValue,
@@ -205,7 +214,7 @@ export function RlComposer() {
           <Field label="Name" hint="what the result is called">
             <Input
               value={name}
-              placeholder="bash-practised"
+              placeholder={`${gymId}-practised`}
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
@@ -246,6 +255,17 @@ export function RlComposer() {
               </Select>
             </Field>
 
+            {gymId === "math" && (
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox checked={automatic} onCheckedChange={(checked) => setAutomatic(checked === true)} />
+                  Advance difficulty automatically
+                </label>
+                <p className="text-xs text-muted-foreground">Automatic practice includes every rung, starts with placement, and keeps earlier skills in review. Promotion requires 90% on two checks of 100 distinct validation problems. Fixed tests run before and after training. These checks add generation time beyond the training iterations. No tools are available.</p>
+                {adaptive && <Field label="Validate every" hint="training iterations"><Input type="number" min={1} value={checkEvery} onChange={(e) => setCheckEvery(clamp(e.target.valueAsNumber, 1, 1000))} /></Field>}
+              </div>
+            )}
+
             <Field label="Task types">
               {/* A column per family, rungs in order down it — the run form's
                   layout, and for its reason: read down for one skill getting
@@ -266,6 +286,7 @@ export function RlComposer() {
                         <Checkbox
                           className="mt-0.5 shrink-0"
                           checked={selected.includes(type.id)}
+                          disabled={adaptive}
                           onCheckedChange={() => toggle(type.id)}
                         />
                         <span className="min-w-0">
@@ -288,6 +309,8 @@ export function RlComposer() {
           </div>
         )}
       </Panel>
+
+      {gymId === "math" && <DemonstrationsForm gymId={gymId} taskTypes={selected} />}
 
       <Panel
         title="The loop"
@@ -327,12 +350,13 @@ export function RlComposer() {
                 }
               />
             </Field>
-            <Field label="Rounds" hint="shell turns per episode">
+            <Field label="Rounds" hint={gym?.tools.length === 0 ? "one answer, no tools" : "shell turns per episode"}>
               <Input
                 type="number"
                 min={1}
                 max={32}
-                value={maxRounds}
+                value={gym?.tools.length === 0 ? 1 : maxRounds}
+                disabled={gym?.tools.length === 0}
                 onChange={(e) => setMaxRounds(clamp(e.target.valueAsNumber, 1, 32))}
               />
             </Field>
@@ -351,8 +375,7 @@ export function RlComposer() {
                 <span className="text-foreground">
                   {episodes} episodes is more than one gym run may hold.
                 </span>{" "}
-                Every episode seeds a sandbox filesystem and the sandbox keeps a
-                finite number of them, so tasks × rollouts has to stay at or
+                The gym service limits the episodes in one run, so tasks × rollouts has to stay at or
                 under {MAX_EPISODES}. Each iteration would be refused, and the
                 run would fail on its first one.
               </>

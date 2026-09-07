@@ -306,6 +306,23 @@ def _as_task_weights(value):
     return [{"id": item} if isinstance(item, str) else item for item in value]
 
 
+class PracticeSchedule(BaseModel):
+    """Validation controls the lessons; the fixed test never controls them."""
+
+    check_every: int = Field(default=10, ge=1)
+    validation_samples: int = Field(default=100, ge=10, le=100)
+    test_samples: int = Field(default=16, ge=1, le=100)
+    promote_at: float = Field(default=0.9, gt=0.0, le=1.0)
+    retain_at: float = Field(default=0.75, ge=0.0, lt=1.0)
+    consecutive_checks: int = Field(default=2, ge=2, le=10)
+
+    @model_validator(mode="after")
+    def _thresholds(self):
+        if self.retain_at >= self.promote_at:
+            raise ValueError("retain_at must be lower than promote_at")
+        return self
+
+
 class RlConfig(BaseModel):
     """Reinforcement learning against a gym, from a model that already scores.
 
@@ -336,11 +353,11 @@ class RlConfig(BaseModel):
     )
     #: Rollouts per task, and therefore the size of the baseline an advantage is
     #: measured against. A group of one contributes exactly zero gradient.
-    group_size: int = Field(default=8, ge=2, le=32)
+    group_size: int = Field(default=8, ge=2, le=256)
     #: Distinct tasks per iteration. `tasks_per_batch * group_size` is the whole
     #: batch, and it is bounded by the gyms service's own ceiling on episodes per
     #: run — which exists because just-bash holds a finite number of filesystems.
-    tasks_per_batch: int = Field(default=4, ge=1, le=32)
+    tasks_per_batch: int = Field(default=4, ge=1, le=256)
     iterations: int = Field(default=50, ge=1)
     max_rounds: int = Field(default=8, ge=1, le=32)
 
@@ -381,6 +398,7 @@ class RlConfig(BaseModel):
     holdout_base: int = Field(default=1_000_000)
 
     checkpoint_target: int | None = None
+    curriculum: PracticeSchedule | None = None
 
     _normalize_task_types = field_validator("task_types", mode="before")(_as_task_weights)
 
@@ -411,6 +429,8 @@ class RlConfig(BaseModel):
         """A run cannot be measured on seeds it trained on, and the arithmetic
         that would overlap them is not obvious from the two numbers."""
         drawn = self.seed_base + self.iterations * self.tasks_per_batch
+        if self.curriculum is not None and self.gym_id != "math":
+            raise ValueError("automatic curriculum is currently available for the math gym")
         if self.seed_base <= self.holdout_base < drawn:
             raise ValueError(
                 f"holdout_base {self.holdout_base} is inside the seeds this run will "

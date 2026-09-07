@@ -35,6 +35,7 @@ from llm.corpus import bpe
 from llm.gym.client import Client
 from llm.model import checkpoint
 from llm.orchestrate import train as train_pipeline
+from llm.orchestrate import practice
 from llm.train import loop, policy, rollout
 from llm.train.progress import Checkpoint, Progress, ProgressCallback, log_progress
 
@@ -83,7 +84,7 @@ def _frozen(weights, device):
     return reference
 
 
-def _rollouts(cfg, client, model, tokenizer, iteration, rng, window, rope, generator):
+def _rollouts(cfg, client, model, tokenizer, iteration, rng, window, rope, generator, lessons=None):
     """One iteration's batch: every lane's gym run, rolled out and pooled.
 
     Pooled without weighting or rescaling. `RlConfig.lanes` says why that is
@@ -92,13 +93,13 @@ def _rollouts(cfg, client, model, tokenizer, iteration, rng, window, rope, gener
     pooled: list[rollout.Rollout] = []
     runs: list[str] = []
     for gym_id, task_types in cfg.lanes():
-        drawn = _draw(cfg, rng, task_types)
+        drawn = lessons.draw(rng, cfg.tasks_per_batch) if lessons else _draw(cfg, rng, task_types)
         run_id, episodes = client.create_run(
             gym_id=gym_id,
             model_name=cfg.base_model,
             task_types=drawn,
             count=cfg.tasks_per_batch * cfg.group_size,
-            seed_base=cfg.seed_base + iteration * cfg.tasks_per_batch,
+            seed_base=cfg.seed_base + (lessons.training_groups if lessons else iteration * cfg.tasks_per_batch),
             group_size=cfg.group_size,
         )
         runs.append(run_id)
@@ -163,6 +164,11 @@ def _frame(cfg, iteration, batch, update, rollouts, started, lr) -> Progress:
         lr=lr,
         elapsed_secs=round(time.time() - started, 2),
         diag={
+            # The x position of every point on the chart. A diag dict without it
+            # is a sample the panel cannot place, so the stats render off the
+            # latest one while the curves draw nothing — see `Diagnostics.step`,
+            # whose whole job on the training path is this same field.
+            "step": iteration + 1,
             "pass_rate": batch.pass_rate,
             "mean_return": batch.mean_return,
             "signal": batch.signal,
@@ -182,6 +188,7 @@ def _iterate(cfg, client, model, reference, optimizer, state, iteration) -> Prog
     rollouts, runs = _rollouts(
         cfg, client, model, state.tokenizer, iteration, state.rng,
         state.window, state.rope, state.generator,
+        state.lessons,
     )
     batch = policy.score(rollouts)
 
@@ -201,6 +208,8 @@ def _iterate(cfg, client, model, reference, optimizer, state, iteration) -> Prog
 
     for run_id in runs:
         client.set_status(run_id, DONE)
+    if state.lessons:
+        state.lessons.training_groups += cfg.tasks_per_batch
     return _frame(cfg, iteration, batch, update, rollouts, state.started, cfg.lr)
 
 
@@ -209,6 +218,7 @@ class _State:
 
     def __init__(self, cfg: RlConfig, model, tokenizer, device, started: float):
         self.tokenizer = tokenizer
+        self.lessons = None
         self.started = started
         self.rng = random.Random(cfg.seed_base)
         # No sampler seed. Pinning the draw would make a group's G rollouts G
@@ -243,6 +253,7 @@ def _learn(cfg: RlConfig, client: Client, on_progress, cancel, started) -> dict:
     # points at the wrong tokens.
     tokenizer = bpe.load(storage.model_dir(cfg.base_model))
     state = _State(cfg, model, tokenizer, device, started)
+    state.lessons = practice.prepare(cfg, client)
     optimizer = _optimizer(model, cfg)
 
     provenance = {"base_model": cfg.base_model, "architecture": arch}
@@ -253,17 +264,62 @@ def _learn(cfg: RlConfig, client: Client, on_progress, cancel, started) -> dict:
         state_extra={"base_model": cfg.base_model},
     )
 
+    if state.lessons:
+        _exam(cfg, client, model, state, provenance, on_progress, cancel, 0, initial=True)
+
     frames = []
     for iteration in range(cfg.iterations):
         if cancel is not None and cancel.is_set():
             break
         frame = _iterate(cfg, client, model, reference, optimizer, state, iteration)
+        if state.lessons:
+            if (iteration + 1) % cfg.curriculum.check_every == 0:
+                _exam(cfg, client, model, state, provenance, on_progress, cancel, iteration + 1)
+            provenance["curriculum"] = state.lessons.snapshot()
+            frame.diag["mastery"] = state.lessons.report()
+            frame.diag["curriculum_events"] = list(state.lessons.events)
+            write.state_extra["curriculum"] = provenance["curriculum"]
         frames.append(frame)
         if on_progress is not None:
             on_progress(frame)
             _checkpoint(cfg, write, model, optimizer, iteration, frame, on_progress)
 
+    if state.lessons and not (cancel is not None and cancel.is_set()):
+        _exam(cfg, client, model, state, provenance, on_progress, cancel, len(frames), final=True)
     return _saved(cfg, model, tokenizer, arch, frames, started, provenance)
+
+
+def _exam(cfg, client, model, state, provenance, on_progress, cancel, step, *, initial=False, final=False):
+    lessons = state.lessons
+
+    def notify(task):
+        phase = "Fixed test" if testing else "Placement" if initial else "Validation"
+        print(f"{phase}: {task}")
+        if on_progress:
+            on_progress(Progress(step=step, total_steps=cfg.iterations, epoch=1,
+                                 total_epochs=1, chunk=step, total_chunks=cfg.iterations,
+                                 loss=0.0, lr=cfg.lr, elapsed_secs=time.time() - state.started,
+                                 diag={"step": step, "practice_phase": f"{phase}: {task}",
+                                       "mastery": lessons.report(),
+                                       "curriculum_events": list(lessons.events)}))
+
+    testing = False
+    if not final:
+        practice.validate(cfg, client, model, state, lessons, step, cancel, notify)
+    if initial or final:
+        testing = True
+        result = practice.benchmark(cfg, client, model, state, lessons, cancel, notify)
+        if result is not None:
+            provenance["test_before" if initial else "test_after"] = result
+    provenance["curriculum"] = lessons.snapshot()
+    provenance["mastery"] = lessons.report()
+    provenance["curriculum_events"] = list(lessons.events)
+    if on_progress:
+        on_progress(Progress(step=step, total_steps=cfg.iterations, epoch=1, total_epochs=1,
+                             chunk=step, total_chunks=cfg.iterations, loss=0.0, lr=cfg.lr,
+                             elapsed_secs=time.time() - state.started,
+                             diag={"step": step, "practice_phase": "Practice" if not final else "Finished",
+                                   **{key: provenance[key] for key in ("mastery", "curriculum_events", "test_before", "test_after") if key in provenance}}))
 
 
 def _checkpoint(cfg, write, model, optimizer, iteration, frame, on_progress) -> None:

@@ -71,6 +71,8 @@ retry lives in the corpus client.
 rollout batch, the group-relative advantage, the two optional `Transformer.
 forward` arguments a ragged batch needs, and why the engine drives an episode
 without ever rendering one. See [`rl.md`](rl.md).
+Automatic math placement, mastery gates, fixed tests and saved lesson state are
+documented in [math-practice.md](math-practice.md).
 
 ### What a training run reports
 

@@ -25,6 +25,7 @@ export interface GymTaskType {
   level: string
   /** `ls`, `read` or `find` — the skill the family's ladder is climbing. */
   family: string
+  prerequisites: string[]
 }
 
 /** The rungs, in the order they should be attempted. Mirrors `LEVELS` in
@@ -36,6 +37,7 @@ export interface Gym {
   name: string
   description: string
   task_types: GymTaskType[]
+  tools: string[]
 }
 
 export type RunStatus = "pending" | "running" | "done" | "abandoned" | "failed"
@@ -84,6 +86,7 @@ export interface GymEpisode {
   seed: number
   prompt: string
   system: string
+  tools?: string[]
   status: EpisodeStatus
   answer: string | null
   score: number | null
@@ -154,6 +157,15 @@ export async function createGymRun(run: NewRun): Promise<GymRunDetail> {
   })
   if (!res.ok) throw new Error(await detail(res, "create the run"))
   return res.json()
+}
+
+export async function createDemonstrations(gymId: string, taskTypes: string[], datasetName: string, count: number, seedBase: number): Promise<void> {
+  const res = await apiFetch("/gym/demonstrations", {
+    method: "POST",
+    body: JSON.stringify({ gym_id: gymId, task_types: taskTypes, dataset_name: datasetName,
+      count, seed_base: seedBase }),
+  })
+  if (!res.ok) throw new Error(await detail(res, "create demonstrations"))
 }
 
 /**

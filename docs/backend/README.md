@@ -181,6 +181,14 @@ cleaning and deleting them stay a person's, under `/data`.
 
 ### The gym family
 
+`GET /internal/gyms` forwards the task catalogue for adaptive practice.
+Tool-free episodes (`tools: []`) receive a single terminal response with tool
+calls masked from the outset. The gyms service also refuses steps for them.
+Demonstration requests forward `gym_id`; math trajectories contain no moves,
+so their checked answer and short working pass through as one assistant turn.
+Generator version and split travel in demonstration provenance. See
+[math gym](../gyms/math.md).
+
 `/internal/gym/*` is not read-only and cannot be — a rollout runs commands and
 grades answers — but every one of its writes lands in the gyms service's own
 record, which is the module that owns them. Nothing new is stored here.
@@ -461,7 +469,7 @@ what is listening — the tool registers, and every call fails on connect.
 **One filesystem per chat.** The service keeps a sandbox per `session` key, the
 chat id the backend sends, so `echo x > f.txt` in one round is readable in the
 next. Sessions expire an hour after their last command and the oldest is
-evicted past 64 of them (`BASH_SESSIONS`, `BASH_SESSION_TTL_SECS`); eviction is
+evicted past 256 of them (`BASH_SESSIONS`, `BASH_SESSION_TTL_SECS`); eviction is
 silent, and the next command simply gets a fresh filesystem the way a rebooted
 machine would.
 
@@ -527,6 +535,9 @@ a live round makes — and writes the result to the *data engine* as an ordinary
 already have. Three services and one job, and the assembly is here because this
 is the only process where all three are reachable: the two Python services never
 speak.
+
+The dataset description is optional; when omitted, the backend sends an empty
+string to the data engine, whose import endpoint requires a string if supplied.
 
 `api/src/demonstrations.rs` is that conversion, and the line it holds is worth
 stating. The observation **body** is rendered here, because that is what serving

@@ -50,7 +50,11 @@ fn engine_stub(script: Vec<&'static str>) -> (String, Receiver<String>) {
 
 /// The gyms service: one run, one episode, and the two writes a driver makes.
 fn gyms_stub() -> (String, Receiver<String>) {
-    serve(|_nth, request| {
+    gym_with_tools(json!(["bash"]))
+}
+
+fn gym_with_tools(available: Value) -> (String, Receiver<String>) {
+    serve(move |_nth, request| {
         let body = if request.contains(&format!("GET /gym/runs/{RUN_ID} ")) {
             json!({
                 "id": RUN_ID,
@@ -67,6 +71,7 @@ fn gyms_stub() -> (String, Receiver<String>) {
                     "status": "pending",
                     "prompt": "Which file holds NEEDLE?",
                     "system": "You are working at a Linux shell.",
+                    "tools": available,
                 }],
             })
         } else if request.contains("/step") {
@@ -181,6 +186,21 @@ fn body_of(raw: &str) -> Value {
 
 fn requests(rx: &Receiver<String>, n: usize) -> Vec<String> {
     (0..n).map(|_| rx.recv().expect("a request")).collect()
+}
+
+#[actix_web::test]
+async fn a_tool_free_episode_never_dispatches_even_an_unexpected_tool_call() {
+    let (engine_url, asked) = engine_stub(vec![CALLS_THE_SHELL]);
+    let (gyms_url, served) = gym_with_tools(json!([]));
+    let mut server = server(engine_url, gyms_url);
+
+    let frames = drive(&mut server).await;
+    let request = body_of(&asked.recv().expect("one generation"));
+    assert_eq!(request["max_tool_calls"], 0);
+    assert!(asked.try_recv().is_err());
+    assert!(!kinds(&frames).contains(&"tool_result"));
+    assert!(kinds(&frames).contains(&"episode_done"));
+    assert!(served.try_iter().all(|request| !request.contains("/step")));
 }
 
 #[actix_web::test]

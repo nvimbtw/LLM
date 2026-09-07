@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/chart"
 import { Panel } from "@/components/ui/panel"
 import type { useJob } from "@/hooks/use-job"
+import { PracticePanel } from "@/components/jobs/practice-panel"
+import type { PracticeReport } from "@/lib/practice"
 
 /**
  * A reinforcement-learning run's body: a pass rate, and the number that says
@@ -59,17 +61,22 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
         })),
     [run.diag]
   )
-  const last = run.diag.at(-1)
+  const last = run.diag.findLast((d) => d.pass_rate != null)
+  const report = React.useMemo(() => {
+    const stored = (run.job?.result ?? {}) as PracticeReport
+    return run.diag.reduce<PracticeReport>((all, point) => ({ ...all, ...point }), stored)
+  }, [run.diag, run.job?.result])
 
   return (
     <div className="space-y-6">
+      <PracticePanel report={report} />
       <Panel
         title="Practising"
         description="One iteration is one gym run: T tasks, G rollouts of each"
       >
         <div className="space-y-5">
           <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
-            <Stat label="Pass rate" value={percent(last?.pass_rate)} />
+            <Stat label="Training pass rate" value={percent(last?.pass_rate)} />
             <Stat label="Signal" value={percent(last?.signal)} />
             <Stat
               label="Groups"

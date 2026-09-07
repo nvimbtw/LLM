@@ -101,6 +101,7 @@ async fn demonstrate(
             &caller,
             "/gym/trajectories",
             json!({
+                "gym_id": gym_id,
                 "task_types": task_types,
                 "count": body["count"].clone(),
                 "seed_base": seed_base,
@@ -130,7 +131,7 @@ async fn demonstrate(
             "/datasets/demonstrations",
             json!({
                 "name": body["dataset_name"].clone(),
-                "description": body["description"].clone(),
+                "description": body.get("description").cloned().unwrap_or(json!("")),
                 "steps": demonstrations::provenance(&gym_id, &task_types, seed_base, budget),
                 "conversations": conversations,
             }),

@@ -47,7 +47,7 @@ class FakeGym:
         self.graded.append(episode_id)
         return Graded(score=1.0 if "report" in reply else 0.0, answer=reply[-20:])
 
-    def close(self, episode_id):
+    def abandon(self, episode_id):
         self.closed.append(episode_id)
 
 
@@ -213,3 +213,17 @@ def test_an_episode_with_no_window_left_is_graded_not_truncated(loaded, cfg):
     )
     assert all(not roll.live for roll in batch)
     assert all(roll.rounds <= 8 for roll in batch)
+
+
+def test_a_window_exhaustion_does_not_abort_the_other_rollouts(loaded, cfg):
+    """A context-full episode is graded without poisoning the batch's next pass."""
+    model, tokenizer = loaded
+    gym = FakeGym()
+    batch = rollout.run(
+        model, tokenizer, gym, _episodes(3), cfg,
+        window=rollout.MIN_REPLY_TOKENS * 3, max_rounds=8,
+    )
+
+    assert len(batch) == 3
+    assert all(not roll.live for roll in batch)
+    assert all(len(roll.ids) <= rollout.MIN_REPLY_TOKENS * 3 for roll in batch)

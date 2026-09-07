@@ -1,4 +1,5 @@
 import { Terminal, Beaker } from "lucide-react"
+import Link from "next/link"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { ButtonLink } from "@/components/ui/button-link"
 
@@ -20,9 +21,21 @@ export function GymCard({ id, name, description }: GymCardProps) {
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>
-        <ButtonLink href={`/gyms/${id}`} size="sm" variant="outline">
-          Open
-        </ButtonLink>
+        {/* Practising is what the catalogue is for, so it is one click from
+            here and arrives with this gym already chosen. The other door —
+            one evaluation, and the board of the ones already run — is still a
+            door, just the quieter one. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <ButtonLink href={`/jobs/new/rl?gym=${id}`} size="sm" variant="outline">
+            Practise
+          </ButtonLink>
+          <Link
+            href={`/gyms/${id}`}
+            className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            Score once, and past runs
+          </Link>
+        </div>
       </CardContent>
     </Card>
   )

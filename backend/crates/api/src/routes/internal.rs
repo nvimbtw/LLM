@@ -43,6 +43,11 @@ async fn dataset(
     answer(data.get(&service.caller, &format!("/datasets/{id}")).await?)
 }
 
+#[get("/gyms")]
+async fn catalogue(service: ServiceCaller, gyms: web::Data<gyms::Proxy>) -> Answer {
+    answer(gyms.get(&service.caller, "/gyms").await?)
+}
+
 /// One page of documents. The query string is passed through untouched: paging
 /// is the data engine's to define, and a run sizes its own pages by what the
 /// last one measured.
@@ -128,6 +133,7 @@ async fn set_status(
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(catalogue);
     cfg.service(dataset);
     cfg.service(documents);
     cfg.service(create_run);

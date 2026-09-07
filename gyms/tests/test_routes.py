@@ -21,12 +21,12 @@ async def test_the_catalogue_lists_the_bash_gym_and_its_task_types(client):
     every field it renders, so that is what this asserts.
     """
     listing = (await client.get("/gyms")).json()
-    assert [gym["id"] for gym in listing] == ["bash"]
+    assert [gym["id"] for gym in listing] == ["bash", "math"]
     task_types = listing[0]["task_types"]
     assert task_types
     for task_type in task_types:
-        assert task_type.keys() == {"id", "label", "description", "level", "family"}
-        assert all(task_type.values())
+        assert task_type.keys() == {"id", "label", "description", "level", "family", "prerequisites"}
+        assert all(task_type[key] for key in ("id", "label", "description", "level", "family"))
 
 
 async def test_a_run_seeds_a_workspace_for_every_episode(a_run, sandbox):

@@ -112,6 +112,8 @@ pub fn conversation(trajectory: &Value, budget: usize) -> Option<Value> {
         "meta": {
             "task_type": turn::string_at(trajectory, "task_type"),
             "seed": trajectory["seed"].clone(),
+            "generator_version": trajectory["generator_version"].clone(),
+            "split": trajectory["split"].clone(),
         },
     }))
 }
@@ -313,5 +315,21 @@ mod tests {
         assert_eq!(steps[0]["max_output_chars"], 4000);
         assert_eq!(steps[0]["seed_base"], 7);
         assert_eq!(steps[0]["gym"], "bash");
+    }
+
+    #[test]
+    fn math_demonstrations_have_no_tool_turns() {
+        let source = json!({
+            "task_type": "math_expressions_easy", "seed": 12,
+            "generator_version": 1, "split": "train",
+            "system": "Solve the question.", "prompt": "2 + 3 + 4?",
+            "moves": [], "answer": "2 + 3 = 5; 5 + 4 = 9.\nAnswer: 9",
+        });
+        let built = conversation(&source, 320).expect("valid math demonstration");
+        let turns = messages(&built);
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[2]["content"], source["answer"]);
+        assert!(turns.iter().all(|turn| turn["tool"].is_null()));
+        assert_eq!(built["meta"]["generator_version"], 1);
     }
 }

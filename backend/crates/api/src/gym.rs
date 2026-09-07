@@ -140,7 +140,8 @@ async fn episode_loop(
         "text": turn::string_at(episode, "prompt"),
     })];
 
-    let rounds = max_rounds();
+    let no_tools = episode["tools"].as_array().is_some_and(Vec::is_empty);
+    let rounds = if no_tools { 1 } else { max_rounds() };
     for round in 0..rounds {
         // The last round is the terminal one: generated with the tool-call
         // marker masked out, so the model has to say something rather than

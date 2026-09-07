@@ -64,7 +64,7 @@ class FakeGym:
         self._graded += 1
         return Graded(score=score, answer=reply[-16:])
 
-    def close(self, episode_id):
+    def abandon(self, episode_id):
         pass
 
     def set_status(self, run_id, status):
@@ -174,6 +174,9 @@ def test_a_frame_carries_what_an_rl_run_is_read_by():
 
     assert diag.keys() >= {"pass_rate", "signal", "groups", "skipped_groups", "kl", "episodes"}
     assert 0.0 <= diag["pass_rate"] <= 1.0
+    # The x position the panel plots every series against. Without it the run's
+    # figures still render and its curves draw nothing at all.
+    assert diag["step"] == 1
     assert diag["kl"] >= 0.0, "k3 is non-negative for every sample; a negative one is a sign flip"
 
 
@@ -185,3 +188,14 @@ def test_cancelling_stops_between_iterations():
     frames = []
     result = rl._learn(_cfg(), FakeGym(), frames.append, cancel, 0.0)
     assert result["iterations"] == 0
+
+
+def test_the_client_still_closes_its_connection_on_the_way_out():
+    """`rl.run` holds the gym client in a `with`, so exiting one has to reach
+    `Hop.close()`. An episode-scoped method named `close` shadowed it, and every
+    run raised on its last line after the batch was already learned from."""
+    from llm.gym import client as gym_client
+
+    with gym_client.Client("someone", url="http://gyms.invalid", service_secret="s") as c:
+        pass
+    assert c._http.is_closed

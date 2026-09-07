@@ -108,10 +108,18 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
     }
     case "chat":
       return null
-    // No recap yet: an RL config is composed by hand rather than by a form, so
-    // there is no set of fields this could claim to be summarising.
-    case "rl":
-      return null
+    case "rl": {
+      const cfg = (job.config ?? {}) as Record<string, unknown>
+      return {
+        description: "As queued",
+        rows: [["Gym", String(cfg.gym_id ?? "bash")],
+          ["Progression", cfg.curriculum ? "Automatic, with validation and fixed tests" : "Selected tasks"],
+          ["Iterations", String(cfg.iterations ?? 50)],
+          ["Tasks per iteration", String(cfg.tasks_per_batch ?? 4)],
+          ["Attempts per task", String(cfg.group_size ?? 8)]],
+        blocks: [],
+      }
+    }
   }
 }
 

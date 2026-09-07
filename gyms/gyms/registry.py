@@ -10,11 +10,14 @@ a second gym will share none of them.
 """
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable
 
 from gyms.bash import composed, tasks
 from gyms.bash.grade import grade
 from gyms.bash.tasks import Task
+from gyms.math import tasks as arithmetic
+from gyms.math.grade import grade as grade_math
 
 
 #: The rungs of a family's ladder, in the order they should be attempted.
@@ -39,7 +42,7 @@ class TaskType:
     id: str
     label: str
     description: str
-    generate: Callable[[int], Task]
+    generate: Callable[[int], Task | arithmetic.Problem]
     grade: Callable[[str, str], tuple[float, str]]
     #: Which rung of `LEVELS` this is, and which family it is a rung of. Served
     #: in the listing so the run form can offer "every easy task" without
@@ -47,6 +50,7 @@ class TaskType:
     #: only place a task type is spelled out.
     level: str = "hard"
     family: str = ""
+    prerequisites: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,7 @@ class Gym:
     name: str
     description: str
     task_types: tuple[TaskType, ...]
+    tools: tuple[str, ...] = ("bash",)
 
 
 BASH = Gym(
@@ -225,7 +230,27 @@ BASH = Gym(
     ),
 )
 
-GYMS: tuple[Gym, ...] = (BASH,)
+MATH = Gym(
+    id="math",
+    name="Math",
+    description="Arithmetic, expressions and word problems. Exact grading, no tools, automatic skill progression.",
+    tools=(),
+    task_types=tuple(
+        TaskType(
+            id=f"math_{family}_{level}",
+            label=f"{family.title()} · {level}",
+            description=f"{family.title()} at the {level} rung; one exact numeric answer.",
+            generate=partial(arithmetic.generate, family, level),
+            grade=grade_math,
+            level=level,
+            family=family,
+            prerequisites=arithmetic.prerequisites(family, level),
+        )
+        for family in arithmetic.FAMILIES for level in LEVELS
+    ),
+)
+
+GYMS: tuple[Gym, ...] = (BASH, MATH)
 
 
 class GymRegistry:
@@ -250,10 +275,12 @@ class GymRegistry:
         found = self._task_types.get(task_type_id)
         return found[0] if found else None
 
-    def generate(self, task_type_id: str, seed: int) -> Task:
+    def generate(self, task_type_id: str, seed: int, split: str = "train") -> Task | arithmetic.Problem:
         task_type = self.task_type(task_type_id)
         if task_type is None:
             raise ValueError(f"unknown task type {task_type_id!r}")
+        if self.gym_of(task_type_id) == "math":
+            return arithmetic.generate(task_type.family, task_type.level, seed, split)
         return task_type.generate(seed)
 
     def grade(self, task_type_id: str, reply: str, ground_truth: str) -> tuple[float, str]:
@@ -271,6 +298,8 @@ class GymRegistry:
                 "id": gym.id,
                 "name": gym.name,
                 "description": gym.description,
+                "tools": list(gym.tools),
+                "generator_version": arithmetic.VERSION if gym.id == "math" else None,
                 "task_types": [
                     {
                         "id": t.id,
@@ -278,6 +307,7 @@ class GymRegistry:
                         "description": t.description,
                         "level": t.level,
                         "family": t.family,
+                        "prerequisites": list(t.prerequisites),
                     }
                     for t in gym.task_types
                 ],

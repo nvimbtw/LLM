@@ -21,7 +21,7 @@ import { useModels } from "@/hooks/use-models"
 import { createGymRun, LEVELS, type Gym } from "@/lib/gyms"
 
 /** What one run may ask for — the gyms service refuses more (`MAX_EPISODES`). */
-const MAX_EPISODES = 32
+const MAX_EPISODES = 256
 const DEFAULT_EPISODES = 5
 
 /**
@@ -129,7 +129,7 @@ export function RunForm({ gym }: { gym: Gym }) {
   return (
     <Panel
       title="New run"
-      description={`${gym.name} — one sandbox per task, seeded before anything runs.`}
+      description={gym.tools.length === 0 ? `${gym.name} — one question and one answer, no tools.` : `${gym.name} — one sandbox per task, seeded before anything runs.`}
     >
       <div className="space-y-5">
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_6rem]">

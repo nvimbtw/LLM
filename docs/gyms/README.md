@@ -5,10 +5,9 @@ it is given a shell, a workspace and a question it can only answer by looking
 around, and what comes back is scored. One module, one database
 (`slate_gyms`), one sandboxed filesystem per episode.
 
-The module exists ahead of the reinforcement learning it is named for. Nothing
-here trains anything yet — a run is an evaluation — but every part of it is the
-part RL will need: generated tasks, a shell, a dense per-step reward, a terminal
-score, and the whole trajectory on disk.
+The engine trains against this service through the backend. This service owns
+the tasks and scores, not the optimizer. Bash tasks use a sandbox; the
+[math gym](math.md) generates arithmetic with exact grading and no tools.
 
 ## Ownership, and who drives
 
@@ -278,7 +277,8 @@ backend, so the fine-tune needs no new machinery in the LLM engine at all. See
 
 ## Adding a gym, or a task type
 
-1. Write `generate(seed) -> Task` in `gyms/<name>/tasks.py`, and a grader if the
+1. Write a seeded task generator with `stored()` and `public()` in
+   `gyms/<name>/tasks.py`, and a grader if the
    bash one does not fit.
 2. Add a `TaskType` row to the gym in `gyms/registry.py`, with its `level` and
    `family`.
@@ -288,6 +288,10 @@ backend, so the fine-tune needs no new machinery in the LLM engine at all. See
 4. Write its moves in `gyms/bash/expert.py` and map them in `_MOVES`. Optional
    for a type that is only ever evaluated; required for one that will be cloned
    from, and `tests/test_expert.py` runs them against a real shell.
+
+Gym entries declare their tools; `tools: []` means no sandbox and no tool
+calls in either driver. Task types may declare prerequisite ids for adaptive
+practice. Math's API additions and reproduction rules are in [math.md](math.md).
 
 The frontend reads `GET /gyms`, so a new task type appears in the run form —
 under its level — with no frontend change at all.

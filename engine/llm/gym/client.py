@@ -47,6 +47,7 @@ class Episode:
     seed: int
     prompt: str
     system: str
+    tools: tuple[str, ...] = ("bash",)
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,10 @@ class Graded:
 class Client(Hop):
     """One rollout's view of the gym runs it drives."""
 
+    def catalogue(self) -> list[dict]:
+        payload, _ = self.request("GET", "/internal/gyms")
+        return payload
+
     def create_run(
         self,
         *,
@@ -76,6 +81,7 @@ class Client(Hop):
         count: int,
         seed_base: int,
         group_size: int,
+        split: str = "train",
     ) -> tuple[str, list[Episode]]:
         """A run and its episodes, workspaces already seeded.
 
@@ -94,6 +100,7 @@ class Client(Hop):
                 "seed_base": seed_base,
                 "group_size": group_size,
                 "kind": "rl",
+                "split": split,
             },
         )
         episodes = [
@@ -105,6 +112,7 @@ class Client(Hop):
                 seed=int(row["seed"]),
                 prompt=str(row.get("prompt", "")),
                 system=str(row.get("system", "")),
+                tools=tuple(row.get("tools", ["bash"])),
             )
             for row in payload.get("episodes", [])
         ]
@@ -131,8 +139,12 @@ class Client(Hop):
             answer=str(payload.get("answer") or ""),
         )
 
-    def close(self, episode_id: str) -> None:
+    def abandon(self, episode_id: str) -> None:
         """Abandon an episode without grading it.
+
+        Named apart from `Hop.close`, which ends the HTTP connection this client
+        holds: one method cannot be both, and the `with` block that owns the
+        client calls the connection one on the way out.
 
         An abandoned episode is absent from a run's mean rather than a zero, and
         it is absent from a batch for the same reason: it measures this side

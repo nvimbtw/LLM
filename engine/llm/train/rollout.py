@@ -69,6 +69,8 @@ class Rollout:
     rounds: int = 0
     shaping: float = 0.0
     score: float = 0.0
+    answer: str = ""
+    truncated: bool = False
     #: False once the episode has been graded or abandoned.
     live: bool = True
     #: Why it stopped, for the frame a run publishes. Not a reward term.
@@ -244,7 +246,9 @@ class Scaffold:
         )
 
 
-def _continue(roll: Rollout, scaffold: Scaffold, tokenizer, observation: str) -> None:
+def _continue(
+    roll: Rollout, scaffold: Scaffold, tokenizer, observation: str, window: int | None = None
+) -> bool:
     """Close the assistant turn, append what the shell said, and open the next.
 
     The tool block is `template.tool_block`'s layout and `tools.render_result`'s
@@ -254,9 +258,15 @@ def _continue(roll: Rollout, scaffold: Scaffold, tokenizer, observation: str) ->
     """
     call = roll.calls[0]
     answered = tools.render_result(call["tool"], call["argument"], observation)
-    roll.took([scaffold.end_of_assistant], drawn=False)
-    roll.took(bpe.encode(tokenizer, tool_block(Turn(Role.TOOL, answered))), drawn=False)
-    roll.took(scaffold.assistant_open, drawn=False)
+    continuation = (
+        [scaffold.end_of_assistant]
+        + bpe.encode(tokenizer, tool_block(Turn(Role.TOOL, answered)))
+        + scaffold.assistant_open
+    )
+    if window is not None and len(roll.ids) + len(continuation) + MIN_REPLY_TOKENS > window:
+        return False
+    roll.took(continuation, drawn=False)
+    return True
 
 
 def _grade(client: Client, roll: Rollout, why: str) -> None:
@@ -268,19 +278,29 @@ def _grade(client: Client, roll: Rollout, why: str) -> None:
         roll.stopped = "ungraded"
         return
     roll.score = graded.score
+    roll.answer = graded.answer
 
 
 def _abandon(client: Client, roll: Rollout, why: str) -> None:
     roll.live = False
     roll.stopped = why
     roll.score = 0.0
-    client.close(roll.episode.id)
+    client.abandon(roll.episode.id)
 
 
 def start(episodes: list[Episode], tokenizer, window: int) -> list[Rollout]:
     """A rollout per episode, each holding its prompt and nothing drawn yet."""
     started = []
     for episode in episodes:
+        if not episode.tools:
+            # Math must never be graded on a question silently cut to fit.
+            unbounded = max(window, len(episode.prompt.encode()) + len(episode.system.encode()) + 64)
+            full = build_prompt(episode.system, [Turn(Role.USER, episode.prompt)], tokenizer,
+                                unbounded + MIN_REPLY_TOKENS, MIN_REPLY_TOKENS)
+            if len(full) + MIN_REPLY_TOKENS > window:
+                raise ValueError("math task does not fit the model context with room for an answer")
+            started.append(Rollout(episode=episode, ids=full, policy=[False] * len(full)))
+            continue
         ids = build_prompt(
             episode.system,
             [Turn(Role.USER, episode.prompt)],
@@ -327,9 +347,13 @@ def run(
         # whether the answer had been found.
         terminal = round_index + 1 == max_rounds
         state = _Round.of(rules, tokenizer, len(live), 0 if terminal else MAX_TOOL_CALLS_PER_TURN)
+        for index, roll in enumerate(live):
+            if not roll.episode.tools:
+                state.calls[index] = _ToolCalls(rules, tokenizer, 0)
         _generate(model, rules, live, state, cfg, rope, generator, window)
 
         for index, roll in enumerate(live):
+            roll.truncated |= state.open[index]
             roll.took(state.produced[index], drawn=True)
             roll.reply = bpe.decode(tokenizer, state.produced[index])
             roll.calls = list(state.calls[index].made)
@@ -358,8 +382,8 @@ def _advance(client, live: list[Rollout], scaffold, tokenizer, window: int, term
             _abandon(client, roll, "unreachable")
             continue
         roll.shaping += reward
-        _continue(roll, scaffold, tokenizer, observation)
         # An episode with no room left to answer ends on what it last said,
-        # rather than being asked a question it would only be shown part of.
-        if len(roll.ids) + MIN_REPLY_TOKENS > window:
+        # rather than being handed an overlong context that would fail during
+        # the policy pass after rollout.
+        if not _continue(roll, scaffold, tokenizer, observation, window):
             _grade(client, roll, "window")
