@@ -10,12 +10,12 @@ unbounded rows into a database is the failure mode this module exists to avoid.
 """
 
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, NamedTuple
 
 import pyarrow.parquet as pq
 from huggingface_hub import hf_hub_download
 
-from hub.search import HubError, PARQUET_SUFFIX
+from hub.search import HubError, parquet_shards
 from store.schema import DatasetKind
 
 #: Rows per arrow batch. Not the database batch size — that is the caller's.
@@ -40,40 +40,45 @@ MAX_META_CHARS = 500
 NUL = "\x00"
 
 
-def shards_under(repo: str, prefix: str | None) -> list[str]:
-    """The parquet shards of a repo, sorted, optionally under one directory.
+class Shards(NamedTuple):
+    """Which files to read, and which revision of the repo they are on.
 
-    Sorted so the order is stable: a pull capped at N rows must take the same N
-    rows every time, or re-pulling a dataset silently produces a different one.
+    The two travel together because they are only meaningful together: a path
+    listed on the conversion branch does not exist on `main`, so a download that
+    forgot the revision would ask for a file that is not there.
     """
-    from huggingface_hub import HfApi
 
-    try:
-        files = HfApi().list_repo_files(repo, repo_type="dataset")
-    except Exception as e:
-        raise HubError(str(e)) from e
+    paths: list[str]
+    revision: str | None
 
-    shards = sorted(
-        f
-        for f in files
-        if f.endswith(PARQUET_SUFFIX) and (not prefix or f.startswith(prefix))
-    )
-    if not shards:
+
+def shards_under(repo: str, prefix: str | None) -> Shards:
+    """The parquet shards of a repo, optionally under one directory.
+
+    Falls back to the Hub's conversion branch when the repo publishes no parquet
+    of its own — see `search.parquet_shards`, which decides that and is also what
+    the detail route lists, so the prefix chosen in the form exists here.
+    """
+    revision, found = parquet_shards(repo)
+    paths = [f for f in found if not prefix or f.startswith(prefix)]
+    if not paths:
         where = f" under {prefix!r}" if prefix else ""
         raise HubError(f"no parquet shards found in {repo}{where}")
-    return shards
+    return Shards(paths, revision)
 
 
-def iter_rows(repo: str, shards: list[str], columns: list[str] | None) -> Iterator[dict]:
+def iter_rows(repo: str, shards: Shards, columns: list[str] | None) -> Iterator[dict]:
     """Row dicts, downloading one shard at a time.
 
     `columns` is a projection, not a requirement: a shard missing one of them is
     read whole rather than failing, because a repo whose shards disagree about
     their schema is common and is not the caller's problem to pre-empt.
     """
-    for shard in shards:
+    for shard in shards.paths:
         try:
-            local = hf_hub_download(repo, filename=shard, repo_type="dataset")
+            local = hf_hub_download(
+                repo, filename=shard, repo_type="dataset", revision=shards.revision
+            )
             handle = pq.ParquetFile(local)
         except Exception as e:
             raise HubError(f"{shard}: {e}") from e

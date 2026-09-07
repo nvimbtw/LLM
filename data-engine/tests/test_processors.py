@@ -356,12 +356,33 @@ def test_markdown_emphasis_ignores_underscores_inside_words_and_math():
     assert after["messages"][0]["content"] == content
 
 
-def test_markdown_emphasis_leaves_code_fences_and_inline_code_alone():
-    content = "Run `x * y ** 2` in ```python\ndef f(): return a * b\n``` ok"
+def test_markdown_emphasis_leaves_code_fences_alone():
+    content = "Run x in ```python\ndef f(): return a * b\n``` ok"
 
     after = _md([{"role": "assistant", "content": content}])
 
     assert after["messages"][0]["content"] == content
+
+
+def test_an_inline_code_span_becomes_a_code_marker_and_keeps_its_stars():
+    """The span is converted and then protected: `**` inside a code sample is
+    two characters of the sample, not emphasis somebody forgot to close."""
+    after = _md([{"role": "assistant", "content": "Run `x * y ** 2` and **go**"}])
+
+    assert after["messages"][0]["content"] == (
+        "Run <|code|>x * y ** 2<|/code|> and <|bold|>go<|/bold|>"
+    )
+
+
+def test_an_escaped_delimiter_is_a_literal_not_emphasis():
+    """`\\_` is a literal underscore in CommonMark, and it is how LaTeX writes a
+    subscript: `$a\\_n$` is a formula, and reading its escape as an opener
+    rewrites the maths into markup."""
+    after = _md([{"role": "assistant", "content": r"$S\_n=2^{n}a\_n-1$ and **real**"}])
+
+    assert after["messages"][0]["content"] == (
+        r"$S\_n=2^{n}a\_n-1$ and <|bold|>real<|/bold|>"
+    )
 
 
 def test_markdown_emphasis_does_not_touch_existing_markers():
@@ -836,7 +857,8 @@ def test_convert_chat_renders_a_reply_as_paragraphs_and_leaves_the_question_alon
 
     assert after["messages"][0]["content"] == "What are two things to do in London?"
     assert after["messages"][1]["content"] == (
-        "<|par|>Sure!<|/par|><|par|>1. The British Museum.<|/par|><|par|>2. Borough Market.<|/par|>"
+        "<|par|>Sure!<|/par|>"
+        "<|list|><|item|>The British Museum.<|/item|><|item|>Borough Market.<|/item|><|/list|>"
     )
 
 
@@ -879,6 +901,106 @@ def test_convert_chat_keeps_fenced_code_out_of_a_paragraph():
     after = apply("convert-chat", doc)
 
     assert "<|codeblock|>x = 1\n\ny = 2<|/codeblock|>" in after["messages"][1]["content"]
+
+
+def _reply(markdown: str) -> str:
+    """One assistant reply through `convert-chat`, as rendered markup."""
+    doc = {
+        "messages": [
+            {"role": "user", "content": "go on"},
+            {"role": "assistant", "content": markdown},
+        ]
+    }
+    return apply("convert-chat", doc)["messages"][1]["content"]
+
+
+def test_headings_become_the_three_markers_the_vocabulary_has():
+    """`#`, `##` and `###` are h1/h2/h3 — `corpus.special` names them title,
+    heading and subheading, and `message-parser.ts` is what renders them so."""
+    assert _reply("# One\n\n## Two\n\n### Three") == (
+        "<|title|>One<|/title|><|heading|>Two<|/heading|><|subheading|>Three<|/subheading|>"
+    )
+
+
+def test_a_heading_deeper_than_the_vocabulary_goes_clamps_to_subheading():
+    """Markdown has six levels and there are markers for three. A `####` line is
+    still a heading, and rendering it as prose teaches the model to type hashes."""
+    assert _reply("#### Four\n\n###### Six") == (
+        "<|subheading|>Four<|/subheading|><|subheading|>Six<|/subheading|>"
+    )
+
+
+def test_a_bulleted_list_becomes_one_list_of_items():
+    assert _reply("Two things:\n\n- first\n- second") == (
+        "<|par|>Two things:<|/par|>"
+        "<|list|><|item|>first<|/item|><|item|>second<|/item|><|/list|>"
+    )
+
+
+def test_a_change_of_marker_starts_a_second_list():
+    """A numbered list under a bulleted one is two lists in the source and must
+    be two here; run together they would teach a shape nobody wrote."""
+    assert _reply("- a\n\n1. b") == (
+        "<|list|><|item|>a<|/item|><|/list|><|list|><|item|>b<|/item|><|/list|>"
+    )
+
+
+def test_a_wrapped_item_stays_one_item():
+    assert _reply("- a line\n  continued here\n- b") == (
+        "<|list|><|item|>a line continued here<|/item|><|item|>b<|/item|><|/list|>"
+    )
+
+
+def test_a_blockquote_is_one_quote_however_many_lines_it_ran_to():
+    """`<|quote|>` holds a run of text and no `<|par|>` is legal inside it, so
+    the block cannot be split the way the source's line breaks were."""
+    assert _reply("> first line\n> second line") == (
+        "<|quote|>first line second line<|/quote|>"
+    )
+
+
+def test_a_thematic_break_becomes_a_divider_and_a_starred_rule_is_not_a_list():
+    assert _reply("a\n\n---\n\nb") == "<|par|>a<|/par|><|divider|><|par|>b<|/par|>"
+    assert _reply("* * *") == "<|divider|>"
+
+
+def test_a_construct_with_no_marker_stays_prose():
+    """The set converted here is fixed by the vocabulary, not by Markdown. A
+    table has no marker, so it is text — inventing one would be unrenderable."""
+    rendered = _reply("| a | b |\n| - | - |\n| 1 | 2 |")
+
+    assert rendered.startswith("<|par|>")
+    assert "<|table|>" not in rendered
+
+
+def test_a_rendered_reply_is_well_formed_under_the_grammar():
+    """The markers the model is trained on must be a shape it is allowed to
+    emit: `chat.markup` masks a closer that names a block which is not open, an
+    `<|item|>` outside a `<|list|>`, and anything but an item directly inside
+    one. Training against markup the sampler would refuse teaches a reply the
+    model can never finish."""
+    import re
+
+    rendered = _reply(
+        "# Title\n\nIntro.\n\n## Why\n\n- one\n- two\n\n> quoted\n\n---\n\n"
+        "```py\nx = 1\n```\n\nEnd."
+    )
+
+    stack: list[str] = []
+    for marker in re.findall(r"<\|(/?[a-z]+)\|>", rendered):
+        if marker == "divider":
+            continue
+        if marker.startswith("/"):
+            assert stack and stack[-1] == marker[1:], f"{marker} closes nothing"
+            stack.pop()
+            continue
+        if marker == "item":
+            assert stack and stack[-1] == "list", "<|item|> outside a <|list|>"
+        if stack and stack[-1] == "list":
+            assert marker == "item", "only <|item|> may sit directly in a <|list|>"
+        stack.append(marker)
+
+    assert not stack, f"left open: {stack}"
 
 
 def test_convert_chat_neutralises_a_marker_the_source_wrote():

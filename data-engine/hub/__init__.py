@@ -14,9 +14,10 @@ from hub.fetch import (
     shards_under,
 )
 from hub.sample import sample, splits
-from hub.search import HubError, detail, search
+from hub.search import PARQUET_REVISION, HubError, detail, search
 
 __all__ = [
-    "MESSAGE_COLUMNS", "TEXT_COLUMNS", "HubError", "as_document", "detail",
-    "iter_rows", "pick_column", "sample", "search", "shards_under", "splits",
+    "MESSAGE_COLUMNS", "PARQUET_REVISION", "TEXT_COLUMNS", "HubError",
+    "as_document", "detail", "iter_rows", "pick_column", "sample", "search",
+    "shards_under", "splits",
 ]

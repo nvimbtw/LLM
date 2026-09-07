@@ -149,7 +149,8 @@ def pull(config: dict, report: Report, cancel: threading.Event) -> dict:
         "dataset_id": str(dataset_id),
         "documents": written,
         "cancelled": cancelled,
-        "shards": len(shards),
+        "shards": len(shards.paths),
+        "revision": shards.revision,
         "nul_stripped": tally.get("nul_stripped", 0),
     }
 

@@ -12,13 +12,17 @@ shared and the error handling is not.
 
 from typing import Any
 
-from huggingface_hub import HfApi
-
 #: A search is a browse, not an export. Enough rows to choose from, few enough
 #: that the Hub is not asked for a catalogue on every keystroke.
 MAX_RESULTS = 50
 
 PARQUET_SUFFIX = ".parquet"
+
+#: The branch the Hub keeps its own conversion of a dataset on. Every public
+#: repo under the conversion size limit gets one, whatever it ships itself, so
+#: this is the only way to read the many datasets published as CSV, JSON, or a
+#: loading script — `main` holds no parquet at all for those.
+PARQUET_REVISION = "refs/convert/parquet"
 
 
 class HubError(RuntimeError):
@@ -26,7 +30,15 @@ class HubError(RuntimeError):
     actionable half — gated terms, a rename, a rate limit."""
 
 
-def _api() -> HfApi:
+def _api() -> Any:
+    """The Hub client, constructed per call.
+
+    Imported here rather than at module scope so the name is resolved when it is
+    used: a test that replaces `huggingface_hub.HfApi` with a stub is otherwise
+    replacing something this module already bound and no longer reads.
+    """
+    from huggingface_hub import HfApi
+
     return HfApi()
 
 
@@ -61,6 +73,42 @@ def _isoformat(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else None
 
 
+def parquet_shards(repo: str) -> tuple[str | None, list[str]]:
+    """A repo's parquet shards, sorted, and the revision they were found on.
+
+    `main` first, so a dataset that publishes its own parquet is read exactly as
+    its author sharded it. Only when there is none does this fall back to the
+    Hub's conversion — a repo whose files are CSV or JSON has parquet only
+    there, and refusing to look was this service calling half the Hub unpullable.
+
+    Sorted so the order is stable: a pull capped at N rows must take the same N
+    rows every time, or re-pulling a dataset silently produces a different one.
+
+    An empty list is not an error here. The caller says what "nothing" means:
+    a pull raises, a detail page reports zero shards.
+    """
+    shards = _sorted_parquet(_files(repo, None))
+    if shards:
+        return None, shards
+    try:
+        return PARQUET_REVISION, _sorted_parquet(_files(repo, PARQUET_REVISION))
+    except HubError:
+        # No conversion branch. The repo simply has no parquet anywhere, which
+        # is the answer, not a failure to reach the Hub — that already worked.
+        return None, []
+
+
+def _files(repo: str, revision: str | None) -> list[str]:
+    try:
+        return _api().list_repo_files(repo, repo_type="dataset", revision=revision)
+    except Exception as e:
+        raise HubError(str(e)) from e
+
+
+def _sorted_parquet(files: list[str]) -> list[str]:
+    return sorted(f for f in files if f.endswith(PARQUET_SUFFIX))
+
+
 def detail(repo: str) -> dict[str, Any]:
     """What one dataset offers: its declared configs and columns, and its shards.
 
@@ -69,14 +117,18 @@ def detail(repo: str) -> dict[str, Any]:
     question about a page the user is only looking at — so a dataset whose card
     declares nothing reports no columns, and the pull form asks for the column
     name instead of guessing it.
+
+    The shards are the ones a pull would actually read, conversion branch
+    included, and `revision` says which — the prefixes a form offers must come
+    from the same revision the pull will list, or the user picks a directory
+    that is not there.
     """
     try:
         info = _api().dataset_info(repo)
-        files = _api().list_repo_files(repo, repo_type="dataset")
     except Exception as e:
         raise HubError(str(e)) from e
 
-    shards = sorted(f for f in files if f.endswith(PARQUET_SUFFIX))
+    revision, shards = parquet_shards(repo)
     return {
         "repo": repo,
         "downloads": getattr(info, "downloads", None),
@@ -85,6 +137,7 @@ def detail(repo: str) -> dict[str, Any]:
         "updated_at": _isoformat(getattr(info, "last_modified", None)),
         "gated": bool(getattr(info, "gated", False)),
         "configs": _configs(getattr(info, "card_data", None)),
+        "revision": revision,
         "shards": shards[:200],
         "shard_count": len(shards),
         "prefixes": _prefixes(shards),

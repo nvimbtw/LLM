@@ -171,6 +171,17 @@ trips are not what a pack spends its time on.
   state (deduplication) lives in the per-run `State` dict it is handed, never
   in a module global — two runs must not contaminate each other, and a preview
   must always start clean.
+- **Block structure is `markup.blocks`; inline formatting is
+  `markdown-emphasis`.** A source writes Markdown and the model must emit the
+  reserved markers, so the conversion is split by what each side can see:
+  `blocks` has the line structure and renders headings, lists, quotes, rules,
+  paragraphs and fences while a turn is being converted; `markdown-emphasis`
+  runs afterwards over the runs of text and does emphasis and code spans. What
+  is converted is fixed by `engine/llm/corpus/special.py`, not by Markdown —
+  `#`/`##`/`###+` are `<|title|>`/`<|heading|>`/`<|subheading|>`, and a
+  construct with no marker (a table) stays prose rather than inventing one. The
+  result must also satisfy the grammar in `engine/llm/chat/markup.py`: an
+  `<|item|>` only inside a `<|list|>`, and only items directly inside one.
 - **Out-of-range parameters are clamped, not rejected.** They arrive from a
   field the user is still typing in, and a preview that errors mid-keystroke is
   worse than one showing the nearest legal answer.
@@ -193,6 +204,14 @@ trips are not what a pack spends its time on.
   shards. So a repo with no preview (gated, private, unindexed) still pulls
   fine, and the kind/column the preview suggests is a default for the form, not
   a decision: the pull resolves its own column against a real row.
+- **Most repos ship no parquet, and are read off `refs/convert/parquet`.** A
+  dataset published as CSV, JSON or a loading script has nothing to read on
+  `main`; the Hub converts it and keeps the result on that branch.
+  `search.parquet_shards` prefers the repo's own shards and falls back to the
+  conversion, and it is what both the detail route and the pull list with — so
+  the prefixes offered in the form exist on the revision the pull will download
+  from. A shard path and its revision therefore travel together, as
+  `fetch.Shards`.
 - **A pull that cannot resolve its content column fails loudly.** Silence looks
   exactly like a dataset that is genuinely empty. Exhausting the rows without
   ever finding one is the same failure as running out of patience, and both

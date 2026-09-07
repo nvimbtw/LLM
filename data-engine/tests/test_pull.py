@@ -39,7 +39,7 @@ def stub_hub(monkeypatch, shard):
     monkeypatch.setattr(hub.fetch, "hf_hub_download", lambda *a, **k: str(shard))
 
     class Api:
-        def list_repo_files(self, repo, repo_type=None):
+        def list_repo_files(self, repo, repo_type=None, revision=None):
             return ["README.md", "data/train-00000.parquet"]
 
     monkeypatch.setattr("huggingface_hub.HfApi", Api)
@@ -167,13 +167,65 @@ def test_a_cancelled_pull_keeps_what_it_already_had(stub_hub, dataset, monkeypat
 
 def test_a_repo_with_no_shards_is_an_error_not_an_empty_pull(monkeypatch, dataset):
     class Api:
-        def list_repo_files(self, repo, repo_type=None):
+        def list_repo_files(self, repo, repo_type=None, revision=None):
             return ["README.md"]
 
     monkeypatch.setattr("huggingface_hub.HfApi", Api)
 
     with pytest.raises(hub.HubError, match="no parquet shards"):
         run_pull(dataset, limit_rows=5)
+
+
+def test_a_repo_that_ships_no_parquet_is_read_from_the_conversion_branch(
+    monkeypatch, shard, dataset
+):
+    """Most of the Hub publishes CSV or JSON, not parquet, and the Hub converts
+    it on `refs/convert/parquet`. Listing only `main` called those unpullable."""
+    asked: list[str | None] = []
+
+    class Api:
+        def list_repo_files(self, repo, repo_type=None, revision=None):
+            if revision is None:
+                return ["README.md", "dataset.json"]
+            return [".gitattributes", "default/train/0000.parquet"]
+
+    monkeypatch.setattr("huggingface_hub.HfApi", Api)
+
+    def download(repo, filename=None, repo_type=None, revision=None):
+        asked.append(revision)
+        return str(shard)
+
+    monkeypatch.setattr(hub.fetch, "hf_hub_download", download)
+
+    result, _ = run_pull(dataset, limit_rows=5)
+
+    assert result["documents"] == 5
+    # The path came off the conversion branch, so the download must ask for it
+    # there: on `main` that file does not exist.
+    assert asked == [hub.PARQUET_REVISION]
+
+
+def test_a_repo_with_its_own_parquet_is_read_from_main(monkeypatch, shard, dataset):
+    """The conversion is a fallback, not a preference: a dataset that publishes
+    parquet is read as its author sharded it, at the revision they tagged."""
+    asked: list[str | None] = []
+
+    class Api:
+        def list_repo_files(self, repo, repo_type=None, revision=None):
+            assert revision is None, "main had shards; the branch was not needed"
+            return ["data/train-00000.parquet"]
+
+    monkeypatch.setattr("huggingface_hub.HfApi", Api)
+
+    def download(repo, filename=None, repo_type=None, revision=None):
+        asked.append(revision)
+        return str(shard)
+
+    monkeypatch.setattr(hub.fetch, "hf_hub_download", download)
+
+    run_pull(dataset, limit_rows=5)
+
+    assert asked == [None]
 
 
 @pytest.fixture
@@ -194,7 +246,7 @@ def nul_shard(tmp_path, monkeypatch):
     monkeypatch.setattr(hub.fetch, "hf_hub_download", lambda *a, **k: str(path))
 
     class Api:
-        def list_repo_files(self, repo, repo_type=None):
+        def list_repo_files(self, repo, repo_type=None, revision=None):
             return ["data/train-00000.parquet"]
 
     monkeypatch.setattr("huggingface_hub.HfApi", Api)
@@ -266,7 +318,7 @@ def test_conversations_are_shaped_from_a_messages_column(monkeypatch, tmp_path, 
     monkeypatch.setattr(hub.fetch, "hf_hub_download", lambda *a, **k: str(path))
 
     class Api:
-        def list_repo_files(self, repo, repo_type=None):
+        def list_repo_files(self, repo, repo_type=None, revision=None):
             return ["data/sft-00000.parquet"]
 
     monkeypatch.setattr("huggingface_hub.HfApi", Api)
@@ -299,7 +351,7 @@ def test_nul_bytes_are_stripped_from_inside_a_turn(monkeypatch, tmp_path, store_
     monkeypatch.setattr(hub.fetch, "hf_hub_download", lambda *a, **k: str(path))
 
     class Api:
-        def list_repo_files(self, repo, repo_type=None):
+        def list_repo_files(self, repo, repo_type=None, revision=None):
             return ["data/sft-00000.parquet"]
 
     monkeypatch.setattr("huggingface_hub.HfApi", Api)
