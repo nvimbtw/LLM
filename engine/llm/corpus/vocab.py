@@ -23,7 +23,6 @@ from tokenizers import Tokenizer
 
 from llm import storage
 from llm.corpus import bpe, remote, special
-from llm.train.progress import ProgressCallback, Tokenize
 
 #: Namespace for `auto_id`. Fixed forever: changing it re-keys every vocabulary
 #: an unnamed run would otherwise have reused.
@@ -77,7 +76,7 @@ def build(
     tokenizer_id: str,
     selection: Selection,
     max_vocab: int,
-    on_progress: ProgressCallback | None = None,
+    report=None,
     sample_bytes: int = bpe.SAMPLE_BYTES,
 ) -> VocabStats:
     """Learn a vocabulary from the selected corpora and record what it came from.
@@ -87,6 +86,13 @@ def build(
     draws each share strided across its dataset. The selection still decides
     *what* is sampled, so the vocabulary is still a function of the datasets
     asked for.
+
+    `report` is the caller's `llm.train.progress.BuildReport`, handed down rather
+    than imported — this module used to reach right across the layering for the
+    frame type, and a reporter passed in is what makes that unnecessary. It says
+    nothing about whether the build it belongs to *ends* here: a vocabulary is a
+    run of its own and also the first step of a pretrain, and only the caller
+    knows which.
     """
     prose = [selected for selected in selection if selected.taken > 0]
     if not prose:
@@ -94,9 +100,6 @@ def build(
             f"Nothing to learn merges from: {_named(selection)} "
             f"{'hold no documents' if selection else 'is an empty selection'}"
         )
-
-    if on_progress is not None:
-        on_progress(Tokenize(documents=sum(s.taken for s in prose), progress=0.05))
 
     directory = storage.ensure_dir(storage.tokenizer_build_dir(tokenizer_id))
 
@@ -106,13 +109,12 @@ def build(
     # to the capped part of it.
     budgets = bpe.shares({s.id: _selected_bytes(s) for s in prose}, sample_bytes)
     by_id = {s.id: s for s in prose}
-    drawn = (
-        chunk
-        for dataset_id, share in budgets
-        for chunk in remote.sample(
-            client, by_id[dataset_id], share, take_each=bpe.SAMPLE_TAKE_BYTES
-        )
-    )
+    budget = sum(share for _, share in budgets)
+    documents = sum(s.taken for s in prose)
+    if report is not None:
+        report.at("sampling", documents=documents, sample_budget=budget, sampled_bytes=0)
+
+    drawn = _draw(client, budgets, by_id, budget, documents, report)
 
     # The sample is written under the build's own directory rather than held in
     # memory: it is bounded at `sample_bytes`, the trainer counts across cores
@@ -128,6 +130,17 @@ def build(
             f"A chat dataset holds conversations, and a vocabulary is learned from "
             f"text — fine-tune on those instead"
         )
+    sampled = sum(path.stat().st_size for path in written)
+    if report is not None:
+        # The one step of a build that reports nothing while it runs. The
+        # `tokenizers` trainer is a single call with no callback to observe (see
+        # `bpe.merge_sequence`), so what a watcher gets is the step's name, what
+        # it was handed, and a clock that keeps running — which is the whole of
+        # the difference between "working" and "hung". Not `max_vocab`: that is
+        # what was asked for, and `vocab` on a frame is what was built.
+        report.at(
+            "merges", sampled_bytes=sampled, sample_budget=budget, documents=documents
+        )
     tokenizer = bpe.train(written, max_vocab, out_dir=directory)
 
     stats = VocabStats(
@@ -136,7 +149,7 @@ def build(
         merges=bpe.merge_count(tokenizer),
         fingerprint=file_fingerprint(storage.tokenizer_file(directory)),
         sampled_chunks=len(written),
-        sampled_bytes=sum(path.stat().st_size for path in written),
+        sampled_bytes=sampled,
     )
 
     # Written after the vocabulary lands, so a directory with no sidecar is an
@@ -167,16 +180,35 @@ def build(
         encoding="utf-8",
     )
 
-    if on_progress is not None:
-        on_progress(
-            Tokenize(
-                vocab=stats.vocab_size,
-                merges=stats.merges,
-                progress=1.0,
-                done=True,
-            )
-        )
+    if report is not None:
+        # What the merges came out as, and nothing about being finished: a
+        # vocabulary is either a run in its own right or the first tenth of a
+        # pretrain, and this used to close phase 1 in both cases — which sent the
+        # panel to the training view for the whole of the pack that followed.
+        report.say(fraction=1.0, vocab=stats.vocab_size, merges=stats.merges)
     return stats
+
+
+def _draw(client, budgets, by_id, budget: int, documents: int, report):
+    """The sample, chunk by chunk, saying how much of the budget it has drawn.
+
+    A generator so the text is still handed to `write_chunks` one stop at a time
+    rather than held: the budget bounds the sample on disk, not in memory.
+    """
+    taken = 0
+    for dataset_id, share in budgets:
+        for chunk in remote.sample(
+            client, by_id[dataset_id], share, take_each=bpe.SAMPLE_TAKE_BYTES
+        ):
+            taken += len(chunk[1])
+            if report is not None:
+                report.tick(
+                    fraction=taken / budget if budget else None,
+                    sampled_bytes=taken,
+                    sample_budget=budget,
+                    documents=documents,
+                )
+            yield chunk
 
 
 def _selected_bytes(selected) -> int:

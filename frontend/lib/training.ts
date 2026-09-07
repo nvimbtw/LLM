@@ -236,7 +236,65 @@ export interface Ribbon {
   windows: RibbonWindow[]
 }
 
+// One source as a build is working through it: a dataset within a curriculum
+// stage. `expected` is what the selection says it holds, `documents` how many of
+// them have been read — the same dataset appears once per stage that names it,
+// because a stage that trains on it again reads it again.
+//
+// `chars`/`tokens` are the live halves of `Fertility`: their ratio is this
+// source's chars per token, available while the pack is running rather than only
+// in the sidecar it writes at the end.
+export interface BuildSource {
+  dataset: string
+  stage: number
+  expected?: number
+  documents: number
+  chars: number
+  tokens: number
+}
+
+// Which of phase 1's steps a build is on. Named by the engine
+// (`llm.train.progress.BUILD_SPANS`) rather than inferred here from which counts
+// have arrived: packing is the longest step of a run and used to report nothing
+// at all, so "the step before the first one that has not reported" read the whole
+// of it as a tokenizer that had already finished.
+export type BuildStep =
+  | "sampling"
+  | "merges"
+  | "packing"
+  | "rendering"
+  | "reusing"
+  | "measuring"
+
 export interface TokenizeStats {
+  // Which step is running, and the clock it has been running on. `elapsed_secs`
+  // is phase 1's own — a run's `TrainStats.elapsed_secs` starts at the first
+  // training step, which is the moment all of this is over.
+  step: BuildStep
+  elapsed_secs: number
+  // What is left of the step in flight, projected from the rate it has managed
+  // so far. Absent until something has been read: a rate of nothing is not slow,
+  // it is unmeasured.
+  eta_secs: number
+  // Documents encoded so far, against `documents`, which a build reports as the
+  // count it set out to read before it reads any of them. On a fine-tune these
+  // are conversation rows read, and `conversations` counts the ones that
+  // survived rendering — the gap between the two is what was skipped.
+  documents_done: number
+  // Tokens a second over the last few seconds rather than over the build. The
+  // average is what `eta_secs` is projected from and is deliberately smooth;
+  // this is the one that says whether the thing is still moving right now.
+  tokens_per_sec: number
+  // Text drawn for the vocabulary's merges, against the budget it is drawn to.
+  // Only the sampling step measures these — learning the merges from them
+  // reports neither, because the library exposes no callback to observe it.
+  sampled_bytes: number
+  sample_budget: number
+  // Per-source progress while a corpus is packed, in reading order. Bounded by
+  // the engine, which sends a window centred on the source in flight;
+  // `sources_total` is how many there really are.
+  sources: BuildSource[]
+  sources_total: number
   // Pretrain phase-1 stats (BPE tokenizer + corpus build).
   //
   // `documents` rather than `files`: the text arrives from the data engine a page
@@ -361,6 +419,11 @@ export interface DiagPoint {
   // Fraction of episodes that answered correctly. The number an RL run is read
   // by, in place of a loss.
   pass_rate?: number
+  mastery?: import("@/lib/practice").SkillProgress[]
+  curriculum_events?: import("@/lib/practice").MasteryEvent[]
+  test_before?: import("@/lib/practice").PracticeTest
+  test_after?: import("@/lib/practice").PracticeTest
+  practice_phase?: string
   // Fraction of groups that had ANY variance in their returns. A group whose
   // rollouts all passed or all failed has an exactly zero gradient, so this —
   // not the pass rate — is what says whether a run is learning or merely

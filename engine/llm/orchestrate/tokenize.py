@@ -10,7 +10,7 @@ from threading import Event
 
 from llm.config import TokenizerConfig
 from llm.corpus import remote, vocab
-from llm.train.progress import ProgressCallback, Tokenize, log_progress
+from llm.train.progress import BuildReport, ProgressCallback, log_progress
 
 
 def run(
@@ -32,6 +32,7 @@ def run(
 
 def _build(cfg, client, on_progress, cancel, started) -> dict:
     selection = vocab.resolve(client, cfg.datasets)
+    report = BuildReport(on_progress)
 
     if not cfg.rebuild and vocab.matches(cfg.tokenizer_id, selection, cfg.max_vocab):
         built = vocab.info(cfg.tokenizer_id)
@@ -44,21 +45,22 @@ def _build(cfg, client, on_progress, cancel, started) -> dict:
             sampled_chunks=built.get("sampled_chunks", 0),
             sampled_bytes=built.get("sampled_bytes", 0),
         )
-        if on_progress is not None:
-            on_progress(
-                Tokenize(
-                    vocab=stats.vocab_size,
-                    merges=stats.merges,
-                    progress=1.0,
-                    done=True,
-                )
-            )
+        report.at("reusing", vocab=stats.vocab_size, merges=stats.merges)
     else:
         named = ", ".join(str(selected) for selected in selection)
         print(f"[1/1] Learning a vocabulary from {named} (max_vocab {cfg.max_vocab})")
         if cancel is not None and cancel.is_set():
             raise RuntimeError("cancelled before the build started")
-        stats = vocab.build(client, cfg.tokenizer_id, selection, cfg.max_vocab, on_progress)
+        stats = vocab.build(client, cfg.tokenizer_id, selection, cfg.max_vocab, report)
+
+    # Both branches close the same way, and only here: `vocab.build` reports its
+    # own steps and never that the phase is over, because the same call is the
+    # first tenth of a pretrain run — which has a corpus to pack afterwards.
+    report.finish(
+        vocab=stats.vocab_size,
+        merges=stats.merges,
+        sampled_bytes=stats.sampled_bytes or None,
+    )
 
     print(
         f"      vocab {stats.vocab_size:,}, {stats.merges:,} merges, learned from "

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import type { BatchPoint, LossPoint } from "@/hooks/use-training"
+import type { BatchPoint, BuildPoint, LossPoint } from "@/hooks/use-training"
 import { cancelJob, getJob, type Job } from "@/lib/jobs"
 import { attachJob, type Attachment } from "@/lib/jobs-socket"
 import type {
@@ -19,6 +19,11 @@ import type {
 const MAX_LOSS_POINTS = 500
 const MAX_BATCH_POINTS = 60
 const MAX_DIAG_POINTS = 500
+// Phase 1's own curve. The engine's frame interval widens as a build runs
+// (`TARGET_BUILD_REPORTS`), so this is only reached by a build of hours — and
+// halving it there costs the resolution of the first minutes, which by then is
+// the part nobody is still reading.
+const MAX_BUILD_POINTS = 300
 
 function downsample<T>(arr: T[], max: number): T[] {
   let out = arr
@@ -63,6 +68,7 @@ export function useJob(idJob: string) {
   const [loss, setLoss] = React.useState<LossPoint[]>([])
   const [batchSeries, setBatchSeries] = React.useState<BatchPoint[]>([])
   const [diag, setDiag] = React.useState<DiagPoint[]>([])
+  const [buildSeries, setBuildSeries] = React.useState<BuildPoint[]>([])
   const [checkpoints, setCheckpoints] = React.useState<CheckpointFrame[]>([])
   const [log, setLog] = React.useState<string[]>([])
   const [runConfig, setRunConfig] = React.useState<TrainConfig | null>(null)
@@ -126,6 +132,25 @@ export function useJob(idJob: string) {
         // the frame that says the corpus is packed does not repeat the counts
         // from the frame that collected the files.
         setTokenize((prev) => ({ ...prev, ...s }))
+        const { elapsed_secs: at, tokens_per_sec: rate } = s
+        // Only the frames that carry a rate. The ones that open a step carry
+        // counts and no measurement of how fast it is going, and plotting those
+        // as zero would draw a stall into every step boundary.
+        if (at != null && rate != null) {
+          const point: BuildPoint = {
+            elapsed: at,
+            rate,
+            tokens: s.total_tokens ?? 0,
+            documents: s.documents_done ?? 0,
+          }
+          setBuildSeries((prev) => {
+            const base =
+              prev.length >= MAX_BUILD_POINTS
+                ? prev.filter((_, i) => i % 2 === 0)
+                : prev
+            return [...base, point]
+          })
+        }
         break
       }
       case "log":
@@ -273,6 +298,7 @@ export function useJob(idJob: string) {
     train,
     loss,
     batchSeries,
+    buildSeries,
     diag,
     checkpoints,
     log,

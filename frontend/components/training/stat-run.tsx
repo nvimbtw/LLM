@@ -10,6 +10,19 @@ export function compact(n: number | undefined | null): string {
   return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
 }
 
+// A wall clock in words: seconds under a minute, then minutes, then hours. Here
+// beside `compact` and for the same reason — an ETA, an elapsed clock and a
+// finished run's duration are the same reading, and three spellings of it across
+// the training figures is three things to keep in step.
+export function duration(secs: number | undefined | null): string {
+  if (secs == null || !Number.isFinite(secs)) return "—"
+  const s = Math.max(0, Math.round(secs))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
 // A single figure in the stat run: a big tabular value over a muted label. No
 // box, no fill of its own — the hairline rules between cells do the separating,
 // so the numbers read like a figure's data line, not a grid of cards.

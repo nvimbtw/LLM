@@ -2,7 +2,7 @@
 
 import { Progress } from "@/components/ui/progress"
 import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
-import { StatRun, type Stat } from "@/components/training/stat-run"
+import { duration, StatRun, type Stat } from "@/components/training/stat-run"
 import { cn } from "@/lib/utils"
 import type {
   CurriculumStage,
@@ -14,15 +14,6 @@ import type {
 function compact(n: number | undefined | null): string {
   if (n == null) return "—"
   return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
-}
-
-function formatEta(secs: number | undefined): string {
-  if (secs == null || !Number.isFinite(secs)) return "—"
-  const s = Math.max(0, Math.round(secs))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 function loss4(v: number | undefined): string {
@@ -61,17 +52,7 @@ function describe(
     case "tokenizing":
       return {
         headline: isSft ? "Building the dataset" : "Building the corpus",
-        detail: isSft
-          ? tokenize.conversations != null
-            ? `${compact(tokenize.conversations)} conversations rendered`
-            : "Rendering chat conversations into a masked dataset…"
-          : // `documents`, not `files`: the text comes from the data engine a page
-            // at a time. `files` is what a run queued before that move reported.
-            tokenize.vocab != null
-            ? `Tokenizer trained — packing ${compact(tokenize.documents ?? tokenize.files)} document(s)`
-            : (tokenize.documents ?? tokenize.files) != null
-              ? `${compact(tokenize.documents ?? tokenize.files)} document(s) collected — training the tokenizer…`
-              : "Collecting documents…",
+        detail: buildDetail(isSft, tokenize),
       }
     case "training": {
       const stage = train.stage_name?.trim()
@@ -99,6 +80,54 @@ function describe(
       }
     default:
       return { headline: "Waiting", detail: "This run has not started yet." }
+  }
+}
+
+// What the build is doing, in a sentence, off the step the engine names rather
+// than off which counters happen to have arrived. The line it replaces was
+// written once — when the tokenizer finished — and then stood unchanged for the
+// hours the pack took, which is the whole of what made a working build
+// indistinguishable from a stuck one.
+function buildDetail(isSft: boolean, tokenize: Partial<TokenizeStats>): string {
+  const read = tokenize.documents_done
+  const expected = tokenize.documents ?? tokenize.files
+  // "N of M" once both are known, "M" while only the target is, and nothing at
+  // all before either — a count of "—" in the middle of a sentence reads as a
+  // bug rather than as a figure that has not arrived.
+  const through =
+    expected == null
+      ? null
+      : read != null
+        ? `${compact(read)} of ${compact(expected)}`
+        : compact(expected)
+
+  switch (tokenize.step) {
+    case "sampling":
+      return through
+        ? `Drawing the vocabulary's sample from ${through} document(s)`
+        : "Drawing the text the vocabulary's merges are learned from…"
+    case "merges":
+      return "Learning the merges — one call into the tokenizer, which reports nothing until it returns"
+    case "packing":
+      return tokenize.total_tokens != null
+        ? `Encoding ${through ?? "the corpus"} — ${compact(tokenize.total_tokens)} token(s) so far`
+        : `Encoding ${through ?? "the corpus"} into the packed corpus`
+    case "rendering":
+      return through
+        ? `Rendering ${through} conversation(s) into a masked dataset`
+        : "Rendering chat conversations into a masked dataset…"
+    case "reusing":
+      return isSft
+        ? "Reusing the dataset an earlier run rendered"
+        : "Reusing the corpus an earlier run packed"
+    case "measuring":
+      return `Measuring what was built — ${compact(tokenize.documents)} document(s), ${compact(tokenize.total_tokens)} token(s)`
+    default:
+      // A build whose first frame has not landed, or one queued before the
+      // engine named its steps: say what it is about to do rather than nothing.
+      return isSft
+        ? "Rendering chat conversations into a masked dataset…"
+        : "Collecting documents…"
   }
 }
 
@@ -260,8 +289,8 @@ export function TrainingHero({
         // A run that has stopped has no estimate left, only a duration. The slot
         // stays where it is so the strip does not reshuffle when it lands.
         finished
-          ? { label: "Elapsed", value: formatEta(train.elapsed_secs) }
-          : { label: "ETA", value: formatEta(train.eta_secs) },
+          ? { label: "Elapsed", value: duration(train.elapsed_secs) }
+          : { label: "ETA", value: duration(train.eta_secs) },
       ]
     : isSft
       ? [
@@ -276,10 +305,26 @@ export function TrainingHero({
           { label: "Too long", value: compact(tokenize.skipped_too_long) },
         ]
       : [
-          { label: "Files", value: compact(tokenize.files) },
-          { label: "Characters", value: compact(tokenize.chars) },
-          { label: "Vocab size", value: compact(tokenize.vocab) },
-          { label: "Merges", value: compact(tokenize.merges) },
+          // Live counts rather than the four end-of-phase figures that used to
+          // stand here reading "—" for the whole of the build. Vocabulary and
+          // merges are in the build panel's step rail below, where they land the
+          // moment the tokenizer is trained.
+          {
+            label: "Documents",
+            value:
+              tokenize.documents_done != null && tokenize.documents != null
+                ? `${compact(tokenize.documents_done)} / ${compact(tokenize.documents)}`
+                : compact(tokenize.documents ?? tokenize.files),
+          },
+          { label: "Tokens", value: compact(tokenize.total_tokens) },
+          {
+            label: "Tokens / sec",
+            value: compact(tokenize.tokens_per_sec),
+          },
+          {
+            label: "Time left",
+            value: duration(tokenize.eta_secs),
+          },
         ]
 
   const totalSteps =
@@ -293,7 +338,9 @@ export function TrainingHero({
       ? `Step ${(train.step ?? 0).toLocaleString()} of ${totalSteps.toLocaleString()}`
       : trainPhase
         ? "Waiting for the first report…"
-        : "Phase 1 of 2 — preparing the data"
+        : tokenize.elapsed_secs != null
+          ? `Phase 1 of 2 — ${duration(tokenize.elapsed_secs)} in`
+          : "Phase 1 of 2 — preparing the data"
 
   return (
     <section className="rounded-(--radius-sheet) border border-border bg-card">

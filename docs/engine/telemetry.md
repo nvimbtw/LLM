@@ -3,9 +3,9 @@
 A run publishes `Progress` frames (`llm/train/progress.py`); a sampled subset of
 them carry a `diag` dict built by `llm/train/diagnostics.py`. This file is about
 that dict: the budget it lives inside, the contract it travels under, and the
-fine-tuning half of it that is absent on a pretrain run. The last section covers
-the one frame that is not a `Progress` at all — phase 1's closing `Tokenize`, and
-the span ribbon it carries.
+fine-tuning half of it that is absent on a pretrain run. The last two sections
+cover the frames that are not `Progress` at all — the `Tokenize` frames phase 1
+publishes while it builds the data, and the span ribbon its closing one carries.
 
 ## The budget is the design
 
@@ -100,6 +100,99 @@ copy of the weights it keeps resident, not that transient.
 
 Pretrain runs pay **nothing**: `loop.run` passes no mask, `observe` skips every
 split, and no probe is ever built.
+
+## What phase 1 says while it runs
+
+Everything above is about a training *step*. Phase 1 is what happens before there
+are any: a vocabulary learned, a corpus packed, and the measuring pass that closes
+it. It used to publish three frames — the documents counted, the tokenizer
+trained, and everything over — and the longest of its steps sat between the second
+and the third saying nothing at all. At the 5B-token scale `README.md` quotes,
+that is hours in which the only honest reading of the page was "no idea".
+
+`BuildReport` is the seam that fixed it: made by the orchestrator, handed down
+into the packer, and the only thing that turns a build's counters into frames.
+Five things about it are decisions rather than implementation details.
+
+- **The interval widens with the build, because the budget cannot be set in
+  advance.** `TARGET_REPORTS` works for a training run because a run knows its
+  step count before it takes a step. A build does not know whether packing is
+  four minutes or four hours until it is over, and both are ordinary. So the gap
+  between frames is `elapsed / TARGET_BUILD_REPORTS`, floored at
+  `BUILD_REPORT_SECS`: a frame a second while a watcher is still deciding whether
+  anything is happening, a frame a minute an hour in when the only question left
+  is the ETA. The count then grows with the **logarithm** of the build's length —
+  ~240 frames over four minutes, ~2,300 over four hours, against the ~14,000 a
+  fixed one-second interval would leave in a run's history, which is held in
+  memory for as long as anybody is attached.
+
+- **The reporter travels down the layering; the frame type does not travel up.**
+  `corpus` sits left of `train` in `llm/__init__.py`'s order, so `pack.pack`,
+  `vocab.build` and `sft.build` take a `report` object rather than importing
+  `Tokenize` — which is what `corpus/vocab.py` used to do, and was the one import
+  in `llm/corpus` that reached right. A packer names the fields it is counting and
+  knows nothing about what they become on the wire, so the names are still
+  identical at every hop for the reason they always were: they are the ones it
+  passed.
+
+- **The step is named on the frame, never inferred from it.** The panel used to
+  read "the step before the first one that has not reported yet is the one
+  running", which is true only while every step reports something. It also meant
+  a step could only end the phase by *saying* so — and `vocab.build` said so,
+  which for a pretrain is the first tenth of phase 1. `done=True` sent the panel
+  to the training view for the whole of the pack that followed, which is the
+  proximate cause of the silence this section is about. `BuildReport.finish` is
+  now the only thing that can close the phase, and only an orchestrator calls it.
+
+- **The bar is a table of spans, not a division into equal steps.** The steps are
+  fixed and their costs are wildly uneven — packing is hours where learning merges
+  is seconds — so equal shares would leave the bar at a third for all but the last
+  minute of a build. `BUILD_SPANS` gives each step a cumulative span and every
+  step reports its own fraction *within* that span; a build enters them in order,
+  which is what makes `progress` monotone without anything having to clamp it.
+
+- **Two rates, because they answer different questions.** `eta_secs` is projected
+  from the rate over the whole step, which is the smooth one and the same
+  estimator `train.loop` gives a run. `tokens_per_sec` is over the last
+  `RATE_WINDOW_SECS`, which is the one that says whether the thing is moving
+  *now*. An average would take minutes to show a stall and minutes more to
+  forgive one. Both are `BuildReport.pace`, so a pack and an SFT render cannot
+  disagree about what either means.
+
+| Step | Reports |
+|---|---|
+| `sampling` | `sampled_bytes` against `sample_budget` — the text the merges will be fitted to |
+| `merges` | nothing while it runs: one call into `tokenizers`, which exposes no callback (the same fact `merge_sequence` is shaped by). The step's name and the clock are the whole of what a watcher gets, and they are the difference between working and hung |
+| `packing` | `documents_done`/`documents`, `chars`, `total_tokens`, and `sources` |
+| `rendering` | a fine-tune's one long step: `documents_done`, `conversations`, `total_tokens`, `trainable_tokens`, `skipped_too_long` |
+| `reusing` | that the build was found on disk, so the hours are skipped and the reporting is not |
+| `measuring` | the closing frame — `window_fit`, the ribbon, fertility, dead vocab |
+
+`sources` is the one field that is not a scalar, and it is bounded the way
+`fertility` is: `pack.BUILD_SOURCES` rows of `{dataset, stage, expected,
+documents, chars, tokens}`, with `sources_total` carrying the real count. It is
+keyed by `(stage, dataset)` and not by dataset alone, because a dataset two
+stages name is read twice on purpose and a bar that summed the two passes would
+sit at half through the whole of the first. The window is **centred on the source
+being read** rather than taken from the front, which is the difference between
+showing where a build has got to and showing where it started.
+
+### Measured cost
+
+Nothing. Every counter a frame carries is one the pack already kept — the
+per-dataset characters and tokens are the sidecar's own `fertility`, computed at
+the one moment the text and its encoding are both in hand — and the only per-frame
+work is copying at most `BUILD_SOURCES` small dicts. The throttle is checked
+before any of that is assembled, so a build with nobody attached pays a clock
+read per encode batch.
+
+The chain is the phase-1 chain, and the same rule holds at every hop:
+
+```
+BuildReport -> Tokenize -> api/runner._frame -> WebSocket
+            -> frontend/lib/training.ts (TokenizeStats, BuildSource)
+            -> components/training/build-progress.tsx
+```
 
 ## The span ribbon — phase 1's one non-scalar
 

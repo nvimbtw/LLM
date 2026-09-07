@@ -111,6 +111,24 @@ work, and `spans.from_sidecar` takes either shape.
 as `undefined`. A field a phase does not measure is **omitted, not zeroed**, so
 "—" means nobody measured rather than "none".
 
+Phase 1 publishes those frames **while it runs**, not only at the end of it —
+`pack.pack` and `vocab.build` take a `BuildReport` from the orchestrator and say
+where they are on a widening interval. What that costs, why the reporter is
+passed down rather than the frame type reached for, and what each step reports
+are in [`telemetry.md`](telemetry.md). Two consequences belong here, because they
+are properties of the pack rather than of the reporting:
+
+- **The live counters and the sidecar's are the same counters.** `pack._Tally`
+  keys characters read and tokens written by `(stage, dataset)` at the one moment
+  the text and its encoding are both in hand; the frame's `sources` and
+  `segments.json`'s `fertility` are two readings of it, the second summed back
+  down to the dataset name. Nothing is counted twice and nothing can disagree.
+- **The pack is told what it is packing.** `build_dataset` hands it a `plan` —
+  `[{dataset, stage, expected}]` in reading order, off the resolved selection —
+  because the one thing a stream of `SourceDoc` cannot say about itself is how
+  much of it is left. Without a plan the pack still reports what it has done and
+  simply cannot project an ETA, which is what a script or a test gets.
+
 Beyond the counters, a pretrain build reports what the tokenization and the
 packing actually produced: `fertility` (chars per token, per source),
 `dead_vocab` (ids the corpus never uses — tied embeddings make each one a row

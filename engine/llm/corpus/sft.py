@@ -224,9 +224,16 @@ def build(
     tokenizer: Tokenizer,
     selection: list[remote.Selected],
     reasoning: Reasoning = Reasoning.KEEP,
+    report=None,
 ) -> SftStats:
-    """Render every conversation in `selection` into the aligned corpus/mask pair."""
+    """Render every conversation in `selection` into the aligned corpus/mask pair.
+
+    `report` is the caller's `llm.train.progress.BuildReport`, handed down for
+    the reason `pack.pack` takes one: `corpus` sits left of `train` in the
+    layering, and this is the longest thing a fine-tune does before it trains.
+    """
     key = dataset_key(selection, reasoning)
+    expected = sum(selected.taken for selected in selection)
 
     eot_id = bpe.token_id(tokenizer, special.END_OF_TEXT)
 
@@ -244,6 +251,11 @@ def build(
     skipped = 0
     total_tokens = 0
     trainable_tokens = 0
+    # Rows taken off the wire, as against `documents`, which counts the ones that
+    # survived rendering. The gap between the two is `skipped`, and watching it
+    # open is how a selection pointed at the wrong dataset shows up in the first
+    # seconds rather than in the error at the end.
+    read = 0
 
     storage.ensure_dir(storage.sft_dataset_dir(key))
 
@@ -310,9 +322,32 @@ def build(
 
         pending.clear()
         pending_chars = 0
+        announce()
+
+    def announce(force: bool = False) -> None:
+        """Where the render has got to. Called at a drain boundary, which is the
+        only point the counters agree with each other and is reached every
+        `ENCODE_BATCH_CHARS` of text — often enough that the throttle rather than
+        the batch size decides the frame rate.
+
+        Forced once at the end, because the throttle would otherwise drop the
+        frame that says the render is over and leave the panel showing wherever
+        the last one happened to land."""
+        if report is None or not (force or report.due):
+            return
+        report.say(
+            **report.pace(read, expected, total_tokens),
+            documents=expected or None,
+            documents_done=read,
+            conversations=len(documents),
+            total_tokens=total_tokens,
+            trainable_tokens=trainable_tokens,
+            skipped_too_long=skipped,
+        )
 
     with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
         for raw in read_conversations(client, selection):
+            read += 1
             turns = _turns(raw)
             if turns is None:
                 skipped += 1
@@ -329,6 +364,7 @@ def build(
 
         drain()
         flush()
+        announce(force=True)
 
     if not documents:
         corpus_partial.unlink(missing_ok=True)

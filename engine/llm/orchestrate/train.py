@@ -34,7 +34,7 @@ from llm.model.checkpoint import TrainState
 from llm.model.transformer import Transformer
 from llm.train import diagnostics, loop
 from llm.train.plan import DataPlan, Stage
-from llm.train.progress import Checkpoint, ProgressCallback, Tokenize, log_progress
+from llm.train.progress import BuildReport, Checkpoint, ProgressCallback, log_progress
 
 #: Architecture a `TrainConfig` can state. A resumed run takes these from the
 #: checkpoint; the point of the list is which ones a *request* is then compared
@@ -291,7 +291,7 @@ def build_dataset(
     selection: list[pack.StageSelection],
     tokenizer_id: str,
     fingerprint: str,
-    on_progress: ProgressCallback | None = None,
+    report: BuildReport,
 ) -> pack.PackStats:
     """Phase 1: text on disk -> corpus.bin + segments.json, under `key`.
 
@@ -299,17 +299,20 @@ def build_dataset(
     moments ago — because the corpus is keyed on it and cannot be packed before
     it is known.
 
-    Reported as well as printed: this phase is minutes of a run during which the
-    training figures have nothing to show, so a watcher who is told nothing
-    cannot tell it from a run that is stuck.
+    Reported as well as printed, and reported *while it runs* rather than at
+    either end of it: packing is the longest thing a run does before it trains,
+    and a watcher told only that it had started could not tell it from a run
+    that had stopped. What makes that possible is `plan` — the selection's own
+    document counts, in reading order, which is the one thing the stream of
+    documents handed to the packer cannot say about itself.
     """
-
-    def report(**fields) -> None:
-        if on_progress is not None:
-            on_progress(Tokenize(**fields))
-
     stages = cfg.stages()
-    expected = sum(selected.taken for _, datasets in selection for selected in datasets)
+    plan = [
+        {"dataset": selected.name, "stage": index, "expected": selected.taken}
+        for index, (_, datasets) in enumerate(selection)
+        for selected in datasets
+    ]
+    expected = sum(one["expected"] for one in plan)
     if not expected:
         raise ValueError(
             f"Nothing to pack: {_named(selection)} hold no documents between them. "
@@ -317,7 +320,6 @@ def build_dataset(
             f"those instead, which is a run that names `base_model`."
         )
     merges = bpe.merge_count(tokenizer)
-    report(documents=expected, vocab=bpe.vocab_size(tokenizer), merges=merges, progress=0.6)
 
     # Per-dataset counts, because a cap that silently failed to apply is otherwise
     # invisible until the run's wall-clock comes in several times over.
@@ -329,6 +331,15 @@ def build_dataset(
     print(f"[2/6] Reading {expected:,} document(s): {breakdown}")
 
     print(f"[3/6] Packing corpus into {key}")
+    report.at(
+        "packing",
+        documents=expected,
+        documents_done=0,
+        vocab=bpe.vocab_size(tokenizer),
+        merges=merges,
+        sources=plan[: pack.BUILD_SOURCES],
+        sources_total=len(plan),
+    )
     stats = pack.pack(
         _documents(client, selection),
         tokenizer,
@@ -347,6 +358,8 @@ def build_dataset(
         ],
         tokenizer_id=tokenizer_id,
         fingerprint=fingerprint,
+        report=report,
+        plan=plan,
     )
     print(
         f"      {stats.corpus_len:,} tokens, {stats.documents:,} documents, "
@@ -358,7 +371,7 @@ def build_dataset(
     return stats
 
 
-def _phase_one(cfg, tokenizer, dataset, corpus, documents, info) -> Tokenize:
+def _phase_one(cfg, tokenizer, dataset, corpus, documents, info, report) -> None:
     """The frame that closes phase 1, for a fresh build and a reused one alike.
 
     One function for both branches because a measurement that only a fresh build
@@ -371,9 +384,10 @@ def _phase_one(cfg, tokenizer, dataset, corpus, documents, info) -> Tokenize:
     reconstruct, which is the honest reading: nobody measured.
     """
     counts = info.get("token_counts")
+    report.at("measuring", documents=len(documents) or None)
     fit = spans_mod.window_fit(documents, cfg.ctx_window, len(corpus))
     ribbon = spans_mod.span_ribbon(documents, cfg.ctx_window, len(corpus))
-    return Tokenize(
+    report.finish(
         documents=len(documents) or None,
         chars=dataset.chars if dataset else _chars(info),
         vocab=bpe.vocab_size(tokenizer),
@@ -390,8 +404,6 @@ def _phase_one(cfg, tokenizer, dataset, corpus, documents, info) -> Tokenize:
         doc_length_hist=fit.length_hist if fit else None,
         docs_over_ctx=fit.over_ctx if fit else None,
         span_ribbon=ribbon.as_dict() if ribbon else None,
-        progress=1.0,
-        done=True,
     )
 
 
@@ -427,7 +439,7 @@ def _vocabulary(
     cfg: TrainConfig,
     client,
     selection: list[pack.StageSelection],
-    on_progress: ProgressCallback | None,
+    report: BuildReport,
     state: TrainState | None = None,
 ) -> str:
     """The id of the vocabulary this run trains against.
@@ -467,7 +479,7 @@ def _vocabulary(
         return tokenizer_id
 
     print(f"[1/6] Learning a vocabulary (max_vocab {cfg.max_vocab})")
-    stats = vocab.build(client, tokenizer_id, flat, cfg.max_vocab, on_progress)
+    stats = vocab.build(client, tokenizer_id, flat, cfg.max_vocab, report)
     print(
         f"      {stats.vocab_size:,} tokens from {stats.sampled_bytes / 1e6:.1f} MB "
         f"drawn across {stats.sampled_chunks:,} point(s) in {len(flat)} dataset(s)"
@@ -493,11 +505,19 @@ def run(
         # `_train` needs this same state again to build the model and decide
         # resumed-vs-continued, so it is not resolved twice.
         state = resume_state(cfg.resume_from)
-        tokenizer_id = _vocabulary(cfg, client, selection, on_progress, state)
-        return _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, started)
+        # One reporter across the whole of phase 1, because the bar and the clock
+        # it carries are the phase's and not any one step's — a vocabulary, a
+        # pack and a measuring pass are three steps of one wait.
+        report = BuildReport(on_progress)
+        tokenizer_id = _vocabulary(cfg, client, selection, report, state)
+        return _train(
+            cfg, client, selection, tokenizer_id, state, report, on_progress, cancel, started
+        )
 
 
-def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, started) -> dict:
+def _train(
+    cfg, client, selection, tokenizer_id, state, report, on_progress, cancel, started
+) -> dict:
     tokenizer = vocab.load(tokenizer_id)
     fingerprint = vocab.fingerprint(tokenizer_id)
     vocab_size = bpe.vocab_size(tokenizer)
@@ -513,18 +533,22 @@ def _train(cfg, client, selection, tokenizer_id, state, on_progress, cancel, sta
             selection=selection,
             tokenizer_id=tokenizer_id,
             fingerprint=fingerprint,
-            on_progress=on_progress,
+            report=report,
         )
     else:
         print(f"[2-3/6] Reusing the corpus packed at {key}")
+        # A reused build skips the hours and not the reporting: what it is doing
+        # is opening a corpus somebody else packed, and a bar that stayed at the
+        # vocabulary's tenth until the first training frame would read as the
+        # pack having silently started.
+        report.at("reusing", vocab=vocab_size, merges=bpe.merge_count(tokenizer))
         dataset = None
 
     corpus = pack.load_corpus(key)
     eot_id, documents, info = pack.load_segments(key)
     stage_meta = info.get("stages", [])
 
-    if on_progress is not None:
-        on_progress(_phase_one(cfg, tokenizer, dataset, corpus, documents, info))
+    _phase_one(cfg, tokenizer, dataset, corpus, documents, info, report)
 
     if documents:
         # Stage *membership* comes from the sidecar: the corpus on disk decides

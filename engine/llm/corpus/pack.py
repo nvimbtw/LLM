@@ -74,6 +74,16 @@ KEY_DIGEST_CHARS = 10
 #: from putting a list nobody reads on every phase-1 frame.
 FERTILITY_DATASETS = 12
 
+#: How many sources one *live* frame names, and the same argument for the same
+#: reason — except that this list goes out every second rather than once, so the
+#: cap is what bounds the whole pack's reporting rather than one frame's.
+#:
+#: The window is centred on the source being read rather than taken from the
+#: front, which is the difference between showing where a build has got to and
+#: showing where it started. `Tokenize.sources_total` carries the real count, so
+#: a window is never mistaken for the whole selection.
+BUILD_SOURCES = 16
+
 #: One curriculum stage as the corpus knows it: what it was called, and which
 #: datasets it drew from, each resolved against the data engine. Epochs are
 #: absent on purpose — see `corpus_key`.
@@ -119,6 +129,122 @@ class PackStats:
     # pack: the text is dropped as it is encoded, and the tokens are a flat
     # stream with only the span table to say which document they came from.
     fertility: list[dict] = field(default_factory=list)
+
+
+class _Tally:
+    """What the pack has counted so far, and the live frame built off it.
+
+    One object rather than the three parallel dicts this used to keep, because
+    the live report needs a fourth counter keyed exactly like the others and
+    four dicts walked in step is a fifth one waiting to disagree with them.
+
+    Rows are keyed by `(stage, dataset)` and not by the dataset alone: a dataset
+    named by two stages is read twice on purpose, and a bar that summed the two
+    passes would sit at half through the whole of the first. `fertility` sums
+    them back down to the name, which is the granularity the sidecar records and
+    the only one that survives the build.
+    """
+
+    def __init__(self, plan: list[dict] | None) -> None:
+        # Seeded in reading order from the plan, so a source that has not been
+        # reached yet is still on the strip — at zero, which is a fact about the
+        # build rather than a gap in it. A source absent from the plan is
+        # appended as it arrives; nothing is dropped for being unexpected.
+        self._rows: dict[tuple[int, str], dict] = {
+            (one["stage"], one["dataset"]): {
+                "dataset": one["dataset"],
+                "stage": one["stage"],
+                "expected": one["expected"],
+                "documents": 0,
+                "chars": 0,
+                "tokens": 0,
+            }
+            for one in plan or []
+        }
+        self._active: tuple[int, str] | None = None
+        self.documents = 0
+        self.chars = 0
+        self.tokens = 0
+
+    def read(self, source: SourceDoc) -> None:
+        row = self._row(source)
+        row["documents"] += 1
+        row["chars"] += len(source.text)
+        self.documents += 1
+        self.chars += len(source.text)
+
+    def wrote(self, source: SourceDoc, tokens: int) -> None:
+        self._row(source)["tokens"] += tokens
+        self.tokens += tokens
+
+    def _row(self, source: SourceDoc) -> dict:
+        key = (source.stage, source.dataset)
+        self._active = key
+        if key not in self._rows:
+            self._rows[key] = {
+                "dataset": source.dataset,
+                "stage": source.stage,
+                "documents": 0,
+                "chars": 0,
+                "tokens": 0,
+            }
+        return self._rows[key]
+
+    @property
+    def datasets(self) -> int:
+        return len({row["dataset"] for row in self._rows.values() if row["documents"]})
+
+    @property
+    def expected(self) -> int:
+        return sum(row.get("expected", 0) for row in self._rows.values())
+
+    def fertility(self) -> list[dict]:
+        """Characters read and tokens written per dataset, for the sidecar.
+
+        Summed across stages, and over every source that was actually read —
+        a planned source the selection turned out to hold nothing for
+        contributed no text and has no ratio to record.
+        """
+        per_dataset: dict[str, dict] = {}
+        for row in self._rows.values():
+            if not row["documents"]:
+                continue
+            one = per_dataset.setdefault(
+                row["dataset"], {"dataset": row["dataset"], "chars": 0, "tokens": 0}
+            )
+            one["chars"] += row["chars"]
+            one["tokens"] += row["tokens"]
+        return list(per_dataset.values())
+
+    def report(self, report, *, force: bool = False) -> None:
+        """Say where the pack is, if anyone is listening and a frame is due.
+
+        The `due` check comes first so that a build with nowhere to report — a
+        script, a test — never pays for the window and the row copies it is
+        about to throw away.
+        """
+        if report is None or not (force or report.due):
+            return
+        expected = self.expected
+        report.say(
+            **report.pace(self.documents, expected, self.tokens),
+            documents=expected or None,
+            documents_done=self.documents,
+            chars=self.chars,
+            total_tokens=self.tokens,
+            sources=self._window(),
+            sources_total=len(self._rows),
+        )
+
+    def _window(self) -> list[dict]:
+        """`BUILD_SOURCES` rows centred on the one being read."""
+        rows = list(self._rows.values())
+        if len(rows) <= BUILD_SOURCES:
+            return rows
+        keys = list(self._rows)
+        centre = keys.index(self._active) if self._active in self._rows else 0
+        start = min(max(0, centre - BUILD_SOURCES // 2), len(rows) - BUILD_SOURCES)
+        return rows[start : start + BUILD_SOURCES]
 
 
 def resolve(client, stages) -> list[StageSelection]:
@@ -174,12 +300,21 @@ def pack(
     stages: list[dict] | None = None,
     tokenizer_id: str | None = None,
     fingerprint: str = "",
+    report=None,
+    plan: list[dict] | None = None,
 ) -> PackStats:
     """Encode every document into one flat corpus, recording its boundaries.
 
     `documents_in` is an iterable of `SourceDoc`, consumed once and never held:
     it is a paged read from the data engine, and materializing it would be the
     engine keeping a copy of a corpus it does not own.
+
+    `report` is the caller's `llm.train.progress.BuildReport`, passed in rather
+    than imported — `corpus` sits left of `train` in the layering, and a packer
+    that built its own frames would be reaching right. `plan` is what it is
+    reporting against: `[{dataset, stage, expected}]` in reading order, which is
+    the one thing a stream of `SourceDoc` cannot say about itself. Without it
+    the pack still reports what it has done, and cannot say how much is left.
     """
     vocab = bpe.vocab_size(tok)
     if vocab > np.iinfo(CORPUS_DTYPE).max + 1:
@@ -198,13 +333,11 @@ def pack(
 
     documents = SpanBuilder()
     seen: set[int] = set()
-    chars = 0
     corpus_len = 0
-    # Two counters per dataset rather than per document: a handful of entries
-    # whatever the corpus is, and the only moment the text and its encoding are
-    # both in hand.
-    read_chars: dict[str, int] = {}
-    written_tokens: dict[str, int] = {}
+    # A handful of counters per source rather than any per document: the only
+    # moment the text and its encoding are both in hand is this loop, and what
+    # it accumulates is both the sidecar's fertility and every live frame.
+    tally = _Tally(plan)
 
     storage.ensure_dir(storage.pretrain_dataset_dir(key))
 
@@ -231,8 +364,6 @@ def pack(
             out.write(block.tobytes())
             buffer.clear()
 
-    seen_datasets: set[str] = set()
-
     with partial.open("wb") as out:
         batch: list[SourceDoc] = []
         texts: list[str] = []
@@ -245,6 +376,10 @@ def pack(
                 return
 
             for source, ids in zip(batch, bpe.encode_batch(tok, texts)):
+                # Counted before the empty check, so `chars` is what was read
+                # and not what survived encoding — a source that encodes to
+                # nothing is a fact about the tokenizer, not an absence of text.
+                tally.read(source)
                 if not ids:
                     continue
 
@@ -259,9 +394,7 @@ def pack(
                 corpus_len += len(ids) + 1
                 # The document's own tokens, as `spans` records them — the
                 # separator belongs to the packing, not to the source.
-                written_tokens[source.dataset] = (
-                    written_tokens.get(source.dataset, 0) + len(ids)
-                )
+                tally.wrote(source, len(ids))
                 seen.update(marker_ids.intersection(ids))
 
                 if len(buffer) >= FLUSH_TOKENS:
@@ -270,11 +403,13 @@ def pack(
             batch.clear()
             texts.clear()
             pending = 0
+            # One batch is one report at most, and usually fewer: this is the
+            # only boundary at which the counters are consistent, and it is
+            # reached often enough (a batch is `ENCODE_BATCH_CHARS` of text)
+            # that the throttle rather than the loop decides the frame rate.
+            tally.report(report)
 
         for source in documents_in:
-            chars += len(source.text)
-            read_chars[source.dataset] = read_chars.get(source.dataset, 0) + len(source.text)
-            seen_datasets.add(source.dataset)
             batch.append(source)
             texts.append(source.text)
             pending += len(source.text)
@@ -288,11 +423,13 @@ def pack(
         flush()
 
     partial.replace(corpus)
+    # Forced, because the throttle would otherwise drop the one frame that says
+    # the pack is over: the last batch of a build is usually seconds after the
+    # one before it, and a step whose final state was never reported leaves the
+    # panel showing wherever the last frame happened to land.
+    tally.report(report, force=True)
 
-    per_dataset = [
-        {"dataset": name, "chars": count, "tokens": written_tokens.get(name, 0)}
-        for name, count in read_chars.items()
-    ]
+    per_dataset = tally.fertility()
     spans = documents.build()
     spans.save(storage.pretrain_spans_path(key))
 
@@ -325,8 +462,8 @@ def pack(
     )
 
     return PackStats(
-        datasets=len(seen_datasets),
-        chars=chars,
+        datasets=tally.datasets,
+        chars=tally.chars,
         vocab_size=vocab,
         corpus_len=corpus_len,
         documents=len(spans),

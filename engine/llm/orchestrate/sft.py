@@ -27,7 +27,7 @@ from llm.orchestrate import train as train_pipeline
 from llm.train import loop
 from llm.train.diagnostics import DIAGNOSTIC_ROWS, Probes
 from llm.train.plan import DataPlan
-from llm.train.progress import ProgressCallback, Tokenize, log_progress
+from llm.train.progress import BuildReport, ProgressCallback, log_progress
 from llm.train.warm_start import untrained_marker_ids, warm_start_embeddings
 
 
@@ -199,10 +199,14 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
     named = ", ".join(str(selected) for selected in selection)
 
     sft_corpus.clear_legacy()
-    if on_progress is not None:
-        on_progress(Tokenize(progress=0.05))
+    report = BuildReport(on_progress)
     if cfg.rebuild_dataset or not sft_corpus.is_built(key, selection, reasoning):
-        stats = sft_corpus.build(client, tokenizer, selection, reasoning)
+        report.at(
+            "rendering",
+            documents=sum(selected.taken for selected in selection) or None,
+            documents_done=0,
+        )
+        stats = sft_corpus.build(client, tokenizer, selection, reasoning, report)
         print(
             f"[2/5] {named} ({reasoning.value}) -> {stats.conversations:,} conversations, "
             f"{stats.total_tokens:,} tokens, {stats.trainable_tokens:,} trainable "
@@ -211,26 +215,22 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         )
     else:
         stats = None
+        report.at("reusing")
         print(f"[2/5] Reusing the built dataset for {named} ({reasoning.value})")
 
     corpus, mask = sft_corpus.load(key)
     eot_id, documents, info = sft_corpus.load_segments(key)
 
-    if on_progress is not None:
-        # A reused dataset reports what the files on disk say — the counts the
-        # build would have returned are not recorded in the sidecar, and summing
-        # the mask to recover the trainable share means reading the whole corpus
-        # for one number, so it stays unmeasured rather than paid for.
-        on_progress(
-            Tokenize(
-                conversations=stats.conversations if stats else len(documents),
-                total_tokens=stats.total_tokens if stats else len(corpus),
-                trainable_tokens=stats.trainable_tokens if stats else None,
-                skipped_too_long=stats.skipped if stats else None,
-                progress=1.0,
-                done=True,
-            )
-        )
+    # A reused dataset reports what the files on disk say — the counts the build
+    # would have returned are not recorded in the sidecar, and summing the mask to
+    # recover the trainable share means reading the whole corpus for one number,
+    # so it stays unmeasured rather than paid for.
+    report.finish(
+        conversations=stats.conversations if stats else len(documents),
+        total_tokens=stats.total_tokens if stats else len(corpus),
+        trainable_tokens=stats.trainable_tokens if stats else None,
+        skipped_too_long=stats.skipped if stats else None,
+    )
 
     # Markers this dataset uses that the base never saw, warm-started before the
     # first step — see llm/train/warm_start.py for why the caller decides this.

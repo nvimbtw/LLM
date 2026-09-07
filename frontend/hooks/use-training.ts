@@ -59,6 +59,20 @@ export interface BatchPoint {
   max: number
 }
 
+// One phase-1 report, plotted against the build's own clock rather than against
+// a step — phase 1 has no steps, which is why it needed a series of its own.
+//
+// The engine sends the counters and not the curve; this is the curve, rebuilt
+// from the frames. A page attaching to a build already in flight gets the whole
+// of it, because the run's stream replays from the start (`api/sse.py`) — so the
+// figure is the build's history and not this session's.
+export interface BuildPoint {
+  elapsed: number
+  rate: number
+  tokens: number
+  documents: number
+}
+
 /**
  * Composing a training run.
  *

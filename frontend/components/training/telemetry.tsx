@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { Check } from "lucide-react"
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 
 import {
@@ -19,13 +18,9 @@ import {
   yAxisProps,
 } from "@/components/training/chart-theme"
 import { BuildMetrics } from "@/components/training/build-metrics"
-import {
-  compact,
-  Figure,
-  FigurePlaceholder,
-} from "@/components/training/stat-run"
-import { cn } from "@/lib/utils"
-import type { BatchPoint, LossPoint } from "@/hooks/use-training"
+import { BuildProgress } from "@/components/training/build-progress"
+import { Figure, FigurePlaceholder } from "@/components/training/stat-run"
+import type { BatchPoint, BuildPoint, LossPoint } from "@/hooks/use-training"
 import type {
   CurriculumStage,
   RunPhase,
@@ -41,132 +36,6 @@ const batchChartConfig = {
   min: { label: "Min", color: batchRamp.min },
 } satisfies ChartConfig
 
-// One line of the phase-1 figure: what the build step produced, once it has.
-function BuildStep({
-  label,
-  value,
-  state,
-}: {
-  label: string
-  value: string
-  state: "done" | "active" | "todo"
-}) {
-  return (
-    <li className="flex items-baseline justify-between gap-4 border-b border-border/40 py-2.5 last:border-b-0">
-      <span className="flex min-w-0 items-center gap-2">
-        <span
-          aria-hidden
-          className={cn(
-            "flex size-4 shrink-0 items-center justify-center rounded-full",
-            state === "done" && "bg-chart-2/20 text-chart-2",
-            state === "active" &&
-              "animate-pulse bg-primary/30 ring-1 ring-primary/50",
-            state === "todo" && "bg-muted"
-          )}
-        >
-          {state === "done" && <Check className="size-2.5" />}
-        </span>
-        <span
-          className={cn(
-            "truncate text-sm",
-            state === "todo" ? "text-muted-foreground" : "text-foreground"
-          )}
-        >
-          {label}
-        </span>
-      </span>
-      <span className="shrink-0 text-sm text-muted-foreground tabular-nums">
-        {value}
-      </span>
-    </li>
-  )
-}
-
-/**
- * Phase 1, as the steps it actually consists of.
- *
- * This slot used to plot vocabulary against merges, which is a straight line by
- * construction — the vocabulary grows by exactly one entry per merge learned —
- * drawn from the one sample the tokenizer can report, since the library it wraps
- * has no callback to sample during training. A checklist says what that chart
- * was pretending to: which step the build is on, and what each one produced.
- */
-function PhaseOneFigure({
-  isSft,
-  tokenize,
-  done,
-}: {
-  isSft: boolean
-  tokenize: Partial<TokenizeStats>
-  done: boolean
-}) {
-  // A step is done once its own count has arrived, and active once the step
-  // before it is done — the build reports each measurement as it lands, so
-  // "what has not reported yet" is what is happening now.
-  const state = (
-    measured: boolean,
-    previous: boolean
-  ): "done" | "active" | "todo" =>
-    measured ? "done" : previous ? "active" : "todo"
-
-  const collected = tokenize.documents ?? tokenize.files
-  const steps = isSft
-    ? [
-        {
-          label: "Conversations rendered",
-          value: compact(tokenize.conversations ?? tokenize.examples),
-          state: state(tokenize.conversations != null, true),
-        },
-        {
-          label: "Tokens written",
-          value: compact(tokenize.total_tokens),
-          state: state(
-            tokenize.total_tokens != null,
-            tokenize.conversations != null
-          ),
-        },
-        {
-          label: "Trainable (assistant replies)",
-          value: compact(tokenize.trainable_tokens),
-          state: state(tokenize.trainable_tokens != null, done),
-        },
-      ]
-    : [
-        {
-          // `documents`, not `files`: the text is read from the data engine a
-          // page at a time and there are no files. `files` is what a run queued
-          // before that move reported, and its frames still render here.
-          label: "Documents collected",
-          value: compact(tokenize.documents ?? tokenize.files),
-          state: state(collected != null, true),
-        },
-        {
-          label: "Tokenizer trained",
-          value:
-            tokenize.vocab != null
-              ? `${compact(tokenize.vocab)} vocab · ${compact(tokenize.merges)} merges`
-              : "—",
-          state: state(tokenize.vocab != null, collected != null),
-        },
-        {
-          label: "Corpus packed",
-          value:
-            tokenize.total_tokens != null
-              ? `${compact(tokenize.total_tokens)} tokens`
-              : "—",
-          state: state(tokenize.total_tokens != null, tokenize.vocab != null),
-        },
-      ]
-
-  return (
-    <ul className="rounded-(--radius-control-sm) border border-dashed px-4 py-1">
-      {steps.map((s) => (
-        <BuildStep key={s.label} {...s} />
-      ))}
-    </ul>
-  )
-}
-
 export interface TelemetryProps {
   status: RunPhase | null
   isSft: boolean
@@ -174,6 +43,8 @@ export interface TelemetryProps {
   train: Partial<TrainStats>
   loss: LossPoint[]
   batchSeries: BatchPoint[]
+  // Phase 1's own curve, accumulated from its frames while the page is attached.
+  buildSeries: BuildPoint[]
   // The run's curriculum stages (empty for a plain single-pass run), for the
   // per-stage colouring of the loss overlay and its legend.
   curriculum: CurriculumStage[]
@@ -198,6 +69,7 @@ export function Telemetry({
   train,
   loss,
   batchSeries,
+  buildSeries,
   curriculum,
   ctxWindow,
 }: TelemetryProps) {
@@ -373,19 +245,11 @@ export function Telemetry({
           )}
         </Figure>
       ) : (
-        <Figure
-          caption={
-            isSft
-              ? "Dataset build — rendering chat conversations into the masked SFT dataset"
-              : "Dataset build — tokenizer, then the packed corpus"
-          }
-        >
-          <PhaseOneFigure
-            isSft={isSft}
-            tokenize={tokenize}
-            done={tokenize.done === true}
-          />
-        </Figure>
+        <BuildProgress
+          isSft={isSft}
+          tokenize={tokenize}
+          series={buildSeries}
+        />
       )}
 
       {/* What the build measured. Not part of the phase-1 slot above: these are
