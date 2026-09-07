@@ -88,6 +88,9 @@ export interface HubDetail {
   updated_at: string | null
   gated: boolean
   configs: HubConfig[]
+  /** Null when the shards are the repo's own; the Hub's conversion branch when
+   *  they are the parquet it made of a repo that ships CSV or JSON. */
+  revision: string | null
   shards: string[]
   shard_count: number
   prefixes: { prefix: string; shards: number }[]
