@@ -19,7 +19,7 @@ acting caller. The seam itself is documented in
 | `BACKEND_URL` | `http://127.0.0.1:8080` | |
 | `BACKEND_SERVICE_SECRET` | unset | Shared with the backend. Unset signs the token anyway, because `act` still has to travel |
 
-Three properties, and each of them is a decision rather than an implementation
+Four properties, and each of them is a decision rather than an implementation
 detail:
 
 - **Nothing is written down.** A page is fetched, encoded and dropped. A cache or
@@ -31,6 +31,19 @@ detail:
   not a thousand snippets, so the last page's measured weight sets the next
   one's limit. The data engine's own ceiling of 200 rows is what binds for small
   documents; the byte target is what binds for large ones.
+- **Several pages are in flight, and how many is a function of what one weighs.**
+  The waiting is nearly all of a page — an offset scan, a JSON encode, two hops —
+  so pages asked for together arrive in about the time one of them would.
+  But a reader running further ahead than the encoder can consume is not reading,
+  it is four more threads competing for the six cores the encoder is on. So
+  `remote._pages_at_once` asks for however many pages make one byte target's
+  worth: **one** for a corpus of books, where a single page already reaches it,
+  and up to `PAGE_CONCURRENCY` for a corpus of snippets, where the 200-row
+  ceiling binds first and a page is half a megabyte. Measured, packing end to
+  end: 6,000 `cosmopedia` documents in 8.1 s one page at a time and 3.4 s six at
+  a time; 150 `gutenberg_eng-clean` books in 7.3 s at one and 8.9 s at a fixed
+  four. Sizing off the page's weight lands on the right one without being told
+  which corpus it is looking at.
 
 All three build paths read through it: the pretrain pack, the vocabulary's
 strided sample, and the SFT render. Nothing in `llm/` opens a corpus file any
@@ -86,6 +99,42 @@ from `render_result` here, so neither is copied. An unknown tool drops the
 conversation rather than raising — the chat path can tell a caller it was wrong,
 a build over hundreds of thousands of rows cannot.
 
+## What the encoder is given, and why the pack is not slower than it is
+
+Packing is where a rebuild spends nearly all of its time, so the shape of what
+reaches the encoder is load-bearing. A batch is `ENCODE_BATCH_CHARS` of text cut
+into `bpe.CHUNK_CHARS` pieces — **not** a handful of whole documents, which is
+what it used to be. Three things follow, and the first two are what make an
+11 GiB machine enough:
+
+- **A batch is bounded by characters.** Filled with whole documents it was the
+  target *plus the last document*, and `gutenberg_eng-clean` holds books from a
+  few KB to 27.6 MB. One of those cost 30.6 s and 4.5 GiB of peak RSS inside the
+  encoder; in pieces it is 5.9 s and 1.2 GiB. Packing a 60 MB slice peaked at
+  1,127 MiB before and 483 MiB after.
+- **Every core has work to the end of the batch.** The library parallelizes
+  across a batch's *items*, so nine books are nine work units for six cores and
+  the largest book is the batch. Pieces are hundreds of units and divide evenly.
+- **The reader runs on a thread of its own** (`pack._read_ahead`), so a page is
+  fetched while the page before it is encoded. Before that, the six encoding
+  threads were busy 37% of the wall clock and the thread doing everything else
+  spent 83% of its own blocked on a socket.
+
+Together, on a 60 MB slice of the corpus above: **21.8 s to 10.9 s**, and the
+`corpus.bin`, `spans.npy` and `segments.json` that come out are byte-identical
+to what the old path wrote. They have to be, and two things are why.
+`bpe.encode_batch` asks for `encode_batch_fast`, which is the same ids without
+the token strings and character offsets nothing here reads (1.8x the CPU and
+1.2x the memory for four fields nobody asks for). And a piece boundary is a
+place the byte-level pretokenizer would have split anyway — a whitespace
+character whose predecessor is not whitespace — so BPE, which never merges
+across a pretoken, produces the same ids either way.
+`tests/test_encode_chunking.py` is what holds that: the cut rule, the identity,
+and a corpus packed at two different batch sizes coming out the same.
+
+A document with no such position in it — a megabyte of base64 — is left whole.
+It keeps the cost it already had, which is the only honest thing to do with it.
+
 ## What a packed corpus is made of
 
 A build directory holds the tokens (`corpus.bin`, plus `mask.bin` for SFT), the
@@ -124,10 +173,21 @@ are properties of the pack rather than of the reporting:
   `segments.json`'s `fertility` are two readings of it, the second summed back
   down to the dataset name. Nothing is counted twice and nothing can disagree.
 - **The pack is told what it is packing.** `build_dataset` hands it a `plan` —
-  `[{dataset, stage, expected}]` in reading order, off the resolved selection —
-  because the one thing a stream of `SourceDoc` cannot say about itself is how
-  much of it is left. Without a plan the pack still reports what it has done and
-  simply cannot project an ETA, which is what a script or a test gets.
+  `[{dataset, stage, expected, expected_chars}]` in reading order, off the
+  resolved selection — because the one thing a stream of `SourceDoc` cannot say
+  about itself is how much of it is left. Without a plan the pack still reports
+  what it has done and simply cannot project an ETA, which is what a script or a
+  test gets.
+- **The ETA is projected from text, not from document counts.** A document is
+  not an amount of text: `gutenberg_eng-clean` is 86% of a typical selection's
+  bytes and 5.6% of its documents. A pack a quarter of the way through the books
+  had read 3% of the documents it was asked for, divided the time it had spent
+  by that, and reported **fourteen hours** on a build that takes under one —
+  then would have collapsed the moment it reached the snippets. So
+  `pack._Tally` paces on characters against `remote.Selected.weight`, the
+  dataset's own recorded `byte_size` scaled by the cap. Bytes are within 1.5% of
+  characters on every corpus here, which is far inside what an ETA is worth, and
+  a plan that states no text is still paced by the documents it does state.
 
 Beyond the counters, a pretrain build reports what the tokenization and the
 packing actually produced: `fertility` (chars per token, per source),

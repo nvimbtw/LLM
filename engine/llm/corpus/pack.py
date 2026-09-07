@@ -23,6 +23,8 @@ import json
 import re
 import shutil
 from dataclasses import dataclass, field
+from queue import Full, Queue
+from threading import Event, Thread
 
 import numpy as np
 from tokenizers import Tokenizer
@@ -56,12 +58,34 @@ FLUSH_TOKENS = 1 << 21
 # batched — six hours against two on the full input tree, and packing is the step
 # a rebuild spends nearly all of its time in.
 #
-# Sized in characters rather than files because a batch is bounded by what it
-# holds, not by how many things it holds: 4 MiB is ~16 shards at the shape on
-# disk here (the measured optimum — 64 shards was slower and 330 MB heavier) and
-# is still 4 MiB when one file is 28 MB. The texts and their encodings are the
-# whole of the addition: ~40 MB of boxed ids on top of the flush buffer.
+# Sized in characters, and — unlike the version of this that counted documents
+# into it — actually bounded by them: a batch is built out of `bpe.CHUNK_CHARS`
+# pieces, so it is 4 MiB whether the corpus is web snippets or a 27 MB book.
+# Filled with whole documents it was 4 MiB *plus the last one*, and on
+# `gutenberg_eng-clean` that last one is up to 27.6 MB — a 4.5 GiB peak inside
+# the encoder, on a machine that has 11 GiB in total. 4 MiB was measured the
+# optimum at the shape on disk here; 64 shards' worth was slower and 330 MB
+# heavier.
 ENCODE_BATCH_CHARS = 1 << 22
+
+#: How many encode batches the reader runs ahead of the encoder.
+#:
+#: Packing alternates between two things that need nothing from each other: a
+#: page is fetched — a Postgres query, a JSON encode, two service hops — while
+#: every core sits idle, and then encoded while the socket sits idle. Measured on
+#: the run this was written for, the six encoding threads were busy 37% of the
+#: time and the thread doing everything else spent 83% of its own blocked on the
+#: network. Overlapping them is worth more than anything else here.
+#:
+#: Depth is what it costs in memory: this many batches are queued while one more
+#: is being built and one more is being encoded. One is enough to cover a page,
+#: and counting in batches rather than pages or documents is the same argument as
+#: sizing the batch in characters — neither of those is an amount of text.
+READ_AHEAD_BATCHES = 1
+
+#: How long the reader waits on a full queue before checking whether the pack it
+#: is feeding is still there. Only a pack that ended early ever reaches it.
+READ_AHEAD_POLL_SECS = 0.5
 
 #: How a key reads in a directory listing: a couple of dataset names, then the
 #: vocabulary it was packed with, then the digest that actually identifies it.
@@ -105,6 +129,29 @@ class SourceDoc:
     stage: int = 0
 
 
+@dataclass(frozen=True)
+class _Piece:
+    """One item of an encode batch: a slice of one document, and where in that
+    document it falls.
+
+    Documents are cut up (`bpe.split_for_encoding`) for two reasons that arrive
+    together. The encoder parallelizes across the *items* of a batch, so a batch
+    of nine books is nine work units for six cores and the largest book is the
+    batch; and a batch built out of whole documents is as big as the biggest one
+    in it, which on `gutenberg_eng-clean` is 27.6 MB of text and 4.5 GiB inside
+    the encoder.
+
+    The two flags are what puts the document back together: a span cannot be
+    recorded until the last of its pieces has been encoded, and a batch boundary
+    is allowed to fall between two pieces of the same document.
+    """
+
+    source: SourceDoc
+    text: str
+    opens: bool
+    closes: bool
+
+
 @dataclass
 class PackStats:
     datasets: int
@@ -131,6 +178,12 @@ class PackStats:
     fertility: list[dict] = field(default_factory=list)
 
 
+def _blank_row(dataset: str, stage: int) -> dict:
+    """One source's counters before it has been read. What the plan knows on top
+    of this — how much there is going to be — is added by whoever seeds it."""
+    return {"dataset": dataset, "stage": stage, "documents": 0, "chars": 0, "tokens": 0}
+
+
 class _Tally:
     """What the pack has counted so far, and the live frame built off it.
 
@@ -150,17 +203,16 @@ class _Tally:
         # reached yet is still on the strip — at zero, which is a fact about the
         # build rather than a gap in it. A source absent from the plan is
         # appended as it arrives; nothing is dropped for being unexpected.
-        self._rows: dict[tuple[int, str], dict] = {
-            (one["stage"], one["dataset"]): {
-                "dataset": one["dataset"],
-                "stage": one["stage"],
-                "expected": one["expected"],
-                "documents": 0,
-                "chars": 0,
-                "tokens": 0,
-            }
-            for one in plan or []
-        }
+        self._rows: dict[tuple[int, str], dict] = {}
+        for one in plan or []:
+            row = _blank_row(one["dataset"], one["stage"])
+            row["expected"] = one["expected"]
+            # Absent rather than zero where the plan does not state it — the
+            # convention `Tokenize` follows, and here it also decides which unit
+            # the ETA is projected in. See `expected_chars`.
+            if one.get("expected_chars"):
+                row["expected_chars"] = one["expected_chars"]
+            self._rows[(one["stage"], one["dataset"])] = row
         self._active: tuple[int, str] | None = None
         self.documents = 0
         self.chars = 0
@@ -181,13 +233,7 @@ class _Tally:
         key = (source.stage, source.dataset)
         self._active = key
         if key not in self._rows:
-            self._rows[key] = {
-                "dataset": source.dataset,
-                "stage": source.stage,
-                "documents": 0,
-                "chars": 0,
-                "tokens": 0,
-            }
+            self._rows[key] = _blank_row(source.dataset, source.stage)
         return self._rows[key]
 
     @property
@@ -196,7 +242,24 @@ class _Tally:
 
     @property
     def expected(self) -> int:
+        """Documents the plan says will be read."""
         return sum(row.get("expected", 0) for row in self._rows.values())
+
+    @property
+    def expected_chars(self) -> int:
+        """Characters the plan says will be read, and the unit the bar and the
+        ETA are measured in wherever it says.
+
+        Documents are what a person counts and are the wrong thing to project
+        from, because a document is not an amount of text.
+        `gutenberg_eng-clean` is 86% of a typical selection's bytes and 5.6% of
+        its documents, so a pack a quarter of the way through the books reported
+        fourteen hours left and would have collapsed to under one the moment it
+        reached the snippets. A dataset's recorded `byte_size` is within 1.5% of
+        its character count on every corpus here, which is far inside what an ETA
+        is worth.
+        """
+        return sum(row.get("expected_chars", 0) for row in self._rows.values())
 
     def fertility(self) -> list[dict]:
         """Characters read and tokens written per dataset, for the sidecar.
@@ -226,8 +289,17 @@ class _Tally:
         if report is None or not (force or report.due):
             return
         expected = self.expected
+        # Off characters where the plan states them, and off documents where it
+        # does not — a script or a test hands over a plan with counts alone, and
+        # a fraction measured against a total nobody stated would be a fraction
+        # of nothing. See `expected_chars` for why the unit matters this much.
+        wanted = self.expected_chars
         report.say(
-            **report.pace(self.documents, expected, self.tokens),
+            **(
+                report.pace(self.chars, wanted, self.tokens)
+                if wanted
+                else report.pace(self.documents, expected, self.tokens)
+            ),
             documents=expected or None,
             documents_done=self.documents,
             chars=self.chars,
@@ -292,6 +364,93 @@ def corpus_key(fingerprint: str, stages: list[StageSelection]) -> str:
     return f"{slug or 'empty'}-{fingerprint[:KEY_FINGERPRINT_CHARS]}-{digest}"
 
 
+def _batches(documents_in, limit: int | None = None, chunk: int | None = None):
+    """`documents_in`, cut into pieces and grouped into one encode's worth each.
+
+    The one place a stream of documents becomes a stream of work, and a
+    generator so that `_read_ahead` can run the whole of it — the page fetch,
+    the JSON, the cutting — on a thread of its own.
+
+    A batch overshoots `limit` by at most one piece, which is what makes it
+    bounded: `bpe.CHUNK_CHARS` and not "however long the next document is".
+
+    Both sizes are read here rather than bound into the signature, so that they
+    stay knobs a test can turn down without needing a corpus scaled to them.
+    """
+    limit = limit or ENCODE_BATCH_CHARS
+    chunk = chunk or bpe.CHUNK_CHARS
+    batch: list[_Piece] = []
+    pending = 0
+    for source in documents_in:
+        pieces = bpe.split_for_encoding(source.text, chunk)
+        last = len(pieces) - 1
+        for index, text in enumerate(pieces):
+            batch.append(_Piece(source, text, opens=index == 0, closes=index == last))
+            pending += len(text)
+            if pending >= limit:
+                yield batch
+                batch, pending = [], 0
+    if batch:
+        yield batch
+
+
+def _read_ahead(batches, depth: int = READ_AHEAD_BATCHES):
+    """`batches`, filled by a thread of its own.
+
+    So that waiting for a page overlaps encoding the page before it. Nothing
+    else moves: the same batches arrive in the same order, and every counter,
+    every span and the corpus file itself are still touched only by the thread
+    that consumes this.
+
+    What the thread is for is also what makes it safe — it does the reading and
+    nothing else, so `documents_in` has exactly one consumer, as it did when the
+    packer iterated it directly.
+    """
+    queue: Queue = Queue(maxsize=depth)
+    stop = Event()
+    ended = object()
+
+    def offer(item) -> bool:
+        """Hand one item over, unless the pack has gone away in the meantime."""
+        while not stop.is_set():
+            try:
+                queue.put(item, timeout=READ_AHEAD_POLL_SECS)
+                return True
+            except Full:
+                continue
+        return False
+
+    def fill() -> None:
+        try:
+            for batch in batches:
+                if not offer(batch):
+                    return
+        except Exception as failure:  # noqa: BLE001 — re-raised below, in the caller
+            offer(failure)
+        else:
+            offer(ended)
+
+    reader = Thread(target=fill, name="corpus-read-ahead", daemon=True)
+    reader.start()
+    try:
+        while True:
+            item = queue.get()
+            if item is ended:
+                return
+            if isinstance(item, Exception):
+                # A dropped page belongs to the pack that asked for it, not to a
+                # thread nobody is watching. `remote.Client` has already retried.
+                raise item
+            yield item
+    finally:
+        # A pack that ended early — its own failure, or a caller that stopped
+        # consuming — leaves the reader blocked on a queue nobody will drain. It
+        # checks between attempts; a fetch already in flight has its own timeout
+        # and the thread is a daemon, so nothing here waits on the network.
+        stop.set()
+        reader.join(timeout=READ_AHEAD_POLL_SECS * 2)
+
+
 def pack(
     documents_in,
     tok: Tokenizer,
@@ -312,9 +471,11 @@ def pack(
     `report` is the caller's `llm.train.progress.BuildReport`, passed in rather
     than imported — `corpus` sits left of `train` in the layering, and a packer
     that built its own frames would be reaching right. `plan` is what it is
-    reporting against: `[{dataset, stage, expected}]` in reading order, which is
-    the one thing a stream of `SourceDoc` cannot say about itself. Without it
-    the pack still reports what it has done, and cannot say how much is left.
+    reporting against: `[{dataset, stage, expected, expected_chars}]` in reading
+    order, which is the one thing a stream of `SourceDoc` cannot say about
+    itself. Without it the pack still reports what it has done, and cannot say
+    how much is left. `expected_chars` is optional and is what an ETA is
+    projected from where it is there — see `_Tally.expected_chars`.
     """
     vocab = bpe.vocab_size(tok)
     if vocab > np.iinfo(CORPUS_DTYPE).max + 1:
@@ -357,6 +518,13 @@ def pack(
     # step of every run. See `llm.train.diagnostics.histogram`.
     counts = np.zeros(vocab, dtype=np.int64)
 
+    # The document being written, which a batch boundary is allowed to fall in
+    # the middle of: where it began in the corpus, and how much of it has been
+    # written so far. Its span cannot be recorded until its last piece has been
+    # encoded, and that may be the first piece of the next batch.
+    open_start = 0
+    open_length = 0
+
     def flush() -> None:
         if buffer:
             block = np.asarray(buffer, dtype=CORPUS_DTYPE)
@@ -365,61 +533,54 @@ def pack(
             buffer.clear()
 
     with partial.open("wb") as out:
-        batch: list[SourceDoc] = []
-        texts: list[str] = []
-        pending = 0
 
-        def drain() -> None:
-            """Encode the files held so far, in order, and append them."""
-            nonlocal corpus_len, pending
-            if not texts:
-                return
+        def write(batch: list[_Piece]) -> None:
+            """Encode one batch and append what it holds, in order."""
+            nonlocal corpus_len, open_start, open_length
 
-            for source, ids in zip(batch, bpe.encode_batch(tok, texts)):
-                # Counted before the empty check, so `chars` is what was read
-                # and not what survived encoding — a source that encodes to
-                # nothing is a fact about the tokenizer, not an absence of text.
-                tally.read(source)
-                if not ids:
-                    continue
+            encoded = bpe.encode_batch(tok, [piece.text for piece in batch])
+            for piece, ids in zip(batch, encoded):
+                source = piece.source
+                if piece.opens:
+                    # Counted before anything is looked at, so `chars` is what
+                    # was read and not what survived encoding — a source that
+                    # encodes to nothing is a fact about the tokenizer, not an
+                    # absence of text.
+                    tally.read(source)
+                    open_start, open_length = corpus_len, 0
 
-                documents.append(
-                    source.dataset,
-                    start=corpus_len,
-                    length=len(ids),
-                    stage=source.stage,
-                )
-                buffer.extend(ids)
-                buffer.append(eot_id)
-                corpus_len += len(ids) + 1
-                # The document's own tokens, as `spans` records them — the
-                # separator belongs to the packing, not to the source.
-                tally.wrote(source, len(ids))
-                seen.update(marker_ids.intersection(ids))
+                if ids:
+                    buffer.extend(ids)
+                    corpus_len += len(ids)
+                    open_length += len(ids)
+                    seen.update(marker_ids.intersection(ids))
+                    if len(buffer) >= FLUSH_TOKENS:
+                        flush()
 
-                if len(buffer) >= FLUSH_TOKENS:
-                    flush()
+                if piece.closes and open_length:
+                    documents.append(
+                        source.dataset,
+                        start=open_start,
+                        length=open_length,
+                        stage=source.stage,
+                    )
+                    # The document's own tokens, as `spans` records them — the
+                    # separator belongs to the packing, not to the source.
+                    buffer.append(eot_id)
+                    corpus_len += 1
+                    tally.wrote(source, open_length)
 
-            batch.clear()
-            texts.clear()
-            pending = 0
             # One batch is one report at most, and usually fewer: this is the
             # only boundary at which the counters are consistent, and it is
             # reached often enough (a batch is `ENCODE_BATCH_CHARS` of text)
             # that the throttle rather than the loop decides the frame rate.
             tally.report(report)
 
-        for source in documents_in:
-            batch.append(source)
-            texts.append(source.text)
-            pending += len(source.text)
-            # One batch is one page: the documents are encoded and released
-            # before the next page is asked for, so peak memory is a page and
-            # not a corpus.
-            if pending >= ENCODE_BATCH_CHARS:
-                drain()
-
-        drain()
+        # Read on one thread and encoded on this one, so a page is being fetched
+        # while the page before it is being encoded. Peak memory is a handful of
+        # batches whatever the corpus is, which is what `_Piece` bought.
+        for batch in _read_ahead(_batches(documents_in)):
+            write(batch)
         flush()
 
     partial.replace(corpus)

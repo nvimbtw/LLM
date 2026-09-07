@@ -134,6 +134,56 @@ def test_a_rate_of_nothing_is_absent_rather_than_zero(clock):
     assert paced["tokens_per_sec"] == pytest.approx(500.0)
 
 
+def test_a_build_projects_from_text_and_not_from_document_counts(clock):
+    """The number that read as fourteen hours on a pack that took four.
+
+    A document is not an amount of text: `gutenberg_eng-clean` is 92% of this
+    selection's bytes and 8.8% of its documents, so a pack a quarter of the way
+    through the books had read 2% of the documents it was asked for — and
+    divided the hour it had spent by that.
+    """
+    frames: list[Tokenize] = []
+    report = BuildReport(frames.append)
+    report.at("packing")
+    tally = pack._Tally(
+        [
+            {"dataset": "books", "stage": 0, "expected": 48_284,
+             "expected_chars": 17_201_587_997},
+            {"dataset": "snippets", "stage": 0, "expected": 500_000,
+             "expected_chars": 1_390_416_820},
+        ]
+    )
+
+    book = pack.SourceDoc(dataset="books", text="x" * 356_259)
+    for _ in range(12_071):  # a quarter of the books, and none of the snippets
+        tally.read(book)
+    clock.now += 3_600
+    tally.report(report, force=True)
+
+    # Three quarters of the books and all of the snippets, at the rate the first
+    # quarter went: three and a bit hours left.
+    assert frames[-1].eta_secs == pytest.approx(11_964, rel=0.01)
+    counted_by_document = 3_600 / 12_071 * (548_284 - 12_071)
+    assert counted_by_document > 10 * frames[-1].eta_secs
+
+
+def test_a_plan_that_states_no_text_is_still_paced_by_what_it_does_state(clock):
+    """A script or a test hands over document counts alone. Projecting off a
+    total nobody stated would be a fraction of nothing, so the documents are
+    used — which is what every build did before text was in the plan."""
+    frames: list[Tokenize] = []
+    report = BuildReport(frames.append)
+    report.at("packing")
+    tally = pack._Tally([{"dataset": "d", "stage": 0, "expected": 100}])
+
+    for _ in range(25):
+        tally.read(pack.SourceDoc(dataset="d", text="four"))
+    clock.now += 10
+    tally.report(report, force=True)
+
+    assert frames[-1].eta_secs == pytest.approx(30.0)
+
+
 def test_the_eta_is_projected_from_the_step_and_not_from_the_phase(clock):
     """A pack that inherited the minute the vocabulary took would read as slower
     than it is until it had caught up with the lie."""
@@ -157,9 +207,16 @@ def _frames_of_a_pack(client, plan_extra: int = 0) -> list[Tokenize]:
     key = pack.corpus_key(fingerprint, [(None, selection)])
 
     plan = [
-        {"dataset": one.name, "stage": 0, "expected": one.taken} for one in selection
+        {
+            "dataset": one.name,
+            "stage": 0,
+            "expected": one.taken,
+            "expected_chars": one.weight,
+        }
+        for one in selection
     ] + [
-        {"dataset": f"unread-{i}", "stage": 1, "expected": 1} for i in range(plan_extra)
+        {"dataset": f"unread-{i}", "stage": 1, "expected": 1, "expected_chars": 1}
+        for i in range(plan_extra)
     ]
     frames: list[Tokenize] = []
     pack.pack(

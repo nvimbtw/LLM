@@ -8,6 +8,7 @@ a vocabulary is allowed to learn from.
 """
 
 import functools
+import re
 from pathlib import Path
 
 from tokenizers import Tokenizer
@@ -210,10 +211,72 @@ def encode_batch(tok: Tokenizer, texts: list[str]) -> list[list[int]]:
     shards: 2.3 MB/s one at a time against 7.0 MB/s batched — 3.0x on the step
     that dominates a rebuild.
 
+    `encode_batch_fast` rather than `encode_batch`, because the ids are the whole
+    of what anything here reads and the difference between the two calls is what
+    the library builds *beside* them: every token's own string, the character
+    offsets it was trimmed to, the type and attention masks. Measured on 4.4 MB
+    of `gutenberg_eng-clean`, that is 1.8x the CPU and 1.2x the peak memory for
+    four fields nobody asks for. The ids are identical, and
+    `tests/test_encode_chunking.py` is what says so.
+
     Identical output to calling `encode` per text: the batch is a scheduling
     detail, and each text is still encoded independently.
     """
-    return [encoding.ids for encoding in tok.encode_batch(texts)]
+    return [encoding.ids for encoding in tok.encode_batch_fast(texts)]
+
+
+#: How much of one document goes into a single item of an encode batch.
+#:
+#: The library parallelizes a batch across its *items*, so a batch is only as
+#: balanced as the documents in it — and a document is not an amount of text.
+#: `gutenberg_eng-clean` holds books from a few KB to 27 MB, so a 4 MiB batch is
+#: nine of them, five cores finish early and the largest one is the batch. Worse,
+#: the pretokenization of a whole document is held at once: one 27.6 MB book cost
+#: 30.6 s and 4.5 GiB of peak RSS whole, against 5.9 s and 1.2 GiB in pieces.
+#:
+#: Throughput is flat from 8 KiB to 256 KiB on the corpora here, so the size is
+#: chosen for the tail rather than for the middle: 64 KiB gives six cores
+#: something to divide even when the batch is a single 400 KB book.
+CHUNK_CHARS = 1 << 16
+
+#: A cut is made *at* the whitespace, so the character before it must be
+#: non-whitespace and the whitespace itself must be one this tokenizer's own
+#: regex agrees is whitespace. Spelled out rather than `\s` on both sides because
+#: Python's `\s` and Rust's differ at the edges (`\x1c`-`\x1f` are whitespace to
+#: one and not the other), and this pattern has to be the stricter of the two in
+#: both positions or the cut is not a boundary.
+_CUT_POINT = re.compile(r"\S[ \t\n\r\f\v]")
+
+
+def split_for_encoding(text: str, limit: int = CHUNK_CHARS) -> list[str]:
+    """`text` in pieces that encode to exactly what the whole of it encodes to.
+
+    A cut lands on a whitespace character whose predecessor is not whitespace,
+    and that position is always a pretoken boundary: every alternative in the
+    byte-level pretokenizer's pattern either stops at whitespace or matches
+    whitespace only, so the pretoken holding the character before the cut ends
+    there — and nothing in the pattern looks backwards, so the text after the cut
+    pretokenizes the same alone as it did in place. BPE merges never cross a
+    pretoken, so concatenating the pieces' ids reproduces the document's.
+
+    A stretch with no such position in it — a megabyte of base64 — is left whole
+    rather than cut somewhere that is not a boundary. Correctness is not
+    negotiable for a speedup; a pathological document simply keeps the cost it
+    already had.
+    """
+    if len(text) <= limit:
+        return [text]
+    pieces = []
+    start = 0
+    while len(text) - start > limit:
+        found = _CUT_POINT.search(text, start + limit)
+        if found is None:
+            break
+        cut = found.start() + 1
+        pieces.append(text[start:cut])
+        start = cut
+    pieces.append(text[start:])
+    return pieces
 
 
 def decode(tok: Tokenizer, ids: list[int]) -> str:

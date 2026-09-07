@@ -248,6 +248,11 @@ export interface BuildSource {
   dataset: string
   stage: number
   expected?: number
+  // How much text this source is expected to hold, from the dataset's recorded
+  // byte size. It is what the build's own bar and ETA are projected from — a
+  // document is not an amount of text, and a selection of books and snippets is
+  // 86% books by bytes and 5.6% by documents.
+  expected_chars?: number
   documents: number
   chars: number
   tokens: number

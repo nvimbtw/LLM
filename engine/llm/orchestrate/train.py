@@ -308,7 +308,15 @@ def build_dataset(
     """
     stages = cfg.stages()
     plan = [
-        {"dataset": selected.name, "stage": index, "expected": selected.taken}
+        {
+            "dataset": selected.name,
+            "stage": index,
+            "expected": selected.taken,
+            # What the pack projects its ETA against. Documents are what a person
+            # counts and are the wrong unit to divide elapsed time by — see
+            # `remote.Selected.weight`.
+            "expected_chars": selected.weight,
+        }
         for index, (_, datasets) in enumerate(selection)
         for selected in datasets
     ]

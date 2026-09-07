@@ -159,18 +159,29 @@ Five things about it are decisions rather than implementation details.
   forgive one. Both are `BuildReport.pace`, so a pack and an SFT render cannot
   disagree about what either means.
 
+- **What a pack divides by is text, not documents.** `pace` takes whatever unit
+  it is handed, and the packer hands it characters against the plan's
+  `expected_chars`. A document is not an amount of text — a selection of books
+  and web snippets is 86% books by bytes and 5.6% by documents — so a pack a
+  quarter of the way through the books had read 3% of the documents it was asked
+  for and reported fourteen hours on a build that takes under one. The bar moves
+  in the same unit, for the same reason. See
+  [`corpus.md`](corpus.md).
+
 | Step | Reports |
 |---|---|
 | `sampling` | `sampled_bytes` against `sample_budget` — the text the merges will be fitted to |
 | `merges` | nothing while it runs: one call into `tokenizers`, which exposes no callback (the same fact `merge_sequence` is shaped by). The step's name and the clock are the whole of what a watcher gets, and they are the difference between working and hung |
-| `packing` | `documents_done`/`documents`, `chars`, `total_tokens`, and `sources` |
+| `packing` | `documents_done`/`documents`, `chars`, `total_tokens`, and `sources`. The bar and the ETA are `chars` against the plan's, not documents against documents |
 | `rendering` | a fine-tune's one long step: `documents_done`, `conversations`, `total_tokens`, `trainable_tokens`, `skipped_too_long` |
 | `reusing` | that the build was found on disk, so the hours are skipped and the reporting is not |
 | `measuring` | the closing frame — `window_fit`, the ribbon, fertility, dead vocab |
 
 `sources` is the one field that is not a scalar, and it is bounded the way
 `fertility` is: `pack.BUILD_SOURCES` rows of `{dataset, stage, expected,
-documents, chars, tokens}`, with `sources_total` carrying the real count. It is
+expected_chars, documents, chars, tokens}`, with `sources_total` carrying the
+real count. `expected_chars` is absent rather than zero on a plan that did not
+state it, which is what decides the unit above. It is
 keyed by `(stage, dataset)` and not by dataset alone, because a dataset two
 stages name is read twice on purpose and a bar that summed the two passes would
 sit at half through the whole of the first. The window is **centred on the source

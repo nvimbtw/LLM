@@ -21,11 +21,17 @@ pack. A page costs one retry.
 books is not a thousand web snippets. The size of the last page sets the next
 one's limit, against a byte target — bounded above by the data engine's own
 ceiling of 200 rows, which is what actually binds for small documents. Peak
-memory is one page, whatever the corpus turns out to be.
+memory is `PAGE_CONCURRENCY` pages, whatever the corpus turns out to be.
+
+**Several pages are asked for at once.** Nearly all of a page is the waiting —
+the offset scan, the JSON, two service hops — so pages in flight together arrive
+in about the time one of them would have. They are still *yielded* in order,
+because concatenation order is a real training difference.
 """
 
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import httpx
@@ -44,8 +50,11 @@ from llm.backend import (  # noqa: F401  (re-exported: this was their address fi
     secret,
 )
 
-#: What a page should weigh. Matches `pack.ENCODE_BATCH_CHARS`, so one page is
-#: one encode batch and is released as soon as it has been encoded.
+#: What a page should weigh. The same size as `pack.ENCODE_BATCH_CHARS`, so a
+#: page is about one encode's worth of work and is released once it has been
+#: encoded. Not one *for* one any more — the packer reads ahead of its encoder,
+#: and cuts documents up before batching them — but the two still want to be the
+#: same order of magnitude, because what is in flight is a small multiple of it.
 PAGE_TARGET_BYTES = 1 << 22
 
 #: The data engine refuses a larger `limit` (`MAX_PAGE` in its datasets router).
@@ -57,6 +66,19 @@ MAX_PAGE_DOCUMENTS = 200
 #: Where sizing starts, before any page has been measured. Deliberately small:
 #: the first page of a corpus of books should not be the one that hurts.
 FIRST_PAGE_DOCUMENTS = 16
+
+#: The most pages of one dataset to have in flight at once. How many actually
+#: are is `_pages_at_once`, and is usually one.
+#:
+#: A page costs a round trip, an offset scan and a JSON encode, and the waiting
+#: is nearly all of it — the bytes are the small part. Measured over 24 pages of
+#: `cosmopedia` at offset 250,000: 3.12 MB/s one at a time, 8.10 MB/s four at a
+#: time, 11.22 MB/s six.
+#:
+#: A ceiling and not a target, because reading further ahead than the encoder
+#: can keep up with is not reading, it is competing for the same six cores. What
+#: is in flight is also what is held in memory.
+PAGE_CONCURRENCY = 6
 
 #: A dropped page is retried rather than losing the pack around it. Transport
 #: failures and 5xx only — a 404 means the dataset is gone and retrying it is
@@ -118,6 +140,18 @@ class Selected:
     def taken(self) -> int:
         """How many documents this selection actually reads."""
         return min(self.cap, self.documents) if self.cap else self.documents
+
+    @property
+    def weight(self) -> int:
+        """How much text this selection reads, in bytes.
+
+        The dataset's own `byte_size`, scaled by the share of it the cap takes.
+        What it is for is projecting a build's progress: `taken` counts
+        documents, and a document is not an amount of text — the same selection
+        can be 48,284 books or 500,000 snippets, and one of those is thirteen
+        times the other's bytes. See `llm.corpus.pack._Tally.expected_chars`.
+        """
+        return self.bytes * self.taken // self.documents if self.documents else 0
 
     def identity(self) -> list:
         """What a key is a function of.
@@ -262,35 +296,60 @@ class Client(Hop):
         start: int = 0,
         target_bytes: int = PAGE_TARGET_BYTES,
     ) -> Iterator[dict]:
-        """Every document of a dataset, in `ordinal` order, one page at a time.
+        """Every document of a dataset, in `ordinal` order, a few pages at a time.
 
         `cap` takes the first N — the selection cap, which used to mean "the
         first N files" and now means the first N documents. It is the same
         promise it always made and a better-founded one: `ordinal` is the data
         engine's stable order, where a directory listing was ordering by
         filename and hoping.
+
+        Asked for in windows and yielded in order. What that buys is in
+        `PAGE_CONCURRENCY`; what it costs is that the offsets of a window are
+        planned before any of it has come back, so a page that returned short
+        would put every offset after it out by the difference. `_window` is where
+        that cannot happen — it asks only for pages the dataset has said it
+        holds, which is why the first one is always alone.
         """
         offset = start
         limit = FIRST_PAGE_DOCUMENTS
         served = 0
+        total = 0
+        width = 1
 
-        while cap is None or served < cap:
-            if cap is not None:
-                limit = min(limit, cap - served)
+        with ThreadPoolExecutor(
+            max_workers=PAGE_CONCURRENCY, thread_name_prefix="corpus-page"
+        ) as pool:
+            while cap is None or served < cap:
+                size = _clamp(limit if cap is None else min(limit, cap - served))
+                asked = _window(offset, size, width, total, cap, served)
+                if not asked:
+                    return
+                window = list(pool.map(lambda at: self.page(dataset_id, at, size), asked))
 
-            rows, total, weight = self.page(dataset_id, offset, limit)
-            if not rows:
-                return
+                read = 0
+                weight = 0
+                for rows, said, page_weight in window:
+                    if not rows:
+                        return
+                    total = said or total
+                    read += len(rows)
+                    weight += page_weight
+                    for row in rows:
+                        yield row
+                        served += 1
+                        # A window is planned in whole pages, so its last page
+                        # may reach past a cap. Reading a few rows nobody asked
+                        # for is a page of bandwidth once per dataset; yielding
+                        # them would be training on data nobody selected.
+                        if cap is not None and served >= cap:
+                            return
+                    offset += len(rows)
+                    if offset >= total:
+                        return
 
-            for row in rows:
-                yield row
-                served += 1
-
-            offset += len(rows)
-            if offset >= total:
-                return
-
-            limit = _next_limit(limit, len(rows), weight, target_bytes)
+                limit = _next_limit(limit, read, weight, target_bytes)
+                width = _pages_at_once(weight, len(asked), target_bytes)
 
 
 def text_of(row: dict) -> str | None:
@@ -366,6 +425,51 @@ def sample(
         if held:
             spent += weight
             yield selected.name, "\n".join(held)
+
+
+def _window(
+    offset: int, limit: int, width: int, total: int, cap: int | None, served: int
+) -> list[int]:
+    """The offsets to ask for at once, in reading order.
+
+    Every page of a window but the last is one the dataset has already said it
+    holds in full, so only the last of them can come back short — and nothing is
+    planned after it. Until a page has answered, `total` is unknown and the
+    window is one page: that first page is what makes every window after it safe.
+    """
+    if not total:
+        return [offset]
+    room = total - offset
+    if cap is not None:
+        room = min(room, cap - served)
+    if room <= 0:
+        return []
+    pages = min(width, -(-room // limit))
+    return [offset + at * limit for at in range(pages)]
+
+
+def _pages_at_once(weight: int, pages: int, target: int) -> int:
+    """How many pages to ask for at once, from what the last ones weighed.
+
+    However many it takes to make one page's worth of *bytes* — which for a
+    corpus of books is one, because there a single page already reaches the byte
+    target, and for a corpus of snippets is several, because the data engine's
+    ceiling of `MAX_PAGE_DOCUMENTS` rows binds first and 200 of them are half a
+    megabyte where the target is four.
+
+    That is the right question to ask because reading further ahead than the
+    encoder can consume is not reading — it is four more threads competing for
+    the six cores the encoder is already using. Packing 150 books took 7.4 s one
+    page at a time and 8.9 s four at a time; packing 6,000 snippets took 8.1 s
+    one at a time and 3.7 s six at a time. Sizing off the page's weight lands on
+    the right one of those without being told which corpus this is.
+    """
+    if weight <= 0 or pages <= 0:
+        return 1
+    # Whole pages that fit in the target, never a part of one: a page already
+    # within a rounding error of the target is one page, and asking for a second
+    # to cover the remainder is the case that costs books 6% for nothing.
+    return max(1, min(PAGE_CONCURRENCY, target * pages // weight))
 
 
 def _next_limit(limit: int, rows: int, weight: int, target: int) -> int:
