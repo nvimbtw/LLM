@@ -159,10 +159,18 @@ const CONVERSATION: Turn[] = [
       "2p, so candidates are 27, 53 and 79 — of which only 53 and 79 are prime, and neither " +
       "divides 8191. It is prime, and it is in fact the fourth Mersenne prime.<|/thinking|>" +
       "<|par|>Yes — and it is a notable one.<|/par|>" +
-      "<|par|>8,191 is <|bold|>2^13 − 1<|/bold|>, the fourth Mersenne prime.<|/par|>" +
+      // Maths has no token of its own: it arrives as markdown inside a <|par|>,
+      // inline and displayed, and is lifted out by lib/math-parser.ts. Both
+      // forms are here because the inline one has to sit on the line without
+      // disturbing it, and the displayed one has to hold the block rhythm.
+      "<|par|>8,191 is $2^{13} - 1$, the fourth Mersenne prime. A factor of a " +
+      "Mersenne number must satisfy<|/par|>" +
+      "<|par|>$$q \\equiv 1 \\pmod{2p}, \\qquad q \\le \\sqrt{2^{p}-1}$$<|/par|>" +
+      "<|par|>which leaves only $53$ and $79$ to try, and neither divides it.<|/par|>" +
       "<|thinking|>Should I list the earlier ones? It is short and makes the pattern " +
       "concrete. Yes.<|/thinking|>" +
-      "<|par|>The ones before it are 3, 7 and 31 — that is 2^2−1, 2^3−1 and 2^5−1.<|/par|>",
+      "<|par|>The ones before it are 3, 7 and 31 — that is $2^2-1$, $2^3-1$ and " +
+      "$2^5-1$.<|/par|>",
   },
   {
     id: "m9",

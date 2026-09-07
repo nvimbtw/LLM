@@ -13,6 +13,7 @@ import {
   type MNode,
 } from "@/lib/message-parser"
 import { useSettings } from "@/components/settings/settings-provider"
+import { Math } from "./math"
 import { MessageAside } from "./message-aside"
 import { ReasoningPanel } from "./reasoning-panel"
 
@@ -215,6 +216,14 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
           code={stripEdgeNewlines(textContent(el))}
           lang={el.attrs?.lang}
         />
+      )
+    case "math block":
+    case "math inline":
+      // The node's text *is* the TeX, delimiters already stripped. Typeset by
+      // KaTeX rather than rendered here: maths is the one thing in a reply whose
+      // layout cannot be expressed in the vocabulary the rest of this file uses.
+      return (
+        <Math tex={textContent(el)} display={el.type === "math block"} />
       )
     case "ordered list":
       return (

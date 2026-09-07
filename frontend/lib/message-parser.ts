@@ -23,8 +23,15 @@
 // keeps the renderer as the single place that knows how each node type looks,
 // while the backend stays the single source of truth for token names.
 //
+// Maths is the exception to all of this: it has no token of its own and
+// arrives as ordinary markdown (`$$…$$`, `$…$`) inside whatever block the model
+// was already writing, so it is lifted out of the finished tree by
+// `splitMath` (lib/math-parser.ts) rather than by the tag scanner below.
+//
 // Tags may carry attributes after a `|` separator (e.g. `href='...'`).
 // `<|divider|>` is void (no closing tag).
+
+import { splitMath } from "./math-parser"
 
 // Backend token name -> render node type. Names not listed pass through
 // unchanged (quote, divider, italic, bold, list, item, link, …).
@@ -197,7 +204,7 @@ export function parseMessage(input: string): MElement {
 
   if (last < input.length) pushText(input.slice(last))
 
-  return root
+  return splitMath(root)
 }
 
 /** Flattens an element's descendant text — used for code, which is plain text. */

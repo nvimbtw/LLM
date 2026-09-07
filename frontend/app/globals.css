@@ -844,6 +844,38 @@
   }
 }
 
+/* ---- Maths (KaTeX) --------------------------------------------------------
+   Three corrections to the stylesheet KaTeX ships, and nothing else: its layout
+   is the reason we load it, and everything it draws already inherits our ink.
+
+   1. KaTeX sets 1.21em on the assumption that its Computer Modern is next to a
+      body face with a taller x-height than ours. At 1.21 an equation shouts
+      over the sentence containing it and pushes the line box apart; 1.1 is the
+      point where the two faces read at the same size.
+   2. The block margins go, so a displayed equation is spaced by the same
+      `0.9em` block rhythm as the paragraph and the list around it
+      (components/chat/rich-message.tsx), rather than by KaTeX's own 1em — two
+      systems arguing produces a gap that belongs to neither.
+   3. A displayed equation sits at the left margin, not centred. Centring is
+      the convention in a paper, where an equation is numbered and referred back
+      to; in a reply it is a step in an argument the reader is scanning down the
+      left edge of, and pulling it to the middle breaks that edge.
+
+   Every rule is hung off `.rich-math`, the wrapper `components/chat/math.tsx`
+   puts around KaTeX's output, rather than written flat against `.katex`. Both
+   stylesheets are unlayered and these selectors are the same ones KaTeX uses,
+   so a flat rule would be decided by which `<link>` the bundler happened to
+   emit last — which is not ours. The descendant selector wins on specificity
+   instead, and confines the change to the surfaces we render maths on. */
+.rich-math .katex {
+  font-size: 1.1em;
+}
+.rich-math .katex-display,
+.rich-math .katex-display > .katex {
+  margin: 0;
+  text-align: left;
+}
+
 /* An upload in flight, under its tile in the composer's attachment strip. A
    sliver travelling the width rather than a filling bar: the browser reports no
    progress for a request this small, and a bar that claims a fraction it does

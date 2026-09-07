@@ -11,6 +11,7 @@
 //   **bold**  *italic*
 //   blank-line-separated paragraphs
 
+import { splitMath } from "./math-parser"
 import type { MElement, MNode } from "./message-parser"
 
 const FENCE_OPEN = /^```(\w*)\s*$/
@@ -155,5 +156,5 @@ export function parseUserMarkdown(input: string): MElement {
   }
 
   flushPara()
-  return root
+  return splitMath(root)
 }

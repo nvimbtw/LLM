@@ -37,6 +37,13 @@ export default function MarkupPage() {
               vocabulary has not been extended for them.
             </p>
             <p>
+              Maths is the one thing here with no token behind it. A model
+              writes it as markdown — <code className="text-xs">$…$</code>{" "}
+              inline, <code className="text-xs">$$…$$</code> displayed — inside
+              whatever block it was already writing, so it never appears in the
+              legend; the Mersenne answer carries both forms.
+            </p>
+            <p>
               The last three turns are <span className="italic">traces</span> —
               a reply that called <code className="text-xs">tool-call</code> and
               came back for a second round with what it found. The whole working

@@ -20,6 +20,17 @@ import { ThinkingLabel } from "./thinking-label"
 import { callInFlight } from "./trace"
 import { ToolLabel } from "./tool-label"
 import { QueuedMessage } from "./queued-message"
+import { TokenFlow, type TokenFlowProps } from "./token-flow"
+import { TurnClock, workedFor } from "./turn-clock"
+
+/** The join between two things in the status row. One element, reused: it is
+ * punctuation, and punctuation that differs between two commas in a sentence is
+ * a mistake somewhere. */
+const RULE = (
+  <span aria-hidden className="-mx-1 shrink-0 text-border">
+    |
+  </span>
+)
 
 export function ChatThread({ chatId }: { chatId: string }) {
   const {
@@ -104,12 +115,33 @@ export function ChatThread({ chatId }: { chatId: string }) {
     (inThinking || !hasVisibleContent(lastMessage.content))
   const showGenerating = streaming && !searching && !showThinking
 
-  // Whichever count belongs to the state on show, so the leader rule's right-hand
-  // figure tracks the phase without the row having to branch.
-  const statusTokens = showThinking
-    ? (lastMessage.thinkingTokenCount ?? null)
-    : showGenerating
-      ? (lastMessage.tokenCount ?? null)
+  // Whether anything is written to the right of the rule. Generating says
+  // nothing — the tokens arriving are the message itself, which the reader can
+  // already see — so the rule would otherwise trail off into blank row.
+  const label = searching || waiting || showThinking
+
+  // One figure, and it is everything this conversation has cost: the context so
+  // far plus what this turn has written into it, which is what
+  // `contextTokensUsed` already is. It only ever climbs.
+  //
+  // It used to be whichever half matched the phase — the context while the
+  // question went out, the reply's own count once tokens came back — and the
+  // changeover dropped the number to zero mid-turn and started again. Two
+  // honest figures, and the sequence between them a lie: nothing about that
+  // moment resets anything.
+  //
+  // So the arrow carries the phase instead, and it is the only thing that
+  // changes hands. Queuing, a tool call, and the beat before the first token
+  // are the model being *given* something; from the first token on it is
+  // writing. A context of zero is a chat whose summary has not loaded rather
+  // than a turn that sent nothing, so it shows no figure at all.
+  const written = isSending ? (lastMessage?.tokenCount ?? 0) : 0
+  const statusFlow: TokenFlowProps | null =
+    contextTokensUsed > 0 && !showIdle
+      ? {
+          direction: waiting || searching || written === 0 ? "in" : "out",
+          count: contextTokensUsed,
+        }
       : null
 
   // A user gesture near the bottom (re-)engages auto-follow; scrolling up to
@@ -253,7 +285,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
               searching ||
               showIdle ||
               waiting) && (
-              // Mark, label, then the token count pushed to the right edge. One
+              // Mark, then the count, then what is being done. One
               // Throbber instance rather than one per state — that's what lets
               // thinking → generating → idle morph instead of swapping, since the
               // element is never unmounted.
@@ -275,6 +307,31 @@ export function ChatThread({ chatId }: { chatId: string }) {
                             : "idle"
                   }
                 />
+                {/* Time, then size, then what is being done — the reading
+                  order of the row, and each rule drawn only when there is
+                  something on both sides of it. The count sits here rather than
+                  filed at the row's right edge, where it used to be, because it
+                  is the subject of the row and not a measurement of it.
+
+                  A finished turn keeps the clock and drops everything else: the
+                  count it ended on is the conversation's own total, which the
+                  composer under it already carries. */}
+                {isSending && (
+                  <TurnClock
+                    // Keyed to the turn, so a second question in the same
+                    // conversation starts a new clock rather than reading the
+                    // first one's.
+                    key={`${chatId}:${messages.length}`}
+                  />
+                )}
+                {showIdle && lastMessage?.elapsedSecs != null && (
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {workedFor(lastMessage.elapsedSecs)}
+                  </span>
+                )}
+                {isSending && statusFlow && RULE}
+                {statusFlow && <TokenFlow {...statusFlow} />}
+                {statusFlow && label && RULE}
                 {/* A fixed word rather than the rotating ThinkingLabel: that one
                   guesses at what a model might be doing, and here we know —
                   down to which tool and what it was handed. */}
@@ -287,14 +344,9 @@ export function ChatThread({ chatId }: { chatId: string }) {
                   </span>
                 )}
                 {showThinking && <ThinkingLabel />}
-                {/* Pushes the token count to the far edge, which the throbber used to
-                  do by spanning the gap itself. */}
+                {/* Takes the slack, so a long tool argument truncates against
+                  it rather than stretching the row. */}
                 <span className="min-w-0 flex-1" />
-                {statusTokens !== null && (
-                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                    {statusTokens.toLocaleString("en-US")} tokens
-                  </span>
-                )}
               </div>
             )}
 
