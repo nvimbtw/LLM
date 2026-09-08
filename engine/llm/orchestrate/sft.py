@@ -278,6 +278,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         weight_decay=cfg.weight_decay,
         shuffle=cfg.shuffle,
         seed=cfg.seed,
+        recompute_blocks=cfg.recompute_blocks,
     )
 
     print(f"[4/5] Fine-tuning {cfg.epochs} epoch(s) at lr {cfg.lr:g}")

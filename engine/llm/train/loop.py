@@ -328,6 +328,13 @@ def run(
     """
     model.to(device)
     model.train()
+    # Set on the model rather than passed through the forward, because it is the
+    # model that knows a decode step must never recompute. It stays set for the
+    # model's lifetime and is not restored on the way out, which costs nothing:
+    # `Transformer.forward` recomputes only a cache-free pass that requires grad,
+    # and every use of a trained model here is one or the other — generation
+    # passes caches, evaluation runs under `no_grad`.
+    model.recompute_blocks = cfg.recompute_blocks
 
     # ~1.1x on Ampere for a tenth of a bit of matmul mantissa. Torch defaults it off.
     if device == "cuda":

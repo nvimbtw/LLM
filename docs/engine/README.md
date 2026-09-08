@@ -348,6 +348,19 @@ The renamed row is at its original init until an SFT run touches it, which
   pass**: the SFT loss splits are re-weightings of the softmax it already
   computed, not a second forward. [`telemetry.md`](telemetry.md) has the
   measured numbers.
+- **Most of a training step's VRAM is activations, and `recompute_blocks` is
+  what trades them away.** At 512d/16L/ctx1024/bs8 the weights, gradients and
+  AdamW moments are 1006 MiB and the tensors held for the backward pass are
+  3214 MiB — three quarters of the peak, scaling with depth and with
+  batch x context rather than with anything about the model's quality. Setting
+  `recompute_blocks` on a run keeps each block's input only and re-runs the block
+  during the backward: 3831 -> 1273 MiB with compile on, for 1.3x the step time
+  and **identical gradients** (bitwise in bf16). Off by default — a run that
+  already fits should not pay for headroom it is not using. It is a runtime flag
+  and never part of `arch`, so it stays out of every checkpoint. With it on, the
+  card's limit becomes AdamW's 16 bytes per parameter rather than the
+  activations, which is ~300M parameters in practice against ~50M before. See
+  [`../decisions/activations-are-recomputed.md`](../decisions/activations-are-recomputed.md).
 - **The chat cache holds a model until something evicts it.**
   `orchestrate/chat.py`'s `_CACHE` keeps one model resident per process and only
   ever replaces it when a later chat names a different one. One device means that

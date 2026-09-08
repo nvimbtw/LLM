@@ -22,6 +22,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as recompute
 
 # The frequency base for RoPE. 10000 is the value from the original paper and
 # what the Rust side uses; changing it changes what every trained model expects,
@@ -289,6 +290,13 @@ class Transformer(nn.Module):
             for _ in range(layers)
         )
         self.ln_final = nn.LayerNorm(dimensions)
+        # Trade compute for VRAM: keep only each block's input and recompute its
+        # insides during the backward pass. See `forward`. A runtime flag and not
+        # a constructor argument, like `record_activations` beside it, because it
+        # is not part of what the model *is* — it does not enter `arch`, the
+        # state_dict, or a checkpoint, and the same weights train identically
+        # with it on or off. `llm.train.loop` sets it from `TrainConfig`.
+        self.recompute_blocks = False
 
         cos, sin = rope_tables(self.head_dim, ctx_window, rope_base)
         # Buffers, not parameters: derived from the architecture, and they move
@@ -339,6 +347,16 @@ class Transformer(nn.Module):
         padding. `pos_offset` cannot express that — it is one number for the
         whole batch. Both default to None and every existing caller passes
         neither, which is why this stays the arithmetic it was.
+
+        With `recompute_blocks` set, a training step stores each block's *input*
+        and nothing from inside it, and the backward pass runs the block forward
+        a second time to rebuild what it needs. That is the whole of the trade,
+        and it is a large one on this hardware: the activations a step holds are
+        what an 8 GiB card actually runs out of, and they are what scales with
+        depth. Measured at 512d/16L/ctx1024/bs8 with `torch.compile` on, peak
+        VRAM falls 3831 -> 1273 MiB for 1.3x the step time. The arithmetic is
+        unchanged — the recomputed forward is the same function of the same
+        input — so this buys memory rather than trading accuracy for it.
         """
         rope_cos, rope_sin = rope if rope is not None else (self.rope_cos, self.rope_sin)
         limit = rope_cos.shape[0]
@@ -357,9 +375,23 @@ class Transformer(nn.Module):
             sin = rope_sin[positions]
 
         x = self.embedding(idx)
+        # Recomputing is for the backward pass and costs a second forward, so it
+        # is asked of a training step and of nothing else. `caches` excludes the
+        # generation path, which would otherwise be rebuilt without its cache;
+        # `requires_grad` excludes everything with no backward to save for —
+        # `no_grad` (evaluation, diagnostics, a rollout) and a model whose
+        # parameters are frozen, which is what the RL reference is.
+        recomputing = self.recompute_blocks and caches is None and x.requires_grad
         new_caches = []
         for i, block in enumerate(self.blocks):
-            x, cache = block(x, cos, sin, caches[i] if caches else None, key_mask)
+            if recomputing:
+                # Non-reentrant: it composes with autocast, tolerates a block
+                # returning a tuple, and does not need its inputs to require
+                # grad — the reentrant version is wrong on all three counts here.
+                x, cache = recompute(block, x, cos, sin, None, key_mask,
+                                     use_reentrant=False)
+            else:
+                x, cache = block(x, cos, sin, caches[i] if caches else None, key_mask)
             new_caches.append(cache)
 
         x = self.ln_final(x)

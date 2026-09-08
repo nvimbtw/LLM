@@ -189,6 +189,17 @@ class TrainConfig(BaseModel):
         default=True,
         description="TF32 for fp32 matmuls on Ampere+; torch defaults this off",
     )
+    # The one setting here that buys memory rather than speed, and the only lever
+    # that decides how large a model this card can hold at all: activations are
+    # ~75% of a step's peak at the sizes trained here, and they are what grows
+    # with depth. Off by default because the step is ~1.3x slower with it on and
+    # a model that already fits should not pay that.
+    recompute_blocks: bool = Field(
+        default=False,
+        description="recompute each block in the backward pass instead of storing its "
+        "activations: ~3x less VRAM for ~1.3x the step time, and the same arithmetic, "
+        "so it changes what fits on the card rather than what the model learns",
+    )
 
     _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 
@@ -244,6 +255,15 @@ class SftConfig(BaseModel):
     warmup_steps: int = 50
     grad_clip: float = 1.0
     weight_decay: float = 0.1
+    # The one performance knob SFT restates, because it is not one: a base model
+    # large enough to need it in pretrain cannot be fine-tuned without it either,
+    # and the rest of that section — precision, compile, tf32 — only decides how
+    # fast a run that already fits goes. See `TrainConfig.recompute_blocks`.
+    recompute_blocks: bool = Field(
+        default=False,
+        description="recompute each block in the backward pass instead of storing its "
+        "activations: ~3x less VRAM for ~1.3x the step time, same arithmetic",
+    )
 
     # ── Data ────────────────────────────────────────────────────────────────
     # Which SFT sets to fine-tune on, exactly as `TrainConfig.datasets` selects
