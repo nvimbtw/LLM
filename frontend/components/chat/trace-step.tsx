@@ -22,6 +22,14 @@ import { toolWords } from "@/lib/tools"
  * Two levels of disclosure, because a turn can make several calls and five
  * results each would bury the answer: the line names the search and counts what
  * it found, and the results appear on a click.
+ *
+ * The results are set two different ways, because they are two different kinds
+ * of text. A search comes back with *findings*, which take a hanging index in
+ * the tag face — the apparatus a footnote is set with, and the cheapest way to
+ * say "these are numbered things somebody found". A shell comes back with
+ * *output*, which is set in the mono face and carries no index: `01` over the
+ * lines of `wc -l` would be a claim about what those lines are. They used to
+ * share one class, so terminal output rendered in the body face.
  */
 export interface TraceStepProps {
   /** The tool's wire name — `web-search`, `bash`. */
@@ -50,7 +58,7 @@ export function TraceStep({
   running,
   className,
 }: TraceStepProps) {
-  const { items, failed } = React.useMemo(() => resultsOf(body), [body])
+  const { items, failed, shell } = React.useMemo(() => resultsOf(body), [body])
   const [open, setOpen] = React.useState(false)
 
   // `lib/tools.ts` owns how a tool is said, so the tick and the thread's status
@@ -64,8 +72,16 @@ export function TraceStep({
   const shown = failed || open
 
   return (
-    <div className={cn("relative", className)}>
-      <Tick running={running} />
+    <div
+      // Both attributes are read by the rules in globals.css: `running` warms
+      // and reaches the tick, `open` drives the results' own fold. They are on
+      // this element rather than the step wrapper because the wrapper belongs to
+      // `MarginNote`, which knows nothing about tools.
+      data-trace-running={running ? "" : undefined}
+      data-trace-open={shown ? "" : undefined}
+      className={className}
+    >
+      <Tick />
 
       <button
         type="button"
@@ -80,7 +96,7 @@ export function TraceStep({
       >
         <span
           className={cn(
-            "tag shrink-0 whitespace-nowrap",
+            "shrink-0 tag whitespace-nowrap",
             "text-muted-foreground/60",
             // The same shimmer everything mid-flight in the app carries.
             running && "text-shimmer"
@@ -100,39 +116,51 @@ export function TraceStep({
           {argument}
         </span>
 
-        {expandable && (
-          <span className="shrink-0 whitespace-nowrap text-muted-foreground/50">
-            <span aria-hidden className="text-muted-foreground/35">
-              ·
-            </span>{" "}
-            <span className="text-[0.72em] tabular-nums">
-              {summaryOf(tool, items.length)}
-            </span>
-          </span>
-        )}
+        {/* Fades in as the answer lands, rather than appearing with it: the
+            count is the one part of the row that was not there a moment ago. */}
+        <span
+          className={cn(
+            "shrink-0 tag whitespace-nowrap text-muted-foreground/50 tabular-nums",
+            "transition-opacity duration-500",
+            !expandable && "opacity-0"
+          )}
+        >
+          {expandable ? summaryOf(tool, items.length) : ""}
+        </span>
       </button>
 
-      {shown && (
-        // Flush with the working's prose, not indented under the query. The
-        // trace has one left edge and everything in it lines up on that; a
-        // second column for results turned the rail into a two-level outline,
-        // which is more structure than four lines of supporting text needs.
-        <ul className="mt-[0.5em] space-y-[0.35em]">
-          {items.map((item, i) => (
-            <li
-              key={i}
-              className={cn(
-                "text-[0.85em] leading-[1.6] text-muted-foreground/75",
-                // A caveat is a state rather than a finding, so it is set apart
-                // from the results a working search would have put here.
-                failed && "italic"
-              )}
-            >
-              {item}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* Flush with the working's prose, not indented under the query. The trace
+          has one left edge and everything in it lines up on that; a second
+          column for results turned the rail into a two-level outline, which is
+          more structure than four lines of supporting text needs. */}
+      <div className="trace-fold">
+        <div className="overflow-hidden">
+          <ul className="mt-[0.5em] space-y-[0.35em]">
+            {items.map((item, i) => (
+              <li
+                key={i}
+                className={cn(
+                  "leading-[1.6] text-muted-foreground/75",
+                  // A caveat is a state rather than a finding, so it is set
+                  // apart from the results a working search would have put here.
+                  failed && "text-[0.85em] italic",
+                  shell && "font-mono text-[0.78em]",
+                  !failed &&
+                    !shell &&
+                    "grid grid-cols-[2.1em_1fr] text-[0.85em]"
+                )}
+              >
+                {!failed && !shell && (
+                  <span aria-hidden className="tag text-muted-foreground/35">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                )}
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   )
 }
@@ -140,20 +168,21 @@ export function TraceStep({
 /**
  * The mark where this step meets the trace's rail.
  *
- * Pulled left by the trace's own padding so it starts *on* the hairline. It is
- * the one thing in the trace allowed a colour, and only while the call is in
- * flight — `--throbber-spark` is the token the status row's throbber is using at
- * the same moment, so the two read as one signal rather than two.
+ * Pulled left by the trace's own padding so it starts *on* the hairline. Two
+ * nested elements, because it carries two independent movements — see "The
+ * trace, in motion" in `globals.css`. It is the one thing in the trace allowed
+ * a colour, and only while the call is in flight: `--throbber-spark` is the
+ * token the status row's throbber is using at the same moment, so the two read
+ * as one signal rather than two.
  */
-function Tick({ running }: { running: boolean }) {
+function Tick() {
   return (
     <span
       aria-hidden
-      className={cn(
-        "absolute top-[0.72em] -left-[1.15em] h-px w-[0.7em] transition-colors duration-500",
-        running ? "bg-[var(--throbber-spark)]" : "bg-border"
-      )}
-    />
+      className="trace-tick absolute top-[0.72em] -left-[1.15em] h-px w-[0.7em]"
+    >
+      <span />
+    </span>
   )
 }
 
@@ -168,13 +197,19 @@ function Tick({ running }: { running: boolean }) {
  * not recognise is still something the model was told, and hiding it would make
  * the trace a lie about what the reply had to work with.
  */
-function resultsOf(body: string | null): { items: string[]; failed: boolean } {
-  if (!body?.trim()) return { items: [], failed: false }
+function resultsOf(body: string | null): {
+  items: string[]
+  failed: boolean
+  shell: boolean
+} {
+  if (!body?.trim()) return { items: [], failed: false, shell: false }
 
   const items: string[] = []
   let failed = false
+  let shell = false
   const walk = (node: MNode) => {
     if (node.type === "code block") {
+      shell = true
       for (const line of textContent(node).split("\n")) {
         if (line.trim()) items.push(line)
       }
@@ -190,7 +225,7 @@ function resultsOf(body: string | null): { items: string[]; failed: boolean } {
   }
   walk(parseMessage(body))
 
-  if (items.length > 0) return { items, failed }
+  if (items.length > 0) return { items, failed, shell }
   const flat = textContent(parseMessage(body)).trim()
-  return { items: flat ? [flat] : [], failed: false }
+  return { items: flat ? [flat] : [], failed: false, shell: false }
 }

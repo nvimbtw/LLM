@@ -373,6 +373,24 @@ The chat exists before the socket opens — its id is in the URL — so there is
 is written when the last token lands, so closing the tab loses it rather than
 storing half of one.
 
+**A `token` frame is a delta, not a word — concatenate it, never join it.** The
+engine yields `after[len(before):]`, the difference between decoding the reply
+so far and decoding it one id longer
+(`engine/llm/orchestrate/chat.py`), so the pieces already carry whatever
+whitespace belongs to them and their concatenation is *byte-identical* to the
+`content` on `done`, which is one `decode` over the whole sequence. `use-chat.ts`
+joined them with `" "` instead, on the belief that a token was a whitespace-split
+word. It is not: the tokenizer is byte-level BPE and a piece can be half a UTF-8
+character, let alone half a word. The symptom was a reply that streamed as
+`b ust y b oot s` and `I ' ve` and then silently became `busty boots` and `I've`
+the moment the stored message replaced it — the two stages disagreeing about the
+same reply. Nothing downstream can repair that, because by then the extra spaces
+are indistinguishable from real ones.
+
+`joinWorking` is a different boundary and keeps its space: it joins one *round's*
+markup to the next, across a closed block, and both the streaming path and
+`groupTurns` on reload use it — so the live trace and the stored one agree.
+
 **A turn that calls a tool runs more than one round**, so `token` and `done` can
 each arrive twice — the reply that called, then the reply that answers with what
 came back. `final` on a `done` is the one that ends the turn; the client closes
@@ -751,11 +769,79 @@ hanging under the trace, or, in the stored view, as a middle round vanishing.
 
 The panel's rail is its timeline. Reasoning is prose against it, a tool call is a
 tick off it (`components/chat/trace-step.tsx`), and the whole thing is
-achromatic except a step in flight — that tick warms to `--throbber-spark`, the
-token the status row's throbber is using at the same moment. A turn that called
-nothing has no trace and renders exactly as it always did, reasoning inline.
+achromatic except the point the pen has reached — a step in flight, whose tick
+warms to `--throbber-spark` and reaches out to 1.55x with a light travelling its
+length, or, when nothing is running, the rule's own end, which graduates into
+that same ink over its last 3.2em and turns right into a foot. That corner is
+the nib. The foot yields the moment a call starts, because that call's tick is
+then the warm mark and two would be two answers to one question. A turn that
+called nothing has no trace and renders exactly as it always did, reasoning
+inline.
 
-`/markup` carries two fixture traces, including the failure path.
+The shell — rule, header, fold, stagger — is `components/chat/margin-note.tsx`,
+and `Trace` and `ReasoningPanel` are its two callers. They were the same panel
+written twice, down to a duplicated `LONG_TRACE_WORDS = 70` and a duplicated
+paragraph splitter, which is a thing that only gets worse: every movement below
+would have had to be authored, and then maintained, in both.
+
+**What moves is in `globals.css` under "The trace, in motion"**, with one curve
+throughout — the `word-ink-in` curve — and everything expressed as opacity,
+transform or a registered custom property, because a long trace is twenty of
+these on screen while the model is still writing. The disclosure is
+`grid-template-rows` between `0fr` and `1fr` (the idiom `slash-command-menu.tsx`
+already opens on), which animates a height nobody measured; it was a bare
+`{expanded && …}` before, so opening a note, closing it, and the auto-collapse
+when the answer arrives were all instant swaps — and that last one is the moment
+the panel is judged on, since it is where the working gets out of the way of the
+conclusion. Steps arrive 34ms apart, capped at six so a twenty-step trace still
+opens inside a quarter second. The rule's warming is a registered `@property`,
+because an unregistered custom property is a string to the animation system and
+a string does not interpolate.
+
+The header is one line and not a label with a readout after it: the word, a
+leader (the hairline off a table of contents), then the figures, all in the
+`tag` face. There is no chevron — a lucide icon is a 2px stroke, which made it
+the heaviest mark in a panel whose whole argument is hairlines, and the steps
+underneath already say whether the note is open. The word is tensed: `Working…`
+while it runs, `Worked` after. It said `Worked…` mid-turn until the label became
+two words instead of one.
+
+Results are set two ways, because they are two kinds of text. A search returns
+**findings**, which take a hanging index in the `tag` face — a footnote
+apparatus. A shell returns **output**, set in the mono face with no index, since
+`01` over the lines of `wc -l` would be a claim about what those lines are. They
+shared one class until this, so terminal output rendered in the body face.
+
+Reasoning still arriving is held to five lines with a top mask and scrolled so
+the newest sits on the bottom edge (`.trace-live-prose`). A turn that thinks for
+four hundred words otherwise pushes its own answer off the screen while it
+writes, which is the one thing a panel *above* the answer must never do. The cap
+lifts when the turn closes. The working also inks in word by word now
+(`components/chat/inked.tsx`, shared with `RichContent`) — only the answer had
+that, so the model's thinking arrived in hard chunks while its conclusion was
+treated, which is the wrong way round.
+
+**`showReasoning` off redacts the working; it does not delete it.** Each prose
+step becomes the single word `Thought` — no count, no rule, because a
+measurement standing in for withheld text is measuring something the reader was
+not shown — and the calls are untouched, since a query and what it returned are
+not reasoning. The shape of the work is still the honest account of what the
+reply was built from: thought, searched, thought, ran. `Trace` did not consult
+the setting at all before this, so with it off the panel printed the whole of
+the thinking above an answer while `rich-message.tsx` was hiding the thinking
+*inside* one; and an inline `<|thinking|>` rendered as `null`, so on a turn that
+called no tool a reader with the setting off lost every sign that the model had
+reasoned. Both now redact. The setting is off by default, so this is the path
+most readers are on.
+
+Because `stepsOf` merges a `<|thinking|>` block and the `<|par|>` after it into
+one prose step — inside the trace the distinction has stopped mattering — a
+redacted step covers both. There is no "reasoning" left to separate from
+"narration" by that point, and reintroducing the seam only to hide half of it
+would put a distinction back into the panel that the panel exists to remove.
+
+`/markup` carries two fixture traces, including the failure path, and its
+thinking blocks follow the setting — toggle it there to see both states.
 
 While a call is in flight the thread's status row names it —
 `Search: tallest mountain in europe`, `Bash: ls -l /etc` — off the same reading
@@ -846,6 +932,55 @@ itself when the turn is saved.
 Reduced motion keeps the rotation and the counting and drops only the
 per-character and per-wheel movement — the row still has to say the model is
 working.
+
+### Words arriving
+
+A streamed word is **set**: it arrives about 0.055em loose and tightens to its
+own tracking over 340ms, under an opacity rise from 0.3
+(`word-ink` in `globals.css`, applied by `components/chat/inked.tsx` to both the
+answer and the working). It was a 2px blur before, and the blur was the defect —
+at 16px it makes a word unreadable for the first fifth of a second, and the word
+it does that to is the newest one, which is the one the reader is reaching for.
+
+**Tracking is not a stylistic preference, it is the only property available.**
+CSS transforms do not apply to non-replaced inline elements, so every slide,
+scale or rise needs `display: inline-block` on each word — and an inline-block
+word cannot break, so a long URL or identifier overflows the column instead of
+wrapping. That rules out most of the obvious treatments. The trade taken in
+exchange is layout: tracking relays the line out on every frame where `filter`
+did not, which is affordable only because the paragraph is already being relaid
+on every token as text is appended to it.
+
+The keyframes name a `from` and no `to` for the tracking, deliberately.
+`letter-spacing` is inherited and the type scale sets it per step
+(`--text-base--letter-spacing` is -0.003em), so animating to a literal `0` would
+pin every streamed word at zero tracking and then re-track the whole message the
+instant streaming stopped. With no 100% entry the browser interpolates to the
+element's own underlying value instead.
+
+**The word is an approximation, and knowingly one.** The engine yields
+byte-level BPE fragments — `engine/llm/orchestrate/chat.py` says "a byte-level
+token can be half a UTF-8 character" — and one socket frame is one token, so a
+word is never the unit of arrival.
+
+The unit the animation *is* hung on is a word **together with the whitespace in
+front of it** (`\s*\S+`), because that is the shape a token arrives in: a
+leading space rides with its word rather than arriving as anything of its own.
+Splitting on `/(\s+)/` instead, which is what this did first, took that space
+back out and rendered it as a bare text node between two animated spans — twice
+the nodes, and a space left sitting un-animated until its word turned up. Pairing
+them does *not* narrow the leading edge, and nobody should re-do it expecting
+that: measured against a settled line the tracking pushes the edge about 21px
+wide at 26px type either way, and carrying the space inside the span tracks the
+space too. The delta is the knob, not the split. The animation therefore fires on a word's
+first fragment and the rest of the word grows inside a span that is already
+moving. Waiting for the word to complete is worse, because it animates type the
+reader can already read; animating the true unit would mean threading token
+offsets through the parser, since `RichContent` is handed the whole accumulated
+string and re-parses it on every token. The treatment is quiet enough that the
+approximation does not show, and that quietness is the requirement it is tuned
+against — if the line-break flicker at the leading edge ever reads as noise, the
+0.055em delta is the knob before the duration is.
 
 `budget` is the composer's thinking-budget choice, one section of
 `components/chat/composer-picker.tsx` (the type and its options live in

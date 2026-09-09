@@ -13,6 +13,7 @@ import {
   type MNode,
 } from "@/lib/message-parser"
 import { useSettings } from "@/components/settings/settings-provider"
+import { Inked } from "./inked"
 import { Math } from "./math"
 import { MessageAside } from "./message-aside"
 import { ReasoningPanel } from "./reasoning-panel"
@@ -102,21 +103,6 @@ interface Ctx {
 // Block containers where whitespace between children is just formatting noise.
 const BLOCK_CONTAINERS = new Set(["root", "ordered list", "list"])
 
-// While streaming, wrap each visible word in a one-shot animation so newly-
-// arrived words resolve in. Already-rendered words stay mounted, so they don't
-// re-animate.
-function inkWords(value: string): React.ReactNode {
-  return value.split(/(\s+)/).map((part, i) =>
-    part.trim() === "" ? (
-      part
-    ) : (
-      <span key={i} className="word-ink">
-        {part}
-      </span>
-    )
-  )
-}
-
 function renderChildren(node: MElement, ctx: Ctx): React.ReactNode {
   const children = BLOCK_CONTAINERS.has(node.type)
     ? node.children.filter((c) => !(isText(c) && c.value.trim() === ""))
@@ -135,7 +121,8 @@ function renderChildren(node: MElement, ctx: Ctx): React.ReactNode {
 }
 
 function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
-  if (isText(node)) return ctx.streaming ? inkWords(node.value) : node.value
+  if (isText(node))
+    return ctx.streaming ? <Inked text={node.value} /> : node.value
 
   const el = node
   const kids = renderChildren(el, ctx)
@@ -180,12 +167,18 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
       // Rendered in place, at the point in the reply where the model actually
       // reasoned — not hoisted above the whole message — so text/reasoning/text
       // sequences stay in their original order.
-      if (!ctx.showReasoning) return null
+      //
+      // `showReasoning` off redacts the block rather than removing it, the same
+      // way it redacts a step of a `Trace`. Returning null here meant a reader
+      // with the setting off lost every sign that the model had reasoned at
+      // all — and on a turn that called no tool there is no trace above the
+      // answer to say so either.
       const text = textContent(el).trim()
       return text ? (
         <ReasoningPanel
           text={text}
           streaming={ctx.liveThinking && ctx.isLast === true}
+          redacted={!ctx.showReasoning}
         />
       ) : null
     }
@@ -222,9 +215,7 @@ function renderNode(node: MNode, ctx: Ctx): React.ReactNode {
       // The node's text *is* the TeX, delimiters already stripped. Typeset by
       // KaTeX rather than rendered here: maths is the one thing in a reply whose
       // layout cannot be expressed in the vocabulary the rest of this file uses.
-      return (
-        <Math tex={textContent(el)} display={el.type === "math block"} />
-      )
+      return <Math tex={textContent(el)} display={el.type === "math block"} />
     case "ordered list":
       return (
         <ol
@@ -350,11 +341,7 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
             <Copy className="size-3.5" />
           )}
         </button>
-        {lang && (
-          <span className="tag text-muted-foreground/70">
-            {lang}
-          </span>
-        )}
+        {lang && <span className="tag text-muted-foreground/70">{lang}</span>}
       </div>
     </div>
   )

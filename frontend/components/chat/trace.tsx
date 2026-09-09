@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { ChevronRight } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import {
@@ -11,6 +10,15 @@ import {
   type MNode,
   type ToolCall,
 } from "@/lib/message-parser"
+import { useSettings } from "@/components/settings/settings-provider"
+import { Inked } from "./inked"
+import {
+  MarginNote,
+  Redacted,
+  countWords,
+  opensItself,
+  splitParagraphs,
+} from "./margin-note"
 import { TraceStep } from "./trace-step"
 
 /**
@@ -29,21 +37,32 @@ import { TraceStep } from "./trace-step"
  *
  * ## The rail is the timeline
  *
- * `ReasoningPanel` already sets reasoning apart with a hairline rule down its
- * left edge. Nothing else was needed: reasoning is the prose running *against*
- * that rail, and a tool call is a short tick *off* it — a marginal reference
- * mark, which is the print idiom the rest of the reply is already set in. That
- * is deliberately not the icon-per-row treatment other products use; the rows
- * there float, and need an icon to say what they are. These do not.
+ * The shell — rule, header, fold — is `MarginNote`, shared with
+ * `ReasoningPanel`. Reasoning is the prose running *against* that rail, and a
+ * tool call is a short tick *off* it: a marginal reference mark, which is the
+ * print idiom the rest of the reply is already set in. That is deliberately not
+ * the icon-per-row treatment other products use; the rows there float, and need
+ * an icon to say what they are. These do not.
  *
  * ## It stays grey, and only the live step is not
  *
  * The rail lost a saturated colour once already (see `ReasoningPanel`) because a
  * margin note must not be the loudest thing in a reply, and that verdict holds
- * here. The one exception is a step *currently running*: its tick warms to
+ * here. The exception is the point the pen has reached — a step *currently
+ * running*, or the rule's own foot when nothing is — which warms to
  * `--throbber-spark`, the same token the throbber in the status row is showing
- * at that moment, and cools back to the hairline when the result lands. So the
- * trace is achromatic and the live step is the only warm mark on the page.
+ * at that moment. So the trace is achromatic and the live edge is the only warm
+ * mark on the page.
+ *
+ * ## Reasoning turned off redacts it; it does not delete it
+ *
+ * With `showReasoning` off, the prose steps become the single word `Thought`
+ * and the calls are untouched — a query and what it returned are not reasoning.
+ * The shape of the work is still the thing worth reading, and it is still the
+ * honest account of what the reply was built from; only the words of the
+ * thinking go. This panel used not to consult the setting at all, so turning
+ * reasoning off hid the thinking *inside* an answer and printed the whole of it
+ * above one.
  */
 export interface ToolAnswer {
   tool: string
@@ -80,10 +99,11 @@ export interface TraceProps {
   className?: string
 }
 
-// Above this a reasoning-only trace opens collapsed — roughly where reasoning
-// stops being a sentence of context and becomes a wall the answer hides behind.
-// A trace that called a tool is past that by construction and always starts shut.
-const LONG_TRACE_WORDS = 70
+/** A turn that called nothing is reasoning, in either tense. */
+const REASONING = { running: "Reasoning", done: "Reasoning" }
+/** One that reached for something is an account of work, and the tense matters
+ *  while it is still happening — this said "Worked…" mid-turn. */
+const WORKING = { running: "Working", done: "Worked" }
 
 export function Trace({
   working,
@@ -93,6 +113,7 @@ export function Trace({
   streaming = false,
   className,
 }: TraceProps) {
+  const { settings } = useSettings()
   const steps = React.useMemo(
     () => stepsOf(working, answers, interjections),
     [working, answers, interjections]
@@ -100,129 +121,85 @@ export function Trace({
   const words = React.useMemo(() => countWords(working), [working])
   const calls = steps.filter((s) => s.kind === "tool").length
 
-  // Only the initial value depends on the content — once the reader has opened
-  // or closed it, a trace that keeps growing must not yank itself shut again.
-  const [open, setOpen] = React.useState(
-    () => calls === 0 && words <= LONG_TRACE_WORDS
-  )
-  const expanded = streaming || open
-
   if (steps.length === 0) return null
 
-  return (
-    <div
-      className={cn(
-        // `em` throughout, so the rail and its indent scale with whatever size
-        // the surface set the reply at — same as every other block.
-        "my-[1.5em] border-l border-border pl-[1.15em]",
-        className
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={expanded}
-        className="flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ChevronRight
-          aria-hidden
-          className={cn(
-            "size-[0.85em] shrink-0 transition-transform duration-200",
-            expanded && "rotate-90",
-            // A live trace cannot be collapsed, so the affordance goes away
-            // rather than sitting there inert.
-            streaming && "opacity-0"
-          )}
-        />
-        <Summary
-          calls={calls}
-          words={words}
-          elapsedSecs={elapsedSecs}
-          streaming={streaming}
-        />
-      </button>
+  // The rule's foot is the pen at rest. A call in flight has a warm tick of its
+  // own, and two warm marks would be two answers to the same question.
+  const nib = streaming && !steps.some((s) => s.kind === "tool" && !s.body)
+  const last = steps.length - 1
 
-      {expanded && (
-        <div className="mt-[0.7em] space-y-[0.9em]">
-          {steps.map((step, i) =>
-            step.kind === "tool" ? (
-              <TraceStep
-                key={i}
-                tool={step.tool}
-                argument={step.argument}
-                body={step.body}
-                running={step.body === null}
-              />
-            ) : step.kind === "interject" ? (
-              <Interject key={i} text={step.text} />
-            ) : (
-              <Prose key={i} text={step.text} />
-            )
-          )}
-        </div>
+  return (
+    <MarginNote
+      label={calls === 0 ? REASONING : WORKING}
+      figures={figuresOf(calls, words, elapsedSecs)}
+      streaming={streaming}
+      nib={nib}
+      openInitially={opensItself(words, calls)}
+      className={className}
+      steps={steps.map((step, i) =>
+        step.kind === "tool" ? (
+          <TraceStep
+            key={i}
+            tool={step.tool}
+            argument={step.argument}
+            body={step.body}
+            running={step.body === null}
+          />
+        ) : step.kind === "interject" ? (
+          <Interject key={i} text={step.text} />
+        ) : settings.showReasoning ? (
+          <Prose key={i} text={step.text} live={streaming && i === last} />
+        ) : (
+          <Redacted key={i} live={streaming && i === last} />
+        )
       )}
-    </div>
+    />
   )
 }
 
 /**
- * The header line. A turn that called nothing keeps the wording it has always
- * had — the common case must not pay for the feature — and only one that
+ * The header's figures. A turn that called nothing keeps the wording it has
+ * always had — the common case must not pay for the feature — and only one that
  * reached for something becomes an account of the work.
+ *
+ * "call", not "search": a turn can run a shell as well, and the header counts
+ * steps of every kind. Which tool each one was is the step's own line.
  */
-function Summary({
-  calls,
-  words,
-  elapsedSecs,
-  streaming,
-}: {
-  calls: number
-  words: number
+function figuresOf(
+  calls: number,
+  words: number,
   elapsedSecs?: number
-  streaming: boolean
-}) {
-  const label = calls === 0 ? "Reasoning" : "Worked"
+): string[] {
+  if (calls === 0) return [`${words.toLocaleString()} words`]
   const parts: string[] = []
-  if (calls > 0 && elapsedSecs != null)
-    parts.push(`${Math.round(elapsedSecs)}s`)
-  // "call", not "search": a turn can now run a shell as well, and the header
-  // counts steps of every kind. Which tool each one was is the step's own line.
-  if (calls > 0) parts.push(calls === 1 ? "1 call" : `${calls} calls`)
-  if (calls === 0) parts.push(`${words.toLocaleString()} words`)
-
-  return (
-    <>
-      <span
-        className={cn(
-          "tag",
-          // The same shimmer the thread's status row uses, so a trace still
-          // being written says so the way everything else in the app says it.
-          streaming && "text-shimmer"
-        )}
-      >
-        {streaming ? `${label}…` : label}
-      </span>
-      {parts.map((part) => (
-        <React.Fragment key={part}>
-          {/* Middot-separated, matching the byline under a reply — a gap alone
-              read as two labels rather than one line of attribution. */}
-          <span aria-hidden className="text-muted-foreground/35">
-            ·
-          </span>
-          <span className="text-[0.72em] tabular-nums">{part}</span>
-        </React.Fragment>
-      ))}
-    </>
-  )
+  if (elapsedSecs != null) parts.push(`${Math.round(elapsedSecs)}s`)
+  parts.push(calls === 1 ? "1 call" : `${calls} calls`)
+  return parts
 }
 
-function Prose({ text }: { text: string }) {
+function Prose({ text, live }: { text: string; live: boolean }) {
+  const ref = React.useRef<HTMLDivElement>(null)
+
+  // The newest line on the bottom edge of the cap. Written straight to the node
+  // rather than through state: this runs on every token of a long think, and a
+  // re-render to move a scroll offset is a re-render for nothing.
+  React.useEffect(() => {
+    const node = ref.current
+    if (live && node) node.scrollTop = node.scrollHeight
+  })
+
   // Set a step down from the answer and in the muted ink: this is the working,
   // and it should be legible without ever competing with the conclusion.
   return (
-    <div className="space-y-[0.75em] text-[0.92em] leading-[1.7] text-muted-foreground">
+    <div
+      ref={ref}
+      className={cn(
+        "space-y-[0.75em] text-[0.92em] leading-[1.7] text-muted-foreground",
+        live && "trace-live-prose"
+      )}
+    >
       {splitParagraphs(text).map((paragraph, i) => (
-        <p key={i}>{paragraph}</p>
+        <p key={i}>{live ? <Inked text={paragraph} /> : paragraph}</p>
       ))}
     </div>
   )
@@ -232,13 +209,16 @@ function Prose({ text }: { text: string }) {
  * A steer that actually reached the model mid-turn. Same achromatic register
  * as a reasoning step — this is still the model's working, just with someone
  * else's line in it — set apart only by the label, the same "who said this"
- * device `queued-message.tsx` uses before it lands here.
+ * device `queued-message.tsx` uses before it lands here. It survives reasoning
+ * being turned off, because it is not the model's reasoning.
  */
 function Interject({ text }: { text: string }) {
   return (
     <div className="space-y-[0.35em]">
       <span className="tag text-muted-foreground/60">you interjected</span>
-      <p className="text-[0.92em] leading-[1.7] text-muted-foreground">{text}</p>
+      <p className="text-[0.92em] leading-[1.7] text-muted-foreground">
+        {text}
+      </p>
     </div>
   )
 }
@@ -248,18 +228,6 @@ type Step =
   | { kind: "tool"; tool: string; argument: string; body: string | null }
   | { kind: "interject"; text: string }
 
-/**
- * The working, cut into steps in the order they happened.
- *
- * Reasoning and ordinary prose both become prose steps — inside the trace the
- * distinction has stopped mattering, because everything here is working rather
- * than answer. Consecutive ones are joined so a `<|thinking|>` block followed by
- * a `<|par|>` reads as continuous thought instead of two stacked panels.
- *
- * `answers` is consumed positionally: the nth call in the markup is answered by
- * the nth entry. A call with no entry yet is one still running, which is exactly
- * the state mid-stream.
- */
 /**
  * The call in `working` that is still waiting on its answer, if there is one.
  *
@@ -282,6 +250,20 @@ export function callInFlight(
     : null
 }
 
+/**
+ * The working, cut into steps in the order they happened.
+ *
+ * Reasoning and ordinary prose both become prose steps — inside the trace the
+ * distinction has stopped mattering, because everything here is working rather
+ * than answer. Consecutive ones are joined so a `<|thinking|>` block followed by
+ * a `<|par|>` reads as continuous thought instead of two stacked panels. It is
+ * also why turning reasoning off redacts a whole prose step rather than the
+ * `<|thinking|>` inside it: by this point there is no inside.
+ *
+ * `answers` is consumed positionally: the nth call in the markup is answered by
+ * the nth entry. A call with no entry yet is one still running, which is exactly
+ * the state mid-stream.
+ */
 function stepsOf(
   working: string,
   answers: ToolAnswer[],
@@ -335,21 +317,4 @@ function plainText(node: MNode): string {
   const separator =
     node.type === "paragraph" || node.type === "thinking" ? "\n\n" : ""
   return separator + node.children.map(plainText).join("") + separator
-}
-
-function countWords(text: string): number {
-  const bare = text.replace(/<\|[^]*?\|>/g, " ").trim()
-  return bare ? bare.split(/\s+/).length : 0
-}
-
-/**
- * Blank-line-separated paragraphs. Single newlines are soft-wrapped away: models
- * hard-wrap at arbitrary widths, and honouring those breaks produces a ragged
- * column that looks like a bug.
- */
-function splitParagraphs(text: string): string[] {
-  return text
-    .split(/\n\s*\n/)
-    .map((block) => block.replace(/\s*\n\s*/g, " ").trim())
-    .filter(Boolean)
 }

@@ -807,37 +807,53 @@
   }
 }
 
-/* Streamed words as ink soaking into paper: each arriving word resolves out of
-   the page rather than sliding or popping in.
+/* Streamed words as type coming to its measure: an arriving word is set a
+   little loose and tightens to its own tracking as it lands.
 
-   Opacity and blur only — both composited, which is what makes this affordable
-   when a fast model puts a few hundred of these on screen at once. The obvious
-   alternative, ramping `color` from `--background` to `--foreground`, paints on
-   the main thread every frame to produce the same pixels: text drawn at 12%
-   opacity over a surface *is* 12% ink mixed into that surface. Opacity is also
-   the only one of the two that stays right on a surface that isn't the page —
-   a code block or a quote, where a mix against `--background` is a mix against
-   the wrong colour. */
+   This was a 2px blur under an opacity ramp, and the blur was the defect. At
+   16px it makes a word genuinely unreadable for the first fifth of a second,
+   and the word it does that to is the newest one — the one the reader is
+   reaching for. It was also the only blur left anywhere in the app once the
+   trace stopped using one.
+
+   **Tracking, because tracking is the only way to move inline type.** CSS
+   transforms do not apply to non-replaced inline elements, so every slide,
+   scale or rise is unavailable here without `display: inline-block` — and an
+   inline-block word cannot break, so a long URL or identifier, which a model
+   emits often, would overflow its column instead of wrapping. That rules out
+   most of the obvious treatments and leaves this one, which is also the most
+   honest thing to do to type: loose, then set.
+
+   **The end keyframe is deliberately absent.** `letter-spacing` is inherited
+   and the type scale sets it per step (`--text-base--letter-spacing` is
+   -0.003em), so animating to a literal `0` would hold every streamed word at
+   zero tracking and then re-track the whole message the moment streaming
+   stopped. With no 100% entry the browser interpolates to the element's own
+   underlying value, which is whatever the surface set — the reason this rule
+   names a `from` and nothing else.
+
+   It reflows the line every frame, which `filter` did not. That is the price
+   and it was accepted with eyes open: the paragraph is already being relaid on
+   every token as text is appended to it, so the marginal cost is one more
+   layout on a block that was going to have one anyway. If the line-break
+   flicker at the leading edge ever reads as noise, the delta is the knob —
+   0.055em down to about 0.035em — before the duration is. */
 @keyframes word-ink-in {
-  0% {
-    opacity: 0.12;
-    filter: blur(2px);
+  from {
+    opacity: 0.3;
+    letter-spacing: 0.055em;
   }
-  42% {
-    opacity: 0.68;
-    filter: blur(0.6px);
-  }
-  100% {
+  to {
     opacity: 1;
-    filter: blur(0);
   }
 }
 .word-ink {
-  animation: word-ink-in 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: word-ink-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 /* Inline, not inline-block: a long URL or identifier — which a model emits
    often — has to stay breakable, and an inline-block word overflows its column
-   instead of wrapping. */
+   instead of wrapping. Which is also why the movement above is tracking rather
+   than a transform. */
 @media (prefers-reduced-motion: reduce) {
   .word-ink {
     animation: none;
@@ -958,6 +974,226 @@
   color: transparent;
   -webkit-text-fill-color: transparent;
   animation: text-shimmer 2.2s linear infinite;
+}
+
+/* ---- The trace, in motion -------------------------------------------------
+   The working of a turn is a margin note being *set*, not a panel being shown,
+   and these are the movements that say so. The shell they hang off is
+   `components/chat/margin-note.tsx`; this file owns only what moves.
+
+   Everything here is opacity, transform or a registered colour — all
+   composited — because a long trace puts twenty of these on screen at once
+   while the model is still writing. And there is one curve, the `word-ink-in`
+   curve above: a second easing would be a second opinion about how the app
+   moves.
+
+   `data-trace-open` and `data-trace-live` are set on the note's own element,
+   and the child rules are scoped with `>` where the same class appears at two
+   depths (a step's results fold is the panel's fold one level down). */
+
+/* The rule rules itself, top to bottom, when the note lands. Slower than the
+   fold, because this is the panel arriving and that is a thing the reader
+   did. */
+@keyframes trace-rule {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* The colour the rule's lower end travels between. Registered, because an
+   unregistered custom property is a string as far as the animation system is
+   concerned, and a string does not interpolate — the cool-down would snap. */
+@property --trace-nib {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: transparent;
+}
+
+.trace-rail {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 1px;
+  transform-origin: top;
+  --trace-nib: var(--border);
+  /* Flat `--border` at rest, so one declaration draws both states and the
+     change between them is a colour moving rather than a swap. */
+  background: linear-gradient(
+    to bottom,
+    var(--border) 0,
+    var(--border) calc(100% - 3.2em),
+    var(--trace-nib) 100%
+  );
+  transition: --trace-nib 520ms ease;
+  animation: trace-rule 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Mid-turn the rule warms toward its end — to `--throbber-spark`, the ink the
+   live tick is carrying and the ink the status row's throbber is showing at the
+   same moment — and then turns right into a foot. That corner is the whole of
+   "still being written": it is the nib, mid-stroke, at the point the pen has
+   reached.
+
+   The end used to fade out into the page instead. A soft grey fade under a
+   saturated tick was two visual languages for one state; this is one, in one
+   colour, and it needs no spinner and no second row. */
+[data-trace-live] .trace-rail {
+  --trace-nib: var(--throbber-spark);
+}
+
+/* The foot of that L. Shown only while nothing else is running — the moment a
+   call starts, that call's own tick is the warm mark and two would be two
+   answers to the same question. Sized and coloured as a tick, because that is
+   what it is about to become. */
+.trace-nib {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  width: 0.7em;
+  background: var(--throbber-spark);
+  transform-origin: left;
+  transform: scaleX(0);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.trace-nib[data-drawn] {
+  transform: scaleX(1);
+}
+
+/* The disclosure. `grid-template-rows` between `0fr` and `1fr` animates a
+   height nobody had to measure — the idiom `slash-command-menu.tsx` already
+   opens on. The inner element's `overflow: hidden` is what the row size acts
+   against; without it the content simply overflows a zero-height row.
+
+   It was a bare `{expanded && …}` before this, so opening a note, closing it,
+   and the auto-collapse when the answer arrives were all instant swaps — and
+   that last one is the moment the panel is actually judged on, because it is
+   where the working gets out of the way of the conclusion. */
+.trace-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 190ms ease;
+}
+[data-trace-open] > .trace-fold {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* Pushed left and padded back, so a tick sitting at -1.15em is inside the clip.
+   Without this every fold shaves the marks off the rail. */
+.trace-clip {
+  overflow: hidden;
+  margin-left: -1.7em;
+  padding-left: 1.7em;
+}
+
+/* Steps arrive in sequence rather than together. 34ms is under the gap where a
+   stagger reads as a queue and over the one where it reads as simultaneous; the
+   delay stops growing past `--i` 6 (capped in `margin-note.tsx`) so a
+   twenty-step trace still opens inside a quarter of a second. */
+@keyframes trace-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+[data-trace-open] .trace-step {
+  animation: trace-step-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 34ms);
+}
+
+/* The mark where a call meets the rule, in two elements because it carries two
+   independent movements: the outer draws it out of the rail as the step
+   arrives, the inner reaches and warms while the call is in flight. One element
+   would mean one `transform`, and the second would silently win. */
+@keyframes trace-tick-out {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+[data-trace-open] .trace-tick {
+  animation: trace-tick-out 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* Behind its own row, so the mark follows the text it belongs to. */
+  animation-delay: calc(var(--i, 0) * 34ms + 70ms);
+}
+.trace-tick > span {
+  display: block;
+  height: 100%;
+  background-color: var(--border);
+  transform-origin: left;
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 520ms ease;
+}
+
+/* A light travelling the mark's own length — `text-shimmer` for a 1px rule. It
+   reaches out to 1.55x for the duration of the call and settles back when the
+   answer lands, which is the whole state change: no spinner, no second row. */
+@keyframes trace-tick-run {
+  from {
+    background-position-x: 240%;
+  }
+  to {
+    background-position-x: -20%;
+  }
+}
+[data-trace-running] .trace-tick > span {
+  transform: scaleX(1.55);
+  background-color: var(--throbber-spark);
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--throbber-spark) 22%, transparent) 0%,
+    var(--throbber-spark) 45%,
+    color-mix(in oklab, var(--throbber-spark) 22%, transparent) 100%
+  );
+  background-size: 260% 100%;
+  animation: trace-tick-run 1.5s linear infinite;
+}
+
+/* Reasoning still arriving is held to five lines and scrolled so the newest one
+   sits on the bottom edge. A turn that thinks for four hundred words otherwise
+   pushes its own answer off the screen while it writes, which is the one thing
+   a panel above the answer must never do. The cap lifts when the turn closes. */
+.trace-live-prose {
+  max-height: 8.5em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 2.6em,
+    #000 100%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0, #000 2.6em, #000 100%);
+}
+
+/* Reduced motion keeps every state — the note still opens, the rule still ends
+   in the nib, the mark still warms — and drops only the travel, which is the
+   part the preference is about. */
+@media (prefers-reduced-motion: reduce) {
+  .trace-rail,
+  [data-trace-open] .trace-step,
+  [data-trace-open] .trace-tick,
+  [data-trace-running] .trace-tick > span {
+    animation: none;
+  }
+  .trace-rail,
+  .trace-nib,
+  .trace-fold,
+  .trace-tick > span {
+    transition-duration: 1ms;
+  }
 }
 
 /* Composer rich-text editor (TipTap) content styles. */

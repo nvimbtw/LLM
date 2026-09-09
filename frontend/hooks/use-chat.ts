@@ -243,13 +243,20 @@ export function useChat(chatId: string) {
       topP: settings.topP,
       contextMultiplier: settings.contextMultiplier,
     }
-  }, [settings.temperature, settings.topK, settings.topP, settings.contextMultiplier])
+  }, [
+    settings.temperature,
+    settings.topK,
+    settings.topP,
+    settings.contextMultiplier,
+  ])
 
   // What `/prune` last found for this chat — browser-local, not the engine's
   // to remember (see `lib/context-floor.ts`). Re-read whenever the chat
   // changes, and held in state (not just the ref below) so the footer's token
   // count re-renders the moment a prune actually lands.
-  const [floor, setFloor] = React.useState<StoredFloor | null>(() => getContextFloor(chatId))
+  const [floor, setFloor] = React.useState<StoredFloor | null>(() =>
+    getContextFloor(chatId)
+  )
   // Adjusted during render rather than in an Effect, same as the composer
   // footer's own title-follows-prop pattern — see composer-footer.tsx.
   const [floorChatId, setFloorChatId] = React.useState(chatId)
@@ -492,12 +499,17 @@ export function useChat(chatId: string) {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === "assistant") {
-            // Tokens are whitespace-split words; rejoin with spaces to
-            // approximate the structured markup while it streams.
-            const sep = last.content ? " " : ""
+            // Concatenated, never joined. A `token` frame is the *delta* of the
+            // decoded reply (`engine/llm/orchestrate/chat.py`:
+            // `after[len(before):]`), so a leading space arrives inside the
+            // piece that owns it and adding one here invents a boundary the
+            // model never emitted. This joined with `" "` on the belief that a
+            // token was a whitespace-split word, which is why a streaming reply
+            // read `b ust y b oot s` and then silently became `busty boots` the
+            // moment the stored message replaced it.
             next[next.length - 1] = {
               ...last,
-              content: last.content + sep + value,
+              content: last.content + value,
               tokenCount,
               thinkingTokenCount,
             }
@@ -589,10 +601,11 @@ export function useChat(chatId: string) {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last?.role === "assistant" && last.working !== undefined) {
-            const sep = last.working ? " " : ""
+            // Concatenated for the same reason as `appendToAssistant` — the
+            // trace has to read the way the stored working will.
             next[next.length - 1] = {
               ...last,
-              working: last.working + sep + value,
+              working: last.working + value,
               tokenCount,
             }
           }
@@ -731,7 +744,14 @@ export function useChat(chatId: string) {
         )
       })
     },
-    [chatId, fetchMessages, refreshChats, queueInterjection, drainQueued, putQueued]
+    [
+      chatId,
+      fetchMessages,
+      refreshChats,
+      queueInterjection,
+      drainQueued,
+      putQueued,
+    ]
   )
 
   React.useEffect(() => {
