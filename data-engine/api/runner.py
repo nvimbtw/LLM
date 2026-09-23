@@ -5,7 +5,7 @@ history, the sockets watching it. None of that survives a restart and none of it
 should. What survives is the queue: a run is a row before it starts and after it
 ends, so closing the tab does not lose a pull and a restart resumes the line.
 
-One at a time, like the engine's, but for a different reason. Nothing here
+One at a time, like the LLM engine's, but for a different reason. Nothing here
 contends for a device; it is the Hub that is worth being polite to, and a
 serial queue is the simplest thing that cannot accidentally open twenty parallel
 downloads.

@@ -115,13 +115,13 @@ export function findPage(slug: string[]): DocPage | undefined {
  * The sidebar: two groups, `Documentation` and `Modules`.
  *
  * Labels here are deliberately not the pages' own titles. A doc's `# ` heading
- * is written to be a masthead — "Engine — PyTorch training, inference,
+ * is written to be a masthead — "LLM engine — PyTorch training, inference,
  * evaluation" — and setting that as a tracked uppercase eyebrow gives you three
  * wrapped lines of shouting. The rail gets the directory name; the page keeps
  * its title.
  *
  * A directory is a *module* when the repo has code under that name, so
- * `docs/engine/` files under Modules and `docs/decisions/` does not. Derived
+ * `docs/llm-engine/` files under Modules and `docs/decisions/` does not. Derived
  * rather than listed: a new module documents itself into the right group the
  * day it exists.
  */

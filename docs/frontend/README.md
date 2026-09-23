@@ -80,8 +80,9 @@ signed-in chrome.
 - **Build time only.** `generateStaticParams` prerenders every page, so the
   filesystem outside this module is never touched by a running server. The
   consequence: a docs-only commit needs a frontend rebuild before it shows on
-  the deployed site, and any container build must include `../docs` in its
-  context.
+  the deployed site. The frontend container uses the repository root as its
+  build context and copies `docs/`, `README.md`, and `AGENTS.md` into the paths
+  this renderer expects; Compose mounts those paths in development too.
 - **Relative links are rewritten** to routes, so the same markdown reads
   correctly on the site and in an editor. A link that resolves to nothing
   **fails the build** — deliberately; that is what keeps the docs from drifting
@@ -340,15 +341,15 @@ the Base UI primitive underneath, both learned the hard way:
 ### Where the data lives
 
 The backend owns people, sessions and presets. Everything else — models,
-conversations, runs, scores, usage — belongs to the Python engine, and the
+conversations, runs, scores, usage — belongs to the LLM engine, and the
 backend forwards to it. So a route here is `/chats`, `/models`, `/runs`,
 `/benchmarks`, `/usage`, `/tokenize`, and the shape that comes back is the
-engine's.
+LLM engine's.
 
 Two names are adapted at the wire rather than renamed through every component,
-each in one place: the engine's `run_id` is this side's `id_job` (`lib/jobs.ts`),
+each in one place: the LLM engine's `run_id` is this side's `id_job` (`lib/jobs.ts`),
 and its `benchmark_id` is `id_run` (`lib/benchmark.ts`). Nothing else is
-reshaped — a field the engine adds arrives without a change here.
+reshaped — a field the LLM engine adds arrives without a change here.
 
 ### Stream protocol (chat)
 
@@ -374,9 +375,9 @@ is written when the last token lands, so closing the tab loses it rather than
 storing half of one.
 
 **A `token` frame is a delta, not a word — concatenate it, never join it.** The
-engine yields `after[len(before):]`, the difference between decoding the reply
+LLM engine yields `after[len(before):]`, the difference between decoding the reply
 so far and decoding it one id longer
-(`engine/llm/orchestrate/chat.py`), so the pieces already carry whatever
+(`llm-engine/llm/orchestrate/chat.py`), so the pieces already carry whatever
 whitespace belongs to them and their concatenation is *byte-identical* to the
 `content` on `done`, which is one `decode` over the whole sequence. `use-chat.ts`
 joined them with `" "` instead, on the belief that a token was a whitespace-split
@@ -436,6 +437,22 @@ quietly re-queue the message it was draining.
 
 ### Two doors to a gym, and only one of them is a loop
 
+The General gym is offered by the catalogue and mixes source questions across
+episodes. Evaluation and practice forms expose source weights; task selection
+still defaults to easy rungs. A composite gym's tools are decided per episode,
+so its empty catalogue tool list does not force practice to one round. Math
+episodes remain tool-free. General evaluations and mixed training reports show
+scores by source alongside the overall result. Demonstrations are available
+for every catalogue entry declaring that capability, including General. The
+catalogue places General first in a full-width card above the source gyms.
+The General RL job panel also shows the latest task-source sequence and a chart
+per source. Those charts accumulate correct answers only when that source appears
+in a batch; their adjacent correct/graded counts and percentage keep the count
+from being mistaken for a pass-rate trend. The existing overall pass-rate and
+signal chart remains below them. Completed runs read the compact history saved
+in the RL result, while running jobs use live diagnostic frames.
+
+
 The math practice composer defaults to automatic progression across all rungs.
 Turning it off permits manual task selection, including which demonstrations
 to generate. Demonstrations create or append an SFT dataset; they never start
@@ -443,7 +460,7 @@ a training job. A math episode has one response and no tools. The job page
 shows per-skill mastery, promotion/review evidence and fixed before/after test
 scores, read from the saved result after completion. Training pass rate is
 labelled separately because its difficulty changes. See
-[math practice](../engine/math-practice.md).
+[math practice](../llm-engine/math-practice.md).
 
 `/gyms/<id>` starts **one** run: the browser drives it over the socket below,
 the episodes are graded, and it ends. Nothing it scores reaches the weights —
@@ -451,7 +468,7 @@ it is a measurement.
 
 The loop is a **job**, composed at `/jobs/new/rl`
 (`components/jobs/rl-composer.tsx`) and watched on the job page like every other
-run. Each of its iterations is a gym run of its own, created by the engine
+run. Each of its iterations is a gym run of its own, created by the LLM engine
 rather than the browser and kept off the `/gyms/<id>` board (`kind: "rl"`), so a
 fifty-iteration run does not bury the evaluations anyone made.
 
@@ -481,7 +498,7 @@ server → { type: "run_done",     score, correct, graded, episode_count }
 ```
 
 Two differences from chat, and both are the reason it is a socket of its own.
-The engine's `done` arrives as **`round_done`**, because an episode takes a
+The LLM engine's `done` arrives as **`round_done`**, because an episode takes a
 round per command and a client counting `done` would see an episode end every
 time the model ran `ls`. And every frame carries its `episode_id`, so a run of
 twenty tasks is one connection rather than twenty.
@@ -629,7 +646,7 @@ standards, and keeping them apart is the whole of the design.
   streamed — see `chat-thread.tsx`. Neither half was checked against a
   tokenizer.
 - **The draft in the composer is a real count.** `hooks/use-draft-tokens.ts`
-  posts it to `/tokenize/count` 200ms after typing settles, and the engine
+  posts it to `/tokenize/count` 200ms after typing settles, and the LLM engine
   encodes it under that model's own vocabulary. A guess from character count
   would be wrong by an amount that changes with the model — these vocabularies
   are trained per model — against windows that start at 256 tokens, where a
@@ -653,8 +670,8 @@ Three things the hook does that are not optional:
 A recognised standalone command (`/clear`, `/model …`) reads as zero: it runs
 locally and never reaches the model, so it costs the window nothing.
 
-Counting per keystroke is only affordable because the engine caches the parsed
-vocabulary — see [`../engine/README.md`](../engine/README.md). Attachments
+Counting per keystroke is only affordable because the LLM engine caches the parsed
+vocabulary — see [`../llm-engine/README.md`](../llm-engine/README.md). Attachments
 contribute nothing here, and that is a property of the system rather than an
 omission: nothing reads them
 ([`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md)).
@@ -708,7 +725,7 @@ data, not a UI choice — there is no route that removes a stored message
 (`routes/chats.rs` has create, rename, and delete-the-whole-chat, nothing
 finer), and the thread *is* the prompt, so editing in place would either lie
 about what was sent or silently drop everything after it. Giving these branching
-semantics means adding a truncate to the backend and the engine first.
+semantics means adding a truncate to the backend and the LLM engine first.
 
 Edit goes through the composer rather than sending directly, via its `draft`
 prop — so the question can actually be changed, and so sending still happens on
@@ -958,8 +975,8 @@ pin every streamed word at zero tracking and then re-track the whole message the
 instant streaming stopped. With no 100% entry the browser interpolates to the
 element's own underlying value instead.
 
-**The word is an approximation, and knowingly one.** The engine yields
-byte-level BPE fragments — `engine/llm/orchestrate/chat.py` says "a byte-level
+**The word is an approximation, and knowingly one.** The LLM engine yields
+byte-level BPE fragments — `llm-engine/llm/orchestrate/chat.py` says "a byte-level
 token can be half a UTF-8 character" — and one socket frame is one token, so a
 word is never the unit of arrival.
 
@@ -987,7 +1004,7 @@ against — if the line-break flicker at the leading edge ever reads as noise, t
 `lib/think-budget.ts`, shared with `/thinking`'s argument list) — `"low" |
 "med" | "high"`, matching the labels the SFT corpus is tagged with, since the
 string sent becomes the marker the model was trained under. **"Auto" is the absence of a budget, not a fourth
-value**: it is omitted from the frame entirely, so the engine renders no marker
+value**: it is omitted from the frame entirely, so the LLM engine renders no marker
 and the model is prompted exactly as it always was. It rides through
 `PendingMessage` when a new chat navigates, same as `model` — see
 "The composer's own choice" below for both.
@@ -996,14 +1013,14 @@ and the model is prompted exactly as it always was. It rides through
 they **are** settings (`lib/settings.ts`, rendered as sliders in the ⌘K modal) —
 how random you want decoding to be is a standing preference, not a property of
 one question. Each is omitted individually when unset or non-finite, and the
-engine then falls back to its own defaults.
+LLM engine then falls back to its own defaults.
 
 `context_multiplier` is a setting the same way: how much headroom past the
 trained context window you want is a standing preference, not a property of one
-question. 1 (the default) is the model exactly as trained; the engine builds an
+question. 1 (the default) is the model exactly as trained; the LLM engine builds an
 NTK-scaled RoPE table fresh per turn for anything above that, computed from the
 model's own `ctx_window` rather than a token count this side would have to keep
-in sync with it — see `docs/engine/README.md`.
+in sync with it — see `docs/llm-engine/README.md`.
 
 ### `/prune`
 
@@ -1013,7 +1030,7 @@ trained window again, instead of already sitting near a raised cap. Nothing is
 deleted: every message stays exactly where it was, visible in the thread and
 counted in `/usage`. What changes is what a *future* turn is built from.
 
-The mechanism is deliberately stateless on the engine's side. `GET
+The mechanism is deliberately stateless on the LLM engine's side. `GET
 /chats/{id}/context-floor?model_name=...` is a pure read — it answers "where
 would the cut land under *this* model's own `ctx_window`," using the identical
 walk `build_prompt` already runs, and writes nothing down. `lib/context-floor.ts`
@@ -1028,7 +1045,7 @@ mean anything for another — `sendMessage` in `use-chat.ts` compares the stored
 `modelId` against the model the turn is actually going to and sends
 `history_floor` only on a match; switching models makes a stale floor inert
 rather than wrong, without discarding it, so switching back makes it live
-again with no extra round trip. The engine's own fallback (a stale or
+again with no extra round trip. The LLM engine's own fallback (a stale or
 unrecognised floor is treated as no floor rather than erroring, `_floored` in
 `api/routes/chats.py`) is what makes "inert" safe to fall back to: a client's
 memory of a prune is a convenience, not something a turn should fail over.
@@ -1038,7 +1055,7 @@ is the point to reconsider: persist the floor against the chat server-side
 instead of trusting the client to keep resending it.
 
 The composer footer subtracts the floor's own reported token count from
-`chatSummary.tokens` rather than asking the engine for a second, smaller total
+`chatSummary.tokens` rather than asking the LLM engine for a second, smaller total
 — `chatSummary.tokens` is also what `/usage` bills from, and has to keep
 counting every token this chat ever cost regardless of what a later prune
 excludes from the model's view of it.
@@ -1141,6 +1158,12 @@ and `useCheckpoints` exactly as before, and reads and writes `model` and
 
 ### Slash commands & fuzzy finder
 
+The composer also accepts an optional `plan` snapshot. Its presentation and
+the interactive `/markup#composer-plan` fixture are documented in
+[Composer plan](composer-plan.md). `/plan add`, `/plan edit`, and `/plan save`
+manage browser-local plans in live chat, with draft editing and drag or keyboard
+reordering. Plans are not yet synchronized with the backend or model.
+
 Typing a leading `/` in the composer brings up the floating fuzzy finder popover
 (`components/chat/slash-command-menu.tsx`, driven by `lib/commands.ts`).
 
@@ -1155,7 +1178,7 @@ Typing a leading `/` in the composer brings up the floating fuzzy finder popover
   - `/temperature`, `/top-k`, `/top-p`, `/context-multiplier`: Displays allowed
     ranges, current values, and clickable preset buttons.
   - `/prune`: No argument. A no-op toast at `context_multiplier: 1`; otherwise
-    asks the engine for this chat's floor and toasts what it cut — see the
+    asks the LLM engine for this chat's floor and toasts what it cut — see the
     note on `/prune` above.
   - `/system-prompt <text>`: Previews current prompt and offers templates or `clear`.
   - `/theme <light | dark | system>`: Switches visual theme.
@@ -1198,15 +1221,15 @@ subject you are reading.
   icons and that group is hidden.
 - Admin-ness is a client fact (`useAuth().isAdmin`, read from the stored access
   level), so these are hidden rather than guarded. **The endpoints are the
-  boundary** — the engine's queue routes are admin-only, and `JobsProvider` is
+  boundary** — the LLM engine's queue routes are admin-only, and `JobsProvider` is
   gated on the same flag so a normal session does not spend its life collecting
   403s.
 
 ### The jobs queue
 
 Everything that uses the GPU — training and benchmarks — is a run in the
-engine's queue. See `lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one
-socket per run, relaying the engine's own frames).
+LLM engine's queue. See `lib/jobs.ts` (types + REST) and `lib/jobs-socket.ts` (one
+socket per run, relaying the LLM engine's own frames).
 
 A `tokenize` run is the exception that proves the line: it never touches the
 device. It is queued anyway because it is minutes of CPU that would fight a
@@ -1237,7 +1260,7 @@ Both take their field list, their derived figures and their validation from
 run may be belongs there, never in a layout.
 
 **A run that continues from a checkpoint states no architecture at all.** The
-engine takes the shape from the state it resumes and *refuses* a request that
+LLM engine takes the shape from the state it resumes and *refuses* a request that
 restates it differently — it cannot let the request win, because the weights
 would win anyway and the run would report an architecture it did not train. So
 `RESUMED_ARCH_FIELDS` (`lib/training.ts`) is dropped from the payload in
@@ -1251,7 +1274,7 @@ Dropping a field only works while the far side leaves the gap open. It did not:
 `POST /train` stored the config as a full dump, defaults and all, so every field
 was "set" again by the time the pipeline read it and **every** resume from a
 checkpoint that was not the composer's default shape was refused, whatever this
-module sent — see [`../engine/checkpoints.md`](../engine/checkpoints.md). What
+module sent — see [`../llm-engine/checkpoints.md`](../llm-engine/checkpoints.md). What
 that means here is that a resumed run's stored config carries no architecture
 and no vocabulary, so `components/jobs/config-recap.tsx` names whose shape it is
 ("The checkpoint's") rather than printing five numbers nobody chose, and the
@@ -1260,7 +1283,7 @@ resolved shape is read back off the model the run produces
 `result.architecture`).
 
 **The tokenizer is inherited the same way, on its own list.** `resumed_tokenizer`
-in the engine refuses a resumed run's *stated* `tokenizer_id` exactly as
+in the LLM engine refuses a resumed run's *stated* `tokenizer_id` exactly as
 `resumed_architecture` refuses a disagreeing shape, so the composer offers no
 Tokenizer selector once `resume_from` is set (`run-config.ts::hidesTokenizer`,
 read by both `train-board.tsx` and `params-rail.tsx`), and `RESUMED_TOKENIZER_FIELDS`
@@ -1273,29 +1296,29 @@ says so as well, so a person picking "Continue from" is told once, in prose, tha
 the vocabulary is not theirs to choose either.
 
 **`max_vocab` is on that list too, and it is the one to keep an eye on.** It is
-neither refused nor honoured: the engine's `tokenizer_for` returns the
+neither refused nor honoured: the LLM engine's `tokenizer_for` returns the
 checkpoint's vocabulary and returns *before* `max_vocab` is read, so a stated
 ceiling is silently ignored — which is why it survived the pass that hid the
-architecture knobs. A field that is quietly dropped on the engine's side is
+architecture knobs. A field that is quietly dropped on the LLM engine's side is
 worse than one that is refused, not better: nothing fails, and the run is stored
 and recapped carrying a number it never used. It renders through `ARCH_FIELDS`,
 so `fieldsFor` had been hiding it only when a *built* vocabulary was named —
 a condition a resume never meets, because `hidesTokenizer` means `tokenizer_id`
 is never set. `validate` skips it on a resume for the same reason it skips the
 shape, and `jobs/config-recap.tsx` prints "Tokenizer — The checkpoint's" instead
-of a max-vocab row rather than reporting the engine's default back as a
+of a max-vocab row rather than reporting the LLM engine's default back as a
 decision.
 
 #### Reading a run back — the diagnostics panel
 
 `components/training/diagnostics-panel.tsx` renders `DiagPoint[]`
-(`lib/training.ts`), which is the engine's `Diagnostics` dataclass **verbatim**
+(`lib/training.ts`), which is the LLM engine's `Diagnostics` dataclass **verbatim**
 — nothing between the training loop and the chart renames a field, so a rename
-on either side arrives as `undefined`. The engine's side is documented in
-[`../engine/telemetry.md`](../engine/telemetry.md).
+on either side arrives as `undefined`. The LLM engine's side is documented in
+[`../llm-engine/telemetry.md`](../llm-engine/telemetry.md).
 
 - **An optional field means "not measured", and must never render as 0.** The
-  engine drops what it did not measure instead of sending a zero, because a zero
+  LLM engine drops what it did not measure instead of sending a zero, because a zero
   reads as a real measurement. Every fine-tuning field on `DiagPoint` is
   therefore optional; `opt()` in the panel maps `undefined` to `null` so recharts
   drops the point rather than plotting it at the bottom of the axis.
@@ -1330,7 +1353,7 @@ on either side arrives as `undefined`. The engine's side is documented in
   `TrainStats.checkpoint_path`. A checkpoint interval is a multiple of the report
   interval, so the epoch-boundary save is usually deduplicated against the
   interval one and its frame carries no path — reading the path listed almost
-  nothing, and nothing at all on a single-epoch run. The frame is the engine's
+  nothing, and nothing at all on a single-epoch run. The frame is the LLM engine's
   `Checkpoint` dataclass verbatim (`CheckpointFrame` in `lib/training.ts`) and
   announces every save as its weights land, so the list is complete and each row
   can say where in the run it was taken.
@@ -1371,13 +1394,13 @@ Three things about it are load-bearing:
   moment training starts; the metrics stay, because they are facts about the
   corpus the run is training on, and a finished run's page is where they are
   read.
-- **An absent field is "—", never 0.** The engine omits what a phase did not
-  measure (see [`../engine/README.md`](../engine/README.md)), and a corpus packed
+- **An absent field is "—", never 0.** The LLM engine omits what a phase did not
+  measure (see [`../llm-engine/README.md`](../llm-engine/README.md)), and a corpus packed
   before a metric existed reports none of it. Drawing that as a zero would be a
   number that reads as a real count of nothing.
 - **`ctx_window` comes from the run's config, not from the frame.** The window is
   a property of the run, and one packed corpus can be trained at two of them —
-  which is also why the engine measures the length histogram at report time
+  which is also why the LLM engine measures the length histogram at report time
   rather than baking it into the build.
 
 ##### While the build is running
@@ -1385,11 +1408,11 @@ Three things about it are load-bearing:
 The step is read off the frame (`TokenizeStats.step`), never inferred from which
 counters have arrived. The panel used to infer it, which worked while every step
 reported something and read the longest step of the run — packing, which reported
-nothing — as a tokenizer that had already finished. The engine's half of that,
+nothing — as a tokenizer that had already finished. The LLM engine's half of that,
 including why a vocabulary build no longer closes the phase, is in
-[`../engine/telemetry.md`](../engine/telemetry.md).
+[`../llm-engine/telemetry.md`](../llm-engine/telemetry.md).
 
-- **The elapsed clock is the page's, anchored to the engine's.** `BuildClock` is
+- **The elapsed clock is the page's, anchored to the LLM engine's.** `BuildClock` is
   remounted by its `key` whenever a frame lands and counts up from the reading
   that frame carried, so a page attached halfway through reads the build's age
   rather than its own and the two cannot drift. It exists because the frame
@@ -1398,7 +1421,7 @@ including why a vocabulary build no longer closes the phase, is in
   moving, and a clock that has stopped is exactly what a hung build looks like.
   A finished build's stops where it stopped, because one still running would be
   claiming something still is.
-- **The throughput curve is rebuilt from the frames, not sent.** The engine
+- **The throughput curve is rebuilt from the frames, not sent.** The LLM engine
   reports `tokens_per_sec` and not a series, so `use-job.ts` accumulates one — and
   a page attaching to a build already in flight still gets the whole curve,
   because a run's stream replays from the start. Only the frames that *carry* a
@@ -1407,7 +1430,7 @@ including why a vocabulary build no longer closes the phase, is in
 - **A bar is drawn only for the step in flight.** A full bar on a finished step
   says nothing and an empty one on a step that has not started says something
   untrue.
-- **The source strip is a window, and says so.** The engine centres at most
+- **The source strip is a window, and says so.** The LLM engine centres at most
   `BUILD_SOURCES` rows on the source being read and sends `sources_total`; the
   caption carries both, so a curriculum longer than the window is never mistaken
   for one that fits. The stage label appears only on a run with more than one
@@ -1420,10 +1443,10 @@ rendered directly under it: a sample of the run's actual training windows, one
 bar each, split into the documents inside it and coloured by dataset. The number
 cannot tell a corpus of books (a window sitting mid-chapter) from a corpus of
 tweets (forty unrelated things per window), and those want opposite decisions.
-The engine's half — the sampling strategy, the frame bound, the cost — is in
-[`../engine/telemetry.md`](../engine/telemetry.md).
+The LLM engine's half — the sampling strategy, the frame bound, the cost — is in
+[`../llm-engine/telemetry.md`](../llm-engine/telemetry.md).
 
-- **SVG, not canvas2d, and the element count is not why.** The engine caps the
+- **SVG, not canvas2d, and the element count is not why.** The LLM engine caps the
   frame at `RIBBON_WINDOWS × RIBBON_SEGMENTS` rects, which either would draw
   without noticing. What decides it is that the fills are the theme's own values
   applied as attributes (canvas would need `getComputedStyle` and a redraw on
@@ -1436,7 +1459,7 @@ The engine's half — the sampling strategy, the frame bound, the cost — is in
   window's edge. Drawing the two alike is what turns one book into nine unrelated
   documents, which is precisely the reading the figure exists to correct.
 - **The elided tail is drawn thin and muted, never at bar height.** A window past
-  the engine's per-window cap reports `overflow` and stops short; filling that
+  the LLM engine's per-window cap reports `overflow` and stops short; filling that
   space at full height would claim one long document where there are dozens of
   short ones.
 - **A dataset is a category, so it takes a hue and not a ramp** — the same wheel
@@ -1446,8 +1469,8 @@ The engine's half — the sampling strategy, the frame bound, the cost — is in
 
 ### A model's architecture, pretrain or SFT
 
-`hooks/use-models.ts` reads the engine's `parameters` two different ways
-depending on family — see [`../engine/README.md`](../engine/README.md) for why
+`hooks/use-models.ts` reads the LLM engine's `parameters` two different ways
+depending on family — see [`../llm-engine/README.md`](../llm-engine/README.md) for why
 a pretrain states its shape under `config.*` and an SFT run cannot — and
 `architectureOf(raw)` is the one place that hides the difference: it tries
 `config.*` first and falls back to `result.architecture`, so `/models` (the
@@ -1489,7 +1512,7 @@ model's own `baseModelId`/`resumedFromId` one `GET /models/{id}` hop at a time,
 stopping at the first ancestor with neither. A chain here is rarely more than a
 few hops — a training lineage isn't something people build ten deep — so a
 handful of small sequential requests reads more simply than adding a
-server-side walk (`_context()` in `engine/api/routes/models.py` is the existing
+server-side walk (`_context()` in `llm-engine/api/routes/models.py` is the existing
 precedent for one, if a future chain gets long enough to need it) for traffic
 this light. A `MAX_LINEAGE_HOPS` bound guards the walk against a cycle the
 system does not otherwise allow.
@@ -1498,7 +1521,7 @@ system does not otherwise allow.
 `config.datasets` (or `config.curriculum`'s stages, flattened and deduped by
 id, when the run was staged) — the same `{id, name, count}` shape on both
 `TrainConfig` and `SftConfig` — and the panel resolves each id against the data
-engine's own dataset list, falling back to the name stored with the selection
+LLM engine's own dataset list, falling back to the name stored with the selection
 at train time, then to the bare id: the same "named when we can" fallback
 `baseModelName` already uses one section up.
 
@@ -1507,9 +1530,9 @@ at train time, then to the bare id: the same "named when we can" fallback
 `components/models/attention-viewer.tsx` on `/models/[id]`: pick a layer and a
 head, give it a text, get that head's attention matrix back. `lib/attention.ts`
 is the wire (base64 fp32 in, a `Float32Array` out), `hooks/use-attention.ts` the
-state, `components/models/attention-canvas.tsx` the figure. The engine side —
+state, `components/models/attention-canvas.tsx` the figure. The LLM engine side —
 including why nothing records attention until someone asks — is
-[`../engine/README.md`](../engine/README.md).
+[`../llm-engine/README.md`](../llm-engine/README.md).
 
 - **Canvas2d, and measured rather than assumed.** One backing pixel per cell,
   filled through a 256-entry ramp into one `ImageData`, one `putImageData`, and
@@ -1517,7 +1540,7 @@ including why nothing records attention until someone asks — is
   and not a shape, so a `fillRect` per cell would be 262,144 draw calls for
   something the compositor does as a blit. Measured in headless Chromium with
   **no GPU at all** (software raster, the pessimistic case): 512×512 — the
-  largest matrix the engine will return — **median 6.3 ms, p95 12.7 ms**;
+  largest matrix the LLM engine will return — **median 6.3 ms, p95 12.7 ms**;
   256×256 1.6 ms; 128×128 0.3 ms. That is a one-off cost per fetched matrix,
   behind a network round trip and a forward pass that each cost more, and
   hovering redraws nothing. Canvas2d is comfortably enough here and there is no
@@ -1539,6 +1562,21 @@ including why nothing records attention until someone asks — is
   is a display transform; the hovered cell always states the exact weight, and
   the tokens on both axes, which is the whole point of labelling them.
 
+### New-chat figure
+
+The new-chat splash is the **Thought Trellis**, a sparse triangular dot field
+with three asymmetric trees taking turns growing from its centre. It borrows
+the throbber's lattice and `--throbber-base` / `--throbber-spark` tokens; its
+12-second passes are decorative and do not indicate model activity.
+`components/ui/figure-trellis.tsx` fixes the geometry at render time; the
+`trellis-*` rules in its imported `figure-trellis.css` animate only dash offset
+and opacity. The component imports its animation stylesheet directly so the
+figure and its motion enter the build together.
+Depth delays connect each twig to its parent before the tip lights, and let
+outer connections linger into the next pass. Reduced motion shows the first
+tree as a still engraving. The SVG is hidden from assistive technology and
+keeps the former splash's footprint so the heading and composer stay in place.
+
 ### Throbber or dot
 
 `components/ui/throbber.tsx` is a **figure**, not an icon: a hexagonal field of
@@ -1551,12 +1589,13 @@ used to be sized per call site, and the result was a different figure in every
 row, none of which looked like the same object.
 
 **The tree is grown, not drawn.** A fresh one is grown by random walk at the
-start of every pass, so the mark is never the same twice. What is fixed is the
-*character* of the growth, and that is what carries the state — see `GROWTH`:
-`limbs` (directions leaving the root), `branch` (how far an inner dot splits)
-and `depth` (how far ink travels). One long wandering route is a token being
-sampled; a broad shallow bush is several paths held open; the full spanning net
-is every parameter moving at once.
+start of every pass — every state but `generating`, which walks instead — so the
+mark is never the same twice. What is fixed is the *character* of the growth,
+and that is what carries the state — see `GROWTH`: `limbs` (directions leaving
+the root), `branch` (how far an inner dot splits) and `depth` (how far ink
+travels). One route walked without stopping is a token being sampled; a broad
+shallow bush is several paths held open; the full spanning net is every
+parameter moving at once.
 
 Rules governing changes to it:
 
@@ -1574,10 +1613,22 @@ Rules governing changes to it:
 - **A state is three growth numbers plus an advance rule**, not a bespoke
   animation. Add a state by adding entries to `GROWTH`, `RATES` and `TINT`, and
   a branch to the advance `switch` in `draw` only if the new state genuinely
-  cannot be told by how its tree grows.
-- Unlike the rail it replaced, this figure **re-starts on purpose**: a state
-  change grows a new tree immediately rather than waiting out the pass in
-  progress, because repeated growth is its whole language.
+  cannot be told by how its tree grows. `generating` is the one state that
+  bought more than that, and the snake section of the file is what it cost —
+  that is the bar for the next one.
+- **`generating` is a snake, not a tree.** The head steps to a neighbouring dot
+  and the tail lets the oldest one go, so six dots travel the field with no seam
+  in them. It grows nothing and never re-starts, because a token stream does
+  not: the tree it used to grow put a fresh start in the middle of a reply once
+  a second. The walk is planned ahead on the pass boundary and never in a frame,
+  and it may not step where its own body will still be standing.
+- **A state change is answered at once — except by the snake.** Every tree state
+  grows the new one immediately rather than waiting out the pass in progress,
+  because repeated growth is its whole language. Leaving `generating` instead
+  runs the head home to the centre and drains the body in behind it, half a
+  second in which the mark still says *generating*: a stream is put away, not
+  cut. What is left standing is a lit dot at the centre, which is where the
+  incoming figure's first frame starts anyway, so the two join up.
 
 The `/throbber` page shows every state side by side, and the chat's status row
 with a live count behind it — the only place either of the row's movements can

@@ -18,33 +18,32 @@
 //! commands and grades answers — but every one of its writes lands in the gyms
 //! service's own record, which is the module that owns them.
 //!
-//! **The engine never sees a `{stdout, stderr, exit_code}` triple.** The step
+//! **The LLM engine never sees a `{stdout, stderr, exit_code}` triple.** The step
 //! route answers with the *rendered* observation, from `gym::play`, which is the
 //! same renderer the browser's socket loop and the live chat `bash` tool use.
 //! That is the whole reason an engine-driven rollout is allowed to exist at all:
 //! it makes the round trip the sandbox already forced it into pay for the
 //! rendering too. See
-//! `docs/decisions/reinforcement-learning-in-the-engine.md`.
+//! `docs/decisions/reinforcement-learning-in-the-llm-engine.md`.
 
-use actix_web::{HttpRequest, get, post, web};
+use actix_web::{get, post, web, HttpRequest};
 use data_engine::Proxy;
 use serde_json::Value;
 
 use crate::extractors::ServiceCaller;
 use crate::gym;
-use crate::upstream::{Answer, answer, with_query};
+use crate::upstream::{answer, with_query, Answer};
 
 #[get("/datasets/{id}")]
-async fn dataset(
-    service: ServiceCaller,
-    id: web::Path<String>,
-    data: web::Data<Proxy>,
-) -> Answer {
-    answer(data.get(&service.caller, &format!("/datasets/{id}")).await?)
+async fn dataset(service: ServiceCaller, id: web::Path<String>, data: web::Data<Proxy>) -> Answer {
+    answer(
+        data.get(&service.caller, &format!("/datasets/{id}"))
+            .await?,
+    )
 }
 
 #[get("/gyms")]
-async fn catalogue(service: ServiceCaller, gyms: web::Data<gyms::Proxy>) -> Answer {
+async fn catalogue(service: ServiceCaller, gyms: web::Data<gyms_engine::Proxy>) -> Answer {
     answer(gyms.get(&service.caller, "/gyms").await?)
 }
 
@@ -70,9 +69,12 @@ async fn documents(
 async fn create_run(
     service: ServiceCaller,
     body: web::Json<Value>,
-    gyms: web::Data<gyms::Proxy>,
+    gyms: web::Data<gyms_engine::Proxy>,
 ) -> Answer {
-    answer(gyms.post(&service.caller, "/gym/runs", body.into_inner()).await?)
+    answer(
+        gyms.post(&service.caller, "/gym/runs", body.into_inner())
+            .await?,
+    )
 }
 
 /// One move of an engine-driven episode: run the call, record it, and answer
@@ -82,7 +84,7 @@ async fn step(
     service: ServiceCaller,
     id: web::Path<String>,
     body: web::Json<Value>,
-    gyms: web::Data<gyms::Proxy>,
+    gyms: web::Data<gyms_engine::Proxy>,
 ) -> Answer {
     let body = body.into_inner();
     let budget = tools::Config::from_env().bash_budget_chars;
@@ -105,7 +107,7 @@ async fn finish(
     service: ServiceCaller,
     id: web::Path<String>,
     body: web::Json<Value>,
-    gyms: web::Data<gyms::Proxy>,
+    gyms: web::Data<gyms_engine::Proxy>,
 ) -> Answer {
     let path = format!("/gym/episodes/{id}/finish");
     answer(gyms.post(&service.caller, &path, body.into_inner()).await?)
@@ -115,7 +117,7 @@ async fn finish(
 async fn close(
     service: ServiceCaller,
     id: web::Path<String>,
-    gyms: web::Data<gyms::Proxy>,
+    gyms: web::Data<gyms_engine::Proxy>,
 ) -> Answer {
     let path = format!("/gym/episodes/{id}/close");
     answer(gyms.post(&service.caller, &path, Value::Null).await?)
@@ -126,7 +128,7 @@ async fn set_status(
     service: ServiceCaller,
     id: web::Path<String>,
     body: web::Json<Value>,
-    gyms: web::Data<gyms::Proxy>,
+    gyms: web::Data<gyms_engine::Proxy>,
 ) -> Answer {
     let path = format!("/gym/runs/{id}/status");
     answer(gyms.post(&service.caller, &path, body.into_inner()).await?)

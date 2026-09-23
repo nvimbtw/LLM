@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Populate the benchmark's reference corpus at engine/data/eval/corpus/.
+Populate the benchmark's reference corpus at llm-engine/data/eval/corpus/.
 
 The benchmark's primary number is held-out bits-per-byte: how well the model
 predicts English it was never trained on. That only means anything if the text
 really is held out, so this writes to `data/eval/`, which is deliberately outside
-`engine/data/input/` — anything under input is selectable as training data in the
+`llm-engine/data/input/` — anything under input is selectable as training data in the
 UI, and a held-out set that can be accidentally trained on is not a held-out set.
 
 By default it pulls the TinyStories **train** split, because

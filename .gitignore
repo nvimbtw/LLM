@@ -11,17 +11,18 @@ backend/crates/llm/src/training/shaders/*.a
 
 # Python bytecode caches
 __pycache__/
+.coverage
 
-# The virtualenvs — the engine's is 5 GB of wheels; both rebuild from
+# The virtualenvs — the LLM engine's is 5 GB of wheels; all rebuild from
 # requirements.txt.
-engine/.venv/
+llm-engine/.venv/
 data-engine/.venv/
-gyms/.venv/
+gyms-engine/.venv/
 
-# The engine owns the corpora, models and datasets. They arrive via the fetch
+# The LLM engine owns the corpora, models and datasets. They arrive via the fetch
 # scripts and are regenerated, not versioned. This also covers what a fetch
 # leaves beside them: .prepare_state.json and .prepare_logs/ from prepare_all.py.
-engine/data/
+llm-engine/data/
 
 # Datasets a fetch script stages inside the repo. prepare_smoltalk.py's
 # --cache-dir defaults here and snapshot_download()s the whole source repo into

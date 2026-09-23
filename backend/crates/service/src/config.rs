@@ -2,7 +2,7 @@
 //!
 //! Every field comes from the environment because none of them are properties of
 //! this project — they are properties of the machine it runs on. The variables
-//! are the service's prefix plus a fixed suffix (`ENGINE_PORT`,
+//! are the service's prefix plus a fixed suffix (`LLM_ENGINE_PORT`,
 //! `DATA_ENGINE_PORT`), so adding a service adds a documented block to `.env`
 //! rather than a new naming scheme.
 
@@ -38,8 +38,8 @@ pub struct Config {
     /// The variable the child reads its secret from. Named here rather than
     /// derived at the spawn, so the child and the token agree by construction.
     pub secret_var: String,
-    /// Anything else the child needs in its environment. The engine's data root
-    /// is the only current case, and it belongs to the engine, not here.
+    /// Anything else the child needs in its environment. The LLM engine's data root
+    /// is the only current case, and it belongs to the LLM engine, not here.
     pub extra_env: Vec<(String, String)>,
     /// Importing torch is slow enough on a cold page cache that a short one
     /// would flap.
@@ -98,8 +98,13 @@ impl Config {
     /// Relative is the trap: a path resolved against the *server's* working
     /// directory silently creates a second, empty tree beside the real one.
     pub fn with_env_path(mut self, key: &str, path: PathBuf) -> Config {
-        let resolved = if path.is_absolute() { path } else { self.dir.join(path) };
-        self.extra_env.push((key.to_string(), resolved.display().to_string()));
+        let resolved = if path.is_absolute() {
+            path
+        } else {
+            self.dir.join(path)
+        };
+        self.extra_env
+            .push((key.to_string(), resolved.display().to_string()));
         self
     }
 
@@ -110,8 +115,8 @@ impl Config {
     /// Check the paths exist and return a copy with them made absolute.
     ///
     /// Absolute is not cosmetic: `Command` resolves the program path *after*
-    /// chdir-ing into `current_dir`, so a relative `../engine/.venv/bin/python`
-    /// is looked for under `../engine/../engine/...` and fails with a bare ENOENT.
+    /// chdir-ing into `current_dir`, so a relative `../llm-engine/.venv/bin/python`
+    /// is looked for under `../llm-engine/../llm-engine/...` and fails with a bare ENOENT.
     pub fn resolved(&self) -> Result<Config, String> {
         let prefix = self.audience.to_uppercase().replace('-', "_");
         if !self.dir.is_dir() {
@@ -131,7 +136,12 @@ impl Config {
         let extra_env = self
             .extra_env
             .iter()
-            .map(|(k, v)| Ok((k.clone(), absolute(&PathBuf::from(v))?.display().to_string())))
+            .map(|(k, v)| {
+                Ok((
+                    k.clone(),
+                    absolute(&PathBuf::from(v))?.display().to_string(),
+                ))
+            })
             .collect::<Result<Vec<_>, String>>()?;
 
         Ok(Config {
@@ -152,7 +162,10 @@ fn absolute(path: &std::path::Path) -> Result<PathBuf, String> {
 }
 
 fn env_or(key: &str, fallback: String) -> String {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty()).unwrap_or(fallback)
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(fallback)
 }
 
 fn parse_env<T: std::str::FromStr>(key: &str) -> Option<T> {

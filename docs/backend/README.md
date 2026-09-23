@@ -2,7 +2,7 @@
 
 The Rust half: people, sessions, and the seam to the services behind it. It owns
 users and presets and nothing else — models, conversations, runs and scores live
-in `engine/`, and this side forwards to them.
+in `llm-engine/`, and this side forwards to them.
 
 ## Tech stack
 
@@ -41,23 +41,23 @@ backend/
     ├── auth/          argon2 hashing, the token cipher, JWT issue/verify
     ├── db/            users and presets — sqlx + migrations/      → auth
     ├── service/       spawning a Python service, and the hops both ways → auth
-    ├── engine/        names the LLM engine: audience, port, DATA_DIR → service
+    ├── llm-engine/    names the LLM engine: audience, port, DATA_DIR → service
     ├── data-engine/   names the data engine                          → service
-    ├── gyms/          names the gyms service                            → service
+    ├── gyms-engine/   names the gyms engine                          → service
     ├── tools/         what a model can reach for, and the answer  → (nothing)
-    └── api/           routes + extractors + sockets   → service, engine, data-engine, gyms, tools, db, auth
+    └── api/           routes + extractors + sockets   → service, llm-engine, data-engine, gyms-engine, tools, db, auth
 ```
 
 `tools` is a leaf like `auth`: it knows about the outside world and about the
-marker vocabulary, and nothing about this project's users, sessions or the engine
+marker vocabulary, and nothing about this project's users, sessions or the LLM engine
 process.
 
-`service` names no service. `engine`, `data-engine` and `gyms` are ~40 lines
+`service` names no service. `llm-engine`, `data-engine` and `gyms-engine` are ~40 lines
 each — an audience, a set of defaults, and a `Proxy` newtype — and do **not**
 depend on each other: the three Python processes are siblings that never speak.
 
 The database holds three tables: `users`, `training_presets`, and sqlx's own
-migration ledger. Everything else moved to the engine.
+migration ledger. Everything else moved to the LLM engine.
 
 A user's chat settings (decoding knobs, system prompt, UI toggles) live in
 `users.settings`, one opaque JSONB blob rather than a table of their own — a
@@ -98,31 +98,31 @@ simply fails to compile. `crates/*` are workspace members subordinate to
 ## Proxy routes
 
 A route for something a service owns forwards rather than re-models it. The
-payload is `serde_json::Value` on purpose — a field the engine adds needs no
+payload is `serde_json::Value` on purpose — a field the LLM engine adds needs no
 change here, and `upstream::Upstream` carries the service's own status back, so
 a 404 stays a 404 instead of becoming a generic 502.
 
 **One pair of routes forwards something that is not JSON.** `/attachments` takes
-a multipart upload from the browser and forwards it as multipart to the engine
+a multipart upload from the browser and forwards it as multipart to the LLM engine
 (`Proxy::upload`), and serves the bytes back with the content type and
-disposition the engine set (`Proxy::fetch`) — this side stores nothing about a
+disposition the LLM engine set (`Proxy::fetch`) — this side stores nothing about a
 file and would otherwise be guessing at a name it never saw. Both are buffered
-rather than streamed: the engine caps what it will store, and a streaming body
+rather than streamed: the LLM engine caps what it will store, and a streaming body
 cannot carry an upstream failure through a response already begun. The size
 ceiling is repeated here so an oversized body is refused at the edge rather than
 read into memory on its way to being refused; keep it in step with `MAX_BYTES`
-in `engine/api/routes/attachments.py`. What the engine does with them —
+in `llm-engine/api/routes/attachments.py`. What the LLM engine does with them —
 and, more to the point, what it does not — is
 [`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
 
 **One proxy route is `AuthUser` where its neighbours on the same resource are
-`AdminUser`.** `POST /models/{id}/attention` forwards to the engine's attention
+`AdminUser`.** `POST /models/{id}/attention` forwards to the LLM engine's attention
 endpoint, and it is not admin work: it is one forward pass over a model anyone
 signed in can already hold a conversation with, and reading where one of its
 heads looks is strictly less than that. Editing or deleting a model next door
 stays admin, because those change what everyone else sees. What keeps a
-quadratic response off an open route is the engine's own bound on the sequence
-(see [`../engine/README.md`](../engine/README.md)) — a long text comes back as a
+quadratic response off an open route is the LLM engine's own bound on the sequence
+(see [`../llm-engine/README.md`](../llm-engine/README.md)) — a long text comes back as a
 400, so nothing here has to restate a ceiling it would then have to keep in step.
 
 **Two routes are spelled almost alike and are not the same thing.**
@@ -135,12 +135,12 @@ composer's context meter asks it on every pause in typing
 collecting 403s.
 
 **One family of proxy routes has a driver behind it.** `/gym/*`
-(`routes/gym.rs`, admin only) forwards to the gyms service like any other, but a
+(`routes/gym.rs`, admin only) forwards to the gyms engine like any other, but a
 gym *run* is not a request — it is a loop, and `api/src/gym.rs` is where that
 loop lives. See [the gym socket](#the-gym-socket) below.
 
-**And one gym loop has no socket at all.** `POST /runs/rl` queues an engine-side
-run that drives its own episodes through [the gym family](#the-gym-family) of
+**And one gym loop has no socket at all.** `POST /runs/rl` queues a run in the
+LLM engine that drives its own episodes through [the gym family](#the-gym-family) of
 `/internal`, with nobody watching. It is beside `/runs/train` and `/runs/sft`
 because it is the same thing to this side — a row in the queue that produces a
 model — and the only reason it is not `/runs/train` with a flag is that what it
@@ -154,7 +154,7 @@ the service scopes by that. A user token is never forwarded.
 
 `api/routes/internal.rs`, behind the `ServiceCaller` extractor, is the one place
 a **service** is the caller. The LLM engine reads documents there that the data
-engine owns — it cannot ask the data engine itself, because the two Python
+LLM engine owns — it cannot ask the data engine itself, because the Python
 services never speak, and it cannot be handed them in advance, because a queued
 run needs them at a moment nothing on this side knows ahead of time. It drives
 gym episodes there for the same reason, and one more of its own: see
@@ -168,10 +168,10 @@ Three things make that safe to have, each enforced somewhere different:
   PyJWT, verified by `jsonwebtoken`, the only token in this project that Python
   signs and Rust checks.
 - **The issuer list, named at the call site.** `InboundSecret::caller` takes the
-  issuers it will accept, and the extractor passes `engine::AUDIENCE` alone. The
+  issuers it will accept, and the extractor passes `llm_engine::AUDIENCE` alone. The
   data engine holds a valid secret and still cannot read through the backend,
   because it has no business asking.
-- **`act` survives the hop.** The caller the engine names is re-minted into the
+- **`act` survives the hop.** The caller the LLM engine names is re-minted into the
   token going out to the data engine, so a run reads exactly the datasets the
   person who queued it could have read. `crates/service` names no service, so
   the crate that knows both is `api` and only `api`.
@@ -183,14 +183,17 @@ cleaning and deleting them stay a person's, under `/data`.
 
 `GET /internal/gyms` forwards the task catalogue for adaptive practice.
 Tool-free episodes (`tools: []`) receive a single terminal response with tool
-calls masked from the outset. The gyms service also refuses steps for them.
-Demonstration requests forward `gym_id`; math trajectories contain no moves,
+calls masked from the outset. The gyms engine also refuses steps for them.
+Demonstration requests forward `gym_id`, `gym_weights` and `task_weights`;
+math trajectories contain no moves,
 so their checked answer and short working pass through as one assistant turn.
-Generator version and split travel in demonstration provenance. See
-[math gym](../gyms/math.md).
+Source gym, generator version and split travel in conversation metadata; the
+resolved selection policy is retained in dataset provenance. A general run
+uses each episode's tool policy, just as an ordinary source run does. See
+[math gym](../gyms-engine/math.md).
 
 `/internal/gym/*` is not read-only and cannot be — a rollout runs commands and
-grades answers — but every one of its writes lands in the gyms service's own
+grades answers — but every one of its writes lands in the gyms engine's own
 record, which is the module that owns them. Nothing new is stored here.
 
 **The step route answers with the rendered observation, and that is the whole
@@ -200,15 +203,15 @@ laid out by `tools::observation` — the same function the browser's gym socket
 and the live chat `bash` tool render with. `gym::play` is the shared body; the
 socket loop and this route differ only in what they do with the result.
 
-So the engine drives a rollout without ever laying an observation out, which is
+So the LLM engine drives a rollout without ever laying an observation out, which is
 what reconciles two things that read like a contradiction:
 [`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md)
-rejected *the engine drives, calling the backend to render* — priced as a round
+rejected *the LLM engine drives, calling the backend to render* — priced as a round
 trip taken purely to format a string — and
-[`../decisions/reinforcement-learning-in-the-engine.md`](../decisions/reinforcement-learning-in-the-engine.md)
-requires the engine to drive, because a policy gradient needs the token ids and
+[`../decisions/reinforcement-learning-in-the-llm-engine.md`](../decisions/reinforcement-learning-in-the-llm-engine.md)
+requires the LLM engine to drive, because a policy gradient needs the token ids and
 log-probabilities the sampler drew and no HTTP frame carries them. The rejection
-priced a round trip the engine would otherwise not make. It makes this one
+priced a round trip the LLM engine would otherwise not make. It makes this one
 anyway — the sandbox is behind this server — so the rendering rides a hop that
 already had to happen and costs nothing.
 
@@ -232,7 +235,7 @@ letting them default to unset — see
 `service` names no service, and `crates/data-engine` is the worked example. A
 third one is:
 
-1. a crate beside `engine/` and `data-engine/` naming its `AUDIENCE`, its
+1. a crate beside `llm-engine/` and `data-engine/` naming its `AUDIENCE`, its
    `Defaults` (env prefix, directory, port), and a `Proxy` newtype,
 2. a `Supervisor::start` and a `Proxy` in `main.rs`, registered as `app_data`,
 3. route files above it, mounted in `routes/mod.rs`.
@@ -253,7 +256,7 @@ is **let the reply finish, run what it asked for while it does, then ask again
 with the answers in the conversation** — see
 [`../decisions/tool-calls.md`](../decisions/tool-calls.md) for what that forces.
 
-`api/turn.rs` drives it. Per round: relay the engine's frames to the browser,
+`api/turn.rs` drives it. Per round: relay the LLM engine's frames to the browser,
 spawn a tool the moment its `tool_call` frame arrives, keep relaying, join at
 `done`, then POST the next round with a `tool_result`. Bounded at
 `MAX_TOOL_ROUNDS` (six) — without it a model that searches in every reply never
@@ -267,7 +270,7 @@ mid-investigation, leaving a reply that ended in a call nothing answered. Note
 what that costs when it *is* hit: the last round's call is still parsed and
 still spawned, and its result is then discarded with the loop.
 
-The engine detects, this side executes. Detection needs token *ids*, which only
+The LLM engine detects, this side executes. Detection needs token *ids*, which only
 the generation loop has; the API key, the outbound HTTP and the round loop are
 all properties of the machine, which is this side. Each `done` is stamped
 `final` so the client can tell a round's end from the turn's.
@@ -288,7 +291,7 @@ with the first for a case that does not need one.
 built the next round's `tool_result` payload — `drain_interjection` collects
 everything that arrived since the last drain (joined with a blank line if more
 than one landed), and `fold_interjection` writes it onto the payload as
-`interject`, the field `engine/api/routes/chats.py::Ask` stores as a second
+`interject`, the field `llm-engine/api/routes/chats.py::Ask` stores as a second
 message immediately after the tool result. The instant it folds one in, the
 client is told with `{ "type": "interjected", "text": "..." }`, sent before the
 next round's request goes out — the frontend's cue to move that message out of
@@ -301,7 +304,7 @@ once the socket closes, so nothing typed is lost, just re-homed to the next
 turn instead of this one.
 
 Adding a tool is an `impl Tool` and a line in `Registry::with_config`, plus a row
-in the engine's table (`engine/llm/chat/tools.py`). **No reserved slots**: every
+in the LLM engine's table (`llm-engine/llm/chat/tools.py`). **No reserved slots**: every
 tool is called through one `<|tool-call|>` marker naming it in JSON, so the tool
 table is a property of the build rather than of the vocabulary — see
 [`../decisions/generic-tool-calls.md`](../decisions/generic-tool-calls.md). A
@@ -384,7 +387,7 @@ requests, and signing up requires a card even for those.
 
 `SEARCH_BUDGET_CHARS` is the one worth thinking about, because the models here
 are small enough that a search result competes with the conversation for room.
-The engine's default `ctx_window` is **256 tokens**, half of which
+The LLM engine's default `ctx_window` is **256 tokens**, half of which
 `orchestrate/chat.py` reserves for the reply — so the whole prompt, system block
 and history included, is about 380 characters. Five untrimmed results measured
 ~1,200. Nothing errors on that; `build_prompt` simply evicts the question to fit
@@ -411,8 +414,8 @@ finds back — see
 The cache lives in the **data engine**, as a dataset (`web-search-cache`,
 `origin = search`, `owner_id = NULL`) rather than a table of its own: a search
 result is data on the same terms anything else pulled from the Hub is, and
-storing it there is what makes it selectable for training later with no
-engine-side work at all.
+storing it there is what makes it selectable for training later without work
+in the LLM engine.
 
 `tools::SearchCache` is the trait `WebSearch` calls through — `get`/`put`
 keyed by a normalized query — and it stays a trait rather than a concrete type
@@ -487,7 +490,7 @@ worth teaching anyway.
 
 **That rendering is exported, and it is the reason the gym is driven from
 here.** `tools::observation` is the same function, called with the fields the
-gyms service reports for a command it ran; a second renderer in Python would
+gyms engine reports for a command it ran; a second renderer in Python would
 mean a model practising against a shell it is never actually served. See
 [the gym socket](#the-gym-socket).
 
@@ -505,14 +508,14 @@ exactly that reason:
   call goes to `POST /gym/episodes/{id}/step` on the gyms proxy, which runs it
   in *that episode's* filesystem and records it with its reward. What comes back
   is rendered by `tools::observation`, so the two are the same text.
-- **How the next round is asked.** A chat turn is stored by the engine and comes
+- **How the next round is asked.** A chat turn is stored by the LLM engine and comes
   back as history, so a round sends one `tool_result`. An episode has no chat:
-  the conversation is held in the loop and handed whole to the engine's
+  the conversation is held in the loop and handed whole to the LLM engine's
   stateless `/chat/stream` every round, with tool turns naming their call so the
-  engine renders the `<|tool-result|>` block (`ChatTurn.tool`/`argument`).
+  LLM engine renders the `<|tool-result|>` block (`ChatTurn.tool`/`argument`).
 
 Frames are the chat vocabulary plus four: `episode_start`, `episode_done`,
-`run_done`, and the engine's `done` relayed as **`round_done`** — an episode
+`run_done`, and the LLM engine's `done` relayed as **`round_done`** — an episode
 takes a round per command, and a client counting `done` would see an episode end
 every time the model ran `ls`. Every frame carries the `episode_id` it belongs
 to, so a run of twenty tasks is one socket.
@@ -524,16 +527,16 @@ be judged on the one task it happened to finish.
 
 A dropped socket abandons the run — graded episodes stand, the rest are never
 run — which is the bargain a chat turn already makes. Why the loop is here at
-all rather than in the engine, where RL will want it, is
+all rather than in the LLM engine, where RL will want it, is
 [`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md).
 
 **`POST /gym/demonstrations` is the other route that is not a pass-through**, and
-for the same reason as the socket. It asks the gyms service for expert
+for the same reason as the socket. It asks the gyms engine for expert
 trajectories, renders each observation with `tools::observation` — the same call
 a live round makes — and writes the result to the *data engine* as an ordinary
 `sft` dataset, which the LLM engine then fine-tunes on with no reader it does not
 already have. Three services and one job, and the assembly is here because this
-is the only process where all three are reachable: the two Python services never
+is the only process where all three are reachable: the Python services never
 speak.
 
 The dataset description is optional; when omitted, the backend sends an empty
@@ -542,10 +545,10 @@ string to the data engine, whose import endpoint requires a string if supplied.
 `api/src/demonstrations.rs` is that conversion, and the line it holds is worth
 stating. The observation **body** is rendered here, because that is what serving
 renders it with. The `<|tool-call|>` header around it is **not** — the stored
-turn carries `tool` and `argument` beside the body, and the engine's
+turn carries `tool` and `argument` beside the body, and the LLM engine's
 `render_result` adds the header at build time. Spelling it here would be a
 fourth copy of a layout this side has no reason to own. See
-[`../gyms/demonstrations.md`](../gyms/demonstrations.md).
+[`../gyms-engine/demonstrations.md`](../gyms-engine/demonstrations.md).
 
 ```sh
 cargo run -p tools --example bash_once -- 'echo hello > f.txt; ls -l'
@@ -558,25 +561,31 @@ cargo run -p tools --example bash_once -- 'echo hello > f.txt; ls -l'
 - IDs are UUIDs (`gen_random_uuid()`, `Uuid` in Rust).
 - Every mutable entity carries `created_at`, and `updated_at` where relevant.
 - Migrations are additive and forward-only once data exists.
+- Applied migration files are immutable, including comments and whitespace:
+  sqlx checksums the entire file and refuses startup with `VersionMismatch` if
+  it changes. Historical names and paths in them must stay as written. Restore
+  accidentally edited files to their applied versions and recompile the `db`
+  crate to refresh the embedded migrations; do not rewrite the database's
+  migration checksums to accept an edit.
 
-## The Python engine
+## The Python services
 
 `crates/service` is the only crate that knows a service is a subprocess: it
 spawns one as a child of the Actix server, health-checks it before the server
-reports ready, restarts it if it dies, and kills it on shutdown. Both Python
+reports ready, restarts it if it dies, and kills it on shutdown. All three Python
 services are started this way.
 
 Configured by environment, because these are properties of the machine:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ENGINE_DIR` | `../engine` | Working directory; `main:app` resolves against it |
-| `ENGINE_PYTHON` | `$ENGINE_DIR/.venv/bin/python` | Interpreter; started as `-m uvicorn` |
-| `ENGINE_HOST` | `127.0.0.1` | |
-| `ENGINE_PORT` | `8001` | 8000 is commonly taken by a local Apache |
-| `ENGINE_AUTOSTART` | `true` | Off = "an engine is already running, do not spawn" |
-| `ENGINE_STARTUP_TIMEOUT_SECS` | `60` | Importing torch is slow on a cold cache |
-| `ENGINE_SERVICE_SECRET` | unset | Shared with the engine; unset leaves both open |
+| `LLM_ENGINE_DIR` | `../llm-engine` | Working directory; `main:app` resolves against it |
+| `LLM_ENGINE_PYTHON` | `$LLM_ENGINE_DIR/.venv/bin/python` | Interpreter; started as `-m uvicorn` |
+| `LLM_ENGINE_HOST` | `127.0.0.1` | |
+| `LLM_ENGINE_PORT` | `8001` | 8000 is commonly taken by a local Apache |
+| `LLM_ENGINE_AUTOSTART` | `true` | Off = "an LLM engine is already running, do not spawn" |
+| `LLM_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | Importing torch is slow on a cold cache |
+| `LLM_ENGINE_SERVICE_SECRET` | unset | Shared with the LLM engine; unset leaves both open |
 
 The data engine takes the same set under `DATA_ENGINE_*`, read by the same
 `service::Config::from_env`:
@@ -591,29 +600,41 @@ The data engine takes the same set under `DATA_ENGINE_*`, read by the same
 | `DATA_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | |
 | `DATA_ENGINE_SERVICE_SECRET` | unset | |
 
+The gyms engine follows the same contract under `GYMS_ENGINE_*`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GYMS_ENGINE_DIR` | `../gyms-engine` | |
+| `GYMS_ENGINE_PYTHON` | `$GYMS_ENGINE_DIR/.venv/bin/python` | |
+| `GYMS_ENGINE_HOST` | `127.0.0.1` | |
+| `GYMS_ENGINE_PORT` | `8003` | |
+| `GYMS_ENGINE_AUTOSTART` | `true` | |
+| `GYMS_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | |
+| `GYMS_ENGINE_SERVICE_SECRET` | unset | |
+
 One variable belongs to neither service, because it guards the direction that
 runs toward this server:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BACKEND_SERVICE_SECRET` | unset | Shared with the engine, which signs `aud: backend` tokens with it. Unset leaves `/internal` open |
+| `BACKEND_SERVICE_SECRET` | unset | Shared with the LLM engine, which signs `aud: backend` tokens with it. Unset leaves `/internal` open |
 | `BIND_ADDR` | `127.0.0.1` | What the server listens on. `0.0.0.0` in a container, where a published port cannot reach a loopback binding |
 
 It has no `DATA_DIR`: its datasets are rows in `slate_data`, not a tree. That
-variable is the engine's and is injected by `crates/engine` alone — and it now
+variable is the LLM engine's and is injected by `crates/llm-engine` alone — and it now
 points at artifacts only, since the text a run trains on comes back the other
 way through `/internal`.
 
 Two things that are load-bearing and non-obvious:
 
-- **`ENGINE_PYTHON` is made absolute but never `canonicalize`d.** A virtualenv's
+- **`LLM_ENGINE_PYTHON` is made absolute but never `canonicalize`d.** A virtualenv's
   `bin/python` is a symlink to the system interpreter, and Python derives
   `sys.prefix` from the path it was invoked by — resolving the link hands over
   an interpreter with no idea it is in a venv, and `-m uvicorn` fails against a
   venv where uvicorn is plainly installed.
 - **Absolute at all, because `Command` resolves the program path *after*
-  chdir-ing into `current_dir`.** A relative `ENGINE_PYTHON` would be looked up
-  under `$ENGINE_DIR/`, failing with a bare ENOENT.
+  chdir-ing into `current_dir`.** A relative `LLM_ENGINE_PYTHON` would be looked up
+  under `$LLM_ENGINE_DIR/`, failing with a bare ENOENT.
 
 Autostart off is the normal development setup: run `uvicorn main:app --reload`
 in another terminal and the server attaches to it.

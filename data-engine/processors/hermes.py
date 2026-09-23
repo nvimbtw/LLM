@@ -36,7 +36,7 @@ the model met the real thing.
 
 **One call per assistant turn**, even where the trace made four at once. The
 backend answers the first call of a round and carries the rest only as a report
-(`api/turn.rs::answer`), because the engine takes one `tool_result` per
+(`api/turn.rs::answer`), because the LLM engine takes one `tool_result` per
 request — so a conversation with two answered calls in one turn is a shape the
 runtime cannot reproduce.
 
@@ -81,8 +81,8 @@ SFT = (DatasetKind.sft,)
 WARN_OPEN, WARN_CLOSE = "<|warn|>", "<|/warn|>"
 
 #: The one marker every tool is called through. Written out rather than
-#: imported: the data engine and the engine are separate services with separate
-#: virtualenvs. `engine/llm/chat/tools.py` owns the layout.
+#: imported: the data engine and the LLM engine are separate services with separate
+#: virtualenvs. `llm-engine/llm/chat/tools.py` owns the layout.
 TOOL_CALL_OPEN, TOOL_CALL_CLOSE = "<|tool-call|>", "<|/tool-call|>"
 BASH = "bash"
 

@@ -2,7 +2,7 @@
 """
 Generate synthetic SFT chat data with a cheap LLM, via the `opencode` CLI.
 
-The hand-curated conversations in `engine/data/sft/synthetic.jsonl` are the
+The hand-curated conversations in `llm-engine/data/sft/synthetic.jsonl` are the
 gold set: real coding-agent sessions (long pasted context, terse expert replies,
 tool-driven investigations). They are the *style target*, and they are never
 written to by this script — generated output goes to a sibling file
@@ -112,7 +112,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 # ---------------------------------------------------------------------------
 # Markup vocabulary (must stay in sync with frontend/lib/message-parser.ts and
-# SPECIAL_TOKENS in engine/llm/corpus/special.py)
+# SPECIAL_TOKENS in llm-engine/llm/corpus/special.py)
 # ---------------------------------------------------------------------------
 
 # Paired tags allowed in assistant replies. `title` is deliberately left out:

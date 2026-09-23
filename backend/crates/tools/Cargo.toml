@@ -6,7 +6,7 @@ edition = "2021"
 # What a model can reach for: a named tool, the argument it was called with, and
 # an answer rendered in the marker vocabulary the model reads. Depends on nothing
 # else in the workspace — a tool knows about the outside world and about markup,
-# and nothing about this project's users, sessions, or the engine process.
+# and nothing about this project's users, sessions, or the LLM engine process.
 [dependencies]
 async-trait = "0.1"
 # `query` is not in reqwest's default set: it is what percent-encodes a search

@@ -1,4 +1,4 @@
-//! The gyms service, reached through here.
+//! The gyms engine, reached through here.
 //!
 //! Pass-through, like `data.rs` and `models.rs`: the shape of a run belongs to
 //! the service that owns it. The one thing this side adds is the gate — every
@@ -15,7 +15,7 @@ use crate::demonstrations;
 use crate::extractors::AdminUser;
 use crate::upstream::{Answer, admin_caller, answer, with_query};
 
-use gyms::Proxy;
+use gyms_engine::Proxy;
 
 #[get("")]
 async fn catalogue(admin: AdminUser, gyms: web::Data<Proxy>) -> Answer {
@@ -24,7 +24,10 @@ async fn catalogue(admin: AdminUser, gyms: web::Data<Proxy>) -> Answer {
 
 #[post("/runs")]
 async fn create_run(admin: AdminUser, body: web::Json<Value>, gyms: web::Data<Proxy>) -> Answer {
-    answer(gyms.post(&admin_caller(&admin), "/gym/runs", body.into_inner()).await?)
+    answer(
+        gyms.post(&admin_caller(&admin), "/gym/runs", body.into_inner())
+            .await?,
+    )
 }
 
 /// The board. `?kind=rl` reads back a training run's batches instead, which is
@@ -39,12 +42,18 @@ async fn runs(admin: AdminUser, req: HttpRequest, gyms: web::Data<Proxy>) -> Ans
 
 #[get("/runs/{id}")]
 async fn run(admin: AdminUser, id: web::Path<String>, gyms: web::Data<Proxy>) -> Answer {
-    answer(gyms.get(&admin_caller(&admin), &format!("/gym/runs/{id}")).await?)
+    answer(
+        gyms.get(&admin_caller(&admin), &format!("/gym/runs/{id}"))
+            .await?,
+    )
 }
 
 #[get("/episodes/{id}")]
 async fn episode(admin: AdminUser, id: web::Path<String>, gyms: web::Data<Proxy>) -> Answer {
-    answer(gyms.get(&admin_caller(&admin), &format!("/gym/episodes/{id}")).await?)
+    answer(
+        gyms.get(&admin_caller(&admin), &format!("/gym/episodes/{id}"))
+            .await?,
+    )
 }
 
 /// A command a person typed, rather than one a model called. Kept because a
@@ -58,7 +67,10 @@ async fn step(
     gyms: web::Data<Proxy>,
 ) -> Answer {
     let path = format!("/gym/episodes/{id}/step");
-    answer(gyms.post(&admin_caller(&admin), &path, body.into_inner()).await?)
+    answer(
+        gyms.post(&admin_caller(&admin), &path, body.into_inner())
+            .await?,
+    )
 }
 
 #[post("/episodes/{id}/close")]
@@ -105,6 +117,8 @@ async fn demonstrate(
                 "task_types": task_types,
                 "count": body["count"].clone(),
                 "seed_base": seed_base,
+                "gym_weights": body.get("gym_weights").cloned().unwrap_or(json!({})),
+                "task_weights": body.get("task_weights").cloned().unwrap_or(json!({})),
             }),
         )
         .await?;
@@ -125,6 +139,8 @@ async fn demonstrate(
         })));
     }
 
+    let mut provenance = demonstrations::provenance(&gym_id, &task_types, seed_base, budget);
+    provenance[0]["selection"] = played["selection"].clone();
     let stored = data
         .post(
             &caller,
@@ -132,7 +148,7 @@ async fn demonstrate(
             json!({
                 "name": body["dataset_name"].clone(),
                 "description": body.get("description").cloned().unwrap_or(json!("")),
-                "steps": demonstrations::provenance(&gym_id, &task_types, seed_base, budget),
+                "steps": provenance,
                 "conversations": conversations,
             }),
         )

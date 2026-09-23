@@ -1,6 +1,6 @@
 //! Turning a gym's expert trajectories into a dataset that can be trained on.
 //!
-//! Three services and one job. The gyms service plays the trajectory and knows
+//! Three services and one job. The gyms engine plays the trajectory and knows
 //! what the shell said; this crate knows how that is *rendered* for a model,
 //! because `tools::observation` is the same function a live round is served by;
 //! the data engine owns every corpus anything trains on. The two Python
@@ -20,7 +20,7 @@
 //!
 //! So nothing is stored pre-rendered that this side could not verify, and the
 //! demonstration reads back through the ordinary SFT path with no new reader in
-//! the engine at all.
+//! the LLM engine at all.
 //!
 //! **The assistant turn names the call, and that is the whole point of this
 //! module.** SFT trains every assistant turn and masks every tool turn
@@ -43,15 +43,15 @@ use serde_json::{Value, json};
 
 use crate::turn;
 
-/// The gyms service's `bash` tool is this project's `bash` tool. Named once
+/// The gyms engine's `bash` tool is this project's `bash` tool. Named once
 /// rather than threaded through: a demonstration that claimed some other tool
-/// would be dropped by the engine's build, which refuses a call it has no tool
+/// would be dropped by the LLM engine's build, which refuses a call it has no tool
 /// for.
 const TOOL: &str = tools::Bash::NAME;
 
 /// One trajectory as a conversation, or `None` if it is not trainable.
 ///
-/// A demonstration must end on the answer. The engine drops a conversation that
+/// A demonstration must end on the answer. The LLM engine drops a conversation that
 /// does not — a trailing tool result is a turn nothing is trained on, so the
 /// conversation would cost context and teach no ending at all — so a trajectory
 /// with no answer is dropped here, where the count it changes is still visible
@@ -110,6 +110,7 @@ pub fn conversation(trajectory: &Value, budget: usize) -> Option<Value> {
     Some(json!({
         "messages": messages,
         "meta": {
+            "gym_id": trajectory["gym_id"].clone(),
             "task_type": turn::string_at(trajectory, "task_type"),
             "seed": trajectory["seed"].clone(),
             "generator_version": trajectory["generator_version"].clone(),
@@ -123,7 +124,7 @@ pub fn conversation(trajectory: &Value, budget: usize) -> Option<Value> {
 ///
 /// `max_output_chars` is the one that is easy to leave out and should not be. A
 /// body is clamped when it is written, so a set rendered at one budget is not
-/// interchangeable with one rendered at another — and nothing in the engine's
+/// interchangeable with one rendered at another — and nothing in the LLM engine's
 /// corpus key can see the difference, because the key is a function of the
 /// dataset's id, count and timestamp.
 pub fn provenance(gym_id: &str, task_types: &Value, seed_base: i64, budget: usize) -> Value {
@@ -180,7 +181,15 @@ mod tests {
 
         assert_eq!(
             roles,
-            vec!["system", "user", "assistant", "tool", "assistant", "tool", "assistant"]
+            vec![
+                "system",
+                "user",
+                "assistant",
+                "tool",
+                "assistant",
+                "tool",
+                "assistant"
+            ]
         );
     }
 
@@ -254,7 +263,7 @@ mod tests {
 
     #[test]
     fn a_tool_turn_carries_its_call_and_an_unwrapped_body() {
-        // Stored the way `ChatTurn` names a call, so the engine's single
+        // Stored the way `ChatTurn` names a call, so the LLM engine's single
         // renderer adds the header at build time. A `<|tool-call|>` spelled here
         // would be a fourth copy of `tools::call`.
         let built = conversation(&trajectory(), 4000).expect("trainable");

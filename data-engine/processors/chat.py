@@ -178,7 +178,7 @@ PROCESSORS = (
                 type="string",
                 default="convert",
                 description=(
-                    "convert: <think> becomes <|thinking|>, which the engine's "
+                    "convert: <think> becomes <|thinking|>, which the LLM engine's "
                     "strip_thinking can still drop per run. strip: discard it here, for "
                     "one dataset in a blend that should carry no reasoning at all."
                 ),

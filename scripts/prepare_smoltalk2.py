@@ -26,11 +26,11 @@ empty.
 ## Reasoning blocks
 
 Thinking rows carry a literal `<think>…</think>` at the start of the assistant's
-content. It becomes `<|thinking|>…<|/thinking|>`, the marker pair the engine's
+content. It becomes `<|thinking|>…<|/thinking|>`, the marker pair the LLM engine's
 template defines and the frontend renders.
 
 A block that opens and never closes causes the conversation to be **dropped**
-rather than emitted. The engine's `strip_thinking()` removes blocks by exact
+rather than emitted. The LLM engine's `strip_thinking()` removes blocks by exact
 marker match, so a malformed one survives into what is supposed to be
 reasoning-free output and shows up as literal `<think>` in a reply. Dropping is
 cheap; a corrupted reply is not.
@@ -288,7 +288,7 @@ def write_set(mode, groups, selector, args) -> None:
         )
         if conversation is None:
             continue
-        # Carried for provenance and later filtering; the engine ignores fields
+        # Carried for provenance and later filtering; the LLM engine ignores fields
         # it does not declare.
         conversation["source"] = row["source"]
         buffer.append(json.dumps(conversation, ensure_ascii=False))

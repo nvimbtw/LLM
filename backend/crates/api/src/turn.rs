@@ -10,8 +10,8 @@
 //! the end of the reply — the search overlaps the tokens that follow it instead
 //! of stalling them, which for a ten-second search is the whole latency budget.
 
-use engine::{Frame, Proxy};
 use futures_util::{Stream, StreamExt};
+use llm_engine::{Frame, Proxy};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -43,7 +43,7 @@ fn max_tool_rounds() -> usize {
         .unwrap_or(DEFAULT_TOOL_ROUNDS)
 }
 
-/// One `tool_call` the engine reported, and the work started for it.
+/// One `tool_call` the LLM engine reported, and the work started for it.
 struct Pending {
     call: Value,
     work: JoinHandle<(String, Option<tools::ToolError>)>,
@@ -91,11 +91,17 @@ pub async fn run(
             return;
         }
 
-        let Some(mut next) = answer(session, pending).await else { return };
+        let Some(mut next) = answer(session, pending).await else {
+            return;
+        };
         carry_settings(&settings, &mut next);
         if let Some(text) = fold_interjection(&mut next, drain_interjection(&mut interjections)) {
             let confirmed = json!({ "text": text });
-            if session.text(envelope("interjected", &confirmed).to_string()).await.is_err() {
+            if session
+                .text(envelope("interjected", &confirmed).to_string())
+                .await
+                .is_err()
+            {
                 return;
             }
         }
@@ -116,7 +122,7 @@ fn drain_interjection(interjections: &mut mpsc::UnboundedReceiver<String>) -> Op
 }
 
 /// Splice a buffered interjection into the next round's request, as the
-/// engine's `interject` field (`engine/api/routes/chats.py::Ask`). Returns the
+/// LLM engine's `interject` field (`llm-engine/api/routes/chats.py::Ask`). Returns the
 /// text when it folded one in, so the caller knows to confirm it to the
 /// client — `None` leaves `next` untouched, which is a round with nothing
 /// queued behaving exactly as it did before this existed.
@@ -133,7 +139,7 @@ fn fold_interjection(next: &mut Value, text: Option<String>) -> Option<String> {
 /// None when the browser hung up. An empty list means the reply asked for
 /// nothing, which is the end of the turn.
 ///
-/// The engine ends every round with `done`, but only the last one ends the
+/// The LLM engine ends every round with `done`, but only the last one ends the
 /// *turn* — so each is stamped with whether another round follows. Without it
 /// the client cannot tell the two apart, and closing on the first would cut the
 /// turn off before the answer it went to fetch.
@@ -141,7 +147,7 @@ async fn relay(
     session: &mut actix_ws::Session,
     registry: &Registry,
     chat: &str,
-    frames: impl Stream<Item = engine::Result<Frame>>,
+    frames: impl Stream<Item = llm_engine::Result<Frame>>,
     last_round: bool,
 ) -> Option<Vec<Pending>> {
     futures_util::pin_mut!(frames);
@@ -185,7 +191,7 @@ fn start(registry: &Registry, chat: &str, call: Value) -> Pending {
 /// Await every tool this round started and build the request that continues the
 /// turn. None when the browser hung up.
 ///
-/// Only the first result continues the turn: the engine takes one `tool_result`
+/// Only the first result continues the turn: the LLM engine takes one `tool_result`
 /// per request because each is a message of its own in the conversation, and
 /// answering two calls at once would mean deciding which the next reply follows.
 /// The rest are still reported, so nothing a person watched start disappears.
@@ -196,7 +202,10 @@ async fn answer(session: &mut actix_ws::Session, pending: Vec<Pending>) -> Optio
         // A panicked task is reported as a failed tool rather than taken down
         // with the turn: the reply it belongs to is already generated.
         let (body, failure) = work.await.unwrap_or_else(|e| {
-            (tools::markup::warning("The tool did not finish."), Some(panicked(e)))
+            (
+                tools::markup::warning("The tool did not finish."),
+                Some(panicked(e)),
+            )
         });
         if let Some(e) = failure {
             eprintln!("tool {} failed: {e}", string_at(&call, "tool"));
@@ -207,7 +216,11 @@ async fn answer(session: &mut actix_ws::Session, pending: Vec<Pending>) -> Optio
             "argument": string_at(&call, "argument"),
             "body": body,
         });
-        if session.text(envelope("tool_result", &result).to_string()).await.is_err() {
+        if session
+            .text(envelope("tool_result", &result).to_string())
+            .await
+            .is_err()
+        {
             return None;
         }
         first.get_or_insert(result);
@@ -238,27 +251,40 @@ fn flatten(frame: &Frame) -> String {
 /// A `done` frame, saying whether it ends the turn or only this round.
 fn stamped(frame: &Frame, is_final: bool) -> String {
     let mut payload = envelope(&frame.kind, &frame.data);
-    // Set after the merge, so a field the engine happens to add cannot shadow it.
+    // Set after the merge, so a field the LLM engine happens to add cannot shadow it.
     payload["final"] = json!(is_final);
     payload.to_string()
 }
 
 pub fn string_at(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The model and sampling settings carry across a round; the text does not.
 ///
-/// The engine takes exactly one of `text` and `tool_result`, so the question
+/// The LLM engine takes exactly one of `text` and `tool_result`, so the question
 /// that opened the turn must be dropped from the follow-up — it is already
 /// stored as a message and comes back as history.
 pub fn carry_settings(ask: &Value, next: &mut Value) {
     const CARRIED: [&str; 9] = [
-        "model_name", "system", "budget", "max_tokens", "temperature", "top_k", "top_p",
-        "context_multiplier", "history_floor",
+        "model_name",
+        "system",
+        "budget",
+        "max_tokens",
+        "temperature",
+        "top_k",
+        "top_p",
+        "context_multiplier",
+        "history_floor",
     ];
 
-    let (Some(from), Some(into)) = (ask.as_object(), next.as_object_mut()) else { return };
+    let (Some(from), Some(into)) = (ask.as_object(), next.as_object_mut()) else {
+        return;
+    };
     for key in CARRIED {
         if let Some(value) = from.get(key) {
             into.insert(key.to_string(), value.clone());
@@ -297,14 +323,17 @@ mod tests {
         carry_settings(&ask, &mut next);
 
         assert_eq!(next["context_multiplier"], 4.0);
-        assert_eq!(next["history_floor"], "11111111-1111-1111-1111-111111111111");
+        assert_eq!(
+            next["history_floor"],
+            "11111111-1111-1111-1111-111111111111"
+        );
     }
 
     #[test]
     fn a_follow_up_carries_no_attachments() {
-        // They belong to the question, and the engine stored them with it. A
+        // They belong to the question, and the LLM engine stored them with it. A
         // second round that repeated them would try to bind rows already sent
-        // and fail the turn — see `_bind` in the engine's chats route.
+        // and fail the turn — see `_bind` in the LLM engine's chats route.
         let ask = json!({ "model_name": "tiny", "text": "what is this", "attachment_ids": ["a"] });
         let mut next = json!({ "tool_result": { "tool": "web-search" } });
         carry_settings(&ask, &mut next);
@@ -351,7 +380,10 @@ mod tests {
         tx.send("first".to_string()).unwrap();
         tx.send("second".to_string()).unwrap();
 
-        assert_eq!(drain_interjection(&mut rx), Some("first\n\nsecond".to_string()));
+        assert_eq!(
+            drain_interjection(&mut rx),
+            Some("first\n\nsecond".to_string())
+        );
         // Drained once, so a round with nothing new sent since sees nothing.
         assert_eq!(drain_interjection(&mut rx), None);
     }

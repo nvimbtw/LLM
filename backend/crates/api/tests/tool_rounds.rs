@@ -1,6 +1,6 @@
 //! A turn that calls a tool, over the socket a browser actually opens.
 //!
-//! The engine is a stub emitting a fixed SSE script. What is under test is this
+//! The LLM engine is a stub emitting a fixed SSE script. What is under test is this
 //! side: that a `tool_call` starts work, that the turn comes back for a second
 //! round carrying the result, and that it stops rather than looping.
 
@@ -11,8 +11,8 @@ use std::sync::mpsc::Receiver;
 use actix_web::{web, App};
 use auth::token;
 use auth::AccessLevel;
-use engine::Proxy;
 use futures_util::{SinkExt, StreamExt};
+use llm_engine::Proxy;
 use serde_json::{json, Value};
 use tools::Registry;
 use uuid::Uuid;
@@ -56,7 +56,10 @@ fn stub(script: Vec<&'static str>) -> (String, Receiver<String>) {
             );
             let _ = socket.write_all(response.as_bytes());
             let _ = socket.flush();
-            if tx.send(String::from_utf8_lossy(&buffer[..read]).to_string()).is_err() {
+            if tx
+                .send(String::from_utf8_lossy(&buffer[..read]).to_string())
+                .is_err()
+            {
                 return;
             }
         }
@@ -79,8 +82,8 @@ fn server(url: String, registry: Registry) -> actix_test::TestServer {
 }
 
 fn sealed_token() -> String {
-    let jwt = token::issue_user_token(Uuid::new_v4(), AccessLevel::User, JWT_SECRET)
-        .expect("issued");
+    let jwt =
+        token::issue_user_token(Uuid::new_v4(), AccessLevel::User, JWT_SECRET).expect("issued");
     auth::token_cipher::encrypt(&jwt, JWT_SECRET).expect("sealed")
 }
 
@@ -101,7 +104,9 @@ async fn converse(server: &mut actix_test::TestServer) -> Vec<Value> {
     let mut frames = Vec::new();
     let mut asked = false;
     while let Some(Ok(message)) = socket.next().await {
-        let actix_http::ws::Frame::Text(bytes) = message else { continue };
+        let actix_http::ws::Frame::Text(bytes) = message else {
+            continue;
+        };
         let frame: Value = serde_json::from_slice(&bytes).expect("json frame");
 
         if frame["type"] == "ready" && !asked {
@@ -141,7 +146,15 @@ async fn a_reply_that_calls_a_tool_comes_back_for_a_second_round() {
     // second round's tokens follow both.
     assert_eq!(
         kinds(&frames),
-        vec!["token", "token", "tool_call", "done", "tool_result", "token", "done"]
+        vec![
+            "token",
+            "token",
+            "tool_call",
+            "done",
+            "tool_result",
+            "token",
+            "done"
+        ]
     );
 
     // Only the last `done` ends the turn. The client closes on that flag, so a
@@ -157,7 +170,7 @@ async fn a_reply_that_calls_a_tool_comes_back_for_a_second_round() {
     let second = body_of(&asked.recv().expect("a second request"));
     assert_eq!(second["tool_result"]["tool"], "web-search");
     assert_eq!(second["tool_result"]["argument"], "elbrus height");
-    // Carried across the round; the question is not, because the engine takes
+    // Carried across the round; the question is not, because the LLM engine takes
     // exactly one of `text` and `tool_result`.
     assert_eq!(second["model_name"], "tiny");
     assert!(second.get("text").is_none());
@@ -170,12 +183,21 @@ async fn a_tool_with_no_credentials_answers_with_a_caveat_rather_than_nothing() 
 
     let frames = converse(&mut server).await;
 
-    let result = frames.iter().find(|f| f["type"] == "tool_result").expect("a result frame");
-    assert!(result["body"].as_str().expect("a body").starts_with("<|warn|>"));
+    let result = frames
+        .iter()
+        .find(|f| f["type"] == "tool_result")
+        .expect("a result frame");
+    assert!(result["body"]
+        .as_str()
+        .expect("a body")
+        .starts_with("<|warn|>"));
 
     let _ = asked.recv();
     let second = body_of(&asked.recv().expect("a second request"));
-    assert!(second["tool_result"]["body"].as_str().expect("a body").contains("<|warn|>"));
+    assert!(second["tool_result"]["body"]
+        .as_str()
+        .expect("a body")
+        .contains("<|warn|>"));
 }
 
 #[actix_web::test]
@@ -188,7 +210,9 @@ async fn a_reply_that_asks_for_nothing_is_one_round() {
     assert_eq!(frames[1]["final"], true);
 
     assert!(asked.recv().is_ok());
-    assert!(asked.recv_timeout(std::time::Duration::from_millis(200)).is_err());
+    assert!(asked
+        .recv_timeout(std::time::Duration::from_millis(200))
+        .is_err());
 }
 
 #[actix_web::test]
@@ -203,8 +227,11 @@ async fn a_model_that_calls_a_tool_every_round_is_stopped_rather_than_looping() 
     let dones: Vec<&Value> = frames.iter().filter(|f| f["type"] == "done").collect();
     assert_eq!(dones.last().expect("a done frame")["final"], true);
 
-    // Two rounds, and then the turn ends despite the engine still asking.
-    assert!(asked.recv().is_ok());
-    assert!(asked.recv().is_ok());
-    assert!(asked.recv_timeout(std::time::Duration::from_millis(200)).is_err());
+    // The default permits six rounds before ending a turn that keeps calling.
+    for _ in 0..6 {
+        assert!(asked.recv().is_ok());
+    }
+    assert!(asked
+        .recv_timeout(std::time::Duration::from_millis(200))
+        .is_err());
 }

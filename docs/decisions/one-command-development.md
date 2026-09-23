@@ -15,7 +15,7 @@ The instinct was a single container running everything, on the grounds that one
 container is one command. It is, but the command is not the thing that was
 expensive — the *coupling* was. A single container running all five processes
 means restarting the frontend to pick up a CSS change also restarts Postgres,
-SearXNG and a Python engine that takes a minute to import torch. That is the
+SearXNG and a Python LLM engine that takes a minute to import torch. That is the
 problem the tmux panes were already solving, reintroduced.
 
 Compose gives the same single command without it. `docker compose up` starts
@@ -23,6 +23,12 @@ everything and interleaves the logs, colour-prefixed by service, in one
 terminal; no multiplexer is involved and nothing has to be learned to read it.
 `docker compose restart backend` restarts exactly one thing. That is strictly
 better than what the tmux setup offered, not a compromise against it.
+
+The dependency graph also preserves the request path when a service is named:
+`docker compose up frontend` starts the backend, and the backend starts all
+three Python services it verifies during boot. The frontend may render public
+docs without them, but the same process serves the application; a green port
+3000 beside an absent port 8080 is therefore not a supported partial mode.
 
 Rejected along with it: a process manager (`overmind`, `mprocs`) over native
 processes. It solves the pane problem and none of the install problem — a new
@@ -54,15 +60,15 @@ to start without them, and `.env.example` says why. The bargain the native setup
 strikes is not available to a container and the configuration should not pretend
 otherwise.
 
-**The engine is in the default profile despite its size.** It was going to sit
-behind `--profile engine`, so a contributor fixing the UI would not download
+**The LLM engine is in the default profile despite its size.** It was going to sit
+behind `--profile llm-engine`, so a contributor fixing the UI would not download
 several GB of torch and CUDA wheels. That does not work: `main.rs` `expect()`s
 on `Supervisor::start`, and with autostart off that is a hard failure when
-nothing answers at `ENGINE_HOST`. A default profile without the engine is a
+nothing answers at `LLM_ENGINE_HOST`. A default profile without the LLM engine is a
 default profile where the backend exits at boot.
 
-The alternative was making an absent engine a warning and letting engine-backed
-routes 503. Rejected: it converts a clear failure at startup into an unclear one
+The alternative was making an absent LLM engine a warning and letting its routes
+return 503. Rejected: it converts a clear failure at startup into an unclear one
 per request, to save a download that happens once. The image is built once and
 cached; the boot contract is read by everyone forever.
 
@@ -80,13 +86,13 @@ container resolved against `/home/<user>/…`, found nothing, and reported
 `Next.js package not found` with version `0.0.0` — a missing-package error for a
 package that was present and correct the whole time.
 
-The engine and data engine carry the same hazard in `__pycache__/`, unmasked.
+The LLM engine and data engine carry the same hazard in `__pycache__/`, unmasked.
 Python revalidates a `.pyc` against its source's mtime, so it has not bitten;
 it is the first thing to suspect if an import there ever misbehaves.
 
 ## What is deliberately still bind-mounted
 
-`engine/data/` — corpora, vocabularies and weights — stays a host directory. It
+`llm-engine/data/` — corpora, vocabularies and weights — stays a host directory. It
 is hundreds of MB that belong to the machine rather than to a container that
 gets recreated. `torch.compile`'s Inductor cache gets a named volume for the
 same reason in reverse: nothing on the host wants it, and without it the first

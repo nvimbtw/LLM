@@ -1,8 +1,8 @@
 {
-  "_comment": "A shared vector for the engine->backend token seam, the one hop that runs toward the backend. Minted by PyJWT, verified by jsonwebtoken: both languages must accept this token and read the same acting caller from it. The secret is a test constant, not a credential.",
+  "_comment": "A shared vector for the LLM-engine->backend token seam, the one hop that runs toward the backend. Minted by PyJWT, verified by jsonwebtoken: both languages must accept this token and read the same acting caller from it. The secret is a test constant, not a credential.",
   "secret": "test-only-not-a-real-secret",
   "audience": "backend",
-  "issuer": "engine",
+  "issuer": "llm-engine",
   "expected_act": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJlbmdpbmUiLCJhdWQiOiJiYWNrZW5kIiwiYWN0IjoiM2YyNTA0ZTAtNGY4OS0xMWQzLTlhMGMtMDMwNWU4MmMzMzAxIiwic2NvcGUiOltdLCJqdGkiOiI4YzFkNWIyZS0wZjQ3LTRhOWQtYjNjNi0yZTdmMWE0ZDkwYmIiLCJleHAiOjQxMDI0NDQ4MDB9.BLvcbTNjHo-SG53CAwY_OXQwNUJJ7PbnIEAKc2udw5M"
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJsbG0tZW5naW5lIiwiYXVkIjoiYmFja2VuZCIsImFjdCI6IjNmMjUwNGUwLTRmODktMTFkMy05YTBjLTAzMDVlODJjMzMwMSIsInNjb3BlIjpbXSwianRpIjoiOGMxZDViMmUtMGY0Ny00YTlkLWIzYzYtMmU3ZjFhNGQ5MGJiIiwiZXhwIjo0MTAyNDQ0ODAwfQ.2SqsUebr8WOsquyJ4k8zuu6PsoUJYSCkCcChD8P4040"
 }

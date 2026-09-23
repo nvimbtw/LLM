@@ -5,15 +5,15 @@ absolute path per script — and those had all drifted to
 `/home/x_x/Programming/LLM/...`, missing a directory, so every script was
 writing into a tree nothing reads.
 
-The engine owns the data. These directories are its input side:
+The LLM engine owns the data. These directories are its input side:
 
-    engine/data/input/<Dataset>/*.txt   pretrain corpora, one folder per dataset
-    engine/data/sft/<Set>/*.jsonl       chat conversations, one folder per SFT set
-    engine/data/eval/corpus/*.txt       held-out prose the benchmark scores against
-    engine/data/eval/chat/*.jsonl       held-out conversations
+    llm-engine/data/input/<Dataset>/*.txt   pretrain corpora, one folder per dataset
+    llm-engine/data/sft/<Set>/*.jsonl       chat conversations, one folder per SFT set
+    llm-engine/data/eval/corpus/*.txt       held-out prose the benchmark scores against
+    llm-engine/data/eval/chat/*.jsonl       held-out conversations
 
 Both training roots are one-folder-per-selectable-thing, because a fine-tune
-picks SFT sets exactly as a pretrain picks corpora — see engine/llm/corpus/
+picks SFT sets exactly as a pretrain picks corpora — see llm-engine/llm/corpus/
 sources.py. Loose `.jsonl` left at the SFT root still trains, as a set named
 `root`, but only when a run asks for it by that name.
 

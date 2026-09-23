@@ -1,7 +1,7 @@
 //! Rendering a tool's answer in the marker vocabulary the model reads.
 //!
 //! Everything here has to survive being pasted into a prompt. A search result is
-//! text a stranger wrote, and the engine tokenizes `<|par|>` into a single
+//! text a stranger wrote, and the LLM engine tokenizes `<|par|>` into a single
 //! marker token wherever it appears — so a page containing `<|/assistant|>`
 //! would end the turn, and one containing `<|tool-result|>` would claim to be a
 //! tool's answer. `neutralize` is what stands between the two.

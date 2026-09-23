@@ -4,19 +4,19 @@ A demonstration is a conversation: the task as a user turn, then the model's
 commands and what the shell said back, then the answer alone as the last turn.
 That is an `sft` dataset like any other here, which is the whole point of
 routing it through this service rather than inventing a corpus path in the LLM
-engine — the engine owns no corpora, and a demonstration set that lived beside
+engine — the LLM engine owns no corpora, and a demonstration set that lived beside
 one would be exactly that. Selected, capped, keyed, previewed, processed and
 deleted like anything pulled from the Hub.
 
 **Nothing is rendered here.** Turns arrive carrying a call as `tool` and
 `argument`: the `assistant` turns name the call they make, the `tool` turns the
 one they answer along with a body the backend already rendered with the same
-Rust function that serves a live round. The engine spells the `<|tool-call|>`
+Rust function that serves a live round. The LLM engine spells the `<|tool-call|>`
 block at build time, and where it puts it depends on which of those two a turn
 is. This service adds no third spelling of a layout it cannot verify — see
 `contracts/shell-observation.json` for what it costs when one does.
 
-The writer is the backend, never the gyms service: the two Python services never
+The writer is the backend, never the gyms engine: the Python services never
 speak, and the backend is the one process that already talks to both.
 """
 
@@ -45,7 +45,7 @@ ROLES = ("system", "user", "assistant", "tool")
 
 class Message(BaseModel):
     """One turn. `tool`/`argument` are given together or not at all, the same
-    pairing `ChatTurn` enforces in the engine and for the same reason: they are
+    pairing `ChatTurn` enforces in the LLM engine and for the same reason: they are
     what tells the build to render this body into the block that answers a call,
     and half of that pair says nothing."""
 
@@ -68,7 +68,7 @@ class NewDemonstrations(BaseModel):
     #: the observations were rendered at. That last one matters and is easy to
     #: forget — a body is clamped when it is written, so a set rendered at one
     #: budget is not interchangeable with one rendered at another, and nothing
-    #: in the engine's corpus key can see the difference.
+    #: in the LLM engine's corpus key can see the difference.
     steps: list = Field(default_factory=list)
     conversations: list[Conversation] = Field(min_length=1, max_length=MAX_CONVERSATIONS)
 
@@ -91,7 +91,7 @@ def _validate(conversation: Conversation, index: int) -> list[dict]:
             raise HTTPException(422, f"{where}: a tool and its argument go together")
         # An assistant turn names the call it *makes*; a tool turn names the one
         # it *answers*. Both are legitimate and they render into different
-        # positions — the engine puts the assistant's marker after its text,
+        # positions — the LLM engine puts the assistant's marker after its text,
         # inside the trained region, and the tool's at the head of the masked
         # result. A user or system turn names neither.
         if message.tool is not None and message.role not in ("tool", "assistant"):
@@ -102,7 +102,7 @@ def _validate(conversation: Conversation, index: int) -> list[dict]:
             stored["argument"] = message.argument
         messages.append(stored)
 
-    # The engine drops a conversation that does not end on an assistant turn:
+    # The LLM engine drops a conversation that does not end on an assistant turn:
     # one ending anywhere else trails off on tokens nothing is trained on, so it
     # costs context and teaches no ending. A demonstration that ends on the
     # shell is a bug in the generator, not data.

@@ -90,7 +90,9 @@ impl Tool for WebSearch {
     async fn run(&self, argument: &str, _session: &str) -> Result<String> {
         let query = argument.trim();
         if query.is_empty() {
-            return Ok(markup::warning("The search was empty, so there was nothing to look up."));
+            return Ok(markup::warning(
+                "The search was empty, so there was nothing to look up.",
+            ));
         }
         if query.chars().count() > MAX_QUERY_CHARS {
             return Ok(markup::warning("That search was too long to run."));
@@ -133,7 +135,11 @@ impl Tool for WebSearch {
 /// the capital of France" are still two different keys. Just immune to the
 /// variation that costs nothing to fold together.
 fn normalize_key(query: &str) -> String {
-    query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn render(hits: Vec<Hit>, limit: usize, budget: usize) -> String {
@@ -150,7 +156,7 @@ fn render(hits: Vec<Hit>, limit: usize, budget: usize) -> String {
 ///
 /// The count and per-snippet caps together still let a result through that is
 /// several times the model's whole context. That is not hypothetical: the
-/// engine's default `ctx_window` is 256 tokens with half of it reserved for the
+/// LLM engine's default `ctx_window` is 256 tokens with half of it reserved for the
 /// reply, and five untrimmed search results measured about four hundred.
 /// `build_prompt` would then evict the question to make room for the answer to
 /// it.
@@ -227,7 +233,12 @@ fn transport(e: reqwest::Error) -> ToolError {
 }
 
 fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or_default().chars().take(SNIPPET_CHARS).collect()
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(SNIPPET_CHARS)
+        .collect()
 }
 
 #[cfg(test)]
@@ -238,13 +249,19 @@ mod tests {
     const WIDE: usize = 100_000;
 
     fn hit(title: &str, snippet: &str) -> Hit {
-        Hit { title: title.to_string(), snippet: snippet.to_string() }
+        Hit {
+            title: title.to_string(),
+            snippet: snippet.to_string(),
+        }
     }
 
     #[test]
     fn results_become_a_list_the_model_has_been_trained_to_read() {
         let rendered = render(vec![hit("Elbrus", "5,642 m")], 5, WIDE);
-        assert_eq!(rendered, "<|list|><|item|>Elbrus — 5,642 m<|/item|><|/list|>");
+        assert_eq!(
+            rendered,
+            "<|list|><|item|>Elbrus — 5,642 m<|/item|><|/list|>"
+        );
     }
 
     #[test]
@@ -283,11 +300,16 @@ mod tests {
     fn the_whole_result_is_held_to_a_budget_and_not_just_each_line() {
         // The count and per-snippet caps alone let through several times the
         // model's whole context — the failure this exists to prevent.
-        let hits: Vec<Hit> = (0..5).map(|i| hit(&format!("t{i}"), &"x".repeat(90))).collect();
+        let hits: Vec<Hit> = (0..5)
+            .map(|i| hit(&format!("t{i}"), &"x".repeat(90)))
+            .collect();
         let rendered = render(hits, 5, 200);
 
         assert_eq!(rendered.matches("<|item|>").count(), 2);
-        assert!(rendered.contains("t0"), "the best result is the one to keep");
+        assert!(
+            rendered.contains("t0"),
+            "the best result is the one to keep"
+        );
     }
 
     #[test]
@@ -300,7 +322,7 @@ mod tests {
 
     #[test]
     fn the_default_budget_leaves_room_for_the_conversation_it_serves() {
-        // ~380 characters is the engine's whole prompt allowance at its default
+        // ~380 characters is the LLM engine's whole prompt allowance at its default
         // 256-token window, and a tool result is only ever part of that.
         assert!(Config::default().search_budget_chars < 380);
     }
@@ -308,7 +330,10 @@ mod tests {
     #[test]
     fn a_long_snippet_is_cut_on_a_character_and_not_inside_one() {
         let long = "é".repeat(SNIPPET_CHARS + 50);
-        assert_eq!(truncate(&long, SNIPPET_CHARS).chars().count(), SNIPPET_CHARS + 1);
+        assert_eq!(
+            truncate(&long, SNIPPET_CHARS).chars().count(),
+            SNIPPET_CHARS + 1
+        );
     }
 
     #[test]
@@ -330,14 +355,25 @@ mod tests {
     #[tokio::test]
     async fn a_query_long_enough_to_be_a_runaway_is_never_sent() {
         let search = WebSearch::from_config(
-            &Config { search_api_key: Some("k".to_string()), ..Config::default() },
+            &Config {
+                search_api_key: Some("k".to_string()),
+                ..Config::default()
+            },
             None,
         )
         .expect("a key is all it needs");
 
         let runaway = "x".repeat(MAX_QUERY_CHARS + 1);
-        assert!(search.run(&runaway, "chat").await.expect("refused, not errored").contains("<|warn|>"));
-        assert!(search.run("   ", "chat").await.expect("refused, not errored").contains("<|warn|>"));
+        assert!(search
+            .run(&runaway, "chat")
+            .await
+            .expect("refused, not errored")
+            .contains("<|warn|>"));
+        assert!(search
+            .run("   ", "chat")
+            .await
+            .expect("refused, not errored")
+            .contains("<|warn|>"));
     }
 
     // ── the cache wrap ──────────────────────────────────────────────────────
@@ -357,13 +393,25 @@ mod tests {
     impl StubProvider {
         fn ok(hits: Vec<Hit>) -> (StubProvider, Arc<AtomicUsize>) {
             let calls = Arc::new(AtomicUsize::new(0));
-            (StubProvider { calls: calls.clone(), outcome: Mutex::new(Some(Ok(hits))) }, calls)
+            (
+                StubProvider {
+                    calls: calls.clone(),
+                    outcome: Mutex::new(Some(Ok(hits))),
+                },
+                calls,
+            )
         }
 
         fn failing() -> (StubProvider, Arc<AtomicUsize>) {
             let calls = Arc::new(AtomicUsize::new(0));
             let outcome = Mutex::new(Some(Err(ToolError::Timeout)));
-            (StubProvider { calls: calls.clone(), outcome }, calls)
+            (
+                StubProvider {
+                    calls: calls.clone(),
+                    outcome,
+                },
+                calls,
+            )
         }
     }
 
@@ -375,7 +423,11 @@ mod tests {
 
         async fn find(&self, _query: &str, _limit: usize) -> Result<Vec<Hit>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.outcome.lock().unwrap().take().expect("stub provider called more than once")
+            self.outcome
+                .lock()
+                .unwrap()
+                .take()
+                .expect("stub provider called more than once")
         }
     }
 
@@ -386,11 +438,17 @@ mod tests {
 
     impl StubCache {
         fn holding(body: &str, age: Duration) -> StubCache {
-            StubCache { entry: Mutex::new(Some((body.to_string(), age))), puts: Mutex::new(vec![]) }
+            StubCache {
+                entry: Mutex::new(Some((body.to_string(), age))),
+                puts: Mutex::new(vec![]),
+            }
         }
 
         fn empty() -> StubCache {
-            StubCache { entry: Mutex::new(None), puts: Mutex::new(vec![]) }
+            StubCache {
+                entry: Mutex::new(None),
+                puts: Mutex::new(vec![]),
+            }
         }
     }
 
@@ -401,7 +459,10 @@ mod tests {
         }
 
         async fn put(&self, key: &str, body: &str) {
-            self.puts.lock().unwrap().push((key.to_string(), body.to_string()));
+            self.puts
+                .lock()
+                .unwrap()
+                .push((key.to_string(), body.to_string()));
         }
     }
 
@@ -430,7 +491,10 @@ mod tests {
     #[tokio::test]
     async fn a_stale_hit_is_replaced_by_a_live_fetch() {
         let (provider, calls) = StubProvider::ok(vec![hit("Elbrus", "5,642 m")]);
-        let cache = Arc::new(StubCache::holding("old answer", Duration::from_secs(30 * 86_400)));
+        let cache = Arc::new(StubCache::holding(
+            "old answer",
+            Duration::from_secs(30 * 86_400),
+        ));
         let tool = search(provider, Some(cache.clone()));
 
         let body = tool.run("elbrus", "test-chat").await.unwrap();
@@ -458,10 +522,16 @@ mod tests {
     #[tokio::test]
     async fn a_live_failure_falls_back_to_a_stale_entry_instead_of_erroring() {
         let (provider, _) = StubProvider::failing();
-        let cache = Arc::new(StubCache::holding("old answer", Duration::from_secs(30 * 86_400)));
+        let cache = Arc::new(StubCache::holding(
+            "old answer",
+            Duration::from_secs(30 * 86_400),
+        ));
         let tool = search(provider, Some(cache));
 
-        let body = tool.run("elbrus", "test-chat").await.expect("stale beats nothing");
+        let body = tool
+            .run("elbrus", "test-chat")
+            .await
+            .expect("stale beats nothing");
 
         assert_eq!(body, "old answer");
     }
@@ -487,7 +557,13 @@ mod tests {
 
     #[test]
     fn the_cache_key_folds_case_and_spacing_but_not_wording() {
-        assert_eq!(normalize_key("Tallest   Mountain"), normalize_key("tallest mountain"));
-        assert_ne!(normalize_key("capital of France"), normalize_key("capital of Germany"));
+        assert_eq!(
+            normalize_key("Tallest   Mountain"),
+            normalize_key("tallest mountain")
+        );
+        assert_ne!(
+            normalize_key("capital of France"),
+            normalize_key("capital of Germany")
+        );
     }
 }

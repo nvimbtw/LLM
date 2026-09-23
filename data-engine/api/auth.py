@@ -1,7 +1,7 @@
 """Who is allowed to call the data engine.
 
 The same seam the LLM engine uses, addressed to a different name. Every request
-carries a short-lived token minted by the backend; a token minted for `engine` is
+carries a short-lived token minted by the backend; a token minted for `llm-engine` is
 refused here and vice versa, which is the point of the audience claim.
 
 Unset `DATA_ENGINE_SERVICE_SECRET` leaves the service open and says so at

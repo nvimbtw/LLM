@@ -4,11 +4,11 @@
 #
 # Every service hot-reloads from the source tree bind-mounted into it, so this
 # is the development setup and not a deployment artifact — `cargo watch` for the
-# backend, `next dev` for the frontend, `uvicorn --reload` for both Python
+# backend, `next dev` for the frontend, `uvicorn --reload` for all three Python
 # services. Restart one without touching the rest:
 #
 #   docker compose restart backend
-#   docker compose logs -f engine
+#   docker compose logs -f llm-engine
 #
 # The ports are the ones the root README's port map names, so a browser and a
 # host-side `curl` see exactly what they saw before any of this existed. The one
@@ -46,19 +46,19 @@ services:
       timeout: 3s
       retries: 30
 
-  gyms:
+  gyms-engine:
     build:
-      context: ./gyms
+      context: ./gyms-engine
       target: dev
     command: >
       sh -c "alembic upgrade head &&
              uvicorn main:app --host 0.0.0.0 --port 8003 --reload"
     environment:
-      GYMS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_gyms
-      GYMS_SERVICE_SECRET: ${GYMS_SERVICE_SECRET:?set it in .env}
+      GYMS_ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_gyms
+      GYMS_ENGINE_SERVICE_SECRET: ${GYMS_ENGINE_SERVICE_SECRET:?set it in .env}
       BASH_URL: http://just-bash:8899
     volumes:
-      - ./gyms:/app
+      - ./gyms-engine:/app
     ports:
       - "127.0.0.1:8003:8003"
     depends_on:
@@ -88,17 +88,17 @@ services:
       postgres:
         condition: service_healthy
 
-  engine:
+  llm-engine:
     build:
-      context: ./engine
+      context: ./llm-engine
       target: dev
     command: >
       sh -c "alembic upgrade head &&
              uvicorn main:app --host 0.0.0.0 --port 8001 --reload"
     environment:
-      ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_engine
-      ENGINE_SERVICE_SECRET: ${ENGINE_SERVICE_SECRET:?set it in .env}
-      # The hop that runs toward the backend: the engine reads, through it, the
+      LLM_ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_engine
+      LLM_ENGINE_SERVICE_SECRET: ${LLM_ENGINE_SERVICE_SECRET:?set it in .env}
+      # The hop that runs toward the backend: the LLM engine reads, through it, the
       # datasets the data engine owns.
       BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
       BACKEND_URL: http://backend:8080
@@ -111,13 +111,13 @@ services:
       # runs, this keeps a single run from needing as much.
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
-      - ./engine:/app
+      - ./llm-engine:/app
       # Corpora, vocabularies and weights: hundreds of MB that belong to the
       # host tree, not to a container that gets recreated.
-      - ./engine/data:/app/data
+      - ./llm-engine/data:/app/data
       # torch.compile's Inductor cache. Without it every first training step
       # after a `docker compose up` pays full compilation cost again.
-      - engine-torch-cache:/root/.cache
+      - llm-engine-torch-cache:/root/.cache
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:
@@ -148,14 +148,14 @@ services:
       # unset, they leave the service hops and /internal open, and the loopback
       # binding is no longer there to make that private.
       BIND_ADDR: 0.0.0.0
-      GYMS_SERVICE_SECRET: ${GYMS_SERVICE_SECRET:?set it in .env}
-      GYMS_HOST: gyms
-      GYMS_AUTOSTART: "false"
-      # Both Python services are their own containers here, so the supervisor
+      GYMS_ENGINE_SERVICE_SECRET: ${GYMS_ENGINE_SERVICE_SECRET:?set it in .env}
+      GYMS_ENGINE_HOST: gyms-engine
+      GYMS_ENGINE_AUTOSTART: "false"
+      # All three Python services are their own containers here, so the supervisor
       # attaches to them instead of spawning them as children.
-      ENGINE_AUTOSTART: "false"
-      ENGINE_HOST: engine
-      ENGINE_SERVICE_SECRET: ${ENGINE_SERVICE_SECRET:?set it in .env}
+      LLM_ENGINE_AUTOSTART: "false"
+      LLM_ENGINE_HOST: llm-engine
+      LLM_ENGINE_SERVICE_SECRET: ${LLM_ENGINE_SERVICE_SECRET:?set it in .env}
       DATA_ENGINE_AUTOSTART: "false"
       DATA_ENGINE_HOST: data-engine
       DATA_ENGINE_SERVICE_SECRET: ${DATA_ENGINE_SERVICE_SECRET:?set it in .env}
@@ -181,17 +181,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      engine:
+      llm-engine:
         condition: service_started
       data-engine:
+        condition: service_started
+      gyms-engine:
         condition: service_started
 
   frontend:
     build:
-      context: ./frontend
+      context: .
+      dockerfile: frontend/Dockerfile
       target: dev
     volumes:
       - ./frontend:/app
+      # The docs renderer resolves these paths one directory above /app. Keep
+      # the source tree live in dev so markdown edits are picked up immediately.
+      - ./docs:/docs:ro
+      - ./README.md:/README.md:ro
+      - ./AGENTS.md:/AGENTS.md:ro
       # Masks the host's node_modules: bun resolves some packages per platform,
       # and a tree installed on a macOS host is not loadable in this container.
       - /app/node_modules
@@ -208,9 +216,16 @@ services:
       # dev server has to poll to notice an edit. Costs idle CPU; harmless and
       # unnecessary on Linux, where you can set this to false.
       WATCHPACK_POLLING: ${WATCHPACK_POLLING:-true}
+    depends_on:
+      # The UI has no useful partial mode: every interactive route goes through
+      # the backend. This also makes `docker compose up frontend` bring up the
+      # complete request path instead of serving a working docs site beside a
+      # dead application.
+      backend:
+        condition: service_started
 
 volumes:
   postgres-data:
   backend-target:
-  engine-torch-cache:
+  llm-engine-torch-cache:
   frontend-next:

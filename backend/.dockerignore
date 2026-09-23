@@ -3,5 +3,5 @@
 target/
 
 # Secrets and machine-local paths. Compose supplies the environment instead;
-# ENGINE_DIR and friends name host paths that mean nothing inside a container.
+# LLM_ENGINE_DIR and friends name host paths that mean nothing inside a container.
 .env

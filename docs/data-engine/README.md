@@ -8,34 +8,34 @@ about where it came from.
 
 Datasets, the documents in them, and the runs that write them — in its own
 database, `slate_data`. That now includes **the text every model is trained
-on**: the engine holds no corpora of its own and reads these by page through the
+on**: the LLM engine holds no corpora of its own and reads these by page through the
 backend, so a dataset here is not a staging area for one over there.
 
 What it does **not** own, and must never reach for:
 
-- **The engine's artifacts.** `engine/data/` holds packed corpora, vocabularies
+- **The LLM engine's artifacts.** `llm-engine/data/` holds packed corpora, vocabularies
   and weights — all of them derived. Nothing here reads or writes that tree, and
   nothing here knows a dataset was ever trained on.
 - **People.** `owner_id` is an opaque id minted by the backend and never
-  validated, the same arrangement the engine uses. There is no foreign key,
+  validated, the same arrangement the LLM engine uses. There is no foreign key,
   because the row lives in another database.
 - **Anything about training.** No torch, no tokenizers, no notion of a model.
 
-**The two Python services never speak to each other.** Everything either knows
+**The Python services never speak to each other.** Everything either knows
 about the other arrives through the Rust backend. That is what lets each one be
 restarted, moved or replaced without the other noticing, and it is why this
-module has no client for the engine and the engine has none for it — the engine
+module has no client for the LLM engine and the LLM engine has none for it — the LLM engine
 reads documents from here without either side holding an address for the other.
 
 ## Tech stack
 
-FastAPI, SQLAlchemy 2.0 ORM over psycopg 3, alembic — the engine's stack minus
+FastAPI, SQLAlchemy 2.0 ORM over psycopg 3, alembic — the LLM engine's stack minus
 everything that computes. `huggingface_hub` and `pyarrow` do the fetching;
 `datasets` is deliberately *not* a dependency, because parquet shards read
 through `hf_hub_download` + pyarrow are lazy and a budget can stop them
 mid-repo.
 
-Sessions are sync, not async, for the reason the engine's are: a run's worker
+Sessions are sync, not async, for the reason the LLM engine's are: a run's worker
 thread writes its own progress, and reaching an async session from a thread
 means bouncing every write through the event loop for no gain.
 
@@ -63,7 +63,7 @@ Nothing in `store/` or `processors/` imports from `api/`.
 ## Schema
 
 Three tables in `slate_data`, `public`. Its **own database**, not a schema
-inside the engine's — one database per module is the boundary this repo already
+inside the LLM engine's — one database per module is the boundary this repo already
 draws, and it is what lets the tests run against in-memory SQLite instead of
 demanding a server.
 
@@ -110,7 +110,7 @@ See [`backend-written.md`](backend-written.md).
 
 ### Content in Postgres
 
-Documents are rows, not files. The engine's `data/` tree grew large enough to
+Documents are rows, not files. The LLM engine's `data/` tree grew large enough to
 slow every tool that walks the repo, and a corpus that is only ever read by
 page, sampled by ordinal and filtered by predicate is a table's job anyway.
 
@@ -177,10 +177,10 @@ trips are not what a pack spends its time on.
   `blocks` has the line structure and renders headings, lists, quotes, rules,
   paragraphs and fences while a turn is being converted; `markdown-emphasis`
   runs afterwards over the runs of text and does emphasis and code spans. What
-  is converted is fixed by `engine/llm/corpus/special.py`, not by Markdown —
+  is converted is fixed by `llm-engine/llm/corpus/special.py`, not by Markdown —
   `#`/`##`/`###+` are `<|title|>`/`<|heading|>`/`<|subheading|>`, and a
   construct with no marker (a table) stays prose rather than inventing one. The
-  result must also satisfy the grammar in `engine/llm/chat/markup.py`: an
+  result must also satisfy the grammar in `llm-engine/llm/chat/markup.py`: an
   `<|item|>` only inside a `<|list|>`, and only items directly inside one.
 - **Out-of-range parameters are clamped, not rejected.** They arrive from a
   field the user is still typing in, and a preview that errors mid-keystroke is
@@ -196,7 +196,7 @@ trips are not what a pack spends its time on.
 - **`Json` sets `none_as_null=True`.** Without it SQLAlchemy stores a Python
   `None` as the JSON value `null`, which is not SQL `NULL`, so `messages IS
   NULL` never holds and the content/messages CHECK rejects **every** row. The
-  engine's `Json` alias does not set it and has never noticed, because it has
+  LLM engine's `Json` alias does not set it and has never noticed, because it has
   no such constraint.
 - **The preview and the pull read different sources.** `hub/sample.py` asks the
   Hub's **datasets-server** for rows it has already extracted — one small HTTP

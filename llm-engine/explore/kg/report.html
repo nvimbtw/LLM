@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E4 · Knowledge-graph view — LLM explore report</title>
+<style>
+  :root { --ink:#1c2430; --mut:#5a6b85; --line:#e3e9f2; --bg:#fbfcfe; --acc:#3955c4; --ok:#1a7f37; --warn:#b56a00; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.6 system-ui,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:880px; margin:0 auto; padding:2.5rem 1.4rem 5rem; }
+  h1 { font-size:1.7rem; margin:0 0 .2rem; }
+  .sub { color:var(--mut); margin-bottom:1.6rem; }
+  h2 { font-size:1.15rem; margin:2.2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; margin:1rem 0; }
+  .kpi { display:flex; flex-wrap:wrap; gap:1rem; }
+  .kpi div { flex:1 1 200px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem 1rem; }
+  .kpi b { display:block; font-size:1.3rem; color:var(--acc); }
+  .kpi span { font-size:.8rem; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  th { background:#f2f5fa; }
+  code { background:#eef2f8; padding:.08rem .35rem; border-radius:4px; font-size:.88em; }
+  .cmd { font-family:ui-monospace,monospace; font-size:.85rem; background:#0f172a; color:#dbeafe; padding:.4rem .7rem; border-radius:6px; display:inline-block; }
+  .verdict { border-left:4px solid var(--acc); padding:.4rem 1rem; background:#f2f5fc; }
+  .warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>E4 — A knowledge-graph view of the corpus</h1>
+  <div class="sub">llm-engine/explore/kg · e4_graph.py · corpus word-graph vs the trained model's embedding space</div>
+
+  <h2>What was done</h2>
+  <div class="card">
+    <p>The favourite workhorse here is the user's <em>knowledge graph</em> idea.
+    A transformer learns from token streams; a knowledge graph would teach it the
+    <em>entity &amp; relation</em> structure. Before proposing any graph machinery
+    inside the model, we measured how much graph-like structure the corpus
+    already carries and whether the trained model's embeddings already agree with
+    it:</p>
+    <ul>
+      <li>a weighted <b>word co-occurrence graph</b> (per-document windows, edges
+        if two frequent words appear within 5 of each other, weight=n);</li>
+      <li>degree/hubs, page-rank, clustering, connected components, communities;</li>
+      <li>whether graph <b>neighbours are closer than non-neighbours</b> in the
+        embedding space (cosine of BPE-averaged word vectors), and how similarity
+        decays with hop distance;</li>
+      <li>whether graph communities separate as clusters of embeddings;</li>
+      <li>the BPE "<b>cost</b>" of entity-like (capitalised) phrases, and how often
+        they recur across documents.</li>
+    </ul>
+    <p class="cmd">llm-engine/.venv/bin/python llm-engine/explore/kg/e4_graph.py &gt; llm-engine/explore/kg/e4_knowledge_graph.json</p>
+  </div>
+
+  <h2>Results</h2>
+  <div class="card">
+    <div class="kpi">
+      <div><b>317 nodes</b><span>12,086 edges — 1 giant component, clustering 0.66</span></div>
+      <div><b>0.0365 vs 0.0172</b><span>embedding-cos: connected vs disconnected pairs (gap 0.019)</span></div>
+      <div><b>1 → 0.0365</b><span>hop-1 similarity; hop-2 drops to 0.0172 (≈disconnected)</span></div>
+      <div><b>0.0255 / 0.0122</b><span>intra-community vs inter-community cosine</span></div>
+      <div><b>3972</b><span>distinct entity-like phrases; mean 2.3 BPE pieces each</span></div>
+    </div>
+    <table>
+      <tr><th>graph quantity</th><th>value</th></tr>
+      <tr><td>documents / words / unique words</td><td>100 / 74,542 / 9,141</td></tr>
+      <tr><td>hubs (degree)</td><td>the 316 · of 316 · and 315 · in 313 · a 310 · is 303</td></tr>
+      <tr><td>pagerank top</td><td>world · because · more · these · over · law</td></tr>
+      <tr><td>connected-pair cosine</td><td>0.0365</td></tr>
+      <tr><td>disconnected-pair cosine</td><td>0.0172</td></tr>
+      <tr><td>intra-community cosine / inter</td><td>0.0255 / 0.0122</td></tr>
+      <tr><td>entities: distinct, mentions, repeated-across-docs</td><td>3,972 · 8,119 · 6,112</td></tr>
+      <tr><td>entity BPE cost</td><td>mean 2.32 pieces, max 76 pieces</td></tr>
+    </table>
+    <p class="warn"><b>The key number:</b> the model's embeddings pick up the
+    co-occurrence graph <em>weakly and only for hop 1</em>. Hop-2 neighbours are
+    indistinguishable from disconnected token pairs (0.0172 each) — i.e. the
+    model has essentially <b>no relational generalisation</b> over the graph:
+    it remembers direct in-window co-occurrence, nothing longer.</p>
+  </div>
+
+  <h2>Interesting / worrying</h2>
+  <div class="card">
+    <ul>
+      <li>The corpus graph is basically one giant clique of function words (degree
+        ~300 for all)/paragraph. Content words nest inside it. Pagerank is
+        dominated by generic fillers (<code>world</code>, <code>rate</code>) — raw
+        text has no notion of "entity or topic".</li>
+      <li>Communities do separate in embedding space (intra 0.026 vs inter 0.012)
+        — but both values are tiny, and the separation is small relative to the
+        anisotropy floor from E3. A graph-aware model could multiply that margin.</li>
+      <li>Entity phrases recur overwhelmingly across documents (6,112 overlaps),
+        yet cost 2–76 BPE pieces; that's the storage bill the model pays for
+        "australia" (4 pieces) vs a single token a byte-level BPE could and should
+        have.</li>
+    </ul>
+  </div>
+
+  <h2>Why it would be a good addition</h2>
+  <div class="card">
+    <p>This report is the argument for a <b>graph-aware layer</b> — the 
+    "knowledge-graph" addition the user cares about:</p>
+    <ul>
+      <li><b>Entity-token prelexicon.</b> Detect entities (the capitalised phrases,
+        ~4k of them) at tokenization time and reserve the top ~512 as real
+        single tokens (or an entity-code appended to the BPE). Directly removes the
+        2–76 piece tax: e.g. "australia" 4→1 token, "united states" 2–3→1.</li>
+      <li><b>Graph-quenched embeddings.</b> Make word embeddings agree with the
+        adjacency matrix via a cheap contrastive term over co-occurrence windows —
+        the "agraph contrast" would widen the hop-1 gap and extend it to hop-2.
+        One aux loss + one hook; no change to the forward pass.</li>
+      <li><b>A "graph memory" attention.</b> A second attention block over
+        entity embeddings (not tokens) injected as a residual — the model attends
+        over concepts, then folds fact-set signals back into the token stream.
+        This is the closest thing to "a knowledge graph inside the model" without
+        loading an external KG.</li>
+    </ul>
+    <p class="verdict">Verdict: entity-prelexing is a pure pre-processing win you
+    can land today; the embedding contrast term is the smallest true in-train
+    change that would make these numbers move; the graph-memory block is the long
+    idea worth a dedicated branch (see bottom of the training report).</p>
+  </div>
+
+  <h2>How it changes the workflow</h2>
+  <div class="card">
+    <ul>
+      <li><b>Vocabulary</b>: entities become first-class tokens → token/EOT counts
+        drop per document, and every repetition of "australia" saves tokens.</li>
+      <li><b>Dataset</b>: an optional <code>kg:</code> step runs e4's graph build at
+        ingest; graph metrics (hop-1 gap) get added as a diagnostic gauge so you
+        can <i>watch</i> the model grow relational memory.</li>
+      <li><b>Training</b>: the contrastive loss can be a regularizer flag in
+        <code>plan.py</code> — off by default, so standard runs unaffected.</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>

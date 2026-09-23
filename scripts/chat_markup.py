@@ -7,7 +7,7 @@ failure shows up as garbled assistant output long after the fetch that caused it
 ## Markdown becomes markup
 
 The source corpora are markdown; the models here speak the marker vocabulary in
-`engine/llm/corpus/special.py`. Block level:
+`llm-engine/llm/corpus/special.py`. Block level:
 
     blank-line separated  ->  <|par|>...<|/par|>
     ```lang ... ```       ->  <|codeblock|>...<|/codeblock|>
@@ -38,7 +38,7 @@ keeping two levels balanced anyway.
 ## Fitting the context window
 
 The whole rendered example — system, every turn, the scaffold — has to fit the
-model's window. The engine refuses one that does not and counts it as skipped,
+model's window. The LLM engine refuses one that does not and counts it as skipped,
 so nothing downstream breaks; cutting here as well keeps that count near zero,
 because a conversation refused there is one that was imported, converted and
 written for nothing.
@@ -76,7 +76,7 @@ from corpus_shards import neutralize  # noqa: F401  (re-exported: one marker reg
 # Held-out prose measures 3.79 and these corpora average 3.71, but neither is the
 # number to use: what overruns the window is the code-heavy tail, and code
 # tokenizes far worse than the prose the merges were learned from. Tuned down
-# against the exact check until the fraction the engine has to refuse settled:
+# against the exact check until the fraction the LLM engine has to refuse settled:
 # 3.5 left 1.18% overrunning, 3.0 leaves 0.29% while still keeping 93.7% of the
 # source. Lower it further and the loss is in what gets dropped, not in what
 # gets through.
@@ -98,8 +98,8 @@ MDLINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
 HOLE = "\x00%d\x00"
 HOLE_RE = re.compile(r"\x00(\d+)\x00")
 
-# The canonical reasoning markers, from engine/llm/chat/template.py. Written out
-# rather than imported because the engine is a separate package with its own
+# The canonical reasoning markers, from llm-engine/llm/chat/template.py. Written out
+# rather than imported because the LLM engine is a separate package with its own
 # virtualenv, and these scripts must run without it importable.
 THINKING_OPEN = "<|thinking|>"
 THINKING_CLOSE = "<|/thinking|>"

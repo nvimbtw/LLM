@@ -14,8 +14,8 @@ use std::sync::mpsc::{Receiver, channel};
 use actix_web::{App, web};
 use auth::AccessLevel;
 use auth::token;
-use engine::Proxy;
 use futures_util::{SinkExt, StreamExt};
+use llm_engine::Proxy;
 use serde_json::{Value, json};
 use tools::Registry;
 use uuid::Uuid;
@@ -37,7 +37,7 @@ const ANSWERS_PLAINLY: &str = concat!(
     "event: done\ndata: {\"text\": \"<|par|>report.txt<|/par|>\", \"usage\": {\"elapsed_secs\": 1}}\n\n",
 );
 
-/// The engine: `script[n]` to the nth round, the last one repeating.
+/// The LLM engine: `script[n]` to the nth round, the last one repeating.
 fn engine_stub(script: Vec<&'static str>) -> (String, Receiver<String>) {
     serve(move |nth, _request| {
         let body = script[nth.min(script.len() - 1)];
@@ -48,12 +48,20 @@ fn engine_stub(script: Vec<&'static str>) -> (String, Receiver<String>) {
     })
 }
 
-/// The gyms service: one run, one episode, and the two writes a driver makes.
+/// The gyms engine: one run, one episode, and the two writes a driver makes.
 fn gyms_stub() -> (String, Receiver<String>) {
     gym_with_tools(json!(["bash"]))
 }
 
 fn gym_with_tools(available: Value) -> (String, Receiver<String>) {
+    gym_with_episodes(json!([{
+        "id": EPISODE_ID, "index": 0, "task_type": "bash_grep", "seed": 7,
+        "status": "pending", "prompt": "Which file holds NEEDLE?",
+        "system": "You are working at a Linux shell.", "tools": available,
+    }]))
+}
+
+fn gym_with_episodes(episodes: Value) -> (String, Receiver<String>) {
     serve(move |_nth, request| {
         let body = if request.contains(&format!("GET /gym/runs/{RUN_ID} ")) {
             json!({
@@ -63,16 +71,7 @@ fn gym_with_tools(available: Value) -> (String, Receiver<String>) {
                 "score": 1.0,
                 "correct": 1,
                 "graded": 1,
-                "episodes": [{
-                    "id": EPISODE_ID,
-                    "index": 0,
-                    "task_type": "bash_grep",
-                    "seed": 7,
-                    "status": "pending",
-                    "prompt": "Which file holds NEEDLE?",
-                    "system": "You are working at a Linux shell.",
-                    "tools": available,
-                }],
+                "episodes": episodes,
             })
         } else if request.contains("/step") {
             json!({ "stdout": "report.txt", "stderr": "", "exit_code": 0, "timed_out": false,
@@ -92,9 +91,7 @@ fn gym_with_tools(available: Value) -> (String, Receiver<String>) {
 }
 
 /// A one-connection-at-a-time HTTP stub that records every request it answered.
-fn serve(
-    answer: impl Fn(usize, &str) -> String + Send + 'static,
-) -> (String, Receiver<String>) {
+fn serve(answer: impl Fn(usize, &str) -> String + Send + 'static) -> (String, Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
     let (tx, rx) = channel();
@@ -125,7 +122,7 @@ fn server(engine_url: String, gyms_url: String) -> actix_test::TestServer {
                 engine_url.clone(),
                 Some(SERVICE_SECRET.to_string()),
             )))
-            .app_data(web::Data::new(gyms::Proxy::new(
+            .app_data(web::Data::new(gyms_engine::Proxy::new(
                 gyms_url.clone(),
                 Some(SERVICE_SECRET.to_string()),
             )))
@@ -136,8 +133,8 @@ fn server(engine_url: String, gyms_url: String) -> actix_test::TestServer {
 
 /// Admin, because every gym route is: a run names a model and spends the GPU.
 fn admin_token() -> String {
-    let jwt = token::issue_user_token(Uuid::new_v4(), AccessLevel::Admin, JWT_SECRET)
-        .expect("issued");
+    let jwt =
+        token::issue_user_token(Uuid::new_v4(), AccessLevel::Admin, JWT_SECRET).expect("issued");
     auth::token_cipher::encrypt(&jwt, JWT_SECRET).expect("sealed")
 }
 
@@ -157,7 +154,9 @@ async fn drive(server: &mut actix_test::TestServer) -> Vec<Value> {
     let mut frames = Vec::new();
     let mut started = false;
     while let Some(Ok(message)) = socket.next().await {
-        let actix_http::ws::Frame::Text(bytes) = message else { continue };
+        let actix_http::ws::Frame::Text(bytes) = message else {
+            continue;
+        };
         let frame: Value = serde_json::from_slice(&bytes).expect("json frame");
 
         if frame["type"] == "ready" && !started {
@@ -213,7 +212,7 @@ async fn an_episode_runs_its_command_and_is_graded_on_the_reply_that_stops_calli
 
     let frames = drive(&mut server).await;
 
-    // The engine's `done` arrives as `round_done`: an episode takes a round per
+    // The LLM engine's `done` arrives as `round_done`: an episode takes a round per
     // command, and a client counting `done` would end it every time.
     assert_eq!(
         kinds(&frames),
@@ -238,13 +237,19 @@ async fn an_episode_runs_its_command_and_is_graded_on_the_reply_that_stops_calli
         }
     }
 
-    let verdict = frames.iter().find(|f| f["type"] == "episode_done").expect("graded");
+    let verdict = frames
+        .iter()
+        .find(|f| f["type"] == "episode_done")
+        .expect("graded");
     assert_eq!(verdict["score"], 1.0);
     assert_eq!(verdict["ground_truth"], "report.txt");
 
     // What the model reads is what a chat round would have shown it: the output
     // inside a code block, rendered by the tool's own renderer.
-    let result = frames.iter().find(|f| f["type"] == "tool_result").expect("a result");
+    let result = frames
+        .iter()
+        .find(|f| f["type"] == "tool_result")
+        .expect("a result");
     assert_eq!(result["body"], "<|codeblock|>report.txt<|/codeblock|>");
 }
 
@@ -266,12 +271,15 @@ async fn the_second_round_carries_the_whole_conversation_with_the_call_named() {
 
     let second = body_of(&asked.recv().expect("a second round"));
     assert_eq!(second["turns"][1]["role"], "assistant");
-    // The tool turn names its call rather than spelling the block: the engine
+    // The tool turn names its call rather than spelling the block: the LLM engine
     // renders it, so there is one copy of that layout and not two.
     assert_eq!(second["turns"][2]["role"], "tool");
     assert_eq!(second["turns"][2]["tool"], "bash");
     assert_eq!(second["turns"][2]["argument"], "grep -rl NEEDLE .");
-    assert_eq!(second["turns"][2]["text"], "<|codeblock|>report.txt<|/codeblock|>");
+    assert_eq!(
+        second["turns"][2]["text"],
+        "<|codeblock|>report.txt<|/codeblock|>"
+    );
 }
 
 #[actix_web::test]
@@ -286,7 +294,10 @@ async fn a_command_runs_in_the_episodes_own_workspace() {
     // by the episode, which is the sandbox session key.
     let seen = requests(&served, 4);
     let step = seen.iter().find(|r| r.contains("/step")).expect("a step");
-    assert!(step.contains(&format!("/gym/episodes/{EPISODE_ID}/step")), "{step}");
+    assert!(
+        step.contains(&format!("/gym/episodes/{EPISODE_ID}/step")),
+        "{step}"
+    );
     assert_eq!(body_of(step)["command"], "grep -rl NEEDLE .");
 }
 
@@ -305,4 +316,30 @@ async fn a_model_that_never_stops_calling_is_stopped_and_graded_anyway() {
     assert_eq!(kinds(&frames).last(), Some(&"run_done"));
     assert!(frames.iter().any(|f| f["type"] == "episode_done"));
     assert!(requests(&served, 5).iter().any(|r| r.contains("/finish")));
+}
+
+#[actix_web::test]
+async fn a_general_run_uses_each_episodes_own_tool_policy() {
+    let (engine_url, asked) = engine_stub(vec![ANSWERS_PLAINLY, CALLS_THE_SHELL, ANSWERS_PLAINLY]);
+    let (gyms_url, served) = gym_with_episodes(json!([
+        {"id": "math-episode", "index": 0, "gym_id": "math", "task_type": "math_addition_easy",
+         "status": "pending", "prompt": "1+1?", "system": "Answer.", "tools": []},
+        {"id": EPISODE_ID, "index": 1, "gym_id": "bash", "task_type": "bash_grep",
+         "status": "pending", "prompt": "Find the file.", "system": "Use bash.", "tools": ["bash"]}
+    ]));
+    let mut server = server(engine_url, gyms_url);
+    let frames = drive(&mut server).await;
+    let generations = requests(&asked, 3);
+    assert_eq!(body_of(&generations[0])["max_tool_calls"], 0);
+    assert_ne!(body_of(&generations[1])["max_tool_calls"], 0);
+    let steps: Vec<_> = served.try_iter().filter(|r| r.contains("/step")).collect();
+    assert_eq!(steps.len(), 1);
+    assert!(steps[0].contains(EPISODE_ID));
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["type"] == "episode_done")
+            .count(),
+        2
+    );
 }

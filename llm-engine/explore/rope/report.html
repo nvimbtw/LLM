@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E1 · RoPE geometry — LLM explore report</title>
+<style>
+  :root { --ink:#1c2430; --mut:#5a6b85; --line:#e3e9f2; --bg:#fbfcfe; --acc:#3955c4; --ok:#1a7f37; --warn:#b56a00; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.6 system-ui,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:880px; margin:0 auto; padding:2.5rem 1.4rem 5rem; }
+  h1 { font-size:1.7rem; margin:0 0 .2rem; }
+  .sub { color:var(--mut); margin-bottom:1.6rem; }
+  h2 { font-size:1.15rem; margin:2.2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; margin:1rem 0; }
+  .kpi { display:flex; flex-wrap:wrap; gap:1rem; }
+  .kpi div { flex:1 1 180px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem 1rem; }
+  .kpi b { display:block; font-size:1.3rem; color:var(--acc); }
+  .kpi span { font-size:.8rem; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  th { background:#f2f5fa; }
+  code { background:#eef2f8; padding:.08rem .35rem; border-radius:4px; font-size:.88em; }
+  .warn { color:var(--warn); }
+  .ok { color:var(--ok); }
+  .cmd { font-family:ui-monospace,monospace; font-size:.85rem; background:#0f172a; color:#dbeafe; padding:.4rem .7rem; border-radius:6px; display:inline-block; }
+  .verdict { border-left:4px solid var(--acc); padding:.4rem 1rem; background:#f2f5fc; }
+</style>
+</head>
+<body>
+<main>
+  <h1>E1 — RoPE geometry</h1>
+  <div class="sub">llm-engine/explore/rope · e1_rope.py · model-free (pure math on the LLM engine's rotation scheme)</div>
+
+  <h2>What was done</h2>
+  <div class="card">
+    <p>Took the LLM engine's actual RoPE implementation (interleaved adjacent-pair rotation,
+    head-dims 32 channels, no precomputed table) and measured the geometry it
+    imposes on <em>forward</em> positions: how quickly two positions decorrelate and — crucially —
+    where the encoding <b>wraps around</b> and stops being recognisable at all.</p>
+    <p class="cmd">llm-engine/.venv/bin/python llm-engine/explore/rope/e1_rope.py &gt; llm-engine/explore/rope/e1_rope.json</p>
+    <p>Runs in ~2 s on CPU. <code>results.json</code> = <code>e1_rope.json</code>.</p>
+  </div>
+
+  <h2>Results</h2>
+  <div class="card">
+    <div class="kpi">
+      <div><b>0.9646</b><span>cos after 1 offset (base 10k)</span></div>
+      <div><b>0.432</b><span>cos after 64 tokens</span></div>
+      <div><b>4 → 0.35</b><span>cos after 256 tokens</span></div>
+      <div><b>~47–75%</b><span>channels wrapped/insensitive by offset 32–512</span></div>
+      <div><b>0.398</b><span>cos at dist 256 for base 100k</span></div>
+    </div>
+    <table>
+      <tr><th>offset</th><th>base 10k</th><th>base 100k</th><th>base 500k</th><th>base 1M</th></tr>
+      <tr><td>1</td><td>0.9646</td><td>0.9690</td><td>0.9723</td><td>0.9719</td></tr>
+      <tr><td>8</td><td>0.6895</td><td>0.7462</td><td>0.7646</td><td>0.7780</td></tr>
+      <tr><td>64</td><td>0.4320</td><td>0.5821</td><td>0.6437</td><td>0.6444</td></tr>
+      <tr><td>256</td><td>0.3493</td><td>0.3984</td><td>0.5632</td><td>0.5601</td></tr>
+      <tr><td>512 — % channels wrapped</td><td>0.4688</td><td>0.5625</td><td>0.6250</td><td>0.6250</td></tr>
+    </table>
+    <p class="warn"><b>Key finding</b> — with the default base of 10k, roughly half of the 32
+    positional channels have already aliased by the time the model has seen
+    ~128–512 tokens: the rotation has done a full lap in those channels and
+    <em>can no longer tell positions apart</em>. Raising the base delays the decay
+    (positions stay distinguishable further out) but does not remove the wrap:
+    even at base 1M, 63% of channels are aliased or indistinguishable at offsets
+    of hundreds.</p>
+  </div>
+
+  <h2>Interesting / worrying</h2>
+  <div class="card">
+    <ul>
+      <li>The similarity curve is <em>not monotonic</em> (dist 32 ≈ 0.60–0.71 sits
+        above dist 16 for several bases); that hump is the wrap boundary where a
+        chunk of channels return to (approx) 0 distance. Fine-grain position is
+        only available in the low-frequency channels.</li>
+      <li>In the trained model the roof is e2: heads typically attend to a broad
+        envelope — see the attention report. RoPE aliasing means "distant token"
+        is effectively system-noise for many channels, so there is little room for
+        a genuine long-range copy head.</li>
+    </ul>
+  </div>
+
+  <h2>Why it would be a good addition</h2>
+  <div class="card">
+    <p>Three engine-friendly proposals, all cheap and orthogonal:</p>
+    <ul>
+      <li><b>Base schedule / bigger default from a config knob.</b> In this corpus
+        the maximum usable distance is ~256 tokens; 10k is a legacy choice.
+        Making <code>rope_base</code> plumbed through <code>TrainConfig</code> (it
+        is currently a private constant) lets users dial range vs. fine-grain
+        without a code change.</li>
+      <li><b>Two-segment base (NTK-style).</b> Use one base for the first half of
+        the channels (fine local) and a much higher base for the second half
+        (background position). Implemented as a precomputed frequency vector —
+        a ~15-line change, no positions change in the maths.</li>
+      <li><b>Wrapping guard option.</b> An optional "cap" on rotation so channels
+        never complete a full lap within <code>ctx</code>; trade few channels for
+        well-defined long-range positions.</li>
+    </ul>
+    <p class="verdict">Verdict: an opt-in config + NTK-style composite base is a
+    3–8 line footprint in <code>transformer.py</code> with an immediate effect on
+    any long-context task — the LLM engine ships a *clean* base knob, the rest of the
+    codebase is untouched.</p>
+  </div>
+
+  <h2>How it changes the workflow</h2>
+  <div class="card">
+    <p>Today positional behaviour is invisible; on launch a user can't tell unless
+    their task needs long-range memory. Adding a measured knob means:</p>
+    <ul>
+      <li>At the <b>training</b> step: pick a base matched to the corpus window
+        (here, ~1e5–5e5 for windows 128–256, or adaptive composite).</li>
+      <li>At the <b>eval</b> step: a unit-test/probe <code>rope_assert</code>
+        gives a sanity regression: "no channel wrapped before distance D".</li>
+      <li>The experiment <em>is</em> the tool: <code>e1_rope.py</code> becomes a
+        quick report check when anyone touches positional frequency.</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>

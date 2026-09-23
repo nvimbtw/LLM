@@ -1,9 +1,9 @@
-"""Source prose as the block markup the engine reads.
+"""Source prose as the block markup the LLM engine reads.
 
 `markdown.py` is about the dialect a *source* wrote in; this is about the one a
-reply is generated in. The engine draws the same line, and nothing here may
+reply is generated in. The LLM engine draws the same line, and nothing here may
 import across it: the two services have separate virtualenvs, so the marker
-layout is written out on both sides and `engine/llm/corpus/special.py` stays the
+layout is written out on both sides and `llm-engine/llm/corpus/special.py` stays the
 source of truth for it.
 
 Shared by every converter that turns a chat corpus into training text. A
@@ -28,7 +28,7 @@ DIVIDER = "<|divider|>"
 #: Markdown's six heading levels onto the three the vocabulary has. Clamped
 #: rather than dropped past the third: a `####` line is a heading whatever depth
 #: its author gave it, and rendering it as prose is the bug this table fixes.
-#: `engine/llm/corpus/special.py` has the markers; the frontend's
+#: `llm-engine/llm/corpus/special.py` has the markers; the frontend's
 #: `message-parser.ts` is what fixes them as h1/h2/h3.
 _HEADINGS = {
     1: (TITLE_OPEN, TITLE_CLOSE),

@@ -3,7 +3,7 @@
 **2026-08-20**
 
 A file put in the composer is uploaded, kept, and shown back in the history. No
-part of it reaches a prompt. It lives in the engine's database, beside the
+part of it reaches a prompt. It lives in the LLM engine's database, beside the
 messages it hangs off.
 
 ## What forced it
@@ -20,7 +20,7 @@ something they can be handed in any form.
 
 ## Where they live
 
-**The engine**, which is not where instinct puts user uploads — the module is
+**The LLM engine**, which is not where instinct puts user uploads — the module is
 named for training and inference — but is where the boundary puts them.
 
 An attachment's lifetime is exactly a message's lifetime, and the messages are
@@ -56,7 +56,7 @@ Placement was never going to enforce this, so it is enforced where it can be:
   conversation `build_prompt` sees. `test_attachments.py` asserts the stored
   question is the text the person typed and nothing more.
 - **A tool result may carry none.** The backend's `carry_settings` drops the
-  field on a follow-up round because its allowlist never named it; the engine
+  field on a follow-up round because its allowlist never named it; the LLM engine
   refuses one outright, which turns that from a coincidence into a contract.
 
 If a model here ever *can* read a file, this is the record to come back and
@@ -66,7 +66,7 @@ overturn — deliberately, not by wiring a field that was left lying around.
 
 A `bytea` column, on the same terms
 [`dataset-content-in-postgres.md`](dataset-content-in-postgres.md) took: it only
-works with caps, so there are two, in `engine/api/routes/attachments.py` and
+works with caps, so there are two, in `llm-engine/api/routes/attachments.py` and
 mirrored at the edge in the backend's route. 50 MB a file, 5 files a turn — the
 product is the number that matters, since a turn's files pass whole through
 three processes, and the count came down when the per-file ceiling went up. An
@@ -74,7 +74,7 @@ upload is read in chunks and refused the moment it passes the ceiling rather
 than after the whole of it is in memory, and `Attachment.content` is a deferred
 column so the history read that lists ten files does not load ten files.
 
-Files under `engine/data/` were the alternative. That tree is documented as
+Files under `llm-engine/data/` were the alternative. That tree is documented as
 derived artifacts and nothing else — a person's upload is derived from nothing —
 and the repository already has a record of moving *away* from directories for
 the indexing cost they carry.

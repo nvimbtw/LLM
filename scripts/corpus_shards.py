@@ -12,9 +12,9 @@ has to track the tokenizer's grammar, and the held-out slice has to stay disjoin
 from training text. Six hand-maintained copies of either is six chances to be
 subtly wrong in a way no test catches and only a bad model reveals.
 
-Output layout, matching what `engine/llm/corpus/sources.py` selects:
+Output layout, matching what `llm-engine/llm/corpus/sources.py` selects:
 
-    engine/data/input/<Dataset>/<prefix>000000.txt
+    llm-engine/data/input/<Dataset>/<prefix>000000.txt
 
 Documents inside a shard are separated by `<|endoftext|>`, which the corpus
 packer reads as a document boundary.

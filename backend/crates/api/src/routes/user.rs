@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
+use actix_web::{delete, get, post, put, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::extractors::AuthUser;
 use crate::routes::validate;
-use auth::{AccessLevel, token::Claims};
+use auth::{token::Claims, AccessLevel};
 
 /// The db `User` carries the password hash, so it is never serialized directly.
 #[derive(Serialize)]
@@ -70,7 +70,13 @@ async fn insert_user(
         Err(e) => return failed("create", e),
     };
 
-    match db::user::create(pool.get_ref(), &payload.username, &hash, Some(AccessLevel::User)).await
+    match db::user::create(
+        pool.get_ref(),
+        &payload.username,
+        &hash,
+        Some(AccessLevel::User),
+    )
+    .await
     {
         Ok(_) => HttpResponse::Created().finish(),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => taken(),
@@ -85,7 +91,11 @@ async fn get_me(auth: AuthUser, pool: web::Data<PgPool>) -> impl Responder {
 }
 
 #[get("/{id}")]
-async fn get_user(auth: AuthUser, path: web::Path<Uuid>, pool: web::Data<PgPool>) -> impl Responder {
+async fn get_user(
+    auth: AuthUser,
+    path: web::Path<Uuid>,
+    pool: web::Data<PgPool>,
+) -> impl Responder {
     let id = path.into_inner();
     if !is_self_or_admin(&auth.claims, id) {
         return forbidden();
@@ -159,8 +169,12 @@ async fn update_my_composer_choice(
     payload: web::Json<ComposerChoicePayload>,
     pool: web::Data<PgPool>,
 ) -> impl Responder {
-    match db::user::update_composer_choice(pool.get_ref(), auth.claims.sub, &payload.composer_choice)
-        .await
+    match db::user::update_composer_choice(
+        pool.get_ref(),
+        auth.claims.sub,
+        &payload.composer_choice,
+    )
+    .await
     {
         Ok(Some(composer_choice)) => {
             HttpResponse::Ok().json(ComposerChoicePayload { composer_choice })
@@ -195,13 +209,24 @@ async fn update_user(
         return HttpResponse::BadRequest().body(msg);
     }
 
-    let hash = match payload.password.as_deref().map(auth::password::hash_password) {
+    let hash = match payload
+        .password
+        .as_deref()
+        .map(auth::password::hash_password)
+    {
         Some(Ok(hash)) => Some(hash),
         Some(Err(e)) => return failed("update", e),
         None => None,
     };
 
-    match db::user::update(pool.get_ref(), id, payload.username.as_deref(), hash.as_deref()).await {
+    match db::user::update(
+        pool.get_ref(),
+        id,
+        payload.username.as_deref(),
+        hash.as_deref(),
+    )
+    .await
+    {
         Ok(Some(user)) => HttpResponse::Ok().json(UserResponse::from(user)),
         Ok(None) => not_found(),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => taken(),
@@ -214,16 +239,19 @@ async fn delete_user(
     auth: AuthUser,
     path: web::Path<Uuid>,
     pool: web::Data<PgPool>,
-    engine: web::Data<engine::Proxy>,
+    engine: web::Data<llm_engine::Proxy>,
 ) -> impl Responder {
     let id = path.into_inner();
     if !is_self_or_admin(&auth.claims, id) {
         return forbidden();
     }
 
-    // The engine goes first, and its erase is idempotent: this order can be
+    // The LLM engine goes first, and its erase is idempotent: this order can be
     // retried, the other leaves chats owned by an id nothing can resolve.
-    if let Err(e) = engine.delete(&::auth::Caller::System, &format!("/owners/{id}")).await {
+    if let Err(e) = engine
+        .delete(&::auth::Caller::System, &format!("/owners/{id}"))
+        .await
+    {
         eprintln!("engine erase error: {e}");
         return HttpResponse::BadGateway().body("failed to erase this user's conversations");
     }

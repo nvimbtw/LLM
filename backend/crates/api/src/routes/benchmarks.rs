@@ -1,15 +1,19 @@
 //! Scores across models — the history page's question, which names no model.
 
-use actix_web::{HttpRequest, delete, get, web};
-use engine::Proxy;
+use actix_web::{delete, get, web, HttpRequest};
+use llm_engine::Proxy;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{Answer, answer, caller, with_query};
+use crate::upstream::{answer, caller, with_query, Answer};
 
 #[get("")]
 async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
-    answer(engine.get(&caller(&user), &with_query("/benchmarks", &req)).await?)
+    answer(
+        engine
+            .get(&caller(&user), &with_query("/benchmarks", &req))
+            .await?,
+    )
 }
 
 #[get("/suite")]
@@ -19,12 +23,20 @@ async fn suite(user: AuthUser, engine: web::Data<Proxy>) -> Answer {
 
 #[get("/{benchmark_id}")]
 async fn get_one(user: AuthUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    answer(engine.get(&caller(&user), &format!("/benchmarks/{id}")).await?)
+    answer(
+        engine
+            .get(&caller(&user), &format!("/benchmarks/{id}"))
+            .await?,
+    )
 }
 
 #[delete("/{benchmark_id}")]
 async fn remove(_admin: AdminUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    answer(engine.delete(&auth::Caller::System, &format!("/benchmarks/{id}")).await?)
+    answer(
+        engine
+            .delete(&auth::Caller::System, &format!("/benchmarks/{id}"))
+            .await?,
+    )
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

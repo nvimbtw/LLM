@@ -12,7 +12,7 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 # Module names, not paths: a filename here segfaults coverage 7.15 on 3.14
-# rather than reporting a bad config. Same trap as the engine's.
+# rather than reporting a bad config. Same trap as the LLM engine's.
 source = ["api", "hub", "processors", "store", "main"]
 omit = ["tests/*"]
 

@@ -421,10 +421,10 @@ dependencies = [
  "chrono",
  "data-engine",
  "db",
- "engine",
  "futures-util",
- "gyms",
+ "gyms-engine",
  "jsonwebtoken",
+ "llm-engine",
  "serde",
  "serde_json",
  "service",
@@ -560,8 +560,8 @@ dependencies = [
  "data-engine",
  "db",
  "dotenvy",
- "engine",
- "gyms",
+ "gyms-engine",
+ "llm-engine",
  "service",
  "tools",
 ]
@@ -1165,13 +1165,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "engine"
-version = "0.1.0"
-dependencies = [
- "service",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1448,7 +1441,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gyms"
+name = "gyms-engine"
 version = "0.1.0"
 dependencies = [
  "service",
@@ -2019,6 +2012,13 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+
+[[package]]
+name = "llm-engine"
+version = "0.1.0"
+dependencies = [
+ "service",
+]
 
 [[package]]
 name = "local-channel"

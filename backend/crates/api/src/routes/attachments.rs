@@ -1,4 +1,4 @@
-//! Files a person attached to a turn. The engine owns them, for the same reason
+//! Files a person attached to a turn. The LLM engine owns them, for the same reason
 //! it owns the messages they hang off; this hop proves who is asking and carries
 //! bytes rather than JSON.
 //!
@@ -7,28 +7,30 @@
 //! the service; a download comes back as bytes with the headers the service set,
 //! because only the service knows what the file is.
 
+use actix_multipart::form::{tempfile::TempFile, MultipartForm, MultipartFormConfig};
 use actix_multipart::MultipartError;
-use actix_multipart::form::{MultipartForm, MultipartFormConfig, tempfile::TempFile};
-use actix_web::{HttpRequest, HttpResponse, delete, error::InternalError, get, http::header, post, web};
-use engine::{FilePart, Proxy};
+use actix_web::{
+    delete, error::InternalError, get, http::header, post, web, HttpRequest, HttpResponse,
+};
+use llm_engine::{FilePart, Proxy};
 use uuid::Uuid;
 
 use crate::extractors::AuthUser;
-use crate::upstream::{Answer, caller};
+use crate::upstream::{caller, Answer};
 use service::Error as Upstreamed;
 
-/// The multipart field the engine reads an upload from.
+/// The multipart field the LLM engine reads an upload from.
 const FILE_FIELD: &str = "file";
 
 /// What a file is when the browser said nothing useful about it.
 const UNKNOWN_MEDIA_TYPE: &str = "application/octet-stream";
 
 /// The ceiling, in the unit the refusal is written in. Kept in step with
-/// `MAX_BYTES` in `engine/api/routes/attachments.py` — and with the `limit` on
+/// `MAX_BYTES` in `llm-engine/api/routes/attachments.py` — and with the `limit` on
 /// the field below, which a macro forces to be a literal.
 const MAX_MB: usize = 50;
 
-/// Refused here as well as in the engine, so an oversized body is dropped at the
+/// Refused here as well as in the LLM engine, so an oversized body is dropped at the
 /// edge instead of being read into memory twice on its way to being refused.
 const MAX_BYTES: usize = MAX_MB * 1024 * 1024;
 
@@ -102,7 +104,7 @@ fn read_part(file: TempFile) -> Result<FilePart, Upstreamed> {
 
     Ok(FilePart {
         field: FILE_FIELD.to_string(),
-        // The engine sanitizes this into a label; nothing on this side opens it.
+        // The LLM engine sanitizes this into a label; nothing on this side opens it.
         filename: file.file_name.unwrap_or_else(|| "file".to_string()),
         media_type: file
             .content_type
@@ -133,7 +135,7 @@ fn over(code: u16, detail: &str) -> Upstreamed {
 /// oversized upload never reaches `read_part` and would otherwise come back as
 /// a bare 400 "Payload error" — which says nothing a person can act on. This
 /// turns the one refusal that actually happens into the status and the sentence
-/// the engine would have given it.
+/// the LLM engine would have given it.
 fn refusal(error: MultipartError, _: &HttpRequest) -> actix_web::Error {
     // `Payload(Overflow)`, not `Field` — actix raises the limit from inside the
     // reader (`form::Limits::try_consume_limits`), so the field it belongs to is

@@ -1,8 +1,8 @@
 """Gym demonstrations, arriving as a dataset like any other.
 
-The reason they come here at all rather than into a corpus path in the LLM
-engine: the engine owns no corpora, so a demonstration set that lived beside one
-would be the engine owning a corpus again. Landing them here means the SFT build
+The reason they come here at all rather than into a corpus path in the
+LLM engine: it owns no corpora, so a demonstration set that lived beside one
+would be the LLM engine owning a corpus again. Landing them here means the SFT build
 needs no new reader — it selects, caps and keys these exactly as it does
 something pulled from the Hub, and they can be mixed into one fine-tune with a
 chat corpus, which matters because three task types on their own train a model
@@ -108,7 +108,7 @@ async def test_the_counters_the_corpus_key_reads_are_kept_current(client, store_
 
 async def test_a_tool_turn_keeps_the_call_it_answers(client, store_session):
     """Stored unrendered, deliberately. The body was rendered by the backend's
-    Rust and the `<|tool-call|>` header is added by the engine at build time, so
+    Rust and the `<|tool-call|>` header is added by the LLM engine at build time, so
     this service never spells a layout it cannot verify."""
     await client.post("/datasets/demonstrations", json=payload())
 
@@ -126,7 +126,7 @@ async def test_a_tool_turn_keeps_the_call_it_answers(client, store_session):
 async def test_the_provenance_says_what_produced_the_set(client, store_session):
     """Including the output budget. A body is clamped when it is written, so a
     set rendered at one budget is not interchangeable with one rendered at
-    another — and nothing in the engine's corpus key can see that."""
+    another — and nothing in the LLM engine's corpus key can see that."""
     await client.post("/datasets/demonstrations", json=payload())
 
     with store.session() as db:
@@ -137,7 +137,7 @@ async def test_the_provenance_says_what_produced_the_set(client, store_session):
 
 
 async def test_a_conversation_that_does_not_end_on_an_answer_is_refused(client):
-    """The engine would drop it at build time — a conversation trailing off on a
+    """The LLM engine would drop it at build time — a conversation trailing off on a
     tool result ends on tokens nothing is trained on. Refusing here makes it a
     422 naming the row instead of a lower conversation count noticed weeks
     later."""
@@ -153,7 +153,7 @@ async def test_a_conversation_that_does_not_end_on_an_answer_is_refused(client):
 
 
 async def test_half_a_tool_call_is_refused(client):
-    """The pairing `ChatTurn` enforces in the engine. Half of it says nothing —
+    """The pairing `ChatTurn` enforces in the LLM engine. Half of it says nothing —
     and would silently store as an already-rendered turn, which it is not."""
     half = conversation()
     half["messages"][3] = {"role": "tool", "content": BODY, "tool": "bash"}

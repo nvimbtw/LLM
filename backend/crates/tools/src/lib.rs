@@ -3,11 +3,11 @@
 //! A tool is named inside the call the model emits —
 //! `<|tool-call|>{"tool": "web-search", "argument": "…"}<|/tool-call|>` is the
 //! tool named `web-search`. Nothing here parses markers or JSON: by the time a
-//! call arrives the engine has already made it a `(name, argument)` pair, and a
+//! call arrives the LLM engine has already made it a `(name, argument)` pair, and a
 //! body it could not read never became a call at all.
 //!
 //! Adding a tool is one `impl Tool` and one line in `Registry::with_config`,
-//! plus the two reserved slots the engine needs to spell it
+//! plus the two reserved slots the LLM engine needs to spell it
 //! (`llm/chat/tools.py`).
 
 mod bash;
@@ -21,10 +21,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-pub use bash::{Bash, Output, observation};
+pub use bash::{observation, Bash, Output};
 pub use config::Config;
-pub use search::WebSearch;
 pub use error::{Result, ToolError};
+pub use search::WebSearch;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -114,7 +114,10 @@ impl Registry {
             origins.push(format!("{} ({})", bash.name(), bash.origin()));
             tools.push(Arc::new(bash));
         }
-        Registry { tools: tools.iter().map(|t| (t.name(), t.clone())).collect(), origins }
+        Registry {
+            tools: tools.iter().map(|t| (t.name(), t.clone())).collect(),
+            origins,
+        }
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -168,7 +171,10 @@ mod tests {
             "stub"
         }
         async fn run(&self, argument: &str, _session: &str) -> Result<String> {
-            Err(ToolError::Status { code: 429, detail: argument.to_string() })
+            Err(ToolError::Status {
+                code: 429,
+                detail: argument.to_string(),
+            })
         }
     }
 
@@ -181,7 +187,10 @@ mod tests {
     #[test]
     fn a_key_is_all_web_search_needs_to_appear() {
         let configured = Registry::with_config(
-            &Config { search_api_key: Some("k".to_string()), ..Config::default() },
+            &Config {
+                search_api_key: Some("k".to_string()),
+                ..Config::default()
+            },
             None,
         );
         assert_eq!(configured.names(), vec!["web-search"]);
@@ -190,7 +199,10 @@ mod tests {
     #[test]
     fn each_tool_appears_on_its_own_configuration_and_not_the_others() {
         let sandbox_only = Registry::with_config(
-            &Config { bash_url: Some("http://localhost:8899".to_string()), ..Config::default() },
+            &Config {
+                bash_url: Some("http://localhost:8899".to_string()),
+                ..Config::default()
+            },
             None,
         );
         assert_eq!(sandbox_only.names(), vec!["bash"]);

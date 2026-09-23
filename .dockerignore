@@ -1,0 +1,13 @@
+# The frontend build uses the repository root as context so its static docs can
+# be included. Keep unrelated services and host artifacts out of that context.
+**
+!frontend/
+!frontend/**
+!docs/
+!docs/**
+!README.md
+!AGENTS.md
+
+frontend/node_modules/
+frontend/.next/
+frontend/tsconfig.tsbuildinfo

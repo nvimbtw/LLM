@@ -5,7 +5,7 @@ Rebuild the `smoltalk` SFT set (data/sft/smoltalk/) from HuggingFaceTB/smol-smol
 This writes one *named set*, not the whole SFT directory: a fine-tune selects
 sets the way a pretrain selects corpora, so this corpus sits beside the thinking
 sets rather than being blended into them. See scripts/prepare_smoltalk2.py for
-the reasoning-trace sets and engine/llm/corpus/sft.py for how they are chosen.
+the reasoning-trace sets and llm-engine/llm/corpus/sft.py for how they are chosen.
 
 Source: 484,570 conversations (460,341 train + 24,229 test), the variant of
 SmolTalk that HuggingFace tuned for their 135M/360M models — shorter turns and

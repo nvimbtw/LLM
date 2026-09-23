@@ -8,7 +8,7 @@ curated set of short, simple synthetic stories — clean prose with no OCR/scan
 noise — so unlike PG-19 it needs no cleaning. The dataset ships as raw .txt
 files whose stories are already separated by `<|endoftext|>`, which is exactly
 the document-boundary convention the Rust pretrain builder
-(engine/llm/corpus/pack.py) expects: it concatenates the
+(llm-engine/llm/corpus/pack.py) expects: it concatenates the
 .txt files, and a single trailing `<|endoftext|>` per file marks where one
 document ends and the next begins.
 

@@ -213,7 +213,7 @@ def latest_by_key(db: Session, dataset_id: uuid.UUID, cache_key: str) -> Documen
 
     A re-fetch appends rather than replaces — the same shape a re-pulled Hub
     dataset already has, "holding more documents under the same id" (see
-    `docs/engine/README.md`) — so the newest row by `created_at` is the one
+    `docs/llm-engine/README.md`) — so the newest row by `created_at` is the one
     that answers "what do we currently believe," and nothing is ever
     overwritten in place.
     """
@@ -265,7 +265,7 @@ def gym_dataset(db: Session, name: str, description: str, steps: list) -> Datase
     there are task types and difficulties worth training on separately. A second
     request under the same name **appends**, which is what makes a set growable
     without a re-pull — and what makes `updated_at` and `document_count`
-    load-bearing, since the engine's corpus key reads both.
+    load-bearing, since the LLM engine's corpus key reads both.
 
     Immediately `ready`. Every row is complete when it is written; there is no
     batch to wait out, so there is no interval where calling this half-written

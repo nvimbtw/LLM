@@ -5,7 +5,7 @@ and returns the result — if it grows past a few lines the logic belongs in
 `hub/`, `processors/` or `store/`.
 
 This service talks to the Rust backend and to the Hugging Face Hub. It does not
-know the LLM engine exists, and must not learn: the two Python services are
+know the LLM engine exists, and must not learn: the Python services are
 siblings that share a caller, not a pipeline.
 """
 

@@ -3,7 +3,7 @@
 //! Nothing here names a service. One is a `Config` carrying an audience, an
 //! environment prefix and a working directory; `Supervisor` starts it and keeps
 //! it alive, and `Proxy` forwards signed requests to it. The crates above —
-//! `engine`, `data-engine` — are thin by design: each supplies those constants
+//! `llm-engine`, `data-engine` — are thin by design: each supplies those constants
 //! and a newtype, and adds no behaviour.
 //!
 //! The newtype is not ceremony. Actix keys `app_data` by type, so two bare

@@ -51,7 +51,7 @@ def test_a_token_minted_for_the_llm_engine_is_refused(monkeypatch):
     secret-shaped seam: one service's token must not open the other."""
     monkeypatch.setenv("DATA_ENGINE_SERVICE_SECRET", SECRET)
     for_engine = jwt.encode(
-        {"iss": "backend", "aud": "engine", "act": str(uuid.uuid4()), "exp": 4102444800},
+        {"iss": "backend", "aud": "llm-engine", "act": str(uuid.uuid4()), "exp": 4102444800},
         SECRET,
         algorithm="HS256",
     )

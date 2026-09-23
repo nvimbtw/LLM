@@ -1,17 +1,17 @@
 //! The proxy routes end to end: who is let through, and what is forwarded.
 //!
-//! The engine is a stub — what is under test is this side. The engine's own
+//! The LLM engine is a stub — what is under test is this side. The LLM engine's own
 //! behaviour is covered by its suite, and the hop between the two by
-//! `engine/tests/seam.rs`.
+//! `llm-engine/tests/seam.rs`.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
-use actix_web::{App, http::StatusCode, test, web};
-use auth::AccessLevel;
+use actix_web::{http::StatusCode, test, web, App};
 use auth::token::{self, Caller};
-use engine::Proxy;
-use serde_json::{Value, json};
+use auth::AccessLevel;
+use llm_engine::Proxy;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 const JWT_SECRET: &str = "proxying-test-jwt-secret";
@@ -34,7 +34,10 @@ fn stub(body: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
             let read = socket.read(&mut buffer).unwrap_or(0);
             let _ = socket.write_all(response.as_bytes());
             let _ = socket.flush();
-            if tx.send(String::from_utf8_lossy(&buffer[..read]).to_string()).is_err() {
+            if tx
+                .send(String::from_utf8_lossy(&buffer[..read]).to_string())
+                .is_err()
+            {
                 return;
             }
         }
@@ -76,8 +79,11 @@ fn acting_for(raw: &str) -> Caller {
         .lines()
         .find_map(|line| line.strip_prefix("authorization: "))
         .expect("the hop is signed");
-    let service = header.trim().strip_prefix("Bearer ").expect("bearer scheme");
-    token::verify_service_token(service, engine::AUDIENCE, SERVICE_SECRET).expect("valid")
+    let service = header
+        .trim()
+        .strip_prefix("Bearer ")
+        .expect("bearer scheme");
+    token::verify_service_token(service, llm_engine::AUDIENCE, SERVICE_SECRET).expect("valid")
 }
 
 #[actix_web::test]
@@ -85,10 +91,14 @@ async fn an_unauthenticated_request_never_reaches_the_engine() {
     let (url, asked) = stub("{}");
     let app = service!(url);
 
-    let response = test::call_service(&app, test::TestRequest::get().uri("/chats").to_request()).await;
+    let response =
+        test::call_service(&app, test::TestRequest::get().uri("/chats").to_request()).await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(asked.try_recv().is_err(), "the engine was called anyway");
+    assert!(
+        asked.try_recv().is_err(),
+        "the LLM engine was called anyway"
+    );
 }
 
 #[actix_web::test]
@@ -107,7 +117,7 @@ async fn a_signed_in_person_is_forwarded_as_themselves() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let raw = asked.recv().expect("the engine was called");
+    let raw = asked.recv().expect("the LLM engine was called");
     assert_eq!(request_line(&raw), "GET /chats HTTP/1.1");
     assert!(matches!(acting_for(&raw), Caller::User(id) if id == who));
 }
@@ -148,7 +158,10 @@ async fn starting_a_run_is_admin_work() {
     .await;
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(asked.try_recv().is_err(), "the engine was called anyway");
+    assert!(
+        asked.try_recv().is_err(),
+        "the LLM engine was called anyway"
+    );
 }
 
 #[actix_web::test]
@@ -185,7 +198,10 @@ async fn a_query_string_is_forwarded_rather_than_restated() {
     )
     .await;
 
-    assert_eq!(request_line(&asked.recv().unwrap()), "GET /runs?limit=2&offset=4 HTTP/1.1");
+    assert_eq!(
+        request_line(&asked.recv().unwrap()),
+        "GET /runs?limit=2&offset=4 HTTP/1.1"
+    );
 }
 
 #[actix_web::test]
@@ -207,7 +223,10 @@ async fn an_admin_action_reaches_the_engine_as_the_backend_itself() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let raw = asked.recv().unwrap();
-    assert_eq!(request_line(&raw), format!("DELETE /models/{model} HTTP/1.1"));
+    assert_eq!(
+        request_line(&raw),
+        format!("DELETE /models/{model} HTTP/1.1")
+    );
     assert!(matches!(acting_for(&raw), Caller::System));
 }
 
@@ -250,7 +269,11 @@ async fn a_run_the_engine_refuses_is_refused_here_with_the_same_status() {
 
 #[actix_web::test]
 async fn an_unreachable_engine_is_a_bad_gateway_rather_than_a_crash() {
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let app = service!(format!("http://127.0.0.1:{port}"));
     let (_, bearer) = session(AccessLevel::User);
 
@@ -288,7 +311,10 @@ fn stub_bytes(
             let _ = socket.write_all(head.as_bytes());
             let _ = socket.write_all(body);
             let _ = socket.flush();
-            if tx.send(String::from_utf8_lossy(&buffer[..read]).to_string()).is_err() {
+            if tx
+                .send(String::from_utf8_lossy(&buffer[..read]).to_string())
+                .is_err()
+            {
                 return;
             }
         }
@@ -311,7 +337,9 @@ fn stub_draining(body: &'static str) -> (String, std::sync::mpsc::Receiver<Strin
     std::thread::spawn(move || {
         for socket in listener.incoming() {
             let Ok(mut socket) = socket else { return };
-            let Some(head) = drain(&mut socket) else { continue };
+            let Some(head) = drain(&mut socket) else {
+                continue;
+            };
             let response = format!(
                 "HTTP/1.1 200 OK
 Content-Type: application/json
@@ -346,7 +374,9 @@ fn drain(socket: &mut std::net::TcpStream) -> Option<String> {
         }
         raw.extend_from_slice(&chunk[..read]);
 
-        let Some(split) = find_headers_end(&raw) else { continue };
+        let Some(split) = find_headers_end(&raw) else {
+            continue;
+        };
         let head = String::from_utf8_lossy(&raw[..split]).to_string();
         let length = content_length(&head).unwrap_or(0);
         if raw.len() - split >= length {
@@ -356,12 +386,18 @@ fn drain(socket: &mut std::net::TcpStream) -> Option<String> {
 }
 
 fn find_headers_end(raw: &[u8]) -> Option<usize> {
-    raw.windows(4).position(|w| w == b"\r\n\r\n").map(|at| at + 4)
+    raw.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|at| at + 4)
 }
 
 fn content_length(head: &str) -> Option<usize> {
     head.lines()
-        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(str::to_owned))
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(str::to_owned)
+        })
         .and_then(|value| value.trim().parse().ok())
 }
 
@@ -399,9 +435,12 @@ async fn an_upload_reaches_the_engine_as_a_file_and_not_as_json() {
     .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
-    let raw = asked.recv().expect("the engine was called");
+    let raw = asked.recv().expect("the LLM engine was called");
     assert_eq!(request_line(&raw), "POST /attachments HTTP/1.1");
-    assert!(raw.contains("multipart/form-data"), "not forwarded as a file");
+    assert!(
+        raw.contains("multipart/form-data"),
+        "not forwarded as a file"
+    );
     assert!(raw.contains("shot.png"), "the filename was dropped");
     assert!(matches!(acting_for(&raw), Caller::User(id) if id == who));
 }
@@ -425,8 +464,13 @@ async fn a_download_keeps_what_the_engine_said_the_file_is() {
     let headers = response.headers().clone();
     assert_eq!(headers.get("content-type").unwrap(), "image/png");
     assert!(
-        headers.get("content-disposition").unwrap().to_str().unwrap().contains("shot.png"),
-        "the filename the engine set was dropped"
+        headers
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("shot.png"),
+        "the filename the LLM engine set was dropped"
     );
     assert_eq!(test::read_body(response).await.as_ref(), b"\x89PNG pixels");
 }
@@ -458,7 +502,7 @@ async fn a_file_just_under_the_ceiling_still_gets_through() {
     .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
-    assert!(asked.recv().is_ok(), "it never reached the engine");
+    assert!(asked.recv().is_ok(), "it never reached the LLM engine");
 }
 
 #[actix_web::test]
@@ -483,7 +527,10 @@ async fn an_empty_upload_never_reaches_the_engine() {
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(asked.try_recv().is_err(), "the engine was called anyway");
+    assert!(
+        asked.try_recv().is_err(),
+        "the LLM engine was called anyway"
+    );
 }
 
 #[actix_web::test]
@@ -518,5 +565,8 @@ async fn an_oversized_upload_says_what_the_limit_was() {
         body["error"].as_str().unwrap_or_default().contains("50 MB"),
         "the refusal does not name the limit: {body}"
     );
-    assert!(asked.try_recv().is_err(), "the engine was called anyway");
+    assert!(
+        asked.try_recv().is_err(),
+        "the LLM engine was called anyway"
+    );
 }

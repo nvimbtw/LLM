@@ -44,8 +44,8 @@ Four nullable columns carry it (`run_id`, `parent_id`, `checkpoint_step`,
 `checkpoint_index`), and **`checkpoint_index IS NOT NULL` is the sole definition
 of "intermediate"** — deliberately not a boolean beside it, which is a second
 source of truth that can disagree with the first. The mechanism and the resume
-semantics are [`../engine/checkpoints.md`](../engine/checkpoints.md); the
-columns are in [`../engine/README.md`](../engine/README.md#schema).
+semantics are [`../llm-engine/checkpoints.md`](../llm-engine/checkpoints.md); the
+columns are in [`../llm-engine/README.md`](../llm-engine/README.md#schema).
 
 ## What this costs
 

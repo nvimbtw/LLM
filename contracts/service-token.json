@@ -1,8 +1,8 @@
 {
-  "_comment": "A shared vector for the backend<->engine token seam. The secret is a test constant, not a credential. Both languages must accept this token and read the same acting caller from it.",
+  "_comment": "A shared vector for the backend<->LLM-engine token seam. The secret is a test constant, not a credential. Both languages must accept this token and read the same acting caller from it.",
   "secret": "test-only-not-a-real-secret",
-  "audience": "engine",
+  "audience": "llm-engine",
   "issuer": "backend",
   "expected_act": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJiYWNrZW5kIiwiYXVkIjoiZW5naW5lIiwiYWN0IjoiM2YyNTA0ZTAtNGY4OS0xMWQzLTlhMGMtMDMwNWU4MmMzMzAxIiwic2NvcGUiOlsiY2hhdDp3cml0ZSIsIm1vZGVsczpyZWFkIl0sImp0aSI6IjliMWRlYjRkLTNiN2QtNGJhZC05YmRkLTJiMGQ3YjNkY2I2ZCIsImV4cCI6NDEwMjQ0NDgwMH0.1KgP7Mt4RHcfTY7imbAtppho2X6YI1YLHmuQ-RH_Xjo"
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJiYWNrZW5kIiwiYXVkIjoibGxtLWVuZ2luZSIsImFjdCI6IjNmMjUwNGUwLTRmODktMTFkMy05YTBjLTAzMDVlODJjMzMwMSIsInNjb3BlIjpbImNoYXQ6d3JpdGUiLCJtb2RlbHM6cmVhZCJdLCJqdGkiOiI5YjFkZWI0ZC0zYjdkLTRiYWQtOWJkZC0yYjBkN2IzZGNiNmQiLCJleHAiOjQxMDI0NDQ4MDB9.NazDe28vgD2L9McVVfFJXem3Nfoj_is_sgvdFtT1b9c"
 }

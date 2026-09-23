@@ -8,7 +8,7 @@ const DEFAULT_RESULTS: usize = 3;
 
 /// How many characters the whole rendered result may run to.
 ///
-/// Sized against the engine's default `ctx_window` of 256 tokens, half of which
+/// Sized against the LLM engine's default `ctx_window` of 256 tokens, half of which
 /// `orchestrate/chat.py` reserves for the reply — so the prompt has ~128 tokens
 /// for the system block, the history *and* this. At roughly three characters a
 /// token that is ~380 characters for everything, and a tool result is only ever
@@ -89,23 +89,26 @@ impl Config {
             search_url: env_string("SEARCH_URL"),
             search_api_key: env_string("SEARCH_API_KEY"),
             search_results: parse_env("SEARCH_RESULTS").unwrap_or(DEFAULT_RESULTS),
-            search_budget_chars: parse_env("SEARCH_BUDGET_CHARS")
-                .unwrap_or(DEFAULT_BUDGET_CHARS),
+            search_budget_chars: parse_env("SEARCH_BUDGET_CHARS").unwrap_or(DEFAULT_BUDGET_CHARS),
             bash_url: env_string("BASH_URL"),
-            bash_budget_chars: parse_env("BASH_BUDGET_CHARS")
-                .unwrap_or(DEFAULT_BASH_BUDGET_CHARS),
+            bash_budget_chars: parse_env("BASH_BUDGET_CHARS").unwrap_or(DEFAULT_BASH_BUDGET_CHARS),
             timeout: parse_env("TOOL_TIMEOUT_SECS")
                 .map(Duration::from_secs)
                 .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
             search_cache_max_age: parse_env("SEARCH_CACHE_MAX_AGE_DAYS")
                 .map(|days: u64| Duration::from_secs(days * SECONDS_PER_DAY))
-                .unwrap_or(Duration::from_secs(DEFAULT_CACHE_MAX_AGE_DAYS * SECONDS_PER_DAY)),
+                .unwrap_or(Duration::from_secs(
+                    DEFAULT_CACHE_MAX_AGE_DAYS * SECONDS_PER_DAY,
+                )),
         }
     }
 }
 
 fn env_string(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn parse_env<T: std::str::FromStr>(key: &str) -> Option<T> {

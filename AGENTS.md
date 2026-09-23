@@ -4,34 +4,34 @@ The entry point for every agent working in this repository. Read it, then read
 the doc for the module you are about to touch. Nothing else is required
 reading — this file exists so you never have to guess where something lives.
 
-An LLM trained, served and inspected end to end: a PyTorch engine, a Rust API
+An LLM trained, served and inspected end to end: a PyTorch LLM engine, a Rust API
 in front of it, a Next.js UI in front of that.
 
 ```
-engine/       training, inference, evaluation — PyTorch, FastAPI.
+llm-engine/   training, inference, evaluation — PyTorch, FastAPI.
 data-engine/  acquiring datasets and cleaning them — FastAPI, huggingface_hub.
-gyms/         tasks, a sandboxed shell, and what a model scored — FastAPI.
+gyms-engine/  tasks, a sandboxed shell, and what a model scored — FastAPI.
 backend/      people, sessions, and the seam to the services — Rust, Actix, sqlx.
 frontend/     chat, the job board, model, data, benchmark and gym views — Next.js.
 ```
 
-Each module owns a database. The engine owns models, conversations, runs and
+Each module owns a database. The LLM engine owns models, conversations, runs and
 scores; the data engine owns datasets and the documents in them — including the
-text every model is trained on; the gyms service owns gym runs and the
+text every model is trained on; the gyms engine owns gym runs and the
 trajectories in them; the backend owns users and presets. A request flows
 frontend → backend → a service and back the same way.
 
 **The Python services never speak to each other.** Everything either knows
-about the other arrives through the Rust backend. That is why the engine, which
+about the other arrives through the Rust backend. That is why the LLM engine, which
 trains on data it does not own, reads it *through* the backend: the one hop in
 this system that runs toward the backend rather than away from it. See
-[`docs/decisions/datasets-out-of-the-engine.md`](docs/decisions/datasets-out-of-the-engine.md).
+[`docs/decisions/datasets-out-of-the-llm-engine.md`](docs/decisions/datasets-out-of-the-llm-engine.md).
 
 ## Where everything is
 
 | | |
 | --- | --- |
-| [`docs/engine/`](docs/engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/gyms/`](docs/gyms/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
+| [`docs/llm-engine/`](docs/llm-engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/gyms-engine/`](docs/gyms-engine/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
 | [`docs/conventions.md`](docs/conventions.md) | The coding rules (R1–R21) every change is judged against. |
 | [`docs/decisions/`](docs/decisions/) | Decision records — what was weighed and rejected, dated, once. |
 | [`docs/README.md`](docs/README.md) | The spec for the docs themselves: shape of a module directory, what belongs in one. |
@@ -53,7 +53,7 @@ this system that runs toward the backend rather than away from it. See
 4. **Leave the docs true.** See below. This is part of finishing, not a
    follow-up.
 5. **Verify before you claim.** `cargo build` clean with zero warnings (R7) and
-   the relevant tests, `bun run lint`/`typecheck`, `pytest` for the engine. If
+   the relevant tests, `bun run lint`/`typecheck`, `pytest` for the LLM engine. If
    something fails and you cannot fix it, say so plainly with the output — do
    not report a change as done on a red build.
 6. **Committing is the user's call.** Do not commit or push unless asked.
@@ -111,41 +111,41 @@ build fails while `cargo run` on the host still succeeds. Why several containers
 rather than one:
 [`docs/decisions/one-command-development.md`](docs/decisions/one-command-development.md).
 
-Natively, which is still the better loop for engine work:
+Natively, which is still the better loop for LLM engine work:
 
 ```sh
-cd engine      && .venv/bin/uvicorn main:app --port 8001   # or let the backend spawn it
+cd llm-engine      && .venv/bin/uvicorn main:app --port 8001   # or let the backend spawn it
 cd data-engine && .venv/bin/uvicorn main:app --port 8002   # or let the backend spawn it
-cd gyms        && .venv/bin/uvicorn main:app --port 8003   # or let the backend spawn it
+cd gyms-engine        && .venv/bin/uvicorn main:app --port 8003   # or let the backend spawn it
 cd backend     && cargo run                                 # needs DATABASE_URL, JWT_SECRET
 cd frontend    && bun run dev
 ```
 
-The backend spawns the Python services as children unless `ENGINE_AUTOSTART` /
-`DATA_ENGINE_AUTOSTART` / `GYMS_AUTOSTART` is false, and health-checks each before reporting ready.
-Set `ENGINE_SERVICE_SECRET` and `DATA_ENGINE_SERVICE_SECRET` on both sides to
+The backend spawns the Python services as children unless `LLM_ENGINE_AUTOSTART` /
+`DATA_ENGINE_AUTOSTART` / `GYMS_ENGINE_AUTOSTART` is false, and health-checks each before reporting ready.
+Set `LLM_ENGINE_SERVICE_SECRET` and `DATA_ENGINE_SERVICE_SECRET` on both sides to
 authenticate the hops; unset leaves a service open and it says so at startup. A
 token is addressed to one service by name and is refused by the other.
-`BACKEND_SERVICE_SECRET` guards the one hop that runs the other way — the engine
+`BACKEND_SERVICE_SECRET` guards the one hop that runs the other way — the LLM engine
 reading, through the backend, datasets the data engine owns — and behaves the
 same way when unset.
 
 Each Python service needs its own database, migrated with `alembic upgrade head`:
-`ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_engine`),
+`LLM_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_engine`),
 `DATA_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_data`)
-and `GYMS_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`).
+and `GYMS_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`).
 
 # Tests
 
 ```sh
-cd engine      && .venv/bin/python -m pytest tests/   # incl. the dataflow trace
+cd llm-engine      && .venv/bin/python -m pytest tests/   # incl. the dataflow trace
 cd data-engine && .venv/bin/python -m pytest tests/   # incl. the migration drift check
-cd gyms        && .venv/bin/python -m pytest tests/   # no Docker, no Postgres
+cd gyms-engine        && .venv/bin/python -m pytest tests/   # no Docker, no Postgres
 cd backend     && cargo test --workspace              # needs DATABASE_URL
 cd frontend    && bun run typecheck && bun run lint
 ```
 
-`engine/tests/test_dataflow_trace.py` is the contract that keeps the engine
+`llm-engine/tests/test_dataflow_trace.py` is the contract that keeps the LLM engine
 honest: one fixed question, recorded at five layer boundaries under a pinned
 seed. Re-record with `python -m tests.fixtures.record` only when a behaviour
 change is intended, and commit the diff as the evidence of what moved.

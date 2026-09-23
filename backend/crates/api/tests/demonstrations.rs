@@ -1,12 +1,17 @@
-use actix_web::{web, App, HttpResponse};
+use actix_web::{App, HttpResponse, web};
 use auth::AccessLevel;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 const JWT_SECRET: &str = "demonstrations-test-secret";
 
-async fn trajectories() -> HttpResponse {
-    HttpResponse::Ok().json(json!({"trajectories": [{
+async fn trajectories(body: web::Json<Value>) -> HttpResponse {
+    if body["gym_id"] == "general" {
+        assert_eq!(body["gym_weights"]["math"], 2);
+        assert_eq!(body["task_weights"]["math_expressions_easy"], 3);
+    }
+    HttpResponse::Ok().json(json!({"selection": {"mode": "mixture", "sources": [{"gym_id": "math", "weight": 2}]}, "trajectories": [{
+        "gym_id": "math",
         "task_type": "math_expressions_easy", "seed": 0,
         "system": "Solve the question.", "prompt": "2 + 3 + 4?",
         "moves": [], "answer": "Answer: 9"
@@ -31,7 +36,10 @@ async fn omitted_description_defaults_to_empty_and_supplied_description_survives
     let server = actix_test::start(move || {
         App::new()
             .app_data(web::Data::new(JWT_SECRET.to_string()))
-            .app_data(web::Data::new(gyms::Proxy::new(gyms_url.clone(), None)))
+            .app_data(web::Data::new(gyms_engine::Proxy::new(
+                gyms_url.clone(),
+                None,
+            )))
             .app_data(web::Data::new(data_engine::Proxy::new(
                 data_url.clone(),
                 None,
@@ -44,7 +52,8 @@ async fn omitted_description_defaults_to_empty_and_supplied_description_survives
 
     for description in [None, Some(""), Some("Math foundations")] {
         let mut request = json!({
-            "gym_id": "math", "task_types": ["math_expressions_easy"],
+            "gym_id": "general", "task_types": ["math_expressions_easy"],
+            "gym_weights": {"math": 2}, "task_weights": {"math_expressions_easy": 3},
             "dataset_name": "math-foundations", "count": 1, "seed_base": 0
         });
         if let Some(description) = description {
@@ -60,6 +69,8 @@ async fn omitted_description_defaults_to_empty_and_supplied_description_survives
         let stored: Value = response.json().await.expect("json");
         assert_eq!(stored["description"], description.unwrap_or(""));
         assert_eq!(stored["name"], "math-foundations");
+        assert_eq!(stored["steps"][0]["selection"]["sources"][0]["weight"], 2);
+        assert_eq!(stored["conversations"][0]["meta"]["gym_id"], "math");
         assert_eq!(
             stored["conversations"][0]["messages"][2]["content"],
             "Answer: 9"

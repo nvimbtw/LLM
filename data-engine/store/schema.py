@@ -1,7 +1,7 @@
 """What the data engine is the authority on: datasets, their documents, and the
 runs that produce them.
 
-Content lives here rather than on disk. The engine's `data/` tree grew large
+Content lives here rather than on disk. The LLM engine's `data/` tree grew large
 enough to slow every tool that walks the repo, and a corpus that is only ever
 read by page, sampled by ordinal and filtered by predicate is a table's job
 anyway. The cost is real and is paid deliberately: a pull is capped, inserts are
@@ -9,7 +9,7 @@ batched, and nothing reads a whole dataset into memory.
 
 Deliberately not here: anything about a person, and anything the LLM engine
 owns. `owner_id` is an opaque id minted by the backend and never validated —
-the same arrangement that keeps the engine's database independent of the
+the same arrangement that keeps the LLM engine's database independent of the
 backend's.
 """
 
@@ -35,7 +35,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# Postgres in production, SQLite in tests — the same two aliases the engine
+# Postgres in production, SQLite in tests — the same two aliases the LLM engine
 # uses, for the same reason.
 #
 # `none_as_null` is not cosmetic: without it a Python `None` is stored as the
@@ -71,7 +71,7 @@ class DatasetOrigin(str, enum.Enum):
     #: Expert demonstrations played through a gym's sandbox and written here by
     #: the backend. Not pulled, not derived from anything in this database, and
     #: not a recording of a model — the gym's own generator holds the ground
-    #: truth, so it can demonstrate itself. `docs/gyms/demonstrations.md`.
+    #: truth, so it can demonstrate itself. `docs/gyms-engine/demonstrations.md`.
     gym = "gym"
 
 
@@ -207,7 +207,7 @@ class Document(Base):
 class Run(Base):
     """A pull or a processing pass.
 
-    Same shape as the engine's queue and for the same reasons — it takes minutes,
+    Same shape as the LLM engine's queue and for the same reasons — it takes minutes,
     it wants frames and a cancel — but a separate line: nothing here touches the
     GPU, so a pull has no business queueing behind a training run.
     """

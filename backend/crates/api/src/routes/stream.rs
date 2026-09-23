@@ -1,18 +1,18 @@
-//! The browser's half of a stream the engine sends as SSE.
+//! The browser's half of a stream the LLM engine sends as SSE.
 //!
-//! The engine reports over plain HTTP because it has one consumer and no
+//! The LLM engine reports over plain HTTP because it has one consumer and no
 //! handshake to get wrong; a browser wants a socket. This is where the two meet.
 
-use actix_web::{HttpRequest, HttpResponse, get, web};
-use engine::{Frame, Proxy};
+use actix_web::{get, web, HttpRequest, HttpResponse};
 use futures_util::{Stream, StreamExt};
-use serde_json::{Value, json};
+use llm_engine::{Frame, Proxy};
+use serde_json::{json, Value};
 use tools::Registry;
 use uuid::Uuid;
 
 use crate::{gym, turn, ws};
-use auth::AccessLevel;
 use auth::token::Claims;
+use auth::AccessLevel;
 
 #[get("/runs/{run_id}")]
 async fn run_socket(
@@ -65,10 +65,15 @@ async fn data_run_session(
     run_id: Uuid,
     secret: String,
 ) {
-    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
+    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else {
+        return;
+    };
     let caller = auth::Caller::User(claims.sub);
 
-    match data.events(&caller, &format!("/runs/{run_id}/events")).await {
+    match data
+        .events(&caller, &format!("/runs/{run_id}/events"))
+        .await
+    {
         Ok(frames) => relay(&mut session, frames).await,
         Err(e) => {
             let _ = session.text(ws::error_frame(&e.to_string())).await;
@@ -84,7 +89,7 @@ async fn gym_socket(
     body: web::Payload,
     run_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
-    gyms: web::Data<gyms::Proxy>,
+    gyms: web::Data<gyms_engine::Proxy>,
     secret: web::Data<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, stream) = actix_ws::handle(&req, body)?;
@@ -127,7 +132,9 @@ async fn run_session(
     run_id: Uuid,
     secret: String,
 ) {
-    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
+    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else {
+        return;
+    };
     let caller = auth::Caller::User(claims.sub);
 
     let control = actix_web::rt::spawn(watch_for_cancel(
@@ -137,7 +144,10 @@ async fn run_session(
         matches!(claims.access_level, AccessLevel::Admin),
     ));
 
-    match engine.events(&caller, &format!("/runs/{run_id}/events")).await {
+    match engine
+        .events(&caller, &format!("/runs/{run_id}/events"))
+        .await
+    {
         Ok(frames) => relay(&mut session, frames).await,
         Err(e) => {
             let _ = session.text(ws::error_frame(&e.to_string())).await;
@@ -156,12 +166,16 @@ async fn chat_session(
     chat_id: Uuid,
     secret: String,
 ) {
-    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
+    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else {
+        return;
+    };
     let caller = auth::Caller::User(claims.sub);
 
     // One connection for the question and the reply it streams back — which may
-    // take several rounds through the engine if the reply calls a tool.
-    let Some(ask) = next_json(&mut stream).await else { return };
+    // take several rounds through the LLM engine if the reply calls a tool.
+    let Some(ask) = next_json(&mut stream).await else {
+        return;
+    };
 
     // From here on the socket is read concurrently with the turn: a person may
     // type and send again before this reply is done, and the only way to learn
@@ -193,7 +207,7 @@ async fn chat_session(
 /// `{ "type": "interject", "text": ... }` and forwards the text to `turn::run`.
 ///
 /// No `attachment_ids` here, unlike the opening `ask` — see `Ask.interject` in
-/// `engine/api/routes/chats.py` for why an interjection is text-only. Anything
+/// `llm-engine/api/routes/chats.py` for why an interjection is text-only. Anything
 /// else on the socket (a stray `ping`, garbage, another frame type) is ignored
 /// rather than closing the connection: this task has no way to answer back,
 /// and the turn it is feeding is the thing actually driving the socket.
@@ -204,12 +218,18 @@ async fn read_interjections(
     use actix_ws::Message;
 
     while let Some(Ok(message)) = stream.next().await {
-        let Message::Text(text) = message else { continue };
-        let Some(value) = serde_json::from_str::<Value>(&text).ok() else { continue };
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let Some(value) = serde_json::from_str::<Value>(&text).ok() else {
+            continue;
+        };
         if value.get("type").and_then(Value::as_str) != Some("interject") {
             continue;
         }
-        let Some(text) = value.get("text").and_then(Value::as_str) else { continue };
+        let Some(text) = value.get("text").and_then(Value::as_str) else {
+            continue;
+        };
         if text.is_empty() {
             continue;
         }
@@ -227,11 +247,13 @@ async fn gym_session(
     mut session: actix_ws::Session,
     mut stream: actix_ws::MessageStream,
     engine: Proxy,
-    gyms: gyms::Proxy,
+    gyms: gyms_engine::Proxy,
     run_id: Uuid,
     secret: String,
 ) {
-    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else { return };
+    let Some(claims) = handshake(&mut session, &mut stream, &secret).await else {
+        return;
+    };
     if !matches!(claims.access_level, AccessLevel::Admin) {
         let _ = session.text(ws::error_frame("admin only")).await;
         let _ = session.close(None).await;
@@ -241,7 +263,9 @@ async fn gym_session(
 
     // The sampling the client chose, if any. Unlike a chat there is no question
     // in it — the run already holds the model and the tasks.
-    let Some(ask) = next_json(&mut stream).await else { return };
+    let Some(ask) = next_json(&mut stream).await else {
+        return;
+    };
 
     gym::run(&mut session, &engine, &gyms, &caller, run_id, &ask).await;
     let _ = session.close(None).await;
@@ -291,7 +315,7 @@ async fn next_json(stream: &mut actix_ws::MessageStream) -> Option<Value> {
 /// Frames flattened onto a `type` field the client switches on.
 async fn relay(
     session: &mut actix_ws::Session,
-    frames: impl Stream<Item = engine::Result<Frame>>,
+    frames: impl Stream<Item = llm_engine::Result<Frame>>,
 ) {
     futures_util::pin_mut!(frames);
     while let Some(frame) = frames.next().await {
@@ -319,7 +343,9 @@ async fn watch_for_cancel(
     use actix_ws::Message;
 
     while let Some(Ok(message)) = stream.next().await {
-        let Message::Text(text) = message else { continue };
+        let Message::Text(text) = message else {
+            continue;
+        };
         let asked = serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned));
@@ -331,7 +357,9 @@ async fn watch_for_cancel(
 }
 
 fn merge(target: &mut Value, source: Value) {
-    let (Some(target), Value::Object(source)) = (target.as_object_mut(), source) else { return };
+    let (Some(target), Value::Object(source)) = (target.as_object_mut(), source) else {
+        return;
+    };
     for (key, value) in source {
         target.insert(key, value);
     }

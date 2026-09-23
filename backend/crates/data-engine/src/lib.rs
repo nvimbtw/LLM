@@ -1,9 +1,9 @@
 //! The data engine: datasets, where they came from and what was done to them,
 //! in `data-engine/`.
 //!
-//! A sibling of `engine`, not a layer above or below it. The two Python services
+//! A sibling of `llm-engine`, not a layer above or below it. The Python services
 //! never speak to each other — everything either of them knows about the other
-//! arrives through the backend — so this crate depends on `engine` for nothing.
+//! arrives through the backend — so this crate depends on `llm-engine` for nothing.
 
 use service::{Config, Defaults};
 
@@ -25,7 +25,7 @@ pub fn config() -> Config {
 }
 
 /// The data engine's proxy, distinct from every other service's — see
-/// `engine::Proxy` for why the newtype is load-bearing rather than decorative.
+/// `llm_engine::Proxy` for why the newtype is load-bearing rather than decorative.
 #[derive(Clone)]
 pub struct Proxy(service::Proxy);
 

@@ -1,12 +1,12 @@
-//! Conversations. The engine owns them; this hop proves who is asking.
+//! Conversations. The LLM engine owns them; this hop proves who is asking.
 
-use actix_web::{HttpRequest, HttpResponse, delete, get, patch, post, put, web};
-use engine::Proxy;
+use actix_web::{delete, get, patch, post, put, web, HttpRequest, HttpResponse};
+use llm_engine::Proxy;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::extractors::AuthUser;
-use crate::upstream::{Answer, answer, caller, with_query};
+use crate::upstream::{answer, caller, with_query, Answer};
 
 #[get("")]
 async fn list(user: AuthUser, engine: web::Data<Proxy>) -> Answer {
@@ -15,17 +15,23 @@ async fn list(user: AuthUser, engine: web::Data<Proxy>) -> Answer {
 
 #[post("")]
 async fn create(user: AuthUser, body: web::Json<Value>, engine: web::Data<Proxy>) -> Answer {
-    let created = engine.post(&caller(&user), "/chats", body.into_inner()).await?;
+    let created = engine
+        .post(&caller(&user), "/chats", body.into_inner())
+        .await?;
     Ok(HttpResponse::Created().json(created))
 }
 
 #[get("/{chat_id}")]
 async fn get_one(user: AuthUser, chat_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    answer(engine.get(&caller(&user), &format!("/chats/{chat_id}")).await?)
+    answer(
+        engine
+            .get(&caller(&user), &format!("/chats/{chat_id}"))
+            .await?,
+    )
 }
 
 /// Where `/prune` (the frontend command) would cut this chat's history — read
-/// only, on both sides of this hop. See `context_floor` in the engine's
+/// only, on both sides of this hop. See `context_floor` in the LLM engine's
 /// `api/routes/chats.py` for what the answer means and why nothing is written
 /// down anywhere to produce it.
 #[get("/{chat_id}/context-floor")]
@@ -46,12 +52,22 @@ async fn rename(
     body: web::Json<Value>,
     engine: web::Data<Proxy>,
 ) -> Answer {
-    answer(engine.patch(&caller(&user), &format!("/chats/{chat_id}"), body.into_inner()).await?)
+    answer(
+        engine
+            .patch(
+                &caller(&user),
+                &format!("/chats/{chat_id}"),
+                body.into_inner(),
+            )
+            .await?,
+    )
 }
 
 #[delete("/{chat_id}")]
 async fn remove(user: AuthUser, chat_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    engine.delete(&caller(&user), &format!("/chats/{chat_id}")).await?;
+    engine
+        .delete(&caller(&user), &format!("/chats/{chat_id}"))
+        .await?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -63,7 +79,9 @@ async fn ask(
     engine: web::Data<Proxy>,
 ) -> Answer {
     let path = format!("/chats/{chat_id}/messages");
-    let reply = engine.post(&caller(&user), &path, body.into_inner()).await?;
+    let reply = engine
+        .post(&caller(&user), &path, body.into_inner())
+        .await?;
     Ok(HttpResponse::Created().json(reply))
 }
 

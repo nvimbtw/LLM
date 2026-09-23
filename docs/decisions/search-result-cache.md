@@ -35,12 +35,12 @@ fact about the world and not about whoever asked first. It is created
 `ready` on first write rather than going through `pulling` — there is no
 batch to wait out, every row is complete the moment it lands. Storing it this
 way is what makes "use what got searched as training data later" free: it is
-already `DatasetSelection`-able (`engine/llm/config.py`) the moment it
-exists, with zero engine-side work.
+already `DatasetSelection`-able (`llm-engine/llm/config.py`) the moment it
+exists, without work in the LLM engine.
 
 A re-fetch **appends a fresh document rather than overwriting the old one** —
 the same shape a re-pulled Hub dataset already has, "holding more documents
-under the same id" (`docs/engine/README.md`). `Document` gained `created_at`
+under the same id" (`docs/llm-engine/README.md`). `Document` gained `created_at`
 (nothing there had a per-row timestamp before) and `cache_key` (nullable —
 null on everything pulled from the Hub or produced by a pipeline, which are
 found by ordinal, never by content). The freshest row under a key, by

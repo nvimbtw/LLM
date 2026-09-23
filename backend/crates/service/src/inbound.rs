@@ -3,8 +3,8 @@
 //! Everywhere else in this crate the backend is the caller and a Python service
 //! answers. This is the one direction that runs the other way, and it exists for
 //! a single reason: a training run needs its documents at the moment it reaches
-//! the front of the engine's queue, which is a time nothing on this side knows
-//! in advance. So the engine asks.
+//! the front of the LLM engine's queue, which is a time nothing on this side knows
+//! in advance. So the LLM engine asks.
 //!
 //! It changes who talks to whom and nothing about what may be known. The two
 //! Python services still never speak — a request arriving here is re-minted
@@ -14,8 +14,8 @@
 //! The token is the mirror of the one `Proxy` mints outbound: same issuer, same
 //! shape, addressed to `backend` instead of to a service.
 
-use auth::Caller;
 use auth::token;
+use auth::Caller;
 
 /// What a token addressed to the backend says in its `aud`.
 pub const AUDIENCE: &str = token::BACKEND_AUDIENCE;
@@ -92,7 +92,9 @@ impl InboundSecret {
 fn bearer(header: Option<&str>) -> Option<&str> {
     let header = header?;
     let (scheme, token) = header.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("bearer").then_some(token.trim())
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then_some(token.trim())
 }
 
 #[cfg(test)]
@@ -101,7 +103,7 @@ mod tests {
     use uuid::Uuid;
 
     const SECRET: &str = "inbound-secret";
-    const ENGINE: &str = "engine";
+    const ENGINE: &str = "llm-engine";
     const ALLOWED: &[&str] = &[ENGINE];
 
     fn from_engine(caller: &Caller, secret: &str) -> String {
@@ -123,7 +125,7 @@ mod tests {
     }
 
     /// The property the audience claim exists for, in the direction that did not
-    /// have it before: a token the backend minted *for* the engine must not open
+    /// have it before: a token the backend minted *for* the LLM engine must not open
     /// the backend, or anything holding one could read as any user it likes.
     #[test]
     fn a_token_the_backend_minted_for_a_service_is_refused() {
@@ -141,8 +143,7 @@ mod tests {
     /// has no business reading through the backend and this is what says so.
     #[test]
     fn a_token_from_a_service_that_may_not_ask_is_refused() {
-        let token =
-            token::issue_inbound_token("data-engine", &Caller::System, SECRET).unwrap();
+        let token = token::issue_inbound_token("data-engine", &Caller::System, SECRET).unwrap();
 
         let caller = enforcing().caller(Some(&format!("Bearer {token}")), ALLOWED);
 
@@ -161,7 +162,10 @@ mod tests {
     #[test]
     fn no_token_is_refused_when_a_secret_is_set() {
         assert_eq!(enforcing().caller(None, ALLOWED), Err(Refused::Missing));
-        assert_eq!(enforcing().caller(Some("Basic aGk="), ALLOWED), Err(Refused::Missing));
+        assert_eq!(
+            enforcing().caller(Some("Basic aGk="), ALLOWED),
+            Err(Refused::Missing)
+        );
     }
 
     #[test]
@@ -176,7 +180,10 @@ mod tests {
 
     #[test]
     fn without_a_secret_and_without_a_token_the_caller_is_the_system() {
-        assert_eq!(InboundSecret::new(None).caller(None, ALLOWED), Ok(Caller::System));
+        assert_eq!(
+            InboundSecret::new(None).caller(None, ALLOWED),
+            Ok(Caller::System)
+        );
     }
 
     #[test]

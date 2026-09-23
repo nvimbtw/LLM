@@ -41,17 +41,17 @@ worth training on separately, so the **name comes from the caller** rather than
 being a reserved constant. A second request under the same name appends.
 
 The rows are expert trajectories from a gym, played through its sandbox and
-written here by the backend — never by the gyms service, which cannot reach this
+written here by the backend — never by the gyms engine, which cannot reach this
 one. They are stored so that they can be trained on with no new machinery
 anywhere: an `sft` dataset here is already selectable, cappable, keyable and
 mixable with a chat corpus, and the LLM engine needs no reader it does not have.
-See [`../gyms/demonstrations.md`](../gyms/demonstrations.md).
+See [`../gyms-engine/demonstrations.md`](../gyms-engine/demonstrations.md).
 
 **A `tool` message in one of these carries `tool` and `argument` beside its
 `content`, and the content is the body alone** — unlike `convert-hermes`, whose
 rows carry the whole rendered block. The difference is which side can render:
 this service adds the header to neither. The backend renders the body with the
-Rust function that serves a live round, and the engine's `render_result` adds
+Rust function that serves a live round, and the LLM engine's `render_result` adds
 the `<|tool-call|>` header at build time, so no layout is spelled by anything
 that cannot verify it.
 

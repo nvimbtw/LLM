@@ -1,14 +1,14 @@
 //! The proxy against a stub service: what goes out, and what comes back.
 //!
-//! `seam.rs` proves a token minted here opens the real engine's door. This is
+//! `seam.rs` proves a token minted here opens the real LLM engine's door. This is
 //! the other half — the shapes on the wire, which need no PyTorch to check.
 
 use std::io::Write;
 use std::net::TcpListener;
 
-use service::Proxy;
 use futures_util::StreamExt;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use service::Proxy;
 
 const AUDIENCE: &str = "stub";
 const SECRET: &str = "forwarding-test-secret";
@@ -44,7 +44,10 @@ async fn a_call_carries_a_token_for_the_service_it_names() {
     let (url, handle) = stub(Box::leak(ok(r#"{"status":"ok"}"#).into_boxed_str()));
     let proxy = Proxy::new(url, AUDIENCE, Some(SECRET.into()));
 
-    let body = proxy.get(&auth::Caller::System, "/").await.expect("reaches the stub");
+    let body = proxy
+        .get(&auth::Caller::System, "/")
+        .await
+        .expect("reaches the stub");
     let request = handle.join().unwrap();
 
     assert_eq!(body, json!({"status": "ok"}));
@@ -52,7 +55,10 @@ async fn a_call_carries_a_token_for_the_service_it_names() {
         .lines()
         .find_map(|line| line.strip_prefix("authorization: "))
         .expect("signed");
-    let token = header.trim().strip_prefix("Bearer ").expect("bearer scheme");
+    let token = header
+        .trim()
+        .strip_prefix("Bearer ")
+        .expect("bearer scheme");
     assert!(auth::token::verify_service_token(token, AUDIENCE, SECRET).is_ok());
 }
 
@@ -64,10 +70,16 @@ async fn an_unsecured_proxy_still_says_who_it_acts_for() {
     let proxy = Proxy::new(url, AUDIENCE, None);
     let who = uuid::Uuid::new_v4();
 
-    proxy.get(&auth::Caller::User(who), "/chats").await.expect("reaches the stub");
+    proxy
+        .get(&auth::Caller::User(who), "/chats")
+        .await
+        .expect("reaches the stub");
 
     let request = handle.join().unwrap();
-    assert!(request.to_lowercase().contains("authorization:"), "no token was sent");
+    assert!(
+        request.to_lowercase().contains("authorization:"),
+        "no token was sent"
+    );
     assert!(request.contains(&who.to_string()) || request.to_lowercase().contains("bearer"));
 }
 
@@ -77,7 +89,10 @@ async fn a_body_is_forwarded_verbatim() {
     let proxy = Proxy::new(url, AUDIENCE, None);
 
     let sent = json!({"model_name": "tiny", "nested": {"epochs": 2}});
-    proxy.post(&auth::Caller::System, "/train", sent.clone()).await.expect("posts");
+    proxy
+        .post(&auth::Caller::System, "/train", sent.clone())
+        .await
+        .expect("posts");
 
     let request = handle.join().unwrap();
     let body = request.split("\r\n\r\n").nth(1).expect("a body");
@@ -90,7 +105,10 @@ async fn an_empty_response_is_null_rather_than_a_decode_failure() {
     let (url, _handle) = stub("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
     let proxy = Proxy::new(url, AUDIENCE, None);
 
-    let body = proxy.delete(&auth::Caller::System, "/chats/x").await.expect("deletes");
+    let body = proxy
+        .delete(&auth::Caller::System, "/chats/x")
+        .await
+        .expect("deletes");
     assert_eq!(body, Value::Null);
 }
 
@@ -107,7 +125,10 @@ async fn a_refusal_carries_the_services_own_status_and_message() {
     let (url, _handle) = stub(response);
     let proxy = Proxy::new(url, AUDIENCE, None);
 
-    let err = proxy.get(&auth::Caller::System, "/runs/7").await.expect_err("refused");
+    let err = proxy
+        .get(&auth::Caller::System, "/runs/7")
+        .await
+        .expect_err("refused");
 
     match err {
         service::Error::Status { code, detail } => {
@@ -121,11 +142,21 @@ async fn a_refusal_carries_the_services_own_status_and_message() {
 #[tokio::test]
 async fn an_unreachable_service_is_a_transport_failure() {
     // Nothing is listening: the port was taken and released.
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let proxy = Proxy::new(format!("http://127.0.0.1:{port}"), AUDIENCE, None);
 
-    let err = proxy.get(&auth::Caller::System, "/").await.expect_err("unreachable");
-    assert!(matches!(err, service::Error::Transport(_)), "wrong error: {err}");
+    let err = proxy
+        .get(&auth::Caller::System, "/")
+        .await
+        .expect_err("unreachable");
+    assert!(
+        matches!(err, service::Error::Transport(_)),
+        "wrong error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -141,17 +172,24 @@ async fn an_event_stream_arrives_frame_by_frame() {
     let (url, _handle) = stub(response);
     let proxy = Proxy::new(url, AUDIENCE, None);
 
-    let stream = proxy.events(&auth::Caller::System, "/runs/1/events").await.expect("opens");
+    let stream = proxy
+        .events(&auth::Caller::System, "/runs/1/events")
+        .await
+        .expect("opens");
     let frames: Vec<_> = stream.filter_map(|f| async { f.ok() }).collect().await;
 
-    assert_eq!(frames.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(), ["progress", "done"]);
+    assert_eq!(
+        frames.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(),
+        ["progress", "done"]
+    );
     assert_eq!(frames[0].data["step"], 1);
     assert!(frames[1].is_final());
 }
 
 #[tokio::test]
 async fn a_stream_that_is_refused_never_opens() {
-    let (url, _handle) = stub("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let (url, _handle) =
+        stub("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     let proxy = Proxy::new(url, AUDIENCE, None);
 
     let err = proxy
@@ -159,5 +197,8 @@ async fn a_stream_that_is_refused_never_opens() {
         .await
         .err()
         .expect("refused");
-    assert!(matches!(err, service::Error::Status { code: 401, .. }), "wrong error: {err}");
+    assert!(
+        matches!(err, service::Error::Status { code: 401, .. }),
+        "wrong error: {err}"
+    );
 }

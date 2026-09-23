@@ -5,7 +5,7 @@ Migrate existing SFT conversations to the bare-tag markup convention.
 `<|codeblock|>` and `<|link|>` used to carry attributes (`lang='python'`,
 `href='...'`), but those attribute forms don't tokenize to a single reserved id
 — they byte-shred into raw markup (see SPECIAL_TOKENS in
-engine/llm/corpus/special.py). The convention is now BARE tags:
+llm-engine/llm/corpus/special.py). The convention is now BARE tags:
 
     <|codeblock|lang='python'|>…<|/codeblock|>   ->  <|codeblock|>…<|/codeblock|>
     <|link|href='URL'|>text<|/link|>             ->  <|link|>URL<|/link|>

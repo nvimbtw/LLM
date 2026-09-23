@@ -9,7 +9,7 @@
 //! simulated one costs nothing if the model writes `rm -rf /`.
 //!
 //! One tool for the whole shell, rather than a marker per file operation. See
-//! `engine/llm/chat/tools.py` for why: a command line is the one argument
+//! `llm-engine/llm/chat/tools.py` for why: a command line is the one argument
 //! format a pretrained model has already seen at scale.
 //!
 //! The filesystem lives in the sandbox, keyed by the chat it belongs to, so a
@@ -133,14 +133,17 @@ impl Tool for Bash {
             });
         }
 
-        let ran: Ran = response.json().await.map_err(|e| ToolError::Decode(e.to_string()))?;
+        let ran: Ran = response
+            .json()
+            .await
+            .map_err(|e| ToolError::Decode(e.to_string()))?;
         Ok(render(ran, self.budget))
     }
 }
 
 /// What the model is shown for a command somebody else ran.
 ///
-/// The gym runs its shell through the gyms service rather than through this
+/// The gym runs its shell through the gyms engine rather than through this
 /// tool — the episode's filesystem is that service's to seed and to record —
 /// but what the model *reads* has to be the same text either way, or a model
 /// trained in the gym has been trained on a layout serving never shows it. So
@@ -180,9 +183,14 @@ fn render(ran: Ran, budget: usize) -> String {
 
     let mut out = String::new();
     if ran.timed_out {
-        out.push_str(&markup::warning("The command was still running and was stopped."));
+        out.push_str(&markup::warning(
+            "The command was still running and was stopped.",
+        ));
     } else if ran.exit_code != 0 {
-        out.push_str(&markup::warning(&format!("The command exited {}.", ran.exit_code)));
+        out.push_str(&markup::warning(&format!(
+            "The command exited {}.",
+            ran.exit_code
+        )));
     }
 
     if body.is_empty() {
@@ -241,7 +249,12 @@ fn transport(e: reqwest::Error) -> ToolError {
 }
 
 fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or_default().chars().take(200).collect()
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect()
 }
 
 #[cfg(test)]
@@ -315,7 +328,12 @@ mod tests {
     #[test]
     fn a_command_that_never_finished_says_so_instead_of_reporting_an_exit() {
         let rendered = render(
-            Ran { stdout: "tick".into(), stderr: String::new(), exit_code: 0, timed_out: true },
+            Ran {
+                stdout: "tick".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: true,
+            },
             WIDE,
         );
         assert!(rendered.contains("still running"));
@@ -332,12 +350,17 @@ mod tests {
             },
             WIDE,
         );
-        assert_eq!(rendered, "<|codeblock|>found 2\nwarning: skipped .git<|/codeblock|>");
+        assert_eq!(
+            rendered,
+            "<|codeblock|>found 2\nwarning: skipped .git<|/codeblock|>"
+        );
     }
 
     #[test]
     fn output_the_model_has_no_room_for_is_cut_and_the_cut_is_declared() {
-        let listing = (0..200).map(|i| format!("file-{i}.txt\n")).collect::<String>();
+        let listing = (0..200)
+            .map(|i| format!("file-{i}.txt\n"))
+            .collect::<String>();
         let rendered = render(ran(&listing, 200), 200);
 
         assert!(rendered.contains("has been cut"));
@@ -379,8 +402,16 @@ mod tests {
         .expect("a url is all it needs");
 
         let runaway = "x".repeat(MAX_COMMAND_CHARS + 1);
-        assert!(bash.run(&runaway, "chat").await.expect("refused, not errored").contains("<|warn|>"));
-        assert!(bash.run("  ", "chat").await.expect("refused, not errored").contains("<|warn|>"));
+        assert!(bash
+            .run(&runaway, "chat")
+            .await
+            .expect("refused, not errored")
+            .contains("<|warn|>"));
+        assert!(bash
+            .run("  ", "chat")
+            .await
+            .expect("refused, not errored")
+            .contains("<|warn|>"));
     }
 }
 
@@ -417,10 +448,16 @@ mod contract {
 
     #[test]
     fn every_shared_case_renders_as_the_vector_says() {
-        let path = format!("{}/../../../contracts/shell-observation.json", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/../../../contracts/shell-observation.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let vector: Vector = serde_json::from_str(&raw).expect("valid contract fixture");
-        assert!(!vector.cases.is_empty(), "a vector with no cases pins nothing");
+        assert!(
+            !vector.cases.is_empty(),
+            "a vector with no cases pins nothing"
+        );
 
         for case in &vector.cases {
             let rendered = observation(

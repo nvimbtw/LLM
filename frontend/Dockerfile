@@ -4,7 +4,7 @@ FROM oven/bun:1 AS base
 WORKDIR /app
 
 FROM base AS deps
-COPY package.json bun.lock ./
+COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
 
 FROM base AS dev
@@ -15,7 +15,10 @@ CMD ["bun", "run", "dev", "--hostname", "0.0.0.0"]
 
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY frontend/ .
+COPY docs /docs
+COPY README.md /README.md
+COPY AGENTS.md /AGENTS.md
 RUN bun run build
 
 FROM base AS runtime

@@ -3,7 +3,7 @@
 //!
 //! The browser's socket loop is covered by `gym_rounds.rs`; what is under test
 //! here is the *other* driver's half, and specifically the one thing that
-//! justifies the round trip at all: the engine never sees a
+//! justifies the round trip at all: the LLM engine never sees a
 //! `{stdout, stderr, exit_code}` triple, because this side renders the
 //! observation with the same function chat renders one with.
 //!
@@ -13,12 +13,12 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{channel, Receiver};
 
-use actix_web::{App, web};
-use auth::AccessLevel;
+use actix_web::{web, App};
 use auth::token;
-use serde_json::{Value, json};
+use auth::AccessLevel;
+use serde_json::{json, Value};
 use tools::Registry;
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ const SERVICE_SECRET: &str = "internal-gym-test-service-secret";
 const EPISODE_ID: &str = "22222222-2222-4222-8222-222222222222";
 const RUN_ID: &str = "11111111-1111-4111-8111-111111111111";
 
-/// The gyms service, answering the two shapes this seam forwards.
+/// The gyms engine, answering the two shapes this seam forwards.
 fn gyms_stub() -> (String, Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
@@ -77,7 +77,7 @@ fn server(gyms_url: String) -> actix_test::TestServer {
             .app_data(web::Data::new(service::InboundSecret::new(Some(
                 SERVICE_SECRET.to_string(),
             ))))
-            .app_data(web::Data::new(gyms::Proxy::new(
+            .app_data(web::Data::new(gyms_engine::Proxy::new(
                 gyms_url.clone(),
                 Some(SERVICE_SECRET.to_string()),
             )))
@@ -86,15 +86,15 @@ fn server(gyms_url: String) -> actix_test::TestServer {
     })
 }
 
-/// What the engine sends: `aud: backend`, signed with the shared secret. The
+/// What the LLM engine sends: `aud: backend`, signed with the shared secret. The
 /// mirror of the token this server mints going the other way.
 fn service_token() -> String {
-    token::issue_inbound_token("engine", &auth::Caller::System, SERVICE_SECRET).expect("minted")
+    token::issue_inbound_token("llm-engine", &auth::Caller::System, SERVICE_SECRET).expect("minted")
 }
 
 fn admin_token() -> String {
-    let jwt = token::issue_user_token(Uuid::new_v4(), AccessLevel::Admin, JWT_SECRET)
-        .expect("issued");
+    let jwt =
+        token::issue_user_token(Uuid::new_v4(), AccessLevel::Admin, JWT_SECRET).expect("issued");
     auth::token_cipher::encrypt(&jwt, JWT_SECRET).expect("sealed")
 }
 
@@ -102,14 +102,20 @@ fn admin_token() -> String {
 async fn the_engine_can_read_the_catalogue_but_a_browser_token_cannot() {
     let (gyms_url, served) = gyms_stub();
     let server = server(gyms_url);
-    let response = server.get("/internal/gyms")
+    let response = server
+        .get("/internal/gyms")
         .insert_header(("Authorization", format!("Bearer {}", service_token())))
-        .send().await.expect("sent");
+        .send()
+        .await
+        .expect("sent");
     assert_eq!(response.status(), 200);
     assert!(served.recv().expect("forwarded").contains("GET /gyms "));
-    let refused = server.get("/internal/gyms")
+    let refused = server
+        .get("/internal/gyms")
         .insert_header(("Authorization", format!("Bearer {}", admin_token())))
-        .send().await.expect("sent");
+        .send()
+        .await
+        .expect("sent");
     assert_eq!(refused.status(), 401);
     assert!(served.try_recv().is_err());
 }
@@ -157,14 +163,20 @@ async fn a_tool_this_gym_does_not_have_is_a_caveat_rather_than_a_step() {
     assert_eq!(response.status(), 200);
     let body: Value = response.json().await.expect("json");
     assert!(
-        body["observation"].as_str().unwrap_or_default().contains("no web-search tool"),
+        body["observation"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no web-search tool"),
         "{body}"
     );
     // Nothing ran, so nothing was recorded and no reward was earned. A gym that
     // charged a step for a tool it does not have would be paying for the model's
     // mistake out of the episode's round budget.
     assert!(body["reward"].is_null(), "{body}");
-    assert!(served.try_recv().is_err(), "the gyms service was asked to run it");
+    assert!(
+        served.try_recv().is_err(),
+        "the gyms engine was asked to run it"
+    );
 }
 
 #[actix_web::test]
@@ -196,7 +208,10 @@ async fn grading_and_creating_pass_through_untouched() {
         .await
         .expect("sent");
     assert_eq!(graded.status(), 200);
-    assert_eq!(graded.json::<Value>().await.expect("json")["score"], json!(1.0));
+    assert_eq!(
+        graded.json::<Value>().await.expect("json")["score"],
+        json!(1.0)
+    );
 
     let created = server
         .post("/internal/gym/runs")

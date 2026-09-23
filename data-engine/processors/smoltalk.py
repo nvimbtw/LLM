@@ -9,7 +9,7 @@ conversation ending on the call and no tool-role turn to follow it.
 Every tool here is called through one marker with the tool named inside it, so
 a call is rendered as
 `<|tool-call|>{"tool": "web-search", "argument": …}<|/tool-call|>` — the layout
-`engine/llm/chat/tools.py` owns. The argument is the user's own question: the
+`llm-engine/llm/chat/tools.py` owns. The argument is the user's own question: the
 backend searches it literally, so the source's own JSON arguments would be a
 query a provider would choke on. Rephrasing the question is a real system's
 job, not a cleaning script's — the honest text is what was asked.
@@ -31,7 +31,7 @@ corpus can use it and its behaviour is previewable on its own. Run
 `convert-smoltalk` before it in a pipeline.
 
 The output is `[{role, content}]`, the same shape everything else here stores
-and the engine's `sft._conversation` turns into `{system?, turns}` — where the
+and the LLM engine's `sft._conversation` turns into `{system?, turns}` — where the
 engine wraps each `tool` turn's text in `<|tool-result|>` at render time, so
 the stored text is only what goes between those markers.
 """
@@ -45,8 +45,8 @@ from store.schema import DatasetKind
 SFT = (DatasetKind.sft,)
 
 #: The one marker every tool is called through. Written out rather than
-#: imported: the data engine and the engine are separate services with separate
-#: virtualenvs, and `engine/llm/chat/tools.py` is the source of truth for the
+#: imported: the data engine and the LLM engine are separate services with separate
+#: virtualenvs, and `llm-engine/llm/chat/tools.py` is the source of truth for the
 #: layout either way.
 TOOL_CALL_OPEN = "<|tool-call|>"
 TOOL_CALL_CLOSE = "<|/tool-call|>"

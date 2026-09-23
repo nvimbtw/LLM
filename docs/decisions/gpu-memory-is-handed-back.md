@@ -9,7 +9,7 @@ Two symptoms, reported as separate problems, that turned out to be one
 mechanism seen at two moments:
 
 1. After a training run finished, the card still read as full — 7.4 of 8 GB on
-   an RTX 3060 — until the engine process was restarted.
+   an RTX 3060 — until the LLM engine process was restarted.
 2. During a run, memory climbed in discrete jumps rather than settling, and
    never came back down. In practice that capped a model at roughly
    512 dimensions / 512 context / 8 heads / 6 layers on 8 GB.
@@ -94,7 +94,7 @@ Two supporting changes:
   by `orchestrate/chat.py` was never asked to leave — it sat on the card until
   some later chat happened to name a different one. There is one device and one
   process, so that is memory a run cannot have.
-- **`PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True`** on the engine service.
+- **`PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True`** on the LLM engine service.
   It lets the allocator grow and shrink a segment instead of stranding blocks it
   cannot merge. Not a substitute for either change above; it reduces what a
   single run needs rather than what it holds afterwards.

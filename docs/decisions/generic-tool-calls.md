@@ -68,7 +68,7 @@ they did not stop being true:
 
 - **The grammar can no longer police which tool is called.** The name is
   ordinary text inside a leaf block. A call to a tool that does not exist is now
-  caught after the fact — `tools.parse` drops it in the engine, and
+  caught after the fact — `tools.parse` drops it in the LLM engine, and
   `Registry::answer` turns an unknown name into a `<|warn|>` if one ever gets
   past. The grammar still guarantees the *shape*: one call, at the top level,
   no markup inside, closed before the turn can end.
@@ -111,7 +111,7 @@ it is the difference between a bad habit and an outage.
 
 - Every corpus rendered against the old markers is stale. The converters were
   updated in the same change (`data-engine/processors/smoltalk.py`,
-  `hermes.py`, `engine/scripts/fetch_web_search.py`), and a corpus already
+  `hermes.py`, `llm-engine/scripts/fetch_web_search.py`), and a corpus already
   packed has to be rebuilt — the marker ids in it are the retired pair.
 - `Tool::run` in the Rust `tools` crate gained a `session` argument. It is not
   about this decision but arrived with it: `bash` keeps a filesystem per chat,

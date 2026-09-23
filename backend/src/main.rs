@@ -20,15 +20,15 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("failed to connect to database / run migrations");
 
-    // Spawned here, as children of the server, because the engine holds the GPU
+    // Spawned here, as children of the server, because the LLM engine holds the GPU
     // for as long as the server lives — and held to the end of `main`, because
     // dropping a handle kills the process it supervises.
-    let engine_config = engine::config();
+    let engine_config = llm_engine::config();
     let engine_secret = engine_config.service_secret.clone();
     let engine = service::Supervisor::start(engine_config)
         .await
-        .expect("failed to start the python engine");
-    println!("engine ready at {}", engine.base_url());
+        .expect("failed to start the Python LLM engine");
+    println!("llm-engine ready at {}", engine.base_url());
 
     let data_config = data_engine::config();
     let data_secret = data_config.service_secret.clone();
@@ -37,18 +37,18 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to start the data engine");
     println!("data engine ready at {}", data.base_url());
 
-    let proxy = engine::Proxy::new(engine.base_url(), engine_secret);
+    let proxy = llm_engine::Proxy::new(engine.base_url(), engine_secret);
     let data_proxy = data_engine::Proxy::new(data.base_url(), data_secret);
 
-    let gyms_config = gyms::config();
+    let gyms_config = gyms_engine::config();
     let gyms_secret = gyms_config.service_secret.clone();
     let gyms_svc = service::Supervisor::start(gyms_config)
         .await
-        .expect("failed to start the gyms service");
-    println!("gyms ready at {}", gyms_svc.base_url());
-    let gyms_proxy = gyms::Proxy::new(gyms_svc.base_url(), gyms_secret);
+        .expect("failed to start the Python gyms engine");
+    println!("gyms-engine ready at {}", gyms_svc.base_url());
+    let gyms_proxy = gyms_engine::Proxy::new(gyms_svc.base_url(), gyms_secret);
 
-    // The reverse hop: the engine asks for the documents a run has reached the
+    // The reverse hop: the LLM engine asks for the documents a run has reached the
     // point of needing. Said out loud for the reason the services say it — an
     // unauthenticated seam should be a thing you were told about, not a thing
     // you discover.
@@ -57,11 +57,12 @@ async fn main() -> std::io::Result<()> {
         true => println!("inbound service calls authenticated"),
         false => println!(
             "inbound service calls are UNAUTHENTICATED — set BACKEND_SERVICE_SECRET \
-             here and in the engine to close /internal"
+             here and in the LLM engine to close /internal"
         ),
     }
 
-    let search_cache = std::sync::Arc::new(api::search_cache::DataEngineCache::new(data_proxy.clone()));
+    let search_cache =
+        std::sync::Arc::new(api::search_cache::DataEngineCache::new(data_proxy.clone()));
     let registry = tools::Registry::from_env(Some(search_cache));
     match registry.origins() {
         [] => println!("no tools configured — replies that call one get a caveat back"),

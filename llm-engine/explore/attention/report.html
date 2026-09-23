@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E2 · Attention anatomy — LLM explore report</title>
+<style>
+  :root { --ink:#1c2430; --mut:#5a6b85; --line:#e3e9f2; --bg:#fbfcfe; --acc:#3955c4; --ok:#1a7f37; --warn:#b56a00; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.6 system-ui,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:880px; margin:0 auto; padding:2.5rem 1.4rem 5rem; }
+  h1 { font-size:1.7rem; margin:0 0 .2rem; }
+  .sub { color:var(--mut); margin-bottom:1.6rem; }
+  h2 { font-size:1.15rem; margin:2.2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; margin:1rem 0; }
+  .kpi { display:flex; flex-wrap:wrap; gap:1rem; }
+  .kpi div { flex:1 1 180px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem 1rem; }
+  .kpi b { display:block; font-size:1.3rem; color:var(--acc); }
+  .kpi span { font-size:.8rem; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  th { background:#f2f5fa; }
+  code { background:#eef2f8; padding:.08rem .35rem; border-radius:4px; font-size:.88em; }
+  .cmd { font-family:ui-monospace,monospace; font-size:.85rem; background:#0f172a; color:#dbeafe; padding:.4rem .7rem; border-radius:6px; display:inline-block; }
+  .verdict { border-left:4px solid var(--acc); padding:.4rem 1rem; background:#f2f5fc; }
+  .sink { color:var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <h1>E2 — Attention anatomy</h1>
+  <div class="sub">llm-engine/explore/attention · e2_attention.py · trained model <code>diagfix</code> (128d/4h/2L) vs a fresh init of the same shape, on a real 256-token window</div>
+
+  <h2>What was done</h2>
+  <div class="card">
+    <p>Ran the frozen <code>diagfix</code> model and a randomly-initialised twin
+    through one packed corpus window, and dumped the <em>explicit</em> attention
+    weights. For every (layer, head) we measured what the LLM engine's diagnostics
+    would not: entropy (normalised [0,1]), probability placed on position&nbsp;0
+    (a mixed "read global state" mass), recency mass (probability on the last 2
+    keys), peak mass (mass on the single strongest key) and the weighted mean</p>
+    <p class="cmd">llm-engine/.venv/bin/python llm-engine/explore/attention/e2_attention.py &gt; llm-engine/explore/attention/e2_attention.json</p>
+    <p>Runs in ~3–4 s CPU.</p>
+  </div>
+
+  <h2>Results</h2>
+  <div class="card">
+    <div class="kpi">
+      <div><b>~0.90</b><span>entropy, layer 0 heads (both init &amp; trained)</span></div>
+      <div><b>0.94–0.96</b><span>entropy, trained layer 1 (vs 0.89–0.92 init)</span></div>
+      <div><b>0.056–0.059</b><span>peak mass, trained layer 1</span></div>
+      <div><b>~0.09–0.10</b><span>peak mass at init</span></div>
+      <div><b>2–5e-5</b><span>recent mass — no real recency head at all</span></div>
+      <div><b>1–3%</b><span>sink mass on position 0</span></div>
+    </div>
+    <table>
+      <tr><th>layer</th><th>state</th><th>entropy</th><th>sink</th><th>peak</th><th>recent("s_2")</th></tr>
+      <tr><td>0</td><td>init</td><td>0.885–0.909</td><td>0.020–0.027</td><td>0.091–0.106</td><td>1.6–5.0e-5</td></tr>
+      <tr><td>0</td><td>trained</td><td>0.894–0.903</td><td>0.023–0.028</td><td>0.094–0.102</td><td>2.3e-5–1.2e-4</td></tr>
+      <tr><td>1</td><td>init</td><td>0.893–0.921</td><td>0.014–0.026</td><td>0.078–0.096</td><td>0.5–1.0e-4</td></tr>
+      <tr><td>1</td><td>trained</td><td>0.938–0.957</td><td>0.011–0.024</td><td>0.056–0.059</td><td>0.4–1.0e-4</td></tr>
+    </table>
+    <p class="sink"><b>Two findings.</b> (1) Training <em>widens</em> layer-1
+    attention — entropy up to 0.94–0.96, peak mass down to ~0.06 (from ~0.09 at
+    init): heads learn a diffuse "everything is relevant" distribution, they do
+    <em>not</em> learn a sharp one-token copy head at this scale. (2) There is
+    effectively <b>no recency head</b> in either state — softmax-normalised
+    attention gives the last-visible token negligible mass, a real risk for any
+    windowing/next-token task where the immediately recent context should matter.</p>
+  </div>
+
+  <h2>Interesting / worrying</h2>
+  <div class="card">
+    <ul>
+      <li>Layer 0 is already diffuse at init: a "no piece of the window is safe"
+        default. Training keeps the same shape (entropy ~0.90) and only reduces the
+        peak mass slightly — so most layer-0 heads never really specialize.</li>
+      <li>The trained layer-1 head that stands out is one with <em>distance</em>
+        ~47 (mean attention distance) versus its peers ~56–70 — a slight "localish"
+        preference, still far from a clean local/global split.</li>
+      <li>No "util color" per head at this scale; the LLM engine's softmax attention
+        isn't built to learn a head-specialisation prior.</li>
+    </ul>
+  </div>
+
+  <h2>Why it would be a good addition</h2>
+  <div class="card">
+    <ul>
+      <li><b>Learned per-head softmax temperature.</b> One scalar/head applied in the
+        score before softmax; init slightly &gt;1. This is the cheapest lever to make
+        attention either sharper (for location copy) or flatter (for summarising),
+        and the LLM engine's <code>attention</code> path is self-contained so a
+        <code>logit_scale[head]</code> vector fits in ~6 lines.</li>
+      <li><b>A rescaled / "recall head" budget.</b> Give some heads a distinct
+        scale (see the residual-idea note at the bottom of the training report) —
+        otherwise a small model like this will never grow a true long-range
+        copy head.</li>
+    </ul>
+    <p class="verdict">Verdict: cheapest, immediately-provable experiment in this
+    reportcard. After one training run the diagnostics page would show the layer‑1
+    heads divide into a sharp cluster and a diffuse cluster — a cheap "does the
+    model want a copy head?" test to keep in CI.</p>
+  </div>
+
+  <h2>How it changes the workflow</h2>
+  <div class="card">
+    <ul>
+      <li><b>Diagnostics</b> get one more column: per-head entropy + peak under a
+        supervised temperature, so the team can spot the "all-diffuse" failure
+        at which point system temperatures are the answer.</li>
+      <li><b>Init-only</b> head temperature from a warm/u-cool value could
+        shorten the early local-context exploration that today takes the whole
+        (short) training.</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>

@@ -14,7 +14,7 @@ set -euo pipefail
 
 NAME=slate-searxng
 IMAGE=docker.io/searxng/searxng:latest
-# 8888 because this project already holds 8080 (the backend), 8001 (the engine)
+# 8888 because this project already holds 8080 (the backend), 8001 (the LLM engine)
 # and 3000 (the UI) — see the port map in the root README.
 PORT="${SEARXNG_PORT:-8888}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -5,7 +5,7 @@
 //! — so a field the service adds needs no change here, and a status it returns
 //! reaches the client as itself rather than flattened into a generic failure.
 //!
-//! Nothing here names the engine. A second service is a second `Proxy` with its
+//! Nothing here names the LLM engine. A second service is a second `Proxy` with its
 //! own audience and its own routers above it; this is the whole seam.
 
 use futures_util::{Stream, StreamExt};
@@ -398,40 +398,41 @@ mod tests {
 
     #[test]
     fn a_token_is_addressed_to_the_service_it_was_built_for() {
-        let proxy = Proxy::new("http://x", "engine", Some("s".into()));
+        let proxy = Proxy::new("http://x", "llm-engine", Some("s".into()));
         let header = proxy.authorization(&auth::Caller::System).expect("signed");
         let token = header.strip_prefix("Bearer ").expect("bearer scheme");
 
-        assert!(auth::token::verify_service_token(token, "engine", "s").is_ok());
+        assert!(auth::token::verify_service_token(token, "llm-engine", "s").is_ok());
         assert!(auth::token::verify_service_token(token, "other", "s").is_err());
     }
 
     #[test]
     fn without_a_secret_the_claim_survives_and_the_signature_does_not() {
         let who = uuid::Uuid::new_v4();
-        let proxy = Proxy::new("http://x", "engine", None);
+        let proxy = Proxy::new("http://x", "llm-engine", None);
         let header = proxy
             .authorization(&auth::Caller::User(who))
             .expect("still sent");
         let token = header.strip_prefix("Bearer ").unwrap();
 
         // An enforcing service refuses it, which is the intended failure.
-        assert!(auth::token::verify_service_token(token, "engine", "real").is_err());
+        assert!(auth::token::verify_service_token(token, "llm-engine", "real").is_err());
         // An open one still learns who the call is for.
-        let caller = auth::token::verify_service_token(token, "engine", UNSIGNED).expect("read");
+        let caller =
+            auth::token::verify_service_token(token, "llm-engine", UNSIGNED).expect("read");
         assert!(matches!(caller, auth::Caller::User(id) if id == who));
     }
 
     #[test]
     fn the_token_names_the_person_the_call_is_for() {
         let who = uuid::Uuid::new_v4();
-        let proxy = Proxy::new("http://x", "engine", Some("s".into()));
+        let proxy = Proxy::new("http://x", "llm-engine", Some("s".into()));
         let header = proxy
             .authorization(&auth::Caller::User(who))
             .expect("signed");
         let token = header.strip_prefix("Bearer ").unwrap();
 
-        let caller = auth::token::verify_service_token(token, "engine", "s").expect("valid");
+        let caller = auth::token::verify_service_token(token, "llm-engine", "s").expect("valid");
         assert!(matches!(caller, auth::Caller::User(id) if id == who));
     }
 }

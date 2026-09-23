@@ -5,7 +5,7 @@ stable and safe to cite in a commit or a review; numbering is not contiguous.
 
 Module-specific conventions — layering, stack, forbidden patterns — live in the
 module's own doc: [`backend/README.md`](backend/README.md),
-[`frontend/README.md`](frontend/README.md), [`engine/README.md`](engine/README.md).
+[`frontend/README.md`](frontend/README.md), [`llm-engine/README.md`](llm-engine/README.md).
 These rules layer on top of those.
 
 ## Index
@@ -34,7 +34,7 @@ These rules layer on top of those.
 | R21 | Names don't stutter; every path segment adds meaning |
 
 R1–R13 and R20–R21 are Rust; R14–R18 are TypeScript/React. R13 and R20–R21 are
-about naming and structure and apply to the Python engine too.
+about naming and structure and apply to the Python LLM engine too.
 
 ## Backend (Rust) — R1–R13, R20–R21
 

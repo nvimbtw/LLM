@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E5 · Tokenizer anatomy — LLM explore report</title>
+<style>
+  :root { --ink:#1c2430; --mut:#5a6b85; --line:#e3e9f2; --bg:#fbfcfe; --acc:#3955c4; --ok:#1a7f37; --warn:#b56a00; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.6 system-ui,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:880px; margin:0 auto; padding:2.5rem 1.4rem 5rem; }
+  h1 { font-size:1.7rem; margin:0 0 .2rem; }
+  .sub { color:var(--mut); margin-bottom:1.6rem; }
+  h2 { font-size:1.15rem; margin:2.2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; margin:1rem 0; }
+  .kpi { display:flex; flex-wrap:wrap; gap:1rem; }
+  .kpi div { flex:1 1 200px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem 1rem; }
+  .kpi b { display:block; font-size:1.3rem; color:var(--acc); }
+  .kpi span { font-size:.8rem; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  th { background:#f2f5fa; }
+  code { background:#eef2f8; padding:.08rem .35rem; border-radius:4px; font-size:.88em; }
+  .cmd { font-family:ui-monospace,monospace; font-size:.85rem; background:#0f172a; color:#dbeafe; padding:.4rem .7rem; border-radius:6px; display:inline-block; }
+  .verdict { border-left:4px solid var(--acc); padding:.4rem 1rem; background:#f2f5fc; }
+</style>
+</head>
+<body>
+<main>
+  <h1>E5 — Tokenizer anatomy</h1>
+  <div class="sub">llm-engine/explore/tokenizer · e5_tokenizer.py · the shared 8k vocab over the 110k-token corpus</div>
+
+  <h2>What was done</h2>
+  <div class="card">
+    <p>Measured how the LLM engine's BPE actually spends its 8192 vocab budget on
+    this corpus:</p>
+    <ul>
+      <li>reserved special/marker block vs live tokens;</li>
+      <li>token-frequency entropy, top tokens;</li>
+      <li>live-token coverage — how many vocab IDs ever appear;</li>
+      <li>the per-word and per-character token cost for probe words (the/australia/..).</li>
+    </ul>
+    <p class="cmd">llm-engine/.venv/bin/python llm-engine/explore/tokenizer/e5_tokenizer.py &gt; llm-engine/explore/tokenizer/e5_tokenizer.json</p>
+    <p>~2 s CPU.</p>
+  </div>
+
+  <h2>Results</h2>
+  <div class="card">
+    <div class="kpi">
+      <div><b>7352/8192</b><span>alive tokens = 89.8% of vocab</span></div>
+      <div><b>~10 bits</b><span>effective token entropy over the corpus</span></div>
+      <div><b>2.62</b><span>mean BPE pieces per word</span></div>
+      <div><b>0.237</b><span>tokens per character</span></div>
+      <div><b>4</b><span>pieces for "australia" — vs 1 if entity-aware</span></div>
+      <div><b>41</b><span>markers reserved (of 64 special block)</span></div>
+    </div>
+    <table>
+      <tr><th>probe</th><th>BPE pieces</th></tr>
+      <tr><td>the</td><td>1</td></tr>
+      <tr><td>continent</td><td>2</td></tr>
+      <tr><td>countries</td><td>2</td></tr>
+      <tr><td>united</td><td>2</td></tr>
+      <tr><td>australia</td><td>4</td></tr>
+      <tr><td>afghanistan</td><td>2</td></tr>
+      <tr><td>international</td><td>3</td></tr>
+      <tr><td>responsibility</td><td>5 (long-tail noun)</td></tr>
+    </table>
+  </div>
+
+  <h2>Interesting / worrying</h2>
+  <div class="card">
+    <ul>
+<li>89.8% of vocab is alive — for a 110k-corpus that's high utilisation (a
+        coverage-vs-spread trade). ~10% of IDs never fire, so the budget is
+        slightly over-allocated for this corpus size.</li>
+      <li>Long content nouns (australia, responsibility) pay a 2–12 piece price:
+        the model must spend attention/params re-weighing morpheme bundles to get
+        a single semantic token.</li>
+      <li>with 64 tokens reserved for specials but only 41 markers used, 23 ids
+        are still free to be repurposed for content if ever needed.</li>
+      <li>The 2.62 pieces/word at ~0.24 tokens/char means the tokenizer is already
+        close to byte-level efficiency — so a smarter budget isn't a big win
+        generally; it is concentrated almost entirely on <b>entity names</b>.</li>
+    </ul>
+  </div>
+
+  <h2>Why it would be a good addition</h2>
+  <div class="card">
+    <ul>
+      <li><b>Entity prelexing</b> (ties straight into E4): run the capitalised
+        phrase detector once at train-time, reserve the ~96 best slots (the top
+        recurring entities) as single tokens, and byte-fallback the rest. The
+        result is a top(australia)-cheap rate and better gradient locality on
+        real named-entity tasks.</li>
+      <li><b>Marker reuse.</b> The 23 unused special slots become metadata slots
+        (doc-title, section markers) — a zero-cost way to signal structure through
+        the tokenizer instead of training it to infer structure.</li>
+    </ul>
+    <p class="verdict">Verdict: tokenizer "entity budget" is the sibling of the KG
+    branch. Both are dataset/tokenizer-only changes: no model code touched; all
+    gains measurable via e5/e4 as before/after.</p>
+  </div>
+
+  <h2>How it changes the workflow</h2>
+  <div class="card">
+    <ul>
+      <li><b>Train-time</b>: tokenizer build runs entity-merging deterministically
+        (a config flag), so downstream vocab files are reproducible.</li>
+      <li><b>Eval</b>: token-cost metrics (current sheet) become an acceptance
+        gate: "never regress a corpus token count / entity entropy".</li>
+      <li>Pack-SFT/chat formats keep using special markers; content budget is
+          simply spent better.</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>

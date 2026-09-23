@@ -9,9 +9,9 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
-use actix_web::{App, http::StatusCode, test, web};
-use auth::AccessLevel;
+use actix_web::{http::StatusCode, test, web, App};
 use auth::token;
+use auth::AccessLevel;
 use uuid::Uuid;
 
 const JWT_SECRET: &str = "two-services-test-jwt-secret";
@@ -59,9 +59,15 @@ fn echoing() -> String {
             let request = String::from_utf8_lossy(&buffer[..read]).to_string();
             let sent = request
                 .lines()
-                .find_map(|line| line.to_ascii_lowercase().starts_with("authorization:").then(
-                    || line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default(),
-                ))
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("authorization:")
+                        .then(|| {
+                            line.split_once(':')
+                                .map(|(_, v)| v.trim().to_string())
+                                .unwrap_or_default()
+                        })
+                })
                 .unwrap_or_default();
 
             let body = format!("{{\"authorization\":\"{sent}\"}}");
@@ -85,7 +91,7 @@ macro_rules! two_service_app {
         test::init_service(
             App::new()
                 .app_data(web::Data::new(JWT_SECRET.to_string()))
-                .app_data(web::Data::new(engine::Proxy::new($engine_url, None)))
+                .app_data(web::Data::new(llm_engine::Proxy::new($engine_url, None)))
                 .app_data(web::Data::new(data_engine::Proxy::new($data_url, None)))
                 .app_data(web::Data::new($inbound))
                 .app_data(web::Data::new(tools::Registry::new(vec![])))
@@ -96,7 +102,7 @@ macro_rules! two_service_app {
 }
 
 async fn answered_by(path: &str) -> String {
-    let app = two_service_app!(stub("engine"), stub("data-engine"));
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"));
     let request = test::TestRequest::get()
         .uri(path)
         .insert_header(("Authorization", session(AccessLevel::Admin)))
@@ -113,22 +119,22 @@ async fn a_data_route_reaches_the_data_engine() {
 
 #[actix_web::test]
 async fn an_engine_route_still_reaches_the_engine() {
-    assert_eq!(answered_by("/models").await, "engine");
+    assert_eq!(answered_by("/models").await, "llm-engine");
 }
 
 #[actix_web::test]
 async fn each_service_is_addressed_by_its_own_name() {
-    // A copy-paste that left both crates naming "engine" would compile, route
+    // A copy-paste that left both crates naming "llm-engine" would compile, route
     // correctly, and mint tokens the data engine refuses — a 401 with nothing
     // obviously wrong anywhere.
-    assert_ne!(engine::AUDIENCE, data_engine::AUDIENCE);
-    assert_eq!(engine::AUDIENCE, "engine");
+    assert_ne!(llm_engine::AUDIENCE, data_engine::AUDIENCE);
+    assert_eq!(llm_engine::AUDIENCE, "llm-engine");
     assert_eq!(data_engine::AUDIENCE, "data-engine");
 }
 
 #[actix_web::test]
 async fn a_pull_is_refused_to_a_non_admin() {
-    let app = two_service_app!(stub("engine"), stub("data-engine"));
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"));
     let request = test::TestRequest::post()
         .uri("/data/datasets/pull")
         .insert_header(("Authorization", session(AccessLevel::User)))
@@ -142,10 +148,10 @@ async fn a_pull_is_refused_to_a_non_admin() {
 
 // ── the reverse hop ─────────────────────────────────────────────────────────
 //
-// The engine asking the backend for documents the data engine owns. Same
+// The LLM engine asking the backend for documents the data engine owns. Same
 // app_data hazard as above, one direction further round: these routes take a
 // service token where every other route takes a session, and they must reach the
-// data engine while carrying the person the engine named.
+// data engine while carrying the person the LLM engine named.
 
 const INBOUND_SECRET: &str = "two-services-inbound-secret";
 
@@ -160,10 +166,13 @@ fn enforcing() -> service::InboundSecret {
 
 #[actix_web::test]
 async fn an_internal_route_reaches_the_data_engine() {
-    let app = two_service_app!(stub("engine"), stub("data-engine"), enforcing());
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"), enforcing());
     let request = test::TestRequest::get()
         .uri("/internal/datasets/abc/documents?offset=0&limit=2")
-        .insert_header(("Authorization", service_call("engine", &auth::Caller::System)))
+        .insert_header((
+            "Authorization",
+            service_call("llm-engine", &auth::Caller::System),
+        ))
         .to_request();
 
     let body: serde_json::Value = test::call_and_read_body_json(&app, request).await;
@@ -173,14 +182,17 @@ async fn an_internal_route_reaches_the_data_engine() {
 
 #[actix_web::test]
 async fn the_person_the_engine_acts_for_survives_the_hop() {
-    // The whole reason the engine may ask at all: a run reads what whoever
+    // The whole reason the LLM engine may ask at all: a run reads what whoever
     // queued it could have read. Losing `act` here would silently widen that to
     // whatever the data engine does with an unscoped caller.
     let owner = Uuid::new_v4();
-    let app = two_service_app!(stub("engine"), echoing(), enforcing());
+    let app = two_service_app!(stub("llm-engine"), echoing(), enforcing());
     let request = test::TestRequest::get()
         .uri("/internal/datasets/abc")
-        .insert_header(("Authorization", service_call("engine", &auth::Caller::User(owner))))
+        .insert_header((
+            "Authorization",
+            service_call("llm-engine", &auth::Caller::User(owner)),
+        ))
         .to_request();
 
     let body: serde_json::Value = test::call_and_read_body_json(&app, request).await;
@@ -199,7 +211,7 @@ async fn the_person_the_engine_acts_for_survives_the_hop() {
 async fn a_browser_session_does_not_open_an_internal_route() {
     // The two schemes must not be interchangeable: a session is encrypted and
     // addressed to `web`, and nothing about it should satisfy a service guard.
-    let app = two_service_app!(stub("engine"), stub("data-engine"), enforcing());
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"), enforcing());
     let request = test::TestRequest::get()
         .uri("/internal/datasets/abc")
         .insert_header(("Authorization", session(AccessLevel::Admin)))
@@ -212,7 +224,7 @@ async fn a_browser_session_does_not_open_an_internal_route() {
 
 #[actix_web::test]
 async fn a_service_that_may_not_ask_is_turned_away() {
-    let app = two_service_app!(stub("engine"), stub("data-engine"), enforcing());
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"), enforcing());
     let request = test::TestRequest::get()
         .uri("/internal/datasets/abc")
         .insert_header((
@@ -228,8 +240,10 @@ async fn a_service_that_may_not_ask_is_turned_away() {
 
 #[actix_web::test]
 async fn an_internal_route_needs_a_token_when_a_secret_is_set() {
-    let app = two_service_app!(stub("engine"), stub("data-engine"), enforcing());
-    let request = test::TestRequest::get().uri("/internal/datasets/abc").to_request();
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"), enforcing());
+    let request = test::TestRequest::get()
+        .uri("/internal/datasets/abc")
+        .to_request();
 
     let response = test::call_service(&app, request).await;
 
@@ -238,7 +252,7 @@ async fn an_internal_route_needs_a_token_when_a_secret_is_set() {
 
 #[actix_web::test]
 async fn browsing_datasets_is_open_to_any_signed_in_user() {
-    let app = two_service_app!(stub("engine"), stub("data-engine"));
+    let app = two_service_app!(stub("llm-engine"), stub("data-engine"));
     let request = test::TestRequest::get()
         .uri("/data/datasets")
         .insert_header(("Authorization", session(AccessLevel::User)))

@@ -25,7 +25,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/user").configure(user::configure));
     cfg.service(web::scope("/presets").configure(preset::configure));
 
-    // Owned by the engine, reached through it.
+    // Owned by the LLM engine, reached through it.
     cfg.service(web::scope("/chats").configure(chats::configure));
     cfg.service(web::scope("/attachments").configure(attachments::configure));
     cfg.service(web::scope("/messages").configure(chats::configure_messages));
@@ -40,7 +40,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // Owned by the data engine: what a corpus was before it was training data.
     cfg.service(web::scope("/data").configure(data::configure));
 
-    // Not for a browser: the engine reading the data engine's documents, the one
+    // Not for a browser: the LLM engine reading the data engine's documents, the one
     // hop that runs toward the backend rather than away from it.
     cfg.service(web::scope("/internal").configure(internal::configure));
 

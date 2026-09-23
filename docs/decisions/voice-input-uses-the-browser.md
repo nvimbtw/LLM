@@ -29,7 +29,7 @@ requirement above: it transcribes in chunks, so the text arrives in blocks after
 the fact, and the first word costs a 40–150 MB model download. A dictation
 feature that opens with a progress bar is not the feature that was asked for.
 
-**Our own engine** was never a candidate. It is a text model; there is no audio
+**Our own LLM engine** was never a candidate. It is a text model; there is no audio
 path into it and building one is a different project.
 
 ## The privacy cost, and what is done about it

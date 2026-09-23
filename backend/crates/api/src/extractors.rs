@@ -1,19 +1,18 @@
 //! Request guards. Naming one as a handler argument runs it before the body,
 //! so an unauthenticated request never reaches the handler at all.
 
-use std::future::{Ready, ready};
+use std::future::{ready, Ready};
 
 use actix_web::{
-    FromRequest, HttpRequest,
     dev::Payload,
     error::{ErrorForbidden, ErrorInternalServerError, ErrorUnauthorized},
     http::header::AUTHORIZATION,
-    web,
+    web, FromRequest, HttpRequest,
 };
 
-use auth::AccessLevel;
 use auth::token::{self as jwt, Claims};
 use auth::token_cipher;
+use auth::AccessLevel;
 use service::InboundSecret;
 
 fn authenticate(req: &HttpRequest) -> Result<Claims, actix_web::Error> {
@@ -43,10 +42,10 @@ fn authenticate(req: &HttpRequest) -> Result<Claims, actix_web::Error> {
     })
 }
 
-/// A **service** asking, rather than a person: the engine fetching the documents
+/// A **service** asking, rather than a person: the LLM engine fetching the documents
 /// a queued run has reached the point of needing.
 ///
-/// Only the engine may ask — naming the acceptable issuer here is what keeps the
+/// Only the LLM engine may ask — naming the acceptable issuer here is what keeps the
 /// data engine, which has no business reading through the backend, from doing
 /// it. The caller it carries is the person the run was queued for, and every
 /// route below re-mints toward the other service with exactly that, so a run
@@ -67,11 +66,14 @@ impl FromRequest for ServiceCaller {
             eprintln!("inbound service secret missing from app_data");
             return ready(Err(ErrorInternalServerError("auth misconfigured")));
         };
-        let header = req.headers().get(AUTHORIZATION).and_then(|h| h.to_str().ok());
+        let header = req
+            .headers()
+            .get(AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
 
         ready(
             secret
-                .caller(header, &[engine::AUDIENCE])
+                .caller(header, &[llm_engine::AUDIENCE])
                 .map(|caller| ServiceCaller { caller })
                 .map_err(|refusal| {
                     eprintln!("inbound service call refused: {refusal}");

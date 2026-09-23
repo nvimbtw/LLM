@@ -10,16 +10,16 @@
 //! `docs/decisions/gyms-are-driven-by-the-backend.md`.
 //!
 //! What is different from `turn.rs`, and why this is not that function with a
-//! flag: a chat turn is stored by the engine and comes back as history, so each
+//! flag: a chat turn is stored by the LLM engine and comes back as history, so each
 //! round sends one `tool_result` and nothing else. An episode has no chat — the
-//! conversation is held here, in `turns`, and handed whole to the engine's
+//! conversation is held here, in `turns`, and handed whole to the LLM engine's
 //! stateless `/chat/stream` every round. The two loops share their frame
 //! vocabulary (`turn::envelope`) and their tool rendering, which is the part
 //! that must not drift; the rest is genuinely two different jobs.
 
-use engine::Frame;
 use futures_util::StreamExt;
-use serde_json::{Value, json};
+use llm_engine::Frame;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{turn, ws};
@@ -49,8 +49,8 @@ fn max_rounds() -> usize {
 /// happens.
 pub async fn run(
     session: &mut actix_ws::Session,
-    engine: &engine::Proxy,
-    gyms: &gyms::Proxy,
+    engine: &llm_engine::Proxy,
+    gyms: &gyms_engine::Proxy,
     caller: &auth::Caller,
     run_id: Uuid,
     ask: &Value,
@@ -125,8 +125,8 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)]
 async fn episode_loop(
     session: &mut actix_ws::Session,
-    engine: &engine::Proxy,
-    gyms: &gyms::Proxy,
+    engine: &llm_engine::Proxy,
+    gyms: &gyms_engine::Proxy,
     caller: &auth::Caller,
     episode: &Value,
     model: &str,
@@ -163,7 +163,10 @@ async fn episode_loop(
         // kept so a build whose engine predates `max_tool_calls` still ends.
         if reply.calls.is_empty() || last_round {
             let graded = finish(gyms, caller, &episode_id, &reply.text).await;
-            session.text(turn::envelope("episode_done", &graded).to_string()).await.ok()?;
+            session
+                .text(turn::envelope("episode_done", &graded).to_string())
+                .await
+                .ok()?;
             return Some(());
         }
 
@@ -179,13 +182,13 @@ async fn episode_loop(
 ///
 /// In order because the calls share one filesystem: a round that writes a file
 /// and then reads it is a round whose second command depends on the first. Only
-/// the first answer continues the episode, which is the rule the engine sets for
+/// the first answer continues the episode, which is the rule the LLM engine sets for
 /// a chat turn and is kept here so an episode's conversation has the shape
 /// serving produces. The rest are still executed, recorded and reported — a
 /// command the model ran is a step whether or not it read the output.
 async fn step_through(
     session: &mut actix_ws::Session,
-    gyms: &gyms::Proxy,
+    gyms: &gyms_engine::Proxy,
     caller: &auth::Caller,
     episode_id: &str,
     reply: &Reply,
@@ -195,14 +198,26 @@ async fn step_through(
     for call in &reply.calls {
         let argument = turn::string_at(call, "argument");
         let tool = turn::string_at(call, "tool");
-        let body = execute(gyms, caller, episode_id, &tool, &argument, &reply.text, budget).await;
+        let body = execute(
+            gyms,
+            caller,
+            episode_id,
+            &tool,
+            &argument,
+            &reply.text,
+            budget,
+        )
+        .await;
         let result = json!({
             "tool": tool,
             "argument": argument,
             "body": body,
             "episode_id": episode_id,
         });
-        session.text(turn::envelope("tool_result", &result).to_string()).await.ok()?;
+        session
+            .text(turn::envelope("tool_result", &result).to_string())
+            .await
+            .ok()?;
         answer.get_or_insert(json!({
             "role": "tool",
             "tool": result["tool"].clone(),
@@ -217,25 +232,25 @@ async fn step_through(
 /// model reads back rendered under `observation`.
 ///
 /// **Shared by both drivers**, and the rendering is the whole reason it is
-/// shared: the browser's socket loop below and the RL rollout in the engine
+/// shared: the browser's socket loop below and the RL rollout in the LLM engine
 /// reach this through `routes::internal`, and `tools::observation` is the same
 /// function the live chat `bash` tool renders with. A gym whose observations
 /// are a near-copy of the real ones trains a model for a shell it is never
 /// served — see `docs/decisions/gyms-are-driven-by-the-backend.md`.
 ///
-/// The gyms service owns the episode's filesystem, its step record and its
+/// The gyms engine owns the episode's filesystem, its step record and its
 /// reward, so this cannot go through `Tool::run`: that reaches the *live*
 /// sandbox. What is shared with serving is the layout, and `render` below is
 /// where a second gym names its own.
 pub async fn play(
-    gyms: &gyms::Proxy,
+    gyms: &gyms_engine::Proxy,
     caller: &auth::Caller,
     episode_id: &str,
     tool: &str,
     argument: &str,
     reply: &str,
     budget: usize,
-) -> Result<Value, gyms::GymsError> {
+) -> Result<Value, gyms_engine::GymsEngineError> {
     if tool != BASH {
         // A call to something this gym does not have is not a failed episode:
         // the reply that made it is already generated, and the model reading
@@ -246,7 +261,13 @@ pub async fn play(
     }
 
     let path = format!("/gym/episodes/{episode_id}/step");
-    let mut ran = gyms.post(caller, &path, json!({ "command": argument, "reply": reply })).await?;
+    let mut ran = gyms
+        .post(
+            caller,
+            &path,
+            json!({ "command": argument, "reply": reply }),
+        )
+        .await?;
     let observation = tools::observation(
         tools::Output {
             stdout: turn::string_at(&ran, "stdout"),
@@ -262,10 +283,10 @@ pub async fn play(
 
 /// One command, run in the episode's workspace and rendered for the model.
 ///
-/// A shell the gyms service could not reach comes back as a caveat rather than
+/// A shell the gyms engine could not reach comes back as a caveat rather than
 /// as a failed episode, for the same reason `render_empty` does.
 async fn execute(
-    gyms: &gyms::Proxy,
+    gyms: &gyms_engine::Proxy,
     caller: &auth::Caller,
     episode_id: &str,
     tool: &str,
@@ -287,12 +308,12 @@ struct Reply {
 
 /// Forward a round's frames, tagged with the episode they belong to.
 ///
-/// None when the browser hung up. The engine's own `done` is relayed as
+/// None when the browser hung up. The LLM engine's own `done` is relayed as
 /// `round_done`: a gym client counts episodes, and a `done` per round would
 /// look like an episode ending every time the model ran a command.
 async fn relay(
     session: &mut actix_ws::Session,
-    frames: impl futures_util::Stream<Item = engine::Result<Frame>>,
+    frames: impl futures_util::Stream<Item = llm_engine::Result<Frame>>,
     tag: &Value,
 ) -> Option<Reply> {
     futures_util::pin_mut!(frames);
@@ -308,7 +329,11 @@ async fn relay(
                 if frame.kind == "done" {
                     text = turn::string_at(&frame.data, "text");
                 }
-                let kind = if frame.kind == "done" { "round_done" } else { &frame.kind };
+                let kind = if frame.kind == "done" {
+                    "round_done"
+                } else {
+                    &frame.kind
+                };
                 let mut payload = turn::envelope(kind, &frame.data);
                 merge(&mut payload, tag);
                 payload.to_string()
@@ -326,7 +351,7 @@ async fn relay(
 /// nothing — which is the property that makes it the right route for this: an
 /// episode is not a conversation anybody should be able to find in their chat
 /// list afterwards.
-/// `tool_calls` is the ceiling for this round: None leaves the engine's own
+/// `tool_calls` is the ceiling for this round: None leaves the LLM engine's own
 /// per-turn budget alone, `Some(0)` masks the tool-call marker out of the
 /// grammar so the round can only answer in prose. See `terminal`.
 fn generate(
@@ -355,7 +380,13 @@ fn generate(
     // a model trained under 256 cannot hold a task at all, and stretching the
     // window is the only way to run one against it.
     for key in [
-        "temperature", "top_k", "top_p", "max_tokens", "budget", "seed", "context_multiplier",
+        "temperature",
+        "top_k",
+        "top_p",
+        "max_tokens",
+        "budget",
+        "seed",
+        "context_multiplier",
     ] {
         if let Some(value) = ask.get(key) {
             body[key] = value.clone();
@@ -364,7 +395,12 @@ fn generate(
     body
 }
 
-async fn finish(gyms: &gyms::Proxy, caller: &auth::Caller, episode_id: &str, reply: &str) -> Value {
+async fn finish(
+    gyms: &gyms_engine::Proxy,
+    caller: &auth::Caller,
+    episode_id: &str,
+    reply: &str,
+) -> Value {
     let path = format!("/gym/episodes/{episode_id}/finish");
     match gyms.post(caller, &path, json!({ "reply": reply })).await {
         Ok(graded) => graded,
@@ -372,12 +408,14 @@ async fn finish(gyms: &gyms::Proxy, caller: &auth::Caller, episode_id: &str, rep
     }
 }
 
-async fn close(gyms: &gyms::Proxy, caller: &auth::Caller, episode: &Value) {
+async fn close(gyms: &gyms_engine::Proxy, caller: &auth::Caller, episode: &Value) {
     let id = turn::string_at(episode, "id");
-    let _ = gyms.post(caller, &format!("/gym/episodes/{id}/close"), Value::Null).await;
+    let _ = gyms
+        .post(caller, &format!("/gym/episodes/{id}/close"), Value::Null)
+        .await;
 }
 
-async fn set_status(gyms: &gyms::Proxy, caller: &auth::Caller, run_id: Uuid, status: &str) {
+async fn set_status(gyms: &gyms_engine::Proxy, caller: &auth::Caller, run_id: Uuid, status: &str) {
     let path = format!("/gym/runs/{run_id}/status");
     let _ = gyms.post(caller, &path, json!({ "status": status })).await;
 }
@@ -398,7 +436,10 @@ async fn start(session: &mut actix_ws::Session, episode: &Value) -> bool {
 }
 
 fn episode_status(episode: &Value) -> &str {
-    episode.get("status").and_then(Value::as_str).unwrap_or_default()
+    episode
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 fn merge(target: &mut Value, source: &Value) {

@@ -3,11 +3,11 @@
 **2026-08-19**
 
 The data engine stores documents as rows in its own database. It writes no tree
-under its module directory, and it does not write into the engine's.
+under its module directory, and it does not write into the LLM engine's.
 
 ## What forced it
 
-`engine/data/` holds packed corpora, model checkpoints and the raw text they
+`llm-engine/data/` holds packed corpora, model checkpoints and the raw text they
 came from. It is gitignored, but gitignored is not invisible: an editor opening
 the repository still indexes it, and the tree had grown large enough to make
 that a noticeable wait. A second module acquiring *more* corpora would have
@@ -16,7 +16,7 @@ was the version that made it worse.
 
 ## What was weighed
 
-**Files under `data-engine/data/`.** The engine's own arrangement, and the
+**Files under `data-engine/data/`.** The LLM engine's own arrangement, and the
 cheapest to write: the fetch scripts already produce sharded `.txt`. Rejected
 because it reproduces exactly the cost that prompted the module, and because
 the questions this service has to answer — "the first twenty documents",
@@ -25,17 +25,17 @@ are queries. Answering them over a directory means either reading shards into
 memory or building an index beside them, and an index beside a directory is a
 database with extra steps.
 
-**Publishing into `engine/data/input/<name>/`.** Tempting, because the engine
+**Publishing into `llm-engine/data/input/<name>/`.** Tempting, because the LLM engine
 catalogues datasets by scanning that directory and a cleaned corpus written
-there would appear in the train page's picker with no change to the engine at
+there would appear in the train page's picker with no change to the LLM engine at
 all. Rejected for the same reason as above, plus a worse one: it makes the data
-engine a writer to a tree another module owns, which is the ownership boundary
+LLM engine a writer to a tree another module owns, which is the ownership boundary
 this repository is most careful about. The bridge is
 `GET /datasets/{id}/export` instead — a seam, not a shared directory.
 
 **A Postgres schema inside `slate_engine`.** Rejected: this repository draws its
 module boundary at the database, not the schema, and cross-schema foreign keys
-to engine tables are the coupling that boundary exists to prevent. It would also
+to LLM-engine tables are the coupling that boundary exists to prevent. It would also
 have cost the test suite — SQLite has no schemas, so the fast in-memory path
 would have gone and every store test would need a live server.
 
@@ -64,8 +64,8 @@ statement rather than a directory walk that has to not go wrong.
 
 ## Since
 
-The engine stopped owning corpora entirely, which settled the open half of the
-"publishing into `engine/data/input/`" question above: there is no such tree any
+The LLM engine stopped owning corpora entirely, which settled the open half of the
+"publishing into `llm-engine/data/input/`" question above: there is no such tree any
 more, and nothing writes into another module's directory because there is no
 directory to write into.
 

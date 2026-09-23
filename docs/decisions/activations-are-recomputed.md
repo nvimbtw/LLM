@@ -29,7 +29,7 @@ That total scales with depth and with batch x context, and *not* with how good
 the model is. It is the whole reason a bigger model would not fit: the
 parameters are cheap and what surrounds them is not.
 
-The trade against it is standard and this engine simply had not taken it. Keep
+The trade against it is standard and this LLM engine simply had not taken it. Keep
 each block's *input* only, and when the backward pass needs the insides, run the
 block forward a second time to rebuild them.
 
@@ -112,7 +112,7 @@ descending order of what it buys:
 - **Gradient accumulation.** Fitting a larger model means a smaller resident
   batch, and batch size is an optimization hyperparameter — accumulating
   restores the effective batch that the learning rate and warmup were tuned
-  against. The engine has no accumulation today, so a bigger model is currently
+  against. The LLM engine has no accumulation today, so a bigger model is currently
   also a smaller-batch run, and that *is* a quality difference.
 - **Recomputing every other block** rather than all of them, which buys back
   roughly half the time for roughly half the memory. Worth having only once

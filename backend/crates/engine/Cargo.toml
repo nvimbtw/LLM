@@ -1,9 +1,0 @@
-[package]
-name = "engine"
-version = "0.1.0"
-edition = "2021"
-
-# Names the LLM engine and nothing else: its audience, where it lives, and the
-# data root it owns. Everything that talks to a Python service is in `service`.
-[dependencies]
-service = { path = "../service" }

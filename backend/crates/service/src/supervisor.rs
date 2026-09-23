@@ -21,12 +21,12 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Debug)]
 pub struct Supervisor {
     config: Config,
-    /// `None` when the engine is externally managed: no task, nothing to kill.
+    /// `None` when the LLM engine is externally managed: no task, nothing to kill.
     shutdown: Option<watch::Sender<bool>>,
 }
 
 impl Supervisor {
-    /// Start the engine and wait until it answers.
+    /// Start the LLM engine and wait until it answers.
     ///
     /// Returning only once it is *serving* is the point: a server that boots
     /// green and fails every request is the outcome worth avoiding. With
@@ -37,13 +37,24 @@ impl Supervisor {
         let secret = config.service_secret.clone();
 
         if !config.autostart {
-            wait_until_healthy(&base_url, &config.audience, config.startup_timeout, secret.as_deref(), None)
-                .await
-                .map_err(|e| {
-                    format!("{}_AUTOSTART is off and nothing answers at {base_url}: {e}",
-                        config.audience.to_uppercase().replace('-', "_"))
-                })?;
-            return Ok(Supervisor { config, shutdown: None });
+            wait_until_healthy(
+                &base_url,
+                &config.audience,
+                config.startup_timeout,
+                secret.as_deref(),
+                None,
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "{}_AUTOSTART is off and nothing answers at {base_url}: {e}",
+                    config.audience.to_uppercase().replace('-', "_")
+                )
+            })?;
+            return Ok(Supervisor {
+                config,
+                shutdown: None,
+            });
         }
 
         // Before anything spawns with a different working directory.
@@ -63,7 +74,10 @@ impl Supervisor {
         let (tx, rx) = watch::channel(false);
         tokio::spawn(supervise(config.clone(), child, rx));
 
-        Ok(Supervisor { config, shutdown: Some(tx) })
+        Ok(Supervisor {
+            config,
+            shutdown: Some(tx),
+        })
     }
 
     pub fn base_url(&self) -> String {
@@ -157,15 +171,25 @@ fn spawn(config: &Config) -> Result<Child, String> {
             &config.port.to_string(),
         ])
         .current_dir(&config.dir)
-        .envs(config.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .envs(config.service_secret.iter().map(|s| (config.secret_var.as_str(), s.as_str())))
-        // Inherited so the engine's logs land in the server's output rather than
+        .envs(
+            config
+                .extra_env
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+        .envs(
+            config
+                .service_secret
+                .iter()
+                .map(|s| (config.secret_var.as_str(), s.as_str())),
+        )
+        // Inherited so the LLM engine's logs land in the server's output rather than
         // filling a pipe buffer and blocking on it once nobody reads them.
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         // Covers a panicking supervisor task, which must not leave a process
         // holding the GPU. It does *not* cover the parent being SIGKILLed —
-        // that path orphans the engine and it has to be reaped by hand.
+        // that path orphans the LLM engine and it has to be reaped by hand.
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", config.python.display()))

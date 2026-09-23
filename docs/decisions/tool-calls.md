@@ -28,7 +28,7 @@ whatever it asked for while it does, then ask again with the answers in the
 conversation.**
 
 1. **A marker per tool.** `<|web-search|>query<|/web-search|>`, the marker stem
-   being the tool's name on the wire. Declared once in `engine/llm/chat/tools.py`;
+   being the tool's name on the wire. Declared once in `llm-engine/llm/chat/tools.py`;
    the grammar, the generation loop and the SFT renderer all read that table, so
    a new tool is two reserved slots and one row.
    *(Superseded. One `<|tool-call|>` marker for every tool, with the name inside
@@ -39,7 +39,7 @@ conversation.**
    called and the one that uses it — the position the system block occupies at
    the front of a conversation. Stored as a `tool` message, never a training
    target, and forbidden to the model by the grammar.
-3. **The engine detects, the backend executes.** The generation loop emits a
+3. **The LLM engine detects, the backend executes.** The generation loop emits a
    `tool_call` SSE frame the moment the closing marker is sampled; the Rust side
    owns the API key, the HTTP call, and the round loop.
 4. **Execution overlaps generation.** A tool is spawned on its call and joined at
@@ -75,9 +75,9 @@ conversation.**
   stack. Detection belongs where the ids are; execution belongs where the API
   key is.
 
-- **The engine executing the tool itself.** It is one process closer to the
+- **The LLM engine executing the tool itself.** It is one process closer to the
   work. Rejected because it inverts the arrow the whole system is built on —
-  requests flow frontend → backend → engine — and because it would put a
+  requests flow frontend → backend → LLM engine — and because it would put a
   third-party API key and outbound internet access inside the process holding
   the GPU.
 

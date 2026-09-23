@@ -1,10 +1,10 @@
 """The data engine's own database.
 
-Sync rather than async, and for the same reason the engine's is: a run's worker
+Sync rather than async, and for the same reason the LLM engine's is: a run's worker
 thread writes its own progress, and reaching an async session from a thread means
 bouncing every write through the event loop for no gain at one process.
 
-A separate database from the engine's, not a schema inside it. That is the
+A separate database from the LLM engine's, not a schema inside it. That is the
 module boundary this repo already draws — one database per module, no
 cross-module foreign keys — and it is what lets the tests run against in-memory
 SQLite instead of demanding a server.

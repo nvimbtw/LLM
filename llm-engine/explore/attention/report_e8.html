@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E8 · Per-head attention temperature — LLM explore report</title>
+<style>
+  :root { --ink:#1c2430; --mut:#5a6b85; --line:#e3e9f2; --bg:#fbfcfe; --acc:#3955c4; --ok:#1a7f37; --warn:#b56a00; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.6 system-ui,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:880px; margin:0 auto; padding:2.5rem 1.4rem 5rem; }
+  h1 { font-size:1.7rem; margin:0 0 .2rem; }
+  .sub { color:var(--mut); margin-bottom:1.6rem; }
+  h2 { font-size:1.15rem; margin:2.2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; margin:1rem 0; }
+  .kpi { display:flex; flex-wrap:wrap; gap:1rem; }
+  .kpi div { flex:1 1 200px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem 1rem; }
+  .kpi b { display:block; font-size:1.3rem; color:var(--acc); }
+  .kpi span { font-size:.8rem; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  th { background:#f2f5fa; }
+  code { background:#eef2f8; padding:.08rem .35rem; border-radius:4px; font-size:.88em; }
+  .cmd { font-family:ui-monospace,monospace; font-size:.85rem; background:#0f172a; color:#dbeafe; padding:.4rem .7rem; border-radius:6px; display:inline-block; }
+  .verdict { border-left:4px solid var(--acc); padding:.4rem 1rem; background:#f2f5fc; }
+  .warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>E8 — Per-head attention temperature, on a real model</h1>
+  <div class="sub">llm-engine/explore/attention · e8_attention_temperature.py · frozen <code>diagfix</code>, real 40-token window</div>
+
+  <h2>What was done</h2>
+  <div class="card">
+    <p>Would a <em>learnable softmax temperature per head</em> (idea from the E2
+    report) actually have a lever to pull? Using the identity</p>
+    <p class="cmd">softmax(τ·scores) == softmax(τ·log(w))  for recorded weights w</p>
+    <p>we re-weighted every recorded head on a real window over five temperatures
+    (0.25, 0.5, 1.0, 2.0, 4.0) and computed, per (layer, head): entropy and peak
+    mass at each τ, and the smallest τ at which a head turns "sharp" (peak
+    ≥ 0.30). No engine change; this is an inference-time simulation.</p>
+    <p class="cmd">llm-engine/.venv/bin/python llm-engine/explore/attention/e8_attention_temperature.py</p>
+  </div>
+
+  <h2>Results</h2>
+  <div class="card">
+    <div class="kpi">
+      <div><b>0 / 8</b><span>heads sharp at τ=1 (peak ≥ 0.30)</span></div>
+      <div><b>8 / 8</b><span>heads sharp at τ=4</span></div>
+      <div><b>5 / 8</b><span>heads reach peak ≥ 0.5 at τ=4</span></div>
+      <div><b>+0.333</b><span>mean peak-mass gain τ=1 → τ=4</span></div>
+      <div><b>0.102</b><span>mean entropy lift at τ=0.25 (flattening)</span></div>
+      <div><b>(0,25 → 4)</b><span>entropy 0.82 → 0.32 for layer-0 head 0</span></div>
+    </div>
+    <table>
+      <tr><th>τ</th><th>layer-0 heads entropy</th><th>layer-1 heads entropy</th><th>layer-0 peak</th><th>layer-1 peak</th></tr>
+      <tr><td>0.25</td><td>0.974</td><td>0.975</td><td>0.13</td><td>0.11</td></tr>
+      <tr><td>1.0</td><td>0.82</td><td>0.92–0.93</td><td>0.27</td><td>0.17–0.19</td></tr>
+      <tr><td>4.0</td><td>0.31–0.37</td><td>0.54–0.68</td><td>0.64–0.67</td><td>0.37–0.52</td></tr>
+    </table>
+    <p class="verdict"><b>Reading:</b> every single head has a temperature lever.
+    At the model's default τ=1 exactly zero heads are "sharp". But a modest τ=4
+    turns <em>all eight</em> heads sharp on the same weights — the "sharp heads
+    don't exist" conclusion of E2 is a consequence of <em>one shared τ was
+    constrained by training</em>, not of the model lacking the internal
+    representation. A learned per-head temperature has huge, immediate headroom.</p>
+  </div>
+
+  <h2>Interesting / worrying</h2>
+  <div class="card">
+    <ul>
+      <li>Layer-0 heads need τ=2 to cross sharp; layer-1 heads need τ=4. The two
+        layers have different "pre-trained scale", so a single global τ could
+        never serve both recruiting and summarising — strong argument for
+        per-head, or at least per-layer, temperatures.</li>
+      <li>At τ=0.25 all heads become near-uniform (entropy ~0.975 for all 8): the
+        model carries no head that is forced to read just one token; even the
+        "diffuse" mode can be reshaped by temperature.</li>
+      <li>This is a probe performed on the frozen model; it doesn't guarantee a
+        trained τ would land on these values, but it bounds the achievable range:
+        the sharp signal is present and reachable, which is exactly what E2's
+        one-τ view could not show.</li>
+    </ul>
+  </div>
+
+  <h2>Why it would be a good addition</h2>
+  <div class="card">
+    <ul>
+      <li><b>Per-head temperature parameter.</b> One float/head multiplied into
+        the logits before softmax (in the fused kernel path, pre-softmax ÷τ on
+        the raw scores). ~5 lines in the attention forward; default 1.0 keeps
+        behaviour identical until warmup.</li>
+      <li><b>A self-calibrating range.</b> Target range from this table — default τ=1.0,
+        allow 0.25…4 — so heads can specialize early, avoiding the
+        "diffuse-only" end-state from E2.</li>
+      <li><b>Diagnostics missing-piece.</b> The entropy-vs-τ curve is a great
+        recovery signal: a shrinking max-reachable-peak as training proceeds
+        tells you the head has no residual sharpness left.</li>
+    </ul>
+    <p class="verdict">Verdict: a 5-line engine change with a fibre-optic view —
+    this is the experiment to propose next on the GPU box.</p>
+  </div>
+
+  <h2>How it changes the workflow</h2>
+  <div class="card">
+    <ul>
+      <li>Head specialisation becomes something you can actually shape: a single
+          per-head "temperature" knob turns the E2 head-visualisation into a
+          source of actionable information.</li>
+      <li>Eval: report per-head τ alongside today's entropy column to separate
+          "heads that are dead" from "heads that are merely temperature-suppressed"
+          — the former get pruned, the latter get a temperature reset rather than
+          a rewrite.</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>
