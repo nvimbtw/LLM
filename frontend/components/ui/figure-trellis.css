@@ -1,0 +1,57 @@
+/* The thought trellis: fixed geometry, ink growing along lattice edges.
+   Depth staggers each twig behind its parent; the later tips linger while
+   the next thought begins. A pass takes 12s within a three-thought cycle. */
+@keyframes trellis-branch {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  2.222% {
+    stroke-dashoffset: 0;
+    opacity: var(--trellis-ink);
+  }
+  18% {
+    stroke-dashoffset: 0;
+    opacity: var(--trellis-ink);
+  }
+  30%,
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+@keyframes trellis-tip {
+  0%,
+  2.222% {
+    opacity: 0;
+  }
+  4%,
+  18% {
+    opacity: var(--trellis-ink);
+  }
+  30%,
+  100% {
+    opacity: 0;
+  }
+}
+.trellis-branch {
+  stroke-dasharray: 1;
+  animation: trellis-branch var(--trellis-cycle) ease-in-out infinite;
+  animation-delay: var(--trellis-delay);
+}
+.trellis-tip {
+  animation: trellis-tip var(--trellis-cycle) ease-in-out infinite;
+  animation-delay: var(--trellis-delay);
+}
+/* Decoration has no status to report: keep one complete engraving at rest. */
+@media (prefers-reduced-motion: reduce) {
+  .trellis-thought:not([data-still="true"]) {
+    display: none;
+  }
+  .trellis-branch,
+  .trellis-tip {
+    animation: none;
+    stroke-dashoffset: 0;
+    opacity: var(--trellis-ink);
+  }
+}

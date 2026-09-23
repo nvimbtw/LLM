@@ -8,6 +8,7 @@ import {
   Loader,
   MessageSquareCode,
   Type,
+  BookText
 } from "lucide-react"
 
 /**
@@ -83,6 +84,13 @@ const INTERFACE: Destination[] = [
     icon: MessageSquareCode,
     blurb:
       "Every renderable special token in one fixture conversation, through the real chat bubble.",
+  },
+  {
+    title: "Docs",
+    href: "/docs",
+    icon: BookText,
+    blurb:
+      "The project documentation for its services, boundaries, and conventions.",
   },
 ]
 

@@ -905,55 +905,6 @@
   }
 }
 
-/* ---- The new-chat figure, idling -----------------------------------------
-   `FigureHorizon` is a rule opened at the centre with four half-rings over the
-   aperture. At rest it now breathes: a slow swell travels outward through the
-   rings, and the point at the centre pulses under them — a mark that is waiting
-   for a question rather than a diagram of one.
-
-   Opacity only. Nothing moves, nothing is redrawn, and the rings keep their
-   authored relationship to each other because each animates around its own
-   base value (`--o`, set at the call site) rather than to a shared constant.
-   The stagger (`--d`) is what makes it a wave leaving the centre instead of
-   four rings blinking together.
-
-   14s is deliberately slower than it looks like it should be: this sits above
-   the composer, which has to stay the subject of the screen, and anything
-   quick enough to notice is quick enough to compete. */
-@keyframes horizon-breathe {
-  0%,
-  100% {
-    stroke-opacity: calc(var(--o) * 0.55);
-  }
-  45% {
-    stroke-opacity: calc(var(--o) * 1.75);
-  }
-}
-@keyframes horizon-core {
-  0%,
-  100% {
-    fill-opacity: 0.45;
-  }
-  45% {
-    fill-opacity: 1;
-  }
-}
-.horizon-ring {
-  animation: horizon-breathe 14s ease-in-out infinite;
-  animation-delay: var(--d, 0s);
-}
-.horizon-core {
-  animation: horizon-core 14s ease-in-out infinite;
-}
-/* The figure is decoration, so reduced motion gets the static mark it was
-   before — not a slower version of the same movement. */
-@media (prefers-reduced-motion: reduce) {
-  .horizon-ring,
-  .horizon-core {
-    animation: none;
-  }
-}
-
 /* "Thinking…" — a soft highlight sweeping across the text. Seamless because the
    gradient tiles at 200% and travels exactly one tile per cycle. */
 @keyframes text-shimmer {

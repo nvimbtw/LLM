@@ -18,7 +18,7 @@ const MODES: { mode: ThrobberMode; description: string }[] = [
   },
   {
     mode: "generating",
-    description: "One long route, a different one every pass.",
+    description: "One route walked without stopping — head on, tail off.",
   },
   { mode: "tool", description: "The whole net struck at once." },
   { mode: "training", description: "The whole net held, breathing." },
@@ -59,7 +59,7 @@ export function ThrobberShowcase() {
     <div className="flex flex-col gap-6">
       <Panel
         title="Morph"
-        description="Switch state — the figure changes pace and regrows in the new character"
+        description="Switch state — the figure changes pace and regrows in the new character; leaving generating runs the snake home first"
       >
         <div className="flex justify-center py-6">
           <Throbber mode={mode} />

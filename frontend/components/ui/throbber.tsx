@@ -14,12 +14,12 @@ import { cn } from "@/lib/utils"
  *
  * **The tree is grown, not drawn.** A fresh one is grown by random walk at the
  * start of every pass, so the mark is never the same twice. What stays fixed is
- * the *character* of the growth, and that is what carries the state: one long
- * wandering route is a token being sampled, a broad shallow bush is several
- * paths held open at once, the full spanning net is every parameter moving
- * together. Eight states are eight recognisably different pictures rather than
- * one picture at eight speeds, which is what every earlier version of this
- * component failed at.
+ * the *character* of the growth, and that is what carries the state: one route
+ * walked without stopping is a token being sampled, a broad shallow bush is
+ * several paths held open at once, the full spanning net is every parameter
+ * moving together. Eight states are eight recognisably different pictures
+ * rather than one picture at eight speeds, which is what every earlier version
+ * of this component failed at.
  *
  * Three rules survive from those earlier versions, each learned the hard way:
  *
@@ -38,6 +38,10 @@ import { cn } from "@/lib/utils"
  * promised it would never re-start; this one re-starts on purpose, because
  * repeated growth is its whole language. A state change grows a new tree
  * immediately rather than waiting out the current one.
+ *
+ * **One state is not a tree.** `generating` is a *snake* — see the section of
+ * that name. It grows nothing, never re-starts, and is the only state that
+ * answers a mode change late.
  */
 export type ThrobberMode =
   | "idle"
@@ -144,6 +148,11 @@ const EDGES: { a: number; b: number }[] = (() => {
   return out
 })()
 
+/** Rings out from the centre — how far a dot is from home, in steps. */
+const RADIUS: number[] = FIELD.map(
+  ({ q, r }) => (Math.abs(q) + Math.abs(r) + Math.abs(q + r)) / 2
+)
+
 const EDGE_INDEX = new Map(EDGES.map((edge, i) => [`${edge.a}-${edge.b}`, i]))
 const edgeBetween = (a: number, b: number) =>
   EDGE_INDEX.get(a < b ? `${a}-${b}` : `${b}-${a}`) ?? -1
@@ -213,8 +222,8 @@ const GROWTH: Record<ThrobberMode, Growth> = {
   // Broad and shallow, grown and then withdrawn — several possibilities held
   // open, none of them taken.
   thinking: { limbs: 4, branch: 2, depth: 2 },
-  // One route, as long as the field allows: the closest this figure comes to
-  // drawing a token being chosen.
+  // Not grown at all — see "The snake". `depth` is the only one of the three
+  // numbers it still uses: the length of the body, in edges.
   generating: { limbs: 1, branch: 1, depth: 5 },
   // Everything at once, for the two states that are not a path through
   // anything — a discrete operation, and bulk work on the whole body.
@@ -292,6 +301,184 @@ function grow(rand: () => number, how: Growth): Tree {
   return { edgeDepth, dotDepth, span }
 }
 
+/* ── The snake ───────────────────────────────────────────────────────────────
+   `generating` is the one state that grows nothing. A tree grown from the root
+   and then cleared has a seam in it — the moment it starts over — and a token
+   stream has no such moment: it is one act continuing. So this state walks. The
+   head steps to a neighbouring dot, the tail lets the oldest one go, and the
+   figure is the six dots in between, travelling.
+
+   Stopping is the other half of it. A walk that vanished the instant a reply
+   ended would cut; instead the head is sent home to the centre and the body
+   drains in behind it, which is why this is the only state whose figure outlives
+   its mode by half a second. What is left standing when it has drained is a lit
+   dot at the centre — which is where every other state's first frame begins, so
+   the figure that replaces it grows out of the light the snake left rather than
+   striking up out of a dark field.
+*/
+
+/** The body, in edges — five, so six dots are lit. */
+const BODY = GROWTH.generating.depth
+
+/**
+ * How many dots the head covers in one pass. Ties the walk to
+ * `RATES.generating` instead of giving it a second rate to keep in sync: the
+ * head travels its own length in the time every other state grows and clears a
+ * whole tree.
+ */
+const STEPS_PER_PASS = BODY
+
+/** How far ahead the walk is planned — over a pass of travel, plus the body. */
+const AHEAD = STEPS_PER_PASS + BODY + 2
+
+/** The dimmest a dot burns before the tail lets it go. */
+const TAIL_LEVEL = 0.35
+
+/**
+ * The pace the run home settles at, in dots per second, and deliberately not
+ * the blended rate: this is a full stop rather than a change of speed, and
+ * blending toward `idle`'s would leave it crawling home for twenty seconds.
+ * It is still eased into over `ACCELERATE` — rule 2 holds here too, it is only
+ * the rate being blended *to* that is the snake's own.
+ */
+const HOMING_STEPS_PER_S = 18
+
+/** Dots the run home spends getting up to that pace. */
+const ACCELERATE = 1.2
+
+interface Snake {
+  /** Dots walked, oldest first. Trimmed behind and planned ahead per pass. */
+  route: number[]
+  /** Where the head is along that route — fractional, between two dots. */
+  head: number
+  /** Route index of the centre once it is heading home; -1 while crawling. */
+  home: number
+  /** Where the head was when the stop began, in the same units, so the run
+   * home can ease out of the pace it was crawling at. */
+  stoppedAt: number
+}
+
+const newSnake = (): Snake => ({
+  route: [ROOT],
+  head: 0,
+  home: -1,
+  stoppedAt: 0,
+})
+
+const homingPace = (snake: Snake) => {
+  const crawl = RATES.generating * STEPS_PER_PASS
+  const gathered = smoothstep((snake.head - snake.stoppedAt) / ACCELERATE)
+  return crawl + (HOMING_STEPS_PER_S - crawl) * gathered
+}
+
+/** True once the last of the body has been drawn into the centre. */
+const swallowed = (snake: Snake) =>
+  snake.home >= 0 && snake.head - snake.home >= BODY
+
+/**
+ * The next dot the head walks into: adjacent, and not one its own body will
+ * still be standing on when it arrives.
+ */
+function step(route: number[], rand: () => number): number {
+  const from = route[route.length - 1]
+  const body = route.slice(-BODY)
+  const free = NEIGHBOURS[from].filter((cell) => !body.includes(cell))
+  for (let i = free.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1))
+    ;[free[i], free[j]] = [free[j], free[i]]
+  }
+  // A dot with no free neighbour of its own is a dead end one step early: take
+  // it and the snake has to walk through itself on the step after this one.
+  const open = free.find((cell) =>
+    NEIGHBOURS[cell].some((n) => n !== from && !body.includes(n))
+  )
+  // Boxed in anyway — reachable at the rim, where a dot has three neighbours
+  // rather than six. Clip the corner the body has stood on longest.
+  return open ?? free[0] ?? stalest(NEIGHBOURS[from], route)
+}
+
+function stalest(near: number[], route: number[]): number {
+  return near.reduce((a, b) =>
+    route.lastIndexOf(b) < route.lastIndexOf(a) ? b : a
+  )
+}
+
+/**
+ * Drop what the tail has left behind and plan far enough ahead that no frame
+ * has to. Both halves allocate, which is why this is a pass boundary's work.
+ */
+function plan(snake: Snake, rand: () => number) {
+  const spent = Math.floor(snake.head) - BODY
+  if (spent > 0) {
+    snake.route.splice(0, spent)
+    snake.head -= spent
+  }
+  while (snake.route.length < Math.floor(snake.head) + AHEAD) {
+    snake.route.push(step(snake.route, rand))
+  }
+}
+
+/**
+ * Point the head at the centre. Everything the walk had planned past the dot it
+ * is entering is dropped: this is a stop, not a detour.
+ */
+function sendHome(snake: Snake) {
+  const entering = Math.min(Math.ceil(snake.head), snake.route.length - 1)
+  snake.route.length = entering + 1
+
+  let cell = snake.route[entering]
+  let behind = snake.route[entering - 1] ?? -1
+  while (cell !== ROOT) {
+    const closer = NEIGHBOURS[cell].filter((n) => RADIUS[n] < RADIUS[cell])
+    // Reversing into its own neck reads as a stumble; any other step that still
+    // closes on the centre does not.
+    const next = closer.find((n) => n !== behind) ?? closer[0]
+    snake.route.push(next)
+    behind = cell
+    cell = next
+  }
+  snake.home = snake.route.length - 1
+  snake.stoppedAt = snake.head
+}
+
+/** What is on screen this frame: where the head is, and how much body is still
+ * behind it. */
+interface Body {
+  head: number
+  span: number
+}
+
+function bodyOf(snake: Snake): Body {
+  if (snake.home < 0) return { head: snake.head, span: BODY }
+  // Home: the head stops at the centre but the walk does not, and the distance
+  // between the two is the body being drawn in after it.
+  const over = Math.max(0, snake.head - snake.home)
+  return {
+    head: Math.min(snake.head, snake.home),
+    span: clamp(BODY - over, 0, BODY),
+  }
+}
+
+/**
+ * How brightly a dot burns, by how far behind the head it is. Bright at the
+ * head and falling away behind, so a still frame says which way the snake is
+ * travelling; the exponent holds the head end up and spends most of the fall on
+ * the last two dots, where it reads as a tail rather than a fade.
+ *
+ * Either end is fractional: `arriving` is the dot the head is walking into,
+ * `leaving` the one the tail is walking off. Only the tail end dims that way —
+ * a body draining into the centre gets shorter from behind, and the head holds
+ * its light until the state that replaces it takes the dot over.
+ */
+function bodyLevel(age: number, span: number): number {
+  if (age < -1 || age > span) return 0
+  const arriving = clamp(age + 1, 0, 1)
+  const leaving = age <= 0 ? 1 : clamp(span - age, 0, 1)
+  const taper =
+    1 - (1 - TAIL_LEVEL) * Math.pow(clamp(age / (BODY - 1), 0, 1), 1.4)
+  return arriving * taper * leaving
+}
+
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)"
 
 // A frame this long was a background tab rather than a slow frame. Clamped so
@@ -332,6 +519,9 @@ export function Throbber({
   // a chat streams, and re-rendering React for it would make the throbber the
   // most expensive thing on the page.
   const tree = React.useRef<Tree | null>(null)
+  // Non-null exactly while a snake is on screen, which outlasts `generating`
+  // itself by the run home.
+  const snake = React.useRef<Snake | null>(null)
   const passStart = React.useRef(0)
   const passIndex = React.useRef(0)
   const grownFor = React.useRef<ThrobberMode | null>(null)
@@ -361,6 +551,18 @@ export function Throbber({
     // Grow the new state's character immediately rather than waiting out the
     // pass in progress — feedback that lags a second is not feedback.
     grownFor.current = null
+
+    // The snake is the exception, in both directions: a stream that has stopped
+    // is put away rather than cut, and one that resumes mid-way home simply
+    // turns around. Nudging `passStart` back a whole pass makes the next frame
+    // a boundary, which is where the route it now needs gets planned.
+    if (!snake.current) return
+    if (mode === "generating") {
+      snake.current.home = -1
+      passStart.current = phase.current - 1
+    } else if (snake.current.home < 0) {
+      sendHome(snake.current)
+    }
   }, [mode])
 
   React.useEffect(() => {
@@ -379,32 +581,70 @@ export function Throbber({
       // indicator, and a motionless one reports nothing. The guidance targets
       // large, vestibular-triggering movement; nothing here travels 30px.
       const damp = reduced ? 0.35 : 1
-      phase.current += currentRate(rateFrom, rateTo, blendStart) * damp * dt
+      const rate = currentRate(rateFrom, rateTo, blendStart)
+      phase.current += rate * damp * dt
 
       const active = modeRef.current
       if (!seed.current) seed.current = (Math.random() * 2 ** 31) | 0
 
-      // A new tree at the start of every pass, and on a state change.
-      const local = phase.current - passStart.current
-      if (grownFor.current !== active || local >= 1) {
-        passStart.current = phase.current
-        passIndex.current += 1
-        grownFor.current = active
-        tree.current = grow(
-          mulberry32(seed.current ^ (passIndex.current * 2654435761)),
-          GROWTH[active]
-        )
+      if (active === "generating" && !snake.current) {
+        snake.current = newSnake()
+        // A fresh walk is one dot with nowhere to go: make this frame a
+        // boundary so it is planned now rather than a pass from now.
+        passStart.current = phase.current - 1
       }
 
-      draw(
-        tree.current,
-        clamp(phase.current - passStart.current, 0, 1),
-        phase.current,
-        active,
-        colours.current,
-        edges.current,
-        dots.current
-      )
+      const walking = snake.current
+      if (walking) {
+        // Crawling takes the blended rate, so the walk gathers pace as the
+        // state arrives. The run home does not — see `HOMING_STEPS_PER_S`.
+        const pace =
+          walking.home < 0 ? rate * STEPS_PER_PASS : homingPace(walking)
+        walking.head += pace * damp * dt
+
+        if (walking.home < 0 && phase.current - passStart.current >= 1) {
+          passStart.current = phase.current
+          passIndex.current += 1
+          plan(
+            walking,
+            mulberry32(seed.current ^ (passIndex.current * 2654435761))
+          )
+        }
+        if (swallowed(walking)) snake.current = null
+      }
+
+      if (snake.current) {
+        crawl(
+          snake.current,
+          bodyOf(snake.current),
+          phase.current,
+          colours.current,
+          edges.current,
+          dots.current
+        )
+      } else {
+        // A new tree at the start of every pass, and on a state change.
+        const local = phase.current - passStart.current
+        if (grownFor.current !== active || local >= 1) {
+          passStart.current = phase.current
+          passIndex.current += 1
+          grownFor.current = active
+          tree.current = grow(
+            mulberry32(seed.current ^ (passIndex.current * 2654435761)),
+            GROWTH[active]
+          )
+        }
+
+        draw(
+          tree.current,
+          clamp(phase.current - passStart.current, 0, 1),
+          phase.current,
+          active,
+          colours.current,
+          edges.current,
+          dots.current
+        )
+      }
       frame = requestAnimationFrame(tick)
     }
 
@@ -509,7 +749,8 @@ function draw(
       reach = Math.floor(local * (full + 1))
       break
     default:
-      // Grown across the pass, then cleared so the next one can differ.
+      // `loading` and `tokenizing`: grown across the pass, then cleared so the
+      // next one can differ. `generating` never arrives here — it crawls.
       reach = local * (full + 0.6)
       body = 1 - smoothstep((local - 0.86) / 0.14)
   }
@@ -554,6 +795,82 @@ function draw(
       "opacity",
       (lit > 0.02 ? lit * warmth : restingLevel(FIELD[i], phase)).toFixed(3)
     )
+  }
+}
+
+/** Writes one frame of the snake straight to the DOM. */
+function crawl(
+  snake: Snake,
+  body: Body,
+  phase: number,
+  colours: { accent: string; spark: string },
+  edges: (SVGLineElement | null)[],
+  dots: (SVGCircleElement | null)[]
+) {
+  restField(phase, colours.accent, edges, dots)
+  lightSnake(snake, body, colours.spark, edges, dots)
+}
+
+/** Everything dark but the field's own breathing — the snake is written over
+ * the top of this, which is cheaper than tracking what it lit last frame. */
+function restField(
+  phase: number,
+  accent: string,
+  edges: (SVGLineElement | null)[],
+  dots: (SVGCircleElement | null)[]
+) {
+  for (const el of edges) el?.setAttribute("opacity", "0")
+  for (let i = 0; i < FIELD.length; i++) {
+    const el = dots[i]
+    if (!el) continue
+    el.setAttribute("fill", accent)
+    el.setAttribute("r", DOT_R.toFixed(2))
+    el.setAttribute("opacity", restingLevel(FIELD[i], phase).toFixed(3))
+  }
+}
+
+/** The lit dots, and the edges between them. `generating` is the warmest state
+ * in `TINT`, so the snake is always ink rather than field colour. */
+function lightSnake(
+  snake: Snake,
+  body: Body,
+  spark: string,
+  edges: (SVGLineElement | null)[],
+  dots: (SVGCircleElement | null)[]
+) {
+  const tail = body.head - body.span
+  const first = Math.max(0, Math.floor(tail))
+  const last = Math.min(Math.ceil(body.head), snake.route.length - 1)
+
+  for (let i = first; i <= last; i++) {
+    const el = dots[snake.route[i]]
+    const lit = bodyLevel(body.head - i, body.span)
+    if (!el || lit <= 0.02) continue
+    el.setAttribute("fill", spark)
+    el.setAttribute("r", (DOT_R * (1 + 0.3 * lit)).toFixed(2))
+    el.setAttribute("opacity", lit.toFixed(3))
+  }
+
+  for (let i = first; i < last; i++) {
+    // How much of this edge the body covers, from the dot it was walked from.
+    const lo = clamp(tail - i, 0, 1)
+    const hi = clamp(body.head - i, 0, 1)
+    if (hi - lo < 0.001) continue
+
+    const index = edgeBetween(snake.route[i], snake.route[i + 1])
+    const el = edges[index]
+    if (!el) continue
+    const lit = bodyLevel(body.head - i - (lo + hi) / 2, body.span)
+    el.setAttribute("stroke", spark)
+    el.setAttribute("stroke-dasharray", `${(hi - lo).toFixed(3)} 1`)
+    // A line is drawn between its two dots in field order, which is not
+    // necessarily the direction the snake crossed it: reversed, the same
+    // stretch of body has to be measured from the far end.
+    el.setAttribute(
+      "stroke-dashoffset",
+      (EDGES[index].a === snake.route[i] ? -lo : hi - 1).toFixed(3)
+    )
+    el.setAttribute("opacity", lit.toFixed(3))
   }
 }
 
