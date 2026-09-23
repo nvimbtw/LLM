@@ -9,7 +9,7 @@ import { WS_URL, getToken } from "./api"
 //   server → { type: "done" | "error" | "cancelled", ... }
 //   client → { type: "cancel" }
 //
-// The frames are the engine's own, relayed: the backend flattens each event's
+// The frames are the LLM engine's own, relayed: the backend flattens each event's
 // name onto `type` and passes the payload through. A job that is not on the
 // device has no frames — the stream is the row and then end of stream, which is
 // what `onInactive` reports.

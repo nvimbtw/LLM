@@ -13,7 +13,7 @@ export interface AttentionMatrix {
   head: number
   layers: number
   heads: number
-  /** The engine's ceiling for this model, in tokens. */
+  /** The LLM engine's ceiling for this model, in tokens. */
   maxTokens: number
   tokens: string[]
   size: number
@@ -47,17 +47,17 @@ interface RawAttention {
 
 const BYTES_PER_FLOAT = 4
 
-// The engine sends the matrix as base64 fp32 rather than JSON numbers: at the
+// The LLM engine sends the matrix as base64 fp32 rather than JSON numbers: at the
 // 512-token ceiling that is 1.33 MiB on the wire against 2.5–3 MiB for the same
 // values printed to six decimals, and it needs no decision about how much
-// precision to discard to get there. See engine/llm/orchestrate/attention.py.
+// precision to discard to get there. See llm-engine/llm/orchestrate/attention.py.
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
 
 function decodeFloat32(base64: string): Float32Array {
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
-  // The engine writes little-endian; a typed array reads host order. Every
+  // The LLM engine writes little-endian; a typed array reads host order. Every
   // platform a browser runs on today is little-endian, so the second branch will
   // never execute — but a matrix read byte-swapped is not a failure anyone would
   // recognise as one, and the guard is four lines.

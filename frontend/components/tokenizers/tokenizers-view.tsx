@@ -98,7 +98,7 @@ export function TokenizersView() {
         {error ? (
           <LoadError
             title="The vocabularies didn't load."
-            hint="The engine may still be starting. Nothing has been lost — the vocabularies are on disk either way."
+            hint="The LLM engine may still be starting. Nothing has been lost — the vocabularies are on disk either way."
             onRetry={refresh}
           />
         ) : isLoading ? (

@@ -14,7 +14,7 @@ import { stepGymEpisode, type GymStep } from "@/lib/gyms"
  * is the only way to look: the filesystem lives in the sandbox, keyed by the
  * episode, and nothing else can reach it.
  *
- * It is recorded as a step like any other — the gyms service does not know who
+ * It is recorded as a step like any other — the gyms engine does not know who
  * typed it — so this is deliberately absent once an episode is graded, where an
  * extra step would be appended to a trajectory that has already been scored.
  */

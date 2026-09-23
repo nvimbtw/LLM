@@ -83,7 +83,7 @@ function describe(
   }
 }
 
-// What the build is doing, in a sentence, off the step the engine names rather
+// What the build is doing, in a sentence, off the step the LLM engine names rather
 // than off which counters happen to have arrived. The line it replaces was
 // written once — when the tokenizer finished — and then stood unchanged for the
 // hours the pack took, which is the whole of what made a working build
@@ -124,7 +124,7 @@ function buildDetail(isSft: boolean, tokenize: Partial<TokenizeStats>): string {
       return `Measuring what was built — ${compact(tokenize.documents)} document(s), ${compact(tokenize.total_tokens)} token(s)`
     default:
       // A build whose first frame has not landed, or one queued before the
-      // engine named its steps: say what it is about to do rather than nothing.
+      // LLM engine named its steps: say what it is about to do rather than nothing.
       return isSft
         ? "Rendering chat conversations into a masked dataset…"
         : "Collecting documents…"
@@ -167,7 +167,7 @@ function CurriculumProgress({
     ? totalEpochs
     : Math.max(0, (train.epoch ?? 0) - 1 + chunkFrac)
 
-  // The authoritative current stage comes from the engine's frame; fall back to
+  // The authoritative current stage comes from the LLM engine's frame; fall back to
   // the epoch position (during phase 1, before the first training frame).
   const currentStage =
     train.stage != null

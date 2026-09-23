@@ -21,7 +21,7 @@ export interface Checkpoint {
   /**
    * The loss at the step it was taken, or null when nothing recorded one.
    *
-   * Null is the ordinary case today: the engine writes this into the
+   * Null is the ordinary case today: the LLM engine writes this into the
    * checkpoint's `meta.json` but does not carry it onto the row, so the wire
    * field is absent. It must render as "—" and never as 0 — a zero loss reads
    * as a perfect model.
@@ -45,7 +45,7 @@ function mapCheckpoint(raw: RawModel): Checkpoint {
 }
 
 /**
- * A model's checkpoints, ordered by step — the engine orders them, and the
+ * A model's checkpoints, ordered by step — the LLM engine orders them, and the
  * order is not re-derived here.
  *
  * `null` for `modelId` fetches nothing and reports an empty list, so a caller

@@ -8,7 +8,7 @@ import {
   type TrainConfig,
 } from "./training"
 
-// The GPU queue. The engine calls these runs and so does the wire; the UI has
+// The GPU queue. The LLM engine calls these runs and so does the wire; the UI has
 // always called them jobs, and `fromRow` is where the two names meet.
 //
 // Everything that uses the device is a row, executed one at a time in queue
@@ -83,7 +83,7 @@ interface BoardPayload {
   paused: boolean
 }
 
-/** The engine's `run_id` is this side's `id_job`; nothing else differs. */
+/** The LLM engine's `run_id` is this side's `id_job`; nothing else differs. */
 function fromRow({ run_id, ...rest }: RunRow): Job {
   return { id_job: run_id, ...rest }
 }
@@ -213,7 +213,7 @@ export async function getJob(id: string): Promise<Job> {
  * A flat list, because "then, then, then" is what a person means by a chain. Only
  * `train` and `benchmark` can follow: they are the two kinds that take their model
  * from the run before them. A follow-up's config names **no** model — that is the
- * one question the chain exists to leave open, and the engine answers it when the
+ * one question the chain exists to leave open, and the LLM engine answers it when the
  * predecessor lands.
  */
 export type FollowUp =
@@ -249,23 +249,23 @@ const QUEUE_PATH: Record<Exclude<JobKind, "chat">, string> = {
 const FINE_TUNE_PATH = "/runs/sft"
 
 /**
- * The engine's shape for a training run.
+ * The LLM engine's shape for a training run.
  *
  * One name is adapted here and nowhere else, in the manner of `id_job` and
- * `id_run`: the composer's **`base_model_id`** is the engine's **`base_model`**.
- * The engine decides what a run *is* by that one field — a config carrying it is
+ * `id_run`: the composer's **`base_model_id`** is the LLM engine's **`base_model`**.
+ * The LLM engine decides what a run *is* by that one field — a config carrying it is
  * a fine-tune, a config without it is a pretrain — so failing to translate it
  * did not produce an error, it produced a **pretrain**: a fine-tune of two chat
  * sets was run as a pretrain that went looking for `smoltalk` among the `.txt`
  * corpora and failed minutes later, having queued perfectly happily.
  *
- * Everything else rides along untouched. The engine's `SftConfig` keeps the
+ * Everything else rides along untouched. The LLM engine's `SftConfig` keeps the
  * fields it knows and drops the pretrain-only ones (`dimensions`, `tokenizer_id`,
  * `curriculum`, …), which is exactly right: a fine-tune that restated the
  * architecture could disagree with the weights it starts from, and the weights
  * would win, silently.
  *
- * A **resuming pretrain** is the same statement in the one place the engine did
+ * A **resuming pretrain** is the same statement in the one place the LLM engine did
  * not get to drop the fields for us. It takes its architecture — and its
  * tokenizer — from the state it continues, and restating either is refused —
  * so both are dropped here rather than sent at whatever the form was showing,
@@ -294,9 +294,9 @@ async function queue(
     return fromRow(await (await post(path, config)).json())
   }
   // Chained steps are translated too. A follow-up deliberately names no base —
-  // the engine fills it in when its predecessor lands — so this maps an absent
+  // the LLM engine fills it in when its predecessor lands — so this maps an absent
   // `base_model_id` to an absent `base_model`, which is the same statement in
-  // the engine's vocabulary rather than a missing field in it.
+  // the LLM engine's vocabulary rather than a missing field in it.
   const chain = [
     { kind, config },
     ...steps.map((step) =>
@@ -326,7 +326,7 @@ export function queueTokenizer(config: TokenizerBuild): Promise<Job> {
 /**
  * Queue a reinforcement-learning run against a gym.
  *
- * Typed as the engine's `RlConfig` rather than through a composer shape: there
+ * Typed as the LLM engine's `RlConfig` rather than through a composer shape: there
  * is no composer for one yet, and inventing a second name for every field would
  * be the translation layer `queueTraining` documents the cost of.
  */

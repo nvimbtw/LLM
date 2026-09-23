@@ -78,7 +78,7 @@ export function EpisodeTranscript({
 /**
  * What the answer was worth, and — only now — what it should have been.
  *
- * The ground truth arrives with the grade and not before: the gyms service
+ * The ground truth arrives with the grade and not before: the gyms engine
  * withholds it while an episode is open, so there is no version of this page
  * that could leak it into a run somebody is watching.
  */

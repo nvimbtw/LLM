@@ -54,7 +54,7 @@ const pos = (v: number): number | null =>
 // A finite reading for a linear axis (activations, entropy): non-finite → null.
 const fin = (v: number): number | null => (Number.isFinite(v) ? v : null)
 
-// The same, for a reading the engine may not have taken at all. The fine-tuning
+// The same, for a reading the LLM engine may not have taken at all. The fine-tuning
 // fields are absent rather than zero when unmeasured (see `DiagPoint`), and the
 // whole point of that convention is lost if `undefined` becomes 0 here.
 const opt = (v: number | null | undefined): number | null =>

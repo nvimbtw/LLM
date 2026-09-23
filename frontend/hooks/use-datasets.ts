@@ -8,9 +8,9 @@ import type { DatasetInfo } from "@/lib/training"
 // Loads the selectable datasets for the params rail's checkbox picker: the
 // prose corpora, or the conversation sets when the run is a fine-tune.
 //
-// One catalogue, filtered by kind. Both used to be folders under the engine's
+// One catalogue, filtered by kind. Both used to be folders under the LLM engine's
 // data root and were two different routes; they are now rows in the data
-// engine's database, told apart by the column that already tells them apart.
+// LLM engine's database, told apart by the column that already tells them apart.
 // A dataset that is still pulling is left out — a run that selected one would
 // pack whatever had landed by the time it reached the front of the queue, and
 // key that as though it were the whole thing.

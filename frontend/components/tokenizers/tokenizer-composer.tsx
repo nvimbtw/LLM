@@ -43,7 +43,7 @@ export function TokenizerComposer({ onQueued }: TokenizerComposerProps) {
     setIsSubmitting(true)
     try {
       const job = await queueTokenizer({
-        // The typed name is what to call it; the engine mints the id the
+        // The typed name is what to call it; the LLM engine mints the id the
         // vocabulary is stored under and sends this back as its display name.
         tokenizer_id: name.trim(),
         max_vocab: maxVocab,
@@ -97,7 +97,7 @@ export function TokenizerComposer({ onQueued }: TokenizerComposerProps) {
           emptyHint="No corpora on disk yet — fetch some into data/input/ first."
         />
 
-        {/* Empty is a real request, not an unfinished one: the engine resolves it
+        {/* Empty is a real request, not an unfinished one: the LLM engine resolves it
             to every corpus on disk, at the moment the build runs. */}
         <p className="text-xs text-muted-foreground">
           {picked.length === 0

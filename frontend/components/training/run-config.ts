@@ -31,7 +31,7 @@ export type Field = {
 }
 
 // Every field the rail edits as text. Everything else goes through `Number()`,
-// so a string field missing from here arrives at the engine as 0 — silently, and
+// so a string field missing from here arrives at the LLM engine as 0 — silently, and
 // only for the one field somebody forgot.
 export const STRING_FIELDS = new Set<keyof TrainConfig>([
   "model_name",
@@ -78,6 +78,12 @@ export const ARCH_FIELDS: Field[] = [
 
 export const RUN_FIELDS: Field[] = [
   { key: "epochs", label: "Epochs", hint: "Passes over the corpus" },
+  {
+    key: "batch_size",
+    label: "Batch size",
+    hint: "Windows per step — with context, what decides if it fits",
+    pow2: true,
+  },
   {
     key: "lr",
     label: "Learning rate",
@@ -177,7 +183,7 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
       errs.push("Learning rate must be positive.")
     // A plain fine-tune trains on conversations it names. RAFT and KTO train on
     // the model's own generations instead, so a dataset selection there is not a
-    // thing to require. The engine refuses a run that names nothing — this is
+    // thing to require. The LLM engine refuses a run that names nothing — this is
     // what stops that arriving as a job that queues and then fails.
     if (cfg.mode === "sft" && (cfg.datasets ?? []).length === 0)
       errs.push("Select at least one dataset to fine-tune on.")
@@ -264,7 +270,7 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
  * True for a fine-tune, which inherits the base model's, and true for a pretrain
  * continuing from a checkpoint, which inherits the state's. The composer shows
  * no control for a number it does not get to choose — offering one is offering a
- * decision the engine will refuse the run for having made.
+ * decision the LLM engine will refuse the run for having made.
  */
 export function inheritsArchitecture(cfg: TrainConfig): boolean {
   return isFineTune(cfg.mode) || Boolean(cfg.resume_from)
@@ -276,9 +282,9 @@ export function inheritsArchitecture(cfg: TrainConfig): boolean {
  * A fine-tune never showed a Tokenizer selector — it loads the base model's
  * own — so the only case this hides one is a pretrain continuing from a
  * checkpoint: the vocabulary comes from the checkpoint the same way the
- * architecture does (the engine's `resumed_tokenizer`, alongside
+ * architecture does (the LLM engine's `resumed_tokenizer`, alongside
  * `resumed_architecture`), and offering a control for it would be offering a
- * choice the engine refuses the run for having made.
+ * choice the LLM engine refuses the run for having made.
  */
 export function hidesTokenizer(cfg: TrainConfig): boolean {
   return Boolean(cfg.resume_from)

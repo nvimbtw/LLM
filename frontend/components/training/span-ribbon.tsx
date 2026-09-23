@@ -12,7 +12,7 @@ import type { Ribbon, RibbonWindow } from "@/lib/training"
  * want opposite decisions about the window size and the packing, and only the
  * picture tells them apart.
  *
- * **SVG rather than canvas2d.** The element count is bounded by the engine's own
+ * **SVG rather than canvas2d.** The element count is bounded by the LLM engine's own
  * cap (`RIBBON_WINDOWS` × `RIBBON_SEGMENTS`, under a thousand rects), so the
  * usual reason to reach for canvas does not apply and the choice comes down to
  * which produces less code. Three things settle it: the fills are the theme's own
@@ -28,7 +28,7 @@ export interface SpanRibbonProps {
    * The window the segments' token offsets are measured against. It comes from
    * the run's config rather than the frame on purpose: `ctx_window` is not part
    * of the corpus key, so one packed build is legitimately trained at two of
-   * them and the engine ships the offsets bare.
+   * them and the LLM engine ships the offsets bare.
    */
   ctxWindow: number
 }

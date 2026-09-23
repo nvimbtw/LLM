@@ -77,7 +77,7 @@ export const BENCHMARK_SUITES: {
  * Which model a report describes.
  *
  * `id` is the weights directory and what an API call names it by; `name` is
- * what a person calls it, filled in by the engine's handler because the
+ * what a person calls it, filled in by the LLM engine's handler because the
  * pipeline that measured the model has never heard of the row.
  */
 export interface ReportModel {
@@ -411,7 +411,7 @@ export async function deleteRun(id: string): Promise<void> {
 
 /**
  * The stages a run scores, in order, with the share of the composite each
- * carries. Mirrors the weights in `engine/llm/eval/score.py` and `markup.py` —
+ * carries. Mirrors the weights in `llm-engine/llm/eval/score.py` and `markup.py` —
  * if those move, these have to move with them.
  *
  * This exists so a benchmark that has not finished still has something true to

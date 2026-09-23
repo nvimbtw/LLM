@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/api"
  *
  * Nothing here is a hard-coded catalogue any more. Which gyms exist and which
  * task types each one generates is `GET /gym`, answered by the registry in
- * `gyms/gyms/registry.py` — adding a task type is a row there and nothing in
+ * `gyms-engine/gyms/registry.py` — adding a task type is a row there and nothing in
  * this file. Grading is likewise absent: the answer is graded inside the gyms
  * service, which is the only place that holds the ground truth while an episode
  * is still open.
@@ -14,6 +14,7 @@ import { apiFetch } from "@/lib/api"
 
 export interface GymTaskType {
   id: string
+  gym_id: string
   label: string
   description: string
   /**
@@ -29,7 +30,7 @@ export interface GymTaskType {
 }
 
 /** The rungs, in the order they should be attempted. Mirrors `LEVELS` in
- * `gyms/gyms/registry.py`, which is the source of the strings above. */
+ * `gyms-engine/gyms/registry.py`, which is the source of the strings above. */
 export const LEVELS = ["easy", "medium", "hard"] as const
 
 export interface Gym {
@@ -38,16 +39,25 @@ export interface Gym {
   description: string
   task_types: GymTaskType[]
   tools: string[]
+  composite?: boolean
+  demonstrations?: boolean
 }
 
 export type RunStatus = "pending" | "running" | "done" | "abandoned" | "failed"
 export type EpisodeStatus = "pending" | "running" | "graded" | "closed"
 
+export interface GymSourceScore {
+  episode_count: number
+  graded: number
+  correct: number
+  score: number | null
+}
+
 export interface GymRun {
   id: string
   gym_id: string
   /**
-   * The model's **id**, despite the name. This is the engine's own field and it
+   * The model's **id**, despite the name. This is the LLM engine's own field and it
    * has always held the id — weights live at `artifacts/models/<id>/model.pt`,
    * so a display name would resolve to no path at all. `modelLabel` turns it
    * back into something readable.
@@ -69,6 +79,7 @@ export interface GymRun {
   kind: "eval" | "rl"
   episode_count: number
   status: RunStatus
+  source_scores?: Record<string, GymSourceScore>
   /** Mean score over the graded episodes, or null before any is graded. */
   score: number | null
   graded: number
@@ -125,6 +136,7 @@ export interface NewRun {
   seedBase?: number
   /** Rollouts per task — see `GymRun.group_size`. Must divide `count`. */
   groupSize?: number
+  gymWeights?: Record<string, number>
 }
 
 export async function listGyms(): Promise<Gym[]> {
@@ -153,19 +165,25 @@ export async function createGymRun(run: NewRun): Promise<GymRunDetail> {
       count: run.count,
       ...(run.seedBase === undefined ? {} : { seed_base: run.seedBase }),
       ...(run.groupSize === undefined ? {} : { group_size: run.groupSize }),
+      ...(run.gymWeights === undefined ? {} : { gym_weights: run.gymWeights }),
     }),
   })
   if (!res.ok) throw new Error(await detail(res, "create the run"))
   return res.json()
 }
 
-export async function createDemonstrations(gymId: string, taskTypes: string[], datasetName: string, count: number, seedBase: number): Promise<void> {
+export async function createDemonstrations(gymId: string, taskTypes: string[], datasetName: string, count: number, seedBase: number, gymWeights?: Record<string, number>): Promise<void> {
   const res = await apiFetch("/gym/demonstrations", {
     method: "POST",
     body: JSON.stringify({ gym_id: gymId, task_types: taskTypes, dataset_name: datasetName,
-      count, seed_base: seedBase }),
+      count, seed_base: seedBase, ...(gymWeights ? { gym_weights: gymWeights } : {}) }),
   })
   if (!res.ok) throw new Error(await detail(res, "create demonstrations"))
+}
+
+export function selectedSourceWeights(tasks: GymTaskType[], selected: string[], weights: Record<string, number>): Record<string, number> {
+  const sources = new Set(tasks.filter((task) => selected.includes(task.id)).map((task) => task.gym_id))
+  return Object.fromEntries([...sources].map((source) => [source, weights[source] ?? 1]))
 }
 
 /**

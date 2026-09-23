@@ -67,7 +67,7 @@ export function useCheckpointParent(
       .catch(() => {
         // An id that resolves to nothing leaves the caller with no parent. What
         // to do about that is the caller's — the composer replaces it, the
-        // trainer keeps it and lets the engine refuse the run.
+        // trainer keeps it and lets the LLM engine refuse the run.
         if (active) setResolved({ id: value, parent: "" })
       })
     return () => {

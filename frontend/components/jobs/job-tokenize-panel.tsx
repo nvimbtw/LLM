@@ -23,7 +23,7 @@ export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
   return (
     <div className="space-y-6">
       {/* Full width, no rail. The config recap that would sit beside it renders
-          nothing — the engine's run row carries no `config` — so the column was
+          nothing — the LLM engine's run row carries no `config` — so the column was
           a quarter page of gutter. */}
       <Panel
         title={tokenize.done ? "Built" : "Learning the merges"}

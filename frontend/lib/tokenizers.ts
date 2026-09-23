@@ -10,7 +10,7 @@ import type { DatasetSelection } from "./training"
 // Building one is a job (`queueTokenizer` in `lib/jobs.ts`); this is the reading
 // half.
 
-/** One corpus a vocabulary was learned from, as the engine records it
+/** One corpus a vocabulary was learned from, as the LLM engine records it
  *  (`corpus.remote.Selected.record`): what was asked for — the cap, null for
  *  every document — beside what answered at build time. */
 export interface TokenizerDataset {

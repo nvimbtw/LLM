@@ -1,6 +1,8 @@
 "use client"
 
 import * as React from "react"
+import { SourceWeights } from "@/components/gyms/source-weights"
+import { selectedSourceWeights } from "@/lib/gyms"
 import { useRouter } from "next/navigation"
 import { Play } from "lucide-react"
 
@@ -24,7 +26,7 @@ import { queueReinforcement } from "@/lib/jobs"
 import { DemonstrationsForm } from "@/components/gyms/demonstrations-form"
 
 /**
- * What one gym run may ask for — `MAX_EPISODES` in `gyms/api/routes/gym.py`,
+ * What one gym run may ask for — `MAX_EPISODES` in `gyms-engine/api/routes/gym.py`,
  * which exists because every episode holds a sandbox filesystem and just-bash
  * keeps 256 of them.
  *
@@ -43,7 +45,7 @@ const MAX_EPISODES = 256
  * That difference is the whole reason this is a job on the queue and starting a
  * gym run is not.
  *
- * The fields are the engine's `RlConfig` under its own names, for the reason
+ * The fields are the LLM engine's `RlConfig` under its own names, for the reason
  * `queueReinforcement` gives: a second vocabulary for one form is a translation
  * layer to keep true forever.
  */
@@ -60,6 +62,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
   // an empty list has to survive, or unchecking the last box silently ticks the
   // defaults back on and the form disagrees with itself about being ready.
   const [taskTypes, setTaskTypes] = React.useState<string[] | null>(null)
+  const [gymWeights, setGymWeights] = React.useState<Record<string, number>>({})
   const [iterations, setIterations] = React.useState(50)
   const [tasksPerBatch, setTasksPerBatch] = React.useState(4)
   const [groupSize, setGroupSize] = React.useState(8)
@@ -94,6 +97,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
   const known = (id: string) => gyms?.some((g) => g.id === id) ?? false
   const gymId = (known(chosenGym) ? chosenGym : gyms?.[0]?.id) || ""
   const gym = gyms?.find((g) => g.id === gymId)
+  const noTools = gym !== undefined && !gym.composite && gym.tools.length === 0
   const adaptive = gymId === "math" && automatic
 
   // The easy rung of every family, for the reason the run form starts there: a
@@ -108,6 +112,8 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
   }, [gym])
   const mine = new Set(gym?.task_types.map((t) => t.id) ?? [])
   const selected = (adaptive ? (gym?.task_types.map((t) => t.id) ?? []) : taskTypes ?? defaults).filter((id) => mine.has(id))
+
+  const sourceWeights = selectedSourceWeights(gym?.task_types ?? [], selected, gymWeights)
 
   const families = React.useMemo(() => {
     if (!gym) return []
@@ -147,7 +153,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
   const submit = async () => {
     setIsSubmitting(true)
     try {
-      // `model_name` carries the *typed* name. The engine mints the id the
+      // `model_name` carries the *typed* name. The LLM engine mints the id the
       // weights live under and keeps what was typed as `display_name` — the
       // same arrangement every training composer relies on.
       const job = await queueReinforcement({
@@ -155,10 +161,11 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         base_model: baseModel,
         gym_id: gymId,
         task_types: selected,
+        ...(gym?.composite ? { gym_weights: sourceWeights } : {}),
         group_size: groupSize,
         tasks_per_batch: tasksPerBatch,
         iterations,
-        max_rounds: gym?.tools.length === 0 ? 1 : maxRounds,
+        max_rounds: noTools ? 1 : maxRounds,
         ...(adaptive ? { curriculum: { check_every: checkEvery } } : {}),
         lr: lrValue,
         beta: betaValue,
@@ -231,9 +238,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                 value={gymId}
                 onValueChange={(value) => {
                   setChosenGym(value ?? "")
-                  // A gym's task ids mean nothing to another gym, and
-                  // `POST /gym/runs` refuses types from two of them. Clearing
-                  // falls back to the new gym's easy rung.
+                  // Reset selection to the new gym's easy rung.
                   setTaskTypes(null)
                 }}
                 disabled={isSubmitting}
@@ -310,7 +315,8 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         )}
       </Panel>
 
-      {gymId === "math" && <DemonstrationsForm gymId={gymId} taskTypes={selected} />}
+      {gym?.composite && <Panel title="The mixture"><SourceWeights tasks={gym.task_types} selected={selected} weights={gymWeights} onChange={setGymWeights} /></Panel>}
+      {gym?.demonstrations && <DemonstrationsForm gymId={gymId} taskTypes={selected} gymWeights={gym.composite ? sourceWeights : undefined} />}
 
       <Panel
         title="The loop"
@@ -350,13 +356,13 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                 }
               />
             </Field>
-            <Field label="Rounds" hint={gym?.tools.length === 0 ? "one answer, no tools" : "shell turns per episode"}>
+            <Field label="Rounds" hint={noTools ? "one answer, no tools" : "shell turns per episode"}>
               <Input
                 type="number"
                 min={1}
                 max={32}
-                value={gym?.tools.length === 0 ? 1 : maxRounds}
-                disabled={gym?.tools.length === 0}
+                value={noTools ? 1 : maxRounds}
+                disabled={noTools}
                 onChange={(e) => setMaxRounds(clamp(e.target.valueAsNumber, 1, 32))}
               />
             </Field>

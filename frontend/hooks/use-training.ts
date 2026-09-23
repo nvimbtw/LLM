@@ -14,6 +14,8 @@ export const DEFAULT_CONFIG: TrainConfig = {
   heads: 4,
   layers: 2,
   epochs: 5,
+  // The LLM engine's own default, restated so the composer never sends undefined.
+  batch_size: 8,
   // Pretrain default. Raised from 1e-5 → 1e-4 now that the f32 master-weight fix
   // (ISSUE-0052) lifted the old f16-quantization LR cap: at 1e-5 from-scratch
   // pretrains were badly undertrained. 1e-4 trains stably post-fix (ISSUE-0057).
@@ -62,7 +64,7 @@ export interface BatchPoint {
 // One phase-1 report, plotted against the build's own clock rather than against
 // a step — phase 1 has no steps, which is why it needed a series of its own.
 //
-// The engine sends the counters and not the curve; this is the curve, rebuilt
+// The LLM engine sends the counters and not the curve; this is the curve, rebuilt
 // from the frames. A page attaching to a build already in flight gets the whole
 // of it, because the run's stream replays from the start (`api/sse.py`) — so the
 // figure is the build's history and not this session's.

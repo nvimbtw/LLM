@@ -24,7 +24,7 @@ import type { Model } from "@/hooks/use-models"
  *
  * Two selects rather than one flat list, and that is the whole design. A run
  * leaves ~10 checkpoints, so a single list over every model and every
- * intermediate would be the flood the engine's `checkpoints=false` default
+ * intermediate would be the flood the LLM engine's `checkpoints=false` default
  * exists to prevent — the second select is only ever one model's, asked for by
  * name. It also matches how the two ids relate: a checkpoint is *of* a model,
  * and picking the model first is picking the run.
@@ -62,7 +62,7 @@ export function ResumePicker({
   // answer is not already in hand: an id the model list does not hold, arriving
   // from a deep link off its parent's page or typed into the bar. An id that
   // resolves to nothing leaves the second select unopened — the config still
-  // carries it, and the engine is the one entitled to refuse a run for it.
+  // carries it, and the LLM engine is the one entitled to refuse a run for it.
   const { parentId, record } = useCheckpointParent(value, models)
 
   const { checkpoints, isLoading: checkpointsLoading } = useCheckpoints(

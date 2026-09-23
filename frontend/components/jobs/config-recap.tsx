@@ -128,7 +128,7 @@ function tokenize(config: TokenizerBuild | null): Recap | null {
   return {
     description: "As queued",
     rows: [["Max vocab", String(config.max_vocab)]],
-    // Empty is not "none": the engine resolves it to every corpus on disk, and a
+    // Empty is not "none": the LLM engine resolves it to every corpus on disk, and a
     // blank here would read as a build that learned from nothing.
     blocks: [
       [
@@ -167,7 +167,12 @@ function train(config: TrainConfig | null): Recap | null {
   }
   rows.push(
     ["Epochs", String(config.epochs)],
-    ["Learning rate", config.lr.toExponential(0)]
+    ["Learning rate", config.lr.toExponential(0)],
+    // Recapped beside the learning rate rather than with the architecture: it is
+    // an optimization hyperparameter that the two of them were tuned together
+    // against, and only incidentally the other half of what decides whether a
+    // run fits on the card.
+    ["Batch size", String(config.batch_size)]
   )
   if (!config.resume_from) {
     rows.push(["FF multiplier", `${config.ff_multiplier}×`])
@@ -222,7 +227,7 @@ function train(config: TrainConfig | null): Recap | null {
       ? curriculum
           .map((stage, i) => stage.name ?? `Stage ${i + 1}`)
           .join(" → ")
-      : // Empty is not "none" — the engine resolves it to every set on disk, so
+      : // Empty is not "none" — the LLM engine resolves it to every set on disk, so
         // say that rather than showing a blank where a selection should be.
         (config.datasets ?? []).map((d) => d.name).join(", ") ||
         (config.mode === "sft" ? "Every set on disk" : "")

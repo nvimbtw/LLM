@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils"
 import type { BuildPoint } from "@/hooks/use-training"
 import type { BuildSource, BuildStep, TokenizeStats } from "@/lib/training"
 
-// The steps a pretrain's phase 1 is made of, in the order the engine enters
+// The steps a pretrain's phase 1 is made of, in the order the LLM engine enters
 // them (`llm.train.progress.BUILD_SPANS`). A fine-tune's build is one step with
 // three counters rather than three steps, so it gets its own list below.
 const PRETRAIN_STEPS: BuildStep[] = [
@@ -58,7 +58,7 @@ export interface BuildProgressProps {
  * This slot used to hold a three-line checklist whose states were *inferred*
  * from which counts had arrived — which worked for the two steps that reported
  * one, and read the longest step of the run as an already-finished tokenizer.
- * The engine now names the step it is on and says how far into it it is, so
+ * The LLM engine now names the step it is on and says how far into it it is, so
  * everything here is read rather than guessed.
  *
  * Three things, in the order the question is usually asked: which step, how far
@@ -289,7 +289,7 @@ function SourceStrip({
  * The build's elapsed clock, carried on between the frames that set it.
  *
  * Remounted by its `key` whenever a frame lands, so it counts up from the
- * engine's own reading rather than from when this page opened: a page attached
+ * LLM engine's own reading rather than from when this page opened: a page attached
  * halfway through a build reads the build's age, and the two can never drift
  * apart however long the gap between frames grows.
  *

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import { Play } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { SourceWeights } from "@/components/gyms/source-weights"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Panel } from "@/components/ui/panel"
@@ -18,9 +19,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useModels } from "@/hooks/use-models"
-import { createGymRun, LEVELS, type Gym } from "@/lib/gyms"
+import { createGymRun, selectedSourceWeights, LEVELS, type Gym } from "@/lib/gyms"
 
-/** What one run may ask for — the gyms service refuses more (`MAX_EPISODES`). */
+/** What one run may ask for — the gyms engine refuses more (`MAX_EPISODES`). */
 const MAX_EPISODES = 256
 const DEFAULT_EPISODES = 5
 
@@ -30,7 +31,7 @@ const DEFAULT_EPISODES = 5
  * Measured, not guessed: the shortest task plus its system block is ~72 tokens,
  * and `build_prompt` reserves half the window for the reply — so 256 is the
  * floor before the shell has answered anything, and a tool result has to fit
- * after that. Below it the prompt is truncated (the engine cuts it rather than
+ * after that. Below it the prompt is truncated (the LLM engine cuts it rather than
  * failing) and the model is asked a question it was never shown, which reads as
  * a model scoring zero when it is really a window that could not hold the
  * question.
@@ -63,12 +64,13 @@ export function RunForm({ gym }: { gym: Gym }) {
     const easy = gym.task_types.filter((t) => t.level === "easy")
     return (easy.length > 0 ? easy : gym.task_types).map((t) => t.id)
   })
+  const [gymWeights, setGymWeights] = React.useState<Record<string, number>>({})
   const [count, setCount] = React.useState(DEFAULT_EPISODES)
   const [groupSize, setGroupSize] = React.useState(1)
   const [seed, setSeed] = React.useState("")
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
-  // The model's **id**, not its name. `model_name` is the engine's field and it
+  // The model's **id**, not its name. `model_name` is the LLM engine's field and it
   // has always carried the id — that is the directory the weights are under
   // (`artifacts/models/<id>/model.pt`), and a display name has no path. Chat
   // sends the same thing under the same misleading key.
@@ -110,6 +112,7 @@ export function RunForm({ gym }: { gym: Gym }) {
         gymId: gym.id,
         modelName: modelId,
         taskTypes,
+        ...(gym.composite ? { gymWeights: selectedSourceWeights(gym.task_types, taskTypes, gymWeights) } : {}),
         count,
         // 1 is an ordinary evaluation and is left off the wire entirely.
         ...(groupSize > 1 ? { groupSize } : {}),
@@ -129,7 +132,7 @@ export function RunForm({ gym }: { gym: Gym }) {
   return (
     <Panel
       title="New run"
-      description={gym.tools.length === 0 ? `${gym.name} — one question and one answer, no tools.` : `${gym.name} — one sandbox per task, seeded before anything runs.`}
+      description={gym.composite ? "Questions from the selected gyms, with tools available only where needed." : gym.tools.length === 0 ? `${gym.name} — one question and one answer, no tools.` : `${gym.name} — one sandbox per task, seeded before anything runs.`}
     >
       <div className="space-y-5">
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_6rem]">
@@ -226,6 +229,8 @@ export function RunForm({ gym }: { gym: Gym }) {
             ))}
           </div>
         </Field>
+
+        {gym.composite && <SourceWeights tasks={gym.task_types} selected={taskTypes} weights={gymWeights} onChange={setGymWeights} />}
 
         {groupSize > 1 && (
           <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">

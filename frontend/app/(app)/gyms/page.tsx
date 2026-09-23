@@ -14,7 +14,7 @@ export default function GymsPage() {
   const [error, setError] = React.useState<string | null>(null)
 
   // The catalogue is the service's, not a constant here: a task type added in
-  // `gyms/gyms/registry.py` shows up without a frontend change.
+  // `gyms-engine/gyms/registry.py` shows up without a frontend change.
   React.useEffect(() => {
     let active = true
     listGyms()
@@ -25,28 +25,34 @@ export default function GymsPage() {
     }
   }, [])
 
+  const orderedGyms = gyms && [
+    ...gyms.filter((gym) => gym.id === "general"),
+    ...gyms.filter((gym) => gym.id !== "general"),
+  ]
+
   return (
     <PageShell>
       <PageHeader
         title="Gyms"
         back={{ href: "/admin", label: "Admin" }}
-        description="Environments a model is put to work in. A run generates tasks, gives the model a shell, and scores what it comes back with."
+        description="Environments a model is put to work in. A run generates tasks, lets the model use that gym's tools, and scores the result."
       />
       {error ? (
         <LoadError hint={error} />
-      ) : gyms === null ? (
+      ) : orderedGyms === null ? (
         <div className="grid gap-4 md:grid-cols-2">
           <Skeleton className="h-36" />
           <Skeleton className="h-36" />
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {gyms.map((gym) => (
+          {orderedGyms.map((gym) => (
             <GymCard
               key={gym.id}
               id={gym.id}
               name={gym.name}
               description={gym.description}
+              featured={gym.id === "general"}
             />
           ))}
         </div>

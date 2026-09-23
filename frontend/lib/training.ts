@@ -1,3 +1,5 @@
+import type { GymSourceScore } from "./gyms"
+
 // The shape of a training run: its config, and the frames it reports while it
 // executes.
 //
@@ -27,7 +29,7 @@ export function isFineTune(mode: TrainMode): boolean {
 // One picked dataset: the name of an uploads/ subfolder and how many of its .txt
 // documents to take (0 = all of that dataset).
 //
-// `id` is the data engine's — the engine stores no corpora and selects by id,
+// `id` is the data engine's — the LLM engine stores no corpora and selects by id,
 // because a name is something a person can change without changing a token.
 // `name` rides along so a stored config still reads as something when the
 // dataset list is not to hand; the data engine's own name wins at run time.
@@ -62,6 +64,13 @@ export interface TrainConfig {
   layers: number
   epochs: number
   lr: number
+  // Windows per optimizer step. A run knob and a memory one at the same time:
+  // the activations a step holds scale with batch x ctx_window, so this and the
+  // context window are what decide whether a given architecture fits at all —
+  // the LLM engine plans its recompute depth around them (`llm/train/memory.py`).
+  // It is also an optimization hyperparameter, so lowering it to fit is a
+  // different run and not merely a slower one.
+  batch_size: number
   ff_multiplier: number
   max_vocab: number
   // A vocabulary built by a `tokenize` job, for the run to train against. Absent
@@ -119,7 +128,7 @@ export interface TrainConfig {
 }
 
 // The architecture a resumed run takes from the checkpoint instead of from the
-// request — the engine's `_ARCHITECTURE` (`llm/orchestrate/train.py`), less the
+// request — the LLM engine's `_ARCHITECTURE` (`llm/orchestrate/train.py`), less the
 // two fields the composer has never offered (`rope_base`, `learned_temperature`).
 //
 // Refused rather than overridden, and pydantic tells a *stated* field from a
@@ -136,7 +145,7 @@ export const RESUMED_ARCH_FIELDS = [
 ] as const satisfies readonly (keyof TrainConfig)[]
 
 // The vocabulary a resumed run inherits, the same way `RESUMED_ARCH_FIELDS`
-// covers the shape — the engine's `resumed_tokenizer` refuses a *stated*
+// covers the shape — the LLM engine's `resumed_tokenizer` refuses a *stated*
 // `tokenizer_id` that disagrees with the checkpoint's rather than honouring
 // it, so the composer must neither show a control for this nor send it. Held
 // apart from `RESUMED_ARCH_FIELDS` because neither is an architecture field —
@@ -145,7 +154,7 @@ export const RESUMED_ARCH_FIELDS = [
 // resume's payload is stripped.
 //
 // `max_vocab` rides along because it is the *other* half of the same
-// inheritance and the worse-behaved half: the engine's `tokenizer_for` returns
+// inheritance and the worse-behaved half: the LLM engine's `tokenizer_for` returns
 // the checkpoint's vocabulary before `max_vocab` is ever read, so a stated
 // ceiling is not refused the way a disagreeing `tokenizer_id` is — it is
 // silently ignored, then stored on the run and recapped as though it applied.
@@ -154,7 +163,7 @@ export const RESUMED_TOKENIZER_FIELDS = [
   "max_vocab",
 ] as const satisfies readonly (keyof TrainConfig)[]
 
-// One checkpoint, announced as its weights land: the engine's `Checkpoint`
+// One checkpoint, announced as its weights land: the LLM engine's `Checkpoint`
 // frame (`llm/train/progress.py`), arriving on the job socket as `checkpoint`.
 //
 // A whole model, so `model_id` is a model id like any other — it is what makes a
@@ -196,7 +205,7 @@ export interface Fertility {
 
 // One learned merge. `count` is how often the merged token occurs in the packed
 // corpus, NOT the pair frequency that earned the merge — the tokenizers library
-// keeps that only while it is choosing. See the engine's `bpe.merge_sequence`.
+// keeps that only while it is choosing. See the LLM engine's `bpe.merge_sequence`.
 export interface Merge {
   token: string
   count?: number
@@ -219,7 +228,7 @@ export interface RibbonSegment {
   closes: boolean
 }
 
-// `overflow` is the documents past the engine's per-window cap. Non-zero means
+// `overflow` is the documents past the LLM engine's per-window cap. Non-zero means
 // `segments` stops short of the window's width on purpose: the tail is real and
 // too fine to draw as bars.
 export interface RibbonWindow {
@@ -229,7 +238,7 @@ export interface RibbonWindow {
 }
 
 // The concrete picture behind `boundary_straddle`. `datasets` is the name table
-// `RibbonSegment.dataset` indexes. Bounded by two engine-side constants
+// `RibbonSegment.dataset` indexes. Bounded by two constants in the LLM engine
 // (`RIBBON_WINDOWS` × `RIBBON_SEGMENTS`), never by the size of the corpus.
 export interface Ribbon {
   datasets: string[]
@@ -258,7 +267,7 @@ export interface BuildSource {
   tokens: number
 }
 
-// Which of phase 1's steps a build is on. Named by the engine
+// Which of phase 1's steps a build is on. Named by the LLM engine
 // (`llm.train.progress.BUILD_SPANS`) rather than inferred here from which counts
 // have arrived: packing is the longest step of a run and used to report nothing
 // at all, so "the step before the first one that has not reported" read the whole
@@ -296,7 +305,7 @@ export interface TokenizeStats {
   sampled_bytes: number
   sample_budget: number
   // Per-source progress while a corpus is packed, in reading order. Bounded by
-  // the engine, which sends a window centred on the source in flight;
+  // the LLM engine, which sends a window centred on the source in flight;
   // `sources_total` is how many there really are.
   sources: BuildSource[]
   sources_total: number
@@ -314,7 +323,7 @@ export interface TokenizeStats {
   // measured off the packed corpus and its document table, so a run that reused a
   // build reports them exactly as the run that made it did.
   //
-  // Most tokens first, and bounded by the engine.
+  // Most tokens first, and bounded by the LLM engine.
   fertility: Fertility[]
   // Token ids the corpus never uses. The embedding table is tied, so each one is a
   // row read in every forward pass and trained by nothing — read against `vocab`.
@@ -387,7 +396,7 @@ export interface DiagPoint {
   emb_pca3: [number, number, number][]
 
   // ── Fine-tuning ───────────────────────────────────────────────────────────
-  // Every field below is OPTIONAL because the engine omits what it did not
+  // Every field below is OPTIONAL because the LLM engine omits what it did not
   // measure rather than sending a zero (see `Diagnostics.as_dict`): a pretrain
   // run carries none of them, and an SFT run carries only the ones it could
   // reach. `undefined` means "not measured" and must render as an absent figure,
@@ -424,6 +433,9 @@ export interface DiagPoint {
   // Fraction of episodes that answered correctly. The number an RL run is read
   // by, in place of a loss.
   pass_rate?: number
+  source_scores?: Record<string, GymSourceScore>
+  /** Source gym per task group, in the order the gym assigned them. */
+  task_sequence?: string[]
   mastery?: import("@/lib/practice").SkillProgress[]
   curriculum_events?: import("@/lib/practice").MasteryEvent[]
   test_before?: import("@/lib/practice").PracticeTest
@@ -479,6 +491,15 @@ export interface TrainStats {
   // nothing here, so `CheckpointFrame` is what a listing reads.
   checkpoint_path: string | null
   step: number
+  // Peak VRAM the run has reached, and the budget its recompute depth was
+  // planned against (engine `llm/train/memory.py`). Null off CUDA.
+  //
+  // The pair is the reading, not either number alone: close to the budget means
+  // the next size up will not fit, well under it means the run is paying step
+  // time for headroom it is not using. A run that used to answer this question
+  // by silently spilling into host RAM answers it here instead.
+  peak_mib: number | null
+  budget_mib: number | null
   // Diagnostics sampled on this report frame, or null on epoch-boundary frames.
   diag: DiagPoint | null
 }

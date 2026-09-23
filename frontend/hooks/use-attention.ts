@@ -14,7 +14,7 @@ export function useAttention(modelId: string) {
   const [error, setError] = React.useState<string | null>(null)
 
   // Nothing is fetched on mount, and that is the feature rather than laziness:
-  // materializing a matrix costs the engine a forward pass with the fused kernel
+  // materializing a matrix costs the LLM engine a forward pass with the fused kernel
   // switched off, so it happens when someone asks and at no other time.
   const load = React.useCallback(
     async (query: AttentionQuery) => {

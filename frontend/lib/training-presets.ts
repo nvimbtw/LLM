@@ -153,6 +153,7 @@ export function toTrainConfig(
     layers: num(b.layers, DEFAULT_CONFIG.layers),
     epochs: num(b.epochs, DEFAULT_CONFIG.epochs),
     lr: num(b.lr, DEFAULT_CONFIG.lr),
+    batch_size: num(b.batch_size, DEFAULT_CONFIG.batch_size),
     ff_multiplier: num(b.ff_multiplier, DEFAULT_CONFIG.ff_multiplier),
     max_vocab: num(b.max_vocab, DEFAULT_CONFIG.max_vocab),
     datasets: datasets(b.datasets),

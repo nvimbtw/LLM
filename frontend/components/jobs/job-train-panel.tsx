@@ -44,7 +44,7 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
     <div className="space-y-8">
       {/* Everything here spans the width. There is no rail beside it: the config
           recap that used to hold that column renders nothing for a training job,
-          because the engine's run row carries no `config` field for it to
+          because the LLM engine's run row carries no `config` field for it to
           describe — and half a page of empty gutter beside the hero is worse
           than no rail at all. */}
       <TrainingHero

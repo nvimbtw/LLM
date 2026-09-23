@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { EpisodeList } from "@/components/gyms/episode-list"
 import { CommandBox } from "@/components/gyms/command-box"
 import { EpisodeTranscript } from "@/components/gyms/episode-transcript"
+import { SourceScores } from "@/components/gyms/source-scores"
 import { RewardChart } from "@/components/gyms/reward-chart"
 import { useGymRun } from "@/hooks/use-gym-run"
 import { useModelNames } from "@/hooks/use-model-names"
@@ -112,6 +113,7 @@ export default function GymRunPage() {
               onSelect={setChosen}
             />
           </Panel>
+          {run.gym_id === "general" && <SourceScores episodes={run.episodes} />}
           {rewards.length > 0 && <RewardChart data={rewards} />}
         </div>
 
@@ -127,7 +129,7 @@ export default function GymRunPage() {
               />
               {/* Only while the episode is still open: a command run against a
                   graded episode would append a step to a scored trajectory. */}
-              {selected.status !== "graded" && !isRunning && (
+              {selected.status !== "graded" && selected.status !== "closed" && selected.tools?.includes("bash") && !isRunning && (
                 <div className="border-t border-border pt-6">
                   <p className="eyebrow mb-2 text-muted-foreground">
                     Run a command yourself

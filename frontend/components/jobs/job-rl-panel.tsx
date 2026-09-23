@@ -3,6 +3,9 @@
 import * as React from "react"
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 
+import { SourceScores } from "@/components/gyms/source-scores"
+import { GeneralGymProgress, type SourceHistoryPoint } from "@/components/jobs/general-gym-progress"
+import type { GymSourceScore } from "@/lib/gyms"
 import { Appendix } from "@/components/training/appendix"
 import {
   ACCENT_COLOR,
@@ -50,18 +53,40 @@ const chartConfig = {
 } satisfies ChartConfig
 
 export function JobRlPanel({ run }: JobRlPanelProps) {
+  const result = run.job?.result as {
+    source_scores?: Record<string, GymSourceScore>
+    source_history?: SourceHistoryPoint[]
+    pass_rate?: number
+    signal?: number
+  } | null
+  const liveHistory = React.useMemo(
+    () => run.diag.filter((point) => point.source_scores != null) as SourceHistoryPoint[],
+    [run.diag]
+  )
+  const history = result?.source_history && result.source_history.length > liveHistory.length
+    ? result.source_history : liveHistory
+  const sources = React.useMemo(() => {
+    const fromHistory = history.flatMap((entry) => Object.keys(entry.source_scores ?? {}))
+    const fromResult = Object.keys(result?.source_scores ?? {})
+    return [...new Set([...fromHistory, ...fromResult])]
+  }, [history, result?.source_scores])
+  // The durable run row currently omits config. A live snapshot may have it;
+  // otherwise, more than one actual source is proof this is a General run.
+  const isGeneral = (run.runConfig as { gym_id?: string } | null)?.gym_id === "general"
+    || sources.length > 1
   const points = React.useMemo(
     () =>
-      run.diag
+      (history.length ? history : run.diag)
         .filter((d) => d.pass_rate != null)
         .map((d) => ({
           step: d.step,
           pass_rate: d.pass_rate ?? 0,
           signal: d.signal ?? 0,
         })),
-    [run.diag]
+    [history, run.diag]
   )
   const last = run.diag.findLast((d) => d.pass_rate != null)
+  const sourceScores = last?.source_scores ?? result?.source_scores
   const report = React.useMemo(() => {
     const stored = (run.job?.result ?? {}) as PracticeReport
     return run.diag.reduce<PracticeReport>((all, point) => ({ ...all, ...point }), stored)
@@ -76,8 +101,8 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
       >
         <div className="space-y-5">
           <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
-            <Stat label="Training pass rate" value={percent(last?.pass_rate)} />
-            <Stat label="Signal" value={percent(last?.signal)} />
+            <Stat label="Training pass rate" value={percent(last?.pass_rate ?? result?.pass_rate)} />
+            <Stat label="Signal" value={percent(last?.signal ?? result?.signal)} />
             <Stat
               label="Groups"
               value={
@@ -92,6 +117,12 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
             <Stat label="Rounds / episode" value={fixed(last?.episode_rounds, 1)} />
             <Stat label="Mean return" value={fixed(last?.mean_return, 3)} />
           </dl>
+
+          {isGeneral && <GeneralGymProgress history={history} sources={sources} />}
+
+          {isGeneral && (
+            <h3 className="text-sm font-semibold">Overall batch trend</h3>
+          )}
 
           {points.length > 1 ? (
             <ChartContainer config={chartConfig} className="aspect-auto h-80 w-full">
@@ -148,6 +179,7 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
         </div>
       </Panel>
 
+      {sourceScores && Object.keys(sourceScores).length > 1 && <SourceScores scores={sourceScores} />}
       <Appendix log={run.log} checkpoints={run.checkpoints} />
     </div>
   )

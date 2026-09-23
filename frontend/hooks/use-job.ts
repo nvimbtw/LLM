@@ -19,7 +19,7 @@ import type {
 const MAX_LOSS_POINTS = 500
 const MAX_BATCH_POINTS = 60
 const MAX_DIAG_POINTS = 500
-// Phase 1's own curve. The engine's frame interval widens as a build runs
+// Phase 1's own curve. The LLM engine's frame interval widens as a build runs
 // (`TARGET_BUILD_REPORTS`), so this is only reached by a build of hours — and
 // halving it there costs the resolution of the first minutes, which by then is
 // the part nobody is still reading.

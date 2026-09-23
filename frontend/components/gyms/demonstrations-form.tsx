@@ -9,15 +9,17 @@ import { FormError } from "@/components/ui/error-state"
 import { createDemonstrations } from "@/lib/gyms"
 
 export interface DemonstrationsFormProps {
+  gymWeights?: Record<string, number>
   gymId: string
   taskTypes: string[]
 }
 
 export function DemonstrationsForm({
   gymId,
+  gymWeights,
   taskTypes,
 }: DemonstrationsFormProps) {
-  const [name, setName] = React.useState("math-foundations")
+  const [name, setName] = React.useState(`${gymId}-foundations`)
   const [count, setCount] = React.useState(1000)
   const [seed, setSeed] = React.useState(0)
   const [busy, setBusy] = React.useState(false)
@@ -36,7 +38,7 @@ export function DemonstrationsForm({
     setError(null)
     setCreated(false)
     try {
-      await createDemonstrations(gymId, taskTypes, name.trim(), count, seed)
+      await createDemonstrations(gymId, taskTypes, name.trim(), count, seed, gymWeights)
       setCreated(true)
       setSeed(seed + count)
     } catch (e) {

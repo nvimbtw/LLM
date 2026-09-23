@@ -65,7 +65,7 @@ export function Pow2Input({
 // extension of the spec-sheet rail — a hairline list, tabular figures, muted
 // labels — rather than a separate form.
 //
-// Serves both kinds. A selection carries the dataset's id: the engine selects
+// Serves both kinds. A selection carries the dataset's id: the LLM engine selects
 // by id because a name is something a person can rename in the data view
 // without meaning to change what a run trains on.
 export function DatasetPicker({

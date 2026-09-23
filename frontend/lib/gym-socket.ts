@@ -18,7 +18,7 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 //   server → { type: "error", error }               (at any point)
 //
 // The same vocabulary a chat turn streams, with two differences that matter.
-// The engine's `done` arrives as **`round_done`**: an episode takes a round per
+// The LLM engine's `done` arrives as **`round_done`**: an episode takes a round per
 // command, and a client counting `done` would see an episode end every time the
 // model ran `ls`. And every frame carries the `episode_id` it belongs to, so a
 // run of twenty tasks is one socket rather than twenty.
