@@ -6,6 +6,7 @@ import {
   Gauge,
   HelpCircle,
   ListFilter,
+  ListTodo,
   MessageSquarePlus,
   Percent,
   Scissors,
@@ -26,8 +27,15 @@ import {
 } from "@/lib/settings"
 import type { Model } from "@/hooks/use-models"
 import { THINK_BUDGETS, type ThinkBudget } from "@/lib/think-budget"
+import {
+  planOptions,
+  runPlanCommand,
+  type PlanCommands,
+  type PlanCommandOption,
+} from "./plan-commands"
 
 export interface CommandContext {
+  plan?: PlanCommands
   settings: Settings
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void
   openSettings: () => void
@@ -56,6 +64,7 @@ export type CommandKind =
   | "text"
   | "theme"
   | "action"
+  | "plan"
 
 export interface SlashCommandDef {
   name: string
@@ -69,6 +78,15 @@ export interface SlashCommandDef {
 }
 
 export const SLASH_COMMANDS: SlashCommandDef[] = [
+  {
+    name: "plan",
+    aliases: [],
+    label: "Plan",
+    description: "Add tasks, edit their order, and save your plan",
+    argsHint: "[add <task>|edit|save]",
+    kind: "plan",
+    icon: ListTodo,
+  },
   {
     name: "model",
     aliases: ["m"],
@@ -333,6 +351,7 @@ export interface TextPromptInfo {
 }
 
 export type ArgumentSuggestions =
+  | { type: "plan"; options: PlanCommandOption[] }
   | { type: "model"; options: ModelOption[] }
   | { type: "budget"; options: BudgetOption[] }
   | {
@@ -480,6 +499,13 @@ export function getCommandSuggestions(
   if (!command) return null
 
   switch (command.kind) {
+    case "plan":
+      return {
+        mode: "argument",
+        command,
+        argQuery,
+        data: { type: "plan", options: planOptions(argQuery) },
+      }
     case "model": {
       const models = ctx.models ?? []
       let filtered = models
@@ -661,6 +687,9 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
   }
 
   switch (command.kind) {
+    case "plan":
+      runPlanCommand(arg, ctx.plan)
+      return true
     case "model": {
       if (!arg) {
         const current =
@@ -877,7 +906,7 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
           })
           return true
         }
-        // Async, unlike every other action here: it asks the engine where the
+        // Async, unlike every other action here: it asks the LLM engine where the
         // cut would land. The command is still handled synchronously — the
         // toast just arrives a beat after the menu closes.
         ctx
@@ -886,7 +915,8 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
             if (result.prunedTurns === 0) {
               toast({
                 title: "Prune Context",
-                description: "Already within the trained window — nothing to prune.",
+                description:
+                  "Already within the trained window — nothing to prune.",
               })
               return
             }
@@ -900,7 +930,10 @@ export function runSlashCommand(input: string, ctx: CommandContext): boolean {
             })
           })
           .catch(() => {
-            toast.error("Prune Context", "Could not compute a context floor for this chat.")
+            toast.error(
+              "Prune Context",
+              "Could not compute a context floor for this chat."
+            )
           })
         return true
       }

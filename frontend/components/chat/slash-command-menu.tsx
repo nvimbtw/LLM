@@ -279,7 +279,7 @@ export function SlashCommandMenu({
   return (
     <Panel visible={visible}>
       {/* Header */}
-      <div className="eyebrow flex items-center justify-between border-b border-border px-3.5 py-1.5 text-muted-foreground">
+      <div className="flex items-center justify-between border-b border-border px-3.5 py-1.5 eyebrow text-muted-foreground">
         <div className="flex items-center gap-1.5">
           <span className="font-mono font-medium text-primary">
             /{command.name}
@@ -333,13 +333,37 @@ export function SlashCommandMenu({
                       )}
                     </span>
                     {model.tier && (
-                      <span className="tag ml-auto font-medium text-muted-foreground">
+                      <span className="ml-auto tag font-medium text-muted-foreground">
                         {model.tier}
                       </span>
                     )}
                   </button>
                 )
               })
+            )}
+          </div>
+        )}
+
+        {data.type === "plan" && (
+          <div className="flex flex-col-reverse gap-0.5">
+            {data.options.map((option, index) => (
+              <Button
+                key={option.value}
+                variant="ghost"
+                data-active={index === selectedIndex}
+                className={rowClass(index === selectedIndex)}
+                onClick={() => onSelectOption(option.value, option.execute)}
+              >
+                <span>{option.label}</span>
+                <span className="truncate text-2xs text-muted-foreground">
+                  {option.description}
+                </span>
+              </Button>
+            ))}
+            {!data.options.length && (
+              <p className="p-2.5 text-xs text-muted-foreground">
+                Use add &lt;task&gt;, edit, or save.
+              </p>
             )}
           </div>
         )}
@@ -485,9 +509,7 @@ export function SlashCommandMenu({
 
             {data.info.presets.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="eyebrow text-muted-foreground">
-                  Presets:
-                </span>
+                <span className="eyebrow text-muted-foreground">Presets:</span>
                 <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border border-border p-0.5">
                   {data.info.presets.map((preset, idx) => {
                     const isPresetActive =

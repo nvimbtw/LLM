@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { hasVisibleContent, isInThinkingBlock } from "@/lib/message-parser"
 import type { Attachment } from "@/lib/attachments"
 import { useChat } from "@/hooks/use-chat"
+import { useLocalPlan } from "@/hooks/use-local-plan"
 import { ChatComposer } from "./chat-composer"
 import { useChats } from "./chats-provider"
 import { useComposerChoice } from "./composer-choice-provider"
@@ -33,6 +34,7 @@ const RULE = (
 )
 
 export function ChatThread({ chatId }: { chatId: string }) {
+  const localPlan = useLocalPlan(chatId)
   const {
     messages,
     isLoading,
@@ -362,6 +364,9 @@ export function ChatThread({ chatId }: { chatId: string }) {
             changes with attachments and wrapped lines. */}
           <div className="sticky bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pb-4">
             <ChatComposer
+              key={chatId}
+              plan={localPlan.plan}
+              onPlanChange={localPlan.save}
               onSend={sendMessage}
               sending={isSending}
               onCancel={cancel}

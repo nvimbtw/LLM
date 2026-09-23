@@ -1,7 +1,7 @@
 /**
  * What each tool is called in the interface.
  *
- * A tool is a row in `engine/llm/chat/tools.py` and a name on the wire — the
+ * A tool is a row in `llm-engine/llm/chat/tools.py` and a name on the wire — the
  * vocabulary stopped having a marker per tool (see
  * `docs/decisions/generic-tool-calls.md`), so `web-search` and `bash` arrive
  * here as ordinary strings and nothing upstream knows how to say them in
@@ -20,11 +20,18 @@ export interface ToolWords {
   running: string
   /** Afterwards, past tense — a trace is read once it has happened. */
   done: string
+  failed?: string
 }
 
 const TOOL_WORDS: Record<string, ToolWords> = {
   "web-search": { noun: "Search", running: "Searching", done: "Searched" },
   bash: { noun: "Bash", running: "Running", done: "Ran" },
+  todo: {
+    noun: "Plan",
+    running: "Updating plan",
+    done: "Updated plan",
+    failed: "Plan unchanged",
+  },
 }
 
 /**
@@ -37,4 +44,35 @@ const UNKNOWN: ToolWords = { noun: "Tool", running: "Calling", done: "Called" }
 export function toolWords(tool: string): ToolWords {
   if (!tool) return UNKNOWN
   return TOOL_WORDS[tool] ?? { noun: tool, running: tool, done: tool }
+}
+
+export function toolArgument(tool: string, argument: string): string {
+  if (tool !== "todo") return argument
+  try {
+    const value: unknown = JSON.parse(argument)
+    if (!value || typeof value !== "object") return argument
+    const fields = value as Record<string, unknown>
+    const subject =
+      typeof fields.title === "string"
+        ? fields.title
+        : typeof fields.id === "string"
+          ? fields.id
+          : "tasks"
+    switch (fields.action) {
+      case "create":
+        return `Create plan: ${subject}`
+      case "add":
+        return `Add ${subject}`
+      case "update":
+        return `Update ${subject}`
+      case "complete":
+        return `Complete ${subject}`
+      case "list":
+        return "Read the current plan"
+      default:
+        return argument
+    }
+  } catch {
+    return argument
+  }
 }

@@ -4,7 +4,7 @@
  * The unit an animation is hung on: a word together with the whitespace in
  * front of it, which is the shape a token actually arrives in.
  *
- * The engine yields byte-level BPE fragments — `engine/llm/orchestrate/chat.py`
+ * The LLM engine yields byte-level BPE fragments — `llm-engine/llm/orchestrate/chat.py`
  * notes that one "can be half a UTF-8 character" — and a leading space rides
  * with the word it belongs to rather than arriving as anything of its own. This
  * used to split on `/(\s+)/`, which took that space back out and rendered it as

@@ -30,8 +30,8 @@ export function mapAttachment(raw: AttachmentWire): Attachment {
 }
 
 /**
- * How many files one turn may carry. The engine refuses an eleventh
- * (`MAX_PER_MESSAGE` in `engine/api/routes/attachments.py`) — repeated here so
+ * How many files one turn may carry. The LLM engine refuses an eleventh
+ * (`MAX_PER_MESSAGE` in `llm-engine/api/routes/attachments.py`) — repeated here so
  * it is said in the composer, where the person is still choosing, rather than
  * as a failed turn after the socket has opened.
  */

@@ -25,8 +25,8 @@ export interface ComposerFooterProps {
    *  so the tick mark and the overage badge below have a fixed line to
    *  measure from regardless of `contextMultiplier`. */
   contextWindow: number | null
-  /** Stretches the real ceiling the bar fills toward, via the engine's
-   *  NTK-scaled RoPE tables (`docs/engine/README.md`). 1 (default) renders
+  /** Stretches the real ceiling the bar fills toward, via the LLM engine's
+   *  NTK-scaled RoPE tables (`docs/llm-engine/README.md`). 1 (default) renders
    *  identically to before this existed — no tick, no badge. */
   contextMultiplier?: number
   /** Tokens `/prune` has excluded from what the model is prompted with —

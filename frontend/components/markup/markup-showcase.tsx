@@ -6,6 +6,7 @@ import { ChatMessageBubble } from "@/components/chat/chat-message"
 import { Button } from "@/components/ui/button"
 import type { ChatMessage } from "@/hooks/use-chat"
 import type { ToolAnswer } from "@/components/chat/trace"
+import { PlanShowcase } from "./plan-showcase"
 
 /**
  * Every renderable special token, in one conversation.
@@ -25,7 +26,7 @@ import type { ToolAnswer } from "@/components/chat/trace"
  * one changes.
  *
  * Vocabulary source of truth: `SPECIAL_TOKENS` in
- * `engine/llm/corpus/special.py`.
+ * `llm-engine/llm/corpus/special.py`.
  */
 
 interface Turn {
@@ -81,7 +82,7 @@ const CONVERSATION: Turn[] = [
       "disambiguate.<|/par|>" +
       "<|subheading|>Layout<|/subheading|>" +
       "<|par|>The vocabulary is laid out as raw bytes, then the special block, then BPE " +
-      "merges above it. See <|link|>engine/llm/corpus/special.py<|/link|> for the " +
+      "merges above it. See <|link|>llm-engine/llm/corpus/special.py<|/link|> for the " +
       "table itself.<|/par|>" +
       "<|divider|>" +
       "<|par|>There are 36 of them at present.<|/par|>",
@@ -378,6 +379,7 @@ export function MarkupShowcase() {
           ))}
         </div>
       </div>
+      <PlanShowcase />
     </div>
   )
 }

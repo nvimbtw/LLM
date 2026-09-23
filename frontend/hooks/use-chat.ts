@@ -197,7 +197,7 @@ function groupTurns(rows: MessageWire[]): ChatMessage[] {
  * The row opens by repeating the call —
  * `<|tool-call|>{"tool": …, "argument": …}<|/tool-call|>` then the result —
  * which is what tells the model which of its calls it is being handed (see
- * `engine/llm/chat/tools.py`). Reading it back here is the same fact used the
+ * `llm-engine/llm/chat/tools.py`). Reading it back here is the same fact used the
  * other way round.
  */
 function parseToolRow(content: string): ToolAnswer {
@@ -250,7 +250,7 @@ export function useChat(chatId: string) {
     settings.contextMultiplier,
   ])
 
-  // What `/prune` last found for this chat — browser-local, not the engine's
+  // What `/prune` last found for this chat — browser-local, not the LLM engine's
   // to remember (see `lib/context-floor.ts`). Re-read whenever the chat
   // changes, and held in state (not just the ref below) so the footer's token
   // count re-renders the moment a prune actually lands.
@@ -407,8 +407,8 @@ export function useChat(chatId: string) {
    * Queue a message against the turn already streaming: shown in `queued`
    * rather than `messages`, and sent as an `interject` frame over that turn's
    * own socket. No attachments — an interjection is text steering, not a new
-   * question with its own uploads, matching the engine's `Ask.interject`
-   * (`engine/api/routes/chats.py`) having none either.
+   * question with its own uploads, matching the LLM engine's `Ask.interject`
+   * (`llm-engine/api/routes/chats.py`) having none either.
    */
   const queueInterjection = React.useCallback(
     (content: string, modelId: string, budget: ThinkBudget) => {
@@ -500,7 +500,7 @@ export function useChat(chatId: string) {
           const last = next[next.length - 1]
           if (last?.role === "assistant") {
             // Concatenated, never joined. A `token` frame is the *delta* of the
-            // decoded reply (`engine/llm/orchestrate/chat.py`:
+            // decoded reply (`llm-engine/llm/orchestrate/chat.py`:
             // `after[len(before):]`), so a leading space arrives inside the
             // piece that owns it and adding one here invents a boundary the
             // model never emitted. This joined with `" "` on the belief that a
@@ -691,7 +691,7 @@ export function useChat(chatId: string) {
               elapsedSecs += info.elapsedSecs ?? 0
               // One `done` per round. Only the last is the turn, and refetching
               // on an earlier one would replace a reply still being written
-              // with the half of it the engine has stored so far.
+              // with the half of it the LLM engine has stored so far.
               if (!info.final) return
               // Replace the streamed approximation with the authoritative,
               // intact content saved on the server, but keep the token counts

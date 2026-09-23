@@ -2,7 +2,7 @@ import { apiFetch } from "@/lib/api"
 
 /** What `/chats/{id}/context-floor` reports: where `/prune` would cut this
  *  chat's history right now, under the model's own (un-multiplied)
- *  `ctx_window` — see the engine's `context_floor` for what decides it. */
+ *  `ctx_window` — see the LLM engine's `context_floor` for what decides it. */
 export interface ContextFloor {
   /** The message a future turn should stop reaching past. Null when the
    *  chat has no messages yet. */

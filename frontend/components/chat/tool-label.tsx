@@ -1,7 +1,7 @@
 "use client"
 
 import type { ToolCall } from "@/lib/message-parser"
-import { toolWords } from "@/lib/tools"
+import { toolArgument, toolWords } from "@/lib/tools"
 
 /**
  * What the thread's status row says while a tool runs: the tool, then what it
@@ -14,15 +14,15 @@ import { toolWords } from "@/lib/tools"
  * tool is said (`lib/tools.ts`).
  *
  * Unlike `ThinkingLabel` this is not a guess. The model told us what it wanted
- * and the backend is doing exactly that, so the argument is shown verbatim —
- * the only liberty taken is folding whitespace, because a heredoc arrives with
- * newlines in it and a status row is one line.
+ * and the backend is doing exactly that. Plan operations get a short caption
+ * from `lib/tools.ts`; other arguments stay verbatim except for whitespace,
+ * because a heredoc arrives with newlines and a status row is one line.
  */
 export function ToolLabel({ call }: { call: ToolCall }) {
   const words = toolWords(call.tool)
-  const argument = oneLine(call.argument)
+  const argument = oneLine(toolArgument(call.tool, call.argument))
 
-  // A call with nothing in it is a call the model mangled — the engine drops
+  // A call with nothing in it is a call the model mangled — the LLM engine drops
   // those, so this is rare, but a bare "Search:" with nothing after the colon
   // would look like a rendering fault rather than the model's own mistake.
   if (!argument) {

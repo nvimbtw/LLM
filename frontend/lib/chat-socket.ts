@@ -179,7 +179,7 @@ export function streamChat(
               : {}),
             ...(trimmedSystem ? { system: trimmedSystem } : {}),
             // Same rule for the budget: "auto" is the absence of one, so it is
-            // omitted rather than sent as a value the engine has to interpret.
+            // omitted rather than sent as a value the LLM engine has to interpret.
             ...(budget !== "auto" ? { budget } : {}),
             // Each knob is sent only when it is a real number. A NaN from a
             // corrupted localStorage entry would serialize to `null` and be
@@ -220,7 +220,7 @@ export function streamChat(
         handlers.onInterjected(msg.text ?? "")
         break
       case "done": {
-        // A turn that called a tool runs more than one round, and the engine
+        // A turn that called a tool runs more than one round, and the LLM engine
         // ends each of them with `done` — only the one the backend marks final
         // ends the turn. Settling on the first would close the socket before
         // the answer the search was for had been generated.

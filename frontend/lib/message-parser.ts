@@ -1,7 +1,7 @@
 // Parses the model's custom markup into a small tree the UI can render.
 //
 // The model emits the backend tokenizer's protected vocabulary (SPECIAL_TOKENS
-// in engine/llm/corpus/special.py), which is terse and space-free:
+// in llm-engine/llm/corpus/special.py), which is terse and space-free:
 //   <|title|>Title<|/title|>
 //   <|par|>Text with <|bold|>bold<|/bold|> and <|code|>String<|/code|>.<|/par|>
 //   <|codeblock|>...code...<|/codeblock|>
@@ -14,7 +14,7 @@
 //
 // `<|reply|>` is still parsed, because stored messages may contain one, but the
 // renderer drops it: the reply-reference feature is gone. The marker keeps its
-// reserved id on the engine side — the ids are positional — and the grammar in
+// reserved id on the LLM engine side — the ids are positional — and the grammar in
 // llm/chat/markup.py already forbids the model from emitting it.
 //
 // Those token names are mapped here onto the render vocabulary shared with the
@@ -58,7 +58,7 @@ export interface ToolCall {
 }
 
 /**
- * Keys an argument may arrive under. `engine/llm/chat/tools.py::parse` is the
+ * Keys an argument may arrive under. `llm-engine/llm/chat/tools.py::parse` is the
  * source of truth and is more forgiving than this — it is what decides whether
  * a call *runs*. This only decides how one is captioned, so it reads the same
  * keys and shrugs at anything stranger.
@@ -74,7 +74,7 @@ export function callOf(node: MNode): ToolCall | null {
   try {
     payload = JSON.parse(body)
   } catch {
-    // A call the model mangled. The engine did not run it either, and showing
+    // A call the model mangled. The LLM engine did not run it either, and showing
     // the broken text is more honest than hiding that the model tried.
     return { tool: "", argument: body }
   }

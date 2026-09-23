@@ -40,6 +40,10 @@ import { AttachMenu } from "./attach-menu"
 import { MicButton } from "./mic-button"
 import { AttachmentStrip, type PendingAttachment } from "./attachment-strip"
 import { ComposerFooter } from "./composer-footer"
+import { ComposerPlan } from "./composer-plan"
+import type { Plan } from "@/lib/plan"
+import { usePlanEditor } from "@/hooks/use-plan-editor"
+import { useLocalPlan } from "@/hooks/use-local-plan"
 
 // One level of indentation inside a code block. Two spaces, matching the
 // nesting width `docToMarkdown` uses for lists, so everything the composer
@@ -166,19 +170,10 @@ const InterimTranscript = Mark.create({
 // position mapping below can tell them from edits a person made.
 const VOICE_TRANSACTION = "voiceTranscript"
 
-export function ChatComposer({
-  onSend,
-  disabled = false,
-  sending = false,
-  onCancel,
-  placeholder = "Message Slate…",
-  title,
-  onRenameTitle,
-  contextTokensUsed = 0,
-  unseenTokens = 0,
-  draft,
-  onPruneContext,
-}: {
+export interface ChatComposerProps {
+  plan?: Plan | null
+  onPlanChange?: (plan: Plan) => void
+  onPlanEditingChange?: (editing: boolean) => void
   onSend: (
     content: string,
     modelId: string,
@@ -218,7 +213,32 @@ export function ChatComposer({
   // `/prune` — see lib/context-floor.ts. Optional for the same reason
   // `onRenameTitle` is: the new-chat composer has no chat yet to prune.
   onPruneContext?: () => Promise<{ prunedTurns: number; prunedTokens: number }>
-}) {
+}
+
+export function ChatComposer({
+  onSend,
+  disabled = false,
+  sending = false,
+  onCancel,
+  placeholder = "Message Slate…",
+  title,
+  onRenameTitle,
+  contextTokensUsed = 0,
+  unseenTokens = 0,
+  draft,
+  onPruneContext,
+  plan,
+  onPlanChange,
+  onPlanEditingChange,
+}: ChatComposerProps) {
+  const fallbackPlan = useLocalPlan()
+  const savedPlan = plan === undefined ? fallbackPlan.plan : plan
+  const planEditor = usePlanEditor(
+    savedPlan,
+    onPlanChange ?? fallbackPlan.save,
+    onPlanEditingChange
+  )
+  const visiblePlan = planEditor.editing?.draft ?? savedPlan
   // Both live above the router (see composer-choice-provider.tsx) rather than
   // here: sending the first message replaces the new-chat composer with the
   // thread's own, and a choice held in this component's state would be reset by
@@ -286,7 +306,8 @@ export function ChatComposer({
         if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
         // Nothing waits on this and nothing recovers from it: the row is the
         // server's to sweep if the request never lands.
-        if (a.attachmentId) void discardAttachment(a.attachmentId).catch(() => {})
+        if (a.attachmentId)
+          void discardAttachment(a.attachmentId).catch(() => {})
       }
       return []
     })
@@ -396,6 +417,7 @@ export function ChatComposer({
       clearComposer,
       newChat: () => router.push("/"),
       pruneContext: onPruneContext,
+      plan: planEditor,
     }),
     [
       settings,
@@ -411,6 +433,7 @@ export function ChatComposer({
       clearComposer,
       router,
       onPruneContext,
+      planEditor,
     ]
   )
 
@@ -442,6 +465,7 @@ export function ChatComposer({
     }
     const { data } = suggestionsResult
     if (data.type === "model") return data.options.length
+    if (data.type === "plan") return data.options.length
     if (data.type === "budget") return data.options.length
     if (data.type === "toggle") return data.options.length
     if (data.type === "theme") return data.options.length
@@ -509,6 +533,11 @@ export function ChatComposer({
       }
     } else if (suggestionsResult.mode === "argument") {
       const { command, data } = suggestionsResult
+      if (data.type === "plan" && data.options[selectedIndex]) {
+        const option = data.options[selectedIndex]
+        handleSelectOption(option.value, option.execute)
+        return true
+      }
       if (data.type === "model" && data.options[selectedIndex]) {
         handleSelectOption(data.options[selectedIndex].model.id, true)
         return true
@@ -902,7 +931,10 @@ export function ChatComposer({
       const target = event.target as HTMLElement | null
       const tag = target?.tagName
       const alreadyEditable =
-        target?.isContentEditable || tag === "INPUT" || tag === "TEXTAREA"
+        target?.isContentEditable ||
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        target?.closest("button, [role='button']")
       if (alreadyEditable) return
 
       const ed = editorRef.current
@@ -983,6 +1015,15 @@ export function ChatComposer({
     // without making the footer a compartment of the card — which it is not: it
     // says what the conversation is, not what you are about to send.
     <div className="flex flex-col">
+      {visiblePlan && (
+        <ComposerPlan
+          key={visiblePlan.id}
+          plan={visiblePlan}
+          running={sending}
+          suppressed={isSlashActive}
+          editing={planEditor.editing}
+        />
+      )}
       <div
         className={cn(
           // Above the drawer, and opaque enough to hide the part of it that
@@ -1040,7 +1081,10 @@ export function ChatComposer({
           </div>
         )}
 
-        <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
+        <AttachmentStrip
+          attachments={attachments}
+          onRemove={removeAttachment}
+        />
 
         {/* A recognised command colours the line blue (primary),
             signalling it'll run as a command rather than be sent to the model. */}
@@ -1059,7 +1103,7 @@ export function ChatComposer({
         <div className="flex items-center gap-2 px-2.5 pb-2">
           {/* Off while sending too, not just while disabled: an interjection
               carries no attachments (see `Ask.interject` in
-              `engine/api/routes/chats.py`), so a file picked here while a turn
+              `llm-engine/api/routes/chats.py`), so a file picked here while a turn
               is mid-flight would upload and then have nowhere to go. */}
           <AttachMenu onFiles={addFiles} disabled={disabled || sending} />
           <ComposerPicker
@@ -1095,7 +1139,7 @@ export function ChatComposer({
                 className="rounded-full"
                 onClick={onCancel}
               >
-                <Square className="fill-current size-3.5" />
+                <Square className="size-3.5 fill-current" />
               </Button>
             )}
             <Button

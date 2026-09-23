@@ -9,7 +9,7 @@ import {
   type MElement,
   type MNode,
 } from "@/lib/message-parser"
-import { toolWords } from "@/lib/tools"
+import { toolArgument, toolWords } from "@/lib/tools"
 
 /**
  * One tool call inside a `Trace`: what was asked, and what came back.
@@ -64,7 +64,11 @@ export function TraceStep({
   // `lib/tools.ts` owns how a tool is said, so the tick and the thread's status
   // row cannot end up calling the same call two different things.
   const words = toolWords(tool)
-  const verb = running ? words.running : words.done
+  const verb = running
+    ? words.running
+    : failed
+      ? (words.failed ?? words.done)
+      : words.done
   // A call that failed is never folded away. Its caveat is one line, and the
   // count that would replace it — "1 result" over a search that found nothing —
   // would say the opposite of what happened.
@@ -113,7 +117,7 @@ export function TraceStep({
             expandable && "group-hover:text-foreground"
           )}
         >
-          {argument}
+          {toolArgument(tool, argument)}
         </span>
 
         {/* Fades in as the answer lands, rather than appearing with it: the
