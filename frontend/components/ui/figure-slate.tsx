@@ -15,6 +15,18 @@ const DENSITY = " .:coO08@"
 type Point = readonly [number, number]
 type Face = readonly [Point, Point, Point, number]
 
+const SHIMMER_CLUSTER_SIZE = 12
+const SHIMMER_STEP_SECONDS = 4
+// The order alternates across the range rather than tracing a moving scan line.
+const SHIMMER_ANCHORS: readonly Point[] = [
+  [79, 6],
+  [40, 11],
+  [110, 14],
+  [53, 10],
+  [83, 10],
+  [73, 10],
+]
+
 // Shared vertices make a continuous massif. Light is authored per face so the
 // same character grid describes both the silhouette and the folds inside it.
 const SUMMIT: Point = [79, 1]
@@ -210,22 +222,63 @@ function sample(col: number, row: number) {
   }
 }
 
-// One SVG text run per ink per row, rather than thousands of individual nodes.
-// Explicit cell positions keep the image aligned even before the font loads.
-const LINES = Array.from({ length: ROWS }, (_, row) => {
-  const cells = Array.from({ length: COLUMNS }, (_, col) => sample(col, row))
-  return Array.from({ length: 8 }, (_, ink) => {
-    const columns = cells.flatMap((cell, col) =>
-      cell.ink === ink && cell.glyph !== " " ? [col] : []
-    )
-    return {
-      ink,
-      row,
-      x: columns.map((col) => (col * CELL_WIDTH).toFixed(3)).join(" "),
-      text: columns.map((col) => cells[col].glyph).join(""),
+const GRID = Array.from({ length: ROWS }, (_, row) =>
+  Array.from({ length: COLUMNS }, (_, col) => ({
+    col,
+    row,
+    ...sample(col, row),
+  }))
+)
+
+function shimmerClusters() {
+  const ridges = GRID.flat().filter(({ ink }) => ink === 4 || ink === 5)
+  const clusters = new Map<number, number>()
+  SHIMMER_ANCHORS.forEach(([x, y], cluster) => {
+    const nearby = ridges
+      .filter(({ col, row }) => !clusters.has(row * COLUMNS + col))
+      .map((cell) => ({
+        ...cell,
+        distance: Math.hypot(
+          (cell.col - x) * CELL_WIDTH,
+          (cell.row - y) * CELL_HEIGHT
+        ),
+      }))
+      .sort((a, b) => a.distance - b.distance || a.row - b.row || a.col - b.col)
+      .slice(0, SHIMMER_CLUSTER_SIZE)
+    nearby.forEach(({ col, row }) => clusters.set(row * COLUMNS + col, cluster))
+  })
+  return clusters
+}
+
+const CLUSTERS = shimmerClusters()
+
+// Each glyph belongs to exactly one run. Splitting only at a change of ink or
+// shimmer phase keeps the DOM small and leaves every character on its grid.
+const LINES = GRID.flatMap((cells, row) => {
+  const runs = new Map<
+    string,
+    {
+      ink: number
+      cluster: number
+      columns: number[]
+      text: string
     }
-  }).filter((line) => line.text)
-}).flat()
+  >()
+  cells.forEach(({ col, ink, glyph }) => {
+    if (glyph === " ") return
+    const cluster = CLUSTERS.get(row * COLUMNS + col) ?? -1
+    const key = `${ink}:${cluster}`
+    const run = runs.get(key) ?? { ink, cluster, columns: [], text: "" }
+    run.columns.push(col)
+    run.text += glyph
+    runs.set(key, run)
+  })
+  return Array.from(runs.values(), ({ columns, ...run }) => ({
+    ...run,
+    row,
+    x: columns.map((col) => (col * CELL_WIDTH).toFixed(3)).join(" "),
+  }))
+})
 
 export interface FigureSlateProps {
   className?: string
@@ -239,12 +292,20 @@ export function FigureSlate({ className }: FigureSlateProps) {
       focusable="false"
       className={cn("slate-mark h-auto w-full", className)}
     >
-      {LINES.map(({ row, ink, x, text }) => (
+      {LINES.map(({ row, ink, cluster, x, text }) => (
         <text
-          key={`${row}:${ink}`}
+          key={`${row}:${ink}:${cluster}`}
           x={x}
           y={(row + 1) * CELL_HEIGHT - 1}
-          className={`slate-mark-ink-${ink}`}
+          className={cn(
+            `slate-mark-ink-${ink}`,
+            cluster >= 0 && "slate-mark-shimmer"
+          )}
+          style={
+            cluster >= 0
+              ? { animationDelay: `${cluster * SHIMMER_STEP_SECONDS}s` }
+              : undefined
+          }
         >
           {text}
         </text>

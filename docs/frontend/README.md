@@ -1566,8 +1566,8 @@ including why nothing records attention until someone asks — is
 
 The new-chat heading is an ASCII mountain range above a compact **SLATE**
 wordmark. Letter widths are authored individually on the shared character
-grid: glyph density and theme ink describe
-lit rock faces, shadow, and distant ridges. The mountain geometry and lettering
+grid: glyph density and theme ink describe lit rock faces, shadow, and distant
+ridges. The mountain geometry and lettering
 are authored in `components/ui/figure-slate.tsx`; deterministic grain keeps the
 server and client render identical. Two empty character rows separate the
 mountains from the wordmark. Its imported stylesheet uses active theme roles:
@@ -1575,10 +1575,19 @@ primary and throbber-spark in dark mode, with deeper throbber-base ink and
 stronger opacity in light mode so the thin mountain glyphs survive on paper.
 The wordmark uses foreground in both modes.
 
-The SVG groups characters by row and ink, with explicit character positions so
-font loading cannot shift the grid. It scales as one image with the composer
-width and reserves its aspect ratio before paint. The artwork is static,
-including with reduced motion, and hidden from assistive technology; the
+Six fixed clusters of twelve ridge characters shimmer in a 24-second loop,
+alternating across the range. Each rises for 1.5 seconds, settles for 1.5 seconds,
+then leaves a second of stillness before the next cluster. Only fill colour
+changes: a 70% foreground mix brightens dark mode and deepens light mode without
+fading the base detail. The wordmark stays still. Reduced motion disables the
+animation and retains the original artwork. This is decorative, independent of
+typing or model activity.
+
+The SVG groups characters by row, ink, and shimmer phase, with explicit character
+positions so font loading cannot shift the grid. Cluster membership is computed
+once with the geometry, and CSS owns the animation; there are no frame timers
+or React updates. It scales as one image with the composer width and reserves
+its aspect ratio before paint. The SVG is hidden from assistive technology; the
 heading supplies the accessible name.
 
 ### Throbber or dot

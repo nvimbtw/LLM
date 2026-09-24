@@ -60,3 +60,27 @@
 .slate-mark-ink-7 {
   fill: var(--foreground);
 }
+
+.slate-mark-shimmer {
+  animation: slate-ridge-shimmer 24s ease-in-out infinite;
+}
+
+/* Six four-second slots: 1.5s up, 1.5s down, then a second of stillness.
+   Foreground lightens the night ink and deepens the paper ink. */
+@keyframes slate-ridge-shimmer {
+  0%,
+  12.5%,
+  100% {
+    fill: var(--slate-ridge);
+  }
+
+  6.25% {
+    fill: color-mix(in oklab, var(--slate-ridge) 30%, var(--foreground));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slate-mark-shimmer {
+    animation: none;
+  }
+}
