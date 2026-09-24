@@ -1,0 +1,62 @@
+.slate-mark {
+  --slate-rock: var(--primary);
+  --slate-ridge: var(--throbber-spark);
+  --slate-ink-0-opacity: 0.16;
+  --slate-ink-1-opacity: 0.32;
+  --slate-ink-2-opacity: 0.52;
+  --slate-ink-3-opacity: 0.76;
+  --slate-ink-4-opacity: 0.8;
+
+  font-family: var(--font-mono), monospace;
+  font-size: 7px;
+  font-weight: 500;
+  font-variant-ligatures: none;
+  user-select: none;
+}
+
+/* Thin glyphs need more ink on paper; the night palette's translucent marks
+   otherwise lose the faces between the brightest ridges. */
+:is(:root:not(.dark), .theme-light) .slate-mark {
+  --slate-rock: var(--throbber-base);
+  --slate-ridge: color-mix(
+    in oklab,
+    var(--throbber-spark) 45%,
+    var(--throbber-base)
+  );
+  --slate-ink-0-opacity: 0.32;
+  --slate-ink-1-opacity: 0.54;
+  --slate-ink-2-opacity: 0.76;
+  --slate-ink-3-opacity: 0.94;
+  --slate-ink-4-opacity: 1;
+}
+
+.slate-mark-ink-0 {
+  fill: var(--slate-rock);
+  fill-opacity: var(--slate-ink-0-opacity);
+}
+.slate-mark-ink-1 {
+  fill: var(--slate-rock);
+  fill-opacity: var(--slate-ink-1-opacity);
+}
+.slate-mark-ink-2 {
+  fill: var(--slate-rock);
+  fill-opacity: var(--slate-ink-2-opacity);
+}
+.slate-mark-ink-3 {
+  fill: var(--slate-rock);
+  fill-opacity: var(--slate-ink-3-opacity);
+}
+.slate-mark-ink-4 {
+  fill: var(--slate-ridge);
+  fill-opacity: var(--slate-ink-4-opacity);
+}
+.slate-mark-ink-5 {
+  fill: var(--slate-ridge);
+}
+.slate-mark-ink-6 {
+  fill: var(--foreground);
+  fill-opacity: 0.68;
+}
+.slate-mark-ink-7 {
+  fill: var(--foreground);
+}

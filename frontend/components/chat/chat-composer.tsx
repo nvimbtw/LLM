@@ -1049,7 +1049,7 @@ export function ChatComposer({
           // resting on the thread, and taking the page's own colour made it a
           // hole in the page that only its outline distinguished.
           "bg-card/75 backdrop-blur-2xl backdrop-saturate-150",
-          "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+          "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50",
           disabled && "opacity-70"
         )}
         onDragEnter={handleDragEnter}

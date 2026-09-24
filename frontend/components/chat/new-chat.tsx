@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 
-import { FigureTrellis } from "@/components/ui/figure-trellis"
+import { FigureSlate } from "@/components/ui/figure-slate"
 import { useChats } from "./chats-provider"
 import { ChatComposer } from "./chat-composer"
 import type { ThinkBudget } from "@/lib/think-budget"
@@ -52,13 +52,12 @@ export function NewChat() {
     // centring on its own box and centring on the page are the same thing. The
     // old `pb-12` would now push the group 24px *high*.
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4">
-      {/* Only the empty state gets a figure. A conversation with messages in it
-          has a subject already, and `chat-thread.tsx` stays as it was. */}
-      <FigureTrellis className="max-w-md" />
-      <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">
-        What can I help with?
+      {/* The drawing is decorative; the heading supplies its accessible name. */}
+      <h1 className="flex w-full items-end justify-center">
+        <span className="sr-only">Slate</span>
+        <FigureSlate />
       </h1>
-      <div className="mt-8 w-full">
+      <div className="mt-5 w-full">
         <ChatComposer
           plan={localPlan.plan}
           onPlanChange={localPlan.save}

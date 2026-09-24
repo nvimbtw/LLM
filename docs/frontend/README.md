@@ -1564,18 +1564,22 @@ including why nothing records attention until someone asks — is
 
 ### New-chat figure
 
-The new-chat splash is the **Thought Trellis**, a sparse triangular dot field
-with three asymmetric trees taking turns growing from its centre. It borrows
-the throbber's lattice and `--throbber-base` / `--throbber-spark` tokens; its
-12-second passes are decorative and do not indicate model activity.
-`components/ui/figure-trellis.tsx` fixes the geometry at render time; the
-`trellis-*` rules in its imported `figure-trellis.css` animate only dash offset
-and opacity. The component imports its animation stylesheet directly so the
-figure and its motion enter the build together.
-Depth delays connect each twig to its parent before the tip lights, and let
-outer connections linger into the next pass. Reduced motion shows the first
-tree as a still engraving. The SVG is hidden from assistive technology and
-keeps the former splash's footprint so the heading and composer stay in place.
+The new-chat heading is an ASCII mountain range above a compact **SLATE**
+wordmark. Letter widths are authored individually on the shared character
+grid: glyph density and theme ink describe
+lit rock faces, shadow, and distant ridges. The mountain geometry and lettering
+are authored in `components/ui/figure-slate.tsx`; deterministic grain keeps the
+server and client render identical. Two empty character rows separate the
+mountains from the wordmark. Its imported stylesheet uses active theme roles:
+primary and throbber-spark in dark mode, with deeper throbber-base ink and
+stronger opacity in light mode so the thin mountain glyphs survive on paper.
+The wordmark uses foreground in both modes.
+
+The SVG groups characters by row and ink, with explicit character positions so
+font loading cannot shift the grid. It scales as one image with the composer
+width and reserves its aspect ratio before paint. The artwork is static,
+including with reduced motion, and hidden from assistive technology; the
+heading supplies the accessible name.
 
 ### Throbber or dot
 
