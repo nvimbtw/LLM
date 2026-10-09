@@ -11,7 +11,6 @@ export default function ModelsPage() {
       <PageHeader
         className="mb-6 border-b-0 pb-0"
         title="Models"
-        description="Every model available for your conversations."
       />
       <ModelsGrid />
     </PageShell>

@@ -131,6 +131,7 @@ export function FollowUps({
 
   return (
     <Panel
+      variant="open"
       title="Then run"
       description={`Queued now, started when ${rootLabel} finishes`}
     >
@@ -144,7 +145,7 @@ export function FollowUps({
           </p>
         ) : (
           steps.map((step, i) => (
-            <div key={step.id} className="rounded-(--radius-sheet) border p-3">
+            <div key={step.id} className="border-y border-border/60 py-4">
               <div className="flex items-center gap-2">
                 <span className="w-6 shrink-0 text-sm text-muted-foreground tabular-nums">
                   {i + 1}.

@@ -41,16 +41,12 @@ function Composite({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-(--radius-sheet) border border-border bg-background">
-      <div className="grid gap-px bg-border/60 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)]">
-        <div className="bg-background px-6 py-7">
-          <div className="eyebrow text-muted-foreground">
-            {label}
-          </div>
+    <section className="border-y border-border/60 py-4">
+      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)]">
+        <div className="min-w-0">
+          <div className="eyebrow text-muted-foreground">{label}</div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="figure text-6xl">
-              {formatNumber(score, 1)}
-            </span>
+            <span className="figure text-4xl">{formatNumber(score, 1)}</span>
             <span className="text-lg text-muted-foreground tabular-nums">
               / 100
             </span>
@@ -62,9 +58,8 @@ function Composite({
           </p>
         </div>
 
-        {/* gap-px over a border-toned background paints hairline rules between
-            the cells — a divided ledger rather than three boxes. */}
-        <dl className="grid grid-cols-1 gap-px bg-border/60 sm:grid-cols-3">
+        {/* The component metrics share one open ledger with the composite. */}
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
           {children}
         </dl>
       </div>
@@ -193,12 +188,10 @@ function Headline({
   hint: string
 }) {
   return (
-    <div className="bg-background px-5 py-5">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
+    <div className="min-w-0">
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
       <dd
-        className={`figure mt-2 text-3xl ${
+        className={`mt-2 figure text-2xl ${
           value === NO_VALUE ? "text-muted-foreground/30" : ""
         }`}
       >

@@ -36,7 +36,8 @@ export default function GymRunPage() {
   const { gym, id } = useParams<{ gym: string; id: string }>()
   const { settings } = useSettings()
   const { names } = useModelNames()
-  const { run, transcripts, live, isRunning, error, start, stop, open } = useGymRun(id)
+  const { run, transcripts, live, isRunning, error, start, stop, open } =
+    useGymRun(id)
   const [chosen, setChosen] = React.useState<string | null>(null)
 
   // The live episode wins unless the reader has picked one — following the
@@ -69,6 +70,7 @@ export default function GymRunPage() {
   return (
     <PageShell>
       <PageHeader
+        className="mb-6 border-b-0 pb-0"
         title={modelLabel(names, run.model_name)}
         // "tasks" stops being the episode count once a run has groups: the
         // episodes are `group_size` attempts at each of `episode_count /
@@ -89,7 +91,10 @@ export default function GymRunPage() {
               Stop
             </Button>
           ) : (
-            <Button onClick={() => start(sampling(settings))} disabled={run.graded >= run.episode_count}>
+            <Button
+              onClick={() => start(sampling(settings))}
+              disabled={run.graded >= run.episode_count}
+            >
               <Play className="size-4" />
               {run.graded > 0 ? "Resume" : "Start"}
             </Button>
@@ -102,6 +107,7 @@ export default function GymRunPage() {
       <div className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
         <div className="space-y-6">
           <Panel
+            variant="open"
             title="Tasks"
             description={score(run.score, run.correct, run.graded)}
             bodyClassName="px-1"
@@ -118,6 +124,7 @@ export default function GymRunPage() {
         </div>
 
         <Panel
+          variant="open"
           title={selected ? `Task ${selected.index + 1}` : "Task"}
           description={selected?.task_type}
         >
@@ -129,17 +136,22 @@ export default function GymRunPage() {
               />
               {/* Only while the episode is still open: a command run against a
                   graded episode would append a step to a scored trajectory. */}
-              {selected.status !== "graded" && selected.status !== "closed" && selected.tools?.includes("bash") && !isRunning && (
-                <div className="border-t border-border pt-6">
-                  <p className="eyebrow mb-2 text-muted-foreground">
-                    Run a command yourself
-                  </p>
-                  <CommandBox episodeId={selected.id} />
-                </div>
-              )}
+              {selected.status !== "graded" &&
+                selected.status !== "closed" &&
+                selected.tools?.includes("bash") &&
+                !isRunning && (
+                  <div className="border-t border-border pt-6">
+                    <p className="mb-2 eyebrow text-muted-foreground">
+                      Run a command yourself
+                    </p>
+                    <CommandBox episodeId={selected.id} />
+                  </div>
+                )}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">This run has no tasks.</p>
+            <p className="text-sm text-muted-foreground">
+              This run has no tasks.
+            </p>
           )}
         </Panel>
       </div>

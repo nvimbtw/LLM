@@ -15,7 +15,7 @@ import {
 export function CorpusPanel({ corpus }: { corpus: CorpusMetrics | null }) {
   if (!corpus) {
     return (
-      <Panel title="Held-out text" description="Not measured">
+      <Panel variant="open" title="Held-out text" description="Not measured">
         <p className="text-sm text-muted-foreground">
           No reference corpus is installed, so perplexity was skipped.
         </p>
@@ -39,6 +39,7 @@ export function CorpusPanel({ corpus }: { corpus: CorpusMetrics | null }) {
 
   return (
     <Panel
+      variant="open"
       title="Held-out text"
       description={`${formatCompact(corpus.tokens_scored)} tokens scored`}
     >
@@ -129,12 +130,8 @@ function Stat({
 }) {
   return (
     <div className="pr-6">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="figure mt-1 text-xl">
-        {value}
-      </dd>
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
+      <dd className="mt-1 figure text-xl">{value}</dd>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   )

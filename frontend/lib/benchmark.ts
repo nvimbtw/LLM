@@ -53,23 +53,18 @@ export function suiteTakesBudget(suite: BenchmarkSuite): boolean {
 export const BENCHMARK_SUITES: {
   id: BenchmarkSuite
   label: string
-  blurb: string
 }[] = [
   {
     id: "language",
     label: "Language",
-    blurb: "Held-out text, grammar, and generated prose.",
   },
   {
     id: "markup",
     label: "Markup",
-    blurb: "Special-token use: pairs, placement, and structure.",
   },
   {
     id: "assistant",
     label: "Assistant",
-    blurb:
-      "Held-out replies: how many bits the model spends per token of answer.",
   },
 ]
 

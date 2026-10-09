@@ -4,7 +4,7 @@
 // (components/settings/settings-dialog.tsx) renders its controls from this list,
 // and the slash-command runner (lib/commands.ts) derives its commands from the
 // `toggle` entries. To add a setting you add ONE entry here (and a field on the
-// `Settings` type) — it then shows up in the modal, under the band its `group`
+// `Settings` type) — it then shows up in the modal, under the section its `group`
 // names, and, if it's a toggle, as a `/command` automatically. Nothing else
 // needs touching.
 
@@ -44,36 +44,21 @@ export interface Settings {
   contextMultiplier: number
 }
 
-/**
- * The bands the modal is divided into, in the order they appear.
- *
- * A blurb belongs to a group, not to a row. Three sliders that each explained
- * themselves in two lines of prose made the modal read as documentation with
- * controls embedded in it — and the thing actually worth saying about them is
- * how they *compose*, which is a sentence no single row could carry.
- */
 export type SettingGroup = "appearance" | "chat" | "decoding"
 
 export const GROUPS: ReadonlyArray<{
   id: SettingGroup
   label: string
-  blurb?: string
 }> = [
   { id: "appearance", label: "Appearance" },
   { id: "chat", label: "Chat" },
-  {
-    id: "decoding",
-    label: "Decoding",
-    blurb:
-      "Applied in this order: temperature reshapes the distribution, top-k caps how many candidates survive, then top-p keeps the shortest prefix of those that already holds its share of the probability.",
-  },
+  { id: "decoding", label: "Decoding" },
 ]
 
 interface BaseSetting {
   key: keyof Settings
   group: SettingGroup
   label: string
-  description: string
   command?: string
 }
 
@@ -123,8 +108,6 @@ export const SETTINGS: SettingDef[] = [
     key: "showReasoning",
     group: "chat",
     label: "Show reasoning",
-    description:
-      "Reveal the model’s reasoning above the reply as it thinks. The “Thinking…” animation shows either way.",
     default: false,
     command: "show-thinking",
   },
@@ -133,7 +116,6 @@ export const SETTINGS: SettingDef[] = [
     key: "notifyOnFinish",
     group: "chat",
     label: "Notify when a job finishes",
-    description: "Raise a toast as each queued job lands.",
     default: false,
     command: "notify",
   },
@@ -142,7 +124,6 @@ export const SETTINGS: SettingDef[] = [
     key: "systemPrompt",
     group: "chat",
     label: "System prompt",
-    description: "Sent ahead of every conversation to steer the assistant.",
     default: "",
     placeholder: "You are a helpful assistant. Answer concisely.",
     multiline: true,
@@ -154,8 +135,6 @@ export const SETTINGS: SettingDef[] = [
     key: "contextMultiplier",
     group: "chat",
     label: "Context multiplier",
-    description:
-      "Stretch the context window past what the model trained on, so history survives longer before it's evicted. Quality past the trained length is a step down.",
     default: 1,
     min: 1,
     max: 8,
@@ -168,7 +147,6 @@ export const SETTINGS: SettingDef[] = [
     key: "temperature",
     group: "decoding",
     label: "Temperature",
-    description: "Near 0 is almost greedy and repeats itself; above 1 wanders.",
     default: 0.8,
     min: 0.01,
     max: 2,
@@ -181,8 +159,6 @@ export const SETTINGS: SettingDef[] = [
     key: "topK",
     group: "decoding",
     label: "Top-k",
-    description:
-      "A hard cap on how many of the highest-scoring tokens survive.",
     default: 40,
     min: 1,
     max: 200,
@@ -195,7 +171,6 @@ export const SETTINGS: SettingDef[] = [
     key: "topP",
     group: "decoding",
     label: "Top-p",
-    description: "The share of the probability to keep. 1 turns it off.",
     default: 0.9,
     min: 0.05,
     max: 1,

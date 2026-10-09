@@ -65,7 +65,7 @@ export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
         <ConfigRecap job={job} />
 
-        <Panel title="Scoring" description={`${percent}%`}>
+        <Panel variant="open" title="Scoring" description={`${percent}%`}>
           <p className="text-sm text-muted-foreground">
             {run.stage ?? job.stage ?? "Loading the model…"}
           </p>
@@ -118,7 +118,7 @@ export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
     return (
       <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
         <ConfigRecap job={job} />
-        <Panel title="No score" description={job.status}>
+        <Panel variant="open" title="No score" description={job.status}>
           <p className="text-sm text-muted-foreground">
             This run did not finish, so it produced no score.
           </p>
@@ -131,7 +131,11 @@ export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
     <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
       <ConfigRecap job={job} />
 
-      <Panel title="Score" description={detail?.model_name ?? "Benchmark"}>
+      <Panel
+        variant="open"
+        title="Score"
+        description={detail?.model_name ?? "Benchmark"}
+      >
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
           <span className="figure text-5xl leading-none">
             {formatNumber(detail?.score ?? null, 1)}

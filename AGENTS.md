@@ -100,7 +100,12 @@ the shared map. Keeping them true is cheaper than everyone guessing.
 # Running it
 
 ```sh
-cp .env.example .env && docker compose up    # everything, hot-reloading
+cp .env.example .env
+for k in JWT_SECRET LLM_ENGINE_SERVICE_SECRET DATA_ENGINE_SERVICE_SECRET \
+         GYMS_ENGINE_SERVICE_SECRET BACKEND_SERVICE_SECRET SEARXNG_SECRET; do
+    printf '%s=%s\n' "$k" "$(openssl rand -hex 32)"
+done >> .env
+docker compose up    # everything, hot-reloading
 ```
 
 `docker compose restart <service>` restarts one without disturbing the rest.

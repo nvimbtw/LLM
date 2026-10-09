@@ -43,7 +43,7 @@ export function DatasetDetail({ datasetId }: DatasetDetailProps) {
       <Summary dataset={dataset} />
 
       <Tabs defaultValue="documents">
-        <TabsList>
+        <TabsList variant="line">
           <TabsTrigger value="documents">Documents</TabsTrigger>
           <TabsTrigger value="clean">Clean</TabsTrigger>
         </TabsList>
@@ -56,8 +56,8 @@ export function DatasetDetail({ datasetId }: DatasetDetailProps) {
           {dataset.status === "ready" ? (
             <ProcessingWorkbench dataset={dataset} />
           ) : (
-            <Panel title="Clean">
-              <p className="py-10 text-center text-sm text-muted-foreground">
+            <Panel variant="open" title="Clean">
+              <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
                 {dataset.status === "pulling"
                   ? "Still arriving. Cleaning can start once the pull finishes."
                   : "This dataset failed to pull, so there is nothing to clean."}
@@ -73,6 +73,7 @@ export function DatasetDetail({ datasetId }: DatasetDetailProps) {
 function Summary({ dataset }: { dataset: Dataset }) {
   return (
     <Panel
+      variant="open"
       title={dataset.name}
       description={dataset.kind === "sft" ? "conversations" : "prose"}
     >
@@ -128,9 +129,7 @@ function Summary({ dataset }: { dataset: Dataset }) {
 
       {dataset.steps && dataset.steps.length > 0 && (
         <div className="mt-5 border-t border-border pt-4">
-          <p className="eyebrow mb-2 text-muted-foreground">
-            How it was made
-          </p>
+          <p className="mb-2 eyebrow text-muted-foreground">How it was made</p>
           <ol className="space-y-1 text-xs text-muted-foreground">
             {dataset.steps.map((step, index) => (
               <li key={`${step.processor}-${index}`}>
@@ -152,9 +151,7 @@ function Summary({ dataset }: { dataset: Dataset }) {
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex justify-between gap-4 sm:block">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
       <dd className="sm:mt-0.5">{value}</dd>
     </div>
   )
@@ -172,23 +169,24 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
 
   return (
     <Panel
+      variant="open"
       title="Documents"
       description={`${total.toLocaleString()} in total`}
       bodyClassName="p-0"
     >
       {isLoading ? (
-        <div className="space-y-3 p-5">
+        <div className="space-y-3 py-4">
           <Skeleton className="h-16 w-full" />
           <Skeleton className="h-16 w-full" />
         </div>
       ) : data.length === 0 ? (
-        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
           Nothing here yet.
         </p>
       ) : (
         <ul className="divide-y divide-border">
           {data.map((document) => (
-            <li key={document.id} className="px-5 py-4">
+            <li key={document.id} className="py-4">
               <p className="mb-1 text-xs text-muted-foreground">
                 #{document.ordinal}
               </p>
@@ -201,7 +199,7 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
       )}
 
       {pages > 1 && (
-        <div className="flex items-center justify-between border-t border-border px-5 py-3 text-xs">
+        <div className="flex items-center justify-between border-t border-border py-3 text-xs">
           <button
             className="text-muted-foreground hover:text-foreground disabled:opacity-40"
             disabled={page === 0}

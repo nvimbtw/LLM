@@ -53,7 +53,6 @@ export function ModelLineage({ model }: ModelLineageProps) {
   return (
     <Panel
       title="Lineage"
-      description="How this model was constructed"
       bodyClassName="p-0"
     >
       {isLoading ? (

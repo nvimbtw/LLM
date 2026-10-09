@@ -1,55 +1,78 @@
 import { cn } from "@/lib/utils"
 
-// A titled section that holds content you can act on — so it is a *sheet* under
-// the elevation rule in globals.css: the card surface, an edge dropped to a
-// whisper, and `shadow-sheet`. Furniture (the stat ledgers, filter rows) takes
-// rules instead and never a box; see the ledger idiom in docs/frontend.
-//
-// The shadow is not a return of the heavy Material card this replaced: in light
-// it is the ink at 5%/22% falling ten pixels, in dark it is a 6% highlight along
-// the top edge, because a shadow on near-black has nothing to fall on.
+export interface PanelProps {
+  title: string
+  description?: string
+  /** A short fact about the section; actions belong with their content. */
+  aside?: React.ReactNode
+  /** Admin workspaces use open sections; other callers retain the sheet. */
+  variant?: "sheet" | "open"
+  className?: string
+  bodyClassName?: string
+  children: React.ReactNode
+}
+
 export function Panel({
   title,
   description,
   aside,
+  variant = "sheet",
   className,
   bodyClassName,
   children,
-}: {
-  title: string
-  description?: string
-  /**
-   * One short fact about the panel as a whole, set against the right edge of its
-   * header — when the panel was scored, how many rows it holds. Not a place for
-   * a control: an action belongs on the thing it acts on.
-   */
-  aside?: React.ReactNode
-  className?: string
-  bodyClassName?: string
-  children: React.ReactNode
-}) {
+}: PanelProps) {
+  const open = variant === "open"
   return (
-    // `bg-card`, not `bg-background`: the card token is now a step above the page
-    // in both themes, so a panel is a sheet lying on it rather than an outline
-    // drawn on it. That one step is most of what the flatness was.
     <section
       className={cn(
-        "rounded-(--radius-sheet) border border-border/45 bg-card shadow-sheet",
+        "min-w-0",
+        !open &&
+          "rounded-(--radius-sheet) border border-border/45 bg-card shadow-sheet",
         className
       )}
     >
-      <header className="flex items-baseline justify-between gap-3 border-b border-border px-5 py-4">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
+      <header
+        className={cn(
+          open
+            ? "mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"
+            : "flex items-baseline justify-between gap-3 border-b border-border px-5 py-4"
+        )}
+      >
+        <div
+          className={cn(
+            "min-w-0",
+            open && "flex flex-wrap items-baseline gap-x-3 gap-y-1"
+          )}
+        >
+          <h2
+            className={
+              open
+                ? "font-display text-xl"
+                : "text-sm font-semibold tracking-tight"
+            }
+          >
+            {title}
+          </h2>
           {description && (
-            <p className="mt-0.5 eyebrow text-muted-foreground">
+            <p
+              className={cn(
+                "text-muted-foreground",
+                open ? "text-xs" : "mt-0.5 eyebrow"
+              )}
+            >
               {description}
             </p>
           )}
         </div>
-        {aside && <div className="shrink-0">{aside}</div>}
+        {aside && (
+          <div className={open ? "text-xs text-muted-foreground" : "shrink-0"}>
+            {aside}
+          </div>
+        )}
       </header>
-      <div className={cn("p-5", bodyClassName)}>{children}</div>
+      <div className={cn(open ? "min-w-0" : "p-5", bodyClassName)}>
+        {children}
+      </div>
     </section>
   )
 }

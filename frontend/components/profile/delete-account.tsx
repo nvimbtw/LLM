@@ -23,7 +23,15 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 
-export function DeleteAccount({ onDelete }: { onDelete: () => Promise<void> }) {
+export interface DeleteAccountProps {
+  onDelete: () => Promise<void>
+  compact?: boolean
+}
+
+export function DeleteAccount({
+  onDelete,
+  compact = false,
+}: DeleteAccountProps) {
   const [isDeleting, setDeleting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
@@ -41,19 +49,34 @@ export function DeleteAccount({ onDelete }: { onDelete: () => Promise<void> }) {
   }
 
   return (
-    <Card className="border-destructive/40">
-      <CardHeader>
+    <Card
+      className={
+        compact
+          ? "rounded-none border-t border-border bg-transparent pt-5 pb-0 shadow-none ring-0"
+          : "border-destructive/40"
+      }
+    >
+      <CardHeader className={compact ? "px-0" : undefined}>
         <CardTitle>Delete account</CardTitle>
-        <CardDescription>
+        <CardDescription className={compact ? "text-xs" : undefined}>
           Permanently delete your account. This action cannot be undone.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
+      <CardContent
+        className={compact ? "flex flex-col gap-3 px-0" : "flex flex-col gap-3"}
+      >
         {error && <FormError>{error}</FormError>}
         <AlertDialog>
           <AlertDialogTrigger
             render={
-              <Button variant="destructive" className="self-start">
+              <Button
+                variant={compact ? "ghost" : "destructive"}
+                className={
+                  compact
+                    ? "self-start text-muted-foreground hover:text-destructive"
+                    : "self-start"
+                }
+              >
                 Delete account
               </Button>
             }

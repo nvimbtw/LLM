@@ -30,11 +30,10 @@ import { cn } from "@/lib/utils"
  */
 export interface NowBandProps {
   job: Job | null
-  paused: boolean
   onCancel: (id: string) => void
 }
 
-export function NowBand({ job, paused, onCancel }: NowBandProps) {
+export function NowBand({ job, onCancel }: NowBandProps) {
   // Ticks only while something is running, so an idle page isn't re-rendering
   // once a second forever.
   const [now, setNow] = React.useState(() => Date.now())
@@ -45,17 +44,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
   }, [job])
 
   if (!job) {
-    return (
-      <div className="flex items-center gap-3 border-b border-border px-5 py-6">
-        <span
-          aria-hidden
-          className="size-2 shrink-0 rounded-full bg-muted-foreground/40"
-        />
-        <p className="text-sm text-muted-foreground">
-          {paused ? "The queue is paused." : "The GPU is idle."}
-        </p>
-      </div>
-    )
+    return <div className="border-b border-border/60" />
   }
 
   const elapsed = elapsedSeconds(job, now)
@@ -63,8 +52,8 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
   const stopping = job.status === "cancelling"
 
   return (
-    <div className="border-b border-border bg-secondary/25">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-5">
+    <div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-5 py-6">
         {/* The one place the mark keeps its per-kind mode. This band is the queue
             page's subject — what the GPU is doing right now — so it is worth a
             figure rather than a dot, and it is the single instance whose `mode`
@@ -73,29 +62,26 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
         <Throbber mode={throbberMode(job)} />
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <Link
-              href={jobHref(job)}
-              className="truncate font-display text-base font-semibold tracking-tight hover:underline"
-            >
-              {job.label}
-            </Link>
-            <span className="eyebrow shrink-0 text-muted-foreground">
-              {KIND_LABEL[job.kind]}
-            </span>
+          <Link
+            href={jobHref(job)}
+            className="block truncate font-display text-2xl hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:text-3xl"
+          >
+            {job.label}
+          </Link>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span>{KIND_LABEL[job.kind]}</span>
+            <span aria-hidden>·</span>
+            <p className="min-w-0 break-words">
+              {stopping
+                ? "Stopping at the next step boundary…"
+                : (job.stage ?? "Starting…")}
+            </p>
           </div>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {stopping
-              ? "Stopping at the next step boundary…"
-              : (job.stage ?? "Starting…")}
-          </p>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex w-full items-center justify-end gap-5 sm:w-auto">
           <div className="text-right">
-            <div className="figure text-lg leading-none">
-              {percent}%
-            </div>
+            <div className="figure text-2xl leading-none">{percent}%</div>
             {elapsed !== null && (
               <div className="mt-1 text-xs text-muted-foreground tabular-nums">
                 {formatElapsed(elapsed)}
@@ -103,7 +89,7 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
             )}
           </div>
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
             disabled={stopping}
             onClick={() => onCancel(job.id_job)}
@@ -115,10 +101,17 @@ export function NowBand({ job, paused, onCancel }: NowBandProps) {
 
       {/* The rule sits on the band's own bottom edge, so it reads as the band
           filling rather than as a separate widget parked inside it. */}
-      <div className="h-px w-full bg-border/60">
+      <div
+        role="progressbar"
+        aria-label={`Progress for ${job.label}`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="h-px w-full bg-border/60"
+      >
         <div
           className={cn(
-            "h-px bg-primary transition-[width] duration-700 ease-out",
+            "h-px bg-primary transition-[width] duration-700 ease-out motion-reduce:transition-none",
             stopping && "bg-muted-foreground/50"
           )}
           style={{ width: `${percent}%` }}

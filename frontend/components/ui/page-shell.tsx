@@ -15,10 +15,8 @@ import { cn } from "@/lib/utils"
  *   was only ever using one of. Capped rather than edge-to-edge so a 4K monitor
  *   does not stretch a table into a horizon.
  *
- *   The training composer is here too, which looks like an exception and is not:
- *   a form of four fields is prose, and a form of fifteen across four groups is
- *   a board with a summary beside it. The width is what lets the summary sit
- *   next to the decisions instead of a screen below them.
+ *   The training composer uses a bounded `max-w-4xl` override: its compact field
+ *   rows and review footer form one sequence rather than a board with a sidebar.
  */
 export type PageWidth = "reading" | "board"
 

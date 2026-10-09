@@ -18,6 +18,7 @@ import {
   type Attachment,
 } from "@/lib/attachments"
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 import { FormError } from "@/components/ui/error-state"
 import { docToMarkdown } from "@/lib/tiptap-markdown"
 import {
@@ -244,7 +245,13 @@ export function ChatComposer({
   // thread's own, and a choice held in this component's state would be reset by
   // that swap — you would pick a model, send, and land in the conversation on
   // whichever model happens to be first in the list.
-  const { model, setModel, budget, setBudget } = useComposerChoice()
+  const {
+    model,
+    setModel,
+    budget,
+    setBudget,
+    isLoading: choiceLoading,
+  } = useComposerChoice()
   // `/new` — one router for every mount of this component, since starting a
   // fresh chat is the same navigation regardless of which conversation (or
   // none) the composer is currently attached to.
@@ -260,7 +267,7 @@ export function ChatComposer({
   const [isDraggingFiles, setIsDraggingFiles] = React.useState(false)
 
   const { settings, setSetting, setCommandOpen } = useSettings()
-  const { models } = useModels()
+  const { models, isLoading: modelsLoading } = useModels()
   const {
     supported: voiceSupported,
     listening,
@@ -853,6 +860,7 @@ export function ChatComposer({
       return
     }
 
+    if (choiceLoading || modelsLoading || !model) return
     const markdown = docToMarkdown(editor.getJSON())
     if (!markdown.trim()) return
 
@@ -876,6 +884,8 @@ export function ChatComposer({
   }, [
     editor,
     disabled,
+    choiceLoading,
+    modelsLoading,
     model,
     budget,
     attachments,
@@ -952,7 +962,11 @@ export function ChatComposer({
   // the file the person is watching arrive, and there is no second chance to
   // attach it to a message already written.
   const uploading = attachments.some((a) => a.status === "uploading")
-  const canSend = !isEmpty && !disabled && !uploading
+  const canSend =
+    !isEmpty &&
+    !disabled &&
+    !uploading &&
+    (isCommand || (!choiceLoading && !modelsLoading && Boolean(model)))
 
   const contextWindow =
     models.find((m) => m.id === model)?.contextWindow ?? null
@@ -1094,7 +1108,17 @@ export function ChatComposer({
               "[&_.tiptap]:font-medium [&_.tiptap]:text-primary [&_.tiptap]:caret-primary"
           )}
         >
-          <EditorContent editor={editor} />
+          {editor ? (
+            <EditorContent editor={editor} />
+          ) : (
+            <div className="min-h-20 px-3.5 py-3" role="status">
+              <span className="sr-only">Loading message editor</span>
+              <Skeleton
+                aria-hidden="true"
+                className="h-5 w-40 motion-reduce:animate-none"
+              />
+            </div>
+          )}
         </div>
         {voiceError && (
           <FormError className="px-3.5 pb-1.5">{voiceError}</FormError>
@@ -1162,6 +1186,7 @@ export function ChatComposer({
           contextTokensUsed={contextTokensUsed}
           draftTokens={draftTokens}
           contextWindow={contextWindow}
+          isLoading={modelsLoading || choiceLoading}
           contextMultiplier={settings.contextMultiplier}
           unseenTokens={unseenTokens}
           listening={listening}

@@ -1,10 +1,5 @@
 import Link from "next/link"
-import {
-  Boxes,
-  ChartColumn,
-  MessagesSquare,
-  MessageSquarePlus,
-} from "lucide-react"
+import { Boxes, MessagesSquare, MessageSquarePlus } from "lucide-react"
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -16,7 +11,6 @@ import {
 const items = [
   { title: "New", href: "/", icon: MessageSquarePlus },
   { title: "Models", href: "/models", icon: Boxes },
-  { title: "Usage", href: "/usage", icon: ChartColumn },
   // Always visible (expanded and collapsed) — the entry point to the full
   // archive. The recent-chats list (NavConversations) sits below it when expanded.
   { title: "Conversations", href: "/conversations", icon: MessagesSquare },

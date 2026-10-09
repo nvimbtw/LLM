@@ -14,7 +14,6 @@ import { NavConversations } from "./sidebar/nav-conversations"
 import { NavAdmin } from "./sidebar/nav-admin"
 import { NavJobs } from "./sidebar/nav-jobs"
 import { NavProfile } from "./sidebar/nav-profile"
-import { SidebarSettingsButton } from "./settings/settings-menu-button"
 
 // Brand shown in the sidebar header. Change these to rename the app:
 // APP_NAME is shown when expanded, APP_NAME_SHORT when collapsed to icons.
@@ -36,7 +35,7 @@ export function AppSidebar() {
                 <span className="font-display text-xl leading-none font-semibold tracking-tight">
                   {APP_NAME}
                 </span>
-                <span className="eyebrow mt-1 text-sidebar-foreground/75">
+                <span className="mt-1 eyebrow text-sidebar-foreground/75">
                   LLM Project
                 </span>
               </span>
@@ -64,7 +63,6 @@ export function AppSidebar() {
           them hard against the edge. Different number, same 8 + 32 + 8 sum. */}
       <SidebarFooter className="border-t border-sidebar-border/60 px-1 py-2 group-data-[collapsible=icon]:px-2">
         <NavAdmin />
-        <SidebarSettingsButton />
         <NavProfile />
       </SidebarFooter>
       <SidebarRail />

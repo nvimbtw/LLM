@@ -26,15 +26,11 @@ export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
           nothing — the LLM engine's run row carries no `config` — so the column was
           a quarter page of gutter. */}
       <Panel
+        variant="open"
         title={tokenize.done ? "Built" : "Learning the merges"}
-        description={
-          tokenize.done
-            ? "Any run can now be pointed at it"
-            : "One pass of byte-level BPE"
-        }
       >
         <div className="space-y-5">
-          <dl className="grid grid-cols-3 gap-x-8 gap-y-5 border-y border-border py-4">
+          <dl className="grid grid-cols-1 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-3">
             {/* `documents`, not `files`: a vocabulary is learned from documents
                 the data engine serves. `files` is what a run queued before that
                 move reported, and its stored frames still render here. */}
@@ -68,12 +64,8 @@ function count(n: number | undefined): string {
 function Figure({ label, value }: { label: string; value: string }) {
   return (
     <div className="pr-6">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="figure mt-1.5 text-2xl">
-        {value}
-      </dd>
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
+      <dd className="mt-1.5 figure text-2xl">{value}</dd>
     </div>
   )
 }

@@ -1,5 +1,4 @@
 import { Suspense } from "react"
-import Link from "next/link"
 
 import { TrainComposer } from "@/components/jobs/train-composer"
 import { PageHeader } from "@/components/ui/page-header"
@@ -7,23 +6,12 @@ import { PageShell } from "@/components/ui/page-shell"
 
 export default function NewTrainJobPage() {
   return (
-    <PageShell width="board">
+    <PageShell width="board" className="max-w-4xl">
       <PageHeader
+        titleClassName="text-2xl font-normal"
+        className="mb-6 border-b-0 pb-0"
         back={{ href: "/admin", label: "Admin" }}
         title="Train a model"
-        description={
-          <>
-            <p>
-              Pretrain from scratch, or fine-tune a model you already have.
-              Self-training and preference tuning are not here: they are stages
-              a{" "}
-              <Link href="/cycles" className="underline underline-offset-4">
-                cycle
-              </Link>{" "}
-              runs for you, once it has built a catalogue worth training on.
-            </p>
-          </>
-        }
       />
 
       {/* The form reads `?from=` to seed itself from a previous run, which makes it

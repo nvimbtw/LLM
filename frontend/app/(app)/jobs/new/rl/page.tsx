@@ -24,9 +24,13 @@ export default async function NewRlJobPage({
   return (
     <PageShell width="board">
       <PageHeader
-        back={gym ? { href: "/gyms", label: "Gyms" } : { href: "/admin", label: "Admin" }}
+        className="mb-6 border-b-0 pb-0"
+        back={
+          gym
+            ? { href: "/gyms", label: "Gyms" }
+            : { href: "/admin", label: "Admin" }
+        }
         title="Practise in a gym"
-        description="The model does the tasks, is graded on them, and is stepped toward whichever of its own attempts went better — once per iteration, each iteration a gym run of its own."
       />
       <RlComposer gym={gym} />
     </PageShell>

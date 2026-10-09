@@ -79,11 +79,12 @@ export function HubSearch({ onQueued }: HubSearchProps) {
 
   return (
     <Panel
+      variant="open"
       title="Hugging Face"
       description="most downloaded first"
       bodyClassName="p-0"
     >
-      <div className="border-b border-border p-5">
+      <div className="border-b border-border py-4">
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -97,23 +98,23 @@ export function HubSearch({ onQueued }: HubSearchProps) {
       </div>
 
       {error ? (
-        <div className="p-5">
+        <div className="py-4">
           <LoadError title="The Hub didn't answer." hint={error} />
         </div>
       ) : isLoading ? (
-        <div className="space-y-3 p-5">
+        <div className="space-y-3 py-4">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
         </div>
       ) : results.length === 0 ? (
-        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
           Nothing matched “{query}”.
         </p>
       ) : (
         <ul className="divide-y divide-border">
           {results.map((result) => (
-            <li key={result.repo} className="flex items-center gap-4 px-5 py-3">
+            <li key={result.repo} className="flex items-center gap-4 py-3">
               {/* The row itself opens the dialog, which leads with a sample of
                   the rows: choosing a dataset means looking at it first, and
                   making that a separate affordance would hide it. */}

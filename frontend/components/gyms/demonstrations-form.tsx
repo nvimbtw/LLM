@@ -38,7 +38,14 @@ export function DemonstrationsForm({
     setError(null)
     setCreated(false)
     try {
-      await createDemonstrations(gymId, taskTypes, name.trim(), count, seed, gymWeights)
+      await createDemonstrations(
+        gymId,
+        taskTypes,
+        name.trim(),
+        count,
+        seed,
+        gymWeights
+      )
       setCreated(true)
       setSeed(seed + count)
     } catch (e) {
@@ -51,10 +58,7 @@ export function DemonstrationsForm({
   }
 
   return (
-    <Panel
-      title="SFT demonstrations"
-      description="Generate checked examples for the selected task types. Choose easy tasks first if the model rarely answers correctly."
-    >
+    <Panel variant="open" title="SFT demonstrations">
       <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="space-y-1 text-sm">

@@ -14,9 +14,7 @@ import { cn } from "@/lib/utils"
  * width worked out — so the numbers that only exist as a consequence are visible
  * before the run rather than after it.
  *
- * Deliberately the same idiom `/models/[id]` uses for a model that already
- * exists: a run being composed and a model being read are the same object at two
- * moments of its life, and they should look it.
+ * The admin form keeps this recap as an open ruled ledger at the end of its fields.
  */
 export interface BuildSheetProps {
   cfg: TrainConfig
@@ -57,22 +55,16 @@ export function BuildSheet({
   const stages = cfg.curriculum?.length ?? 0
 
   return (
-    <div className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
-      <header className="border-b border-border px-5 py-4">
-        <p className="eyebrow text-muted-foreground">
+    <div className="min-w-0 border-y border-border/60">
+      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-4">
+        <h2 className="font-display text-xl">Review</h2>
+        <p className="min-w-0 text-xs break-words text-muted-foreground">
+          {cfg.model_name.trim() || "Unnamed"} ·{" "}
           {isSft ? "Fine-tune" : "Pretrain"}
         </p>
-        <h2
-          className={cn(
-            "mt-1 font-display text-xl font-semibold tracking-tight",
-            !cfg.model_name.trim() && "text-muted-foreground"
-          )}
-        >
-          {cfg.model_name.trim() || "Unnamed"}
-        </h2>
       </header>
 
-      <dl className="divide-y divide-border/50">
+      <dl className="grid gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
         {isSft && <Spec label="Base" value={baseName ?? "—"} />}
         {!isSft && (
           <>
@@ -141,9 +133,9 @@ export function BuildSheet({
         )}
       </dl>
 
-      <div className="space-y-3 border-t border-border p-5">
+      <div className="flex flex-wrap items-center justify-between gap-4 py-4">
         {errors.length > 0 && !disabled && (
-          <ul className="space-y-1 text-xs text-destructive">
+          <ul className="w-full space-y-1 text-xs text-destructive">
             {errors.map((err) => (
               <li key={err}>{err}</li>
             ))}
@@ -153,7 +145,7 @@ export function BuildSheet({
         <Button
           type="submit"
           disabled={disabled || errors.length > 0}
-          className="w-full"
+          className="w-full sm:order-last sm:w-auto"
         >
           {disabled
             ? isSft
@@ -163,7 +155,7 @@ export function BuildSheet({
               ? "Start fine-tune"
               : "Start training"}
         </Button>
-        <p className="text-center text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Queued behind whatever is running.
         </p>
       </div>
@@ -181,11 +173,11 @@ function Spec({
   muted?: boolean
 }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 px-5 py-2.5">
+    <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-border/40 py-2.5">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd
         className={cn(
-          "text-right text-xs tabular-nums",
+          "min-w-0 text-right text-xs break-words tabular-nums",
           muted ? "text-muted-foreground" : "font-medium"
         )}
       >

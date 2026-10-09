@@ -9,7 +9,6 @@ export default function UsagePage() {
       <PageHeader
         className="mb-6 border-b-0 pb-0"
         title="Usage"
-        description="Requests, tokens, and cost over the last 30 days."
       />
       <UsageOverview />
     </PageShell>

@@ -48,13 +48,14 @@ export function HistoryPanel({
 
   return (
     <Panel
+      variant="open"
       title="Models by score"
       description={`${runs.length} ${runs.length === 1 ? "run" : "runs"}`}
       bodyClassName="p-0"
     >
       {runs.length === 0 ? (
-        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
-          No benchmarks yet. Pick a model above and run one.
+        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
+          No benchmarks yet.
         </p>
       ) : (
         // A real table: four aligned columns of the same kind of thing per row, which
@@ -62,10 +63,10 @@ export function HistoryPanel({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="eyebrow border-b border-border text-muted-foreground">
+              <tr className="border-b border-border eyebrow text-muted-foreground">
                 <th
                   scope="col"
-                  className="w-10 py-2.5 pr-2 pl-5 text-right font-medium"
+                  className="w-10 py-2.5 pr-2 text-right font-medium"
                 >
                   #
                 </th>
@@ -138,7 +139,7 @@ function HistoryRow({
         selected && "bg-secondary/60"
       )}
     >
-      <td className="py-3 pr-2 pl-5 text-right text-xs text-muted-foreground tabular-nums">
+      <td className="py-3 pr-2 text-right text-xs text-muted-foreground tabular-nums">
         {rank ?? NO_VALUE}
       </td>
 
@@ -208,7 +209,7 @@ function HistoryRow({
           }}
           disabled={run.status === "running"}
           aria-label={`Delete benchmark of ${run.model_name}`}
-          className="rounded-(--radius-marker) p-1.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground hover:!text-destructive disabled:pointer-events-none"
+          className="rounded-(--radius-marker) p-1.5 text-muted-foreground transition-colors group-hover:text-muted-foreground hover:!text-destructive focus-visible:text-muted-foreground disabled:pointer-events-none sm:text-muted-foreground/0"
         >
           <Trash2 className="size-3.5" />
         </button>

@@ -2,52 +2,32 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { Trash2 } from "lucide-react"
+import { Plus } from "lucide-react"
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Panel } from "@/components/ui/panel"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Throbber } from "@/components/ui/throbber"
 import { toast } from "@/components/ui/toast"
+import { TokenizerCatalogue } from "@/components/tokenizers/tokenizer-catalogue"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { TokenizerComposer } from "@/components/tokenizers/tokenizer-composer"
 import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { jobHref, type Job } from "@/lib/jobs"
 import { LoadError } from "@/components/ui/error-state"
-import {
-  deleteTokenizer,
-  describeDatasets,
-  type TokenizerInfo,
-} from "@/lib/tokenizers"
-
-function compact(n: number | null): string {
-  if (n == null) return "—"
-  return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
-}
-
-function megabytes(bytes: number): string {
-  if (!bytes) return "—"
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
+import { deleteTokenizer, type TokenizerInfo } from "@/lib/tokenizers"
 
 /**
- * The vocabularies: build one, and see what has been built.
- *
- * Two lists, not one. A vocabulary built here is a choice a training run can be
- * pointed at; one a run derived for itself is the same kind of artifact and takes
- * the same disk, but nobody picked it — showing them together would put a column
- * of `auto 9c1e…` in front of the two names a person actually chose.
+ * A catalogue with category filters; named builds lead the combined list.
+ * Building is a focused dialog, while automatic vocabularies remain inspectable
+ * and deletable without competing with the form for a permanent column.
  */
 export function TokenizersView() {
   const [refreshKey, setRefreshKey] = React.useState(0)
@@ -88,13 +68,47 @@ export function TokenizersView() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-      <div className="lg:sticky lg:top-6 lg:self-start">
-        <TokenizerComposer onQueued={refresh} />
-      </div>
-
-      <div className="space-y-6">
-        {building && <BuildingBand job={building} />}
+    <div className="space-y-6">
+      {building && <BuildingBand job={building} />}
+      <Tabs defaultValue="all">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList variant="line" aria-label="Vocabulary category">
+            <TabsTrigger value="all">
+              All{" "}
+              <span className="text-xs text-muted-foreground">
+                {tokenizers.length}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="named">
+              Built{" "}
+              <span className="text-xs text-muted-foreground">
+                {named.length}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="derived">
+              From runs{" "}
+              <span className="text-xs text-muted-foreground">
+                {derived.length}
+              </span>
+            </TabsTrigger>
+          </TabsList>
+          <Dialog>
+            <DialogTrigger
+              render={
+                <Button size="sm">
+                  <Plus className="size-3.5" />
+                  Build vocabulary
+                </Button>
+              }
+            />
+            <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Build a vocabulary</DialogTitle>
+              </DialogHeader>
+              <TokenizerComposer onQueued={refresh} />
+            </DialogContent>
+          </Dialog>
+        </div>
         {error ? (
           <LoadError
             title="The vocabularies didn't load."
@@ -102,60 +116,35 @@ export function TokenizersView() {
             onRetry={refresh}
           />
         ) : isLoading ? (
-          <div className="space-y-3">
+          <div className="space-y-3 py-4">
             {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-20 rounded-(--radius-sheet)" />
+              <Skeleton key={i} className="h-12" />
             ))}
           </div>
         ) : (
           <>
-            <Panel
-              title="Built"
-              description={`${named.length} vocabular${named.length === 1 ? "y" : "ies"}`}
-              bodyClassName="p-0"
-            >
-              {named.length === 0 ? (
-                <p className="px-5 py-10 text-center text-sm text-muted-foreground">
-                  None yet. Build one and every run can share it.
-                </p>
-              ) : (
-                <ul className="divide-y divide-border/40">
-                  {named.map((tokenizer) => (
-                    <Row
-                      key={tokenizer.id}
-                      tokenizer={tokenizer}
-                      onDelete={() => remove(tokenizer)}
-                    />
-                  ))}
-                </ul>
-              )}
-            </Panel>
-
-            {derived.length > 0 && (
-              <Panel
-                title="Learned by a run"
-                description="Not offered as a choice"
-                bodyClassName="p-0"
-              >
-                <p className="px-5 pt-4 text-xs text-muted-foreground">
-                  A run that names no vocabulary learns one from its own
-                  corpora. It is kept and reused by the next run asking for the
-                  same corpora, which is why it takes space here.
-                </p>
-                <ul className="mt-2 divide-y divide-border/40">
-                  {derived.map((tokenizer) => (
-                    <Row
-                      key={tokenizer.id}
-                      tokenizer={tokenizer}
-                      onDelete={() => remove(tokenizer)}
-                    />
-                  ))}
-                </ul>
-              </Panel>
-            )}
+            <TabsContent value="all" className="mt-4">
+              <TokenizerCatalogue
+                tokenizers={[...named, ...derived]}
+                onDelete={remove}
+              />
+            </TabsContent>
+            <TabsContent value="named" className="mt-4">
+              <TokenizerCatalogue tokenizers={named} onDelete={remove} />
+            </TabsContent>
+            <TabsContent value="derived" className="mt-4">
+              <TokenizerCatalogue tokenizers={derived} onDelete={remove} />
+            </TabsContent>
           </>
         )}
-      </div>
+      </Tabs>
+      {derived.length > 0 && (
+        <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
+          Vocabularies learned by a run are not offered as a choice. A run that
+          names no vocabulary learns one from its own corpora. It is kept and
+          reused by the next run asking for the same corpora.
+        </p>
+      )}
     </div>
   )
 }
@@ -172,78 +161,15 @@ function BuildingBand({ job }: { job: Job }) {
   return (
     <Link
       href={jobHref(job)}
-      className="flex items-center gap-4 rounded-(--radius-control) border border-border bg-secondary/25 px-5 py-4 transition-colors hover:border-primary/40"
+      className="flex items-center gap-4 border-y border-border/60 py-4 transition-colors hover:bg-muted/30 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
     >
       <Throbber mode="tokenizing" />
       <span className="min-w-0">
-        <span className="block truncate font-display font-semibold tracking-tight">
-          {job.label}
-        </span>
+        <span className="block truncate font-display text-lg">{job.label}</span>
         <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-          {job.stage ?? "Learning merges…"} — follow it on the job page
+          {job.stage ?? "Learning merges…"}
         </span>
       </span>
     </Link>
-  )
-}
-
-function Row({
-  tokenizer,
-  onDelete,
-}: {
-  tokenizer: TokenizerInfo
-  onDelete: () => void
-}) {
-  return (
-    <li className="flex items-start justify-between gap-4 px-5 py-4">
-      <div className="min-w-0 space-y-1">
-        <p className="flex items-center gap-2 font-medium">
-          <span className="truncate">{tokenizer.name}</span>
-          {!tokenizer.hasVocab && (
-            <span className="shrink-0 rounded-(--radius-marker) bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
-              missing on disk
-            </span>
-          )}
-        </p>
-        <p className="truncate text-xs text-muted-foreground">
-          {describeDatasets(tokenizer)}
-        </p>
-        <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
-          <span>{compact(tokenizer.vocabSize)} vocab</span>
-          <span>{compact(tokenizer.merges)} merges</span>
-          <span>{compact(tokenizer.files)} files</span>
-          <span>{megabytes(tokenizer.bytes)}</span>
-        </p>
-      </div>
-
-      <AlertDialog>
-        <AlertDialogTrigger
-          render={
-            <Button variant="ghost" size="icon" aria-label="Delete">
-              <Trash2 className="size-4" />
-            </Button>
-          }
-        />
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete {tokenizer.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The corpora packed under it go too — without this vocabulary they
-              are token ids nothing can read. Models trained with it keep their
-              own copy and are unaffected.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={onDelete}
-              className="bg-destructive text-white hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </li>
   )
 }

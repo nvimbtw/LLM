@@ -4,7 +4,13 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import { useAuth } from "@/hooks/use-auth"
-import { DEFAULT_SETTINGS, type Settings } from "@/lib/settings"
+import {
+  DEFAULT_SETTINGS,
+  type Settings,
+  type SettingGroup,
+} from "@/lib/settings"
+
+export type SettingsSection = SettingGroup | "usage" | "profile"
 
 interface SettingsContextValue {
   settings: Settings
@@ -14,6 +20,9 @@ interface SettingsContextValue {
   // commands (`/settings`) can all drive the same dialog.
   commandOpen: boolean
   setCommandOpen: (open: boolean) => void
+  section: SettingsSection
+  setSection: (section: SettingsSection) => void
+  openSettings: (section?: SettingsSection) => void
 }
 
 const SettingsContext = React.createContext<SettingsContextValue | null>(null)
@@ -35,10 +44,22 @@ function persist(settings: Settings) {
   })
 }
 
-export function SettingsProvider({ children }: { children: React.ReactNode }) {
+export interface SettingsProviderProps {
+  children: React.ReactNode
+}
+
+export function SettingsProvider({ children }: SettingsProviderProps) {
   const { isAuthenticated } = useAuth()
   const [settings, setSettings] = React.useState<Settings>(DEFAULT_SETTINGS)
   const [commandOpen, setCommandOpen] = React.useState(false)
+  const [section, setSection] = React.useState<SettingsSection>("appearance")
+  const openSettings = React.useCallback(
+    (section: SettingsSection = "appearance") => {
+      setSection(section)
+      setCommandOpen(true)
+    },
+    []
+  )
 
   // Whether the account's own copy has landed, so a change made in the gap
   // between mount and that response doesn't PUT a still-default object over
@@ -139,8 +160,19 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       resetSettings,
       commandOpen,
       setCommandOpen,
+      section,
+      setSection,
+      openSettings,
     }),
-    [isAuthenticated, settings, setSetting, resetSettings, commandOpen]
+    [
+      isAuthenticated,
+      settings,
+      setSetting,
+      resetSettings,
+      commandOpen,
+      section,
+      openSettings,
+    ]
   )
 
   return (

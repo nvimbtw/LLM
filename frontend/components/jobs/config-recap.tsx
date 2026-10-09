@@ -30,6 +30,7 @@ export function ConfigRecap({ job, config, className }: ConfigRecapProps) {
 
   return (
     <Panel
+      variant="open"
       title="Config"
       description={recap.description}
       bodyClassName="p-0"
@@ -39,14 +40,14 @@ export function ConfigRecap({ job, config, className }: ConfigRecapProps) {
         {recap.rows.map(([label, value]) => (
           <div
             key={label}
-            className="flex items-baseline justify-between gap-3 px-5 py-2"
+            className="flex items-baseline justify-between gap-3 py-2"
           >
             <dt className="text-xs text-muted-foreground">{label}</dt>
             <dd className="text-right text-xs tabular-nums">{value}</dd>
           </div>
         ))}
         {recap.blocks.map(([label, text]) => (
-          <div key={label} className="px-5 py-2">
+          <div key={label} className="py-2">
             <dt className="text-xs text-muted-foreground">{label}</dt>
             <dd className="mt-1 text-xs leading-relaxed">{text}</dd>
           </div>
@@ -112,11 +113,18 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
       const cfg = (job.config ?? {}) as Record<string, unknown>
       return {
         description: "As queued",
-        rows: [["Gym", String(cfg.gym_id ?? "bash")],
-          ["Progression", cfg.curriculum ? "Automatic, with validation and fixed tests" : "Selected tasks"],
+        rows: [
+          ["Gym", String(cfg.gym_id ?? "bash")],
+          [
+            "Progression",
+            cfg.curriculum
+              ? "Automatic, with validation and fixed tests"
+              : "Selected tasks",
+          ],
           ["Iterations", String(cfg.iterations ?? 50)],
           ["Tasks per iteration", String(cfg.tasks_per_batch ?? 4)],
-          ["Attempts per task", String(cfg.group_size ?? 8)]],
+          ["Attempts per task", String(cfg.group_size ?? 8)],
+        ],
         blocks: [],
       }
     }
@@ -224,9 +232,7 @@ function train(config: TrainConfig | null): Recap | null {
   const datasets = !picksDatasets
     ? ""
     : curriculum.length > 0
-      ? curriculum
-          .map((stage, i) => stage.name ?? `Stage ${i + 1}`)
-          .join(" → ")
+      ? curriculum.map((stage, i) => stage.name ?? `Stage ${i + 1}`).join(" → ")
       : // Empty is not "none" — the LLM engine resolves it to every set on disk, so
         // say that rather than showing a blank where a selection should be.
         (config.datasets ?? []).map((d) => d.name).join(", ") ||

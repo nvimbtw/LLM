@@ -27,7 +27,10 @@ export default function GymPage() {
         setGym(gyms.find((g) => g.id === gymId) ?? null)
         setRuns(all.filter((run) => run.gym_id === gymId))
       })
-      .catch((e) => active && setError(e instanceof Error ? e.message : "Failed to load."))
+      .catch(
+        (e) =>
+          active && setError(e instanceof Error ? e.message : "Failed to load.")
+      )
     return () => {
       active = false
     }
@@ -44,14 +47,18 @@ export default function GymPage() {
   return (
     <PageShell>
       <PageHeader
+        className="mb-6 border-b-0 pb-0"
         title={gym?.name ?? gymId}
-        description={gym?.description}
         back={{ href: "/gyms", label: "Gyms" }}
       />
       <div className="space-y-6">
         {gym ? <RunForm gym={gym} /> : <Skeleton className="h-64" />}
-        <Panel title="Runs" description="Every run of this gym, newest first.">
-          {runs === null ? <Skeleton className="h-24" /> : <RunList runs={runs} />}
+        <Panel variant="open" title="Runs">
+          {runs === null ? (
+            <Skeleton className="h-24" />
+          ) : (
+            <RunList runs={runs} />
+          )}
         </Panel>
       </div>
     </PageShell>

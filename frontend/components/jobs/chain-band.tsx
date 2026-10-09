@@ -45,7 +45,7 @@ export function ChainBand({ jobs, all, onCancel, onDelete }: ChainBandProps) {
             key={job.id_job}
             className="group border-b border-border/40 last:border-0"
           >
-            <div className="flex items-center gap-3 px-5 py-3">
+            <div className="flex items-center gap-3 py-4 sm:gap-4">
               <CornerDownRight
                 className="size-3.5 shrink-0 text-muted-foreground/40"
                 aria-hidden
@@ -54,7 +54,7 @@ export function ChainBand({ jobs, all, onCancel, onDelete }: ChainBandProps) {
               <div className="min-w-0 flex-1">
                 <Link
                   href={jobHref(job)}
-                  className="block truncate text-sm font-medium hover:underline"
+                  className="block truncate text-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
                 >
                   {job.label}
                 </Link>
@@ -66,7 +66,7 @@ export function ChainBand({ jobs, all, onCancel, onDelete }: ChainBandProps) {
                 </span>
               </div>
 
-              <span className="eyebrow shrink-0 text-muted-foreground">
+              <span className="shrink-0 text-xs text-muted-foreground">
                 {KIND_LABEL[job.kind]}
               </span>
 
@@ -77,7 +77,7 @@ export function ChainBand({ jobs, all, onCancel, onDelete }: ChainBandProps) {
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Options for ${job.label}`}
-                      className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
+                      className="shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 data-[popup-open]:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                     >
                       <MoreHorizontal />
                     </Button>

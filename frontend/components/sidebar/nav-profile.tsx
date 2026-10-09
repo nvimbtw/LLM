@@ -9,10 +9,12 @@ import {
 } from "@/components/ui/sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useAuth } from "@/hooks/use-auth"
+import { useSettings } from "@/components/settings/settings-provider"
 import { useProfile } from "@/hooks/use-profile"
 
 export function NavProfile() {
   const { isAuthenticated } = useAuth()
+  const { openSettings } = useSettings()
   const { user, isLoading } = useProfile()
 
   if (!isAuthenticated) {
@@ -21,7 +23,7 @@ export function NavProfile() {
         <SidebarMenuItem>
           <SidebarMenuButton tooltip="Log in" render={<Link href="/login" />}>
             <LogIn />
-            <span>Log in</span>
+            <span className="group-data-[collapsible=icon]:hidden">Log in</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
@@ -31,16 +33,22 @@ export function NavProfile() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        {/* Default size, not `lg`. The footer is three rows — Admin, Settings,
-            Profile — and a 48px row under two 32px ones read as a different kind
-            of control rather than the emphasis it was meant to be. */}
-        <SidebarMenuButton tooltip="Profile" render={<Link href="/profile" />}>
+        <SidebarMenuButton
+          tooltip="Settings and profile"
+          aria-label="Settings and profile"
+          onClick={() => openSettings("profile")}
+        >
           <User />
           {isLoading ? (
-            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-24 group-data-[collapsible=icon]:hidden" />
           ) : (
-            <span>{user?.username ?? "Username"}</span>
+            <span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">
+              {user?.username ?? "Username"}
+            </span>
           )}
+          <kbd className="ml-auto font-mono text-xs text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden">
+            ⌘K
+          </kbd>
         </SidebarMenuButton>
       </SidebarMenuItem>
     </SidebarMenu>

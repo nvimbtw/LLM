@@ -4,9 +4,11 @@ import * as React from "react"
 import { Pencil } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { Skeleton } from "@/components/ui/skeleton"
 import { VoiceWaveform } from "./voice-waveform"
 
 export interface ComposerFooterProps {
+  isLoading?: boolean
   title: string
   /** Omitted where there's no chat yet to rename (the new-chat screen) — the
    *  title renders as plain text rather than an edit control. */
@@ -108,8 +110,11 @@ function describeUsage(
 
   if (unseen > 0) {
     const everSeen = used + draft + unseen
-    const unseenPercent = everSeen > 0 ? Math.round((unseen / everSeen) * 100) : 0
-    clauses.push(`${count(unseen)} earlier tokens (${unseenPercent}%) were pruned from what the model is prompted with`)
+    const unseenPercent =
+      everSeen > 0 ? Math.round((unseen / everSeen) * 100) : 0
+    clauses.push(
+      `${count(unseen)} earlier tokens (${unseenPercent}%) were pruned from what the model is prompted with`
+    )
   }
 
   if (multiplier > 1 && used + draft > trained) {
@@ -120,7 +125,7 @@ function describeUsage(
     const overPercent = Math.round(((used + draft) / trained - 1) * 100)
     clauses.push(
       `${formatMultiplier(multiplier)} extended from ${count(trained)} — ` +
-      `${overPercent}% past the model's trained window`
+        `${overPercent}% past the model's trained window`
     )
   }
 
@@ -137,6 +142,7 @@ function describeUsage(
  * them was a slot of unblurred thread text between two frosted surfaces.
  */
 export function ComposerFooter({
+  isLoading = false,
   title,
   onRenameTitle,
   contextTokensUsed,
@@ -172,7 +178,9 @@ export function ComposerFooter({
   // The bar's real ceiling. Multiplier at 1 makes this exactly `contextWindow`,
   // so nothing below differs from before extension existed.
   const effectiveLimit =
-    contextWindow && contextWindow > 0 ? contextWindow * contextMultiplier : null
+    contextWindow && contextWindow > 0
+      ? contextWindow * contextMultiplier
+      : null
   const percentUsed =
     effectiveLimit !== null ? Math.min(1, totalTokens / effectiveLimit) : null
   // The draft's own share of the bar, so the tip that moves as you type is the
@@ -203,7 +211,9 @@ export function ComposerFooter({
   // true together.
   const everSeen = totalTokens + unseenTokens
   const unseenPercent =
-    unseenTokens > 0 && everSeen > 0 ? Math.round((unseenTokens / everSeen) * 100) : null
+    unseenTokens > 0 && everSeen > 0
+      ? Math.round((unseenTokens / everSeen) * 100)
+      : null
 
   return (
     // Three columns rather than a `justify-between` row, so the middle one is
@@ -213,7 +223,7 @@ export function ComposerFooter({
     // is empty — which is most of the time.
     <div
       className={cn(
-        "grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-3.5 text-xs text-muted-foreground/80",
+        "grid min-h-5 grid-cols-[1fr_auto_1fr] items-center gap-3 px-3.5 text-xs text-muted-foreground/80",
         className
       )}
     >
@@ -260,63 +270,93 @@ export function ComposerFooter({
         {listening && <VoiceWaveform onDevice={onDeviceDictation} />}
       </span>
 
-      {percentUsed !== null && tone && (
+      {isLoading ? (
         <span
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 justify-self-end tabular-nums",
-            tone.text
-          )}
-          title={describeUsage(
-            contextTokensUsed,
-            draftTokens,
-            effectiveLimit!,
-            contextWindow!,
-            contextMultiplier,
-            unseenTokens
-          )}
+          className="flex items-center gap-1.5 justify-self-end"
+          role="status"
         >
-          <span className="relative flex h-1 w-8 overflow-hidden rounded-full bg-muted-foreground/20">
-            <span
-              className={cn("h-full transition-colors", tone.bar)}
-              style={{ width: `${(percentUsed - percentDraft) * 100}%` }}
-            />
-            {/* The draft, in the same colour half-lit: a second hue would read
+          <span className="sr-only">Loading context window</span>
+          <Skeleton
+            aria-hidden="true"
+            className="h-1 w-8 motion-reduce:animate-none"
+          />
+          <Skeleton
+            aria-hidden="true"
+            className="h-3 w-16 motion-reduce:animate-none"
+          />
+        </span>
+      ) : (
+        percentUsed !== null &&
+        tone && (
+          <span
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 justify-self-end tabular-nums",
+              tone.text
+            )}
+            title={describeUsage(
+              contextTokensUsed,
+              draftTokens,
+              effectiveLimit!,
+              contextWindow!,
+              contextMultiplier,
+              unseenTokens
+            )}
+          >
+            <span className="relative flex h-1 w-8 overflow-hidden rounded-full bg-muted-foreground/20">
+              <span
+                className={cn("h-full transition-colors", tone.bar)}
+                style={{ width: `${(percentUsed - percentDraft) * 100}%` }}
+              />
+              {/* The draft, in the same colour half-lit: a second hue would read
                 as a second meaning, when this is the same quantity at a
                 different age. No transition on the width — it tracks typing,
                 and an animated one lags a sentence behind the letters. */}
-            <span
-              className={cn("h-full opacity-45 transition-colors", tone.bar)}
-              style={{ width: `${percentDraft * 100}%` }}
-            />
-            {/* Where the trained window ends. A line rather than a third fill
+              <span
+                className={cn("h-full opacity-45 transition-colors", tone.bar)}
+                style={{ width: `${percentDraft * 100}%` }}
+              />
+              {/* Where the trained window ends. A line rather than a third fill
                 colour: it marks a boundary in the same bar, not a different
                 kind of token — the fill past it is still exactly what the fill
                 before it is. */}
-            {trainedTick !== null && (
-              <span
-                className="absolute inset-y-0 w-px bg-background/70"
-                style={{ left: `${trainedTick * 100}%` }}
-              />
-            )}
-          </span>
-          {formatTokens(totalTokens)}/{formatTokens(effectiveLimit!)}
-          {/* Independent facts, shown independently: a prune brings usage back
+              {trainedTick !== null && (
+                <span
+                  className="absolute inset-y-0 w-px bg-background/70"
+                  style={{ left: `${trainedTick * 100}%` }}
+                />
+              )}
+            </span>
+            {formatTokens(totalTokens)}/{formatTokens(effectiveLimit!)}
+            {/* Independent facts, shown independently: a prune brings usage back
               under the trained window at the moment it runs, but the
               conversation can grow past it again afterwards — at which point
               both are true together (some of this chat is unseen, *and*
               what's left has again gone past the trained size) and neither
               badge should hide the other. */}
-          {overBase !== null && (
-            <span className={cn("rounded-full px-1 py-px", tone.text, "bg-current/10")}>
-              +{overBase}% {formatMultiplier(contextMultiplier)}
-            </span>
-          )}
-          {unseenPercent !== null && (
-            <span className={cn("rounded-full px-1 py-px", tone.text, "bg-current/10")}>
-              {unseenPercent}% unseen
-            </span>
-          )}
-        </span>
+            {overBase !== null && (
+              <span
+                className={cn(
+                  "rounded-full px-1 py-px",
+                  tone.text,
+                  "bg-current/10"
+                )}
+              >
+                +{overBase}% {formatMultiplier(contextMultiplier)}
+              </span>
+            )}
+            {unseenPercent !== null && (
+              <span
+                className={cn(
+                  "rounded-full px-1 py-px",
+                  tone.text,
+                  "bg-current/10"
+                )}
+              >
+                {unseenPercent}% unseen
+              </span>
+            )}
+          </span>
+        )
       )}
     </div>
   )

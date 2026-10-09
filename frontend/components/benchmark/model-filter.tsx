@@ -64,10 +64,8 @@ export function ModelFilter({
   const shown = models.length - models.filter((m) => hidden.has(m.name)).length
 
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-(--radius-sheet) border border-border bg-card px-5 py-3.5">
-      <span className="eyebrow text-muted-foreground">
-        Models
-      </span>
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-y border-border/60 py-3">
+      <span className="eyebrow text-muted-foreground">Models</span>
 
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-2.5">
         {models.map((model) => {
@@ -75,7 +73,7 @@ export function ModelFilter({
           return (
             <label
               key={model.name}
-              className="group flex cursor-pointer items-center gap-2 text-sm"
+              className="group flex max-w-full min-w-0 cursor-pointer items-center gap-2 text-sm"
             >
               <Checkbox
                 checked={on}
@@ -102,7 +100,7 @@ export function ModelFilter({
                   event.preventDefault()
                   onOnly(model.name)
                 }}
-                className="text-xs text-muted-foreground underline underline-offset-4 opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                className="text-xs text-muted-foreground underline underline-offset-4 opacity-100 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 sm:opacity-0"
               >
                 only
               </button>

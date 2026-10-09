@@ -10,7 +10,11 @@ export default async function DatasetPage({
   const { id } = await params
   return (
     <PageShell width="board">
-      <PageHeader title="Dataset" back={{ href: "/data", label: "Data" }} />
+      <PageHeader
+        className="mb-6 border-b-0 pb-0"
+        title="Dataset"
+        back={{ href: "/data", label: "Data" }}
+      />
       <DatasetDetail datasetId={id} />
     </PageShell>
   )

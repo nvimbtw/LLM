@@ -7,6 +7,7 @@ import type { ThinkBudget } from "@/lib/think-budget"
 import { apiFetch, getToken } from "@/lib/api"
 import type { Attachment } from "@/lib/attachments"
 import { useAuth } from "@/hooks/use-auth"
+import { invalidateChatHistory } from "@/lib/chat-history"
 
 export interface ChatSummary {
   id: string
@@ -207,6 +208,7 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
         const text = await response.text()
         throw new Error(text || "Unable to delete the chat.")
       }
+      invalidateChatHistory(id)
       await refresh()
     },
     [refresh]

@@ -6,7 +6,11 @@ import { UsageStats } from "./usage-stats"
 import { UsageChart } from "./usage-chart"
 import { UsageByModel } from "./usage-by-model"
 
-export function UsageOverview() {
+export interface UsageOverviewProps {
+  compact?: boolean
+}
+
+export function UsageOverview({ compact = false }: UsageOverviewProps) {
   const { usage, isLoading, error } = useUsage()
 
   if (error) {
@@ -32,9 +36,9 @@ export function UsageOverview() {
   // side rail that quadruples the page height.
   return (
     <div className="flex flex-col gap-6">
-      <UsageStats usage={usage} />
-      <UsageChart series={usage.series} />
-      <UsageByModel models={usage.byModel} />
+      <UsageStats compact={compact} usage={usage} />
+      <UsageChart compact={compact} series={usage.series} />
+      <UsageByModel compact={compact} models={usage.byModel} />
     </div>
   )
 }

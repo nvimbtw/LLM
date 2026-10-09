@@ -116,7 +116,6 @@ export function AttentionViewer({
   return (
     <Panel
       title="Attention"
-      description="One head, one text, fetched on request"
       aside={
         drawMs !== null &&
         matrix && (

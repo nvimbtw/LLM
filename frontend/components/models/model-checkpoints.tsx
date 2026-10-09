@@ -49,7 +49,6 @@ export function ModelCheckpoints({
   return (
     <Panel
       title="Checkpoints"
-      description="Saved as it trained"
       aside={
         <span className="text-xs text-muted-foreground tabular-nums">
           {checkpoints.length} · to step {formatNumber(last.step)}

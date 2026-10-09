@@ -73,7 +73,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   }
 
   return (
-    <header className="mb-8 border-b border-border pb-6">
+    <header className="mb-6">
       {/* A job is reachable from the queue and from the cycle that queued it, so
           back follows whoever linked here rather than always the queue. */}
       <Link
@@ -85,17 +85,15 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
       </Link>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="truncate font-display text-3xl font-semibold tracking-tight">
-              {job.label}
-            </h1>
+            <h1 className="truncate font-display text-2xl">{job.label}</h1>
             {isRunning(job) && <RunningDot />}
           </div>
 
           {/* One line of provenance: kind, state, and how long it took. Dot
               separators rather than a table — three short facts don't need one. */}
-          <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+          <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span>{KIND_LABEL[job.kind]}</span>
             <span aria-hidden className="text-muted-foreground/30">
               ·

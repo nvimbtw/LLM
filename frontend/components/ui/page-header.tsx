@@ -4,8 +4,7 @@ import { ArrowLeft } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * The masthead every page opens with — title, a sentence on what the page is for,
- * and optionally one action and one way back up.
+ * Descriptions carry model or run metadata, not introductions to the page.
  *
  * Pulled out of the pages because all fifteen of them had spelled the same header
  * by hand, and they had drifted: two type scales, two fonts, three paddings. One
@@ -24,6 +23,7 @@ export interface PageHeaderProps {
    */
   back?: { href: string; label: string }
   className?: string
+  titleClassName?: string
 }
 
 export function PageHeader({
@@ -32,6 +32,7 @@ export function PageHeader({
   action,
   back,
   className,
+  titleClassName,
 }: PageHeaderProps) {
   return (
     <header className={cn("mb-8 border-b border-border pb-6", className)}>
@@ -46,12 +47,14 @@ export function PageHeader({
       )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="font-display text-3xl font-semibold tracking-tight">
+          <h1
+            className={cn(
+              "font-display text-3xl font-semibold tracking-tight",
+              titleClassName
+            )}
+          >
             {title}
           </h1>
-          {/* A div, not a <p>: the longer composers explain themselves in three
-              paragraphs, and nesting those inside a <p> is invalid markup that
-              React silently reparents. `space-y` styles them when they come. */}
           {description && (
             <div className="mt-2 max-w-2xl space-y-3 text-sm leading-relaxed text-muted-foreground">
               {description}

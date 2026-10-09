@@ -39,17 +39,11 @@ import {
   type TrainConfig,
   type TrainMode,
 } from "@/lib/training"
-import { cn } from "@/lib/utils"
 
 /**
- * Composing a training run, as a board.
- *
- * The decisions run down the left in the order they depend on each other — what
- * kind of run, what it is, what it learns from, how hard it trains — and the
- * right column is the build sheet for the model those decisions describe. That
- * sheet is deliberately the same spec-sheet idiom `/models/[id]` uses for a
- * model that already exists, so the thing you are specifying and the thing you
- * later read back are recognisably one object at two moments of its life.
+ * A bounded training form: identity, data, shape, optimization, then review.
+ * Labels sit beside controls; the derived specification and start action follow
+ * the decisions they summarize, so no persistent sidebar repeats the form.
  *
  * A follow-up step renders the same fields as a narrow rail instead
  * (`ParamsRail`); both take their field list and their validation from
@@ -116,8 +110,14 @@ export function TrainBoard({
   }
 
   return (
-    <form onSubmit={submit}>
-      <div className="mb-6 flex justify-end">
+    <form onSubmit={submit} className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-4">
+        <ModeToggle
+          mode={cfg.mode}
+          isCycleMode={isCycleMode}
+          disabled={disabled}
+          onChange={setMode}
+        />
         <PresetControls
           currentConfig={effective}
           disabled={disabled}
@@ -125,209 +125,167 @@ export function TrainBoard({
           modelsRefreshKey={modelsRefreshKey}
         />
       </div>
+      <section aria-label="Run identity">
+        <div className="space-y-3">
+          <label className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
+            <FieldLabel>Model name</FieldLabel>
+            <Input
+              value={cfg.model_name}
+              onChange={(e) => set("model_name", e.target.value)}
+              // Weight classes are the size convention: Feather · Light ·
+              // Welter · Middle · Heavy, smallest to largest. Only a naming
+              // convention — nothing validates it.
+              placeholder="Slate Feather"
+              disabled={disabled}
+              className="h-9"
+            />
+          </label>
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] xl:gap-8">
-        <div className="min-w-0 space-y-6">
-          <Panel title="Run" description="Name and starting point">
-            <div className="space-y-5">
-              <ModeToggle
-                mode={cfg.mode}
-                isCycleMode={isCycleMode}
-                disabled={disabled}
-                onChange={setMode}
-              />
-
-              <div className="grid gap-5 sm:grid-cols-2">
-                <label className="space-y-1.5">
-                  <FieldLabel hint="What the weights will be called">
-                    Model name
-                  </FieldLabel>
-                  <Input
-                    value={cfg.model_name}
-                    onChange={(e) => set("model_name", e.target.value)}
-                    // Weight classes are the size convention: Feather · Light ·
-                    // Welter · Middle · Heavy, smallest to largest. Only a naming
-                    // convention — nothing validates it.
-                    placeholder="Slate Feather"
-                    disabled={disabled}
-                    className="h-10 font-heading text-base font-semibold"
-                  />
-                </label>
-
-                {isSft ? (
-                  <label className="space-y-1.5">
-                    <FieldLabel hint="Its architecture is inherited">
-                      Base model
-                    </FieldLabel>
-                    <Select
-                      value={baseModelId ?? ""}
-                      onValueChange={(v) => set("base_model_id", v ?? "")}
-                      disabled={
-                        disabled || modelsLoading || models.length === 0
-                      }
-                    >
-                      <SelectTrigger className="h-10 w-full">
-                        <SelectValue
-                          placeholder={modelsLoading ? "Loading…" : "No models"}
-                        >
-                          {(value: string | null) =>
-                            models.find((m) => m.id === value)?.name ?? ""
-                          }
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {models.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                ) : !hidesTokenizer(cfg) ? (
-                  <label className="space-y-1.5">
-                    <FieldLabel hint="Reuse a build, or learn one as it packs">
-                      Tokenizer
-                    </FieldLabel>
-                    <Select
-                      value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
-                      onValueChange={(v) =>
-                        onChange({
-                          ...cfg,
-                          tokenizer_id:
-                            !v || v === LEARN_WITH_RUN ? undefined : v,
-                        })
-                      }
-                      disabled={disabled || tokenizersLoading}
-                    >
-                      <SelectTrigger className="h-10 w-full">
-                        <SelectValue>
-                          {(value: string | null) =>
-                            !value || value === LEARN_WITH_RUN
-                              ? "Learn one with the run"
-                              : (tokenizers.find((t) => t.id === value)?.name ??
-                                value)
-                          }
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {/* A real option, not a placeholder: learning one with
+          {isSft ? (
+            <label className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
+              <FieldLabel hint="Its architecture is inherited">
+                Base model
+              </FieldLabel>
+              <Select
+                value={baseModelId ?? ""}
+                onValueChange={(v) => set("base_model_id", v ?? "")}
+                disabled={disabled || modelsLoading || models.length === 0}
+              >
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue
+                    placeholder={modelsLoading ? "Loading…" : "No models"}
+                  >
+                    {(value: string | null) =>
+                      models.find((m) => m.id === value)?.name ?? ""
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {models.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          ) : !hidesTokenizer(cfg) ? (
+            <label className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
+              <FieldLabel hint="Reuse a build, or learn one as it packs">
+                Tokenizer
+              </FieldLabel>
+              <Select
+                value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
+                onValueChange={(v) =>
+                  onChange({
+                    ...cfg,
+                    tokenizer_id: !v || v === LEARN_WITH_RUN ? undefined : v,
+                  })
+                }
+                disabled={disabled || tokenizersLoading}
+              >
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue>
+                    {(value: string | null) =>
+                      !value || value === LEARN_WITH_RUN
+                        ? "Learn one with the run"
+                        : (tokenizers.find((t) => t.id === value)?.name ??
+                          value)
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {/* A real option, not a placeholder: learning one with
                             the run is what every run did before builds existed,
                             and it stays the default. */}
-                        <SelectItem value={LEARN_WITH_RUN}>
-                          Learn one with the run
-                        </SelectItem>
-                        {tokenizers
-                          .filter((t) => t.hasVocab && !t.implicit)
-                          .map((t) => (
-                            <SelectItem key={t.id} value={t.id}>
-                              {t.name}
-                              {t.vocabSize
-                                ? ` · ${t.vocabSize.toLocaleString()}`
-                                : ""}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                ) : null}
+                  <SelectItem value={LEARN_WITH_RUN}>
+                    Learn one with the run
+                  </SelectItem>
+                  {tokenizers
+                    .filter((t) => t.hasVocab && !t.implicit)
+                    .map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}
+                        {t.vocabSize
+                          ? ` · ${t.vocabSize.toLocaleString()}`
+                          : ""}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </label>
+          ) : null}
 
-                {/* A `div` and not a `label`: two controls under one caption,
+          {/* A `div` and not a `label`: two controls under one caption,
                     and a label may only name one. */}
-                {!isSft && (
-                  <div className="space-y-1.5">
-                    <FieldLabel hint="Carry on from a model, or one of its checkpoints">
-                      Continue from
-                    </FieldLabel>
-                    <ResumePicker
-                      value={cfg.resume_from}
-                      onChange={(resume_from) =>
-                        onChange({ ...cfg, resume_from })
-                      }
-                      models={models}
-                      modelsLoading={modelsLoading}
-                      disabled={disabled}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          </Panel>
-
-          {arch.length > 0 && (
-            <Panel
-              title="Architecture"
-              description="What the model is"
-              bodyClassName="p-0"
-            >
-              <FieldGrid
-                fields={arch}
-                cfg={cfg}
+          {!isSft && (
+            <div className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
+              <FieldLabel hint="Carry on from a model, or one of its checkpoints">
+                Continue from
+              </FieldLabel>
+              <ResumePicker
+                value={cfg.resume_from}
+                onChange={(resume_from) => onChange({ ...cfg, resume_from })}
+                models={models}
+                modelsLoading={modelsLoading}
                 disabled={disabled}
-                onText={set}
-                onNumber={setNumber}
               />
-            </Panel>
+            </div>
           )}
-
-          <Panel
-            title="Training data"
-            description={isSft ? "Conversations" : "Corpora"}
-          >
-            <DataSection
-              cfg={cfg}
-              onChange={onChange}
-              disabled={disabled}
-              datasets={datasets}
-              loading={datasetsLoading}
-            />
-          </Panel>
-
-          <Panel
-            title="Optimization"
-            description="How hard it trains"
-            bodyClassName="p-0"
-          >
-            <FieldGrid
-              fields={run}
-              cfg={cfg}
-              disabled={disabled}
-              onText={set}
-              onNumber={setNumber}
-            />
-            {inheritsArchitecture(cfg) && (
-              <p className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
-                Dimensions, context, heads and layers come from{" "}
-                {isSft ? "the base model" : "the checkpoint"} — only these
-                apply.
-                {!isSft && (
-                  <>
-                    {" "}
-                    Its tokenizer comes with them, so there is no vocabulary
-                    to pick — the run trains against whatever it was trained
-                    with.
-                  </>
-                )}
-              </p>
-            )}
-          </Panel>
-
-          {/* Not wrapped in a Panel: the follow-up list frames and titles
-              itself, and a panel around it reads as two headings for one thing. */}
-          {footer}
         </div>
-
-        <aside className="lg:sticky lg:top-6">
-          <BuildSheet
-            cfg={effective}
-            baseName={models.find((m) => m.id === baseModelId)?.name}
-            resumeName={models.find((m) => m.id === cfg.resume_from)?.name}
-            datasets={datasets}
-            errors={errors}
+      </section>
+      <Panel variant="open" title="Training data">
+        <DataSection
+          cfg={cfg}
+          onChange={onChange}
+          disabled={disabled}
+          datasets={datasets}
+          loading={datasetsLoading}
+        />
+      </Panel>
+      {arch.length > 0 && (
+        <Panel variant="open" title="Architecture" bodyClassName="p-0">
+          <FieldGrid
+            fields={arch}
+            cfg={cfg}
             disabled={disabled}
+            onText={set}
+            onNumber={setNumber}
           />
-        </aside>
-      </div>
+        </Panel>
+      )}
+      <Panel variant="open" title="Optimization" bodyClassName="p-0">
+        <FieldGrid
+          fields={run}
+          cfg={cfg}
+          disabled={disabled}
+          onText={set}
+          onNumber={setNumber}
+        />
+        {inheritsArchitecture(cfg) && (
+          <p className="border-t border-border py-3 text-xs text-muted-foreground">
+            Dimensions, context, heads and layers come from{" "}
+            {isSft ? "the base model" : "the checkpoint"} — only these apply.
+            {!isSft && (
+              <>
+                {" "}
+                Its tokenizer comes with them, so there is no vocabulary to pick
+                — the run trains against whatever it was trained with.
+              </>
+            )}
+          </p>
+        )}
+      </Panel>
+
+      {footer}
+      <BuildSheet
+        cfg={effective}
+        baseName={models.find((m) => m.id === baseModelId)?.name}
+        resumeName={models.find((m) => m.id === cfg.resume_from)?.name}
+        datasets={datasets}
+        errors={errors}
+        disabled={disabled}
+      />
     </form>
   )
 }
@@ -340,8 +298,8 @@ function FieldLabel({
   hint?: string
 }) {
   return (
-    <span className="block">
-      <span className="eyebrow text-muted-foreground">{children}</span>
+    <span className="block min-w-0">
+      <span className="text-sm">{children}</span>
       {hint && (
         <span className="mt-0.5 block text-xs text-muted-foreground/80 normal-case">
           {hint}
@@ -352,11 +310,8 @@ function FieldLabel({
 }
 
 /**
- * The numeric fields as a hairline grid rather than a stacked list.
- *
- * `gap-px` over a border-coloured background is what draws the rules between
- * cells: one element, no double borders where two cells meet, and it collapses
- * to a single column on a narrow screen without leaving a stray rule behind.
+ * Open field columns keep labels and controls aligned without a filled cell
+ * around each decision. On narrow screens they form one continuous column.
  */
 function FieldGrid({
   fields,
@@ -372,9 +327,12 @@ function FieldGrid({
   onNumber: (key: keyof TrainConfig, value: number) => void
 }) {
   return (
-    <div className="grid gap-px bg-border/60 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid gap-x-8 sm:grid-cols-2">
       {fields.map((f) => (
-        <label key={f.key} className="space-y-2 bg-card p-5">
+        <label
+          key={f.key}
+          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/60 py-3"
+        >
           <FieldLabel hint={f.hint}>{f.label}</FieldLabel>
           {f.pow2 ? (
             <Pow2Input
@@ -390,7 +348,7 @@ function FieldGrid({
               value={String(cfg[f.key] ?? "")}
               onChange={(e) => onText(f.key, e.target.value)}
               disabled={disabled}
-              className="h-9 w-full tabular-nums"
+              className="h-9 w-24 text-right tabular-nums"
             />
           )}
         </label>
@@ -427,7 +385,7 @@ function ModeToggle({
   }
 
   return (
-    <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border p-0.5">
+    <div className="inline-flex gap-1">
       {(
         [
           ["pretrain", "Pretrain"],
@@ -442,11 +400,9 @@ function ModeToggle({
           // primary: painting it in the accent made the quietest decision on the
           // form its loudest mark, and it competed with the actual primary action.
           variant={mode === value ? "secondary" : "ghost"}
-          className={cn(
-            "w-32",
-            mode === value ? "font-medium" : "text-muted-foreground"
-          )}
+          className={mode === value ? "font-medium" : "text-muted-foreground"}
           disabled={disabled}
+          aria-pressed={mode === value}
           onClick={() => onChange(value)}
         >
           {label}
@@ -542,7 +498,7 @@ function DataSection({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-px overflow-hidden rounded-(--radius-sheet) border border-border bg-border/60 sm:grid-cols-2">
+      <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
         <Switch
           label="Shuffle each epoch"
           hint="Reorder documents every pass, separated by an end-of-text token."
@@ -594,7 +550,7 @@ function Switch({
   onChange: (on: boolean) => void
 }) {
   return (
-    <label className="flex items-start justify-between gap-3 bg-card p-4">
+    <label className="flex items-start justify-between gap-3 border-b border-border/60 pb-4">
       <span className="min-w-0 text-sm">
         {label}
         <span className="mt-0.5 block text-xs text-muted-foreground">

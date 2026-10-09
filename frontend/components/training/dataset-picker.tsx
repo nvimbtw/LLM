@@ -23,11 +23,13 @@ export function Pow2Input({
   value,
   disabled,
   maxExp = EXP_MAX,
+  ariaLabel,
   onChange,
 }: {
   value: number
   disabled: boolean
   maxExp?: number
+  ariaLabel?: string
   onChange: (n: number) => void
 }) {
   const exp = Math.max(0, Math.round(Math.log2(value > 0 ? value : 1)))
@@ -46,6 +48,7 @@ export function Pow2Input({
       </span>
       <span className="text-sm text-muted-foreground select-none">2^</span>
       <Input
+        aria-label={ariaLabel}
         type="number"
         step={1}
         min={EXP_MIN}
@@ -88,7 +91,8 @@ export function DatasetPicker({
   const toggle = (dataset: DatasetInfo, on: boolean) => {
     // The name is stored alongside the id so a saved preset still reads as
     // something; the run resolves the id and takes the current name from there.
-    if (on) onChange([...value, { id: dataset.id, name: dataset.name, count: 0 }])
+    if (on)
+      onChange([...value, { id: dataset.id, name: dataset.name, count: 0 }])
     else onChange(value.filter((d) => d.id !== dataset.id))
   }
 
@@ -102,7 +106,9 @@ export function DatasetPicker({
   const totalDocuments = value.reduce((sum, d) => {
     const info = available.find((a) => a.id === d.id)
     if (!info) return sum
-    return sum + (d.count > 0 ? Math.min(d.count, info.documents) : info.documents)
+    return (
+      sum + (d.count > 0 ? Math.min(d.count, info.documents) : info.documents)
+    )
   }, 0)
 
   return (
@@ -117,15 +123,17 @@ export function DatasetPicker({
       </div>
 
       {loading ? (
-        <p className="rounded-(--radius-sheet) border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
+        <p className="border-y border-border/60 py-3 text-xs text-muted-foreground">
           Loading datasets…
         </p>
       ) : available.length === 0 ? (
-        <p className="rounded-(--radius-sheet) border border-dashed px-2.5 py-3 text-center text-xs text-muted-foreground">
-          {emptyHint ?? <>No datasets yet. Pull one from the Data view first.</>}
+        <p className="border-y border-border/60 py-3 text-xs text-muted-foreground">
+          {emptyHint ?? (
+            <>No datasets yet. Pull one from the Data view first.</>
+          )}
         </p>
       ) : (
-        <ul className="divide-y rounded-(--radius-sheet) border">
+        <ul className="divide-y divide-border/60 border-y border-border/60">
           {available.map((d) => {
             const checked = selected.has(d.id)
             const count = selected.get(d.id) ?? 0
@@ -133,7 +141,7 @@ export function DatasetPicker({
             return (
               <li
                 key={d.id}
-                className="flex items-center justify-between gap-3 px-2.5 py-2"
+                className="flex items-center justify-between gap-3 py-3"
               >
                 <label
                   htmlFor={rowId}
@@ -155,6 +163,7 @@ export function DatasetPicker({
                   {checked ? (
                     <>
                       <Input
+                        aria-label={`${d.name} document limit`}
                         type="number"
                         min={0}
                         max={d.documents}

@@ -30,7 +30,7 @@ export function DataView() {
 
   return (
     <Tabs defaultValue="datasets">
-      <TabsList>
+      <TabsList variant="line">
         <TabsTrigger value="datasets">Datasets</TabsTrigger>
         <TabsTrigger value="browse">Browse</TabsTrigger>
         <TabsTrigger value="runs">
@@ -73,27 +73,27 @@ function RunList({
 }) {
   if (error) {
     return (
-      <Panel title="Runs">
+      <Panel variant="open" title="Runs">
         <LoadError title="The run list didn't load." hint={error} />
       </Panel>
     )
   }
 
   return (
-    <Panel title="Runs" description="newest first" bodyClassName="p-0">
+    <Panel variant="open" title="Runs" bodyClassName="p-0">
       {isLoading ? (
-        <div className="space-y-3 p-5">
+        <div className="space-y-3 py-4">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
         </div>
       ) : runs.length === 0 ? (
-        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
           Nothing has run yet.
         </p>
       ) : (
         <ul className="divide-y divide-border">
           {runs.map((run) => (
-            <li key={run.id} className="flex items-center gap-4 px-5 py-3">
+            <li key={run.id} className="flex items-center gap-4 py-3">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm">{run.label}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">

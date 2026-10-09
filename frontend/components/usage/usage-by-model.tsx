@@ -2,12 +2,23 @@ import type { ModelUsage } from "@/hooks/use-usage"
 import { formatCompact, formatNumber } from "./format"
 import { Panel } from "@/components/ui/panel"
 
-export function UsageByModel({ models }: { models: ModelUsage[] }) {
+export interface UsageByModelProps {
+  models: ModelUsage[]
+  compact?: boolean
+}
+
+export function UsageByModel({ models, compact = false }: UsageByModelProps) {
   const total = models.reduce((sum, m) => sum + m.tokens, 0) || 1
   const sorted = [...models].sort((a, b) => b.tokens - a.tokens)
 
   return (
-    <Panel title="By model" description="Share of tokens">
+    <Panel
+      className={
+        compact ? "rounded-none border-0 bg-transparent shadow-none" : undefined
+      }
+      title="By model"
+      description="Share of tokens"
+    >
       {sorted.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">
           No usage yet.
@@ -16,7 +27,13 @@ export function UsageByModel({ models }: { models: ModelUsage[] }) {
         // Length carries the magnitude — every bar wears the single accent, so
         // colour isn't asked to encode identity (the name does that). Flowed into
         // columns so a long roster stays short instead of a tall stack.
-        <ul className="grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
+        <ul
+          className={
+            compact
+              ? "grid gap-x-8 gap-y-5"
+              : "grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-3"
+          }
+        >
           {sorted.map((model) => {
             const share = model.tokens / total
             return (
@@ -38,7 +55,7 @@ export function UsageByModel({ models }: { models: ModelUsage[] }) {
                     style={{ width: `${Math.max(share * 100, 2)}%` }}
                   />
                 </div>
-                <span className="eyebrow mt-1.5 block text-muted-foreground tabular-nums">
+                <span className="mt-1.5 block eyebrow text-muted-foreground tabular-nums">
                   {formatNumber(model.requests)} requests
                 </span>
               </li>

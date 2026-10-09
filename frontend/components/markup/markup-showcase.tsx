@@ -348,7 +348,7 @@ export function MarkupShowcase() {
         </Button>
       </div>
 
-      <div className="rounded-(--radius-sheet) border border-border bg-card px-5 py-8 sm:px-8">
+      <div className="border-y border-border/60 py-6">
         {/* gap-7 matches the real thread, so the rhythm previewed here is the
             rhythm you get in a conversation. */}
         <div className="flex flex-col gap-7">

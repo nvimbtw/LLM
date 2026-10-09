@@ -13,6 +13,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { InputGroupButton } from "@/components/ui/input-group"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useComposerChoice } from "./composer-choice-provider"
 import { cn } from "@/lib/utils"
 import { useCheckpointParent } from "@/hooks/use-checkpoint-parent"
 import { useCheckpoints } from "@/hooks/use-checkpoints"
@@ -53,6 +55,7 @@ export function ComposerPicker({
   onBudgetChange,
 }: ComposerPickerProps) {
   const { models, isLoading } = useModels()
+  const { isLoading: choiceLoading } = useComposerChoice()
   // The choice may name a checkpoint, which is deliberately in no model list —
   // so `model` alone cannot say which model is selected, and an id missing
   // from the list is not yet evidence of anything.
@@ -67,10 +70,16 @@ export function ComposerPicker({
   // deleted model is, and correcting before the two are told apart would drop
   // every checkpoint choice the moment it was made.
   React.useEffect(() => {
-    if (models.length > 0 && !isResolving && !parentId) {
+    if (
+      !choiceLoading &&
+      !isLoading &&
+      models.length > 0 &&
+      !isResolving &&
+      !parentId
+    ) {
       onModelChange(models[0].id)
     }
-  }, [models, isResolving, parentId, onModelChange])
+  }, [choiceLoading, isLoading, models, isResolving, parentId, onModelChange])
 
   const selectedModel = models.find((m) => m.id === parentId)
   const selectedCheckpoint = checkpoints.find((c) => c.id === model)
@@ -96,14 +105,16 @@ export function ComposerPicker({
     return Array.from(byFamily.entries()).sort(([a], [b]) => a.localeCompare(b))
   }, [models])
 
-  const modelLabel = selectedModel?.name ?? (isLoading ? "Loading…" : "Select model")
-  const checkpointLabel = checkpoints.length === 0
-    ? null
-    : onFinalWeights
-      ? "Final"
-      : selectedCheckpoint
-        ? `#${selectedCheckpoint.index}`
-        : null
+  const loading = isLoading || choiceLoading || isResolving
+  const modelLabel = selectedModel?.name ?? "Select model"
+  const checkpointLabel =
+    checkpoints.length === 0
+      ? null
+      : onFinalWeights
+        ? "Final"
+        : selectedCheckpoint
+          ? `#${selectedCheckpoint.index}`
+          : null
   const budgetOption = THINK_BUDGETS.find((b) => b.value === budget)
   // "Auto" is the absence of a choice, so the trigger names it only when it
   // isn't — see `lib/think-budget.ts`.
@@ -115,14 +126,25 @@ export function ComposerPicker({
         render={
           <InputGroupButton
             aria-label="Model, checkpoint and thinking budget"
-            disabled={isLoading || models.length === 0}
+            disabled={loading || models.length === 0}
+            aria-busy={loading}
             className="gap-1.5"
           >
-            <span>{modelLabel}</span>
-            {checkpointLabel && (
+            {loading ? (
+              <>
+                <span className="sr-only">Loading model selection</span>
+                <Skeleton
+                  aria-hidden="true"
+                  className="h-4 w-28 motion-reduce:animate-none"
+                />
+              </>
+            ) : (
+              <span>{modelLabel}</span>
+            )}
+            {!loading && checkpointLabel && (
               <span className="text-muted-foreground">· {checkpointLabel}</span>
             )}
-            {budgetLabel && (
+            {!loading && budgetLabel && (
               <span className="text-muted-foreground">· {budgetLabel}</span>
             )}
             <ChevronDown className="text-muted-foreground" />
@@ -206,9 +228,7 @@ export function ComposerPicker({
                               <Check
                                 className={cn(
                                   "size-3.5 text-primary transition-opacity",
-                                  checkpointActive
-                                    ? "opacity-100"
-                                    : "opacity-0"
+                                  checkpointActive ? "opacity-100" : "opacity-0"
                                 )}
                               />
                               <span

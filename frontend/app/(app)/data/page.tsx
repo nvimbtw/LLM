@@ -6,16 +6,9 @@ export default function DataPage() {
   return (
     <PageShell width="board">
       <PageHeader
+        className="mb-6 border-b-0 pb-0"
         title="Data"
         back={{ href: "/admin", label: "Admin" }}
-        description={
-          <p>
-            Datasets before they are training data. Pull a slice of something
-            from Hugging Face, look at what actually arrived, then clean it —
-            watching each step on a handful of documents before running it over
-            all of them.
-          </p>
-        }
       />
       <DataView />
     </PageShell>

@@ -6,27 +6,18 @@ import { ThinkingLabel } from "@/components/chat/thinking-label"
 import { TokenFlow } from "@/components/chat/token-flow"
 import { TurnClock, workedFor } from "@/components/chat/turn-clock"
 import { Panel } from "@/components/ui/panel"
+import { Button } from "@/components/ui/button"
 import { Throbber, type ThrobberMode } from "@/components/ui/throbber"
-import { cn } from "@/lib/utils"
 
-const MODES: { mode: ThrobberMode; description: string }[] = [
-  { mode: "idle", description: "Nothing grown — the root dot, breathing." },
-  { mode: "loading", description: "Three limbs, run out and cleared." },
-  {
-    mode: "thinking",
-    description: "A broad, shallow bush, grown and withdrawn.",
-  },
-  {
-    mode: "generating",
-    description: "One route walked without stopping — head on, tail off.",
-  },
-  { mode: "tool", description: "The whole net struck at once." },
-  { mode: "training", description: "The whole net held, breathing." },
-  { mode: "benchmarking", description: "Limbs arriving one at a time, kept." },
-  {
-    mode: "tokenizing",
-    description: "The grown tree, cut into travelling pieces.",
-  },
+const MODES: ThrobberMode[] = [
+  "idle",
+  "loading",
+  "thinking",
+  "generating",
+  "tool",
+  "training",
+  "benchmarking",
+  "tokenizing",
 ]
 
 /** Roughly the rate a reply streams at, so the wheels here turn at the speed
@@ -57,28 +48,27 @@ export function ThrobberShowcase() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Panel
-        title="Morph"
-        description="Switch state — the figure changes pace and regrows in the new character; leaving generating runs the snake home first"
-      >
+      <Panel variant="open" title="Morph">
         <div className="flex justify-center py-6">
           <Throbber mode={mode} />
         </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {MODES.map(({ mode: option }) => (
-            <button
+        <div
+          className="mt-2 flex flex-wrap gap-1.5"
+          role="group"
+          aria-label="Throbber state"
+        >
+          {MODES.map((option) => (
+            <Button
               key={option}
               type="button"
               onClick={() => setMode(option)}
-              className={cn(
-                "rounded-(--radius-marker) border px-3 py-1 text-xs capitalize transition-colors",
-                option === mode
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border text-muted-foreground hover:border-input hover:text-foreground"
-              )}
+              size="sm"
+              variant={option === mode ? "secondary" : "ghost"}
+              aria-pressed={option === mode}
+              className="capitalize"
             >
               {option}
-            </button>
+            </Button>
           ))}
         </div>
       </Panel>
@@ -88,10 +78,7 @@ export function ThrobberShowcase() {
           be watched without a GPU behind them: the wheels rolling as tokens
           arrive, and the word typing itself in and then walking into the next
           word. */}
-      <Panel
-        title="Status row"
-        description="Mark, count, rule, label — as the chat thread assembles it"
-      >
+      <Panel variant="open" title="Status row">
         <div className="flex flex-col gap-4 py-2">
           <div className="flex items-center gap-3 px-1 text-sm">
             <Throbber mode="thinking" />
@@ -135,23 +122,15 @@ export function ThrobberShowcase() {
           loading — any of them look fine loading — but by whether eight states
           are eight recognisably different pictures, which can only be seen with
           them side by side. */}
-      <Panel
-        title="Every state"
-        description="Eight different pictures, not one picture at eight speeds"
-      >
-        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-(--radius-control-sm) border border-border bg-border/60 sm:grid-cols-2">
-          {MODES.map(({ mode: option, description }) => (
+      <Panel variant="open" title="Every state">
+        <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
+          {MODES.map((option) => (
             <div
               key={option}
-              className="flex items-center gap-4 bg-background px-5 py-4"
+              className="flex items-center gap-4 border-b border-border/60 py-4"
             >
               <Throbber mode={option} />
-              <div className="min-w-0">
-                <p className="text-sm font-medium capitalize">{option}</p>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {description}
-                </p>
-              </div>
+              <p className="min-w-0 text-sm font-medium capitalize">{option}</p>
             </div>
           ))}
         </div>

@@ -56,7 +56,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
 
       <div className="space-y-6">
         {job.status === "waiting" ? (
-          <Panel title="Waiting" description="Queued behind another job">
+          <Panel variant="open" title="Waiting">
             <p className="text-sm text-muted-foreground">
               {after ? (
                 <>
@@ -79,7 +79,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
             </p>
           </Panel>
         ) : (
-          <Panel title="In line" description="GPU queue">
+          <Panel variant="open" title="In line">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="figure text-4xl leading-none">
                 {ahead === 0 ? "Next" : ordinal(ahead + 1)}
@@ -110,7 +110,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
               plainly rather than left to be inferred from a queue that never
               advances. */}
             {paused && (
-              <p className="mt-4 rounded-(--radius-sheet) border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              <p className="mt-4 border-l border-border py-2 pl-3 text-sm text-muted-foreground">
                 The queue is paused. Nothing new will start until it is resumed
                 — the running job carries on.
               </p>
@@ -129,7 +129,11 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
           </Panel>
         )}
 
-        <Panel title={next.title} description={KIND_LABEL[job.kind]}>
+        <Panel
+          variant="open"
+          title={next.title}
+          description={KIND_LABEL[job.kind]}
+        >
           <ol className="space-y-3">
             {next.steps.map((step, i) => (
               <li key={step.name} className="flex gap-3">

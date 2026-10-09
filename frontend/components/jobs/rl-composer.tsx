@@ -81,7 +81,9 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
       .catch(
         (e) =>
           alive &&
-          setLoadError(e instanceof Error ? e.message : "Failed to load the gyms.")
+          setLoadError(
+            e instanceof Error ? e.message : "Failed to load the gyms."
+          )
       )
     return () => {
       alive = false
@@ -111,9 +113,17 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
     return (easy.length > 0 ? easy : gym.task_types).map((t) => t.id)
   }, [gym])
   const mine = new Set(gym?.task_types.map((t) => t.id) ?? [])
-  const selected = (adaptive ? (gym?.task_types.map((t) => t.id) ?? []) : taskTypes ?? defaults).filter((id) => mine.has(id))
+  const selected = (
+    adaptive
+      ? (gym?.task_types.map((t) => t.id) ?? [])
+      : (taskTypes ?? defaults)
+  ).filter((id) => mine.has(id))
 
-  const sourceWeights = selectedSourceWeights(gym?.task_types ?? [], selected, gymWeights)
+  const sourceWeights = selectedSourceWeights(
+    gym?.task_types ?? [],
+    selected,
+    gymWeights
+  )
 
   const families = React.useMemo(() => {
     if (!gym) return []
@@ -186,10 +196,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
 
   return (
     <div className="space-y-6">
-      <Panel
-        title="The model"
-        description="What to practise, and what the practised model is called"
-      >
+      <Panel variant="open" title="The model">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Base model" hint="the run's frozen reference too">
             <Select
@@ -228,7 +235,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         </div>
       </Panel>
 
-      <Panel title="The gym" description="Which tasks each iteration draws from">
+      <Panel variant="open" title="The gym">
         {gyms === null ? (
           <Skeleton className="h-40" />
         ) : (
@@ -263,11 +270,33 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
             {gymId === "math" && (
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={automatic} onCheckedChange={(checked) => setAutomatic(checked === true)} />
+                  <Checkbox
+                    checked={automatic}
+                    onCheckedChange={(checked) =>
+                      setAutomatic(checked === true)
+                    }
+                  />
                   Advance difficulty automatically
                 </label>
-                <p className="text-xs text-muted-foreground">Automatic practice includes every rung, starts with placement, and keeps earlier skills in review. Promotion requires 90% on two checks of 100 distinct validation problems. Fixed tests run before and after training. These checks add generation time beyond the training iterations. No tools are available.</p>
-                {adaptive && <Field label="Validate every" hint="training iterations"><Input type="number" min={1} value={checkEvery} onChange={(e) => setCheckEvery(clamp(e.target.valueAsNumber, 1, 1000))} /></Field>}
+                <p className="text-xs text-muted-foreground">
+                  Automatic practice includes every rung, starts with placement,
+                  and keeps earlier skills in review. Promotion requires 90% on
+                  two checks of 100 distinct validation problems. Fixed tests
+                  run before and after training. These checks add generation
+                  time beyond the training iterations. No tools are available.
+                </p>
+                {adaptive && (
+                  <Field label="Validate every" hint="training iterations">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={checkEvery}
+                      onChange={(e) =>
+                        setCheckEvery(clamp(e.target.valueAsNumber, 1, 1000))
+                      }
+                    />
+                  </Field>
+                )}
               </div>
             )}
 
@@ -279,7 +308,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                 {families.map(({ family, types }) => (
                   <div key={family} className="space-y-2.5">
                     {family && (
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                      <p className="text-xs tracking-wide text-muted-foreground uppercase">
                         {family}
                       </p>
                     )}
@@ -297,7 +326,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                         <span className="min-w-0">
                           <span className="flex items-baseline gap-2">
                             {type.label}
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            <span className="text-[10px] tracking-wide text-muted-foreground uppercase">
                               {type.level}
                             </span>
                           </span>
@@ -315,13 +344,25 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         )}
       </Panel>
 
-      {gym?.composite && <Panel title="The mixture"><SourceWeights tasks={gym.task_types} selected={selected} weights={gymWeights} onChange={setGymWeights} /></Panel>}
-      {gym?.demonstrations && <DemonstrationsForm gymId={gymId} taskTypes={selected} gymWeights={gym.composite ? sourceWeights : undefined} />}
+      {gym?.composite && (
+        <Panel variant="open" title="The mixture">
+          <SourceWeights
+            tasks={gym.task_types}
+            selected={selected}
+            weights={gymWeights}
+            onChange={setGymWeights}
+          />
+        </Panel>
+      )}
+      {gym?.demonstrations && (
+        <DemonstrationsForm
+          gymId={gymId}
+          taskTypes={selected}
+          gymWeights={gym.composite ? sourceWeights : undefined}
+        />
+      )}
 
-      <Panel
-        title="The loop"
-        description="One iteration is one gym run, and there are this many of them"
-      >
+      <Panel variant="open" title="The loop">
         <div className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-4">
             <Field label="Iterations" hint="gym runs">
@@ -341,7 +382,9 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                 max={MAX_EPISODES}
                 value={tasksPerBatch}
                 onChange={(e) =>
-                  setTasksPerBatch(clamp(e.target.valueAsNumber, 1, MAX_EPISODES))
+                  setTasksPerBatch(
+                    clamp(e.target.valueAsNumber, 1, MAX_EPISODES)
+                  )
                 }
               />
             </Field>
@@ -356,14 +399,21 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                 }
               />
             </Field>
-            <Field label="Rounds" hint={noTools ? "one answer, no tools" : "shell turns per episode"}>
+            <Field
+              label="Rounds"
+              hint={
+                noTools ? "one answer, no tools" : "shell turns per episode"
+              }
+            >
               <Input
                 type="number"
                 min={1}
                 max={32}
                 value={noTools ? 1 : maxRounds}
                 disabled={noTools}
-                onChange={(e) => setMaxRounds(clamp(e.target.valueAsNumber, 1, 32))}
+                onChange={(e) =>
+                  setMaxRounds(clamp(e.target.valueAsNumber, 1, 32))
+                }
               />
             </Field>
           </div>
@@ -381,9 +431,9 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
                 <span className="text-foreground">
                   {episodes} episodes is more than one gym run may hold.
                 </span>{" "}
-                The gym service limits the episodes in one run, so tasks × rollouts has to stay at or
-                under {MAX_EPISODES}. Each iteration would be refused, and the
-                run would fail on its first one.
+                The gym service limits the episodes in one run, so tasks ×
+                rollouts has to stay at or under {MAX_EPISODES}. Each iteration
+                would be refused, and the run would fail on its first one.
               </>
             ) : (
               <>
@@ -401,7 +451,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         </div>
       </Panel>
 
-      <Panel title="The update" description="How hard each step pulls, and from where">
+      <Panel variant="open" title="The update">
         <div className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="Learning rate">
@@ -419,7 +469,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
           </div>
 
           {!numeric && (
-            <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
               A learning rate and a temperature above zero, and a KL weight of
               zero or more. A temperature of zero makes a group of {groupSize}{" "}
               attempts one attempt counted {groupSize} times, and a group whose
@@ -429,7 +479,11 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         </div>
       </Panel>
 
-      <Button onClick={submit} disabled={!ready || isSubmitting} className="gap-2">
+      <Button
+        onClick={submit}
+        disabled={!ready || isSubmitting}
+        className="gap-2"
+      >
         <Play className="size-3.5" />
         {isSubmitting ? "Queueing…" : "Queue practice run"}
       </Button>

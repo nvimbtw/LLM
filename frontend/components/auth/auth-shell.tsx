@@ -22,7 +22,6 @@ export interface AuthShellProps {
   /** Small uppercase label above the title — which of the two screens this is. */
   eyebrow: string
   title: string
-  description: string
   children: React.ReactNode
   footer?: React.ReactNode
   /** The static SVG on the right. Hidden below `lg`. */
@@ -34,7 +33,6 @@ export interface AuthShellProps {
 export function AuthShell({
   eyebrow,
   title,
-  description,
   children,
   footer,
   figure,
@@ -65,9 +63,6 @@ export function AuthShell({
             <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight">
               {title}
             </h1>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              {description}
-            </p>
           </header>
 
           <div className="mt-8">{children}</div>

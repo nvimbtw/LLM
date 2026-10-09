@@ -1,3 +1,4 @@
+import { Panel } from "@/components/ui/panel"
 import {
   type MarkupReport,
   NO_VALUE,
@@ -19,13 +20,13 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="grid gap-6 xl:grid-cols-2">
-        <section className="rounded-(--radius-sheet) border border-border bg-background px-6 py-5">
-          <h2 className="text-sm font-medium">Marker placement</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            At each marker in a held-out reply: would the model have emitted it?
-          </p>
+        <Panel
+          variant="open"
+          title="Marker placement"
+          description="At each marker in a held-out reply: would the model have emitted it?"
+        >
           {positions ? (
-            <dl className="mt-5 divide-y divide-border/60">
+            <dl className="divide-y divide-border/60">
               <Row
                 label="Right marker, whole vocabulary"
                 value={formatPercent(positions.marker_top1)}
@@ -50,16 +51,15 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
           ) : (
             <Empty />
           )}
-        </section>
+        </Panel>
 
-        <section className="rounded-(--radius-sheet) border border-border bg-background px-6 py-5">
-          <h2 className="text-sm font-medium">Generated structure</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Replies generated from held-out prompts, checked over the tokens
-            themselves.
-          </p>
+        <Panel
+          variant="open"
+          title="Generated structure"
+          description="Replies generated from held-out prompts, checked over the tokens themselves."
+        >
           {structure ? (
-            <dl className="mt-5 divide-y divide-border/60">
+            <dl className="divide-y divide-border/60">
               <Row
                 label="Ended its own turn"
                 value={formatPercent(structure.close_rate)}
@@ -84,7 +84,7 @@ export function MarkupPanel({ report }: { report: MarkupReport }) {
           ) : (
             <Empty />
           )}
-        </section>
+        </Panel>
       </div>
     </div>
   )

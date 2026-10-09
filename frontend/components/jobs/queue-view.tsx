@@ -1,6 +1,7 @@
 "use client"
 
 import { Switch } from "@/components/ui/switch"
+import { AdminSectionHeader } from "@/components/admin/admin-section-header"
 import { FormError } from "@/components/ui/error-state"
 import { useJobsContext } from "./jobs-provider"
 import { AddJobMenu } from "./add-job-menu"
@@ -12,9 +13,9 @@ import { QueueBand } from "./queue-band"
  * The queue: what is running, what is waiting on the GPU, and what is chained
  * behind a job that has not finished yet.
  *
- * The bands share a single frame rather than sitting in separate cards, because
- * they are one sequence read top to bottom — a job moves down it, and a border
- * between each stage would make that continuity into three lists.
+ * The bands share one open ledger because they are one sequence read top to
+ * bottom. The running job carries the emphasis; rules separate the waiting
+ * line from follow-ups without turning them into separate cards.
  *
  * Queue above history, always — but no longer *directly* above it. This and
  * `HistoryView` are separate components so the admin panel can put its directory
@@ -28,7 +29,6 @@ export function QueueView() {
     queued,
     waiting,
     paused,
-    isLoading,
     error,
     cancel,
     remove,
@@ -40,31 +40,27 @@ export function QueueView() {
     <div className="space-y-8">
       {error && <FormError>{error}</FormError>}
 
-      <section className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
-        <header className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border px-5 py-4">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold tracking-tight">Queue</h2>
-            <p className="mt-0.5 eyebrow text-muted-foreground">
-              {summarize(queued.length, running !== null, paused)}
-            </p>
-          </div>
+      <section>
+        <AdminSectionHeader
+          title="Queue"
+          meta={summarize(queued.length, running !== null, paused)}
+          action={
+            <>
+              {/* Pausing holds the next claim; the running job carries on. */}
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                  checked={paused}
+                  onCheckedChange={(next) => pause(Boolean(next))}
+                  aria-label="Pause the queue"
+                />
+                Pause
+              </label>
+              <AddJobMenu />
+            </>
+          }
+        />
 
-          {/* Pausing is a state of the ledger, so it lives in its header and dims
-              the queued band — not a banner that pushes the page down. It never
-              interrupts the job already on the GPU, only stops the next claim. */}
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Switch
-              checked={paused}
-              onCheckedChange={(next) => pause(Boolean(next))}
-              aria-label="Pause the queue"
-            />
-            Pause
-          </label>
-
-          <AddJobMenu />
-        </header>
-
-        <NowBand job={running} paused={paused} onCancel={cancel} />
+        <NowBand job={running} onCancel={cancel} />
         <QueueBand
           jobs={queued}
           paused={paused}
@@ -80,15 +76,6 @@ export function QueueView() {
           onCancel={cancel}
           onDelete={remove}
         />
-
-        {!isLoading &&
-          !running &&
-          queued.length === 0 &&
-          waiting.length === 0 && (
-            <p className="px-5 py-8 text-center text-sm text-muted-foreground">
-              Nothing queued. Add a job to put the GPU to work.
-            </p>
-          )}
       </section>
     </div>
   )

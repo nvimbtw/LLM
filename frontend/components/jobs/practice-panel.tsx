@@ -18,6 +18,7 @@ export function PracticePanel({ report }: PracticePanelProps) {
   if (!report.mastery) return null
   return (
     <Panel
+      variant="open"
       title="Math progression"
       description={
         report.practice_phase ??

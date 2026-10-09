@@ -8,7 +8,6 @@ export default function ProfilePage() {
     <PageShell width="reading">
       <PageHeader
         title="Profile"
-        description="Who you are signed in as, and what this account has been up to."
         action={<LogoutButton />}
       />
       <ProfileView />

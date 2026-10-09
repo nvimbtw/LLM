@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { Throbber } from "@/components/ui/throbber"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useBenchmark } from "@/hooks/use-benchmark"
 import {
   BENCHMARK_SUITES,
@@ -11,7 +12,6 @@ import {
   isLanguageReport,
   isMarkupReport,
 } from "@/lib/benchmark"
-import { cn } from "@/lib/utils"
 
 import { CorpusPanel } from "./corpus-panel"
 import { MarkupPanel } from "./markup-panel"
@@ -110,59 +110,43 @@ export function BenchmarkView() {
     })
   }, [detail])
 
+  const switchSuite = (value: unknown) => {
+    const suite = BENCHMARK_SUITES.find((one) => one.id === value)
+    if (suite) selectSuite(suite.id)
+  }
+
   const switcher = (
-    // Two benchmarks, not two views of one. The blurb is under the tabs rather than
-    // in a tooltip because "which of these am I looking at" is the first question
-    // anyone arriving here has, and the scores are not comparable across them.
-    <div className="flex flex-col gap-2">
-      <div
-        role="tablist"
-        aria-label="Benchmark"
-        className="inline-flex self-start rounded-(--radius-control-sm) border border-border p-0.5"
-      >
-        {BENCHMARK_SUITES.map((suite) => (
-          <button
-            key={suite.id}
-            role="tab"
-            type="button"
-            aria-selected={selectedSuite === suite.id}
-            onClick={() => selectSuite(suite.id)}
-            className={cn(
-              "rounded-(--radius-marker) px-3 py-1.5 text-sm transition-colors",
-              selectedSuite === suite.id
-                ? "bg-muted font-medium text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {suite.label}
-          </button>
-        ))}
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {BENCHMARK_SUITES.find((s) => s.id === selectedSuite)?.blurb}
-      </p>
-    </div>
+    <TabsList variant="line" aria-label="Benchmark">
+      {BENCHMARK_SUITES.map((suite) => (
+        <TabsTrigger key={suite.id} value={suite.id}>
+          {suite.label}
+        </TabsTrigger>
+      ))}
+    </TabsList>
   )
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-6">
+      <Tabs value={selectedSuite} onValueChange={switchSuite} className="gap-6">
         {switcher}
-        <Skeleton className="h-72 rounded-(--radius-sheet)" />
-        <Skeleton className="h-40 rounded-(--radius-sheet)" />
-        <Skeleton className="h-16 rounded-(--radius-sheet)" />
-      </div>
+        <TabsContent value={selectedSuite} className="space-y-6">
+          <Skeleton className="h-72 rounded-(--radius-sheet)" />
+          <Skeleton className="h-40 rounded-(--radius-sheet)" />
+          <Skeleton className="h-16 rounded-(--radius-sheet)" />
+        </TabsContent>
+      </Tabs>
     )
   }
 
   const report = detail?.report ?? null
 
   return (
-    <div className="flex flex-col gap-6">
+    <Tabs value={selectedSuite} onValueChange={switchSuite} className="gap-6">
       {switcher}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <TabsContent value={selectedSuite} className="space-y-6">
+        {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {/* Cross-run views: they read the whole history rather than the selected
+        {/* Cross-run views: they read the whole history rather than the selected
           run, and they are what the page opens on.
 
           Full width, one above the other. They used to sit side by side, which
@@ -171,75 +155,72 @@ export function BenchmarkView() {
           dot there was no room left to separate anything. Two tall figures read
           better than four small quadrants, and neither is compared to the other
           mark-for-mark — they share a y axis and nothing else. */}
-      <ModelFilter
-        runs={runs}
-        hidden={hidden}
-        onToggle={toggleModel}
-        onShowAll={showAllModels}
-        onOnly={showOnlyModel}
-      />
-      <TokensPanel runs={plotted} filtered={filtered} />
-      <DurationPanel runs={plotted} filtered={filtered} />
+        <ModelFilter
+          runs={runs}
+          hidden={hidden}
+          onToggle={toggleModel}
+          onShowAll={showAllModels}
+          onOnly={showOnlyModel}
+        />
+        <TokensPanel runs={plotted} filtered={filtered} />
+        <DurationPanel runs={plotted} filtered={filtered} />
 
-      <HistoryPanel
-        runs={runs}
-        selectedId={selectedId}
-        onSelect={selectAndReveal}
-        onDelete={remove}
-      />
+        <HistoryPanel
+          runs={runs}
+          selectedId={selectedId}
+          onSelect={selectAndReveal}
+          onDelete={remove}
+        />
 
-      {/* scroll-mt keeps the heading clear of the sticky app header when a row
+        {/* scroll-mt keeps the heading clear of the sticky app header when a row
           jumps here, rather than tucking it just underneath. */}
-      <div ref={reportRef} className="flex scroll-mt-6 flex-col gap-6">
-        {report && detail ? (
-          <>
-            <ScoreCard report={report} />
-            {isMarkupReport(report) ? (
-              <MarkupPanel report={report} />
-            ) : isLanguageReport(report) ? (
-              <>
-                <div className="grid gap-6 xl:grid-cols-2">
-                  <CorpusPanel corpus={report.corpus} />
-                  {report.ablation && (
-                    <AblationPanel ablation={report.ablation} />
+        <div ref={reportRef} className="flex scroll-mt-6 flex-col gap-6">
+          {report && detail ? (
+            <>
+              <ScoreCard report={report} />
+              {isMarkupReport(report) ? (
+                <MarkupPanel report={report} />
+              ) : isLanguageReport(report) ? (
+                <>
+                  <div className="grid gap-6 xl:grid-cols-2">
+                    <CorpusPanel corpus={report.corpus} />
+                    {report.ablation && (
+                      <AblationPanel ablation={report.ablation} />
+                    )}
+                  </div>
+                  {report.surface && (
+                    <GenerationPanel
+                      surface={report.surface}
+                      samples={report.samples}
+                    />
                   )}
-                </div>
-                {report.surface && (
-                  <GenerationPanel
-                    surface={report.surface}
-                    samples={report.samples}
-                  />
-                )}
-              </>
-            ) : null}
-            <p className="text-xs text-muted-foreground tabular-nums">
-              Completed in {formatDuration(report.total_secs)}.
+                </>
+              ) : null}
+              <p className="text-xs text-muted-foreground tabular-nums">
+                Completed in {formatDuration(report.total_secs)}.
+              </p>
+            </>
+          ) : active ? (
+            // The first run of all has no earlier report to sit under, which would
+            // otherwise leave the page empty while the GPU works. The mark fills that
+            // space and reads as "measuring" rather than "stalled".
+            <div className="flex items-center gap-4 border-y border-border/60 py-6">
+              <Throbber mode="benchmarking" />
+              <p className="min-w-0 text-sm text-muted-foreground">
+                Scoring {active.model_name}.
+              </p>
+            </div>
+          ) : (
+            // Failed runs carry their error in the history row, so this only has to
+            // cover "nothing selected yet".
+            <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
+              {detail?.status === "failed"
+                ? (detail.error ?? "This run failed.")
+                : "Select a run above, or queue a benchmark from the jobs page."}
             </p>
-          </>
-        ) : active ? (
-          // The first run of all has no earlier report to sit under, which would
-          // otherwise leave the page empty while the GPU works. The mark fills that
-          // space and reads as "measuring" rather than "stalled".
-          <div className="flex flex-col items-center gap-5 rounded-(--radius-sheet) border border-dashed border-border px-6 py-12">
-            <Throbber mode="benchmarking" />
-            <p className="text-center text-sm text-muted-foreground">
-              Scoring in progress.
-            </p>
-            <p className="text-center text-xs text-muted-foreground">
-              Scoring {active.model_name}. This takes a minute or two on the
-              GPU.
-            </p>
-          </div>
-        ) : (
-          // Failed runs carry their error in the history row, so this only has to
-          // cover "nothing selected yet".
-          <p className="rounded-(--radius-sheet) border border-dashed border-border px-5 py-10 text-center text-sm text-muted-foreground">
-            {detail?.status === "failed"
-              ? (detail.error ?? "This run failed.")
-              : "Select a run above, or queue a benchmark from the jobs page."}
-          </p>
-        )}
-      </div>
-    </div>
+          )}
+        </div>
+      </TabsContent>
+    </Tabs>
   )
 }

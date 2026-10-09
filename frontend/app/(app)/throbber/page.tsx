@@ -6,9 +6,9 @@ export default function ThrobberPage() {
   return (
     <PageShell width="reading">
       <PageHeader
+        className="mb-6 border-b-0 pb-0"
         title="Throbber"
         back={{ href: "/admin", label: "Admin" }}
-        description="A tree grown on a hexagonal dot field, regrown from scratch on every pass, so the mark is never twice the same. What stays constant is the character of the growth — one long route, a shallow bush, the full net — and that is what tells the eight states apart."
       />
       <ThrobberShowcase />
     </PageShell>

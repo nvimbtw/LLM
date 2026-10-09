@@ -6,18 +6,21 @@ import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
 import { toast } from "@/components/ui/toast"
 import { AuthField } from "@/components/auth/auth-field"
 
+export interface ChangePasswordFormProps {
+  onSubmit: (password: string) => Promise<void>
+  compact?: boolean
+}
+
 export function ChangePasswordForm({
   onSubmit,
-}: {
-  onSubmit: (password: string) => Promise<void>
-}) {
+  compact = false,
+}: ChangePasswordFormProps) {
   const [password, setPassword] = React.useState("")
   const [confirm, setConfirm] = React.useState("")
   const [isSubmitting, setSubmitting] = React.useState(false)
@@ -50,12 +53,17 @@ export function ChangePasswordForm({
   }
 
   return (
-    <Card>
-      <CardHeader>
+    <Card
+      className={
+        compact
+          ? "rounded-none bg-transparent py-0 shadow-none ring-0"
+          : undefined
+      }
+    >
+      <CardHeader className={compact ? "px-0" : undefined}>
         <CardTitle>Change password</CardTitle>
-        <CardDescription>Update the password for your account.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className={compact ? "px-0" : undefined}>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <AuthField
             id="new-password"

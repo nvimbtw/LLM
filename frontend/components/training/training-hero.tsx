@@ -251,7 +251,7 @@ export interface TrainingHeroProps {
  * The train page's hero: where the run says what it is doing and how far along
  * it is, in one block.
  *
- * A framed band spanning the full width rather than a column beside the config
+ * An open band spanning the full width rather than a column beside the config
  * card. The figures are the reason the page exists, and as a column they were
  * narrow enough that four of them wrapped — which is what made the top of this
  * page read as debris. Given the width they sit in one still row, the phase line
@@ -343,12 +343,10 @@ export function TrainingHero({
           : "Phase 1 of 2 — preparing the data"
 
   return (
-    <section className="rounded-(--radius-sheet) border border-border bg-card">
-      <div className="flex items-start justify-between gap-6 p-5">
+    <section className="border-y border-border/60">
+      <div className="flex items-start justify-between gap-6 py-4">
         <div className="min-w-0 space-y-1">
-          <h2 className="font-heading text-xl font-semibold tracking-tight">
-            {headline}
-          </h2>
+          <h2 className="font-display text-xl">{headline}</h2>
           <p className="text-sm text-balance text-muted-foreground">{detail}</p>
         </div>
         {/* The site's own mark, where a mini copy of the embedding globe used to
@@ -363,7 +361,7 @@ export function TrainingHero({
         />
       </div>
 
-      <div className="space-y-2 px-5 pb-5">
+      <div className="space-y-2 pb-4">
         <Progress value={pct} />
         <div className="flex items-baseline justify-between gap-3 text-xs text-muted-foreground">
           <span className="min-w-0 truncate tabular-nums">{position}</span>
@@ -372,7 +370,7 @@ export function TrainingHero({
       </div>
 
       {showCurriculum && (
-        <div className="border-t border-border px-5 py-4">
+        <div className="border-t border-border py-4">
           <CurriculumProgress
             stages={curriculum}
             train={train}

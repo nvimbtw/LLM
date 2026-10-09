@@ -269,7 +269,7 @@ export function ParamsRail({
           // validates it, and the field takes any name.
           placeholder="Slate Feather"
           disabled={disabled}
-          className="h-10 font-heading text-lg font-semibold"
+          className="h-10"
         />
       </div>
 
@@ -428,7 +428,7 @@ export function ParamsRail({
       {!isSft && (
         <div className="space-y-3">
           {/* Data-order controls: shuffle each epoch + curriculum staging. */}
-          <div className="space-y-2 rounded-(--radius-sheet) border p-2.5">
+          <div className="space-y-3 border-y border-border/60 py-3">
             <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
                 Shuffle documents each epoch
@@ -487,8 +487,7 @@ export function ParamsRail({
           {!isSft && (
             <>
               {" "}
-              Its tokenizer comes with them, so there is no vocabulary to
-              pick.
+              Its tokenizer comes with them, so there is no vocabulary to pick.
             </>
           )}
           {isKto && (

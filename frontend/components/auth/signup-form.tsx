@@ -24,7 +24,6 @@ export function SignupForm() {
     <AuthShell
       eyebrow="Create account"
       title="Start a workspace"
-      description="One account gets you the chat, the model catalogue and your own conversation history."
       figure={<FigureSeed />}
       figureCaption="Begin with one model and a blank corpus. Everything after that is a run you queued."
       footer={

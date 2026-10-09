@@ -4,7 +4,10 @@ import * as React from "react"
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 
 import { SourceScores } from "@/components/gyms/source-scores"
-import { GeneralGymProgress, type SourceHistoryPoint } from "@/components/jobs/general-gym-progress"
+import {
+  GeneralGymProgress,
+  type SourceHistoryPoint,
+} from "@/components/jobs/general-gym-progress"
 import type { GymSourceScore } from "@/lib/gyms"
 import { Appendix } from "@/components/training/appendix"
 import {
@@ -60,20 +63,28 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
     signal?: number
   } | null
   const liveHistory = React.useMemo(
-    () => run.diag.filter((point) => point.source_scores != null) as SourceHistoryPoint[],
+    () =>
+      run.diag.filter(
+        (point) => point.source_scores != null
+      ) as SourceHistoryPoint[],
     [run.diag]
   )
-  const history = result?.source_history && result.source_history.length > liveHistory.length
-    ? result.source_history : liveHistory
+  const history =
+    result?.source_history && result.source_history.length > liveHistory.length
+      ? result.source_history
+      : liveHistory
   const sources = React.useMemo(() => {
-    const fromHistory = history.flatMap((entry) => Object.keys(entry.source_scores ?? {}))
+    const fromHistory = history.flatMap((entry) =>
+      Object.keys(entry.source_scores ?? {})
+    )
     const fromResult = Object.keys(result?.source_scores ?? {})
     return [...new Set([...fromHistory, ...fromResult])]
   }, [history, result?.source_scores])
   // The durable run row currently omits config. A live snapshot may have it;
   // otherwise, more than one actual source is proof this is a General run.
-  const isGeneral = (run.runConfig as { gym_id?: string } | null)?.gym_id === "general"
-    || sources.length > 1
+  const isGeneral =
+    (run.runConfig as { gym_id?: string } | null)?.gym_id === "general" ||
+    sources.length > 1
   const points = React.useMemo(
     () =>
       (history.length ? history : run.diag)
@@ -89,20 +100,26 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
   const sourceScores = last?.source_scores ?? result?.source_scores
   const report = React.useMemo(() => {
     const stored = (run.job?.result ?? {}) as PracticeReport
-    return run.diag.reduce<PracticeReport>((all, point) => ({ ...all, ...point }), stored)
+    return run.diag.reduce<PracticeReport>(
+      (all, point) => ({ ...all, ...point }),
+      stored
+    )
   }, [run.diag, run.job?.result])
 
   return (
     <div className="space-y-6">
       <PracticePanel report={report} />
-      <Panel
-        title="Practising"
-        description="One iteration is one gym run: T tasks, G rollouts of each"
-      >
+      <Panel variant="open" title="Practising">
         <div className="space-y-5">
           <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
-            <Stat label="Training pass rate" value={percent(last?.pass_rate ?? result?.pass_rate)} />
-            <Stat label="Signal" value={percent(last?.signal ?? result?.signal)} />
+            <Stat
+              label="Training pass rate"
+              value={percent(last?.pass_rate ?? result?.pass_rate)}
+            />
+            <Stat
+              label="Signal"
+              value={percent(last?.signal ?? result?.signal)}
+            />
             <Stat
               label="Groups"
               value={
@@ -114,18 +131,26 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
             <Stat label="KL" value={fixed(last?.kl, 4)} />
             <Stat label="Episodes" value={integer(last?.episodes)} />
             <Stat label="Abandoned" value={integer(last?.abandoned)} />
-            <Stat label="Rounds / episode" value={fixed(last?.episode_rounds, 1)} />
+            <Stat
+              label="Rounds / episode"
+              value={fixed(last?.episode_rounds, 1)}
+            />
             <Stat label="Mean return" value={fixed(last?.mean_return, 3)} />
           </dl>
 
-          {isGeneral && <GeneralGymProgress history={history} sources={sources} />}
+          {isGeneral && (
+            <GeneralGymProgress history={history} sources={sources} />
+          )}
 
           {isGeneral && (
             <h3 className="text-sm font-semibold">Overall batch trend</h3>
           )}
 
           {points.length > 1 ? (
-            <ChartContainer config={chartConfig} className="aspect-auto h-80 w-full">
+            <ChartContainer
+              config={chartConfig}
+              className="aspect-auto h-80 w-full"
+            >
               <LineChart data={points} margin={{ left: 4, right: 4, top: 4 }}>
                 <CartesianGrid {...gridProps} />
                 <XAxis
@@ -179,7 +204,9 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
         </div>
       </Panel>
 
-      {sourceScores && Object.keys(sourceScores).length > 1 && <SourceScores scores={sourceScores} />}
+      {sourceScores && Object.keys(sourceScores).length > 1 && (
+        <SourceScores scores={sourceScores} />
+      )}
       <Appendix log={run.log} checkpoints={run.checkpoints} />
     </div>
   )
@@ -201,7 +228,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="pr-6">
       <dt className="eyebrow text-muted-foreground">{label}</dt>
-      <dd className="figure mt-1.5 text-2xl">{value}</dd>
+      <dd className="mt-1.5 figure text-2xl">{value}</dd>
     </div>
   )
 }

@@ -26,8 +26,8 @@ export function HistoryPager({ page, pages, onGo }: HistoryPagerProps) {
   if (pages <= 1) return null
 
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-border/40 px-5 py-2.5">
-      <span className="eyebrow text-muted-foreground tabular-nums">
+    <div className="flex items-center justify-between gap-3 border-t border-border/60 py-3">
+      <span className="text-xs text-muted-foreground tabular-nums">
         Page {page + 1} of {pages}
       </span>
 

@@ -19,7 +19,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useModels } from "@/hooks/use-models"
-import { createGymRun, selectedSourceWeights, LEVELS, type Gym } from "@/lib/gyms"
+import {
+  createGymRun,
+  selectedSourceWeights,
+  LEVELS,
+  type Gym,
+} from "@/lib/gyms"
 
 /** What one run may ask for — the gyms engine refuses more (`MAX_EPISODES`). */
 const MAX_EPISODES = 256
@@ -98,7 +103,9 @@ export function RunForm({ gym }: { gym: Gym }) {
   const ready = modelId && taskTypes.length > 0 && count > 0 && !partialGroup
   const chosen = models.find((model) => model.id === modelId)
   const cramped =
-    chosen !== undefined && chosen.contextWindow > 0 && chosen.contextWindow < MIN_CONTEXT
+    chosen !== undefined &&
+    chosen.contextWindow > 0 &&
+    chosen.contextWindow < MIN_CONTEXT
 
   const toggle = (id: string) =>
     setTaskTypes((chosen) =>
@@ -112,7 +119,15 @@ export function RunForm({ gym }: { gym: Gym }) {
         gymId: gym.id,
         modelName: modelId,
         taskTypes,
-        ...(gym.composite ? { gymWeights: selectedSourceWeights(gym.task_types, taskTypes, gymWeights) } : {}),
+        ...(gym.composite
+          ? {
+              gymWeights: selectedSourceWeights(
+                gym.task_types,
+                taskTypes,
+                gymWeights
+              ),
+            }
+          : {}),
         count,
         // 1 is an ordinary evaluation and is left off the wire entirely.
         ...(groupSize > 1 ? { groupSize } : {}),
@@ -130,14 +145,14 @@ export function RunForm({ gym }: { gym: Gym }) {
   }
 
   return (
-    <Panel
-      title="New run"
-      description={gym.composite ? "Questions from the selected gyms, with tools available only where needed." : gym.tools.length === 0 ? `${gym.name} — one question and one answer, no tools.` : `${gym.name} — one sandbox per task, seeded before anything runs.`}
-    >
+    <Panel variant="open" title="New run">
       <div className="space-y-5">
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_6rem]">
           <Field label="Model">
-            <Select value={modelId} onValueChange={(value) => setChosenId(value ?? "")}>
+            <Select
+              value={modelId}
+              onValueChange={(value) => setChosenId(value ?? "")}
+            >
               <SelectTrigger disabled={isLoading || models.length === 0}>
                 {/* The value is the model's id, so the label has to be looked
                     up — the same explicit render the benchmark composer needs,
@@ -201,12 +216,15 @@ export function RunForm({ gym }: { gym: Gym }) {
             {families.map(({ family, types }) => (
               <div key={family} className="space-y-2.5">
                 {family && (
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                  <p className="text-xs tracking-wide text-muted-foreground uppercase">
                     {family}
                   </p>
                 )}
                 {types.map((type) => (
-                  <label key={type.id} className="flex items-start gap-2.5 text-sm">
+                  <label
+                    key={type.id}
+                    className="flex items-start gap-2.5 text-sm"
+                  >
                     <Checkbox
                       className="mt-0.5 shrink-0"
                       checked={taskTypes.includes(type.id)}
@@ -215,7 +233,7 @@ export function RunForm({ gym }: { gym: Gym }) {
                     <span className="min-w-0">
                       <span className="flex items-baseline gap-2">
                         {type.label}
-                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <span className="text-[10px] tracking-wide text-muted-foreground uppercase">
                           {type.level}
                         </span>
                       </span>
@@ -230,10 +248,17 @@ export function RunForm({ gym }: { gym: Gym }) {
           </div>
         </Field>
 
-        {gym.composite && <SourceWeights tasks={gym.task_types} selected={taskTypes} weights={gymWeights} onChange={setGymWeights} />}
+        {gym.composite && (
+          <SourceWeights
+            tasks={gym.task_types}
+            selected={taskTypes}
+            weights={gymWeights}
+            onChange={setGymWeights}
+          />
+        )}
 
         {groupSize > 1 && (
-          <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
             <span className="text-foreground">
               {count / groupSize || 0} task{count / groupSize === 1 ? "" : "s"},
               each attempted {groupSize} times.
@@ -246,7 +271,7 @@ export function RunForm({ gym }: { gym: Gym }) {
         )}
 
         {partialGroup && (
-          <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
             {count} tasks does not divide into groups of {groupSize}. The last
             group would be smaller than the rest, and a group of one has no
             siblings to be better than.
@@ -254,13 +279,14 @@ export function RunForm({ gym }: { gym: Gym }) {
         )}
 
         {cramped && (
-          <p className="rounded-(--radius-sheet) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
             <span className="text-foreground">
               {chosen?.name} trained at {chosen?.contextWindow} tokens.
             </span>{" "}
-            A task needs about {MIN_CONTEXT} to be asked in full — below that the
-            prompt is cut and the model answers a question it was only shown part
-            of. Raise the context multiplier in settings, or pick a wider model.
+            A task needs about {MIN_CONTEXT} to be asked in full — below that
+            the prompt is cut and the model answers a question it was only shown
+            part of. Raise the context multiplier in settings, or pick a wider
+            model.
           </p>
         )}
 

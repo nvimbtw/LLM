@@ -12,12 +12,8 @@ function Stat({
 }) {
   return (
     <div className="pr-6">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="figure mt-2 text-3xl">
-        {value}
-      </dd>
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
+      <dd className="mt-2 figure text-3xl">{value}</dd>
       {hint && (
         <p className="mt-1 text-xs text-muted-foreground tabular-nums">
           {hint}
@@ -27,7 +23,12 @@ function Stat({
   )
 }
 
-export function UsageStats({ usage }: { usage: Usage }) {
+export interface UsageStatsProps {
+  usage: Usage
+  compact?: boolean
+}
+
+export function UsageStats({ usage, compact = false }: UsageStatsProps) {
   const avgPerRequest = usage.totalRequests
     ? Math.round(usage.totalTokens / usage.totalRequests)
     : 0
@@ -37,7 +38,13 @@ export function UsageStats({ usage }: { usage: Usage }) {
   // below, the figures spaced across it, and the page showing through — the
   // band no longer competes with the cards it sits over.
   return (
-    <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
+    <dl
+      className={
+        compact
+          ? "grid grid-cols-1 gap-x-4 gap-y-4 border-y border-border py-4 sm:grid-cols-2"
+          : "grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4"
+      }
+    >
       <Stat
         label="Requests"
         value={formatNumber(usage.totalRequests)}

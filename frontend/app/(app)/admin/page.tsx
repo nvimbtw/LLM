@@ -22,10 +22,7 @@ import { PageShell } from "@/components/ui/page-shell"
 export default function AdminPage() {
   return (
     <PageShell>
-      <PageHeader
-        title="Admin"
-        description="One GPU, one line. Training runs, benchmarks and chat turns queue here and execute in order — and the queue survives a restart, so what you leave waiting is still waiting."
-      />
+      <PageHeader title="Admin" className="mb-6 border-b-0 pb-0" />
       <div className="space-y-8">
         <QueueView />
         <AdminDirectory />

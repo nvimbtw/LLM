@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Panel } from "@/components/ui/panel"
 import { toast } from "@/components/ui/toast"
 import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
 import { useDatasets } from "@/hooks/use-datasets"
@@ -20,7 +19,7 @@ const DEFAULT_MAX_VOCAB = 8192
 const MAX_VOCAB_EXP = 16
 
 export interface TokenizerComposerProps {
-  /** Called once a build is queued, so the list beside this can refetch. */
+  /** Called once a build is queued, so the catalogue can refetch. */
   onQueued?: () => void
 }
 
@@ -62,57 +61,57 @@ export function TokenizerComposer({ onQueued }: TokenizerComposerProps) {
   }
 
   return (
-    <Panel
-      title="Build a vocabulary"
-      description="Learned once, reused by any run"
-    >
-      <form onSubmit={submit} className="space-y-5">
-        <div className="space-y-1.5">
-          <label className="text-xs text-muted-foreground">Name</label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Prose 8k"
-            disabled={isSubmitting}
-            className="h-10 font-heading text-lg font-semibold"
-          />
-        </div>
-
-        <div className="flex items-center justify-between gap-3 py-1.5">
-          <span className="text-sm text-muted-foreground">Max vocab</span>
-          <Pow2Input
-            value={maxVocab}
-            maxExp={MAX_VOCAB_EXP}
-            disabled={isSubmitting}
-            onChange={setMaxVocab}
-          />
-        </div>
-
-        <DatasetPicker
-          available={available}
-          loading={isLoading}
-          value={picked}
+    <form onSubmit={submit} className="space-y-5">
+      <div className="space-y-1.5">
+        <label htmlFor="vocabulary-name" className="text-sm">
+          Name
+        </label>
+        <Input
+          id="vocabulary-name"
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Prose 8k"
           disabled={isSubmitting}
-          onChange={setPicked}
-          emptyHint="No corpora on disk yet — fetch some into data/input/ first."
+          className="h-10"
         />
+      </div>
 
-        {/* Empty is a real request, not an unfinished one: the LLM engine resolves it
+      <div className="flex items-center justify-between gap-3 py-1.5">
+        <span className="text-sm text-muted-foreground">Max vocab</span>
+        <Pow2Input
+          ariaLabel="Maximum vocabulary exponent"
+          value={maxVocab}
+          maxExp={MAX_VOCAB_EXP}
+          disabled={isSubmitting}
+          onChange={setMaxVocab}
+        />
+      </div>
+
+      <DatasetPicker
+        available={available}
+        loading={isLoading}
+        value={picked}
+        disabled={isSubmitting}
+        onChange={setPicked}
+        emptyHint="No corpora yet. Pull one from the Data view first."
+      />
+
+      {/* Empty is a real request, not an unfinished one: the LLM engine resolves it
             to every corpus on disk, at the moment the build runs. */}
-        <p className="text-xs text-muted-foreground">
-          {picked.length === 0
-            ? "Nothing picked — it will learn from every corpus on disk."
-            : "A run pointed at this vocabulary uses it whatever it trains on."}
-        </p>
+      <p className="text-xs text-muted-foreground">
+        {picked.length === 0
+          ? "Nothing picked — it will learn from every corpus on disk."
+          : "A run pointed at this vocabulary uses it whatever it trains on."}
+      </p>
 
-        <Button
-          type="submit"
-          className="w-full"
-          disabled={isSubmitting || name.trim().length === 0}
-        >
-          Build the vocabulary
-        </Button>
-      </form>
-    </Panel>
+      <Button
+        type="submit"
+        className="w-full"
+        disabled={isSubmitting || name.trim().length === 0}
+      >
+        Build the vocabulary
+      </Button>
+    </form>
   )
 }

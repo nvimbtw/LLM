@@ -6,15 +6,10 @@ export default function TokenizersPage() {
   return (
     <PageShell width="board">
       <PageHeader
+        titleClassName="text-2xl font-normal"
+        className="mb-6 border-b-0 pb-0"
         title="Tokenizers"
         back={{ href: "/admin", label: "Admin" }}
-        description={
-          <p>
-            A vocabulary is learned from the corpora you pick, then kept. Point
-            a training run at one and it skips learning its own — and every run
-            sharing a vocabulary shares the packed corpus underneath it.
-          </p>
-        }
       />
       <TokenizersView />
     </PageShell>

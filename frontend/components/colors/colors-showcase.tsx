@@ -269,11 +269,6 @@ export function ColorsShowcase() {
 
       <div>
         <h2 className="text-base font-semibold text-foreground">What moved in the light theme</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          OKLCH deltas and the WCAG pair each token is held to, before → after, measured
-          at the change this fixture documents. Every move was a lightness or chroma move —
-          hue nearly untouched, which is what keeps the scheme Kanagawa.
-        </p>
         <div className="mt-3 overflow-x-auto rounded-(--radius-sheet) border" style={{ borderColor: "var(--border)" }}>
           <table className="w-full border-collapse text-xs">
             <thead>

@@ -19,7 +19,10 @@ export default function GymsPage() {
     let active = true
     listGyms()
       .then((all) => active && setGyms(all))
-      .catch((e) => active && setError(e instanceof Error ? e.message : "Failed to load."))
+      .catch(
+        (e) =>
+          active && setError(e instanceof Error ? e.message : "Failed to load.")
+      )
     return () => {
       active = false
     }
@@ -33,9 +36,9 @@ export default function GymsPage() {
   return (
     <PageShell>
       <PageHeader
+        className="mb-6 border-b-0 pb-0"
         title="Gyms"
         back={{ href: "/admin", label: "Admin" }}
-        description="Environments a model is put to work in. A run generates tasks, lets the model use that gym's tools, and scores the result."
       />
       {error ? (
         <LoadError hint={error} />

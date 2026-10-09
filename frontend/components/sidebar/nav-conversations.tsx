@@ -34,6 +34,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { useChats, type ChatSummary } from "@/components/chat/chats-provider"
 import { cn } from "@/lib/utils"
+import { prefetchChatHistory } from "@/lib/chat-history"
 
 // Keep the sidebar list short — only the most recent chats. The rest live on the
 // full /conversations page (reachable from NavMain when collapsed).
@@ -78,7 +79,7 @@ export function NavConversations() {
             onClick={() => setExpanded((v) => !v)}
           />
         }
-        className="eyebrow w-full justify-between text-sidebar-foreground/75 hover:text-sidebar-foreground"
+        className="w-full justify-between eyebrow text-sidebar-foreground/75 hover:text-sidebar-foreground"
       >
         Conversations
         <ChevronRight
@@ -116,6 +117,12 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
   const [confirmOpen, setConfirmOpen] = React.useState(false)
 
   const isActive = pathname === `/chat/${chat.id}`
+
+  function prefetch() {
+    if (isActive) return
+    router.prefetch(`/chat/${chat.id}`)
+    prefetchChatHistory(chat.id)
+  }
 
   async function commitRename() {
     const next = title.trim()
@@ -160,7 +167,13 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
     <SidebarMenuItem>
       <SidebarMenuButton
         isActive={isActive}
-        render={<Link href={`/chat/${chat.id}`} />}
+        render={
+          <Link
+            href={`/chat/${chat.id}`}
+            onMouseEnter={prefetch}
+            onFocus={prefetch}
+          />
+        }
         className={cn(
           // One line, the same 32px as every other row in the sidebar, with a left
           // marginalia rule that grows on hover and turns to the accent when active.

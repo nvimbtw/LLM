@@ -26,13 +26,13 @@ export function PlanShowcase() {
   return (
     <section
       id="composer-plan"
-      className="mt-16 space-y-8 border-t border-border pt-10"
+      className="mt-8 space-y-6 border-t border-border/60 pt-6"
     >
       <div className="space-y-3">
         <p className="eyebrow text-muted-foreground">
           The composer · a plan in motion
         </p>
-        <h2 className="font-display text-3xl text-foreground">
+        <h2 className="font-display text-xl text-foreground">
           A little room for what comes next.
         </h2>
         <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">
@@ -80,7 +80,7 @@ export function PlanShowcase() {
         </div>
       </div>
 
-      <div className="rounded-(--radius-sheet) border border-border bg-background px-3 pb-5 sm:px-8 sm:pb-8">
+      <div className="border-y border-border/60 pb-5">
         <div className="mx-auto flex min-h-96 max-w-2xl flex-col justify-end pt-12">
           <div className="mb-10 max-w-lg space-y-3 px-3">
             <p className="font-display text-xl text-foreground">

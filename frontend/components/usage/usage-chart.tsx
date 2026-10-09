@@ -64,7 +64,7 @@ function TokenTooltip({
   const d = payload[0].payload
   return (
     <div className="min-w-36 rounded-(--radius-sheet) border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-overlay">
-      <div className="eyebrow mb-1.5 text-muted-foreground">
+      <div className="mb-1.5 eyebrow text-muted-foreground">
         {formatDate(label ?? "")}
       </div>
       <div className="flex flex-col gap-0.5">
@@ -76,11 +76,19 @@ function TokenTooltip({
   )
 }
 
-export function UsageChart({ series }: { series: UsageDay[] }) {
+export interface UsageChartProps {
+  series: UsageDay[]
+  compact?: boolean
+}
+
+export function UsageChart({ series, compact = false }: UsageChartProps) {
   const data: Point[] = series.map((d) => ({ ...d, total: d.input + d.output }))
 
   return (
     <Panel
+      className={
+        compact ? "rounded-none border-0 bg-transparent shadow-none" : undefined
+      }
       title="Tokens over time"
       description="Total, last 30 days"
       bodyClassName="px-2 py-3"

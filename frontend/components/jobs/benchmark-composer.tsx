@@ -79,7 +79,7 @@ export function BenchmarkComposer() {
 
   return (
     <div className="space-y-6">
-      <Panel title="Model" description="What to score">
+      <Panel variant="open" title="Model">
         <div className="flex flex-wrap items-center gap-3">
           {/* The primitive can emit null on clear; the form always wants a
               concrete id, so a clear falls back to the empty string. */}
@@ -148,7 +148,7 @@ export function BenchmarkComposer() {
           SFT conversations at the start of every benchmark, so it is usually a
           statement about the first run rather than about the install. */}
       {which === "markup" && suite && suite.chat_files === 0 && (
-        <p className="rounded-(--radius-sheet) border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+        <p className="border-l border-border py-2 pl-3 text-sm text-muted-foreground">
           No held-out chat set in{" "}
           <code className="text-xs">{suite.chat_dir}</code> yet. It is exported
           from your SFT conversations when this run starts, so this run scores

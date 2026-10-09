@@ -2,7 +2,12 @@
 
 import * as React from "react"
 
-import { apiFetch } from "@/lib/api"
+import {
+  cachedChatHistory,
+  invalidateChatHistory,
+  loadChatHistory,
+  type MessageWire,
+} from "@/lib/chat-history"
 import {
   streamChat,
   type ChatStreamHandle,
@@ -14,11 +19,7 @@ import {
   setContextFloor,
   type StoredFloor,
 } from "@/lib/context-floor"
-import {
-  mapAttachment,
-  type Attachment,
-  type AttachmentWire,
-} from "@/lib/attachments"
+import { mapAttachment, type Attachment } from "@/lib/attachments"
 import { callOf, parseMessage, TOOL_CALL_CLOSE } from "@/lib/message-parser"
 import type { Interjection, ToolAnswer } from "@/components/chat/trace"
 import { setMessageFeedback, type Feedback } from "@/lib/feedback"
@@ -74,20 +75,6 @@ interface QueuedMessage {
   content: string
   modelId: string
   budget: ThinkBudget
-}
-
-// What GET /chat/:id returns per message. Kept separate from ChatMessage because the
-// two differ: the wire is snake_case and knows nothing about token counts, which are
-// tallied on this side.
-interface MessageWire {
-  message_id: string
-  // `tool` is a stored row like any other — see `groupTurns`, which folds it
-  // back into the assistant turn it belongs to.
-  role: "user" | "assistant" | "tool"
-  content: string
-  model_name: string | null
-  feedback: Feedback | null
-  attachments: AttachmentWire[]
 }
 
 /**
@@ -289,8 +276,12 @@ export function useChat(chatId: string) {
     [chatId]
   )
 
-  const [messages, setMessages] = React.useState<ChatMessage[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
+  const [messages, setMessages] = React.useState<ChatMessage[]>(() =>
+    groupTurns(cachedChatHistory(chatId) ?? [])
+  )
+  const [isLoading, setIsLoading] = React.useState(
+    () => cachedChatHistory(chatId) === undefined
+  )
   const [isSending, setIsSending] = React.useState(false)
   // How many jobs sit in front of this turn, once it has been queued. Null when
   // nothing is in flight; 0 means it is next (or already generating). A reply is a
@@ -343,14 +334,13 @@ export function useChat(chatId: string) {
     ) => Promise<void> | void
   >(() => {})
 
-  const fetchMessages = React.useCallback(async () => {
-    const response = await apiFetch(`/chats/${chatId}`)
-    if (!response.ok) throw new Error("Unable to load this chat.")
-    const { messages: rows } = (await response.json()) as {
-      messages: MessageWire[]
-    }
-    return groupTurns(rows)
-  }, [chatId])
+  const fetchMessages = React.useCallback(
+    async (fresh = false) => {
+      if (fresh) invalidateChatHistory(chatId)
+      return groupTurns(await loadChatHistory(chatId))
+    },
+    [chatId]
+  )
 
   // Flips true once the initial DB load settles. The pending-first-message send
   // waits for this so its optimistic messages aren't clobbered by the load.
@@ -364,7 +354,10 @@ export function useChat(chatId: string) {
   const [loadedFor, setLoadedFor] = React.useState(chatId)
   if (loadedFor !== chatId) {
     setLoadedFor(chatId)
-    setIsLoading(true)
+    const cached = cachedChatHistory(chatId)
+    setMessages(groupTurns(cached ?? []))
+    setIsLoading(cached === undefined)
+    setError(null)
     setLoadedOnce(false)
     // A message queued against the chat being left has nowhere left to go —
     // its socket belongs to the conversation this hook is about to stop
@@ -453,6 +446,7 @@ export function useChat(chatId: string) {
       }
 
       setError(null)
+      invalidateChatHistory(chatId)
       setIsSending(true)
       isSendingRef.current = true
       // User message + an empty assistant message we fill as tokens arrive.
@@ -697,7 +691,7 @@ export function useChat(chatId: string) {
               // intact content saved on the server, but keep the token counts
               // we tallied — the server doesn't send them back.
               try {
-                const fresh = await fetchMessages()
+                const fresh = await fetchMessages(true)
                 const lastIdx = fresh.length - 1
                 if (fresh[lastIdx]?.role === "assistant") {
                   fresh[lastIdx] = {
@@ -797,6 +791,7 @@ export function useChat(chatId: string) {
       )
 
       try {
+        invalidateChatHistory(chatId)
         await setMessageFeedback(messageId, next ?? null)
       } catch {
         setMessages((prev) =>
@@ -807,9 +802,11 @@ export function useChat(chatId: string) {
           )
         )
         setError("Your feedback could not be saved.")
+      } finally {
+        invalidateChatHistory(chatId)
       }
     },
-    []
+    [chatId]
   )
 
   const cancel = React.useCallback(() => {

@@ -92,6 +92,10 @@ services:
     build:
       context: ./llm-engine
       target: dev
+      # apt and pip need DNS during the build. On hosts whose resolver is
+      # reachable from the host but not Docker's build bridge, use that host
+      # network for build steps; runtime still uses the Compose network.
+      network: host
     command: >
       sh -c "alembic upgrade head &&
              uvicorn main:app --host 0.0.0.0 --port 8001 --reload"
@@ -128,13 +132,13 @@ services:
     # not. Left commented out normally because the reservation is not a
     # preference — Compose refuses to start the service at all when no such
     # device exists.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   backend:
     build:

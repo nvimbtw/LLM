@@ -11,7 +11,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
-  KIND_CHIP,
   KIND_LABEL,
   STATUS_LABEL,
   durationSeconds,
@@ -40,7 +39,7 @@ export interface JobHistoryProps {
 export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
   if (jobs.length === 0) {
     return (
-      <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+      <p className="border-y border-border/60 py-8 text-sm text-muted-foreground">
         Nothing has run yet.
       </p>
     )
@@ -60,7 +59,7 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
     <div>
       {[...groups].map(([day, dayJobs]) => (
         <section key={day}>
-          <h3 className="eyebrow border-b border-border/40 bg-secondary/20 px-5 py-1.5 text-muted-foreground">
+          <h3 className="border-y border-border/60 py-2 eyebrow text-muted-foreground">
             {day}
           </h3>
           <ul>
@@ -92,15 +91,15 @@ function HistoryRow({
 
   return (
     <li className="group border-b border-border/40 last:border-0">
-      <div className="flex items-center gap-3 px-5 py-3">
-        <span className="w-14 shrink-0 text-xs text-muted-foreground tabular-nums">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-2 py-4 sm:flex">
+        <span className="col-start-1 row-start-2 w-14 shrink-0 text-xs text-muted-foreground tabular-nums">
           {formatClock(job.created_at)}
         </span>
 
-        <div className="min-w-0 flex-1">
+        <div className="col-start-1 row-start-1 min-w-0 flex-1">
           <Link
             href={jobHref(job)}
-            className="block truncate text-sm hover:underline"
+            className="block truncate text-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
           >
             {job.label}
           </Link>
@@ -111,12 +110,7 @@ function HistoryRow({
           )}
         </div>
 
-        <span
-          className={cn(
-            "shrink-0 rounded-(--radius-marker) px-1.5 py-0.5 text-xs font-medium tracking-[0.06em]",
-            KIND_CHIP[job.kind]
-          )}
-        >
+        <span className="col-start-2 row-start-2 shrink-0 text-right text-xs text-muted-foreground sm:w-20 sm:text-left">
           {KIND_LABEL[job.kind]}
         </span>
 
@@ -128,7 +122,7 @@ function HistoryRow({
             is spent — and only on the outcomes that aren't the expected one. */}
         <span
           className={cn(
-            "w-20 shrink-0 text-right text-xs",
+            "col-start-2 row-start-1 w-20 shrink-0 text-right text-xs",
             job.status === "done" && "text-muted-foreground",
             job.status === "failed" && "text-destructive/70",
             job.status === "cancelled" && "text-muted-foreground"
@@ -144,7 +138,7 @@ function HistoryRow({
                 variant="ghost"
                 size="icon-sm"
                 aria-label={`Options for ${job.label}`}
-                className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
+                className="col-start-3 row-span-2 row-start-1 shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 data-[popup-open]:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
               >
                 <MoreHorizontal />
               </Button>

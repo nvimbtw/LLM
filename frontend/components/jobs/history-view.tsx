@@ -1,6 +1,7 @@
 "use client"
 
 import { useJobsContext } from "./jobs-provider"
+import { AdminSectionHeader } from "@/components/admin/admin-section-header"
 import { HistoryPager } from "./history-pager"
 import { JobHistory } from "./job-history"
 
@@ -29,16 +30,12 @@ export function HistoryView() {
   } = useJobsContext()
 
   return (
-    <section className="overflow-hidden rounded-(--radius-sheet) border border-border bg-card">
-      <header className="border-b border-border px-5 py-4">
-        <h2 className="text-sm font-semibold tracking-tight">History</h2>
-        {/* The count is the whole ledger, not the page — "25 jobs" on every page
-            of a hundred would be a worse answer to "how much have I run" than no
-            number at all. */}
-        <p className="mt-0.5 eyebrow text-muted-foreground">
-          {historyTotal} {historyTotal === 1 ? "job" : "jobs"}
-        </p>
-      </header>
+    <section>
+      {/* The count describes the whole ledger, rather than the current page. */}
+      <AdminSectionHeader
+        title="History"
+        meta={`${historyTotal} ${historyTotal === 1 ? "job" : "jobs"}`}
+      />
       <JobHistory jobs={history} onRetry={retry} onDelete={remove} />
       <HistoryPager
         page={historyPage}

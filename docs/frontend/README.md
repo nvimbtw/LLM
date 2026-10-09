@@ -231,7 +231,7 @@ Four levels on one ladder — `shadow-raised`, `shadow-sheet`,
 middle two:
 
 - **A surface you can act on is a sheet.** `bg-card`, an edge at `border/45`,
-  and `shadow-sheet` — `ui/panel.tsx`, `ui/card.tsx` and the model tiles. A tile
+  and `shadow-sheet` — the default `ui/panel.tsx`, `ui/card.tsx` and the model tiles. A tile
   that is also a link adds `group-hover:-translate-y-px
   group-hover:shadow-sheet-hover` (and `motion-reduce:` opts out of the move).
 - **A surface that summarises is furniture.** No box, no fill: rules only. The
@@ -242,6 +242,14 @@ middle two:
 The app used to give both the same 1px box at the same radius, which is why a
 stat band and a model tile carried equal weight and a page of them read flat.
 The distinction is the fix; the shadow is only how one half of it is drawn.
+
+**Admin workspaces use open sections.** Data, Tokenizers, Train, Benchmark,
+Gyms and their job/run views opt into `Panel variant="open"`: no card fill,
+outline or shadow, a restrained serif heading with quiet metadata, and a body
+aligned with the heading. Lists and recaps use rules between rows; fields keep
+their own control surfaces. The sheet remains the default elsewhere. Fixture
+pages use the same open frame while rendering the real chat and throbber
+components, so their previews continue to represent the application.
 
 Either side of the sheet:
 
@@ -327,8 +335,16 @@ the Base UI primitive underneath, both learned the hard way:
 - Page folders match the route: `app/chat/[id]/page.tsx` → `/chat/:id`.
 - Use Next.js `<Link>` for navigation, not raw `<a>` tags (avoids full page reloads).
 
+Sidebar hover/focus warms conversation messages as well as the route; composer
+ghosts preserve its footprint while loading. See [Chat loading](chat-loading.md)
+for cache freshness, session isolation, and selection readiness.
+
 ### Styling
 
+- Page and settings section titles stand alone. Avoid introductions and panel
+  captions that repeat the heading. Secondary text is for model/run metadata,
+  measurements, or instructions needed to use a control. Admin directory links
+  show the destination's title and icon.
 - Tailwind utility classes in JSX. No separate `.module.css` files.
 - Use `cn()` from `@/lib/utils` for conditional class merging.
 - Follow the existing design: Geist font (sans), the shadcn/ui color tokens, the sidebar layout.
@@ -1078,33 +1094,9 @@ the count beside them, so either turning red means the same thing.
 
 ### Settings
 
-`lib/settings.ts` is the single source of truth. One entry in `SETTINGS` (plus a
-field on the `Settings` type) gives you a control in the ⌘K modal and, for a
-toggle, a slash command — nothing else needs touching.
-
-- An entry names a **`group`**, and `GROUPS` declares the bands in the order they
-  appear. That is the only placement decision adding a setting requires.
-- **A blurb belongs to a group, not a row.** `GROUPS` carries the optional
-  sentence — which is how the three decoding knobs say the one thing worth
-  saying about them, that they compose in order. Three rows each explaining
-  themselves in two lines is what made the modal read as documentation with
-  controls embedded in it.
-- Theme is deliberately **not** a `SETTINGS` entry: next-themes owns and
-  persists it (the no-flash script reads it before React exists), so declaring
-  it here would give the app two answers to what the theme is. It gets a
-  hand-written row in the `appearance` band that reads and writes the real one.
-
-Everything else in `Settings` is stored on the account, not the browser —
-`components/settings/settings-provider.tsx` fetches `GET /user/me/settings` on
-login and writes back with `PUT` on every change, debounced 500ms so a dragged
-slider or a typed system prompt isn't one request per tick. Logged-out state is
-*derived* (`isAuthenticated ? settings : DEFAULT_SETTINGS`) rather than written
-in the effect that notices the session changed, same reasoning as
-`ChatsProvider`'s empty list — a synchronous `setState` in that effect is what
-the `react-hooks/set-state-in-effect` lint rule catches. A fetched blob is
-merged over `DEFAULT_SETTINGS`, so a setting added after an account last saved
-comes back with its default rather than `undefined`. See
-[`../backend/README.md`](../backend/README.md) for where it lives server-side.
+Settings and account controls share a modal with section navigation on the left.
+The Profile button opens its Profile section. See [Settings and profile](settings.md)
+for entry points, persistence, and the standalone `/profile` and `/usage` routes.
 
 ### The composer's own choice
 
@@ -1193,7 +1185,7 @@ Typing a leading `/` in the composer brings up the floating fuzzy finder popover
 ### The admin panel
 
 Everything behind the admin flag is reached through **one row** in the sidebar
-footer, beside Settings — not a labelled nav group. The row is a mode of the app
+footer, above the profile/settings entry — not a labelled nav group. The row is a mode of the app
 you have access to, which is what the footer holds; the content above it is the
 subject you are reading.
 
@@ -1201,10 +1193,29 @@ subject you are reading.
   `AdminDirectory` under it, and `HistoryView` last. **The directory sits
   between the two halves of the queue on purpose** — history is unbounded, so
   anything below it is reached only by scrolling past every run ever made.
-  **Add an admin destination to the directory, not to the sidebar** — a
-  directory has room for a sentence saying what a page is, and a nav row does
-  not. The two bands are what puts work on the GPU (`WORKBENCH`) and what only
-  renders a fixture (`INTERFACE`).
+  **Add an admin destination to the directory, not to the sidebar** — it keeps
+  admin destinations discoverable without crowding the main navigation.
+  The two bands separate data and model work (`WORKBENCH`) from interface
+  fixtures and documentation (`INTERFACE`).
+  The panel uses open sections with shared serif headings and inline counts,
+  matching settings rather than repeating filled cards. The running job is the
+  visual focus: its name, per-kind throbber, progress and elapsed time sit above
+  a thin progress rule. Idle and paused states are stated beside the Queue
+  heading; an empty queue has no repeated status sentence or instructional
+  caption. Pausing holds the next claim while the running job remains visible;
+  follow-ups stay separate from numbered queue positions. Directory links use
+  icon-and-title rows with hover and keyboard-focus treatment, with a rule only
+  between groups. History keeps its date groups, fields, actions and pagination
+  in a quiet ledger; on narrow screens row metadata wraps beneath the job name
+  and menus remain visible without hovering.
+- The subpages carry the same open style: compact headers without a bottom
+  rule, 24–32px between sections, flush rows and line-style tab bars. Forms keep
+  labels, validation, explanations needed for a decision and their existing
+  controls. `PageHeader.titleClassName` lets the bounded Train form and the
+  Tokenizers catalogue use a smaller title. Run names stay at a modest display size; chart tooltips, dialogs,
+  and menus retain their overlay surfaces. Benchmark scores sit in an open
+  ledger, and row actions are visible on touch screens and keyboard focus.
+  Docs remains a reading destination with its existing article layout.
 - **`/data` is a `WORKBENCH` destination**, not a second nav row. It reads the
   data engine through `lib/data.ts`; the cleaning workbench previews a pipeline
   over the first few documents on a debounce, which is why the sample is always
@@ -1234,8 +1245,13 @@ socket per run, relaying the LLM engine's own frames).
 A `tokenize` run is the exception that proves the line: it never touches the
 device. It is queued anyway because it is minutes of CPU that would fight a
 running train for it, and because the queue already has the frames, the cancel
-and the job page it wants. Composed at `/tokenizers`, beside the list of what has
-been built — a vocabulary is picked far more often than it is built.
+and the job page it wants. `/tokenizers` opens on a vocabulary catalogue with
+All, Built and From runs filters. Named builds lead the combined list; automatic
+builds remain inspectable and deletable, with their reuse semantics stated below
+it. `TokenizerCatalogue` aligns counts and storage metadata in a table, moving
+secondary facts under the name on narrow screens. **Build vocabulary** opens
+`TokenizerComposer` in a dialog and hands off to the job page on queueing. The
+catalogue keeps its width when no build is being composed.
 
 - **The board lives at `/admin`**, as the hero of the panel — `QueueView` and
   `HistoryView` are mounted there, and `/jobs` is a redirect kept only so
@@ -1247,11 +1263,13 @@ been built — a vocabulary is picked far more often than it is built.
 
 The same fields are rendered two ways, and neither may drift from the other:
 
-- `components/training/train-board.tsx` at `/jobs/new/train` — the decisions in
-  panels down the left, and a **build sheet** beside them stating what the run
-  *is* rather than what was typed. That sheet is the spec-sheet idiom
-  `/models/[id]` uses for a model that exists, on purpose: composing a run and
-  reading a model back are one object at two moments.
+- `components/training/train-board.tsx` at `/jobs/new/train` — one bounded
+  form, with the mode and presets in a shared toolbar, identity controls next,
+  then data, architecture, optimization and follow-ups. Labels sit beside their
+  controls on wide screens; numeric settings use compact rows in two columns.
+  The **build sheet** follows the decisions as a compact Review ledger with the
+  derived specification, validation and start action. There is no fixed recap
+  column competing with the fields.
 - `components/training/params-rail.tsx` inside a follow-up step, where the same
   fields have a rail's width and no submit of their own.
 

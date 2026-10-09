@@ -26,6 +26,7 @@ const DEFAULT_BUDGET: ThinkBudget = "auto"
  * once, at the one place that has the list.
  */
 interface ComposerChoiceValue {
+  isLoading: boolean
   /** Empty until the model list has loaded, or no model was ever chosen — see
    *  `ComposerPicker`. */
   model: string
@@ -58,9 +59,15 @@ export function ComposerChoiceProvider({
 }: {
   children: React.ReactNode
 }) {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, isLoading: authLoading } = useAuth()
   const [model, setModelState] = React.useState("")
   const [budget, setBudgetState] = React.useState<ThinkBudget>(DEFAULT_BUDGET)
+  const [isLoaded, setIsLoaded] = React.useState(false)
+  const [loadedFor, setLoadedFor] = React.useState(isAuthenticated)
+  if (loadedFor !== isAuthenticated) {
+    setLoadedFor(isAuthenticated)
+    setIsLoaded(false)
+  }
 
   // Whether the account's own copy has landed — see `SettingsProvider`, same
   // reasoning: a pick made in the gap before it does must not PUT a
@@ -85,7 +92,8 @@ export function ComposerChoiceProvider({
       })
       .then((data) => {
         if (!active) return
-        if (data.composer_choice.model) setModelState(data.composer_choice.model)
+        if (data.composer_choice.model)
+          setModelState(data.composer_choice.model)
         if (data.composer_choice.budget)
           setBudgetState(data.composer_choice.budget)
       })
@@ -93,7 +101,10 @@ export function ComposerChoiceProvider({
         // Stay on defaults; the next pick still saves normally.
       })
       .finally(() => {
-        if (active) loaded.current = true
+        if (active) {
+          loaded.current = true
+          setIsLoaded(true)
+        }
       })
     return () => {
       active = false
@@ -118,6 +129,7 @@ export function ComposerChoiceProvider({
 
   const value = React.useMemo(
     () => ({
+      isLoading: authLoading || (isAuthenticated && !isLoaded),
       // Derived, not stored: logging out must not leave the previous
       // session's choice on screen — same reasoning as `ChatsProvider` and
       // `SettingsProvider`.
@@ -126,7 +138,7 @@ export function ComposerChoiceProvider({
       budget: isAuthenticated ? budget : DEFAULT_BUDGET,
       setBudget,
     }),
-    [isAuthenticated, model, setModel, budget, setBudget]
+    [authLoading, isAuthenticated, isLoaded, model, setModel, budget, setBudget]
   )
 
   return (

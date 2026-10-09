@@ -69,6 +69,7 @@ export function TokensPanel({
   if (points.length < 2) {
     return (
       <Panel
+        variant="open"
         title="Tokens"
         description="Score vs tokens used to complete the run"
       >
@@ -92,6 +93,7 @@ export function TokensPanel({
 
   return (
     <Panel
+      variant="open"
       title="Tokens"
       description={`Score vs tokens used to complete the run · ${points.length} runs`}
     >

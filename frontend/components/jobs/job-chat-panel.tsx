@@ -26,16 +26,17 @@ export function JobChatPanel({ job, run }: JobChatPanelProps) {
 
   return (
     <Panel
+      variant="open"
       title="Reply"
       description={isRunning(job) ? "Generating" : undefined}
       bodyClassName="p-0"
     >
       {text ? (
-        <p className="px-5 py-4 text-sm leading-relaxed whitespace-pre-wrap">
+        <p className="py-4 text-sm leading-relaxed whitespace-pre-wrap">
           {text}
         </p>
       ) : (
-        <p className="px-5 py-8 text-center text-sm text-muted-foreground">
+        <p className="py-8 text-center text-sm text-muted-foreground">
           {job.status === "queued"
             ? "Waiting for the GPU."
             : // A finished turn shows nothing here after a reload: the tokens were
@@ -45,7 +46,7 @@ export function JobChatPanel({ job, run }: JobChatPanelProps) {
       )}
 
       {id && (
-        <div className="border-t border-border/40 px-5 py-3">
+        <div className="border-t border-border/40 py-3">
           <Link
             href={`/chat/${id}`}
             className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"

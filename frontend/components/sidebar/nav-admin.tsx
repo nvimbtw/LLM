@@ -23,7 +23,7 @@ import { KIND_LABEL } from "@/lib/jobs"
  * Conversations. The six now live on `/admin` as a directory with room to say what
  * each one is; this row is the door.
  *
- * In the footer beside Settings rather than in the content above, because that is
+ * In the footer above the profile/settings entry rather than in the content above, because that is
  * what it is: not somewhere you go to work, but a mode of the app you have access
  * to. The footer is where the app keeps the things that are true of *you* rather
  * than of what you are reading.

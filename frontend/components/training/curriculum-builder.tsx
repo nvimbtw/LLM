@@ -69,10 +69,10 @@ export function CurriculumBuilder({
         const isCollapsed = collapsed.has(i)
         const title = stage.name?.trim() || `Stage ${i + 1}`
         return (
-          <div key={i} className="rounded-(--radius-sheet) border">
+          <div key={i} className="border-y border-border/60">
             {/* Header: click the title to collapse/expand; reorder + remove stay
                 on the right. Kept compact so a long curriculum doesn't dominate. */}
-            <div className="flex items-center justify-between gap-2 p-2.5">
+            <div className="flex items-center justify-between gap-2 py-3">
               <button
                 type="button"
                 onClick={() => toggleCollapsed(i)}
@@ -134,7 +134,7 @@ export function CurriculumBuilder({
             </div>
 
             {!isCollapsed && (
-              <div className="space-y-2.5 border-t p-2.5">
+              <div className="space-y-3 border-t border-border/60 py-3">
                 <Input
                   value={stage.name ?? ""}
                   onChange={(e) =>

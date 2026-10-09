@@ -21,6 +21,7 @@ export function GenerationPanel({
 }) {
   return (
     <Panel
+      variant="open"
       title="Generation"
       description={`${samples.length} prompts · ${surface.words} words`}
     >
@@ -53,12 +54,9 @@ export function GenerationPanel({
       </dl>
 
       {samples.length > 0 && (
-        <ul className="mt-6 flex flex-col gap-px overflow-hidden rounded-(--radius-sheet) border border-border bg-border/60">
+        <ul className="mt-6 divide-y divide-border/60 border-y border-border/60">
           {samples.map((sample, i) => (
-            <li
-              key={i}
-              className="bg-background px-4 py-3 text-sm leading-relaxed"
-            >
+            <li key={i} className="py-3 text-sm leading-relaxed">
               <span className="text-muted-foreground">{sample.prompt}</span>
               <span className="whitespace-pre-wrap">{sample.text || " …"}</span>
             </li>
@@ -88,12 +86,8 @@ function Stat({
 }) {
   return (
     <div className="pr-6">
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="figure mt-1 text-xl">
-        {value}
-      </dd>
+      <dt className="eyebrow text-muted-foreground">{label}</dt>
+      <dd className="mt-1 figure text-xl">{value}</dd>
       <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
   )

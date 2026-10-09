@@ -14,6 +14,7 @@ export function AblationPanel({ ablation }: { ablation: AblationReport }) {
 
   return (
     <Panel
+      variant="open"
       title="Sublayer contribution"
       description={`${ablation.layers} layers · ${ablation.window_tokens} tokens`}
     >

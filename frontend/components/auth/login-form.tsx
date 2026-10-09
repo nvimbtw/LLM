@@ -24,7 +24,6 @@ export function LoginForm() {
     <AuthShell
       eyebrow="Log in"
       title="Welcome back"
-      description="Your models, runs and conversations are where you left them."
       figure={<FigureLattice />}
       figureCaption="Every token here was predicted by a model trained on this machine, on a corpus you chose."
       footer={

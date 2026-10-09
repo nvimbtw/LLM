@@ -124,20 +124,21 @@ export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
   return (
     <div className="space-y-6">
       <Panel
+        variant="open"
         title="Pipeline"
         description={`${steps.length} ${steps.length === 1 ? "step" : "steps"}`}
         bodyClassName="p-0"
       >
         {isLoading ? (
-          <div className="p-5">
+          <div className="py-4">
             <Skeleton className="h-16 w-full" />
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-4 p-5">
+            <div className="flex flex-wrap items-center gap-4 py-4">
               {/* The rail scrolls rather than wraps: a pipeline is an order,
                   and a second line reads as a second pipeline. */}
-              <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-1">
+              <div className="flex min-w-0 basis-full items-center gap-2 overflow-x-auto pb-1 sm:flex-1 sm:basis-auto">
                 {steps.length === 0 && (
                   <p className="text-sm text-muted-foreground">
                     Add a step to see what it would do to the first {SAMPLE}{" "}
@@ -315,7 +316,7 @@ function StepSettings({
   onChange: (key: string, value: ParamValue) => void
 }) {
   return (
-    <div className="border-t border-border bg-[color-mix(in_oklab,var(--foreground)_2.5%,transparent)] px-5 py-4">
+    <div className="border-t border-border/60 py-4">
       <p className="text-xs text-muted-foreground">{processor.description}</p>
 
       {processor.params.length > 0 && (
@@ -377,7 +378,7 @@ function PreviewPane({
 }) {
   if (error) {
     return (
-      <Panel title="Before and after">
+      <Panel variant="open" title="Before and after">
         <FormError>{error}</FormError>
       </Panel>
     )
@@ -385,7 +386,7 @@ function PreviewPane({
 
   if (steps === 0 || !preview) {
     return (
-      <Panel title="Before and after" description="a small fragment">
+      <Panel variant="open" title="Before and after">
         <p className="py-10 text-center text-sm text-muted-foreground">
           {steps === 0 ? "Nothing to show yet." : "Working…"}
         </p>
@@ -395,13 +396,14 @@ function PreviewPane({
 
   return (
     <Panel
+      variant="open"
       title="Before and after"
       description={`${preview.sampled} sampled · ${preview.dropped} dropped`}
       bodyClassName="p-0"
     >
       <ul className="divide-y divide-border">
         {preview.results.map((result) => (
-          <li key={result.ordinal} className="px-5 py-4">
+          <li key={result.ordinal} className="py-4">
             <div className="mb-2 flex items-center gap-2">
               <span className="text-xs text-muted-foreground">
                 #{result.ordinal}

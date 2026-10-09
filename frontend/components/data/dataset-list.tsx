@@ -59,7 +59,7 @@ export function DatasetList({
 
   if (error) {
     return (
-      <Panel title="Datasets">
+      <Panel variant="open" title="Datasets">
         <LoadError
           title="The dataset list didn't load."
           hint={error}
@@ -71,6 +71,7 @@ export function DatasetList({
 
   return (
     <Panel
+      variant="open"
       title="Datasets"
       description={
         datasets.length === 1 ? "1 stored" : `${datasets.length} stored`
@@ -78,18 +79,18 @@ export function DatasetList({
       bodyClassName="p-0"
     >
       {isLoading ? (
-        <div className="space-y-3 p-5">
+        <div className="space-y-3 py-4">
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
         </div>
       ) : datasets.length === 0 ? (
-        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
           Nothing pulled yet. Find a dataset on the Hub and pull a slice of it.
         </p>
       ) : (
         <ul className="divide-y divide-border">
           {datasets.map((dataset) => (
-            <li key={dataset.id} className="flex items-center gap-4 px-5 py-4">
+            <li key={dataset.id} className="flex items-center gap-4 py-4">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <Link

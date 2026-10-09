@@ -1,50 +1,44 @@
 "use client"
 
 import * as React from "react"
-import { useTheme } from "next-themes"
 
-import { GROUPS, SETTINGS, type SettingDef } from "@/lib/settings"
+import { GROUPS } from "@/lib/settings"
+import { useAuth } from "@/hooks/use-auth"
 import { useSettings } from "./settings-provider"
+import { SettingsSection } from "./settings-section"
+import { SettingsProfile } from "./settings-profile"
+import { UsageOverview } from "@/components/usage/usage-overview"
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { Switch } from "@/components/ui/switch"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
-import { Slider } from "@/components/ui/slider"
 
-/**
- * The Ctrl/⌘+K command modal. Renders one control per entry in `SETTINGS`,
- * bucketed into the bands `GROUPS` declares, so a new setting appears here
- * automatically and in the right place. Mount once (in the root layout).
- *
- * Three bands rather than one list: seven rows given identical treatment made
- * appearance, chat and the decoding knobs look like seven unrelated preferences,
- * when the last three are one mechanism in three parts.
- *
- * The header and footer are fixed and only the bands scroll. Scrolling the whole
- * card took the title off the top of the screen, which is how you end up three
- * sliders deep in a modal with nothing on screen saying what you are in.
- */
+const PANEL_CLASS =
+  "min-w-0 overflow-y-auto px-4 py-8 data-ending-style:hidden sm:px-8"
+const TAB_CLASS =
+  "h-auto flex-none px-3 py-2 text-xs font-normal after:bg-primary group-data-vertical/tabs:after:inset-y-2 group-data-vertical/tabs:after:right-auto group-data-vertical/tabs:after:left-0 group-data-vertical/tabs:after:w-px"
+
 export function SettingsDialog() {
-  const { commandOpen, setCommandOpen, resetSettings } = useSettings()
+  const { commandOpen, setCommandOpen, resetSettings, section, setSection } =
+    useSettings()
+  const { isAuthenticated } = useAuth()
+  const activeSection =
+    !isAuthenticated && (section === "profile" || section === "usage")
+      ? "appearance"
+      : section
+  const close = () => setCommandOpen(false)
 
-  // Global Ctrl/⌘+K to toggle. A ref tracks the latest open state so the
-  // listener can flip it without re-subscribing on every change.
   const openRef = React.useRef(commandOpen)
   React.useEffect(() => {
     openRef.current = commandOpen
   }, [commandOpen])
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Guarded because `key` is not always a string despite its type: autofill
-      // and password managers dispatch synthetic keydowns without it. See the
-      // same guard in `theme-provider.tsx`.
+      // Password managers can dispatch keydowns without a string key.
       if (typeof e.key !== "string") return
       if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
@@ -57,242 +51,89 @@ export function SettingsDialog() {
 
   return (
     <Dialog open={commandOpen} onOpenChange={setCommandOpen}>
-      {/* `p-0` and `gap-0`: this dialog lays out its own three bands, and the
-          card's default padding would put the header's rule inside a margin
-          instead of across the card. */}
-      <DialogContent className="max-w-2xl gap-0 p-0">
-        <header className="border-b border-border px-6 py-4">
-          {/* The ⌘K badge used to sit at the end of a `justify-between` row, in
-              the same corner the dialog absolutely positions its close button —
-              so the two overlapped. It reads as a hint about the title anyway,
-              so it belongs beside it. */}
-          <DialogTitle className="flex items-center gap-2">
-            Settings
-            <kbd className="rounded-(--radius-marker) border border-border bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">
+      <DialogContent className="h-[min(36rem,calc(100dvh-2rem))] max-w-3xl gap-0 overflow-hidden bg-background p-0">
+        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogDescription className="sr-only">
+          Manage your account, usage, and preferences.
+        </DialogDescription>
+        <Tabs
+          orientation="vertical"
+          value={activeSection}
+          onValueChange={(value) => {
+            if (
+              value === "profile" ||
+              value === "usage" ||
+              GROUPS.some((group) => group.id === value)
+            ) {
+              setSection(value as typeof section)
+            }
+          }}
+          className="min-h-0 flex-1 gap-0"
+        >
+          <aside className="flex w-28 shrink-0 flex-col border-r border-border/60 px-2 py-8 sm:w-40 sm:px-4">
+            <p className="mb-6 px-2 eyebrow text-muted-foreground">Settings</p>
+            <TabsList
+              aria-label="Settings sections"
+              activateOnFocus
+              variant="line"
+              className="w-full items-stretch justify-start gap-1 p-0"
+            >
+              {GROUPS.map((group) => (
+                <TabsTrigger
+                  key={group.id}
+                  value={group.id}
+                  className={TAB_CLASS}
+                >
+                  {group.label}
+                </TabsTrigger>
+              ))}
+              {isAuthenticated && (
+                <>
+                  <TabsTrigger value="usage" className={TAB_CLASS}>
+                    Usage
+                  </TabsTrigger>
+                  <TabsTrigger value="profile" className={TAB_CLASS}>
+                    Profile
+                  </TabsTrigger>
+                </>
+              )}
+            </TabsList>
+            <kbd className="mt-auto px-2 pt-6 font-mono text-xs text-muted-foreground/60">
               ⌘K
             </kbd>
-          </DialogTitle>
-          <DialogDescription className="mt-1 text-xs">
-            Saved to your account. Toggles are also available as slash
-            commands in the composer.
-          </DialogDescription>
-        </header>
-
-        {/* 70vh rather than a fixed height: the card is centred by transform, so
-            it can grow to its content on a tall screen and only scroll when it
-            genuinely does not fit. */}
-        <div className="max-h-[70vh] overflow-y-auto px-6">
-          {GROUPS.map((group) => {
-            const rows = SETTINGS.filter((s) => s.group === group.id)
-            if (group.id !== "appearance" && rows.length === 0) return null
-
-            return (
-              <section
-                key={group.id}
-                className="border-b border-border py-5 last:border-0 last:pb-6"
-              >
-                <h3 className="eyebrow text-muted-foreground">
-                  {group.label}
-                </h3>
-                {group.blurb && (
-                  <p className="mt-1.5 max-w-prose text-xs leading-relaxed text-muted-foreground/80">
-                    {group.blurb}
-                  </p>
-                )}
-
-                <div className="mt-3 flex flex-col gap-4">
-                  {group.id === "appearance" && <ThemeRow />}
-                  {rows.map((setting) => (
-                    <SettingRow key={setting.key} setting={setting} />
-                  ))}
-                </div>
-              </section>
-            )
-          })}
-        </div>
-
-        <footer className="flex items-center justify-between gap-3 border-t border-border px-6 py-3.5">
-          {/* `resetSettings` has existed on the provider since it was written and
-              nothing called it — so a modal of sliders had no way back to the
-              defaults except knowing what they were. */}
-          <Button variant="ghost" size="sm" onClick={resetSettings}>
-            Reset to defaults
-          </Button>
-          <DialogClose render={<Button size="sm">Done</Button>} />
-        </footer>
+          </aside>
+          {GROUPS.map((group) => (
+            <TabsContent
+              key={group.id}
+              value={group.id}
+              className={PANEL_CLASS}
+            >
+              <SettingsSection group={group} />
+              <div className="mt-8 border-t border-border/60 pt-4">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={resetSettings}
+                  className="text-muted-foreground"
+                >
+                  Reset to defaults
+                </Button>
+              </div>
+            </TabsContent>
+          ))}
+          {isAuthenticated && (
+            <>
+              <TabsContent value="usage" className={PANEL_CLASS}>
+                <h2 className="mb-6 font-display text-2xl">Usage</h2>
+                <UsageOverview compact />
+              </TabsContent>
+              <TabsContent value="profile" className={PANEL_CLASS}>
+                <SettingsProfile onClose={close} />
+              </TabsContent>
+            </>
+          )}
+        </Tabs>
       </DialogContent>
     </Dialog>
-  )
-}
-
-/**
- * The shared geometry of every row: the words on the left at a readable measure,
- * the control right-aligned in a column of its own.
- *
- * One rhythm for all four kinds is the point. Previously toggles were a
- * two-column row while sliders and the textarea stacked full-width under their
- * prose, so the modal alternated short and tall and read as a pile rather than a
- * list. `control` on its own line is the one deliberate exception — a system
- * prompt needs the width.
- */
-function Row({
-  label,
-  description,
-  control,
-  below,
-  htmlFor,
-}: {
-  label: string
-  description: string
-  control?: React.ReactNode
-  below?: React.ReactNode
-  htmlFor?: string
-}) {
-  return (
-    <div>
-      <div className="flex items-start justify-between gap-6">
-        <div className="min-w-0">
-          <label
-            htmlFor={htmlFor}
-            className="text-sm font-medium text-foreground"
-          >
-            {label}
-          </label>
-          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            {description}
-          </p>
-        </div>
-        {control && <div className="shrink-0 pt-0.5">{control}</div>}
-      </div>
-      {below && <div className="mt-2">{below}</div>}
-    </div>
-  )
-}
-
-/**
- * Theme, which is deliberately *not* a `SETTINGS` entry.
- *
- * next-themes already owns this value and persists it under its own key, and it
- * has to, because the no-flash script reads it before React exists. Declaring it
- * a second time in `Settings` would give the app two answers to what the theme
- * is. So it gets a hand-written row that reads and writes the real one.
- */
-function ThemeRow() {
-  // `theme` is undefined until next-themes has read storage, so no option marks
-  // itself active on the server or the first client render — which is what we
-  // want, and why this needs no mounted flag: the two renders already agree.
-  const { theme, setTheme } = useTheme()
-
-  const options = [
-    ["light", "Light"],
-    ["dark", "Dark"],
-    ["system", "System"],
-  ] as const
-
-  return (
-    <Row
-      label="Theme"
-      description="Warm paper, or Kanagawa Dragon after dark. Press D anywhere to flip."
-      control={
-        <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border border-border p-0.5">
-          {options.map(([value, label]) => (
-            <Button
-              key={value}
-              type="button"
-              size="xs"
-              variant={theme === value ? "secondary" : "ghost"}
-              onClick={() => setTheme(value)}
-            >
-              {label}
-            </Button>
-          ))}
-        </div>
-      }
-    />
-  )
-}
-
-function SettingRow({ setting }: { setting: SettingDef }) {
-  const { settings, setSetting } = useSettings()
-  const id = `setting-${setting.key}`
-
-  if (setting.kind === "toggle") {
-    return (
-      <Row
-        htmlFor={id}
-        label={setting.label}
-        description={setting.description}
-        control={
-          <Switch
-            id={id}
-            checked={settings[setting.key] as boolean}
-            onCheckedChange={(checked) => setSetting(setting.key, checked)}
-          />
-        }
-      />
-    )
-  }
-
-  if (setting.kind === "number") {
-    const current = settings[setting.key] as number
-    return (
-      <Row
-        label={setting.label}
-        description={setting.description}
-        control={
-          // The number sits in the control column, above the track rather than
-          // under the thumb: a value that moves with the drag is unreadable
-          // while dragging, which is the only time anyone is watching it.
-          <div className="w-40">
-            <div className="text-right font-mono text-xs text-muted-foreground tabular-nums">
-              {current.toFixed(setting.precision)}
-            </div>
-            <Slider
-              value={current}
-              min={setting.min}
-              max={setting.max}
-              step={setting.step}
-              aria-label={setting.label}
-              // The primitive supports multi-thumb and hands back an array for
-              // it; this is always single-thumb, so unwrap rather than widen
-              // the setting.
-              onValueChange={(next) =>
-                setSetting(setting.key, Array.isArray(next) ? next[0] : next)
-              }
-              className="mt-1.5"
-            />
-          </div>
-        }
-      />
-    )
-  }
-
-  const value = settings[setting.key] as string
-  return (
-    <Row
-      htmlFor={id}
-      label={setting.label}
-      description={setting.description}
-      below={
-        setting.multiline ? (
-          <Textarea
-            id={id}
-            value={value}
-            maxLength={setting.maxLength}
-            placeholder={setting.placeholder}
-            onChange={(e) => setSetting(setting.key, e.target.value)}
-            className="min-h-20 resize-none text-sm"
-          />
-        ) : (
-          <Input
-            id={id}
-            value={value}
-            maxLength={setting.maxLength}
-            placeholder={setting.placeholder}
-            onChange={(e) => setSetting(setting.key, e.target.value)}
-          />
-        )
-      }
-    />
   )
 }

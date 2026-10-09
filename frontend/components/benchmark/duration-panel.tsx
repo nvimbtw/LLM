@@ -126,7 +126,11 @@ export function DurationPanel({
 
   if (points.length < 2) {
     return (
-      <Panel title="Cost" description="Score vs time to complete">
+      <Panel
+        variant="open"
+        title="Cost"
+        description="Score vs time to complete"
+      >
         <p className="py-6 text-center text-sm text-muted-foreground">
           {filtered
             ? "Not enough shown to compare — tick another model above."
@@ -143,6 +147,7 @@ export function DurationPanel({
 
   return (
     <Panel
+      variant="open"
       title="Cost"
       description={`Score vs time to complete · ${points.length} runs`}
     >
