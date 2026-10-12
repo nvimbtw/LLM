@@ -47,6 +47,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
     rateMessage,
     prunedTokens,
     pruneContext,
+    tokenArt,
   } = useChat(chatId)
   const { conversations, renameChat } = useChats()
   // Resending asks the same question with whatever the composer is currently set
@@ -297,6 +298,7 @@ export function ChatThread({ chatId }: { chatId: string }) {
               // baseline row would hang it below the line of the label.
               <div className="flex items-center gap-3 px-1 text-sm">
                 <Throbber
+                  stream={tokenArt}
                   mode={
                     waiting
                       ? "loading"

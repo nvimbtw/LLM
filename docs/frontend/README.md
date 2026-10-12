@@ -1610,7 +1610,13 @@ heading supplies the accessible name.
 
 ### Throbber or dot
 
-`components/ui/throbber.tsx` is a **figure**, not an icon: a hexagonal field of
+`components/ui/throbber.tsx` selects the classic trellis or optional circular
+token art using the account's **Use live throbber** setting (off by default).
+See [Live throbber](live-throbber.md) for its frontend wgpu/WASM renderer, token
+contract, motion, fallback, showcase and build. Status text is owned by its
+existing components and is unchanged by this selection.
+
+The classic `components/ui/trellis-throbber.tsx` is a **figure**, not an icon: a hexagonal field of
 nineteen dots with a **tree grown across it**. Ink leaves the centre, runs along
 lattice edges and branches; each dot it reaches lights and swells while the rest
 of the field goes on breathing. It is one fixed footprint everywhere,

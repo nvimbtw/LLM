@@ -27,6 +27,7 @@ import { useChats } from "@/components/chat/chats-provider"
 import { useComposerChoice } from "@/components/chat/composer-choice-provider"
 import { useSettings } from "@/components/settings/settings-provider"
 import type { ThinkBudget } from "@/lib/think-budget"
+import { ArtStream } from "@/lib/live-throbber/stream"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -202,6 +203,7 @@ function parseToolRow(content: string): ToolAnswer {
 }
 
 export function useChat(chatId: string) {
+  const [tokenArt] = React.useState(() => new ArtStream(chatId))
   const { takePendingMessage, refresh: refreshChats } = useChats()
   const { settings } = useSettings()
   // The model actually answering right now — a stored floor sized to a
@@ -446,6 +448,7 @@ export function useChat(chatId: string) {
       }
 
       setError(null)
+      tokenArt.reset(`${chatId}:${modelId}:${content}`)
       invalidateChatHistory(chatId)
       setIsSending(true)
       isSendingRef.current = true
@@ -631,7 +634,8 @@ export function useChat(chatId: string) {
           samplingRef.current,
           historyFloor,
           {
-            onToken: (value: string) => {
+            onToken: (value: string, tokenId?: number) => {
+              tokenArt.push(value, tokenId)
               setQueuedAhead(0)
               // One frame, one token — counted once, here, where the arrival of
               // the frame is the event. See the note on the appenders above.
@@ -745,6 +749,7 @@ export function useChat(chatId: string) {
       queueInterjection,
       drainQueued,
       putQueued,
+      tokenArt,
     ]
   )
 
@@ -828,6 +833,7 @@ export function useChat(chatId: string) {
   }, [drainQueued])
 
   return {
+    tokenArt,
     messages,
     isLoading,
     isSending,

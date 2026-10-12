@@ -40,6 +40,10 @@ toggle, a slash command — nothing else needs touching.
   it here would give the app two answers to what the theme is. It gets a
   hand-written row in the `appearance` section that reads and writes the real one.
 
+**Use live throbber** is an Appearance toggle, off by default, also exposed as
+`/live-throbber on|off`. It selects the animation while preserving status text.
+See [Live throbber](live-throbber.md) for capability fallback and the token contract.
+
 Everything else in `Settings` is stored on the account, not the browser —
 `components/settings/settings-provider.tsx` fetches `GET /user/me/settings` on
 login and writes back with `PUT` on every change, debounced 500ms so a dragged

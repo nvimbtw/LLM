@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/check-throbber.mjs && next build",
+    "build:throbber": "node scripts/build-throbber.mjs",
+    "check:throbber": "node scripts/check-throbber.mjs",
     "start": "next start",
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",

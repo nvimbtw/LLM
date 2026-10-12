@@ -9,6 +9,7 @@
 // needs touching.
 
 export interface Settings {
+  useLiveThrobber: boolean
   /**
    * Reveal the model's full reasoning as it thinks. Off: just the "Thinking…"
    * animation. On: the streamed reasoning text shown above the reply too.
@@ -103,6 +104,14 @@ export type SettingDef = ToggleSetting | TextSetting | NumberSetting
 
 // Keep this in the order you want controls to appear in the modal.
 export const SETTINGS: SettingDef[] = [
+  {
+    kind: "toggle",
+    key: "useLiveThrobber",
+    group: "appearance",
+    label: "Use live throbber",
+    default: false,
+    command: "live-throbber",
+  },
   {
     kind: "toggle",
     key: "showReasoning",

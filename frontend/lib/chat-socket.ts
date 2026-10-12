@@ -1,5 +1,6 @@
 import { WS_URL, getToken, handleSessionExpired } from "./api"
 import type { ThinkBudget } from "@/lib/think-budget"
+import { validTokenId } from "@/lib/live-throbber/stream"
 
 // The backend's exact error frame for a bad/expired token (api/src/ws.rs).
 const AUTH_FAILED_MESSAGE = "authentication failed"
@@ -10,7 +11,7 @@ const AUTH_FAILED_MESSAGE = "authentication failed"
 //   server → { type: "ready" }
 //   client → { model_name, text, attachment_ids?, system?, budget?, temperature?,
 //              top_k?, top_p?, context_multiplier?, history_floor? }
-//   server → { type: "token", token }             (decoded text, repeated)
+//   server → { type: "token", token, token_id? }  (decoded text, optional ID)
 //   server → { type: "tool_call", tool, argument } (the reply asked for something)
 //   server → { type: "done", message_id, content, usage }
 //   server → { type: "tool_result", tool, argument, body }
@@ -79,7 +80,7 @@ export interface ToolResultFrame extends ToolCallFrame {
 }
 
 export interface ChatStreamHandlers {
-  onToken: (value: string) => void
+  onToken: (value: string, tokenId?: number) => void
   onToolCall: (call: ToolCallFrame) => void
   onToolResult: (result: ToolResultFrame) => void
   /** Fires once per round. `final` is the one that ends the turn. */
@@ -146,6 +147,7 @@ export function streamChat(
     let msg: {
       type?: string
       token?: string
+      token_id?: unknown
       message_id?: string | null
       error?: string
       tool?: string
@@ -201,7 +203,10 @@ export function streamChat(
         break
       }
       case "token":
-        handlers.onToken(msg.token ?? "")
+        handlers.onToken(
+          msg.token ?? "",
+          validTokenId(msg.token_id) ? msg.token_id : undefined
+        )
         break
       case "tool_call":
         handlers.onToolCall({
