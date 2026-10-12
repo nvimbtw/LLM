@@ -47,26 +47,48 @@ noncryptographic and never sent or persisted by this feature.
 
 ## Motion and lifecycle
 
-The renderer samples the latest accumulated seed at most ten times a second,
-then exponentially approaches the new coefficients over a 420 ms time constant.
+The renderer samples the latest accumulated seed at most **1.25 times a second**
+(one target every 800 ms), then exponentially approaches the new coefficients
+over a 900 ms time constant.
 Every token affects the hash even when intermediate targets are coalesced.
 Keeping the grammar fixed during a turn lets coefficients morph continuously;
 retargeting does not restart an easing clock or build a backlog. Bursts therefore
-stay bounded. Identical ordered inputs produce identical seeds and target
+stay bounded. At 240 tokens/s, roughly one target represents 192 arrivals; a
+1 token/s stream can use each arrival. Sampling is independent of inference
+speed and always takes the latest seed: skipped targets never catch up later.
+A reset or a new turn bypasses the previous turn’s sampling deadline. Identical
+ordered inputs produce identical seeds and target
 expressions; animation timing and GPU rounding can produce different pixels.
 
 Frames are capped at 24 fps, backing resolution at twice CSS size and 192 pixels
 per side. Each canvas allows only one unfinished GPU submission; slow devices
-skip stale frames instead of accumulating a queue. The default footprint is much smaller. Activity modes change a gently
-blended ambient pace; no fake token IDs are invented during a wait. Idle settles
-and stops its loop. Hidden documents and offscreen canvases suspend drawing.
+skip stale frames instead of accumulating a queue. The default footprint is much
+smaller. Activity modes ease between distinct internal transformations over 600 ms;
+no fake token IDs are invented during a wait. The circle itself stays fixed.
+
+| Mode | Ambient motion without output tokens |
+| --- | --- |
+| Loading | Breathing zoom; its rate slows logarithmically with wait time, with a positive floor. |
+| Thinking | A slow wandering field and slight rotation. |
+| Generating | Minimal drift underneath token-driven coefficient changes. |
+| Tool | A small breath and gentle rock. |
+| Training | Flowing coordinate ripples and a slow turn. |
+| Tokenizing | A smooth scanning distortion. |
+| Benchmarking | Paired opposing scans. |
+| Idle | The transform settles to neutral and stops. |
+
+These are activity signatures, not measurements of job progress. Idle settles
+and stops its loop. Hidden documents and canvases with no visible intersection
+area suspend drawing and cancel their frame timers.
 Unmount releases the surface/buffer, subscriptions, timers and observers.
 
-Reduced motion removes ambient movement and interpolation, updating the still
-image at most twice a second as real tokens arrive. Unsupported WebGPU, insecure
+Reduced motion removes ambient movement and interpolation. Drawing is limited
+to twice a second; new visual targets still obey the 1.25/s sampling cap.
+Unsupported WebGPU, insecure
 contexts, failed initialization/shader validation, or a device/render failure
 show the existing trellis. Startup has an eight-second deadline and cancelled
-initializations release their resources when they resolve. It stays visible until the first successful GPU frame
+initializations release their resources when they resolve. The trellis stays
+visible until the first successful GPU frame
 and is unmounted while live art is displayed. A device failure is latched for
 the page lifetime; reloading retries initialization.
 
@@ -74,10 +96,12 @@ the page lifetime; reloading retries initialization.
 
 `/throbber` includes an enlarged 192 pixel canvas, the actual status-row mark,
 classic/live comparison, all eight modes, pause/resume, replay, a 256-token burst
-and ID/text source controls. IDs are explicitly synthetic fixtures. Replay resets
+and ID/text source controls. Slow/steady/fast fixtures send 1/24/240 tokens/s,
+so inference speed can be compared against the fixed visual cadence. IDs are
+explicitly synthetic fixtures. Replay resets
 the same seed; pauses stop token input while the active mode keeps its ambient
-motion. The original multi-state gallery lives in a separate **Classic showcase** tab,
-so its SVG animations and counter timer are unmounted while reviewing live art. Those panels
+motion. The original multi-state gallery lives in a separate **Classic showcase**
+tab, so its SVG animations and counter timer are unmounted while reviewing live art. Those panels
 still exercise the shared `Throbber` component and follow the saved preference.
 
 ## Build
@@ -92,7 +116,7 @@ cargo install wasm-bindgen-cli --version 0.2.125 --locked
 cd frontend
 bun run build:throbber
 bun run check:throbber
-bun test lib/live-throbber/stream.test.ts
+bun test lib/live-throbber/stream.test.ts lib/live-throbber/sampler.test.ts
 bun run typecheck
 bun run lint
 ```
@@ -106,12 +130,14 @@ strictly typed. Commit the generated assets and manifest with source changes.
 ## Verification (2026-10-12)
 
 The release WASM build has zero warnings; asset validation, frontend typecheck,
-lint, five stream tests (including a 100,000-token burst) and the webpack
+lint, nine stream/sampler/motion tests (including a 100,000-token burst and
+1–1,000 tokens/s sampling) and the webpack
 production build pass. A production browser run on Intel Gen12LP verified
-192/50/50 backing sizes at DPR 2, 300 submissions across three canvases over
+192/50/50 backing sizes at DPR 2, at most 300 submissions across three canvases over
 five seconds, no submissions after idle settles or while offscreen, and two
-updates per second per canvas under reduced motion. Device destruction selected
-the classic fallback. Mocked account requests verified both setting values reach
+updates per second per canvas under reduced motion. Slow/fast fixture rates were
+verified; all four non-output modes kept animating with the input paused. Device destruction
+selected the classic fallback when each canvas was visible. Mocked account requests verified both setting values reach
 the existing settings PUT. Dark/light and narrow viewport screenshots are in
 [FEAT-1](https://discord.com/channels/1538659898383011961/1559193308117344298).
 These frame counts are a bounded desktop observation, not a mobile benchmark.
@@ -132,6 +158,8 @@ These frame counts are a bounded desktop observation, not a mobile benchmark.
    and run the Next production build. Capture screenshots for Discord.
 
 WebGPU requires browser/driver support and a secure origin (localhost qualifies).
-The legacy fallback is necessary on unsupported or restricted devices. Responsive emulation does not establish performance on a physical phone. These images do not represent model confidence, semantics or progress.
+The legacy fallback is necessary on unsupported or restricted devices.
+Responsive emulation does not establish performance on a physical phone. These
+images do not represent model confidence, semantics or progress.
 Changing a model/tokenizer can change its IDs, and the 32-bit hash can collide;
 neither is a correctness problem for a decorative indicator.

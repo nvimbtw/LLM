@@ -1,5 +1,5 @@
 export const NODE_COUNT = 31
-export const HEADER_FLOATS = 20
+export const HEADER_FLOATS = 24
 export const PARAMETER_FLOATS = HEADER_FLOATS + NODE_COUNT * 4
 
 export function expression(

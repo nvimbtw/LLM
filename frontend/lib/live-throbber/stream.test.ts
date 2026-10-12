@@ -1,7 +1,12 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ArtStream, validTokenId } from "./stream"
-import { expression, NODE_COUNT, PARAMETER_FLOATS } from "./program"
+import {
+  expression,
+  HEADER_FLOATS,
+  NODE_COUNT,
+  PARAMETER_FLOATS,
+} from "./program"
 
 test("IDs cover the unsigned 32-bit range; invalid IDs use text", () => {
   for (const id of [0, 1, 255, 256, 0xffffffff]) assert.ok(validTokenId(id))
@@ -75,7 +80,7 @@ test("large bursts retain constant stream state and fixed grammar", () => {
   ])
   const after = expression(stream.snapshot.seed, structure)
   assert.equal(after.length, NODE_COUNT * 4)
-  assert.equal(PARAMETER_FLOATS, 20 + after.length)
+  assert.equal(PARAMETER_FLOATS, HEADER_FLOATS + after.length)
   assert.ok(after.every(Number.isFinite))
   assert.notDeepEqual(before, after)
   for (let node = 0; node < NODE_COUNT; node++) {

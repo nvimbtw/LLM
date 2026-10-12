@@ -5,8 +5,8 @@ use std::sync::{
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-// One header, four palette colours and a complete depth-four expression tree.
-const UNIFORM_FLOATS: usize = (1 + 4 + 31) * 4;
+// Two motion vectors, four palette colours and a depth-four expression tree.
+const UNIFORM_FLOATS: usize = (2 + 4 + 31) * 4;
 const MAX_SIDE: u32 = 192;
 
 #[wasm_bindgen]

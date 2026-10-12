@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { ArtStream } from "@/lib/live-throbber/stream"
+import { VISUAL_TARGETS_PER_SECOND } from "@/lib/live-throbber/sampler"
 import { useSettings } from "@/components/settings/settings-provider"
 import { ThinkingLabel } from "@/components/chat/thinking-label"
 import { TokenFlow } from "@/components/chat/token-flow"
@@ -45,12 +46,19 @@ const MODES: ThrobberMode[] = [
   "tokenizing",
 ]
 const FIXTURE_ID = "slate:live-throbber:fixture:v1"
+const STREAM_SPEEDS = [
+  { label: "Slow", rate: 1 },
+  { label: "Steady", rate: 24 },
+  { label: "Fast", rate: 240 },
+]
+const TICK_MS = 90
 
 export function LiveShowcase() {
   const [stream] = React.useState(() => new ArtStream(FIXTURE_ID))
   const [mode, setMode] = React.useState<ThrobberMode>("generating")
   const [paused, setPaused] = React.useState(false)
   const [useIds, setUseIds] = React.useState(true)
+  const [speed, setSpeed] = React.useState(24)
   const [count, setCount] = React.useState(0)
   const [status, setStatus] = React.useState<ArtStatus>("starting")
   const { settings, setSetting } = useSettings()
@@ -68,9 +76,15 @@ export function LiveShowcase() {
 
   React.useEffect(() => {
     if (paused || (mode !== "generating" && mode !== "thinking")) return
-    const timer = setInterval(() => advance(2), 90)
+    let remainder = 0
+    const timer = setInterval(() => {
+      remainder += (speed * TICK_MS) / 1000
+      const amount = Math.floor(remainder)
+      remainder -= amount
+      if (amount) advance(amount)
+    }, TICK_MS)
     return () => clearInterval(timer)
-  }, [paused, mode, advance])
+  }, [paused, mode, advance, speed])
 
   const replay = () => {
     stream.reset(FIXTURE_ID)
@@ -162,6 +176,29 @@ export function LiveShowcase() {
               Text fallback
             </Button>
           </div>
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label="Stream speed"
+          >
+            {STREAM_SPEEDS.map(({ label, rate }) => (
+              <Button
+                key={rate}
+                size="sm"
+                variant={speed === rate ? "secondary" : "ghost"}
+                aria-pressed={speed === rate}
+                onClick={() => setSpeed(rate)}
+              >
+                {label}
+              </Button>
+            ))}
+            <span className="ml-2 text-xs text-muted-foreground">
+              {speed} tokens/s
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Visual targets ≤ {VISUAL_TARGETS_PER_SECOND}/s · Depth 4 · 31 nodes
+          </p>
         </div>
       </div>
       <div

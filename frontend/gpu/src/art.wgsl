@@ -1,5 +1,6 @@
 struct Parameters {
-    frame: vec4<f32>,
+    transform: vec4<f32>,
+    motion: vec4<f32>,
     palette: array<vec4<f32>, 4>,
     nodes: array<vec4<f32>, 31>,
 }
@@ -45,9 +46,14 @@ fn expression(point: vec2<f32>) -> vec3<f32> {
     let radius = length(input.point);
     let edge = max(fwidth(radius), 0.002);
     let alpha = 1.0 - smoothstep(0.97 - edge, 0.97, radius);
-    let phase = art.frame.x;
-    let drift = vec2(sin(phase * 0.27), cos(phase * 0.21)) * 0.09;
-    let field = expression(input.point * 1.8 + drift);
+    let angle = art.transform.w;
+    let rotation = mat2x2(cos(angle), sin(angle), -sin(angle), cos(angle));
+    var point = rotation * (input.point * 1.8 * art.transform.z) + art.transform.xy;
+    point.x += sin(point.y * 3.0 + art.motion.z) * art.motion.w;
+    let scan = exp(-pow(point.x - art.motion.x, 2.0) * 4.0);
+    let paired = scan - exp(-pow(point.x + art.motion.x, 2.0) * 4.0);
+    point.y += select(scan, -paired, art.motion.y < 0.0) * art.motion.y;
+    let field = expression(point);
     let ink = 0.5 + field.x * 0.5;
     let strata = 0.5 + 0.5 * sin(field.x * 9.0 + field.y * 3.0);
     let colour = mix(art.palette[0].rgb, art.palette[1].rgb, smoothstep(0.12, 0.84, ink));

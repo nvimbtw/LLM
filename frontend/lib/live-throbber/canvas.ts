@@ -2,22 +2,12 @@ import { expression, HEADER_FLOATS, PARAMETER_FLOATS } from "./program"
 import type { ArtStream } from "./stream"
 import type { ThrobberMode } from "@/components/ui/trellis-throbber"
 import type { Gpu, Renderer } from "./generated/renderer"
+import { ArtSampler, MORPH_SECONDS } from "./sampler"
+import { motionPose, motionRate, POSE_FLOATS, POSE_SECONDS } from "./motion"
 
 const FRAME_MS = 1000 / 24
 const MAX_SIDE = 192
-const TARGET_MS = 100
-const MORPH_SECONDS = 0.42
 const SETTLED = 0.001
-const RATES: Record<ThrobberMode, number> = {
-  idle: 0,
-  loading: 0.28,
-  thinking: 0.35,
-  generating: 0.6,
-  tool: 0.2,
-  training: 0.5,
-  benchmarking: 0.4,
-  tokenizing: 0.45,
-}
 
 let gpu: Promise<Gpu> | undefined
 
@@ -65,12 +55,15 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
   const parameters = new Float32Array(PARAMETER_FLOATS)
   let current = expression(stream.snapshot.seed, stream.snapshot.structure)
   let target = current.slice()
-  let seenSeed = stream.snapshot.seed
-  let seenStructure = stream.snapshot.structure
+  const sampler = new ArtSampler(stream.snapshot)
+  const pose = new Float32Array(POSE_FLOATS)
+  const desiredPose = new Float32Array(POSE_FLOATS)
+  pose[2] = 1
+  let seenMode = options.mode()
+  let modeBegan = performance.now()
   let phase = 0
   let pace = 0
   let previous = 0
-  let lastTarget = 0
   let frame = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let visible = true
@@ -102,16 +95,12 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
     const dt = Math.min((now - (previous || now)) / 1000, 0.064)
     previous = now
     const snapshot = stream.snapshot
-    if (snapshot.structure !== seenStructure) {
-      seenStructure = snapshot.structure
-      current = expression(snapshot.seed, seenStructure)
-      target = current.slice()
-      seenSeed = snapshot.seed
-    }
-    if (snapshot.seed !== seenSeed && now - lastTarget >= TARGET_MS) {
-      target = expression(snapshot.seed, seenStructure)
-      seenSeed = snapshot.seed
-      lastTarget = now
+    const reset =
+      snapshot.structure !== sampler.snapshot.structure ||
+      snapshot.count < sampler.snapshot.count
+    if (sampler.sample(snapshot, now)) {
+      target = expression(snapshot.seed, snapshot.structure)
+      if (reset) current = target.slice()
     }
     const blend = reduced ? 1 : 1 - Math.exp(-dt / MORPH_SECONDS)
     let distance = 0
@@ -120,10 +109,27 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
       distance = Math.max(distance, Math.abs(delta))
       current[i] += delta * blend
     }
-    const rate = reduced ? 0 : RATES[options.mode()]
+    const mode = options.mode()
+    if (mode !== seenMode) {
+      seenMode = mode
+      modeBegan = now
+    }
+    const rate = reduced ? 0 : motionRate(mode, (now - modeBegan) / 1000)
     pace += (rate - pace) * (1 - Math.exp(-dt / 0.35))
     phase += pace * dt
-    parameters[0] = phase
+    motionPose(reduced ? "idle" : mode, phase, desiredPose)
+    const poseBlend = reduced ? 1 : 1 - Math.exp(-dt / POSE_SECONDS)
+    for (let i = 0; i < POSE_FLOATS; i++) {
+      // Ripple phase wraps at 2π; interpolating it across the seam reverses time.
+      if (i === 6) {
+        pose[i] = desiredPose[i]
+        continue
+      }
+      const delta = desiredPose[i] - pose[i]
+      distance = Math.max(distance, Math.abs(delta))
+      pose[i] += delta * poseBlend
+    }
+    parameters.set(pose)
     parameters.set(current, HEADER_FLOATS)
     let submitted: boolean
     try {
@@ -138,7 +144,7 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
     }
     if (
       (!reduced && (rate > 0 || pace > SETTLED || distance > SETTLED)) ||
-      snapshot.seed !== seenSeed ||
+      sampler.pending(snapshot) ||
       !submitted
     ) {
       schedule()
@@ -162,13 +168,19 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
     }
   })
   const intersection = new IntersectionObserver(([entry]) => {
-    visible = entry.isIntersecting
+    // Edge contact or a collapsed element can intersect without a visible pixel.
+    visible =
+      entry.isIntersecting &&
+      entry.intersectionRect.width > 0 &&
+      entry.intersectionRect.height > 0
     if (visible) {
       previous = 0
       schedule()
-    } else if (frame) {
+    } else {
       cancelAnimationFrame(frame)
       frame = 0
+      clearTimeout(timer)
+      timer = undefined
     }
   })
   const theme = new MutationObserver(() => {
@@ -226,7 +238,7 @@ function readPalette(canvas: HTMLCanvasElement, parameters: Float32Array) {
     const rgb = Number.parseInt(value.slice(1), 16)
     parameters.set(
       [(rgb >>> 16) / 255, ((rgb >>> 8) & 255) / 255, (rgb & 255) / 255, 1],
-      4 + index * 4
+      POSE_FLOATS + index * 4
     )
   })
 }
