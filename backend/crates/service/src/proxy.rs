@@ -8,7 +8,11 @@
 //! Nothing here names the LLM engine. A second service is a second `Proxy` with its
 //! own audience and its own routers above it; this is the whole seam.
 
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
+
+mod sse;
+#[cfg(test)]
+mod tests;
 use serde_json::Value;
 
 use crate::{Error, Result};
@@ -50,6 +54,7 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Report whether this named service event is terminal under the shared event vocabulary.
     pub fn is_final(&self) -> bool {
         matches!(self.kind.as_str(), "done" | "error" | "cancelled")
     }
@@ -67,14 +72,14 @@ pub struct Proxy {
 }
 
 impl Proxy {
+    /// Create a reusable service client with its audience and optional shared secret.
+    /// Only connection establishment times out; durable event streams have no global request timeout.
     pub fn new(
         base_url: impl Into<String>,
         audience: impl Into<String>,
         secret: Option<String>,
     ) -> Proxy {
         Proxy {
-            // No global timeout: a run's event stream is open for as long as
-            // the run lasts. Connect timeouts still apply.
             http: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -85,26 +90,32 @@ impl Proxy {
         }
     }
 
+    /// Forward an owner-scoped GET and decode the service JSON response.
     pub async fn get(&self, caller: &auth::Caller, path: &str) -> Result<Value> {
         self.call(caller, Method::GET, path, None).await
     }
 
+    /// Forward an owner-scoped POST with an opaque service JSON body.
     pub async fn post(&self, caller: &auth::Caller, path: &str, body: Value) -> Result<Value> {
         self.call(caller, Method::POST, path, Some(body)).await
     }
 
+    /// Forward an owner-scoped PATCH with an opaque service JSON body.
     pub async fn patch(&self, caller: &auth::Caller, path: &str, body: Value) -> Result<Value> {
         self.call(caller, Method::PATCH, path, Some(body)).await
     }
 
+    /// Forward an owner-scoped PUT with an opaque service JSON body.
     pub async fn put(&self, caller: &auth::Caller, path: &str, body: Value) -> Result<Value> {
         self.call(caller, Method::PUT, path, Some(body)).await
     }
 
+    /// Forward an owner-scoped DELETE and retain service status semantics.
     pub async fn delete(&self, caller: &auth::Caller, path: &str) -> Result<Value> {
         self.call(caller, Method::DELETE, path, None).await
     }
 
+    /// Send an authenticated service request and decode its JSON, preserving non-success service statuses.
     pub async fn call(
         &self,
         caller: &auth::Caller,
@@ -112,25 +123,14 @@ impl Proxy {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
-        let mut request = self.http.request(method, self.url(path));
-        if let Some(header) = self.authorization(caller) {
-            request = request.header(reqwest::header::AUTHORIZATION, header);
-        }
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
+        let request = self.request(caller, method, path, body);
 
         self.read_json(request).await
     }
 
+    /// Send a prepared request and decode successful JSON; empty response bodies become null.
     async fn read_json(&self, request: reqwest::RequestBuilder) -> Result<Value> {
-        let response = request
-            .send()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(status_error(response).await);
-        }
+        let response = send(request).await?;
 
         let text = response
             .text()
@@ -151,10 +151,8 @@ impl Proxy {
             .map_err(|e| Error::Transport(e.to_string()))?;
         let form = reqwest::multipart::Form::new().part(file.field, part);
 
-        let mut request = self.http.post(self.url(path)).multipart(form);
-        if let Some(header) = self.authorization(caller) {
-            request = request.header(reqwest::header::AUTHORIZATION, header);
-        }
+        let request = self.authorize(self.http.post(self.url(path)).multipart(form), caller);
+
         self.read_json(request).await
     }
 
@@ -164,18 +162,7 @@ impl Proxy {
     /// service that stores it, and a streaming body would have to carry the
     /// upstream's failure through a stream this side has already answered.
     pub async fn fetch(&self, caller: &auth::Caller, path: &str) -> Result<Blob> {
-        let mut request = self.http.get(self.url(path));
-        if let Some(header) = self.authorization(caller) {
-            request = request.header(reqwest::header::AUTHORIZATION, header);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(status_error(response).await);
-        }
+        let response = send(self.request(caller, Method::GET, path, None)).await?;
 
         let media_type = header_of(&response, reqwest::header::CONTENT_TYPE)
             .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -213,6 +200,7 @@ impl Proxy {
         self.streaming(caller, Method::POST, path, Some(body)).await
     }
 
+    /// Open an authenticated event request and transfer its response body to the incremental frame decoder.
     async fn streaming(
         &self,
         caller: &auth::Caller,
@@ -220,23 +208,36 @@ impl Proxy {
         path: &str,
         body: Option<Value>,
     ) -> Result<impl Stream<Item = Result<Frame>>> {
-        let mut request = self.http.request(method, self.url(path));
-        if let Some(header) = self.authorization(caller) {
-            request = request.header(reqwest::header::AUTHORIZATION, header);
-        }
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
+        let response = send(self.request(caller, method, path, body)).await?;
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(status_error(response).await);
-        }
+        Ok(sse::frames(response.bytes_stream()))
+    }
 
-        Ok(frames(response.bytes_stream()))
+    /// Build a signed request, adding a JSON body only when the service call supplies one.
+    fn request(
+        &self,
+        caller: &auth::Caller,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> reqwest::RequestBuilder {
+        let request = self.authorize(self.http.request(method, self.url(path)), caller);
+        match body {
+            Some(body) => request.json(&body),
+            None => request,
+        }
+    }
+
+    /// Attach the service-audience caller token to any JSON, multipart or binary request.
+    fn authorize(
+        &self,
+        request: reqwest::RequestBuilder,
+        caller: &auth::Caller,
+    ) -> reqwest::RequestBuilder {
+        match self.authorization(caller) {
+            Some(header) => request.header(reqwest::header::AUTHORIZATION, header),
+            None => request,
+        }
     }
 
     /// Minted per request rather than cached: it lives for a minute, and a
@@ -251,62 +252,19 @@ impl Proxy {
             .map(|token| format!("Bearer {token}"))
     }
 
+    /// Resolve a service-relative path under the configured base URL without rewriting its query string.
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
 }
 
+/// Read an optional response header as UTF-8, omitting absent or invalid header values.
 fn header_of(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<String> {
     response
         .headers()
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
-}
-
-/// Frames are delimited by a blank line and a chunk can split one anywhere, so
-/// only whole frames are emitted and the remainder stays buffered.
-fn frames<B: AsRef<[u8]>>(
-    bytes: impl Stream<Item = reqwest::Result<B>>,
-) -> impl Stream<Item = Result<Frame>> {
-    let mut buffer = String::new();
-    let mut pending: Vec<Result<Frame>> = Vec::new();
-
-    Box::pin(bytes).flat_map(move |chunk| {
-        match chunk {
-            Err(e) => pending.push(Err(Error::Transport(e.to_string()))),
-            Ok(chunk) => {
-                buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
-                while let Some(split) = buffer.find("\n\n") {
-                    let frame = buffer[..split].to_string();
-                    buffer.drain(..split + 2);
-                    if let Some(frame) = parse(&frame) {
-                        pending.push(Ok(frame));
-                    }
-                }
-            }
-        }
-        futures_util::stream::iter(std::mem::take(&mut pending))
-    })
-}
-
-fn parse(frame: &str) -> Option<Frame> {
-    let mut kind = String::new();
-    let mut data = String::new();
-    for line in frame.lines() {
-        if let Some(rest) = line.strip_prefix("event: ") {
-            kind = rest.trim().to_string();
-        } else if let Some(rest) = line.strip_prefix("data: ") {
-            data.push_str(rest);
-        }
-    }
-    if kind.is_empty() {
-        return None;
-    }
-    Some(Frame {
-        kind,
-        data: serde_json::from_str(&data).unwrap_or(Value::Null),
-    })
 }
 
 /// FastAPI puts its reason in `detail`; anything else is passed through
@@ -325,114 +283,14 @@ async fn status_error(response: reqwest::Response) -> Error {
     Error::Status { code, detail }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::stream;
-
-    fn chunks(pieces: &[&str]) -> impl Stream<Item = reqwest::Result<Vec<u8>>> {
-        let owned: Vec<_> = pieces.iter().map(|p| Ok(p.as_bytes().to_vec())).collect();
-        stream::iter(owned)
+/// Send one request, separating transport failures from the service's own unsuccessful status.
+async fn send(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| Error::Transport(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(status_error(response).await);
     }
-
-    async fn collect(pieces: &[&str]) -> Vec<Frame> {
-        frames(chunks(pieces))
-            .filter_map(|f| async { f.ok() })
-            .collect()
-            .await
-    }
-
-    #[tokio::test]
-    async fn a_frame_split_across_chunks_is_reassembled() {
-        let seen = collect(&["event: progr", "ess\ndata: {\"step\"", ": 1}\n\n"]).await;
-
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].kind, "progress");
-        assert_eq!(seen[0].data["step"], 1);
-    }
-
-    #[tokio::test]
-    async fn several_frames_in_one_chunk_all_arrive() {
-        let seen = collect(&["event: a\ndata: 1\n\nevent: b\ndata: 2\n\n"]).await;
-
-        let kinds: Vec<_> = seen.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(kinds, ["a", "b"]);
-    }
-
-    #[tokio::test]
-    async fn a_frame_with_no_terminator_is_held_rather_than_guessed_at() {
-        assert!(collect(&["event: progress\ndata: {}"]).await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_frame_with_no_event_name_is_not_a_frame() {
-        assert!(collect(&["data: {}\n\n"]).await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn unreadable_data_still_delivers_the_event_name() {
-        // The name is what a consumer switches on; losing the whole frame
-        // because its payload is malformed would hide a terminal `done`.
-        let seen = collect(&["event: done\ndata: not json\n\n"]).await;
-
-        assert_eq!(seen[0].kind, "done");
-        assert!(seen[0].data.is_null());
-    }
-
-    #[test]
-    fn only_a_terminal_frame_ends_a_stream() {
-        let final_kinds = ["done", "error", "cancelled"];
-        for kind in final_kinds {
-            assert!(Frame {
-                kind: kind.into(),
-                data: Value::Null
-            }
-            .is_final());
-        }
-        assert!(!Frame {
-            kind: "progress".into(),
-            data: Value::Null
-        }
-        .is_final());
-    }
-
-    #[test]
-    fn a_token_is_addressed_to_the_service_it_was_built_for() {
-        let proxy = Proxy::new("http://x", "llm-engine", Some("s".into()));
-        let header = proxy.authorization(&auth::Caller::System).expect("signed");
-        let token = header.strip_prefix("Bearer ").expect("bearer scheme");
-
-        assert!(auth::token::verify_service_token(token, "llm-engine", "s").is_ok());
-        assert!(auth::token::verify_service_token(token, "other", "s").is_err());
-    }
-
-    #[test]
-    fn without_a_secret_the_claim_survives_and_the_signature_does_not() {
-        let who = uuid::Uuid::new_v4();
-        let proxy = Proxy::new("http://x", "llm-engine", None);
-        let header = proxy
-            .authorization(&auth::Caller::User(who))
-            .expect("still sent");
-        let token = header.strip_prefix("Bearer ").unwrap();
-
-        // An enforcing service refuses it, which is the intended failure.
-        assert!(auth::token::verify_service_token(token, "llm-engine", "real").is_err());
-        // An open one still learns who the call is for.
-        let caller =
-            auth::token::verify_service_token(token, "llm-engine", UNSIGNED).expect("read");
-        assert!(matches!(caller, auth::Caller::User(id) if id == who));
-    }
-
-    #[test]
-    fn the_token_names_the_person_the_call_is_for() {
-        let who = uuid::Uuid::new_v4();
-        let proxy = Proxy::new("http://x", "llm-engine", Some("s".into()));
-        let header = proxy
-            .authorization(&auth::Caller::User(who))
-            .expect("signed");
-        let token = header.strip_prefix("Bearer ").unwrap();
-
-        let caller = auth::token::verify_service_token(token, "llm-engine", "s").expect("valid");
-        assert!(matches!(caller, auth::Caller::User(id) if id == who));
-    }
+    Ok(response)
 }
