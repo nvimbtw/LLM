@@ -10,4 +10,7 @@ replace the active module contracts or authorize implementation work.
 - [Frontend refactor and independent review](2026-10-13-frontend-refactor.md):
   before/after examples, structural metrics, race fixes, verification and remaining debt.
 
+- [Rust backend refactor and independent review](2026-10-13-rust-backend-refactor.md):
+  ownership boundaries, code/comment examples, PostgreSQL and wire verification, and remaining debt.
+
 Discussion: [Discord DOC-4](https://discord.com/channels/1538659898383011961/1559534257695891487).
