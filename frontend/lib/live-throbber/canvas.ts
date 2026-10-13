@@ -2,10 +2,11 @@ import { expression, HEADER_FLOATS, PARAMETER_FLOATS } from "./program"
 import type { ArtStream } from "./stream"
 import type { ThrobberMode } from "@/components/ui/trellis-throbber"
 import type { Gpu, Renderer } from "./generated/renderer"
-import { ArtSampler, MORPH_SECONDS } from "./sampler"
+import { ArtSampler } from "./sampler"
+import { ArtMorph } from "./morph"
 import { motionPose, motionRate, POSE_FLOATS, POSE_SECONDS } from "./motion"
+import { FrameClock, FRAME_MS, REDUCED_FRAME_MS } from "./frame-clock"
 
-const FRAME_MS = 1000 / 24
 const MAX_SIDE = 192
 const SETTLED = 0.001
 
@@ -53,9 +54,11 @@ export async function animateArt(options: CanvasOptions): Promise<() => void> {
 function run(options: CanvasOptions, renderer: Renderer): () => void {
   const { canvas, stream, reduced } = options
   const parameters = new Float32Array(PARAMETER_FLOATS)
-  let current = expression(stream.snapshot.seed, stream.snapshot.structure)
-  let target = current.slice()
+  const morph = new ArtMorph(
+    expression(stream.snapshot.seed, stream.snapshot.structure)
+  )
   const sampler = new ArtSampler(stream.snapshot)
+  const clock = new FrameClock(reduced ? REDUCED_FRAME_MS : FRAME_MS)
   const pose = new Float32Array(POSE_FLOATS)
   const desiredPose = new Float32Array(POSE_FLOATS)
   pose[2] = 1
@@ -81,15 +84,15 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
   const tick = (now: number) => {
     frame = 0
     if (disposed || !visible || document.hidden) return
-    const interval = reduced ? 500 : FRAME_MS
-    if (previous && now - previous < interval) {
-      timer = setTimeout(
-        () => {
+    if (!clock.take(now)) {
+      if (reduced) {
+        timer = setTimeout(() => {
           timer = undefined
           schedule()
-        },
-        interval - (now - previous)
-      )
+        }, clock.remaining(now))
+      } else {
+        schedule()
+      }
       return
     }
     const dt = Math.min((now - (previous || now)) / 1000, 0.064)
@@ -99,16 +102,12 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
       snapshot.structure !== sampler.snapshot.structure ||
       snapshot.count < sampler.snapshot.count
     if (sampler.sample(snapshot, now)) {
-      target = expression(snapshot.seed, snapshot.structure)
-      if (reset) current = target.slice()
+      const target = expression(snapshot.seed, snapshot.structure)
+      if (reset || reduced) morph.reset(target)
+      else morph.retarget(target, now)
     }
-    const blend = reduced ? 1 : 1 - Math.exp(-dt / MORPH_SECONDS)
+    const morphing = morph.advance(now)
     let distance = 0
-    for (let i = 0; i < current.length; i++) {
-      const delta = target[i] - current[i]
-      distance = Math.max(distance, Math.abs(delta))
-      current[i] += delta * blend
-    }
     const mode = options.mode()
     if (mode !== seenMode) {
       seenMode = mode
@@ -130,7 +129,7 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
       pose[i] += delta * poseBlend
     }
     parameters.set(pose)
-    parameters.set(current, HEADER_FLOATS)
+    parameters.set(morph.values, HEADER_FLOATS)
     let submitted: boolean
     try {
       submitted = renderer.render(parameters)
@@ -143,7 +142,8 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
       return
     }
     if (
-      (!reduced && (rate > 0 || pace > SETTLED || distance > SETTLED)) ||
+      (!reduced &&
+        (rate > 0 || pace > SETTLED || distance > SETTLED || morphing)) ||
       sampler.pending(snapshot) ||
       !submitted
     ) {
@@ -175,6 +175,7 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
       entry.intersectionRect.height > 0
     if (visible) {
       previous = 0
+      clock.reset()
       schedule()
     } else {
       cancelAnimationFrame(frame)
@@ -196,6 +197,7 @@ function run(options: CanvasOptions, renderer: Renderer): () => void {
       timer = undefined
     } else {
       previous = 0
+      clock.reset()
       schedule()
     }
   }

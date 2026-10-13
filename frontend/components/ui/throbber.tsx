@@ -21,7 +21,11 @@ const LiveArt = dynamic(
     import("@/components/throbber/live-art").then((module) => module.LiveArt),
   {
     ssr: false,
-    loading: () => <TrellisThrobber />,
+    loading: () => (
+      <span className="inline-flex size-(--size-live-throbber) shrink-0 items-center justify-center">
+        <TrellisThrobber />
+      </span>
+    ),
   }
 )
 

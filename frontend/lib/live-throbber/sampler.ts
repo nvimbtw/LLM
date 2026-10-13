@@ -2,7 +2,6 @@ import type { ArtSnapshot } from "./stream"
 
 export const VISUAL_TARGETS_PER_SECOND = 1.25
 export const TARGET_INTERVAL_MS = 1000 / VISUAL_TARGETS_PER_SECOND
-export const MORPH_SECONDS = 0.9
 
 /** Samples the newest accumulated input on a visual clock, with no catch-up queue. */
 export class ArtSampler {

@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -8,6 +8,8 @@ use web_sys::HtmlCanvasElement;
 // Two motion vectors, four palette colours and a depth-four expression tree.
 const UNIFORM_FLOATS: usize = (2 + 4 + 31) * 4;
 const MAX_SIDE: u32 = 192;
+// One frame can render while the previous completion crosses the browser's IPC.
+const MAX_PENDING_FRAMES: u32 = 2;
 
 #[wasm_bindgen]
 pub struct Gpu {
@@ -106,7 +108,7 @@ impl Gpu {
             uniform,
             binding,
             failed: self.failed.clone(),
-            pending: Arc::new(AtomicBool::new(false)),
+            pending: Arc::new(AtomicU32::new(0)),
         })
     }
 }
@@ -121,7 +123,7 @@ pub struct Renderer {
     uniform: wgpu::Buffer,
     binding: wgpu::BindGroup,
     failed: Arc<AtomicBool>,
-    pending: Arc<AtomicBool>,
+    pending: Arc<AtomicU32>,
 }
 
 #[wasm_bindgen]
@@ -140,7 +142,7 @@ impl Renderer {
             return Err(js_error("GPU device lost"));
         }
         // Slow adapters must not accumulate an unbounded queue of stale images.
-        if self.pending.load(Ordering::Relaxed) {
+        if self.pending.load(Ordering::Relaxed) >= MAX_PENDING_FRAMES {
             return Ok(false);
         }
         let frame = match self.surface.get_current_texture() {
@@ -173,11 +175,11 @@ impl Renderer {
             pass.set_bind_group(0, &self.binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.pending.store(true, Ordering::Relaxed);
+        self.pending.fetch_add(1, Ordering::Relaxed);
         self.queue.submit([encoder.finish()]);
         let pending = self.pending.clone();
         self.queue.on_submitted_work_done(move || {
-            pending.store(false, Ordering::Relaxed);
+            pending.fetch_sub(1, Ordering::Relaxed);
         });
         frame.present();
         Ok(true)

@@ -199,6 +199,9 @@
   --space-ledger-x: calc(var(--spacing) * 8);
   --space-ledger-y: calc(var(--spacing) * 5);
 
+  /* Fluid art needs a little more room to read than the classic trellis. */
+  --size-live-throbber: calc(var(--spacing) * 8);
+
   /* ---- Radius roles -----------------------------------------------------
      The scale is derived from `--radius` at the bottom of this file. These say
      which step a given kind of thing takes, so "controls are slightly rounder

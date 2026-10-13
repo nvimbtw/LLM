@@ -1,12 +1,12 @@
 {
   "gpu/Cargo.toml": "ba533e45de31f885eba2f5e056d55e0234a9b6d362908239f196ea285a352d8e",
   "gpu/Cargo.lock": "b80d27596ae61700e9e6665393b9cd357491e8a6f61aca2d1ef1af4e17f79d3c",
-  "gpu/src/lib.rs": "6d95a48a6f25b5fcd864d6416fa140564294501dff2cb6a826f258142a767307",
-  "gpu/src/art.wgsl": "1270dd96dfa52e55743b5e35902eb63c618864ac7bd0e2d33952585133d855b9",
+  "gpu/src/lib.rs": "6fd62b54adadfad1c8dca394135f8e604bf96a1938ef7e6650ad645a0078dfbc",
+  "gpu/src/art.wgsl": "2e3b9f5aab790373d533d4e4079b008a10b55871d21a04a24b009bc357cee4b1",
   "scripts/build-throbber.mjs": "c075d91459dedc0326d23e5d4b670b9621c5617279fde5cffb2dd37ec188cb7a",
   "scripts/throbber-artifacts.mjs": "373a96a19dc1b67fc7740433f73b2d146eb86550b372e799d505e39af5b44c6d",
   "lib/live-throbber/generated/renderer.js": "10d873ab00a2c385f05f48aa4e269f37d445d76541fde8d4f12a8c82a1de414f",
   "lib/live-throbber/generated/renderer.d.ts": "05070e5809273d81fd9467a09922981abf866f021289a092efc7c7aba1458985",
   "lib/live-throbber/generated/renderer_bg.wasm.d.ts": "5514250b5766827d69229a9c2cbb0eeb8af80644c301a603150922d8f706d163",
-  "public/live-throbber/renderer_bg.wasm": "45f6a527e064cd2647fefc1d80efd6bf69560a924c8c32e1ea8a4fcc80375faa"
+  "public/live-throbber/renderer_bg.wasm": "3991d3f761ee88839283ba39a5be532a84fd7c667edfee2dc8979010e9038024"
 }

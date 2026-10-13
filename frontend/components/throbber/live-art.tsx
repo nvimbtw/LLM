@@ -15,7 +15,7 @@ const STARTUP_TIMEOUT_MS = 8000
 
 export interface LiveArtProps extends ThrobberProps {
   stream?: ArtStream
-  /** Enlarged only by the fixture; production keeps the throbber's fixed footprint. */
+  /** Enlarged only by the fixture; production uses --size-live-throbber. */
   size?: number
   onStatus?: (status: ArtStatus) => void
 }
@@ -98,7 +98,10 @@ export function LiveArt({
         "relative inline-flex shrink-0 items-center justify-center",
         className
       )}
-      style={{ width: size ?? 27, height: size ?? 25 }}
+      style={{
+        width: size ?? "var(--size-live-throbber)",
+        height: size ?? "var(--size-live-throbber)",
+      }}
     >
       {status !== "wgpu" && (
         <span aria-hidden>
@@ -109,10 +112,9 @@ export function LiveArt({
         ref={canvas}
         aria-hidden
         className={cn(
-          "absolute block rounded-full",
+          "absolute block size-full rounded-full",
           status === "wgpu" ? "opacity-100" : "opacity-0"
         )}
-        style={{ width: size ?? 25, height: size ?? 25 }}
       />
     </span>
   )

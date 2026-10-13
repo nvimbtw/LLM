@@ -3,13 +3,17 @@
 `components/ui/throbber.tsx` selects the classic trellis or optional live art
 using the account's **Use live throbber** Appearance setting. It defaults to
 off; `/live-throbber on|off` controls the same preference. The existing settings
-JSON stores it without a backend schema change. The wrapper changes only the
-animation: the clock, token count, thinking label and tool label stay with their
-existing owners. Both marks occupy the same 27 × 25 CSS pixel slot.
+JSON stores it without a backend schema change. The wrapper owns the mark;
+the clock, token count, thinking label and tool label stay with their
+existing owners. Live art uses one fixed **32 × 32 CSS pixel** footprint across
+the app, set by `--size-live-throbber` in `app/globals.css`. Its fluid detail
+needs more room than the classic trellis, which stays at 28 × 25 pixels.
+Loading and fallback centre the original trellis in the live slot, so the row
+does not shift when the canvas appears or fails.
 
 ## Rendering boundary
 
-The live mark is a clean 25 pixel circle containing procedural Random Art.
+The live mark is a clean 32 pixel circle containing procedural Random Art.
 `frontend/gpu/` is a browser renderer, not a backend crate: Rust **wgpu 28**
 compiles to WASM, uses browser WebGPU and evaluates WGSL on the GPU. It has no
 service, database, model or network dependency beyond fetching its static WASM.
@@ -23,6 +27,9 @@ security requirements. A full depth-four binary tree has 31 nodes. Leaves are
 bounded coordinate functions; internal nodes use sine, cosine, multiplication
 or mixing. The turn's identity seeds the topology. Ordered tokens seed its
 continuous coefficients. Four existing active theme colours supply the palette.
+The shader uses constant node references instead of a dynamically indexed
+per-pixel array, so intermediate values can stay in registers. Transparent
+corners exit before the expression, and inactive ripple/scan math is skipped.
 
 ## Token contract
 
@@ -48,11 +55,15 @@ noncryptographic and never sent or persisted by this feature.
 ## Motion and lifecycle
 
 The renderer samples the latest accumulated seed at most **1.25 times a second**
-(one target every 800 ms), then exponentially approaches the new coefficients
-over a 900 ms time constant.
+(one target every 800 ms), then interpolates coefficients **linearly over
+800 ms**. Equal time steps advance a segment equally, avoiding an exponential
+slowdown followed by a kick at each new target. Retargeting starts from the
+current interpolated values, so positions remain continuous. The expression is
+nonlinear, so this is constant coefficient velocity, not a claim that every
+pixel changes at the same rate.
 Every token affects the hash even when intermediate targets are coalesced.
-Keeping the grammar fixed during a turn lets coefficients morph continuously;
-retargeting does not restart an easing clock or build a backlog. Bursts therefore
+Keeping the grammar fixed during a turn lets coefficients morph continuously.
+Individual tokens do not restart a transition or build a backlog. Bursts therefore
 stay bounded. At 240 tokens/s, roughly one target represents 192 arrivals; a
 1 token/s stream can use each arrival. Sampling is independent of inference
 speed and always takes the latest seed: skipped targets never catch up later.
@@ -60,8 +71,11 @@ A reset or a new turn bypasses the previous turn’s sampling deadline. Identica
 ordered inputs produce identical seeds and target
 expressions; animation timing and GPU rounding can produce different pixels.
 
-Frames are capped at 24 fps, backing resolution at twice CSS size and 192 pixels
-per side. Each canvas allows only one unfinished GPU submission; slow devices
+Active drawing targets **60 fps**, paced directly by animation frames with a
+deadline that tolerates timestamp rounding and differing display refresh rates.
+Backing resolution remains capped at twice CSS size and 192 pixels per side.
+Each canvas allows at most **two unfinished GPU submissions**, overlapping work
+with the browser's asynchronous completion notification; slow devices
 skip stale frames instead of accumulating a queue. The default footprint is much
 smaller. Activity modes ease between distinct internal transformations over 600 ms;
 no fake token IDs are invented during a wait. The circle itself stays fixed.
@@ -117,6 +131,7 @@ cd frontend
 bun run build:throbber
 bun run check:throbber
 bun test lib/live-throbber/stream.test.ts lib/live-throbber/sampler.test.ts
+bun test lib/live-throbber/frame-clock.test.ts lib/live-throbber/morph.test.ts
 bun run typecheck
 bun run lint
 ```
@@ -142,6 +157,23 @@ the existing settings PUT. Dark/light and narrow viewport screenshots are in
 [FEAT-1](https://discord.com/channels/1538659898383011961/1559193308117344298).
 These frame counts are a bounded desktop observation, not a mobile benchmark.
 
+## Performance verification (2026-10-13)
+
+The WASM release rebuild has zero warnings. Asset validation, 15 stream,
+sampler, frame-clock and linear-morph tests, typecheck, lint and the webpack
+production build pass. Clock tests cover 59.94–240 Hz and missed frames.
+
+On Intel Gen12LP, a batched GPU timestamp test at 64 × 64 measured median
+shader time of 0.0195 ms before and 0.0036 ms after optimization (about 5× faster).
+Readbacks matched the original shader exactly across eight poses and two seeds.
+These isolate shader cost, not presentation or inference contention.
+Live uniform captures showed constant coefficient slopes within each segment.
+Foreground browser samples delivered 43–56 fps while animation callbacks were
+available at 45–56 fps; **60 fps is a target, not a verified lock under load**.
+Per-canvas pending submissions stayed at two or fewer. Idle and offscreen
+drawing stopped, and visibility restored the 32 pixel mark without resizing.
+Reduced-motion drawing remained at two frames per second.
+
 ## Review plan and risks
 
 1. Confirm off/default uses the original animation and on persists via existing
@@ -150,7 +182,7 @@ These frame counts are a bounded desktop observation, not a mobile benchmark.
    stable seeds. A large burst must use constant stream storage.
 3. Watch normal streaming, pauses, bursts, thinking/tool/idle transitions and
    replay. Check the small mark as well as the enlarged fixture: a rich large
-   image can become noise at 25 pixels.
+   image can become noise at the production size.
 4. Check both themes, a narrow viewport, reduced motion, unavailable WebGPU,
    device failure and repeated mount/unmount. Confirm fallback and status text
    remain visible and no animation shifts the row.
