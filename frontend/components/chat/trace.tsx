@@ -20,6 +20,7 @@ import {
   splitParagraphs,
 } from "./margin-note"
 import { TraceStep } from "./trace-step"
+import type { ToolAnswer, Interjection } from "@/lib/chat-messages"
 
 /**
  * The working of one turn: everything the model did before the answer.
@@ -64,26 +65,7 @@ import { TraceStep } from "./trace-step"
  * reasoning off hid the thinking *inside* an answer and printed the whole of it
  * above one.
  */
-export interface ToolAnswer {
-  tool: string
-  argument: string
-  /** The result, in the marker vocabulary — a `<|list|>` or a `<|warn|>`. */
-  body: string
-}
-
-/**
- * A message sent mid-turn and actually spliced into it — see the backend's
- * `interjected` frame (`docs/backend/README.md`'s "Tool calls" section) and
- * `hooks/use-chat.ts::groupTurns`, which folds a reloaded chat's interjected
- * row into this the same way it folds a `tool` row into `toolAnswers`.
- */
-export interface Interjection {
-  text: string
-  /** How many tool answers existed the moment this landed — places it right
-   * after the call whose answer is `answers[afterAnswers - 1]`, the same
-   * positional scheme `answers` itself uses against the calls in `working`. */
-  afterAnswers: number
-}
+export type { ToolAnswer, Interjection } from "@/lib/chat-messages"
 
 export interface TraceProps {
   /** The first round's reply: reasoning, prose, and the calls it made. */

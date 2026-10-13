@@ -44,14 +44,23 @@ toggle, a slash command — nothing else needs touching.
 `/live-throbber on|off`. It selects the animation while preserving status text.
 See [Live throbber](live-throbber.md) for capability fallback and the token contract.
 
-Everything else in `Settings` is stored on the account, not the browser —
-`components/settings/settings-provider.tsx` fetches `GET /user/me/settings` on
-login and writes back with `PUT` on every change, debounced 500ms so a dragged
-slider or a typed system prompt isn't one request per tick. Logged-out state is
-*derived* (`isAuthenticated ? settings : DEFAULT_SETTINGS`) rather than written
-in the effect that notices the session changed, same reasoning as
-`ChatsProvider`'s empty list — a synchronous `setState` in that effect is what
-the `react-hooks/set-state-in-effect` lint rule catches. A fetched blob is
-merged over `DEFAULT_SETTINGS`, so a setting added after an account last saved
-comes back with its default rather than `undefined`. See
-[`../backend/README.md`](../backend/README.md) for where it lives server-side.
+Everything else in `Settings` is stored on the account. `SettingsProvider` uses
+`useSessionToken()` from `hooks/use-auth.ts` to scope its loaded values, pending
+writes and responses to the actual browser session identity. An unmatched or not
+yet loaded session shows defaults. A failed settings GET does not authorize writes
+over unknown account data; preference mutations stay disabled until a successful
+read for that identity. Switching accounts, including direct token replacement,
+loads the replacement account rather than treating two authenticated sessions as
+one identity.
+
+Changes write back with PUT, debounced 500ms by `lib/settings-writer.ts`, so a
+slider or system prompt does not send one request per tick. The complete next value
+is calculated before scheduling; React state updaters never start timers or writes.
+Logout or token replacement discards the prior session's pending work, and late
+responses are ignored. Unmounting with the same token flushes its pending value.
+`lib/account-settings.ts` validates known preference fields and merges older blobs
+over current defaults. Invalid response containers fail the read rather than
+turning an unknown account copy into writable defaults. A later failed PUT leaves
+local values intact; the next change retries the current complete value.
+
+See [`../backend/README.md`](../backend/README.md) for account storage.

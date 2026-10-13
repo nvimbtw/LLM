@@ -38,43 +38,7 @@ export const DEFAULT_CONFIG: TrainConfig = {
   beta: 0.1,
 }
 
-// ── chart point types ───────────────────────────────────────────────────────
-//
-// Shared between the live reducer in `use-job` and the figures in
-// `components/training`, so they live here rather than beside either one.
-
-// One recorded loss value, tagged with the epoch it belongs to and its position
-// (chunk) within that epoch. The chart overlays each epoch as its own line using
-// `chunk` as the shared x-axis, so the plot width stays bounded to a single epoch
-// instead of growing with the whole run.
-export interface LossPoint {
-  epoch: number
-  chunk: number
-  loss: number
-}
-
-// One report's intra-batch loss spread, plotted over the global step on the
-// rolling batch-spread chart.
-export interface BatchPoint {
-  step: number
-  min: number
-  avg: number
-  max: number
-}
-
-// One phase-1 report, plotted against the build's own clock rather than against
-// a step — phase 1 has no steps, which is why it needed a series of its own.
-//
-// The LLM engine sends the counters and not the curve; this is the curve, rebuilt
-// from the frames. A page attaching to a build already in flight gets the whole
-// of it, because the run's stream replays from the start (`api/sse.py`) — so the
-// figure is the build's history and not this session's.
-export interface BuildPoint {
-  elapsed: number
-  rate: number
-  tokens: number
-  documents: number
-}
+export type { LossPoint, BatchPoint, BuildPoint } from "@/lib/job-telemetry"
 
 /**
  * Composing a training run.

@@ -34,18 +34,9 @@ export interface AuthState {
   logout: () => Promise<void>
 }
 
-// The session lives in localStorage, which is an external store — so it is read
-// through `useSyncExternalStore` rather than copied into state on mount. That is
-// not only what the lint rule wants: the old version snapshotted the token once
-// per hook instance and never heard about a later change, so logging out left
-// every *other* `useAuth()` consumer (the sidebar's admin nav, the jobs
-// provider) believing the session was still live until something else
-// re-rendered them. `SESSION_CHANGED_EVENT` is already broadcast by `setToken`,
-// `setAccessLevel` and `clearSession`, so one subscription keeps them all honest.
+/** Subscribes to local and cross-tab session changes, returning cleanup for both listeners. */
 function subscribe(onChange: () => void) {
   window.addEventListener(SESSION_CHANGED_EVENT, onChange)
-  // Fired by the browser in *other* tabs. Logging out in one tab should not
-  // leave a second tab holding a live-looking session.
   window.addEventListener("storage", onChange)
   return () => {
     window.removeEventListener(SESSION_CHANGED_EVENT, onChange)
@@ -53,19 +44,24 @@ function subscribe(onChange: () => void) {
   }
 }
 
-// Two subscriptions, not one returning `{ token, accessLevel }`: the snapshot
-// is compared by identity, and a fresh object every call is an infinite loop.
+/** Returns the logged-out server snapshot before browser storage is available. */
 const serverToken = () => null
+/** Returns the unavailable server access-level snapshot. */
 const serverAccessLevel = () => null
 
-// `isLoading` means "the server render and the hydration pass have not read
-// localStorage yet", which is exactly the server/client snapshot split — so it
-// needs no state of its own.
+/** Reports that the client snapshot has read browser state. */
 const clientHydrated = () => false
+/** Reports that server rendering has not read browser state. */
 const serverHydrated = () => true
 
+/** Returns the actual bearer session identity, using null for server rendering and logged-out state. */
+export function useSessionToken(): string | null {
+  return React.useSyncExternalStore(subscribe, getToken, serverToken)
+}
+
+/** Returns reactive authentication/access state and login/logout actions for the current browser session. */
 export function useAuth(): AuthState {
-  const token = React.useSyncExternalStore(subscribe, getToken, serverToken)
+  const token = useSessionToken()
   const accessLevel = React.useSyncExternalStore(
     subscribe,
     getAccessLevel,
@@ -77,6 +73,7 @@ export function useAuth(): AuthState {
     serverHydrated
   )
 
+  /** Authenticates credentials and stores the returned access level before publishing the new token; refusals reject. */
   async function login(credentials: LoginCredentials) {
     const response = await fetch(`${API_URL}/auth`, {
       method: "POST",
@@ -95,13 +92,11 @@ export function useAuth(): AuthState {
       data.access_level as string | undefined
     )?.toLowerCase() as AccessLevel | undefined
 
-    // Access level first: both writes broadcast, and setting the token last
-    // means the render that first sees `isAuthenticated` already sees the
-    // level that goes with it.
     if (nextAccessLevel) setAccessLevel(nextAccessLevel)
     setToken(nextToken)
   }
 
+  /** Clears the browser session and notifies all auth subscribers. */
   async function logout() {
     clearSession()
   }

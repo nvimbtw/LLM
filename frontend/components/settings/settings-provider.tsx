@@ -2,8 +2,13 @@
 
 import * as React from "react"
 
-import { apiFetch } from "@/lib/api"
-import { useAuth } from "@/hooks/use-auth"
+import { getToken } from "@/lib/api"
+import {
+  loadAccountSettings,
+  persistAccountSettings,
+} from "@/lib/account-settings"
+import { createSettingsWriter } from "@/lib/settings-writer"
+import { useSessionToken } from "@/hooks/use-auth"
 import {
   DEFAULT_SETTINGS,
   type Settings,
@@ -16,8 +21,6 @@ interface SettingsContextValue {
   settings: Settings
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void
   resetSettings: () => void
-  // The command modal's open state lives here so Ctrl+K, the sidebar, and slash
-  // commands (`/settings`) can all drive the same dialog.
   commandOpen: boolean
   setCommandOpen: (open: boolean) => void
   section: SettingsSection
@@ -27,32 +30,33 @@ interface SettingsContextValue {
 
 const SettingsContext = React.createContext<SettingsContextValue | null>(null)
 
-/**
- * How long a change sits before it's written back. A slider dragged across
- * its range or a system prompt typed character by character would otherwise
- * be one PUT per tick; this holds the last value of a burst and sends that.
- */
-const WRITE_DEBOUNCE_MS = 500
-
-function persist(settings: Settings) {
-  void apiFetch("/user/me/settings", {
-    method: "PUT",
-    body: JSON.stringify({ settings }),
-  }).catch(() => {
-    // A dropped write leaves the account's copy stale, not this tab's — the
-    // next change, or the next load, tries again.
-  })
+interface AccountSettingsOwner {
+  token: string
+  active: boolean
+  loaded: boolean
+  settings: Settings
+  writer: ReturnType<typeof createSettingsWriter>
 }
 
 export interface SettingsProviderProps {
   children: React.ReactNode
 }
 
+/**
+ * Provides session-owned account preferences and settings-dialog state; unmatched/unloaded identities show defaults.
+ * Only successful reads authorize writes; failed reads retain defaults and keep mutations disabled.
+ * Replacement sessions discard old timers and ignore delayed responses.
+ */
 export function SettingsProvider({ children }: SettingsProviderProps) {
-  const { isAuthenticated } = useAuth()
-  const [settings, setSettings] = React.useState<Settings>(DEFAULT_SETTINGS)
+  const token = useSessionToken()
+  const [account, setAccount] = React.useState<{
+    token: string | null
+    settings: Settings
+  }>({ token: null, settings: DEFAULT_SETTINGS })
+  const ownerRef = React.useRef<AccountSettingsOwner | null>(null)
   const [commandOpen, setCommandOpen] = React.useState(false)
   const [section, setSection] = React.useState<SettingsSection>("appearance")
+  /** Opens the shared settings dialog at the requested section, defaulting to Appearance. */
   const openSettings = React.useCallback(
     (section: SettingsSection = "appearance") => {
       setSection(section)
@@ -61,101 +65,64 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     []
   )
 
-  // Whether the account's own copy has landed, so a change made in the gap
-  // between mount and that response doesn't PUT a still-default object over
-  // whatever was already saved. A ref, not state — read from inside a
-  // `setSettings` updater, where a stale closure over React state would win.
-  const loaded = React.useRef(false)
-  const writeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pending = React.useRef<Settings | null>(null)
-
-  const flush = React.useCallback(() => {
-    if (writeTimer.current !== null) {
-      clearTimeout(writeTimer.current)
-      writeTimer.current = null
-    }
-    if (pending.current) {
-      persist(pending.current)
-      pending.current = null
-    }
-  }, [])
-
-  const schedule = React.useCallback(
-    (next: Settings) => {
-      pending.current = next
-      if (writeTimer.current !== null) clearTimeout(writeTimer.current)
-      writeTimer.current = setTimeout(flush, WRITE_DEBOUNCE_MS)
-    },
-    [flush]
-  )
-
-  // Settings belong to the account, not the browser: load them on login. This
-  // provider lives in the root layout (mounted on /login and /signup too), so
-  // the fetch is skipped whenever there's no session — same reasoning as
-  // `ChatsProvider`. Logged-out is *derived* below rather than written here,
-  // for the same reason `ChatsProvider` derives its empty list instead of
-  // clearing state in this effect: it keeps the previous session's values out
-  // of `settings` without a synchronous `setState` in an effect body.
   React.useEffect(() => {
-    loaded.current = false
-    if (!isAuthenticated) {
-      // Discard rather than flush: the token is already gone, so a write here
-      // would only 401 and bounce back through `handleSessionExpired`.
-      if (writeTimer.current !== null) clearTimeout(writeTimer.current)
-      writeTimer.current = null
-      pending.current = null
+    if (!token) {
+      ownerRef.current = null
       return
     }
-    let active = true
-    apiFetch("/user/me/settings")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Unable to load settings.")
-        return (await response.json()) as { settings: Partial<Settings> }
-      })
-      .then((data) => {
-        if (!active) return
-        // Merged over defaults so a setting added after this account last
-        // saved picks up its default rather than coming back `undefined`.
-        setSettings({ ...DEFAULT_SETTINGS, ...data.settings })
-      })
-      .catch(() => {
-        // Stay on defaults; the next change still saves normally.
-      })
-      .finally(() => {
-        if (active) loaded.current = true
-      })
-    return () => {
-      active = false
+    const owner: AccountSettingsOwner = {
+      token,
+      active: true,
+      loaded: false,
+      settings: DEFAULT_SETTINGS,
+      writer: createSettingsWriter((next) =>
+        persistAccountSettings(token, next)
+      ),
     }
-  }, [isAuthenticated])
+    ownerRef.current = owner
+    loadAccountSettings(token)
+      .then((settings) => {
+        if (!owner.active || getToken() !== token) return
+        owner.settings = settings
+        owner.loaded = true
+        setAccount({ token, settings })
+      })
+      .catch(() => {})
+    return () => {
+      owner.active = false
+      if (getToken() === token) owner.writer.flush()
+      else owner.writer.discard()
+    }
+  }, [token])
 
-  // A pending debounced write must not be lost to a closed tab or a logout.
-  React.useEffect(() => {
-    return () => flush()
-  }, [flush])
-
+  /** Changes a loaded account preference and schedules its complete value; unknown or replaced accounts cannot write. */
   const setSetting = React.useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
-      setSettings((prev) => {
-        const next = { ...prev, [key]: value }
-        if (loaded.current) schedule(next)
-        return next
-      })
+      const owner = ownerRef.current
+      if (!owner?.active || !owner.loaded || getToken() !== owner.token) return
+      const settings = { ...owner.settings, [key]: value }
+      owner.settings = settings
+      setAccount({ token: owner.token, settings })
+      owner.writer.schedule(settings)
     },
-    [schedule]
+    []
   )
 
+  /** Restores defaults for the loaded current account, leaving unloaded/replaced account storage untouched. */
   const resetSettings = React.useCallback(() => {
-    setSettings(DEFAULT_SETTINGS)
-    if (loaded.current) schedule(DEFAULT_SETTINGS)
-  }, [schedule])
+    const owner = ownerRef.current
+    if (!owner?.active || !owner.loaded || getToken() !== owner.token) return
+    owner.settings = DEFAULT_SETTINGS
+    setAccount({ token: owner.token, settings: DEFAULT_SETTINGS })
+    owner.writer.schedule(DEFAULT_SETTINGS)
+  }, [])
 
   const value = React.useMemo(
     () => ({
-      // Derived, not stored: logging out must not leave the previous
-      // session's values on screen until the next fetch happens to replace
-      // them (the same reasoning `ChatsProvider` applies to its list).
-      settings: isAuthenticated ? settings : DEFAULT_SETTINGS,
+      settings:
+        token !== null && account.token === token
+          ? account.settings
+          : DEFAULT_SETTINGS,
       setSetting,
       resetSettings,
       commandOpen,
@@ -165,8 +132,8 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
       openSettings,
     }),
     [
-      isAuthenticated,
-      settings,
+      token,
+      account,
       setSetting,
       resetSettings,
       commandOpen,
@@ -182,6 +149,7 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
   )
 }
 
+/** Returns settings state/actions from the nearest provider, throwing when mounted outside one. */
 export function useSettings(): SettingsContextValue {
   const ctx = React.useContext(SettingsContext)
   if (!ctx)
