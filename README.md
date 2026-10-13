@@ -204,8 +204,9 @@ for why every tool shares one marker.
 cd llm-engine   && .venv/bin/python -m pytest tests/    # incl. the dataflow trace
 cd data-engine  && .venv/bin/python -m pytest tests/
 cd gyms-engine  && .venv/bin/python -m pytest tests/
+cd bench-engine && .venv/bin/python -m pytest tests/
 cd backend  && cargo test --workspace               # needs DATABASE_URL
-cd frontend && bun run typecheck && bun run lint
+cd frontend && bun run typecheck && bun run lint && bun test
 ```
 
 `llm-engine/tests/test_dataflow_trace.py` is the contract that keeps the LLM engine

@@ -1,223 +1,178 @@
 # Coding conventions
 
-The standard every change in this repo is judged against. Ids (R1–R21) are
-stable and safe to cite in a commit or a review; numbering is not contiguous.
+These rules apply to handwritten Rust, Python and TypeScript/React code in every
+module. Read this entire file before editing; an index or summary is insufficient.
+Module documentation adds domain-specific contracts without weakening these rules.
+Existing code is brought into compliance in the scope being changed; generated
+bindings and vendored code retain their upstream form.
 
-Module-specific conventions — layering, stack, forbidden patterns — live in the
-module's own doc: [`backend/README.md`](backend/README.md),
-[`frontend/README.md`](frontend/README.md), [`llm-engine/README.md`](llm-engine/README.md).
-These rules layer on top of those.
+## Rules
 
-## Index
+These twelve rules replace the overlapping cross-language prose. Language
+details follow them, instead of silently exempting Python or React.
 
-| Id | Rule |
-|---|---|
-| R1 | Bounded function length (~60-line body; FFI judged by logical steps) |
-| R2 | Bounded loops — obvious, finite exit |
-| R3 | Handle every fallible `Result`/`Option`; no bare `unwrap` |
-| R4 | `unsafe` minimal and justified with a SAFETY comment |
-| R5 | Smallest scope for data; no wide reused `mut` |
-| R6 | No duplicated logic — factor shared blocks |
-| R7 | Zero warnings (fix or justified `#[allow]`) |
-| R8 | No magic numbers — named `const`s |
-| R9 | Doc comments state non-obvious contracts only, never restate names |
-| R10 | Validate at boundaries (lengths, shapes, ranges) |
-| R11 | No panics on external input — return `Result` |
-| R12 | Respect the layering (one-directional crates) |
-| R13 | Self-documenting naming/structure; comments say *why*, never *what* |
-| R14 | Server-first rendering; `'use client'` only when required |
-| R15 | Centralized API/WebSocket layer (`lib/api.ts`, socket helpers) |
-| R16 | UI primitives from `components/ui/`, no hand-rolled equivalents |
-| R17 | One component per file; named props interface |
-| R18 | Strict TypeScript, no `any` |
-| R20 | Cohesive modules and honest crate boundaries; no grab-bag `utils` |
-| R21 | Names don't stutter; every path segment adds meaning |
+### C1 · Organize by a coherent domain concern
 
-R1–R13 and R20–R21 are Rust; R14–R18 are TypeScript/React. R13 and R20–R21 are
-about naming and structure and apply to the Python LLM engine too.
+Put code beside the behavior it owns. Keep dependency direction explicit and
+keep transport/storage adapters outside domain calculations. A module should
+have a small, understandable public surface. Avoid unrelated utils/helpers
+collections and exports used only by an unrelated module.
 
-## Backend (Rust) — R1–R13, R20–R21
+### C2 · Keep functions small enough to change independently
 
+A function performs one coherent operation at one abstraction level. Prefer
+roughly 15–40 lines for ordinary logic; review bodies beyond roughly 60 lines,
+more than three nesting levels, or many unrelated inputs. These are signals,
+not automatic failure conditions. Declarative tables, cohesive numerical code
+and generated bindings are assessed by logical complexity.
 
-### R1 — Bounded function length
-A function should fit on one screen (~60 lines of body, excluding signature and
-doc comment). Longer functions must be split into named stages.
-*Violation:* a single function doing embed → attention → FF → loss → backward in
-one body instead of delegating to named per-stage helpers.
-*FFI caveat:* code dominated by one-argument-per-line `unsafe extern "C"` calls
-(e.g. the CUDA kernel wrappers) is judged by **logical-step count, not raw line
-count** — a single kernel invocation is ~10 lines, so a cohesive stage of 6–8
-calls will exceed 60 lines while still doing exactly one thing. Split such a
-function at real semantic boundaries (e.g. attention vs. feed-forward sublayer),
-not to chase the line number; once each piece is one coherent operation it
-satisfies R1 even if it runs long.
+Extract when a block has a meaningful domain name, distinct failure policy,
+independent test, repeated policy or separate lifetime. Keep trivial expressions
+inline. A helper that needs ten closure variables or exists only as step_2 has
+probably not found the right boundary. Use a small typed context when its
+members share one real lifetime.
 
-### R2 — Bounded loops
-Every loop must have an obvious, finite bound. An unbounded `loop {}` is only
-allowed with a clearly documented exit condition at the top of the loop.
-*Violation:* a `loop` whose only exit is buried in the middle with no comment.
+### C3 · Separate decisions from effects
 
-### R3 — Handle every fallible result
-No silently dropped `Result`/`Option` in non-test code. No `.unwrap()`,
-`.expect()`, `let _ =`, or `.ok()` on a fallible operation unless there's a
-comment justifying why failure is impossible or ignorable.
-*Violation:* `transformer.save(...)` result discarded with `let _ =` and no note;
-`.unwrap()` on parsed external input.
+Prefer pure functions for validation, scoring, transformation and state
+reduction. Keep I/O and coordination in thin adapters/use cases that expose
+the order of effects. A workflow may call several named stages; its purpose
+remains one operation. Do not distribute a transaction's invariants among
+unrelated helpers merely to shorten a body.
 
-### R4 — Contain and justify `unsafe`
-Every `unsafe` block is as small as possible and carries a comment stating why it
-is sound (invariants the caller guarantees). No `unsafe` spanning more than the
-FFI call(s) it wraps.
-*Violation:* a large `unsafe { ... }` covering pointer math plus several kernel
-calls with no safety comment.
+### C4 · Express contracts with types and boundary validation
 
-### R5 — Smallest scope for data
-Declare variables at the narrowest scope that works; no wide `mut` state reused
-across unrelated sections; no shared mutable module state without a documented
-reason.
-*Violation:* a `let mut` declared at the top of a long function and reused for
-three different purposes.
+Use typed request/result/event variants for interpreted payloads. Validate
+unknown external data once and translate it into domain values. Keep opaque JSON
+only for actual pass-through behavior or explicitly versioned extension fields.
+Make units, identity and optional/unavailable values unambiguous. Avoid unchecked
+casts, sentinel strings and positional arguments that can be exchanged silently.
 
-### R6 — No duplicated logic
-Repeated blocks (copy-pasted parsing, serialization, kernel-call boilerplate)
-must be factored into a shared function. Two copies that must change together are
-a bug waiting to happen.
-*Violation:* `Transformer::load` and `Transformer::from_bytes` carrying nearly
-identical read logic; `save_to_path` and `to_bytes` duplicated.
+### C5 · Give state and resources an owner
 
-### R7 — Zero warnings
-The build compiles clean. Every compiler/clippy warning is either fixed or has an
-explicit, justified `#[allow(...)]` with a comment.
-*Violation:* `dead_code` warning on `cuda_sgd_momentum` left standing.
+Each worker, socket, cache, timer, file, database transaction and mutable session
+has a clear creator, lifetime and cleanup path. Keep state transitions explicit
+and testable. Do not treat booleans such as authenticated as identity. Do not
+maintain several writable copies of the same fact without a synchronization
+contract. Dependency injection should expose actual dependencies, not hide
+them in a universal context or global service locator.
 
-### R8 — No magic numbers
-Tunable or meaningful constants are named, not inlined. Hyperparameters, clip
-thresholds, epsilons, buffer sizes get a `const` with a doc line.
-*Violation:* `0.9`, `0.999`, `1e-8`, `1.0` clip norms scattered inline in the
-optimizer/training loop.
+### C6 · Design failure, retry and cancellation together
 
-### R9 — Document contracts, not names
-A `pub fn`, `pub struct`, or `pub` module carries a doc comment **only where the
-name cannot carry the meaning by itself** — a non-obvious contract (units,
-invariants, panics, ownership, ordering, side effects) or the *why* behind it. A
-well-named public symbol whose behavior is obvious from its signature needs no
-doc comment, and a doc comment that merely restates the name is itself a
-violation (see R13). The bar is "what would surprise a caller," not "every symbol
-gets a `///`."
-*Violation:* `/// Widens the f16 view to f32.` on `pub fn to_f32_vec(&self) ->
-Vec<f32>` (restates the name — delete it); **or**, conversely, a `pub fn
-upload(&self, data: &[f32])` that panics on a length mismatch with no note that
-it does. The first has a comment it shouldn't; the second lacks one it should.
+Specify what commits before acknowledging success and what remains after
+partial failure. Retry reads or idempotent operations; use operation IDs where
+effects may be repeated. A cancelled waiter is not a stopped worker. Persisted
+state must reconcile after crashes. Surface actionable failures and preserve
+their internal cause; silent catches require an explicit recovery policy and
+appropriate observability.
 
-### R10 — Validate at boundaries
-Functions that take external or cross-module input validate their assumptions
-(lengths, shapes, ranges) instead of trusting them and indexing blindly.
-*Violation:* indexing `input[0].len()` without checking `input` is non-empty; a
-kernel wrapper trusting caller-supplied dimensions.
+### C7 · Bound work, memory and waiting
 
-### R11 — No panics on external input
-Parsing, IO, decoding, and request handling return `Result` and never `panic!`/
-`unwrap` on data that came from a file, the network, or a client.
-*Violation:* `.try_into().unwrap()` on bytes read from a model file.
+Validate effective resource use before allocating. Bound queues, caches,
+pagination, concurrency, retries, input/output and admission waits. Use
+backpressure or explicit resynchronization for slow consumers. Long-running
+service loops are allowed when ownership, stop conditions and shutdown are
+clear. Name policy/tuning constants with their units; leave obvious local
+structural literals inline.
 
-### R12 — Respect the layering
-Follow the strict layering in `docs/backend/README.md`: `routes/` is HTTP-only,
-`db/` is pure SQL returning `Result`, `crypto/` is self-contained, no db struct
-serialized straight to a client. The crate boundaries (`llm`, `tokenize`, …) are
-one-directional.
-*Violation:* a `db/` function returning `HttpResponse`; a route embedding raw SQL.
+### C8 · Share policy when it must change together
 
-### R13 — Self-documenting code; comments say why, never what
-A function does exactly one thing and is named after the thing it does, so the
-code reads without narration. Split any function that does more than one thing
-into the smallest well-named pieces; if you can only describe what a function
-does with an "and", it should be two functions. The **name carries the *what***
-and the **structure carries the *flow***.
+Factor duplicated contracts, algorithms and lifecycle policy. Similar syntax
+alone is insufficient reason to share code. Keep domain differences explicit;
+avoid a generic implementation whose callers supply many mode flags. Before
+adding a shared package, identify its stable inputs, outputs, dependency direction
+and independently testable contract.
 
-Comments exist to say something the code **cannot**: the *why* (rationale for a
-non-obvious choice), an invariant the types don't encode, a gotcha, a link to a
-spec/issue. A comment that restates *what* the next line(s) do is noise — delete
-it, or, if the block is only legible because of its caption, extract a named
-function instead of captioning it. Prefer zero comments in a well-named body
-over a comment per step.
-*Violation:* a function named `process` / `handle` / `do_work` that does several
-steps; a 40-line block prefaced by `// compute the attention scores` instead of a
-`compute_attention_scores(...)` call; `// loop over layers` above
-`for layer in 0..layers`; a `// --- attention ---` banner splitting a function
-into sections that should be separate functions; a name that lies about or
-under-describes what the function does.
-*Not a violation:* `// bias correction is nonzero on step 1 even for a zero
-gradient` (a *why* the code can't state); a `SAFETY:` note on `unsafe` (R4); a
-contract doc on a public symbol (R9 — a *contract* is not a restatement of the
-name).
+### C9 · Document functions; make their bodies self-describing
 
-### R19 — (folded into R13)
-R19 ("comments earn their place: why, never what") duplicated the comment half
-of R13 and was merged into it. Older references to R19 mean R13. Do not cite
-R19 in new work.
+Every handwritten named function or method has brief function-level documentation,
+including private helpers, hooks and React components. State its purpose, the
+meaning of its inputs, and the output it returns or state it changes. Include
+relevant preconditions, units, side effects and failure behavior. Usually one to
+four sentences are enough; do not turn a simple function into a boilerplate
+Args/Returns catalogue or merely repeat its name and type signature.
 
-### R20 — Cohesive modules and honest crate boundaries
-A module or crate holds **one coherent concern**, named for that concern, and code
-lives in the crate its dependencies imply — not wherever it was first typed. No
-grab-bag `utils`/`misc`/`helpers` module accreting unrelated functions; no single
-file mixing several concerns that each deserve their own module; no logic sitting
-in a crate that has no business owning it (e.g. tokenizer logic inside `llm`,
-HTTP concerns inside a compute crate). When a file grows to cover multiple
-concerns, split it along those concerns. Crate dependencies stay one-directional
-(this extends R12 from layering to crate placement).
-*Violation:* a 300-line module spanning allocation, upload, save, and optimizer
-plumbing that should be several modules; a `helpers.rs` holding three unrelated
-functions; a type defined in a crate that only exists to be used by another crate
-it could live in.
+Use Rust `///` documentation and TypeScript/JavaScript JSDoc immediately above the
+declaration. In Python, use the function's opening docstring as the language-native
+equivalent. That docstring documents the function as a whole; it is not narration
+interleaved with the implementation.
 
-### R21 — Names don't stutter and the path adds meaning
-A symbol's fully-qualified path should read without repetition. A type named the
-same as its module (`transformer::Transformer`, `config::Config`) stutters — the
-module segment adds nothing. Either give the type a name that says what it *is*
-within its module (`transformer::Model`), or, if the module holds exactly one
-public type, collapse the module. Every path segment must add information the next
-one doesn't already carry. This applies to new and changed code, and existing
-stutters are fair game to file.
-*Violation:* `transformer::Transformer`; `workspace::Workspace`; a `mod tokenizer`
-whose only export is `struct Tokenizer`; a field named `config.config`.
+**No comments inside function bodies.** Names and structure must
+describe the implementation. Move needed invariants, numerical reasoning, safety
+assumptions and edge-case explanations into the function's documentation. If a
+block has a separate coherent purpose, extract a named function and document it
+there. Trivial anonymous callbacks do not need standalone documentation; a
+substantial callback that needs explanation should become a documented named
+function.
 
-## Frontend (TypeScript / React) — R14–R18
+Remove step captions, banners, obvious paraphrases and obsolete implementation
+history instead of moving that noise verbatim into a larger doc comment. Outside
+functions, do not caption every import, variable, type or field; document only
+information the declaration cannot convey. Put extended rationale/history in
+decision records and regressions in tests. Use precise domain names, conventional
+vocabulary and consistent units rather than mechanically short paths.
 
+### C10 · Test externally observable contracts and failure transitions
 
-### R14 — Server-first rendering
-Pages and layouts are server components by default. Only add `'use client'` when
-browser APIs, React hooks (`useState`, `useEffect`, etc.), or DOM event handlers
-are required.
-*Violation:* a page that fetches static data at build time using `'use client'`
-with a `useEffect` instead of an `async` server component.
+Test invariants, boundary cases and meaningful failures rather than private
+helper layout. Include cancellation/retry/restart and concurrency tests for
+stateful workflows. Cross-language protocols require shared fixtures/schema
+checks; PostgreSQL locking and migrations require PostgreSQL tests. Numerical
+behavior changes require intentional evidence, including the pinned trace where
+relevant. Cosmetic reversible changes need proportionate verification.
 
-### R15 — Centralized API and WebSocket layer
-HTTP calls use `lib/api.ts` helpers (`authHeaders`, configured fetch wrapper).
-WebSocket connections use the socket helpers in `lib/` (`chat-socket.ts`,
-`training-socket.ts`). Don't inline raw `fetch()` or `new WebSocket()` in
-components.
-*Violation:* a chat component calling `fetch("/api/...")` directly instead of
-going through `lib/api.ts`; a component creating its own WebSocket connection
-from scratch.
+### C11 · Automate mechanical quality
 
-### R16 — UI primitives from `components/ui/`
-Use the prebuilt shadcn/ui components in `components/ui/` for buttons, inputs,
-dialogs, cards, dropdowns, etc. Don't hand-roll equivalents with raw HTML and
-ad-hoc Tailwind classes.
-*Violation:* a `<button>` with custom Tailwind classes scattered across the
-codebase when `components/ui/button.tsx` already exists; a custom dialog built
-with `<div>` + state when `components/ui/alert-dialog.tsx` already exists.
+Format with the language formatter and enforce agreed lint/type checks with
+pinned versions. Builds and required checks must pass; explain specific blocked
+checks without claiming success. Suppressions must be local, narrow and
+justified. Baseline existing debt explicitly and prevent new violations; never
+mass-format unrelated code as part of a feature.
 
-### R17 — One component per file, explicit props
-Each file exports one primary component. Props are defined as a dedicated
-TypeScript `interface` or `type` (named, not inlined in the function signature
-when more than 2–3 fields).
-*Violation:* a file exporting two unrelated components; props inlined as
-`(props: { a: string; b: number; c: boolean })` instead of a named interface.
+### C12 · Extend from current requirements
 
-### R18 — Strict TypeScript, no `any`
-Every function and component is fully typed. `any` is forbidden unless a
-comment justifies why the type is genuinely unreachable (rare — almost always
-`unknown` + type guard is the right choice instead).
-*Violation:* a prop typed as `any`; a `@ts-ignore` without a comment explaining
-the limitation.
+Keep changes small and reviewable. Prefer composition and explicit seams around
+real variation. Add a plugin system, generic repository or additional service only
+when a present requirement benefits enough to justify its complexity. Preserve
+compatibility deliberately with versions/adapters and migration tests. Delete
+obsolete paths once their supported migration period ends.
+
+## Language and module supplements
+
+| Area | Additional rules |
+| --- | --- |
+| Rust | Document functions with `///`, including concrete safety invariants for unsafe operations. Keep unsafe minimal; function bodies have no comments. Handle fallible Results; no external-input panics. Use formatted, compile-checked SQL in the DB layer and regenerate SQLx metadata after query/schema changes. Run fmt/build/Clippy and relevant tests. |
+| Python | Give named functions/methods short opening docstrings describing purpose, inputs and outputs; no comments within the implementation. Annotate public boundaries and domain contracts; use dataclasses/Protocols where they express real structure. Validate Pydantic ranges and effective budgets. Keep blocking I/O/CPU work off async executors; own and drain worker lifetimes. Add agreed formatter/linter/typechecker configuration across all four services. |
+| React/TypeScript | Document named functions, hooks and components with short JSDoc above the declaration; no comments within their implementation. Use strict types and runtime validation at interpreted network boundaries. Keep event reducers pure; state updaters must not trigger network writes. Scope private state and requests to session/resource identity. One primary concern per file, with cohesive private components allowed. Reuse accessible primitives and centralized API/socket adapters. |
+| Model code | Preserve tensor shapes, precision, RNG behavior, gradients and memory contracts when refactoring. Sampling probability, action provenance and training loss must agree or their deliberate approximation must be documented. |
+| Documentation | Keep module READMEs near 150–250 lines as maps, split large topics, and keep public contracts current. Use markdown links that exist. Mark proposals and historical snapshots clearly. |
+
+## Historical rule references
+
+C1–C12 are the active rules. Earlier reviews and decision records may cite R IDs;
+use this map to find their successor. The old wording is historical, not an
+additional conflicting requirement.
+
+| Historical ID | Active successor |
+| --- | --- |
+| R1 · Function length | C2 |
+| R2 · Loops | C5, C6, C7 |
+| R3 · Fallible results | C4, C6; Rust supplement |
+| R4 · Unsafe | C9; Rust supplement |
+| R5 · Scope | C2, C5 |
+| R6 · Duplication | C8 |
+| R7 · Warnings | C11 |
+| R8 · Constants | C7, C9 |
+| R9 · Function contracts | C9 |
+| R10 · Boundary validation | C4, C7 |
+| R11 · External-input panics | C4, C6; Rust supplement |
+| R12 · Layering | C1, C3; module documentation |
+| R13 · Cohesion and comments | C2, C9 |
+| R14 · Server-first rendering | React/TypeScript supplement; frontend documentation |
+| R15 · API/socket layer | C1, C5; frontend documentation |
+| R16 · UI primitives | React/TypeScript supplement; frontend documentation |
+| R17 · Components and props | C1, C4; React/TypeScript supplement |
+| R18 · Strict TypeScript | C4; React/TypeScript supplement |
+| R19 · Folded into R13 | C9 |
+| R20 · Module cohesion | C1 |
+| R21 · Naming | C9 |

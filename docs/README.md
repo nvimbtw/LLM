@@ -15,7 +15,8 @@ and the spec for what goes in one.
 | [`gyms-engine/`](gyms-engine/) | Where a model is put to work: generated tasks, a sandboxed shell, and the score | `gyms-engine/` |
 | [`decisions/`](decisions/) | Decision records — findings that cost real time | — |
 | [`sprint-cleanup-validation.md`](sprint-cleanup-validation.md) | Deferred Sprint Cleanup acceptance and measurement plan | — |
-| [`conventions.md`](conventions.md) | The coding rules (R1–R21) every change is judged against | — |
+| [`conventions.md`](conventions.md) | The active coding rules (C1–C12), language supplements and historical R-ID map | — |
+| [`audits/`](audits/) | Dated audit findings and proposed agent standards | — |
 
 ## The shape of a module directory
 
@@ -52,7 +53,7 @@ In this order:
 
 - **Decision records** → [`decisions/`](decisions/). A doc says what *is*; a
   decision record says what was weighed and rejected, once, with a date.
-- **The coding rules (R1–R21)** → [`conventions.md`](conventions.md). Those
+- **The coding rules (C1–C12)** → [`conventions.md`](conventions.md). Those
   apply across all modules; a module doc describes one module.
 - **Anything derivable in ten seconds** from a file listing or a type
   signature. Prose that restates code is prose that will contradict code.
