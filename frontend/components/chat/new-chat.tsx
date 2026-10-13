@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 
-import { FigureSlate } from "@/components/ui/figure-slate"
+import { NewChatScene } from "./new-chat-scene"
 import { useChats } from "./chats-provider"
 import { ChatComposer } from "./chat-composer"
 import type { ThinkBudget } from "@/lib/think-budget"
@@ -47,27 +47,16 @@ export function NewChat() {
   }
 
   return (
-    // No optical correction any more: <main> now starts at the true page top
-    // (the 48px header this used to cancel is gone — see (app)/layout.tsx), so
-    // centring on its own box and centring on the page are the same thing. The
-    // old `pb-12` would now push the group 24px *high*.
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4">
-      {/* The drawing is decorative; the heading supplies its accessible name. */}
-      <h1 className="flex w-full items-end justify-center">
-        <span className="sr-only">Slate</span>
-        <FigureSlate />
-      </h1>
-      <div className="mt-5 w-full">
-        <ChatComposer
-          plan={localPlan.plan}
-          onPlanChange={localPlan.save}
-          onSend={handleSend}
-          disabled={isSending}
-          title="New chat"
-          contextTokensUsed={0}
-        />
-        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-      </div>
-    </div>
+    <NewChatScene>
+      <ChatComposer
+        plan={localPlan.plan}
+        onPlanChange={localPlan.save}
+        onSend={handleSend}
+        disabled={isSending}
+        title="New chat"
+        contextTokensUsed={0}
+      />
+      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+    </NewChatScene>
   )
 }

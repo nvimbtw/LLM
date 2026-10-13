@@ -145,6 +145,11 @@ const LETTERS = [
 
 const ROWS = LETTER_TOP + LETTERS[0].length
 const HEIGHT = ROWS * CELL_HEIGHT
+export const SLATE_GRID = {
+  width: WIDTH,
+  cellWidth: CELL_WIDTH,
+  cellHeight: CELL_HEIGHT,
+}
 const WORD_WIDTH = LETTERS.reduce(
   (width, letter) => width + letter[0].length,
   (LETTERS.length - 1) * LETTER_GAP
@@ -230,6 +235,24 @@ const GRID = Array.from({ length: ROWS }, (_, row) =>
   }))
 )
 
+// Reserve occupied cells in the page texture so its glyphs never overprint the
+// authored mountains or lettering. Each path joins adjacent occupied cells.
+export const SLATE_CUTOUTS = GRID.map((cells, row) => {
+  let start = -1
+  const runs: string[] = []
+  for (let col = 0; col <= COLUMNS; col++) {
+    if (col < COLUMNS && cells[col].glyph !== " ") {
+      if (start < 0) start = col
+    } else if (start >= 0) {
+      runs.push(
+        `M${start * CELL_WIDTH},${(row + 0.5) * CELL_HEIGHT}h${(col - start) * CELL_WIDTH}`
+      )
+      start = -1
+    }
+  }
+  return runs.join(" ")
+})
+
 function shimmerClusters() {
   const ridges = GRID.flat().filter(({ ink }) => ink === 4 || ink === 5)
   const clusters = new Map<number, number>()
@@ -282,9 +305,15 @@ const LINES = GRID.flatMap((cells, row) => {
 
 export interface FigureSlateProps {
   className?: string
+  part?: "all" | "word"
+  shimmer?: boolean
 }
 
-export function FigureSlate({ className }: FigureSlateProps) {
+export function FigureSlate({
+  className,
+  part = "all",
+  shimmer = true,
+}: FigureSlateProps) {
   return (
     <svg
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
@@ -292,24 +321,26 @@ export function FigureSlate({ className }: FigureSlateProps) {
       focusable="false"
       className={cn("slate-mark h-auto w-full", className)}
     >
-      {LINES.map(({ row, ink, cluster, x, text }) => (
-        <text
-          key={`${row}:${ink}:${cluster}`}
-          x={x}
-          y={(row + 1) * CELL_HEIGHT - 1}
-          className={cn(
-            `slate-mark-ink-${ink}`,
-            cluster >= 0 && "slate-mark-shimmer"
-          )}
-          style={
-            cluster >= 0
-              ? { animationDelay: `${cluster * SHIMMER_STEP_SECONDS}s` }
-              : undefined
-          }
-        >
-          {text}
-        </text>
-      ))}
+      {LINES.filter(({ row }) => part === "all" || row >= LETTER_TOP).map(
+        ({ row, ink, cluster, x, text }) => (
+          <text
+            key={`${row}:${ink}:${cluster}`}
+            x={x}
+            y={(row + 1) * CELL_HEIGHT - 1}
+            className={cn(
+              `slate-mark-ink-${ink}`,
+              shimmer && cluster >= 0 && "slate-mark-shimmer"
+            )}
+            style={
+              shimmer && cluster >= 0
+                ? { animationDelay: `${cluster * SHIMMER_STEP_SECONDS}s` }
+                : undefined
+            }
+          >
+            {text}
+          </text>
+        )
+      )}
     </svg>
   )
 }

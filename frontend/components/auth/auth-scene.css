@@ -1,0 +1,70 @@
+/* Keep the character texture quiet beneath the form. A fixed-size SVG tile
+   covers any viewport without scaling the glyphs or adding DOM on resize. */
+.auth-art {
+  mask-image: radial-gradient(
+    ellipse 26rem 32rem at center,
+    transparent 60%,
+    black 100%
+  );
+}
+.auth-glyphs text {
+  font-family: var(--font-mono), monospace;
+  font-size: var(--text-2xs);
+  font-variant-ligatures: none;
+  fill: currentColor;
+}
+.auth-art-rest {
+  color: var(--foreground);
+  opacity: 0.06;
+}
+.auth-art-lit,
+.auth-art-core {
+  color: var(--primary);
+  opacity: 0;
+  transition: opacity 900ms ease-in-out;
+}
+.auth-art-lit {
+  mask-image: radial-gradient(
+    circle 12rem at var(--pointer-light-x, 0px) var(--pointer-light-y, 0px),
+    black,
+    transparent
+  );
+}
+.auth-art-core {
+  mask-image: radial-gradient(
+    circle 4rem at var(--pointer-light-x, 0px) var(--pointer-light-y, 0px),
+    black 25%,
+    transparent
+  );
+}
+.auth-art-trail {
+  opacity: 0.6;
+  mask-image: linear-gradient(transparent, transparent);
+  transition: none;
+}
+[data-illuminated] > .auth-art .auth-art-lit {
+  opacity: 0.4;
+  transition-duration: 80ms;
+}
+[data-illuminated] > .auth-art .auth-art-core {
+  opacity: 0.9;
+}
+[data-illuminated] > .auth-art .auth-art-trail {
+  opacity: 0.6;
+}
+@media (max-width: 40rem) {
+  .auth-art {
+    mask-image: radial-gradient(
+      ellipse 18rem 32rem at center,
+      transparent 60%,
+      black 100%
+    );
+  }
+}
+@media (prefers-reduced-motion: reduce), (hover: none) {
+  .auth-art-lit,
+  .auth-art-core,
+  .auth-art-trail {
+    display: none;
+  }
+}

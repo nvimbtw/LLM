@@ -4,6 +4,7 @@ import * as React from "react"
 import { Eye, EyeOff } from "lucide-react"
 
 import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 /**
@@ -31,6 +32,7 @@ export function AuthField({
   hint,
   type,
   className,
+  "aria-describedby": describedBy,
   ...props
 }: AuthFieldProps) {
   const [revealed, setRevealed] = React.useState(false)
@@ -38,39 +40,45 @@ export function AuthField({
 
   return (
     <div className="flex flex-col gap-2">
-      <label
-        htmlFor={id}
-        className="eyebrow text-muted-foreground"
-      >
+      <label htmlFor={id} className="eyebrow text-muted-foreground">
         {label}
       </label>
       <div className="relative">
         <Input
+          variant="ruled"
           id={id}
+          aria-describedby={
+            [describedBy, hint && `${id}-hint`].filter(Boolean).join(" ") ||
+            undefined
+          }
           type={isPassword && revealed ? "text" : type}
           className={cn("h-10", isPassword && "pr-10", className)}
           {...props}
         />
         {isPassword && (
-          <button
+          <Button
             type="button"
-            // Not in the tab order: it sits between the password field and the
-            // submit button, and a keyboard user filling in a form wants the
-            // next Tab to be "log in", not "show the password I just typed".
-            tabIndex={-1}
+            variant="ghost"
+            size="icon"
             aria-label={revealed ? "Hide password" : "Show password"}
+            aria-pressed={revealed}
+            aria-controls={id}
             onClick={() => setRevealed((v) => !v)}
-            className="absolute inset-y-0 right-0 inline-flex w-10 items-center justify-center rounded-r-(--radius-control) text-muted-foreground transition-colors hover:text-foreground"
+            className="absolute top-1 right-0 text-muted-foreground hover:text-foreground"
           >
             {revealed ? (
-              <EyeOff className="size-4" />
+              <EyeOff className="size-4" aria-hidden />
             ) : (
-              <Eye className="size-4" />
+              <Eye className="size-4" aria-hidden />
             )}
-          </button>
+          </Button>
         )}
       </div>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && (
+        <p id={`${id}-hint`} className="text-xs text-muted-foreground">
+          {hint}
+        </p>
+      )}
     </div>
   )
 }

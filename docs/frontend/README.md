@@ -102,6 +102,38 @@ signed-in chrome.
 Adding a doc requires no frontend change: write the markdown, and the page and
 its sidebar entry appear on the next build.
 
+## Authentication pages
+
+`/login` and `/signup` share an open, single-column composition outside the
+signed-in chrome, with no header or sidebar. The Slate home link belongs to the
+form, above its restrained serif heading. Fields use `Input variant="ruled"`:
+a bottom rule, no box or fill, and a thicker, tinted rule on keyboard focus.
+A separate rule introduces the alternate account link. Theme comes from the
+existing provider's saved preference, falling back to the system preference;
+these pages have no separate theme selector.
+
+`AuthScene` places a very muted, evenly spaced ASCII character texture across
+the page, interspersed with sparse assistant/model vocabulary. `AuthTexture`
+renders a deterministic SVG pattern with fixed-size
+glyphs, so larger viewports repeat the tile rather than enlarge its characters.
+Mouse movement reveals a soft primary-colour halo and a smaller, brighter blue
+core through concentric radial masks. A soft clearing in all layers keeps the
+form readable.
+The effect's stylesheet is imported by `AuthScene` so its masks and opacity
+rules load with the interactive layers.
+The artwork is decorative, ignores pointer events and is hidden from assistive
+technology. `usePointerLight` updates CSS properties through refs, without
+rerendering the form or rebuilding SVG geometry. Its trail retains at most eight
+pointer positions and fades each over 800ms. The halo and core fade after 240ms
+without mouse movement, using a smooth 900ms opacity transition; the frame loop stops when trail positions expire
+and is cancelled on unmount. Touch and reduced-motion modes
+keep the static characters without the moving highlight.
+
+The pages and `AuthShell` render on the server; `AuthScene` owns pointer handling,
+while the forms use the existing login/signup hooks. `AuthField` keeps password
+visibility in the keyboard tab order and connects hints with `aria-describedby`.
+Signup creates an account and redirects to login; it does not create a workspace.
+
 ## Colour
 
 The palette is Kanagawa (Dragon in dark, a warm-paper light mode) — *our*
@@ -1582,30 +1614,34 @@ including why nothing records attention until someone asks — is
 ### New-chat figure
 
 The new-chat heading is an ASCII mountain range above a compact **SLATE**
-wordmark. Letter widths are authored individually on the shared character
-grid: glyph density and theme ink describe lit rock faces, shadow, and distant
-ridges. The mountain geometry and lettering
-are authored in `components/ui/figure-slate.tsx`; deterministic grain keeps the
-server and client render identical. Two empty character rows separate the
-mountains from the wordmark. Its imported stylesheet uses active theme roles:
-primary and throbber-spark in dark mode, with deeper throbber-base ink and
-stronger opacity in light mode so the thin mountain glyphs survive on paper.
-The wordmark uses foreground in both modes.
+wordmark. `components/ui/figure-slate.tsx` authors both on one character grid;
+glyph density describes rock faces, shadow and distant ridges. The imported
+stylesheet uses primary and throbber-spark in dark mode, deeper throbber-base
+ink in light mode, and foreground for the wordmark. Two empty character rows
+separate the mountains from the lettering.
 
-Six fixed clusters of twelve ridge characters shimmer in a 24-second loop,
-alternating across the range. Each rises for 1.5 seconds, settles for 1.5 seconds,
-then leaves a second of stillness before the next cluster. Only fill colour
-changes: a 70% foreground mix brightens dark mode and deepens light mode without
-fading the base detail. The wordmark stays still. Reduced motion disables the
-animation and retains the original artwork. This is decorative, independent of
-typing or model activity.
+Only the new-chat page mounts `NewChatScene`. A very muted field of characters
+fills its content area, aligned with the artwork's glyph size and spacing.
+`SlateTexture` repeats an SVG tile; `ResizeObserver` aligns and scales it to the
+figure when the page, sidebar or composer changes size. Occupied artwork cells
+are masked out of the field so random characters never overprint the mountains
+or lettering. Pointer movement reveals the original artwork colours through a
+soft radial mask. Surrounding characters keep the same muted ink during hover.
+`usePointerLight` writes coordinates through refs. Leaving the page area or
+holding the mouse still for 240ms fades the reveal smoothly over another 900ms.
+Up to eight positions leave a wider, 1.8-second trail through the artwork colours;
+the frame loop stops when all positions expire and is cancelled on unmount.
 
-The SVG groups characters by row, ink, and shimmer phase, with explicit character
-positions so font loading cannot shift the grid. Cluster membership is computed
-once with the geometry, and CSS owns the animation; there are no frame timers
-or React updates. It scales as one image with the composer width and reserves
-its aspect ratio before paint. The SVG is hidden from assistive technology; the
-heading supplies the accessible name.
+On mount, a single CSS mask sweeps left to right across **SLATE**, then settles
+back to the muted base. Touch and reduced-motion modes retain a static figure
+and disable both the sweep and hover reveal. Existing conversations never mount
+this scene. All artwork is decorative and ignores pointer events; the heading
+supplies its accessible name, while the composer retains its existing controls.
+The figure's aspect ratio is reserved before paint.
+
+The standalone `FigureSlate` retains its six fixed clusters of twelve ridge
+characters, shimmering in a 24-second loop. The new-chat scene disables that
+loop in favour of the pointer reveal and one-time wordmark sweep.
 
 ### Throbber or dot
 
