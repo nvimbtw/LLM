@@ -1,37 +1,24 @@
-//! Files a person attached to a turn. The LLM engine owns them, for the same reason
-//! it owns the messages they hang off; this hop proves who is asking and carries
-//! bytes rather than JSON.
-//!
-//! The one route pair in this crate that is not a `Value` in and a `Value` out.
-//! An upload arrives as multipart from the browser and leaves as multipart to
-//! the service; a download comes back as bytes with the headers the service set,
-//! because only the service knows what the file is.
-
+//! Owner-scoped uploads stored with conversations in the backend database.
+use crate::conversation::{attachment, database, failure};
 use actix_multipart::form::{tempfile::TempFile, MultipartForm, MultipartFormConfig};
 use actix_multipart::MultipartError;
 use actix_web::{
     delete, error::InternalError, get, http::header, post, web, HttpRequest, HttpResponse,
 };
-use llm_engine::{FilePart, Proxy};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::extractors::AuthUser;
-use crate::upstream::{caller, Answer};
+use crate::upstream::Answer;
 use service::Error as Upstreamed;
-
-/// The multipart field the LLM engine reads an upload from.
-const FILE_FIELD: &str = "file";
 
 /// What a file is when the browser said nothing useful about it.
 const UNKNOWN_MEDIA_TYPE: &str = "application/octet-stream";
 
-/// The ceiling, in the unit the refusal is written in. Kept in step with
-/// `MAX_BYTES` in `llm-engine/api/routes/attachments.py` — and with the `limit` on
-/// the field below, which a macro forces to be a literal.
+/// Keep the multipart literal and database size constraint aligned.
 const MAX_MB: usize = 50;
 
-/// Refused here as well as in the LLM engine, so an oversized body is dropped at the
-/// edge instead of being read into memory twice on its way to being refused.
+/// Enforced before loading the spooled file into memory.
 const MAX_BYTES: usize = MAX_MB * 1024 * 1024;
 
 /// The whole form, which actix limits separately and by default to the same
@@ -55,41 +42,81 @@ struct Upload {
 async fn create(
     user: AuthUser,
     MultipartForm(form): MultipartForm<Upload>,
-    engine: web::Data<Proxy>,
+    pool: web::Data<PgPool>,
 ) -> Answer {
     let part = read_part(form.file)?;
-    let created = engine.upload(&caller(&user), "/attachments", part).await?;
-    Ok(HttpResponse::Created().json(created))
+    let created = db::attachment::create(
+        &pool,
+        user.claims.sub,
+        &part.filename,
+        &part.media_type,
+        &part.bytes,
+    )
+    .await
+    .map_err(database)?;
+    Ok(HttpResponse::Created().json(attachment(&created)))
 }
 
 #[get("/{attachment_id}")]
-async fn show(user: AuthUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    let blob = engine
-        .fetch(&caller(&user), &format!("/attachments/{id}"))
-        .await?;
-
-    let mut response = HttpResponse::Ok();
-    response.content_type(blob.media_type);
-    if let Some(disposition) = blob.disposition {
-        response.insert_header((header::CONTENT_DISPOSITION, disposition));
-    }
-    Ok(response.body(blob.bytes))
+async fn show(user: AuthUser, id: web::Path<Uuid>, pool: web::Data<PgPool>) -> Answer {
+    let (metadata, bytes) = db::attachment::get(&pool, user.claims.sub, *id)
+        .await
+        .map_err(database)?
+        .ok_or_else(|| failure(404, "attachment not found"))?;
+    Ok(HttpResponse::Ok()
+        .content_type(metadata.media_type)
+        .insert_header(header::ContentDisposition {
+            disposition: header::DispositionType::Inline,
+            parameters: vec![header::DispositionParam::FilenameExt(
+                header::ExtendedValue {
+                    charset: header::Charset::Ext("UTF-8".into()),
+                    language_tag: None,
+                    value: metadata.filename.into_bytes(),
+                },
+            )],
+        })
+        .body(bytes))
 }
 
 #[delete("/{attachment_id}")]
-async fn destroy(user: AuthUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    engine
-        .delete(&caller(&user), &format!("/attachments/{id}"))
-        .await?;
+async fn destroy(user: AuthUser, id: web::Path<Uuid>, pool: web::Data<PgPool>) -> Answer {
+    if !db::attachment::discard(&pool, user.claims.sub, *id)
+        .await
+        .map_err(database)?
+    {
+        return Err(failure(404, "unsent attachment not found").into());
+    }
     Ok(HttpResponse::NoContent().finish())
 }
 
-/// The uploaded file as something that can be forwarded.
+fn clean_filename(name: &str) -> String {
+    let label: String = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("file")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(255)
+        .collect();
+    if label.is_empty() {
+        "file".into()
+    } else {
+        label
+    }
+}
+
+/// Read the spooled upload after enforcing its size limit.
 ///
 /// Actix spools a part to a temporary file, so this is where it comes back into
 /// memory — and therefore where the ceiling is enforced a second time. The
 /// `limit` on the field already refuses a larger one; this covers the case of
 /// the two numbers drifting apart, which would otherwise be a silent OOM.
+struct FilePart {
+    filename: String,
+    media_type: String,
+    bytes: Vec<u8>,
+}
+
 fn read_part(file: TempFile) -> Result<FilePart, Upstreamed> {
     let size = file.size;
     if size == 0 {
@@ -102,14 +129,16 @@ fn read_part(file: TempFile) -> Result<FilePart, Upstreamed> {
     let bytes = std::fs::read(file.file.path())
         .map_err(|e| Upstreamed::Transport(format!("reading the upload: {e}")))?;
 
+    let media_type = file
+        .content_type
+        .map(|mime| mime.to_string())
+        .unwrap_or_else(|| UNKNOWN_MEDIA_TYPE.to_string());
+    if media_type.len() > 160 {
+        return Err(over(400, "attachment media type is too long"));
+    }
     Ok(FilePart {
-        field: FILE_FIELD.to_string(),
-        // The LLM engine sanitizes this into a label; nothing on this side opens it.
-        filename: file.file_name.unwrap_or_else(|| "file".to_string()),
-        media_type: file
-            .content_type
-            .map(|mime| mime.to_string())
-            .unwrap_or_else(|| UNKNOWN_MEDIA_TYPE.to_string()),
+        filename: clean_filename(file.file_name.as_deref().unwrap_or("file")),
+        media_type,
         bytes,
     })
 }
@@ -134,8 +163,7 @@ fn over(code: u16, detail: &str) -> Upstreamed {
 /// Actix enforces the field limit while it is still reading the body, so an
 /// oversized upload never reaches `read_part` and would otherwise come back as
 /// a bare 400 "Payload error" — which says nothing a person can act on. This
-/// turns the one refusal that actually happens into the status and the sentence
-/// the LLM engine would have given it.
+/// returns the attachment limit with a useful status and message.
 fn refusal(error: MultipartError, _: &HttpRequest) -> actix_web::Error {
     // `Payload(Overflow)`, not `Field` — actix raises the limit from inside the
     // reader (`form::Limits::try_consume_limits`), so the field it belongs to is

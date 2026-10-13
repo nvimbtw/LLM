@@ -159,7 +159,7 @@ def list_runs(limit: int = 50, offset: int = 0):
             "history_offset": offset,
             "history_limit": limit,
             "history_total": q.count_history(db),
-            "paused": q.is_paused(db),
+            "paused": RUNNER.paused,
         }
 
 
@@ -200,6 +200,51 @@ def cancel_run(run_id: uuid.UUID):
     return {"run_id": str(run_id), "cancelling": True}
 
 
+@router.post("/runs/{run_id}/retry", status_code=202)
+async def retry_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service)):
+    with store.session() as db:
+        run = db.get(Run, run_id)
+        if run is None:
+            raise HTTPException(404, "run not found")
+        if not run.status.is_terminal:
+            raise HTTPException(409, "only finished runs can retry")
+        config, kind, label = dict(run.config), run.kind, run.label
+    config.pop("execution_id", None)
+    if kind == RunKind.benchmark:
+        if config.get("suite", "language") != "language":
+            raise HTTPException(409, "this historical suite is read-only")
+    else:
+        field = "tokenizer_id" if kind == RunKind.tokenize else "model_name"
+        config[field] = str(uuid.uuid4())
+    return await _queue(kind, label, config, False, owner)
+
+
+@router.post("/runs/{run_id}/recover", status_code=202)
+async def recover_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service)):
+    with store.session() as db:
+        run = db.get(Run, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        if run.kind not in (RunKind.train, RunKind.rl) or not run.status.is_terminal:
+            raise HTTPException(status_code=409, detail="only finished training runs can recover")
+        config = dict(run.config or {})
+        try:
+            output_id = uuid.UUID(config.get("model_name", ""))
+        except ValueError:
+            raise HTTPException(status_code=409, detail="legacy run has no recovery output ID")
+        checkpoints = q.checkpoints_of(db, output_id)
+        if not checkpoints:
+            raise HTTPException(status_code=409, detail="no completed recovery point")
+        latest = checkpoints[-1]
+        config["resume_from"] = str(latest.id)
+        kind = run.kind
+        if kind == RunKind.train and not config.get("base_model"):
+            config["recover_exact"] = True
+    config["model_name"] = str(uuid.uuid4())
+    config = _identified(config, config.get("display_name"))
+    return await _queue(kind, _train_label(config), config, False, owner)
+
+
 @router.delete("/runs/{run_id}")
 def delete_run(run_id: uuid.UUID):
     """Forget a finished run. A live one is cancelled first."""
@@ -221,12 +266,8 @@ def reorder_run(run_id: uuid.UUID, after: uuid.UUID | None = None):
 
 @router.post("/runs/pause")
 def set_pause(paused: bool = True):
-    """Stop the runner picking up new work. Survives a restart, because the
-    point of pausing is to leave the machine alone."""
-    with store.session() as db:
-        q.set_paused(db, paused)
-    if not paused:
-        RUNNER.wake()
+    """Pause admission in this process; every engine restart starts running."""
+    RUNNER.set_paused(paused)
     return {"paused": paused}
 
 
@@ -322,12 +363,15 @@ def row(run: Run) -> dict:
     return {
         "run_id": str(run.id),
         "kind": run.kind.value,
+        "config": run.config,
         "status": run.status.value,
         "label": run.label,
         "rank": run.rank,
         "progress": run.progress,
         "stage": run.stage,
         "ref_id": str(run.ref_id) if run.ref_id else None,
+        "output": {"type": "model" if run.kind in (RunKind.train, RunKind.rl) else "tokenizer" if run.kind == RunKind.tokenize else "benchmark",
+                   "id": str(run.ref_id) if run.ref_id else None},
         "depends_on": str(run.depends_on) if run.depends_on else None,
         "result": run.result,
         "error": run.error,

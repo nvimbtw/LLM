@@ -125,6 +125,7 @@ export function streamChat(
   historyFloor: string | null,
   handlers: ChatStreamHandlers
 ): ChatStreamHandle {
+  const requestId = crypto.randomUUID()
   const ws = new WebSocket(`${WS_URL}/ws/chats/${chatId}`)
   let settled = false
 
@@ -173,6 +174,7 @@ export function streamChat(
         ws.send(
           JSON.stringify({
             model_name: modelId,
+          request_id: requestId,
             text: question.text,
             // Omitted when empty, so a turn with no files is byte-for-byte the
             // request it always was.

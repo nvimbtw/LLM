@@ -220,13 +220,6 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
           blurb: section.blurb,
         })),
       }
-    case "chat":
-      return {
-        title: "What it will do",
-        steps: [
-          { name: "Reply", blurb: "The turn streams into the conversation." },
-        ],
-      }
     case "rl":
       return {
         title: "What it will repeat",

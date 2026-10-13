@@ -125,6 +125,7 @@ export interface TrainConfig {
   // Pretrain only. `SftConfig` names a `base_model` instead and simply does not
   // have this field, the same way it has no `tokenizer_id` or `curriculum`.
   resume_from?: string
+  checkpoint_target?: number
 }
 
 // The architecture a resumed run takes from the checkpoint instead of from the

@@ -17,6 +17,7 @@ from threading import Event
 import numpy as np
 
 from llm import storage
+from llm.orchestrate import recovery
 from llm.chat import template
 from llm.chat.template import Reasoning
 from llm.config import SftConfig, TrainConfig
@@ -173,7 +174,9 @@ def run(
 
 
 def _finetune(cfg, client, on_progress, cancel, started) -> dict:
-    weights = storage.weights_path(cfg.base_model)
+    resumed = recovery.resume(cfg, "sft")
+    source = cfg.resume_from or cfg.base_model
+    weights = storage.weights_path(source)
     if not weights.is_file():
         raise FileNotFoundError(
             f"No base model {cfg.base_model!r} at {weights} — pretrain one first"
@@ -189,7 +192,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
     # The base model's own tokenizer, not the shared build: a later pretrain may
     # have replaced the shared one, and a fine-tune tokenized differently from
     # the weights it starts from produces confident nonsense.
-    tokenizer = bpe.load(storage.model_dir(cfg.base_model))
+    tokenizer = bpe.load(storage.model_dir(source))
 
     reasoning = Reasoning.STRIP if cfg.strip_thinking else Reasoning.KEEP
     # Resolved before the key is derived, so a dataset pulled again since the last
@@ -248,7 +251,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         used = sft_corpus.special_ids_in(corpus, marker_ids, eot_id)
     base_seen = _base_special_ids(cfg.base_model)
     to_reset = untrained_marker_ids(used, base_seen)
-    reset = warm_start_embeddings(model, to_reset)
+    reset = 0 if resumed else warm_start_embeddings(model, to_reset)
     print(
         f"[3/5] Warm-start: reset {reset} embedding row(s)"
         + (" — this dataset uses markers the base never trained" if reset else " (none needed)")
@@ -279,6 +282,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         shuffle=cfg.shuffle,
         seed=cfg.seed,
         recompute_blocks=cfg.recompute_blocks,
+        checkpoint_target=cfg.checkpoint_target,
     )
 
     print(f"[4/5] Fine-tuning {cfg.epochs} epoch(s) at lr {cfg.lr:g}")
@@ -315,6 +319,15 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         "total_tokens": len(corpus),
     }
     base = train_pipeline.run_record(cfg.base_model)
+    data_fingerprint = recovery.fingerprint(corpus, mask, plan=data_plan)
+    if resumed is not None:
+        if resumed.extra.get("data_fingerprint") != data_fingerprint:
+            raise ValueError("SFT recovery packed data changed")
+        _, total_steps = loop.step_plan(corpus, data_plan, train_cfg, mask)
+        if resumed.extra.get("corpus_key") != key or resumed.total_steps != total_steps:
+            raise ValueError("SFT recovery data or schedule changed")
+        if resumed.extra.get("cursor") is None:
+            raise ValueError("SFT recovery point has no exact data position")
     summary = loop.run(
         model,
         corpus,
@@ -326,6 +339,7 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         mask,
         token_counts=info.get("token_counts"),
         probes=probes,
+        resume=resumed,
         # A fine-tune's checkpoints are models exactly as a pretrain's are, and
         # the writer is the pretrain's — what differs is only what each run knows
         # to record about itself.
@@ -335,6 +349,8 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
             provenance=provenance,
             state_extra={
                 "corpus_key": key,
+                "data_fingerprint": data_fingerprint,
+                "training_kind": "sft",
                 "tokenizer_id": base.get("tokenizer_id"),
                 "tokenizer_fingerprint": base.get("tokenizer_fingerprint"),
             },

@@ -13,7 +13,7 @@ import pytest
 import store
 from api import handlers
 from store import queries as q
-from store.schema import BenchmarkStatus, RunKind, Suite
+from store.schema import RunKind
 
 
 @pytest.fixture
@@ -131,93 +131,12 @@ def test_retraining_under_the_same_id_updates_its_row(
         assert len(q.list_models(db, include_private=True)) == 1
 
 
-def test_a_benchmark_opens_a_row_when_it_reaches_the_device(
-    store_session, monkeypatch, progress, cancel
-):
-    model_id = uuid.uuid4()
-    with store.session() as db:
-        q.upsert_model(db, model_id=model_id, name="scored")
-
-    monkeypatch.setattr(
-        handlers.eval_pipeline,
-        "run",
-        lambda cfg, on_progress, stop, owner=None: {
-            "model": {"id": cfg.model_name, "name": None, "layers": 2},
-            "score": {"score": 62.5, "version": 3},
-            "tokens_used": 900,
-            "conversations": 12,
-        },
-    )
-
-    result = handlers.benchmark(
-        {"model_name": str(model_id), "suite": "markup"}, progress, cancel
-    )
-
-    with store.session() as db:
-        [run] = q.benchmarks_of(db, model_id)
-        assert str(run.id) == result["benchmark_id"]
-        assert (run.score, run.suite_version) == (62.5, 3)
-        assert run.suite is Suite.markup
-        assert run.status is BenchmarkStatus.done
-        assert run.eval_tokens == 900
 
 
-def test_a_report_learns_the_name_the_pipeline_could_not_know(
-    store_session, monkeypatch, progress, cancel
-):
-    """The pipeline knows a model by its weights directory. What a person calls
-    it is a row, so the handler is where the two meet."""
-    model_id = uuid.uuid4()
-    with store.session() as db:
-        q.upsert_model(db, model_id=model_id, name="Smoke 2")
-
-    monkeypatch.setattr(
-        handlers.eval_pipeline,
-        "run",
-        lambda cfg, on_progress, stop, owner=None: {
-            "model": {"id": cfg.model_name, "name": None},
-            "score": {"score": 1.0},
-        },
-    )
-
-    report = handlers.benchmark({"model_name": str(model_id)}, progress, cancel)
-
-    assert report["model"]["id"] == str(model_id)
-    assert report["model"]["name"] == "Smoke 2"
-    with store.session() as db:
-        assert q.benchmarks_of(db, model_id)[0].report["model"]["name"] == "Smoke 2"
 
 
-def test_a_failed_benchmark_closes_its_row_with_the_reason(
-    store_session, monkeypatch, progress, cancel
-):
-    model_id = uuid.uuid4()
-    with store.session() as db:
-        q.upsert_model(db, model_id=model_id, name="doomed")
-
-    def explode(cfg, on_progress, stop):
-        raise RuntimeError("kaboom")
-
-    monkeypatch.setattr(handlers.eval_pipeline, "run", explode)
-
-    with pytest.raises(RuntimeError):
-        handlers.benchmark({"model_name": str(model_id)}, progress, cancel)
-
-    with store.session() as db:
-        [run] = q.benchmarks_of(db, model_id)
-        assert run.status is BenchmarkStatus.failed
-        assert "kaboom" in run.error
 
 
-def test_benchmarking_an_unknown_model_opens_no_row(store_session, progress, cancel):
-    """A benchmark row means a measurement was attempted."""
-    model_id = uuid.uuid4()
-
-    with pytest.raises(FileNotFoundError):
-        handlers.benchmark({"model_name": str(model_id)}, progress, cancel)
-
-    with store.session() as db:
-        assert q.benchmarks_of(db, model_id) == []
 
 
 def test_a_vocabulary_build_writes_a_tokenizer_row(store_session, pipelines, progress, cancel):
@@ -310,11 +229,8 @@ def test_every_kind_the_queue_accepts_has_a_handler():
     handler and forgetting to write one should fail here, which a hand-kept list
     only does if somebody also remembers to extend the list.
     """
-    assert set(handlers.HANDLERS) == set(RunKind) - {RunKind.chat}
+    assert set(handlers.HANDLERS) == set(RunKind)
 
 
-def test_a_chat_is_the_one_kind_with_no_handler():
-    """It is a row so a conversation shows up on the board beside the runs, and
-    nothing about it is queued — the reason the subtraction above has exactly one
-    term, and the thing that would otherwise make it look like an oversight."""
-    assert RunKind.chat not in handlers.HANDLERS
+def test_chat_is_not_a_durable_execution_kind():
+    assert 'chat' not in {kind.value for kind in RunKind}

@@ -29,6 +29,7 @@ export interface Checkpoint {
   loss: number | null
   createdAt: string
   hasWeights: boolean
+  kept: boolean
 }
 
 function mapCheckpoint(raw: RawModel): Checkpoint {
@@ -41,6 +42,7 @@ function mapCheckpoint(raw: RawModel): Checkpoint {
     loss: typeof recorded?.loss === "number" ? recorded.loss : null,
     createdAt: raw.created_at ?? "",
     hasWeights: raw.has_weights,
+    kept: raw.recovery_kept ?? false,
   }
 }
 

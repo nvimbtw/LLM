@@ -1,5 +1,5 @@
 use actix_cors::Cors;
-use actix_web::{App, HttpServer, web};
+use actix_web::{web, App, HttpServer};
 
 /// Loopback unless told otherwise, because `/internal` is left open when
 /// `BACKEND_SERVICE_SECRET` is unset and the binding is the only thing keeping
@@ -48,6 +48,13 @@ async fn main() -> std::io::Result<()> {
     println!("gyms-engine ready at {}", gyms_svc.base_url());
     let gyms_proxy = gyms_engine::Proxy::new(gyms_svc.base_url(), gyms_secret);
 
+    let bench_config = bench_engine::config();
+    let bench_secret = bench_config.service_secret.clone();
+    let bench_svc = service::Supervisor::start(bench_config)
+        .await
+        .expect("failed to start bench-engine");
+    let bench_proxy = bench_engine::Proxy::new(bench_svc.base_url(), bench_secret);
+
     // The reverse hop: the LLM engine asks for the documents a run has reached the
     // point of needing. Said out loud for the reason the services say it — an
     // unauthenticated seam should be a thing you were told about, not a thing
@@ -86,6 +93,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(proxy.clone()))
             .app_data(web::Data::new(data_proxy.clone()))
             .app_data(web::Data::new(gyms_proxy.clone()))
+            .app_data(web::Data::new(bench_proxy.clone()))
             .app_data(web::Data::new(inbound.clone()))
             .app_data(web::Data::new(registry.clone()))
             .configure(api::configure)
@@ -99,5 +107,6 @@ async fn main() -> std::io::Result<()> {
     engine.shutdown();
     data.shutdown();
     gyms_svc.shutdown();
+    bench_svc.shutdown();
     Ok(())
 }

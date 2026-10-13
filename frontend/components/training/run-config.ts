@@ -77,6 +77,7 @@ export const ARCH_FIELDS: Field[] = [
 ]
 
 export const RUN_FIELDS: Field[] = [
+  { key: "checkpoint_target", label: "Recovery saves", hint: "Approximate saves per run; keep only the latest automatically. 0 disables." },
   { key: "epochs", label: "Epochs", hint: "Passes over the corpus" },
   {
     key: "batch_size",
@@ -165,6 +166,7 @@ function validateName(name: string): string[] {
 // constraints before submitting. Returns a list of human-readable problems.
 export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
   const errs = validateName(cfg.model_name)
+  if (cfg.checkpoint_target !== undefined && (!Number.isInteger(cfg.checkpoint_target) || cfg.checkpoint_target < 0)) errs.push("Recovery saves must be a nonnegative integer.")
 
   if (isFineTune(cfg.mode)) {
     // A follow-up has no base to select: it fine-tunes whatever the job before it

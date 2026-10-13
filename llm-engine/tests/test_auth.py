@@ -69,14 +69,14 @@ async def test_an_open_engine_still_reads_who_a_call_acts_for(client, monkeypatc
     assert auth.require_service("Basic whatever") == auth.SYSTEM
 
 
-async def test_an_owner_scoped_route_needs_someone_to_act_for(client, monkeypatch):
+async def test_transcript_routes_are_retired(client, monkeypatch):
     import uuid
 
     monkeypatch.delenv("LLM_ENGINE_SERVICE_SECRET", raising=False)
     acting = bearer(token(act=str(uuid.uuid4())))
 
-    assert (await client.get("/chats")).status_code == 403
-    assert (await client.get("/chats", headers=acting)).status_code == 200
+    assert (await client.get("/chats")).status_code == 404
+    assert (await client.get("/chats", headers=acting)).status_code == 404
 
 
 async def test_a_configured_secret_refuses_an_unsigned_request(client, enforced):

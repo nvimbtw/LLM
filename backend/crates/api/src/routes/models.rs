@@ -21,19 +21,37 @@ async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Ans
 }
 
 #[get("/{model_id}")]
-async fn get_one(user: AuthUser, model_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
-    answer(
-        engine
-            .get(&caller(&user), &format!("/models/{model_id}"))
-            .await?,
-    )
+async fn get_one(
+    user: AuthUser,
+    model_id: web::Path<Uuid>,
+    engine: web::Data<Proxy>,
+    bench: web::Data<bench_engine::Proxy>,
+) -> Answer {
+    let mut model = engine
+        .get(&caller(&user), &format!("/models/{model_id}"))
+        .await?;
+    let scores = bench
+        .get(
+            &caller(&user),
+            &format!("/benchmarks?model_id={model_id}&limit=50"),
+        )
+        .await?;
+    model["benchmarks"] = scores["benchmarks"].clone();
+    answer(model)
 }
 
 #[get("/{model_id}/benchmarks")]
-async fn benchmarks(user: AuthUser, model_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
+async fn benchmarks(
+    user: AuthUser,
+    model_id: web::Path<Uuid>,
+    bench: web::Data<bench_engine::Proxy>,
+) -> Answer {
     answer(
-        engine
-            .get(&caller(&user), &format!("/models/{model_id}/benchmarks"))
+        bench
+            .get(
+                &caller(&user),
+                &format!("/benchmarks?model_id={model_id}&limit=50"),
+            )
             .await?,
     )
 }

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE messages m SET feedback=$3::text::conversation_feedback FROM chats c WHERE m.chat_id=c.id AND c.owner_id=$1 AND m.id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "74431975ec618229674ee76ca9e475d47a71337f1aac0e94a0b7ae78bc0fcc11"
+}

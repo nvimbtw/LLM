@@ -35,7 +35,7 @@ from llm.corpus import bpe
 from llm.gym.client import Client
 from llm.model import checkpoint
 from llm.orchestrate import train as train_pipeline
-from llm.orchestrate import practice
+from llm.orchestrate import practice, recovery
 from llm.train import loop, policy, rollout
 from llm.train.progress import Checkpoint, Progress, ProgressCallback, log_progress
 
@@ -266,7 +266,8 @@ class _State:
 
 
 def _learn(cfg: RlConfig, client: Client, on_progress, cancel, started) -> dict:
-    weights = storage.weights_path(cfg.base_model)
+    resumed = recovery.resume(cfg, "rl")
+    weights = storage.weights_path(cfg.resume_from or cfg.base_model)
     if not weights.is_file():
         raise FileNotFoundError(
             f"No base model {cfg.base_model!r} at {weights} — fine-tune one first"
@@ -274,7 +275,7 @@ def _learn(cfg: RlConfig, client: Client, on_progress, cancel, started) -> dict:
 
     device = loop.pick_device()
     model, arch = checkpoint.load(weights, device)
-    reference = _frozen(weights, device)
+    reference = _frozen(storage.weights_path(cfg.base_model), device)
     model.eval()
     print(
         f"[1/3] Base {cfg.base_model}: {model.parameter_count():,} parameters, "
@@ -287,22 +288,29 @@ def _learn(cfg: RlConfig, client: Client, on_progress, cancel, started) -> dict:
     # points at the wrong tokens.
     tokenizer = bpe.load(storage.model_dir(cfg.base_model))
     state = _State(cfg, model, tokenizer, device, started)
-    state.lessons = practice.prepare(cfg, client)
+    state.lessons = practice.prepare(cfg, client, resumed.extra.get("curriculum") if resumed else None)
     optimizer = _optimizer(model, cfg)
+    first_iteration = 0
+    if resumed is not None:
+        optimizer.load_state_dict(resumed.optimizer)
+        checkpoint.restore_rng(resumed.rng)
+        state.rng.setstate(resumed.extra["task_rng"])
+        state.generator.set_state(resumed.extra["sampling_rng"])
+        first_iteration = resumed.step
 
-    provenance = {"base_model": cfg.base_model, "architecture": arch}
+    provenance = {**(resumed.extra.get("provenance", {}) if resumed else {}), "base_model": cfg.base_model, "architecture": arch}
     write = train_pipeline.CheckpointWriter(
         tokenizer=tokenizer,
         config=cfg.model_dump(exclude_unset=True),
         provenance=provenance,
-        state_extra={"base_model": cfg.base_model},
+        state_extra={"base_model": cfg.base_model, "training_kind": "rl"},
     )
 
-    if state.lessons:
+    if state.lessons and resumed is None:
         _exam(cfg, client, model, state, provenance, on_progress, cancel, 0, initial=True)
 
     frames = []
-    for iteration in range(cfg.iterations):
+    for iteration in range(first_iteration, cfg.iterations):
         if cancel is not None and cancel.is_set():
             break
         frame = _iterate(cfg, client, model, reference, optimizer, state, iteration)
@@ -316,10 +324,12 @@ def _learn(cfg: RlConfig, client: Client, on_progress, cancel, started) -> dict:
         frames.append(frame)
         if on_progress is not None:
             on_progress(frame)
-            _checkpoint(cfg, write, model, optimizer, iteration, frame, on_progress)
+        write.state_extra.update(provenance=dict(provenance), task_rng=state.rng.getstate(), sampling_rng=state.generator.get_state())
+        _checkpoint(cfg, write, model, optimizer, iteration, frame, on_progress)
 
     if state.lessons and not (cancel is not None and cancel.is_set()):
-        _exam(cfg, client, model, state, provenance, on_progress, cancel, len(frames), final=True)
+        _exam(cfg, client, model, state, provenance, on_progress, cancel, first_iteration + len(frames), final=True)
+    provenance["resumed_at"] = first_iteration
     return _saved(cfg, model, tokenizer, arch, frames, started, provenance)
 
 
@@ -357,18 +367,18 @@ def _exam(cfg, client, model, state, provenance, on_progress, cancel, step, *, i
 
 
 def _checkpoint(cfg, write, model, optimizer, iteration, frame, on_progress) -> None:
-    """Every iteration is a checkpoint, and a checkpoint is a model.
+    """Save at completed iteration boundaries according to the configured cadence.
 
-    That sameness is what makes measuring progress need nothing new: a gym run
-    against `<the run's name> #n`, at temperature 0, on the held-out seeds this
-    run never drew. `checkpoint_target` 0 turns them off, exactly as it does for
-    a training run, and is a disk budget — a `train_state.pt` is the weights
-    again plus AdamW's two moments per parameter.
+    Zero disables recovery; retention keeps the latest automatic generation.
+    Optimizer moments live beside weights without repeating them.
     """
     if cfg.checkpoint_target == 0:
         return
-    on_progress(
-        write(
+    target = cfg.checkpoint_target if cfg.checkpoint_target is not None else 10
+    interval = max(1, (cfg.iterations + target - 1) // target)
+    if (iteration + 1) % interval and iteration + 1 < cfg.iterations:
+        return
+    saved = write(
             model,
             optimizer,
             step=iteration + 1,
@@ -378,7 +388,8 @@ def _checkpoint(cfg, write, model, optimizer, iteration, frame, on_progress) -> 
             stage_name=None,
             loss=frame.loss,
         )
-    )
+    if on_progress is not None:
+        on_progress(saved)
 
 
 def _saved(cfg, model, tokenizer, arch, frames, started, provenance) -> dict:
@@ -390,7 +401,7 @@ def _saved(cfg, model, tokenizer, arch, frames, started, provenance) -> dict:
     result = {
         "model_name": cfg.model_name,
         **provenance,
-        "iterations": len(frames),
+        "iterations": provenance.get("resumed_at", 0) + len(frames),
         "pass_rate": last.get("pass_rate", 0.0),
         "source_scores": last.get("source_scores", {}),
         "source_history": [

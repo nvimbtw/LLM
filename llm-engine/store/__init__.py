@@ -15,24 +15,16 @@ from sqlalchemy.pool import StaticPool
 
 from store.schema import (
     Base,
-    Benchmark,
-    BenchmarkStatus,
-    Chat,
-    Feedback,
-    Message,
     Model,
-    QueueState,
-    Role,
     Run,
     RunKind,
     RunStatus,
-    Suite,
     Tokenizer,
 )
 
 __all__ = [
-    "Base", "Benchmark", "BenchmarkStatus", "Chat", "Feedback", "Message", "Model",
-    "QueueState", "Role", "Run", "RunKind", "RunStatus", "Suite", "Tokenizer",
+    "Base", "Model",
+    "Run", "RunKind", "RunStatus", "Tokenizer",
     "configure", "session", "url",
 ]
 

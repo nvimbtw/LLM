@@ -8,6 +8,8 @@ had to be threaded through each layer by hand.
 
 from typing import Annotated
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # `model_name` collides with pydantic v2's protected `model_` namespace, which
@@ -136,6 +138,7 @@ class TrainConfig(BaseModel):
     weight_decay: float = 0.1
 
     # ── Continuation ────────────────────────────────────────────────────────
+    recover_exact: bool = False
     resume_from: str | None = Field(
         default=None,
         description="a model id to carry on from — a finished model or one of its "
@@ -148,9 +151,9 @@ class TrainConfig(BaseModel):
     checkpoint_target: int | None = Field(
         default=None,
         ge=0,
-        description="roughly how many intermediate checkpoints to leave behind; null is "
-        "`progress.TARGET_CHECKPOINTS` and 0 is none at all. Each one is a whole model "
-        "plus the optimizer moments, so this is a disk budget as much as a cadence",
+        description="roughly how many recovery saves to make; null is "
+        "`progress.TARGET_CHECKPOINTS` and 0 disables saves. Retention keeps the "
+        "latest automatic generation and any explicitly preserved generations",
     )
 
     # ── Data ────────────────────────────────────────────────────────────────
@@ -257,6 +260,8 @@ class SftConfig(BaseModel):
 
     model_name: str = Field(description="names the fine-tuned run's directory")
     base_model: str = Field(description="the pretrained model to fine-tune from")
+    resume_from: str | None = None
+    checkpoint_target: int = Field(default=10, ge=0)
 
     epochs: int = 2
     # An order of magnitude below pretrain. SFT starts from weights that already
@@ -372,6 +377,7 @@ class RlConfig(BaseModel):
 
     model_name: str = Field(description="names the run's directory under artifacts/models/")
     base_model: str = Field(description="the model to start from, and the frozen reference")
+    resume_from: str | None = None
 
     # ── The batch ───────────────────────────────────────────────────────────
     gym_id: str = Field(
@@ -432,7 +438,7 @@ class RlConfig(BaseModel):
     #: subtraction rather than a feature.
     holdout_base: int = Field(default=1_000_000)
 
-    checkpoint_target: int | None = None
+    checkpoint_target: int | None = Field(default=None, ge=0)
     curriculum: PracticeSchedule | None = None
 
     _normalize_task_types = field_validator("task_types", mode="before")(_as_task_weights)
@@ -577,7 +583,7 @@ class EvalConfig(BaseModel):
     # separate because a base model has never seen the chat scaffold, and folding
     # those stages into one number would mark every pretrain down for failing a
     # task it was not trained on.
-    suite: str = "language"
+    suite: Literal["language"] = "language"
 
     max_tokens: int = 96
     temperature: float = 0.8

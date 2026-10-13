@@ -10,3 +10,4 @@
 CREATE DATABASE slate_engine;
 CREATE DATABASE slate_data;
 CREATE DATABASE slate_gyms;
+CREATE DATABASE slate_bench;

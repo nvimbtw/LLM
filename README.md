@@ -12,7 +12,8 @@ you was predicted by a model trained on this machine, on a corpus you chose.
 ```
 frontend/     chat, the job board, model, data and benchmark views — Next.js, Bun
 backend/      people, sessions, and the seam to every module — Rust, Actix, sqlx
-llm-engine/   training, inference, evaluation — PyTorch, FastAPI
+llm-engine/   training, model execution and scheduling — PyTorch, FastAPI
+bench-engine/ English benchmark scoring and history — FastAPI
 data-engine/  acquiring datasets from Hugging Face and cleaning them — FastAPI
 gyms-engine/  generated tasks, sandboxed execution and scoring — FastAPI
 ```
@@ -24,7 +25,7 @@ cp .env.example .env    # then fill in the secrets it names
 docker compose up
 ```
 
-That is the whole thing: Postgres, three Python services, the Rust backend, the
+That is the whole thing: Postgres, four Python services, the Rust backend, the
 UI and a SearXNG instance, on the ports the map below names. Every service
 hot-reloads from the source tree, so an edit lands the same way it does natively
 — and one can be restarted without disturbing the others:
@@ -66,12 +67,13 @@ itself.
 PostgreSQL. A CUDA GPU if you intend to train anything; inference on a small
 model is bearable without one.
 
-**Four databases.** Each module owns one and none reads another's — see
-[`docs/decisions/`](docs/decisions/) for why. Create all four:
+**Five databases.** Each module owns one and none reads another's — see
+[`docs/decisions/`](docs/decisions/) for why. Create all five:
 
 ```sh
-createdb llm              # the backend's: users, presets
-createdb slate_engine     # the LLM engine's: models, conversations, runs, scores
+createdb llm              # the backend's: users, presets, conversations and files
+createdb slate_engine     # the LLM engine's: models, training and scheduling
+createdb slate_bench      # benchmark reports and scoring history
 createdb slate_data       # the data engine's: datasets and their documents
 createdb slate_gyms       # the gyms engine's: runs, episodes, steps and scores
 ```
@@ -80,7 +82,8 @@ Those are the names the checked-in defaults expect — `DATABASE_URL` in
 `backend/.env`, `LLM_ENGINE_DATABASE_URL` (default
 `postgresql+psycopg://localhost/slate_engine`), `DATA_ENGINE_DATABASE_URL`
 (default `postgresql+psycopg://localhost/slate_data`) and
-`GYMS_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`).
+`GYMS_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`),
+and `BENCH_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_bench`).
 
 **The LLM engine**, whose virtualenv the backend expects to find:
 
@@ -113,12 +116,17 @@ python -m venv .venv
 .venv/bin/alembic upgrade head
 ```
 
+**The bench engine** owns English scoring and benchmark history. Set up its
+virtualenv and migrations with the same commands in `bench-engine/`. Populated
+installations must follow [the ownership cutover](docs/backend/ownership-cutover.md)
+before starting the new LLM and benchmark services.
+
 **The backend** reads `backend/.env`, and `DATABASE_URL` must be set and the
 database migrated *before the first build* — sqlx's query macros check every
 query against the live schema at compile time, and the app's own migrations run
 too late for that.
 
-There is no `.env.example` in the tree; the keys are these:
+The root `.env.example` lists Compose settings; native backend settings include:
 
 ```sh
 cd backend
@@ -133,9 +141,10 @@ cargo run
 | `LLM_ENGINE_SERVICE_SECRET` | Authenticates the backend→LLM-engine hop. Unset leaves the LLM engine open, and it says so at startup. |
 | `LLM_ENGINE_AUTOSTART=false` | Don't spawn the LLM engine; attach to one already running. |
 | `DATA_DIR` | The LLM engine's artifacts: packed corpora, vocabularies, weights. Not the text they were built from — that is the data engine's. |
-| `BACKEND_SERVICE_SECRET` | Authenticates the LLM engine→backend hop, the one that runs toward the backend. Unset leaves `/internal` open, and it says so at startup. |
+| `BACKEND_SERVICE_SECRET` | Authenticates issuer-scoped reverse calls from the LLM and bench engines. Unset leaves `/internal` open, and it says so at startup. |
 | `DATA_ENGINE_*` | The same set as `LLM_ENGINE_*`, for the data engine. Port defaults to 8002. |
 | `GYMS_ENGINE_*` | The same set as `LLM_ENGINE_*`, for the gyms engine. Port defaults to 8003. |
+| `BENCH_ENGINE_*` | The same service settings for bench-engine. Port defaults to 8004. |
 | `SEARCH_URL` | A SearXNG instance for the `web-search` tool. Optional — unset, no tool is registered and chat works exactly as before. |
 | `BASH_URL` | A just-bash sandbox for the `bash` tool. Optional, and the same bargain: unset, the tool is not registered. |
 
@@ -147,11 +156,11 @@ bun install
 bun run dev
 ```
 
-That is the whole sequence — `cargo run` spawns all three Python services as child
+That is the whole sequence — `cargo run` spawns all four Python services as child
 processes and health-checks each before reporting ready, so you do not normally
 start them yourself. The UI is on **:3000**, the backend on **:8080**, the
 LLM engine on **:8001**, the data engine on **:8002**, the gyms engine on
-**:8003**, and the two optional tool
+**:8003**, bench-engine on **:8004**, and the two optional tool
 services below on **:8888** (search) and **:8899** (the shell sandbox).
 
 To run a Python service standalone instead, set its `*_AUTOSTART=false` and:
@@ -160,6 +169,7 @@ To run a Python service standalone instead, set its `*_AUTOSTART=false` and:
 cd llm-engine  && DATA_DIR=./data .venv/bin/uvicorn main:app --port 8001 --reload
 cd data-engine && .venv/bin/uvicorn main:app --port 8002 --reload
 cd gyms-engine && .venv/bin/uvicorn main:app --port 8003 --reload
+cd bench-engine && .venv/bin/uvicorn main:app --port 8004 --reload
 ```
 
 **Tools (optional).** A reply can call one, as
@@ -209,7 +219,7 @@ The backend is not a proxy with some auth bolted on. It is the **host**: it owns
 people and sessions, it is the only thing the frontend ever talks to, and every
 capability the product has arrives as a **module** sitting behind it.
 
-Today there are three modules — the LLM engine, data engine, and gyms engine —
+Today there are four service modules — the LLM, data, gyms and bench engines —
 and each plugs into the same seam.
 
 ```
@@ -218,9 +228,9 @@ frontend ──► backend ──► module          the only shape a request ev
 ```
 
 **What a module is.** A service that owns one domain completely, including its
-own database, reached only through the backend. The LLM engine owns models,
-conversations, runs and scores; the backend owns users and presets and models
-none of what the LLM engine owns. It stores an id and asks.
+own database, reached only through the backend. The LLM engine owns models, training and scheduling; bench-engine owns scoring
+and reports; the backend owns users, presets, conversations and files. Cross-service
+references use logical IDs, with attribution snapshots where history requires them.
 
 **What the seam looks like**, concretely, in
 [`backend/crates/llm-engine/`](backend/crates/llm-engine/):
@@ -261,15 +271,13 @@ migrates; and routes on the backend that forward rather than reimplement.
 
 | Module | Owns | Status |
 | --- | --- | --- |
-| **LLM engine** | Models, conversations, training runs, benchmark scores, the weights | **Built** — `llm-engine/`, behind `backend/crates/llm-engine/` |
+| **LLM engine** | Models, training, scheduling and weights | **Built** — `llm-engine/`, behind `backend/crates/llm-engine/` |
 | **Data engine** | Datasets from the Hub, the documents in them, and the cleaning that produces new ones | **Built** — `data-engine/`, behind `backend/crates/data-engine/` |
 | **Gyms engine** | Generated tasks, sandboxed episodes, trajectories and scores | **Built** — `gyms-engine/`, behind `backend/crates/gyms-engine/` |
-| **Benchmark** | Suites, scoring, held-out sets, comparison across models | **Planned** |
+| **Bench engine** | English scoring, reference prose and model performance history | **Built** — `bench-engine/`, behind `backend/crates/bench-engine/` |
 
-Benchmarking is not a stub — there is no separate code for it yet; the LLM
-engine currently serves its routes alongside the `/benchmark` views. Pulling it
-out is the near-term direction of the work, and the seam above is what it will
-be pulled out *into*.
+English benchmarks execute through the shared queue. Bench-engine owns scoring
+and history and requests raw model measurements from the LLM engine through Rust.
 
 The data engine is what training reads: a run selects datasets by id and the
 LLM engine fetches their documents a page at a time through the backend, keeping
@@ -293,3 +301,14 @@ on purpose.
   change is judged against.
 - **[`docs/decisions/`](docs/decisions/)** — what was weighed and rejected,
   dated, once. Read this before re-litigating a boundary.
+
+
+## Sprint ownership cutover
+
+Conversations, messages and uploads are stored by Rust. English benchmark
+scoring/history lives in `bench-engine` (port 8004); LLM execution remains in the
+LLM service. Before upgrading populated databases, follow
+[the ownership cutover](docs/backend/ownership-cutover.md). Existing Compose
+volumes need a `slate_bench` database and `BENCH_ENGINE_SERVICE_SECRET` in `.env`.
+See [bench-engine](docs/bench-engine/README.md) and
+[execution scheduling](docs/llm-engine/execution.md) for native setup and admission.

@@ -49,6 +49,12 @@ struct Pending {
     work: JoinHandle<(String, Option<tools::ToolError>)>,
 }
 
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.work.abort();
+    }
+}
+
 /// Drive a whole turn to its end, relaying everything to `session` as it happens.
 ///
 /// `interjections` carries a person's mid-turn messages, sent over the same
@@ -63,7 +69,9 @@ pub async fn run(
     engine: &Proxy,
     registry: &Registry,
     caller: &auth::Caller,
-    path: &str,
+    pool: &sqlx::PgPool,
+    owner: uuid::Uuid,
+    chat_id: uuid::Uuid,
     // The chat this turn belongs to, handed to every tool as its session key.
     // The sandboxed shell keeps a filesystem under it, so a file written in one
     // round is still there in the next; `tools` never learns what the key means.
@@ -71,11 +79,22 @@ pub async fn run(
     mut ask: Value,
     mut interjections: mpsc::UnboundedReceiver<String>,
 ) {
+    let _guard = crate::conversation::lock(chat_id).await;
     let settings = ask.clone();
 
     let rounds = max_tool_rounds();
     for round in 0..rounds {
-        let frames = match engine.stream(caller, path, ask).await {
+        let prepared = match crate::conversation::prepare(pool, engine, owner, chat_id, ask).await {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = session.text(ws::error_frame(&error.to_string())).await;
+                return;
+            }
+        };
+        let frames = match engine
+            .stream(caller, "/chat/stream", prepared.config.clone())
+            .await
+        {
             Ok(frames) => frames,
             Err(e) => {
                 let _ = session.text(ws::error_frame(&e.to_string())).await;
@@ -84,7 +103,11 @@ pub async fn run(
         };
 
         let last_round = round + 1 == rounds;
-        let Some(pending) = relay(session, registry, chat, frames, last_round).await else {
+        let Some(pending) = relay(
+            session, registry, chat, frames, last_round, pool, owner, chat_id, &prepared,
+        )
+        .await
+        else {
             return;
         };
         if pending.is_empty() {
@@ -122,7 +145,7 @@ fn drain_interjection(interjections: &mut mpsc::UnboundedReceiver<String>) -> Op
 }
 
 /// Splice a buffered interjection into the next round's request, as the
-/// LLM engine's `interject` field (`llm-engine/api/routes/chats.py::Ask`). Returns the
+/// LLM engine's `interject` field (`llm-engine/api/chat_request.py::Ask`). Returns the
 /// text when it folded one in, so the caller knows to confirm it to the
 /// client — `None` leaves `next` untouched, which is a round with nothing
 /// queued behaving exactly as it did before this existed.
@@ -149,32 +172,65 @@ async fn relay(
     chat: &str,
     frames: impl Stream<Item = llm_engine::Result<Frame>>,
     last_round: bool,
+    pool: &sqlx::PgPool,
+    owner: uuid::Uuid,
+    chat_id: uuid::Uuid,
+    prepared: &crate::conversation::Round,
 ) -> Option<Vec<Pending>> {
     futures_util::pin_mut!(frames);
 
     let mut pending = Vec::new();
     while let Some(frame) = frames.next().await {
-        let message = match frame {
+        let frame = match frame {
+            Ok(frame) if frame.kind != "error" => frame,
             Ok(frame) => {
-                if frame.kind == "tool_call" {
-                    pending.push(start(registry, chat, frame.data.clone()));
-                }
-                // Safe to decide here: a `tool_call` always precedes the `done`
-                // of the round that made it.
-                match frame.kind.as_str() {
-                    "done" => stamped(&frame, last_round || pending.is_empty()),
-                    _ => flatten(&frame),
+                // Delivery failure is irrelevant: either way this turn stops.
+                let _ = session.text(flatten(&frame)).await;
+                return None;
+            }
+            Err(error) => {
+                // Delivery failure is irrelevant: either way this turn stops.
+                let _ = session.text(ws::error_frame(&error.to_string())).await;
+                return None;
+            }
+        };
+        let completed = frame.kind == "done";
+        let message = {
+            let mut frame = frame;
+            if frame.kind == "done" {
+                match crate::conversation::finish(pool, owner, chat_id, prepared, &frame.data).await
+                {
+                    Ok(value) => frame.data = value,
+                    Err(error) => {
+                        let _ = session.text(ws::error_frame(&error.to_string())).await;
+                        return None;
+                    }
                 }
             }
-            Err(e) => ws::error_frame(&e.to_string()),
+            if frame.kind == "tool_call" {
+                pending.push(start(registry, chat, frame.data.clone()));
+            }
+            // Safe to decide here: a `tool_call` always precedes the `done`
+            // of the round that made it.
+            match frame.kind.as_str() {
+                "done" => stamped(&frame, last_round || pending.is_empty()),
+                _ => flatten(&frame),
+            }
         };
         if session.text(message).await.is_err() {
             // The browser hung up. Nothing downstream has anywhere to go, and
             // the searches already running will be dropped with their handles.
             return None;
         }
+        if completed {
+            return Some(pending);
+        }
     }
-    Some(pending)
+    // A truncated upstream stream never completes or starts another tool round.
+    let _ = session
+        .text(ws::error_frame("inference ended before completion"))
+        .await;
+    None
 }
 
 fn start(registry: &Registry, chat: &str, call: Value) -> Pending {
@@ -198,10 +254,11 @@ fn start(registry: &Registry, chat: &str, call: Value) -> Pending {
 async fn answer(session: &mut actix_ws::Session, pending: Vec<Pending>) -> Option<Value> {
     let mut first: Option<Value> = None;
 
-    for Pending { call, work } in pending {
+    for mut pending in pending {
+        let call = &pending.call;
         // A panicked task is reported as a failed tool rather than taken down
         // with the turn: the reply it belongs to is already generated.
-        let (body, failure) = work.await.unwrap_or_else(|e| {
+        let (body, failure) = (&mut pending.work).await.unwrap_or_else(|e| {
             (
                 tools::markup::warning("The tool did not finish."),
                 Some(panicked(e)),

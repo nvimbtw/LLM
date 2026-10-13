@@ -91,6 +91,7 @@ export interface RawModelResult {
 }
 
 export interface RawModel {
+  recovery_kept?: boolean
   model_id: string
   name: string
   description: string | null

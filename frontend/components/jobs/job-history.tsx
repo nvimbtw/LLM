@@ -148,7 +148,6 @@ function HistoryRow({
             {/* A chat turn's reply already exists; re-running it would append a
                 second answer to the same question. */}
             <DropdownMenuItem
-              disabled={job.kind === "chat"}
               onClick={() => onRetry(job)}
             >
               <RotateCcw />

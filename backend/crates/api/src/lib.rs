@@ -5,6 +5,7 @@
 //! struct is never serialized straight to a client — `db::user::User` carries
 //! the password hash.
 
+pub mod conversation;
 pub mod demonstrations;
 pub mod extractors;
 pub mod gym;

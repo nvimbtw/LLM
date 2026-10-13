@@ -9,12 +9,10 @@ import pytest
 from llm.chat.template import Reasoning
 from llm.config import EvalConfig, SftConfig
 from llm.corpus import sft as sft_corpus
-from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import train as train_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from tests.fixtures.tiny_env import TINY_CHAT_ID, TINY_DATASET_ID, TINY_MODEL
 
-SUITES = ["language", "markup", "assistant"]
 
 
 @pytest.fixture
@@ -147,61 +145,16 @@ def test_a_pretrain_over_a_chat_dataset_says_what_kind_of_run_it_should_be(data_
         vocab.build(data_client, "unused", selection, 512)
 
 
-@pytest.mark.parametrize("suite", SUITES)
-def test_eval_report_carries_a_versioned_score(suite):
-    """Every suite scores 0-100 and stamps the version that produced it — two
-    scores are only comparable at the same version."""
-    report = _evaluate(suite)
-
-    assert report["suite"] == suite
-    assert isinstance(report["score"], dict)
-    assert report["score"]["version"] >= 1
-    assert 0.0 <= report["score"]["score"] <= 100.0
 
 
-@pytest.mark.parametrize("suite", SUITES)
-def test_eval_writes_the_report_beside_the_weights(suite):
-    """A score travels with the model it describes."""
-    import json
-
-    from llm import storage
-
-    _evaluate(suite)
-    path = storage.model_dir(TINY_MODEL) / f"benchmark-{suite}.json"
-    assert json.loads(path.read_text())["suite"] == suite
 
 
-def test_the_three_suites_are_scored_independently():
-    """They share a range and nothing else — never compared, never averaged."""
-    scores = {suite: _evaluate(suite)["score"] for suite in SUITES}
-
-    assert set(scores["language"]) != set(scores["markup"])
-    assert set(scores["markup"]) != set(scores["assistant"])
-    # Each versions on its own, so one suite's rescoring cannot invalidate another.
-    assert all("version" in s for s in scores.values())
 
 
-@pytest.mark.parametrize("suite", SUITES)
-def test_every_report_says_which_model_it_describes(suite):
-    """A report is read long after the run, so it carries the model rather than
-    leaving a reader to join it back to one."""
-    model = _evaluate(suite)["model"]
-
-    assert model["id"] == TINY_MODEL
-    # Filled in by whoever owns the row; the pipeline cannot resolve a name.
-    assert model["name"] is None
-    assert (model["layers"], model["dimensions"], model["heads"]) == (2, 32, 4)
-    assert model["parameters"] > 0
 
 
-def test_eval_rejects_an_unknown_suite():
-    with pytest.raises(ValueError, match="unknown suite"):
-        eval_pipeline.run(EvalConfig(model_name=TINY_MODEL, suite="nonsense"))
 
 
-def test_eval_needs_weights():
-    with pytest.raises(FileNotFoundError):
-        eval_pipeline.run(EvalConfig(model_name="no-such-model", suite="language"))
 
 
 def test_sft_diagnostics_split_the_loss_by_mask_position_and_conversation(sft_config):
@@ -341,10 +294,6 @@ def _diagnostics(cfg) -> list[dict]:
     return [f.diag for f in frames if isinstance(f, Progress) and f.diag]
 
 
-def _evaluate(suite: str) -> dict:
-    return eval_pipeline.run(
-        EvalConfig(model_name=TINY_MODEL, suite=suite, max_tokens=16, seed=5)
-    )
 
 
 def _identical(a, b) -> bool:

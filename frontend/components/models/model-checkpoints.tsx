@@ -1,6 +1,10 @@
 "use client"
 
 import Link from "next/link"
+import * as React from "react"
+import { apiFetch } from "@/lib/api"
+import { Button } from "@/components/ui/button"
+import { toast } from "@/components/ui/toast"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
@@ -48,7 +52,7 @@ export function ModelCheckpoints({
 
   return (
     <Panel
-      title="Checkpoints"
+      title="Recovery and saved checkpoints"
       aside={
         <span className="text-xs text-muted-foreground tabular-nums">
           {checkpoints.length} · to step {formatNumber(last.step)}
@@ -76,6 +80,18 @@ function CheckpointRow({
   checkpoint: Checkpoint
   canContinue: boolean
 }) {
+  const [kept, setKept] = React.useState(checkpoint.kept)
+  const [saving, setSaving] = React.useState(false)
+  const keep = async () => {
+    setSaving(true)
+    try {
+      const response = await apiFetch(`/models/${checkpoint.id}`, {method: "PATCH", body: JSON.stringify({recovery_keep:true})})
+      if (!response.ok) throw new Error(await response.text())
+      setKept(true)
+    } catch (error) {
+      toast.error("Could not keep checkpoint", error instanceof Error ? error.message : "Storage failed")
+    } finally { setSaving(false) }
+  }
   return (
     <li className="flex items-baseline gap-4 border-b border-border/40 px-5 py-2.5 last:border-0">
       <span className="w-10 shrink-0 text-xs font-medium tabular-nums">
@@ -94,6 +110,7 @@ function CheckpointRow({
         )}
       </span>
       <span className="flex shrink-0 items-baseline gap-3 text-xs">
+        {canContinue && <Button size="sm" variant="ghost" disabled={kept || saving} onClick={keep}>{kept ? "Kept" : "Keep"}</Button>}
         {canContinue && checkpoint.hasWeights && (
           <Link
             href={`/jobs/new/train?resume=${checkpoint.id}`}

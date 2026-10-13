@@ -200,3 +200,7 @@ Automatic mastery progression remains math-only. General runs expose source
 scores in the training report and in their gym records; the browser also shows
 evaluation scores by source. Family-level adaptive curricula across gyms are
 not implemented.
+
+Recovery resumes completed iterations with optimizer, sampler and curriculum state.
+`checkpoint_target` sets approximate save count; zero disables it. See
+[checkpoints.md](checkpoints.md) for retention and replay boundaries.

@@ -21,7 +21,7 @@ from llm.chat.template import (
     build_training_example,
 )
 from llm.corpus import bpe
-from llm.eval import score as score_mod
+from llm.model import likelihood as score_mod
 from llm.model.transformer import Transformer
 
 # Bump alongside any change to the anchors below: it moves every score without a

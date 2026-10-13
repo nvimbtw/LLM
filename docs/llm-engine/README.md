@@ -1,4 +1,4 @@
-# LLM engine — PyTorch training, inference, evaluation
+# LLM engine — PyTorch training and model execution
 
 > **Status: partial.** Sections below are the required shape (see
 > [`../README.md`](../README.md)); the ones still marked TODO are not written
@@ -7,9 +7,10 @@
 
 ## What it owns
 
-Models, conversations, runs and scores. The backend owns users and presets and
-nothing else; requests flow frontend → backend → LLM engine and back the same way.
-See [`../decisions/`](../decisions/) for the two-database split.
+Models, tokenizers, training records, durable execution scheduling and stateless
+model computation. Rust owns conversations/files/usage; bench-engine owns
+benchmark scoring and history. All service communication passes through Rust.
+See [execution.md](execution.md) and the [bench-engine map](../bench-engine/README.md).
 
 What it does **not** own, and this is the boundary that moved most recently:
 **the text it trains on**. Corpora are the data engine's, and a run reads them a
@@ -58,7 +59,7 @@ recording what it was made from, and phase 1 reports what the tokenization
 actually produced. See [`corpus.md`](corpus.md).
 
 `llm/backend.py` is the hop itself — the token, the base URL, the failure —
-and `llm/corpus/remote.py` and `llm/gym/client.py` are its two consumers.
+and corpus reads, gym rollouts and benchmark dispatch are its consumers.
 There is one token minter because there is one seam. What each does with it
 differs in exactly one way and it is load-bearing: **a read may be retried and
 a write may not.** A dropped page costs a page to ask again; a re-sent gym step
@@ -100,9 +101,7 @@ the two mean opposite things and a reader who cannot tell them apart is worse
 off than one who has never seen either.
 
 **Cadence** (`llm/train/progress.py::checkpoint_every`): roughly
-`TARGET_CHECKPOINTS` per run, and never fewer than one per epoch — an epoch
-boundary is what a person reaches back to by name, so a forty-epoch run keeping
-ten would have thrown away three quarters of the points anyone asks for. The
+`TARGET_CHECKPOINTS` saves per run, and never fewer than one per epoch. The
 interval is snapped **up** to a multiple of `report_every`, so a checkpoint
 always lands on a step that is already publishing a frame. The end of every
 epoch and the last step of the run also take one, deduplicated against the
@@ -112,16 +111,11 @@ the epoch and final-step rules go quiet with it because they are what the
 cadence is *made of*, not exceptions to it. The run's own finished model is saved regardless —
 that has never been the cadence's business.
 
-**The cost is why the count is a number and not "every epoch".** A
-`train_state.pt` is the weights again plus AdamW's two moments per parameter,
-about 3x a `model.pt`; the directory holds both, so a checkpoint is ~4x a
-finished model's weights on disk and ten of them ~40x. `checkpoint_target` is a
-disk budget as much as a cadence.
-
-**The layering did not move for this** — `llm/` has still never heard of the
-database — and `TrainConfig.resume_from` picks a checkpoint back up in one of
-two ways the run reports by name. Both are in
-[`checkpoints.md`](checkpoints.md).
+Cadence controls save frequency; retention keeps one latest automatic recovery
+point plus published, explicitly kept or referenced generations. Weights appear
+once per generation, with optimizer/RNG state in a separate file. SFT stores an
+exact batch cursor; RL resumes at completed iteration boundaries. See
+[checkpoints.md](checkpoints.md).
 
 ## Schema
 
@@ -160,7 +154,7 @@ them null — which is exactly what being a finished model means:
 
 **Neither uuid is a foreign key, and for two different reasons.** `run_id` is
 not one because run rows are prunable and the grouping has to outlive them — the
-same reason `runs.ref_id` is a bare uuid. `parent_id` is not one because the
+need to preserve historical identity after queue pruning. `parent_id` is not one because the
 parent row does not exist yet when a run's first checkpoint lands: the
 constraint would refuse the very insert it exists to describe. Both are indexed;
 `checkpoint_index` is not, because it is only ever tested for null on a column
@@ -172,34 +166,10 @@ checkpoint rows in `queries.delete_model` rather than by cascade, and their
 disk. And **which checkpoint a resumed run started from gets no column**: it
 lives in `parameters.config.resume_from`, one string nothing joins on.
 
-`messages.role` is a Postgres enum of `user | assistant | tool`. A tool's answer
-is stored as a message of its own, between the assistant turn that called for it
-and the one that uses it, because the history a later turn is rendered from has
-to carry what the model was told and not merely that it asked.
-
-`attachments` holds files a person put in the composer — bytes in a `bytea`
-column, hanging off the message they were sent with. Two things about it are
-load-bearing and neither is in the types:
-
-- **Nothing reads them.** They are stored and served back, and no part of one
-  reaches a prompt. Nothing under `llm/` may import `api/routes/attachments.py`
-  or name the table; `attachment_ids` on a chat request binds rows and does
-  nothing else. See
-  [`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
-- **`message_id` is nullable and `owner_id` is what scopes a row.** A file is
-  uploaded when it is picked, which is before the turn it belongs to exists and,
-  on a new conversation, before the chat does. Binding happens when the turn is
-  stored; an unbound row is reachable by its owner and nobody else, and only an
-  unbound row can be deleted — a sent turn is history.
-
-Bytes in a table only work with caps, and there are two: `MAX_BYTES` (50 MB a
-file) and `MAX_PER_MESSAGE` (5 a turn), both in `api/routes/attachments.py` and
-mirrored at the edge by the backend's route. It is their **product** that is the
-real constraint — a turn's files pass whole through three processes — so the two
-move against each other rather than independently. `Attachment.content` is a deferred
-column, so listing a conversation's files does not load them.
-
-<!-- TODO: the remaining tables, who writes each, invariants not in the types. -->
+Conversation and attachment tables have moved to Rust. Benchmark rows have moved
+to bench-engine. [Execution schema](execution.md) describes `execution_jobs`,
+`training_runs`, `tokenizer_builds` and `benchmark_dispatches`, including the
+migration preserving historical IDs.
 
 ## Routes
 
@@ -247,7 +217,7 @@ layout in Rust would be free to drift into a shape the model was never trained
 on. See [`../decisions/gyms-are-driven-by-the-backend.md`](../decisions/gyms-are-driven-by-the-backend.md).
 
 **A continuation can carry a person's own words alongside the tool's.**
-`Ask.interject` on `POST /chats/{id}/messages(/stream)` rides beside
+`Ask.interject` on `POST /chat/prepare` rides beside
 `tool_result` only — refused if sent with `text`, since a continuation is not a
 question — and becomes a second stored message, `Role.user`, right after the
 tool result; both land in `ChatConfig.turns` in that order (tool result, then

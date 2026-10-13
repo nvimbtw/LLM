@@ -112,6 +112,7 @@ async fn chat_socket(
     engine: web::Data<Proxy>,
     registry: web::Data<Registry>,
     secret: web::Data<String>,
+    pool: web::Data<sqlx::PgPool>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, stream) = actix_ws::handle(&req, body)?;
     actix_web::rt::spawn(chat_session(
@@ -119,6 +120,7 @@ async fn chat_socket(
         stream,
         engine.get_ref().clone(),
         registry.get_ref().clone(),
+        pool.get_ref().clone(),
         chat_id.into_inner(),
         secret.get_ref().clone(),
     ));
@@ -163,6 +165,7 @@ async fn chat_session(
     mut stream: actix_ws::MessageStream,
     engine: Proxy,
     registry: Registry,
+    pool: sqlx::PgPool,
     chat_id: Uuid,
     secret: String,
 ) {
@@ -185,7 +188,6 @@ async fn chat_session(
     let (sender, interjections) = tokio::sync::mpsc::unbounded_channel();
     let reader = actix_web::rt::spawn(read_interjections(stream, sender));
 
-    let path = format!("/chats/{chat_id}/messages/stream");
     // The chat id is the tools' session key: it is stable for the whole
     // conversation, which is exactly the lifetime a sandbox filesystem wants.
     turn::run(
@@ -193,7 +195,9 @@ async fn chat_session(
         &engine,
         &registry,
         &caller,
-        &path,
+        &pool,
+        claims.sub,
+        chat_id,
         &chat_id.to_string(),
         ask,
         interjections,

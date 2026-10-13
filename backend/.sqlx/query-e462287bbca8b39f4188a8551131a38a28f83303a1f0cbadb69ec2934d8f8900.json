@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('days',$2::integer,'series',COALESCE((SELECT jsonb_agg(s ORDER BY s.date) FROM (SELECT (m.created_at AT TIME ZONE 'UTC')::date AS date,COALESCE(sum(m.tokens) FILTER (WHERE m.role='user'),0) AS asked,COALESCE(sum(m.tokens) FILTER (WHERE m.role='assistant'),0) AS generated,count(*) FILTER (WHERE m.role='assistant') AS replies FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=$1 AND m.created_at>=now()-make_interval(days=>$2) GROUP BY 1) s),'[]'::jsonb),'by_model',COALESCE((SELECT jsonb_agg(s ORDER BY s.tokens DESC) FROM (SELECT m.model_id,m.model_name AS name,sum(m.tokens) AS tokens,count(*) AS replies FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=$1 AND m.role='assistant' AND m.created_at>=now()-make_interval(days=>$2) GROUP BY m.model_id,m.model_name) s),'[]'::jsonb)) AS \"usage!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "usage!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e462287bbca8b39f4188a8551131a38a28f83303a1f0cbadb69ec2934d8f8900"
+}

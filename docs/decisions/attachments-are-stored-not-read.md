@@ -1,5 +1,10 @@
 # Attachments are stored, not read
 
+Update 2026-10-09: ownership and retention portions are superseded by
+[Execution and ownership](execution-and-ownership.md). The original rationale
+below records the design at its date; current contracts are in the module docs.
+
+
 **2026-08-20**
 
 A file put in the composer is uploaded, kept, and shown back in the history. No

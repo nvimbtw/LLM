@@ -195,7 +195,7 @@ function HistoryRow({
               score === null && "text-muted-foreground/30"
             )}
           >
-            {run.status === "failed" ? "failed" : formatNumber(score, 1)}
+            {run.status === "failed" || run.status === "cancelled" ? run.status : formatNumber(score, 1)}
           </span>
         )}
       </td>

@@ -1,8 +1,10 @@
 # Backend — Rust API
 
 The Rust half: people, sessions, and the seam to the services behind it. It owns
-users and presets and nothing else — models, conversations, runs and scores live
-in `llm-engine/`, and this side forwards to them.
+users, presets, conversations, messages, uploads and usage. Models/training and
+queue scheduling belong to the LLM engine; benchmark scoring/history belongs to
+bench-engine. See [conversations.md](conversations.md) and
+[ownership-cutover.md](ownership-cutover.md).
 
 ## Tech stack
 
@@ -39,10 +41,11 @@ backend/
 ├── src/main.rs        HttpServer setup, CORS, app_data
 └── crates/
     ├── auth/          argon2 hashing, the token cipher, JWT issue/verify
-    ├── db/            users and presets — sqlx + migrations/      → auth
+    ├── db/            users, presets, conversations — sqlx + migrations/      → auth
     ├── service/       spawning a Python service, and the hops both ways → auth
     ├── llm-engine/    names the LLM engine: audience, port, DATA_DIR → service
     ├── data-engine/   names the data engine                          → service
+    ├── bench-engine/  names the benchmark service                   → service
     ├── gyms-engine/   names the gyms engine                          → service
     ├── tools/         what a model can reach for, and the answer  → (nothing)
     └── api/           routes + extractors + sockets   → service, llm-engine, data-engine, gyms-engine, tools, db, auth
@@ -52,12 +55,13 @@ backend/
 marker vocabulary, and nothing about this project's users, sessions or the LLM engine
 process.
 
-`service` names no service. `llm-engine`, `data-engine` and `gyms-engine` are ~40 lines
+`service` names no service. `llm-engine`, `data-engine`, `gyms-engine` and `bench-engine` are ~40 lines
 each — an audience, a set of defaults, and a `Proxy` newtype — and do **not**
-depend on each other: the three Python processes are siblings that never speak.
+depend on each other: the four Python processes are siblings that never speak.
 
-The database holds three tables: `users`, `training_presets`, and sqlx's own
-migration ledger. Everything else moved to the LLM engine.
+The database holds `users`, `training_presets`, `chats`, `messages`, `attachments`
+and the migration ledger. Conversation ownership/cascades and stream persistence
+are described in [conversations.md](conversations.md).
 
 A user's chat settings (decoding knobs, system prompt, UI toggles) live in
 `users.settings`, one opaque JSONB blob rather than a table of their own — a
@@ -102,18 +106,10 @@ payload is `serde_json::Value` on purpose — a field the LLM engine adds needs 
 change here, and `upstream::Upstream` carries the service's own status back, so
 a 404 stays a 404 instead of becoming a generic 502.
 
-**One pair of routes forwards something that is not JSON.** `/attachments` takes
-a multipart upload from the browser and forwards it as multipart to the LLM engine
-(`Proxy::upload`), and serves the bytes back with the content type and
-disposition the LLM engine set (`Proxy::fetch`) — this side stores nothing about a
-file and would otherwise be guessing at a name it never saw. Both are buffered
-rather than streamed: the LLM engine caps what it will store, and a streaming body
-cannot carry an upstream failure through a response already begun. The size
-ceiling is repeated here so an oversized body is refused at the edge rather than
-read into memory on its way to being refused; keep it in step with `MAX_BYTES`
-in `llm-engine/api/routes/attachments.py`. What the LLM engine does with them —
-and, more to the point, what it does not — is
-[`../decisions/attachments-are-stored-not-read.md`](../decisions/attachments-are-stored-not-read.md).
+`/attachments` stores uploads in the backend database with conversation ownership.
+The multipart field and database both enforce 50 MiB; downloads return the saved
+bytes, media type and filename. Files never enter model prompts. See
+[conversations.md](conversations.md) for binding and authorization rules.
 
 **One proxy route is `AuthUser` where its neighbours on the same resource are
 `AdminUser`.** `POST /models/{id}/attention` forwards to the LLM engine's attention
@@ -154,7 +150,7 @@ the service scopes by that. A user token is never forwarded.
 
 `api/routes/internal.rs`, behind the `ServiceCaller` extractor, is the one place
 a **service** is the caller. The LLM engine reads documents there that the data
-LLM engine owns — it cannot ask the data engine itself, because the Python
+engine owns — it cannot ask the data engine itself, because the Python
 services never speak, and it cannot be handed them in advance, because a queued
 run needs them at a moment nothing on this side knows ahead of time. It drives
 gym episodes there for the same reason, and one more of its own: see
@@ -508,8 +504,7 @@ exactly that reason:
   call goes to `POST /gym/episodes/{id}/step` on the gyms proxy, which runs it
   in *that episode's* filesystem and records it with its reward. What comes back
   is rendered by `tools::observation`, so the two are the same text.
-- **How the next round is asked.** A chat turn is stored by the LLM engine and comes
-  back as history, so a round sends one `tool_result`. An episode has no chat:
+- **How the next round is asked.** A chat turn is stored by Rust and loaded as authorized history, so a round sends one `tool_result`. An episode has no chat:
   the conversation is held in the loop and handed whole to the LLM engine's
   stateless `/chat/stream` every round, with tool turns naming their call so the
   LLM engine renders the `<|tool-result|>` block (`ChatTurn.tool`/`argument`).
@@ -572,7 +567,7 @@ cargo run -p tools --example bash_once -- 'echo hello > f.txt; ls -l'
 
 `crates/service` is the only crate that knows a service is a subprocess: it
 spawns one as a child of the Actix server, health-checks it before the server
-reports ready, restarts it if it dies, and kills it on shutdown. All three Python
+reports ready, restarts it if it dies, and kills it on shutdown. All four Python
 services are started this way.
 
 Configured by environment, because these are properties of the machine:
@@ -612,12 +607,16 @@ The gyms engine follows the same contract under `GYMS_ENGINE_*`:
 | `GYMS_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | |
 | `GYMS_ENGINE_SERVICE_SECRET` | unset | |
 
-One variable belongs to neither service, because it guards the direction that
+Bench-engine follows the same contract under `BENCH_ENGINE_*`, with directory
+`../bench-engine`, port `8004`, and audience `bench-engine`. See
+[its module doc](../bench-engine/README.md) for database and corpus configuration.
+
+One variable guards the direction that
 runs toward this server:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BACKEND_SERVICE_SECRET` | unset | Shared with the LLM engine, which signs `aud: backend` tokens with it. Unset leaves `/internal` open |
+| `BACKEND_SERVICE_SECRET` | unset | Shared with the LLM and bench engines, which sign issuer-scoped `aud: backend` tokens with it. Unset leaves `/internal` open |
 | `BIND_ADDR` | `127.0.0.1` | What the server listens on. `0.0.0.0` in a container, where a published port cannot reach a loopback binding |
 
 It has no `DATA_DIR`: its datasets are rows in `slate_data`, not a tree. That

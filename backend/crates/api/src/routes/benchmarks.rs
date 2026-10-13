@@ -1,7 +1,7 @@
 //! Scores across models — the history page's question, which names no model.
 
 use actix_web::{delete, get, web, HttpRequest};
-use llm_engine::Proxy;
+use bench_engine::Proxy;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};

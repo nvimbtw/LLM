@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { BENCHMARK_SUITES, type BenchmarkSuite } from "@/lib/benchmark"
+import { ACTIVE_BENCHMARK_SUITES, type BenchmarkSuite } from "@/lib/benchmark"
 import type { FollowUp } from "@/lib/jobs"
 import type { TrainConfig } from "@/lib/training"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
@@ -66,7 +66,7 @@ export function newStep(kind: "train" | "benchmark" = "train"): Step {
       lr: 0.00001,
       epochs: 2,
     },
-    suite: "assistant",
+    suite: "language",
     errors: [],
   }
 }
@@ -179,7 +179,7 @@ export function FollowUps({
                     value={step.suite}
                     onValueChange={(value) =>
                       update(step.id, {
-                        suite: (value as BenchmarkSuite | null) ?? "assistant",
+                        suite: (value as BenchmarkSuite | null) ?? "language",
                       })
                     }
                     disabled={disabled}
@@ -187,13 +187,13 @@ export function FollowUps({
                     <SelectTrigger className="w-40">
                       <SelectValue>
                         {(value: string | null) =>
-                          BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
+                          ACTIVE_BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
                           "Assistant"
                         }
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      {BENCHMARK_SUITES.map((option) => (
+                      {ACTIVE_BENCHMARK_SUITES.map((option) => (
                         <SelectItem key={option.id} value={option.id}>
                           {option.label}
                         </SelectItem>

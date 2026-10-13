@@ -66,7 +66,7 @@ class RecordingWriter:
         self.taken: list[Checkpoint] = []
 
     def __call__(self, model, optimizer, *, step, total_steps, epoch, stage,
-                 stage_name, loss) -> Checkpoint:
+                 stage_name, loss, cursor=None) -> Checkpoint:
         frame = Checkpoint(
             model_id=f"id-{len(self.taken)}",
             index=len(self.taken) + 1,

@@ -2,11 +2,11 @@ import { apiFetch } from "./api"
 import type { Tier } from "./jobs"
 
 // Wire types for the benchmark API. The report is
-// the serialized `llm::eval::Report`; every metric there is an f64, and a metric
+// the report owned by bench-engine; a metric
 // that could not be measured serializes as `null` rather than 0 — so every number
 // below is nullable and the UI renders "—" for a null instead of a confident zero.
 
-export type BenchmarkStatus = "running" | "done" | "failed"
+export type BenchmarkStatus = "running" | "done" | "failed" | "cancelled"
 
 /**
  * Which of the three benchmarks a run belongs to.
@@ -22,7 +22,7 @@ export type BenchmarkStatus = "running" | "done" | "failed"
  * and never average them: the post-train cycle judges a round by requiring that none
  * regressed and at least one improved, which a mean would quietly defeat.
  */
-export type BenchmarkSuite = "language" | "markup" | "assistant"
+export type BenchmarkSuite = "language" | "markup" | "assistant" | "language_v3"
 
 /**
  * A thinking budget, as the marker names it. Re-exported from `lib/jobs` rather than
@@ -47,7 +47,7 @@ export const MIN_CONVERSATIONS = 10
 
 /** Which suites a thinking-budget sweep can move. See `EvalConfig::budget`. */
 export function suiteTakesBudget(suite: BenchmarkSuite): boolean {
-  return suite !== "language"
+  return suite === "markup" || suite === "assistant"
 }
 
 export const BENCHMARK_SUITES: {
@@ -57,6 +57,10 @@ export const BENCHMARK_SUITES: {
   {
     id: "language",
     label: "Language",
+  },
+  {
+    id: "language_v3",
+    label: "Language v3 (legacy)",
   },
   {
     id: "markup",
@@ -221,7 +225,7 @@ interface ReportBase {
 }
 
 export interface LanguageReport extends ReportBase {
-  suite: "language"
+  suite: "language" | "language_v3"
   score: LanguageScore
   corpus: CorpusMetrics | null
   surface: SurfaceMetrics | null
@@ -260,7 +264,7 @@ export function isAssistantReport(
 }
 
 export function isLanguageReport(report: AnyReport): report is LanguageReport {
-  return report.suite === "language"
+  return report.suite === "language" || report.suite === "language_v3"
 }
 
 export interface BenchmarkRun {
@@ -614,3 +618,6 @@ export function formatDate(iso: string): string {
     minute: "2-digit",
   })
 }
+
+/** Only English language measurements may be newly queued. */
+export const ACTIVE_BENCHMARK_SUITES = BENCHMARK_SUITES.filter((suite) => suite.id === "language")

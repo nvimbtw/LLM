@@ -72,7 +72,7 @@ function LanguageScoreCard({ report }: { report: LanguageReport }) {
 
   return (
     <Composite
-      label="Eval score"
+      label={report.suite === "language_v3" ? "Historical language v3 score" : "Eval score"}
       score={score.score}
       stderr={score.score_stderr}
       model={model}

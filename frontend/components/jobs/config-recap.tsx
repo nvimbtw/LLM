@@ -107,8 +107,6 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
         blocks: [],
       }
     }
-    case "chat":
-      return null
     case "rl": {
       const cfg = (job.config ?? {}) as Record<string, unknown>
       return {

@@ -1,3 +1,5 @@
+pub mod attachment;
+pub mod conversation;
 pub mod preset;
 pub mod user;
 

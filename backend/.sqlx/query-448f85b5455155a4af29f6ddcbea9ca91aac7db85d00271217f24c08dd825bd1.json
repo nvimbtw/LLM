@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM attachments WHERE id=$1 AND owner_id=$2 AND message_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "448f85b5455155a4af29f6ddcbea9ca91aac7db85d00271217f24c08dd825bd1"
+}

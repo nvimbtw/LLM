@@ -1,4 +1,4 @@
-"""What the LLM engine is the authority on: models, conversations, runs, scores.
+"""What the LLM engine is the authority on: models, training, vocabularies and execution scheduling.
 
 Deliberately not here: anything about a person. `owner_id` is an opaque id
 minted by the backend and never validated — the LLM engine scopes by it and has no
@@ -11,14 +11,13 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
-    BigInteger,
+    CheckConstraint,
     Boolean,
     DateTime,
     Enum,
     Float,
     ForeignKey,
     Integer,
-    LargeBinary,
     String,
     Text,
     Uuid,
@@ -45,7 +44,6 @@ class Base(DeclarativeBase):
 class RunKind(str, enum.Enum):
     train = "train"
     benchmark = "benchmark"
-    chat = "chat"
     #: Learning a vocabulary. The one kind that does not touch the GPU — it is a
     #: run because it takes minutes and wants the queue's frames and cancel, and
     #: because building one while the device trains would fight it for the CPU.
@@ -75,32 +73,6 @@ class RunStatus(str, enum.Enum):
         return self in (RunStatus.done, RunStatus.cancelled, RunStatus.failed)
 
 
-class Suite(str, enum.Enum):
-    language = "language"
-    markup = "markup"
-    assistant = "assistant"
-
-
-class BenchmarkStatus(str, enum.Enum):
-    running = "running"
-    done = "done"
-    failed = "failed"
-
-
-class Role(str, enum.Enum):
-    user = "user"
-    assistant = "assistant"
-    #: A tool's answer to a call the previous assistant message made. Stored as
-    #: a message so the history a later turn is built from is whole — the model
-    #: has to see what it was told, not just that it asked.
-    tool = "tool"
-
-
-class Feedback(str, enum.Enum):
-    up = "up"
-    down = "down"
-
-
 class Model(Base):
     """A trained model. The row is the index; the weights are on disk under
     `artifacts/models/<id>/`, which is why the id and not the name is stable.
@@ -126,7 +98,7 @@ class Model(Base):
     published: Mapped[bool] = mapped_column(Boolean, default=False)
     #: The run that produced it, carried by a checkpoint and by the finished
     #: model alike so a run's whole output groups by one value. Not a foreign
-    #: key, for the reason `Run.ref_id` is not one: run rows are prunable and the
+    #: key: execution rows are prunable and the
     #: grouping has to outlive them.
     run_id: Mapped[uuid.UUID | None] = mapped_column(Key, index=True)
     #: The finished model this is an intermediate of. Also not a foreign key,
@@ -140,9 +112,7 @@ class Model(Base):
     checkpoint_index: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    benchmarks: Mapped[list["Benchmark"]] = relationship(
-        back_populates="model", cascade="all, delete-orphan"
-    )
+
 
 
 class Tokenizer(Base):
@@ -173,142 +143,6 @@ class Tokenizer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-class Chat(Base):
-    __tablename__ = "chats"
-
-    id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
-    #: A `users.id` in the backend's database. No foreign key — the row lives in
-    #: another database, and a chat whose owner has gone is invisible, not broken.
-    owner_id: Mapped[uuid.UUID] = mapped_column(Key, index=True)
-    title: Mapped[str] = mapped_column(String(200))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    messages: Mapped[list["Message"]] = relationship(
-        back_populates="chat", cascade="all, delete-orphan", order_by="Message.created_at"
-    )
-
-
-class Message(Base):
-    """One turn.
-
-    `role` is stored rather than derived from `model_id`: deleting a model nulls
-    the credit, and a reply must not turn into a question because the model that
-    wrote it is gone.
-    """
-
-    __tablename__ = "messages"
-
-    id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
-    chat_id: Mapped[uuid.UUID] = mapped_column(
-        Key, ForeignKey("chats.id", ondelete="CASCADE"), index=True
-    )
-    role: Mapped[Role] = mapped_column(Enum(Role, name="role"))
-    #: Which model wrote it, while that model still exists.
-    model_id: Mapped[uuid.UUID | None] = mapped_column(
-        Key, ForeignKey("models.id", ondelete="SET NULL")
-    )
-    content: Mapped[str] = mapped_column(Text)
-    #: Length under the model's own tokenizer, counted once at write time so a
-    #: chat's cost can be summed without re-tokenizing it.
-    tokens: Mapped[int] = mapped_column(Integer, default=0)
-    #: Null is "not rated", which is almost every row and has to stay distinct
-    #: from a deliberate rating.
-    feedback: Mapped[Feedback | None] = mapped_column(Enum(Feedback, name="feedback"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    chat: Mapped[Chat] = relationship(back_populates="messages")
-    #: Read-only: what a reply is labelled with. Deleting a model nulls the FK,
-    #: and the turn keeps its role.
-    model: Mapped["Model | None"] = relationship(lazy="joined")
-    attachments: Mapped[list["Attachment"]] = relationship(
-        back_populates="message",
-        cascade="all, delete-orphan",
-        order_by="Attachment.created_at",
-    )
-
-
-class Attachment(Base):
-    """A file a person put in the composer.
-
-    Stored and shown back in the history, and read by nothing: the models served
-    here take text and only text, so an attachment is content the *conversation*
-    carries rather than content the *model* is given. Nothing under `llm/` may
-    touch this table — see
-    `docs/decisions/attachments-are-stored-not-read.md`.
-
-    The bytes are a column rather than a file under `data/`, which is derived
-    artifacts and nothing else; an upload is derived from nothing. It also makes
-    forgetting one a cascade rather than a directory walk that has to not go
-    wrong.
-
-    `message_id` is null between the upload and the turn it is sent with — a
-    file is picked before there is a message to hang it on, and on a new chat
-    before there is even a chat. So `owner_id` is what scopes a row in both
-    states, and it is the column that answers "may this caller see this file".
-    """
-
-    __tablename__ = "attachments"
-
-    id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
-    #: A `users.id` in the backend's database, carried for the same reason
-    #: `Chat.owner_id` is, and never resolved here.
-    owner_id: Mapped[uuid.UUID] = mapped_column(Key, index=True)
-    message_id: Mapped[uuid.UUID | None] = mapped_column(
-        Key, ForeignKey("messages.id", ondelete="CASCADE"), index=True
-    )
-    filename: Mapped[str] = mapped_column(String(255))
-    #: What the browser said it was. Believed for display and never for parsing,
-    #: because nothing here parses it.
-    media_type: Mapped[str] = mapped_column(String(160))
-    #: Denormalised from `content` so a listing can report a size without
-    #: loading the bytes to measure them.
-    size: Mapped[int] = mapped_column(Integer)
-    #: Deferred: every history read walks these rows for their metadata and
-    #: exactly one route ever wants the bytes. Without it, opening a chat with
-    #: ten images in it loads ten images to render ten filenames.
-    content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    message: Mapped["Message | None"] = relationship(back_populates="attachments")
-
-
-class Benchmark(Base):
-    """One suite's verdict on one model.
-
-    The three suites share a range and nothing else — never compared, never
-    averaged — so a row carries which suite produced it and at what version.
-    Two scores are only comparable when both match.
-    """
-
-    __tablename__ = "benchmarks"
-
-    id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
-    model_id: Mapped[uuid.UUID] = mapped_column(
-        Key, ForeignKey("models.id", ondelete="CASCADE"), index=True
-    )
-    #: The model's name when the run happened. Denormalized because a rename
-    #: must not retroactively relabel the score it earned under the old one.
-    model_name: Mapped[str] = mapped_column(String(120))
-    suite: Mapped[Suite] = mapped_column(Enum(Suite, name="suite"))
-    suite_version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[BenchmarkStatus] = mapped_column(
-        Enum(BenchmarkStatus, name="benchmark_status"), default=BenchmarkStatus.running
-    )
-    #: Lifted out of `report` so the history list and the trend chart need not
-    #: parse a JSON blob per row.
-    score: Mapped[float | None] = mapped_column(Float)
-    report: Mapped[dict | None] = mapped_column(Json)
-    #: What the measurement cost, in the unit the model works in.
-    eval_tokens: Mapped[int | None] = mapped_column(BigInteger)
-    train_tokens: Mapped[int | None] = mapped_column(BigInteger)
-    eval_conversations: Mapped[int | None] = mapped_column(BigInteger)
-    error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    model: Mapped[Model] = relationship(back_populates="benchmarks")
-
-
 class Run(Base):
     """A unit of work for the device.
 
@@ -317,7 +151,7 @@ class Run(Base):
     here contends for the same GPU.
     """
 
-    __tablename__ = "runs"
+    __tablename__ = "execution_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(Key, primary_key=True, default=uuid.uuid4)
     kind: Mapped[RunKind] = mapped_column(Enum(RunKind, name="run_kind"))
@@ -330,36 +164,120 @@ class Run(Base):
     #: Ordering within the queue. A new run goes in above the highest; a drag
     #: writes the midpoint of its new neighbours, so reordering touches one row.
     rank: Mapped[float] = mapped_column(Float, default=0.0)
-    #: Everything needed to run it, and to run it again from a retry.
-    config: Mapped[dict] = mapped_column(Json, default=dict)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     stage: Mapped[str | None] = mapped_column(String(120))
-    #: What it produced: a `models.id`, a `benchmarks.id`, or a `messages.id`.
-    #: Not a foreign key — it points into whichever table the kind writes.
-    ref_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    #: A summary for kinds whose output has nowhere else to live.
-    result: Mapped[dict | None] = mapped_column(Json)
     error: Mapped[str | None] = mapped_column(Text)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     #: The run whose model this one consumes. A real reference, unlike `ref_id`,
     #: because it always names another row here.
     depends_on: Mapped[uuid.UUID | None] = mapped_column(
-        Key, ForeignKey("runs.id", ondelete="SET NULL")
+        Key, ForeignKey("execution_jobs.id", ondelete="SET NULL")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class QueueState(Base):
-    """Whether the runner is draining the queue.
+    training: Mapped["TrainingRun | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
+    tokenizer_build: Mapped["TokenizerBuild | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
+    benchmark_dispatch: Mapped["BenchmarkDispatch | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
 
-    A row rather than a flag in memory: pausing exists so the machine can be
-    left alone, and a restart in the middle of that must not quietly resume.
-    """
+    def _domain(self):
+        if self.kind in (RunKind.train, RunKind.rl):
+            if self.training is None:
+                self.training = TrainingRun(training_type="rl" if self.kind == RunKind.rl else "pretrain")
+            return self.training
+        if self.kind == RunKind.tokenize:
+            if self.tokenizer_build is None:
+                self.tokenizer_build = TokenizerBuild()
+            return self.tokenizer_build
+        if self.kind == RunKind.benchmark:
+            if self.benchmark_dispatch is None:
+                self.benchmark_dispatch = BenchmarkDispatch()
+            return self.benchmark_dispatch
+        raise ValueError(f"unsupported execution kind {self.kind}")
 
-    __tablename__ = "queue_state"
+    @property
+    def config(self):
+        return self._domain().config or {}
 
-    only_row: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
-    paused: Mapped[bool] = mapped_column(Boolean, default=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    @config.setter
+    def config(self, value):
+        domain = self._domain()
+        domain.config = value
+        if isinstance(domain, TrainingRun):
+            domain.training_type = "rl" if self.kind == RunKind.rl else "sft" if value.get("base_model") else "pretrain"
+            domain.target_model_id = _uuid(value.get("model_name"))
+        elif isinstance(domain, TokenizerBuild):
+            domain.target_tokenizer_id = _uuid(value.get("tokenizer_id"))
+
+    @property
+    def result(self):
+        return self._domain().result
+
+    @result.setter
+    def result(self, value):
+        self._domain().result = value
+
+    @property
+    def ref_id(self):
+        domain = self._domain()
+        if isinstance(domain, TrainingRun):
+            return domain.model_id
+        if isinstance(domain, TokenizerBuild):
+            return domain.tokenizer_id
+        return domain.benchmark_id
+
+    @ref_id.setter
+    def ref_id(self, value):
+        domain = self._domain()
+        if isinstance(domain, TrainingRun):
+            domain.model_id = value
+        elif isinstance(domain, TokenizerBuild):
+            domain.tokenizer_id = value
+        else:
+            domain.benchmark_id = value
+
+
+def _uuid(value):
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError):
+        return None  # Historical runs may predate reserved output UUIDs.
+
+
+class TrainingRun(Base):
+    __tablename__ = "training_runs"
+    __table_args__ = (CheckConstraint("training_type IN ('pretrain','sft','rl')"),)
+    job_id: Mapped[uuid.UUID] = mapped_column(Key, ForeignKey("execution_jobs.id", ondelete="CASCADE"), primary_key=True)
+    training_type: Mapped[str] = mapped_column(String(12))
+    config: Mapped[dict] = mapped_column(Json, default=dict)
+    result: Mapped[dict | None] = mapped_column(Json)
+    target_model_id: Mapped[uuid.UUID | None] = mapped_column(Key)
+    model_id: Mapped[uuid.UUID | None] = mapped_column(Key, ForeignKey("models.id", ondelete="SET NULL"))
+
+
+class TokenizerBuild(Base):
+    __tablename__ = "tokenizer_builds"
+    job_id: Mapped[uuid.UUID] = mapped_column(Key, ForeignKey("execution_jobs.id", ondelete="CASCADE"), primary_key=True)
+    config: Mapped[dict] = mapped_column(Json, default=dict)
+    result: Mapped[dict | None] = mapped_column(Json)
+    target_tokenizer_id: Mapped[uuid.UUID | None] = mapped_column(Key)
+    tokenizer_id: Mapped[uuid.UUID | None] = mapped_column(Key, ForeignKey("tokenizers.id", ondelete="SET NULL"))
+
+
+class BenchmarkDispatch(Base):
+    """Queue input and remote reference; scoring/history belongs to bench-engine."""
+    __tablename__ = "benchmark_dispatches"
+    job_id: Mapped[uuid.UUID] = mapped_column(Key, ForeignKey("execution_jobs.id", ondelete="CASCADE"), primary_key=True)
+    config: Mapped[dict] = mapped_column(Json, default=dict)
+    benchmark_id: Mapped[uuid.UUID | None] = mapped_column(Key)
+
+    @property
+    def result(self):
+        return {"benchmark_id": str(self.benchmark_id)} if self.benchmark_id else None
+
+    @result.setter
+    def result(self, value):
+        if value and value.get("benchmark_id"):
+            self.benchmark_id = _uuid(value["benchmark_id"])

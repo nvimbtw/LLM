@@ -356,15 +356,14 @@ for cache freshness, session isolation, and selection readiness.
 
 ### Where the data lives
 
-The backend owns people, sessions and presets. Everything else — models,
-conversations, runs, scores, usage — belongs to the LLM engine, and the
-backend forwards to it. So a route here is `/chats`, `/models`, `/runs`,
-`/benchmarks`, `/usage`, `/tokenize`, and the shape that comes back is the
-LLM engine's.
+People, sessions, presets, conversations, files and usage are owned by Rust;
+runs/models by the LLM engine,
+and scores by bench-engine. Public paths remain `/chats`, `/models`, `/runs`
+and `/benchmarks`; the backend resolves ownership.
 
 Two names are adapted at the wire rather than renamed through every component,
 each in one place: the LLM engine's `run_id` is this side's `id_job` (`lib/jobs.ts`),
-and its `benchmark_id` is `id_run` (`lib/benchmark.ts`). Nothing else is
+and bench-engine’s `benchmark_id` is `id_run` (`lib/benchmark.ts`). Nothing else is
 reshaped — a field the LLM engine adds arrives without a change here.
 
 ### Stream protocol (chat)
@@ -1698,3 +1697,21 @@ bun run lint        # ESLint
 bun run format      # Prettier
 bun run typecheck   # tsc --noEmit
 ```
+
+
+## Sprint ownership and recovery
+
+Chat history prefetch, pending-request sharing and session cache invalidation
+remain in `lib/chat-history.ts`. Chat sockets send a request UUID; completed
+frames represent committed backend messages. See [conversation protocol](../backend/conversations.md).
+The job board supports training, RL, tokenizer and benchmark work, with typed
+`output` links; interactive chat has no job kind. New benchmarks offer English
+language only. Historical suite tabs retain their original report interpretation.
+Failed/cancelled training jobs offer **Recover latest**, using their stored
+configuration; checkpoints offer **Keep** to exempt a generation from automatic
+retention. Queue pause lasts only until engine restart. Testing and latency
+comparison are separate from these implementation changes.
+
+Legacy `language_v3` benchmark reports remain in a separate history tab with their
+original score version. They cannot be newly queued or retried; the active
+benchmark composer offers `language` only.

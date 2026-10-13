@@ -86,7 +86,7 @@ async def test_a_failing_handler_fails_only_its_own_run(store_session, registry,
 
 async def test_a_kind_with_no_handler_fails_rather_than_hanging(store_session, registry):
     runner = Runner(registry, {})
-    run_id = runner.enqueue(RunKind.chat, label="orphan", config={})
+    run_id = runner.enqueue(RunKind.train, label="orphan", config={})
 
     await drain(runner)
 
@@ -177,13 +177,11 @@ async def test_a_paused_queue_holds_the_line(store_session, registry, ran):
     runner = Runner(registry, {RunKind.train: handler_recording(ran)})
     runner.enqueue(RunKind.train, label="t", config={"n": 1})
 
-    with store.session() as db:
-        q.set_paused(db, True)
+    runner.set_paused(True)
     await drain(runner)
     assert ran == []
 
-    with store.session() as db:
-        q.set_paused(db, False)
+    runner.set_paused(False)
     await drain(runner)
     assert len(ran) == 1
 
@@ -310,3 +308,13 @@ async def test_the_queue_survives_a_restart(store_session, registry, ran):
     assert [c["n"] for c in ran] == [2]
     with store.session() as db:
         assert db.get(store.Run, still_queued).status is RunStatus.done
+
+
+async def test_pause_is_not_inherited_by_a_new_runner(store_session,registry,ran):
+    first = Runner(registry,{RunKind.train:handler_recording(ran)})
+    first.set_paused(True)
+    first.enqueue(RunKind.train,label='kept',config={})
+    second = Runner(registry,{RunKind.train:handler_recording(ran)})
+    assert second.paused is False
+    await drain(second)
+    assert len(ran) == 1

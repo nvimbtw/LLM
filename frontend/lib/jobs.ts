@@ -15,7 +15,7 @@ import {
 // order. `config` travels with each row, so a finished job can seed a new one
 // without a second request.
 
-export type JobKind = "train" | "benchmark" | "chat" | "tokenize" | "rl"
+export type JobKind = "train" | "benchmark" | "tokenize" | "rl"
 
 export type JobStatus =
   // Queued behind another job and not yet runnable: it consumes the model that job
@@ -43,6 +43,7 @@ export interface Job {
   stage: string | null
   // What the job produced: a model id, a benchmark run id, or a message id.
   ref_id: string | null
+  output: { type: "model" | "tokenizer" | "benchmark"; id: string | null }
   /** The run's own summary, for whatever has no table to read it back from. */
   result: unknown
   /**
@@ -103,14 +104,15 @@ export function isRunning(job: Job): boolean {
 /** A train job's config, or null when this isn't one. */
 export function trainConfig(job: Job): TrainConfig | null {
   if (job.kind !== "train") return null
-  return job.config as TrainConfig
+  const config = job.config as TrainConfig & { base_model?: string; display_name?: string }
+  return { ...config, model_name: config.display_name ?? config.model_name, mode: config.base_model ? "sft" : "pretrain", base_model_id: config.base_model ?? config.base_model_id }
 }
 
 /** The model a benchmark job scores. */
 export function benchmarkModelId(job: Job): string | null {
   if (job.kind !== "benchmark") return null
-  const config = job.config as { id_model?: string }
-  return config?.id_model ?? null
+  const config = job.config as { model_name?: string }
+  return config?.model_name ?? null
 }
 
 /**
@@ -123,6 +125,7 @@ export function benchmarkSuiteOf(job: Job): BenchmarkSuite {
   const config = job.config as { suite?: BenchmarkSuite }
   if (config?.suite === "markup") return "markup"
   if (config?.suite === "assistant") return "assistant"
+  if (config?.suite === "language_v3") return "language_v3"
   return "language"
 }
 
@@ -139,29 +142,8 @@ export function benchmarkBudgetOf(job: Job): Tier | null {
   return config?.budget ?? null
 }
 
-/** The chat a chat job replies in, so the row can link back to the conversation. */
-export function chatId(job: Job): string | null {
-  if (job.kind !== "chat") return null
-  const config = job.config as { id_chat?: string }
-  return config?.id_chat ?? null
-}
-
-/**
- * Where a job's row should link to.
- *
- * Everything gets its own page — except a chat turn, which is never queued from
- * the jobs menu in the first place: it is a reply inside a conversation you are
- * already reading, and the conversation is where the reply belongs. Sending you to
- * /jobs/{id} for one is a detour to a page whose only useful control is a link
- * back, so the row goes straight to the chat instead.
- *
- * A chat job with no conversation on its config (older rows) still falls back to
- * the job page rather than to a broken link.
- */
-export function jobHref(job: Job): string {
-  const chat = chatId(job)
-  return chat ? `/chat/${chat}` : `/jobs/${job.id_job}`
-}
+/** Every durable execution has its own job page. */
+export function jobHref(job: Job): string { return `/jobs/${job.id_job}` }
 
 /**
  * The three thinking budgets, as the SFT corpus tags them.
@@ -236,7 +218,7 @@ async function post(path: string, body: unknown): Promise<Response> {
 
 //: Where each kind is queued. `chat` is not here: a turn is answered on the
 //: socket that asked for it rather than put on the line — see frontend/CLAUDE.md.
-const QUEUE_PATH: Record<Exclude<JobKind, "chat">, string> = {
+const QUEUE_PATH: Record<JobKind, string> = {
   train: "/runs/train",
   benchmark: "/runs/benchmark",
   tokenize: "/runs/tokenize",
@@ -285,7 +267,7 @@ function forEngine(config: TrainConfig): Record<string, unknown> {
 }
 
 async function queue(
-  kind: Exclude<JobKind, "chat">,
+  kind: JobKind,
   config: unknown,
   steps: FollowUp[],
   path: string = QUEUE_PATH[kind]
@@ -371,16 +353,21 @@ export async function cancelJob(id: string): Promise<void> {
  * server-side clone, so a retry is an ordinary new run and the failed one stays in
  * the history as what happened.
  */
-export function retryJob(job: Job): Promise<Job> {
-  if (job.kind === "chat")
-    throw new Error("A chat turn is re-asked, not re-run.")
-  return queue(job.kind, job.config, [])
+export async function retryJob(job: Job): Promise<Job> {
+  const res = await post(`/runs/${job.id_job}/retry`, {})
+  return fromRow(await res.json())
 }
 
 export async function deleteJob(id: string): Promise<void> {
   const res = await apiFetch(`/runs/${id}`, { method: "DELETE" })
   if (!res.ok)
     throw new Error((await res.text()) || "Failed to delete the job.")
+}
+
+export async function recoverJob(id: string): Promise<Job> {
+  const res = await apiFetch(`/runs/${id}/recover`, { method: "POST" })
+  if (!res.ok) throw new Error((await res.text()) || "No completed recovery point is available.")
+  return fromRow((await res.json()) as RunRow)
 }
 
 export async function setPaused(paused: boolean): Promise<void> {
@@ -393,7 +380,6 @@ export async function setPaused(paused: boolean): Promise<void> {
 export const KIND_LABEL: Record<JobKind, string> = {
   train: "Train",
   benchmark: "Benchmark",
-  chat: "Chat",
   tokenize: "Tokenizer",
   rl: "Gym",
 }
@@ -412,7 +398,6 @@ export const KIND_LABEL: Record<JobKind, string> = {
 export const KIND_CHIP: Record<JobKind, string> = {
   train: "text-kind-train bg-kind-train/14",
   benchmark: "text-kind-benchmark bg-kind-benchmark/14",
-  chat: "text-kind-chat bg-kind-chat/14",
   tokenize: "text-kind-tokenize bg-kind-tokenize/14",
   rl: "text-kind-rl bg-kind-rl/14",
 }
@@ -441,8 +426,6 @@ export function throbberMode(
       return "training"
     case "benchmark":
       return "benchmarking"
-    case "chat":
-      return "generating"
     // Its own state now. It used to borrow training's, on the grounds that a
     // fourth motion would be one nobody could tell apart — but the mark's
     // vocabulary is colour rather than motion, and cutting each patch in two is

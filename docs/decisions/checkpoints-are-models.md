@@ -1,5 +1,10 @@
 # A checkpoint is a model, not a lesser artifact
 
+Update 2026-10-09: ownership and retention portions are superseded by
+[Execution and ownership](execution-and-ownership.md). The original rationale
+below records the design at its date; current contracts are in the module docs.
+
+
 - **Date**: 2026-08-29
 - **Status**: Implemented
 

@@ -7,17 +7,19 @@ a pipeline.
 """
 
 import uuid
+import shutil
+
+from llm import storage
 
 import store
 from llm.config import EvalConfig, RlConfig, SftConfig, TokenizerConfig, TrainConfig
-from llm.orchestrate import evaluate as eval_pipeline
 from llm.orchestrate import rl as rl_pipeline
 from llm.orchestrate import sft as sft_pipeline
 from llm.orchestrate import tokenize as tokenize_pipeline
 from llm.orchestrate import train as train_pipeline
 from llm.train.progress import Checkpoint
 from store import queries as q
-from store.schema import BenchmarkStatus, RunKind, Suite
+from store.schema import RunKind
 
 #: A model's weights live at `artifacts/models/<id>/`, so the pipeline's
 #: `model_name` is the id and `display_name` is what a person calls it.
@@ -121,16 +123,9 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
     `final` frames announce the run's own finished model, whose row `train`
     writes when the pipeline returns; there is nothing to do with one here.
 
-    **Nothing is raised.** This runs on the progress callback of a run that is
-    still training, and that callback is called from inside the training loop
-    with nothing between the two — so an exception here does not fail a
-    checkpoint, it fails the run, after the weights it is about to lose were
-    already written to disk. An unregistered checkpoint costs one row; a raise
-    costs everything computed since the run began.
-
-    The broad catch is the point rather than a shortcut around a known error:
-    what is being guaranteed is that no fault of the database's, in any shape,
-    reaches the loop. It says so on stdout, which is the run's log.
+    Registration failures return None after logging. The API runner then stops
+    training; the complete artifact remains available for startup adoption and
+    further unregistered generations cannot accumulate.
     """
     if checkpoint.final:
         return None
@@ -139,6 +134,7 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
     except ValueError:
         return None
 
+    retired = []
     try:
         with store.session() as db:
             run = db.get(store.Run, run_id)
@@ -171,6 +167,7 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
                 parameters={
                     "config": config,
                     "result": {
+                        "recovery": True,
                         # Absent from a producer that does not measure it, the
                         # way every unmeasured figure is absent here.
                         **(
@@ -190,6 +187,13 @@ def record_checkpoint(run_id: uuid.UUID, checkpoint: Checkpoint) -> uuid.UUID | 
                     },
                 },
             )
+            parent_id = _model_id(config.get("model_name"))
+            if parent_id is not None:
+                retired = q.retire_recovery(db, parent_id, model_id)
+        for old_id in retired:
+            directory = storage.model_dir(str(old_id))
+            if directory.exists():
+                shutil.rmtree(directory)
     except Exception as error:  # noqa: BLE001 — see the docstring
         # First line only: a driver error carries the statement, its parameters
         # and a documentation link, and this is going into a running run's log
@@ -267,47 +271,24 @@ def tokenize(config: dict, progress, cancel, owner: str | None = None) -> dict:
 
 
 def benchmark(config: dict, progress, cancel, owner: str | None = None) -> dict:
-    """Score one model on one suite.
-
-    The row opens here rather than at enqueue: a benchmark row means a
-    measurement was attempted, so a run cancelled in the queue leaves none.
-    """
+    """Dispatch through Rust; this queue remains the execution-state authority."""
+    from llm.backend import Hop
     cfg = EvalConfig(**config)
-    model_id = uuid.UUID(cfg.model_name)
-
-    with store.session() as db:
-        model = q.get_model(db, model_id)
-        if model is None:
-            raise FileNotFoundError(f"no model {cfg.model_name}")
-        opened = q.open_benchmark(db, model=model, suite=Suite(cfg.suite))
-        benchmark_id, display_name = opened.id, model.name
-
-    try:
-        report = eval_pipeline.run(cfg, progress, cancel)
-    except Exception as e:
-        with store.session() as db:
-            q.close_benchmark(
-                db, benchmark_id, status=BenchmarkStatus.failed, error=f"{type(e).__name__}: {e}"
-            )
-        raise
-
-    # The pipeline knows the model by its directory; the name is a row it has
-    # never heard of, so it is filled in here.
-    report["model"]["name"] = display_name
-
-    score = report.get("score") or {}
-    with store.session() as db:
-        q.close_benchmark(
-            db,
-            benchmark_id,
-            status=BenchmarkStatus.done,
-            score=score.get("score"),
-            suite_version=score.get("version", 1),
-            report=report,
-            eval_tokens=report.get("tokens_used"),
-            eval_conversations=report.get("conversations"),
-        )
-    return {**report, "benchmark_id": str(benchmark_id)}
+    benchmark_id = config["execution_id"]
+    with Hop(owner) as backend:
+        backend.request("POST", f"/internal/bench/execute/{benchmark_id}", json=cfg.model_dump())
+        while True:
+            row, _ = backend.request("GET", f"/internal/bench/benchmarks/{benchmark_id}")
+            if row["status"] in ("done", "cancelled"):
+                return {**(row.get("report") or {}), "benchmark_id": benchmark_id}
+            if row["status"] == "failed":
+                raise RuntimeError(row.get("error") or "benchmark failed")
+            if cancel.is_set():
+                backend.request("POST", f"/internal/bench/execute/{benchmark_id}/cancel")
+            progress({"stage": "benchmark", "detail": "measuring English language"})
+            # An already-set cancellation event must not turn this into a busy loop.
+            import time
+            time.sleep(0.5)
 
 
 def _summarize(result: dict) -> dict:

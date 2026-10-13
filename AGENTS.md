@@ -10,28 +10,29 @@ in front of it, a Next.js UI in front of that.
 ```
 llm-engine/   training, inference, evaluation — PyTorch, FastAPI.
 data-engine/  acquiring datasets and cleaning them — FastAPI, huggingface_hub.
+bench-engine/ English benchmark scoring and history — FastAPI.
 gyms-engine/  tasks, a sandboxed shell, and what a model scored — FastAPI.
 backend/      people, sessions, and the seam to the services — Rust, Actix, sqlx.
 frontend/     chat, the job board, model, data, benchmark and gym views — Next.js.
 ```
 
-Each module owns a database. The LLM engine owns models, conversations, runs and
-scores; the data engine owns datasets and the documents in them — including the
+Each module owns a database. The LLM engine owns models, training and execution scheduling; bench-engine
+owns benchmark history and scoring; the data engine owns datasets and the documents in them — including the
 text every model is trained on; the gyms engine owns gym runs and the
-trajectories in them; the backend owns users and presets. A request flows
+trajectories in them; the backend owns users, presets, conversations, messages and attachments. A request flows
 frontend → backend → a service and back the same way.
 
 **The Python services never speak to each other.** Everything either knows
 about the other arrives through the Rust backend. That is why the LLM engine, which
-trains on data it does not own, reads it *through* the backend: the one hop in
-this system that runs toward the backend rather than away from it. See
+trains on data it does not own, reads it *through* the backend. Bench-engine likewise requests model measurements
+through Rust. See
 [`docs/decisions/datasets-out-of-the-llm-engine.md`](docs/decisions/datasets-out-of-the-llm-engine.md).
 
 ## Where everything is
 
 | | |
 | --- | --- |
-| [`docs/llm-engine/`](docs/llm-engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/gyms-engine/`](docs/gyms-engine/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
+| [`docs/llm-engine/`](docs/llm-engine/) · [`docs/bench-engine/`](docs/bench-engine/) · [`docs/data-engine/`](docs/data-engine/) · [`docs/gyms-engine/`](docs/gyms-engine/) · [`docs/backend/`](docs/backend/) · [`docs/frontend/`](docs/frontend/) | What each module is: ownership, stack, layout, schema, routes, conventions, gotchas. |
 | [`docs/conventions.md`](docs/conventions.md) | The coding rules (R1–R21) every change is judged against. |
 | [`docs/decisions/`](docs/decisions/) | Decision records — what was weighed and rejected, dated, once. |
 | [`docs/README.md`](docs/README.md) | The spec for the docs themselves: shape of a module directory, what belongs in one. |
@@ -102,7 +103,7 @@ the shared map. Keeping them true is cheaper than everyone guessing.
 ```sh
 cp .env.example .env
 for k in JWT_SECRET LLM_ENGINE_SERVICE_SECRET DATA_ENGINE_SERVICE_SECRET \
-         GYMS_ENGINE_SERVICE_SECRET BACKEND_SERVICE_SECRET SEARXNG_SECRET; do
+         GYMS_ENGINE_SERVICE_SECRET BENCH_ENGINE_SERVICE_SECRET BACKEND_SERVICE_SECRET SEARXNG_SECRET; do
     printf '%s=%s\n' "$k" "$(openssl rand -hex 32)"
 done >> .env
 docker compose up    # everything, hot-reloading
@@ -122,23 +123,25 @@ Natively, which is still the better loop for LLM engine work:
 cd llm-engine      && .venv/bin/uvicorn main:app --port 8001   # or let the backend spawn it
 cd data-engine && .venv/bin/uvicorn main:app --port 8002   # or let the backend spawn it
 cd gyms-engine        && .venv/bin/uvicorn main:app --port 8003   # or let the backend spawn it
+cd bench-engine && .venv/bin/uvicorn main:app --port 8004
 cd backend     && cargo run                                 # needs DATABASE_URL, JWT_SECRET
 cd frontend    && bun run dev
 ```
 
 The backend spawns the Python services as children unless `LLM_ENGINE_AUTOSTART` /
-`DATA_ENGINE_AUTOSTART` / `GYMS_ENGINE_AUTOSTART` is false, and health-checks each before reporting ready.
-Set `LLM_ENGINE_SERVICE_SECRET` and `DATA_ENGINE_SERVICE_SECRET` on both sides to
+`DATA_ENGINE_AUTOSTART` / `GYMS_ENGINE_AUTOSTART` / `BENCH_ENGINE_AUTOSTART` is false, and health-checks each before reporting ready.
+Set each service’s `*_SERVICE_SECRET` on both sides to
 authenticate the hops; unset leaves a service open and it says so at startup. A
 token is addressed to one service by name and is refused by the other.
-`BACKEND_SERVICE_SECRET` guards the one hop that runs the other way — the LLM engine
-reading, through the backend, datasets the data engine owns — and behaves the
+`BACKEND_SERVICE_SECRET` guards reverse calls from the LLM and bench engines,
+scoped by issuer, and behaves the
 same way when unset.
 
 Each Python service needs its own database, migrated with `alembic upgrade head`:
 `LLM_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_engine`),
 `DATA_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_data`)
-and `GYMS_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`).
+`GYMS_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gyms`),
+and `BENCH_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_bench`).
 
 # Tests
 
@@ -146,6 +149,7 @@ and `GYMS_ENGINE_DATABASE_URL` (default `postgresql+psycopg://localhost/slate_gy
 cd llm-engine      && .venv/bin/python -m pytest tests/   # incl. the dataflow trace
 cd data-engine && .venv/bin/python -m pytest tests/   # incl. the migration drift check
 cd gyms-engine        && .venv/bin/python -m pytest tests/   # no Docker, no Postgres
+cd bench-engine && .venv/bin/python -m pytest tests/
 cd backend     && cargo test --workspace              # needs DATABASE_URL
 cd frontend    && bun run typecheck && bun run lint
 ```

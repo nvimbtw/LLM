@@ -99,6 +99,32 @@ async fn cancel(_admin: AdminUser, run_id: web::Path<Uuid>, engine: web::Data<Pr
     )
 }
 
+#[post("/{run_id}/recover")]
+async fn recover(admin: AdminUser, run_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
+    answer(
+        engine
+            .post(
+                &started_by(&admin),
+                &format!("/runs/{run_id}/recover"),
+                Value::Null,
+            )
+            .await?,
+    )
+}
+
+#[post("/{run_id}/retry")]
+async fn retry(admin: AdminUser, run_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
+    answer(
+        engine
+            .post(
+                &started_by(&admin),
+                &format!("/runs/{run_id}/retry"),
+                Value::Null,
+            )
+            .await?,
+    )
+}
+
 #[patch("/{run_id}")]
 async fn reorder(
     _admin: AdminUser,
@@ -149,6 +175,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(list);
     cfg.service(get_one);
     cfg.service(cancel);
+    cfg.service(recover);
+    cfg.service(retry);
     cfg.service(reorder);
     cfg.service(remove);
 }

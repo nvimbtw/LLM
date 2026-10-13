@@ -7,7 +7,7 @@ from llm.train.curriculum import Lessons
 VALIDATION_SEED_STRIDE = 10_000
 
 
-def prepare(cfg, client):
+def prepare(cfg, client, saved=None):
     if cfg.curriculum is None:
         return None
     catalogue = next((gym for gym in client.catalogue() if gym["id"] == cfg.gym_id), None)
@@ -18,7 +18,8 @@ def prepare(cfg, client):
              for task in catalogue["task_types"] if task["id"] in selected]
     if len(tasks) != len(selected):
         raise ValueError("curriculum contains unknown task types")
-    saved = train.run_record(cfg.base_model).get("curriculum")
+    if saved is None:
+        saved = train.run_record(cfg.base_model).get("curriculum")
     return Lessons(tasks, cfg.curriculum, saved)
 
 

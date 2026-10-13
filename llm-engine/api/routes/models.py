@@ -16,7 +16,7 @@ import store
 from api import auth
 from llm import storage
 from store import queries as q
-from store.schema import Benchmark, Model, Suite
+from store.schema import Model
 
 router = APIRouter(tags=["models"])
 
@@ -26,6 +26,7 @@ class ModelEdit(BaseModel):
     description: str | None = None
     family: str | None = Field(default=None, max_length=120)
     published: bool | None = None
+    recovery_keep: bool | None = None
 
 
 @router.get("/models")
@@ -49,7 +50,6 @@ def get_model(model_id: uuid.UUID):
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
         return {
             **_model(db, model, storage.model_dir(str(model_id))),
-            "benchmarks": [benchmark_row(b) for b in q.benchmarks_of(db, model_id)],
         }
 
 
@@ -62,6 +62,8 @@ def edit_model(model_id: uuid.UUID, body: ModelEdit):
         model = q.get_model(db, model_id)
         if model is None:
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
+        if "recovery_keep" in fields:
+            model.parameters = {**(model.parameters or {}), "recovery_keep": fields.pop("recovery_keep")}
         for key, value in fields.items():
             setattr(model, key, value)
         return _model(db, model, storage.model_dir(str(model_id)))
@@ -106,23 +108,6 @@ def list_checkpoints(model_id: uuid.UUID):
         }
 
 
-@router.get("/models/{model_id}/benchmarks")
-def list_benchmarks(model_id: uuid.UUID, limit: int = 50):
-    with store.session() as db:
-        return {"benchmarks": [benchmark_row(b) for b in q.benchmarks_of(db, model_id, limit)]}
-
-
-@router.get("/models/{model_id}/benchmarks/{suite}")
-def latest_benchmark(model_id: uuid.UUID, suite: Suite, version: int = 1):
-    """The newest comparable score. Suite and version both matter: a scoring
-    change moves the number without the model having changed."""
-    with store.session() as db:
-        found = q.latest_benchmark(db, model_id, suite, version)
-        if found is None:
-            raise HTTPException(status_code=404, detail=f"no {suite.value} score for {model_id}")
-        return benchmark_row(found)
-
-
 def _weight_dirs() -> list:
     return sorted((p for p in storage.models_dir().glob("*") if p.is_dir()), key=lambda p: p.name)
 
@@ -163,6 +148,7 @@ def _model(db, model: Model | None, directory) -> dict:
         "parent_id": str(model.parent_id) if model and model.parent_id else None,
         "checkpoint_step": model.checkpoint_step if model else None,
         "checkpoint_index": model.checkpoint_index if model else None,
+        "recovery_kept": bool(model and ((model.parameters or {}).get("recovery_keep") or (model.parameters or {}).get("recovery_referenced") or model.published)),
         "parameters": model.parameters if model else None,
         "created_at": model.created_at.isoformat() if model and model.created_at else None,
         "has_weights": bool(directory and (directory / "model.pt").is_file()),
@@ -234,20 +220,3 @@ def _remove_weights(model_id: uuid.UUID) -> bool:
         return False
     shutil.rmtree(directory)
     return True
-
-
-def benchmark_row(run: Benchmark) -> dict:
-    return {
-        "benchmark_id": str(run.id),
-        "model_id": str(run.model_id),
-        "model_name": run.model_name,
-        "suite": run.suite.value,
-        "suite_version": run.suite_version,
-        "status": run.status.value,
-        "score": run.score,
-        "eval_tokens": run.eval_tokens,
-        "eval_conversations": run.eval_conversations,
-        "error": run.error,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-    }

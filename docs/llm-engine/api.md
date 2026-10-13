@@ -13,29 +13,18 @@ upgrade is an HTTP request, so the socket routes are covered by the same check.
 FastAPI's own `/docs`, `/redoc` and `/openapi.json` bypass an app-level
 dependency, so all three are turned off.
 
-`/attachments` is the one route family whose payload is not JSON: `POST` takes a
-multipart file, `GET /attachments/{id}` answers with the bytes and the headers
-that say what they are, and `DELETE` discards a staged one. All three are scoped
-by the acting caller, like everything else here.
+Conversation/file persistence routes now live in Rust. Python exposes stateless
+`POST /chat` and `/chat/stream`, plus `/chat/prepare` (validate/render/count new
+turns and snapshot model attribution) and `/chat/context-floor` (return a history
+index). The stream emits `token`, `tool_call`, `done` with generation summary,
+or `error`. Rust commits the assistant message before sending its client-facing
+`done`; Python writes no transcript.
 
-`POST /chats/{id}/messages/stream` is the one with a protocol rather than a
-payload. It takes **exactly one** of `text` (a person asking) and `tool_result`
-(a tool answering a call the last reply made) — both is a caller that has lost
-track of which, neither is nothing to answer, and either is a 400.
-
-It answers as SSE, in three event kinds:
-
-```
-event: token      data: {"token": "..."}                      (repeated)
-event: tool_call  data: {"tool": "...", "argument": "..."}     (a call closed)
-event: done       data: {…message, "usage": {…, "tool_calls": [...]}}
-event: error      data: {"error": "..."}
-```
-
-`tool_call` fires the moment the closing marker is sampled, not at the end of the
-turn, so the caller can start the work while the rest of the reply is still
-generating. The row is written when the last token lands, so a dropped
-connection loses the reply rather than storing half of one.
+`POST /measure/{id}` returns model likelihood, unconstrained prompt samples and
+ablation measurements. `/measure/{id}/cancel` signals a cooperative stop. These
+are model primitives used by bench-engine through Rust, with no scoring policy
+or benchmark table here. The queued `/eval` route accepts only `language` and
+dispatches through Rust. [Execution admission](execution.md) covers busy responses.
 
 ## Refusing the shell for a turn: `max_tool_calls`
 
@@ -60,8 +49,8 @@ field instead of a constant. See
 it — so a directory with no row is a model trained outside the queue and a row
 with no directory is one whose weights were removed.
 
-**`checkpoints: bool = False` filters both halves of that join.** A run leaves
-roughly ten intermediates and each one is a model in every respect, directory
+**`checkpoints: bool = False` filters both halves of that join.** A run may retain explicit snapshots alongside
+its latest recovery point and each one is a model in every respect, directory
 included, so filtering only the rows would let every one of them back in through
 the disk half — reported as an unregistered model, which is the one shape this
 listing treats as interesting. `_joinable_dirs` therefore asks the database for
@@ -123,7 +112,7 @@ truncation, reachable by any model with a small window and a long question.
 
 ## `/prune`'s floor: `context_floor`, and why nothing is written down
 
-`GET /chats/{id}/context-floor` answers "where would this chat's history be cut
+Rust’s `GET /chats/{id}/context-floor`, using Python’s `POST /chat/context-floor`, answers "where would this chat's history be cut
 if it were fitting the model's own `ctx_window` rather than whatever
 `context_multiplier` extends it to" — `llm.chat.template.context_floor` runs the
 identical newest-to-oldest walk `build_prompt` already does (`_fit_history`,
@@ -132,8 +121,8 @@ It is read-only: nothing is stored, on either side of the call.
 
 The frontend is what remembers the answer — a message id, kept in
 `localStorage` per chat (`lib/context-floor.ts`) — and resends it as
-`Ask.history_floor` on every later turn. `_floored` in `api/routes/chats.py`
-slices `q.messages_of(...)` against it before `ChatConfig.turns` is built, so
+`history_floor` on every later turn. Rust slices authorized stored messages
+against it before `ChatConfig.turns` is built, so
 history before the floor never reaches `build_prompt` at all, regardless of how
 wide a raised `context_multiplier` would otherwise let it reach. A floor that
 doesn't match any stored message — a stale id, another chat's — falls back to
@@ -193,3 +182,11 @@ another thread during the window takes the explicit-softmax path for one block.
 That is the same arithmetic (`bench.py` pins the two paths to 1e-5) and it is
 slower; the alternative is a second resident copy of the weights, which is the
 cost that cache exists to avoid.
+# Queue pause
+
+`POST /runs/pause?paused=true` stops admission of new queued work for the current
+engine process. It does not cancel the active job. `paused=false` wakes the
+runner; `GET /runs` reports that same process-local flag. Every restart starts
+unpaused. Job records, ordering, dependencies and interrupted-job handling stay
+durable; restarting does not itself resume interrupted training. Migration
+`d8c10f6a21b4` drops the old `queue_state` table without altering job history.

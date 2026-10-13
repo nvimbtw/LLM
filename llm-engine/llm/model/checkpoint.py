@@ -9,13 +9,14 @@ alongside the weights means loading never needs out-of-band knowledge.
 
 `save`/`load` are what inference reads and their meaning does not move.
 `save_state`/`load_state` are the training pair: the same `version`, `arch` and
-`state_dict` plus everything a run needs to be picked up where it stopped. That
-overlap is deliberate — `load` reads a state file and `load_state` reads a plain
-weights file, so "resume from a finished model" and "resume from a checkpoint"
-are one code path.
+training state needed to continue. Recovery files reference sibling weights
+without duplicating them; old self-contained files remain readable. Both
+loaders support these forms, while plain weights carry no optimizer history.
 """
 
+import os
 import random
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,8 +38,7 @@ _ARCH_FIELDS = (
 
 
 def save(model: Transformer, path: Path, **extra) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    _publish(
         {
             "version": CHECKPOINT_VERSION,
             "arch": {name: getattr(model, name) for name in _ARCH_FIELDS},
@@ -50,6 +50,40 @@ def save(model: Transformer, path: Path, **extra) -> Path:
     return path
 
 
+def _publish(payload: dict, path: Path) -> None:
+    """Replace a checkpoint only after its new bytes have reached disk.
+
+    Staging beside the destination keeps rename on the same filesystem. Readers
+    opening the destination see either complete generation, never a partial zip.
+    A hard process kill can leave a hidden staging file; it is never a recovery
+    candidate and must be reconciled by recovery-storage cleanup.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".pending", delete=False
+        ) as output:
+            staging = Path(output.name)
+            torch.save(payload, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(staging, path)
+        sync_directory(path.parent)
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
+
+
+def sync_directory(directory: Path) -> None:
+    """Persist rename/link directory entries after their file bytes are synced."""
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def load(path: Path, device: str = "cpu") -> tuple[Transformer, dict]:
     if not path.is_file():
         raise FileNotFoundError(f"No weights at {path}")
@@ -57,6 +91,12 @@ def load(path: Path, device: str = "cpu") -> tuple[Transformer, dict]:
     # weights_only=True: a checkpoint is data, and unpickling arbitrary objects
     # from one is remote code execution if the file ever comes from elsewhere.
     blob = torch.load(path, map_location=device, weights_only=True)
+
+    if "state_dict" not in blob:
+        weights = torch.load(path.with_name("model.pt"), map_location=device, weights_only=True)
+        if weights.get("arch") != blob.get("arch") or weights.get("version") != blob.get("version"):
+            raise ValueError("Recovery weights do not match optimizer state")
+        blob["state_dict"] = weights["state_dict"]
 
     version = blob.get("version")
     if version != CHECKPOINT_VERSION:
@@ -162,6 +202,7 @@ def save_state(
     total_steps: int,
     rng: dict,
     extra: dict,
+    include_weights: bool = True,
 ) -> Path:
     """The full training state, beside the weights rather than instead of them.
 
@@ -169,12 +210,11 @@ def save_state(
     moments per parameter. That is the number `progress.TARGET_CHECKPOINTS`
     trades against.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    _publish(
         {
             "version": CHECKPOINT_VERSION,
             "arch": {name: getattr(model, name) for name in _ARCH_FIELDS},
-            "state_dict": model.state_dict(),
+            **({"state_dict": model.state_dict()} if include_weights else {}),
             "optimizer": optimizer.state_dict(),
             "step": step,
             "epoch": epoch,
@@ -200,6 +240,11 @@ def load_state(path: Path, device: str = "cpu") -> TrainState:
         raise FileNotFoundError(f"No training state at {path}")
 
     blob = torch.load(path, map_location=device, weights_only=True)
+    if "state_dict" not in blob:
+        weights = torch.load(path.with_name("model.pt"), map_location=device, weights_only=True)
+        if weights.get("version") != blob.get("version") or weights.get("arch") != blob.get("arch"):
+            raise ValueError("Recovery weights and optimizer architecture differ")
+        blob["state_dict"] = weights["state_dict"]
     version = blob.get("version")
     if version != CHECKPOINT_VERSION:
         raise ValueError(

@@ -24,6 +24,7 @@ from api import chain, handlers
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
 from llm.orchestrate import chat as chat_pipeline
+from llm.model import device
 from llm.train.loop import release_device
 from llm.train.progress import Checkpoint, Progress, Tokenize
 from store import queries as q
@@ -53,6 +54,8 @@ class Runner:
         self._handlers = handlers
         self._wake: asyncio.Event | None = None
         self._current: uuid.UUID | None = None
+        self._paused = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── queueing ────────────────────────────────────────────────────────────
 
@@ -79,8 +82,17 @@ class Runner:
         Silent when nothing is draining — the loop rereads the queue when it
         starts, so there is nothing to miss.
         """
-        if self._wake is not None:
-            self._wake.set()
+        if self._wake is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(self._wake.set)
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = paused
+        if not paused:
+            self.wake()
 
     def cancel(self, run_id: uuid.UUID) -> bool:
         """Ask a run to stop. Queued rows stop immediately; a running one stops
@@ -105,6 +117,7 @@ class Runner:
         # The event belongs to whichever loop is draining, so it is made here
         # rather than in __init__ — an asyncio.Event binds to the first loop
         # that waits on it and refuses every one after.
+        self._loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
         try:
             while True:
@@ -119,6 +132,7 @@ class Runner:
                 self._wake.clear()
         finally:
             self._wake = None
+            self._loop = None
 
     async def _drain_once(self) -> None:
         while (claimed := self._claim()) is not None:
@@ -126,6 +140,8 @@ class Runner:
             await self._execute(run_id, kind, config, owner)
 
     def _claim(self) -> tuple[uuid.UUID, RunKind, dict, str | None] | None:
+        if self._paused:
+            return None
         with store.session() as db:
             run = q.claim_next(db)
             if run is None:
@@ -136,6 +152,7 @@ class Runner:
     async def _execute(
         self, run_id: uuid.UUID, kind: RunKind, config: dict, owner: str | None = None
     ) -> None:
+        config = {**config, "execution_id": str(run_id)} if kind == RunKind.benchmark else config
         handler = self._handlers.get(kind)
         if handler is None:
             self._finish(run_id, RunStatus.failed, error=f"no handler for {kind.value}")
@@ -147,26 +164,15 @@ class Runner:
 
         # One device, so a model parked in the chat cache is memory this run
         # cannot have. It is reloaded on the next chat; see `chat.evict`.
-        chat_pipeline.evict()
-
         try:
-            result = await asyncio.to_thread(handler, config, progress, live.cancel, owner)
-        except Exception as e:
-            # The worker future can outlive this catch. Its traceback otherwise
-            # keeps the failed training frame (model, gradients, optimizer) alive
-            # while release_device tries to return their memory to the driver.
-            traceback.clear_frames(e.__traceback__)
-            self._registry.finish(live, "failed", error=f"{type(e).__name__}: {e}")
-            self._finish(run_id, RunStatus.failed, error=f"{type(e).__name__}: {e}")
-        else:
+            result = await asyncio.to_thread(_work, handler, config, progress, live.cancel, owner)
+            produced = _produced(result)
+            if kind in (RunKind.train, RunKind.rl) and produced is not None:
+                handlers.attach_run(run_id, produced)
             if live.cancel.is_set():
+                self._finish(run_id, RunStatus.cancelled, result=result, ref_id=produced)
                 self._registry.finish(live, "cancelled", result=result)
-                self._finish(run_id, RunStatus.cancelled, result=result)
             else:
-                self._registry.finish(live, "completed", result=result)
-                produced = _produced(result)
-                if kind in (RunKind.train, RunKind.rl) and produced is not None:
-                    handlers.attach_run(run_id, produced)
                 self._finish(
                     run_id,
                     RunStatus.done,
@@ -174,17 +180,26 @@ class Runner:
                     ref_id=produced,
                     progress=1.0,
                 )
+                self._registry.finish(live, "completed", result=result)
+        except Exception as e:
+            # The worker future can outlive this catch. Its traceback otherwise
+            # keeps the failed training frame (model, gradients, optimizer) alive
+            # while release_device tries to return their memory to the driver.
+            traceback.clear_frames(e.__traceback__)
+            self._registry.finish(live, "failed", error=f"{type(e).__name__}: {e}")
+            self._finish(run_id, RunStatus.failed, error=f"{type(e).__name__}: {e}")
         finally:
             self._current = None
-            # In `finally` because a run that failed is the one that most needs
-            # it: an OOM leaves the largest pool of all behind, and the next run
-            # would meet a card that is still holding it.
-            release_device()
 
     def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> None:
         with store.session() as db:
-            q.finish_run(db, run_id, status, **fields)
-        if chain.promote(run_id, fields.get("ref_id")):
+            finished = q.finish_run(db, run_id, status, **fields)
+            produced = fields.get("ref_id") if status == RunStatus.done else None
+            if finished is not None and finished.kind == RunKind.benchmark and status == RunStatus.done:
+                produced = uuid.UUID(finished.config["model_name"])
+            elif finished is not None and finished.kind == RunKind.tokenize:
+                produced = None
+        if chain.promote(run_id, produced):
             self.wake()
 
     async def wait(self, run_id: uuid.UUID, poll_secs: float = 0.05) -> None:
@@ -208,6 +223,22 @@ class Runner:
         return self._current
 
 
+def _work(handler, config, progress, cancel, owner):
+    if handler is handlers.benchmark:
+        return handler(config, progress, cancel, owner)
+    with device.admit(wait=True):
+        if cancel.is_set():
+            return {"cancelled": True}
+        chat_pipeline.evict()
+        try:
+            return handler(config, progress, cancel, owner)
+        except Exception as error:
+            traceback.clear_frames(error.__traceback__)
+            raise
+        finally:
+            release_device()
+
+
 class _ThrottledProgress:
     """Publishes every frame live, writes a coarse one to the row on a timer."""
 
@@ -225,7 +256,8 @@ class _ThrottledProgress:
             # Written now, not on the timer below. That throttle exists so a
             # progress bar does not cost a row per step; a checkpoint frame it
             # swallowed would be weights on disk that nothing can name.
-            handlers.record_checkpoint(self._run_id, payload)
+            if handlers.record_checkpoint(self._run_id, payload) is None and not payload.final:
+                raise RuntimeError("Recovery point was saved but registration failed; stopping to preserve bounded recovery storage")
             return
 
         now = time.monotonic()
@@ -303,7 +335,7 @@ def _produced(result: dict | None) -> uuid.UUID | None:
     # Ordered, not a set: a *training* result also carries the `tokenizer_id` it
     # consumed, and `ref_id` is what a run produced. Reading that one first would
     # point every training row at a vocabulary.
-    for key in ("model_id", "benchmark_id", "message_id", "tokenizer_id"):
+    for key in ("model_id", "benchmark_id", "tokenizer_id"):
         value = result.get(key)
         if value:
             try:

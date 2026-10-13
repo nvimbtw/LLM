@@ -63,6 +63,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
   // defaults back on and the form disagrees with itself about being ready.
   const [taskTypes, setTaskTypes] = React.useState<string[] | null>(null)
   const [gymWeights, setGymWeights] = React.useState<Record<string, number>>({})
+  const [recoverySaves, setRecoverySaves] = React.useState(10)
   const [iterations, setIterations] = React.useState(50)
   const [tasksPerBatch, setTasksPerBatch] = React.useState(4)
   const [groupSize, setGroupSize] = React.useState(8)
@@ -175,6 +176,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         group_size: groupSize,
         tasks_per_batch: tasksPerBatch,
         iterations,
+        checkpoint_target: recoverySaves,
         max_rounds: noTools ? 1 : maxRounds,
         ...(adaptive ? { curriculum: { check_every: checkEvery } } : {}),
         lr: lrValue,
@@ -365,6 +367,9 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
       <Panel variant="open" title="The loop">
         <div className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-4">
+            <Field label="Recovery saves" hint="Approximate saves per run; 0 disables">
+              <Input type="number" min={0} step={1} value={recoverySaves} onChange={(event) => setRecoverySaves(clamp(event.target.valueAsNumber, 0, 10000))} />
+            </Field>
             <Field label="Iterations" hint="gym runs">
               <Input
                 type="number"

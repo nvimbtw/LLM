@@ -1,12 +1,8 @@
 "use client"
 
-import * as React from "react"
-import { useRouter } from "next/navigation"
 
 import { useJob } from "@/hooks/use-job"
-import { chatId } from "@/lib/jobs"
 import { JobBenchmarkPanel } from "./job-benchmark-panel"
-import { JobChatPanel } from "./job-chat-panel"
 import { JobHeader } from "./job-header"
 import { JobQueuedPanel } from "./job-queued-panel"
 import { JobRlPanel } from "./job-rl-panel"
@@ -23,26 +19,10 @@ export interface JobDetailProps {
 }
 
 export function JobDetail({ idJob }: JobDetailProps) {
-  const router = useRouter()
   const run = useJob(idJob)
   const { job, isLoading, error } = run
 
-  // A chat turn is queued from a conversation, never from the jobs menu, and the
-  // conversation is where its reply belongs — so its job page is a redirect rather
-  // than a place. `replace`, not `push`: this page is a waypoint, and leaving it in
-  // history would make back bounce straight through it again.
-  const chat = job ? chatId(job) : null
-  React.useEffect(() => {
-    if (chat) router.replace(`/chat/${chat}`)
-  }, [chat, router])
-
-  if (isLoading || chat) {
-    return (
-      <p className="py-16 text-center text-sm text-muted-foreground">
-        {chat ? "Opening the conversation…" : "Loading…"}
-      </p>
-    )
-  }
+  if (isLoading) return <p className="py-16 text-center text-sm text-muted-foreground">Loading…</p>
 
   if (!job) {
     return (
@@ -73,9 +53,7 @@ export function JobDetail({ idJob }: JobDetailProps) {
             {job.kind === "benchmark" && (
               <JobBenchmarkPanel job={job} run={run} />
             )}
-            {/* Only reachable for an older chat job whose config names no
-                conversation; anything current redirected above. */}
-            {job.kind === "chat" && <JobChatPanel job={job} run={run} />}
+
           </>
         )}
       </div>

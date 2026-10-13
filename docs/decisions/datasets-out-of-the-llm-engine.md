@@ -1,5 +1,10 @@
 # The LLM engine stopped owning training data
 
+Update 2026-10-09: ownership and retention portions are superseded by
+[Execution and ownership](execution-and-ownership.md). The original rationale
+below records the design at its date; current contracts are in the module docs.
+
+
 **2026-08-19**
 
 The LLM engine keeps models, vocabularies and the corpora it derives. The prose

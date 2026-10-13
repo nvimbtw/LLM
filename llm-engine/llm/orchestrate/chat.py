@@ -18,7 +18,7 @@ from llm.chat.markup import OpenBlocks, Rules
 from llm.chat.template import Role, ThinkBudget, Turn, build_prompt, context_floor
 from llm.config import ChatConfig, ChatTurn
 from llm.corpus import bpe
-from llm.model import checkpoint, sample
+from llm.model import checkpoint, sample, device
 from llm.train.loop import pick_device, release_device
 
 # Headroom left for the reply before the prompt starts evicting its own freshest
@@ -173,6 +173,11 @@ def _history(turns: list[ChatTurn]) -> list[Turn]:
 
 @torch.inference_mode()
 def stream(cfg: ChatConfig):
+    with device.admit():
+        return (yield from _stream(cfg))
+
+
+def _stream(cfg: ChatConfig):
     """Yield `(kind, data)` frames of the assistant turn, then return a summary.
 
     Two kinds: `("token", {"token": piece})` for every decoded fragment, and

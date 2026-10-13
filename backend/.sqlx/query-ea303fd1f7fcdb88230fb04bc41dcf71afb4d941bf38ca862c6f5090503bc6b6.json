@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.id,m.chat_id,m.role::text AS \"role!\",m.content,m.tokens,m.model_id,m.model_name,m.tool,m.argument,m.feedback::text,m.created_at FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=$1 AND c.id=$2 ORDER BY m.position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "chat_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "role!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "tokens",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "model_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "model_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "tool",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "argument",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "feedback",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      null,
+      false
+    ]
+  },
+  "hash": "ea303fd1f7fcdb88230fb04bc41dcf71afb4d941bf38ca862c6f5090503bc6b6"
+}

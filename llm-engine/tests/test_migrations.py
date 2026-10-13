@@ -96,7 +96,7 @@ def test_the_schema_round_trips_through_postgres(scratch_database):
 
     import store
     from store import queries as q
-    from store.schema import Feedback, Role, RunKind, Suite
+    from store.schema import RunKind, TrainingRun
 
     command.upgrade(Config("alembic.ini"), "head")
     store.configure(scratch_database)
@@ -106,10 +106,6 @@ def test_the_schema_round_trips_through_postgres(scratch_database):
         model = q.upsert_model(
             db, model_id=uuid.uuid4(), name="pg", parameters={"nested": {"ok": True}}
         )
-        chat = q.create_chat(db, owner, "c")
-        reply = q.add_message(db, role=Role.assistant, chat_id=chat.id, content="a", model_id=model.id)
-        q.set_feedback(db, reply.id, owner, Feedback.up)
-        q.open_benchmark(db, model=model, suite=Suite.language, score=42.0)
         q.enqueue(db, kind=RunKind.train, label="r", config={"a": [1, 2]})
         # The one statement that proves the `ALTER TYPE` ran: Postgres holds
         # `run_kind` as a real enum, and a value the migration failed to add is
@@ -123,10 +119,5 @@ def test_the_schema_round_trips_through_postgres(scratch_database):
         stored = q.find_model_by_name(db, "pg")
         assert stored.parameters == {"nested": {"ok": True}}
         assert q.find_tokenizer_by_name(db, "pg-vocab").datasets == [["A", None]]
-        assert q.messages_of(db, chat.id)[0].feedback is Feedback.up
-        assert q.latest_benchmark(db, stored.id, Suite.language, 1).score == 42.0
-
-        # The cascade is declared on the FK, which SQLite does not enforce by
-        # default — this is the dialect that actually applies it.
-        q.delete_model(db, stored.id)
-        assert q.benchmarks_of(db, stored.id) == []
+        from sqlalchemy import select
+        assert db.scalar(select(TrainingRun)).training_type == "pretrain"

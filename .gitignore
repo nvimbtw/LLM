@@ -18,11 +18,13 @@ __pycache__/
 llm-engine/.venv/
 data-engine/.venv/
 gyms-engine/.venv/
+bench-engine/.venv/
 
-# The LLM engine owns the corpora, models and datasets. They arrive via the fetch
+# Local packed corpora and model artifacts arrive via the fetch
 # scripts and are regenerated, not versioned. This also covers what a fetch
 # leaves beside them: .prepare_state.json and .prepare_logs/ from prepare_all.py.
 llm-engine/data/
+bench-engine/data/
 
 # Generated corpora and model artifacts left under the former module name.
 /engine/data/

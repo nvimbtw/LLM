@@ -13,6 +13,7 @@ export const DEFAULT_CONFIG: TrainConfig = {
   ctx_window: 64,
   heads: 4,
   layers: 2,
+  checkpoint_target: 10,
   epochs: 5,
   // The LLM engine's own default, restated so the composer never sends undefined.
   batch_size: 8,

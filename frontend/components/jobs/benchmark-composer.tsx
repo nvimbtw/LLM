@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select"
 import { useModels } from "@/hooks/use-models"
 import {
-  BENCHMARK_SUITES,
+  ACTIVE_BENCHMARK_SUITES,
   getSuite,
   type BenchmarkSuite,
   type SuiteInfo,
@@ -118,13 +118,13 @@ export function BenchmarkComposer() {
             <SelectTrigger className="w-full min-w-0 sm:w-44">
               <SelectValue>
                 {(value: string | null) =>
-                  BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
+                  ACTIVE_BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
                   "Language"
                 }
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {BENCHMARK_SUITES.map((option) => (
+              {ACTIVE_BENCHMARK_SUITES.map((option) => (
                 <SelectItem key={option.id} value={option.id}>
                   {option.label}
                 </SelectItem>
@@ -143,17 +143,8 @@ export function BenchmarkComposer() {
         </div>
       </Panel>
 
-      {/* The markup suite's pair stage needs nothing on disk, so an absent chat set
-          is a partial score rather than a broken run — and it is written from your
-          SFT conversations at the start of every benchmark, so it is usually a
-          statement about the first run rather than about the install. */}
-      {which === "markup" && suite && suite.chat_files === 0 && (
-        <p className="border-l border-border py-2 pl-3 text-sm text-muted-foreground">
-          No held-out chat set in{" "}
-          <code className="text-xs">{suite.chat_dir}</code> yet. It is exported
-          from your SFT conversations when this run starts, so this run scores
-          the marker pairs and the next one scores everything.
-        </p>
+      {suite && suite.corpus_files === 0 && (
+        <p className="text-sm text-muted-foreground">No held-out English corpus is installed. Compression measurements will be unavailable.</p>
       )}
     </div>
   )

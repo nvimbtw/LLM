@@ -81,16 +81,14 @@ def test_a_checkpoint_row_carries_the_shape_the_frame_measured(store_session):
 
 
 @pytest.mark.postgres
-def test_the_checkpoint_columns_survive_a_downgrade_and_come_back(scratch_database):  # noqa: F811
-    """Down and up again, then a real row through them. `compare_metadata` in
+def test_the_checkpoint_columns_survive_forward_ownership_migrations(scratch_database):  # noqa: F811
+    """Upgrade to the ownership schema, then write a real row through it. `compare_metadata` in
     `test_migrations.py` proves the columns are *declared*; only writing one
     proves the migration built something a checkpoint fits in."""
     from alembic import command
     from alembic.config import Config
 
     config = Config("alembic.ini")
-    command.upgrade(config, "head")
-    command.downgrade(config, "-1")
     command.upgrade(config, "head")
 
     store.configure(scratch_database)
@@ -158,6 +156,8 @@ async def test_a_checkpoint_row_does_not_wait_on_the_progress_throttle(
         )
         progress(checkpoint(1, model_id=first, step=10))
         progress(checkpoint(2, model_id=second, step=20))
+        with store.session() as db:
+            q.upsert_model(db, model_id=parent_id, name="Finished")
         return {"model_id": str(parent_id)}
 
     runner = Runner(registry, {RunKind.train: trains})
@@ -170,9 +170,10 @@ async def test_a_checkpoint_row_does_not_wait_on_the_progress_throttle(
 
     with store.session() as db:
         rows = q.checkpoints_of(db, parent_id)
-        assert [r.name for r in rows] == ["Sonnet #1", "Sonnet #2"]
-        assert [r.checkpoint_step for r in rows] == [10, 20]
-        assert [str(r.id) for r in rows] == [first, second]
+        assert [r.name for r in rows] == ["Sonnet #2"]
+        assert [r.checkpoint_step for r in rows] == [20]
+        assert [str(r.id) for r in rows] == [second]
+        assert q.get_model(db, uuid.UUID(first)) is None
         assert all(r.run_id == run_id and r.published is False for r in rows)
 
 

@@ -83,6 +83,39 @@ impl FromRequest for ServiceCaller {
     }
 }
 
+pub struct BenchCaller {
+    pub caller: auth::Caller,
+}
+
+impl FromRequest for BenchCaller {
+    type Error = actix_web::Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+        // A missing secret is not a missing *configuration*: unset is the
+        // development pair, announced at startup. What would be a fault is the
+        // policy object never being registered at all.
+        let Some(secret) = req.app_data::<web::Data<InboundSecret>>() else {
+            eprintln!("inbound service secret missing from app_data");
+            return ready(Err(ErrorInternalServerError("auth misconfigured")));
+        };
+        let header = req
+            .headers()
+            .get(AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+
+        ready(
+            secret
+                .caller(header, &[bench_engine::AUDIENCE])
+                .map(|caller| BenchCaller { caller })
+                .map_err(|refusal| {
+                    eprintln!("inbound service call refused: {refusal}");
+                    ErrorUnauthorized(refusal.to_string())
+                }),
+        )
+    }
+}
+
 pub struct AuthUser {
     pub claims: Claims,
 }

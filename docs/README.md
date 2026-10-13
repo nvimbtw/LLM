@@ -7,12 +7,14 @@ and the spec for what goes in one.
 
 | Directory | Module | Code |
 | --- | --- | --- |
-| [`llm-engine/`](llm-engine/) | Training, inference, evaluation and the data they own | `llm-engine/` |
+| [`llm-engine/`](llm-engine/) | Training, model execution and durable scheduling | `llm-engine/` |
+| [`bench-engine/`](bench-engine/) | English benchmark scoring and performance history | `bench-engine/` |
 | [`data-engine/`](data-engine/) | Acquiring datasets and cleaning them, before they are training data | `data-engine/` |
-| [`backend/`](backend/) | People, sessions, and the seam to the three Python engines | `backend/` |
+| [`backend/`](backend/) | People, sessions, and the seam to the Python services | `backend/` |
 | [`frontend/`](frontend/) | Chat, job board, model and benchmark views | `frontend/` |
 | [`gyms-engine/`](gyms-engine/) | Where a model is put to work: generated tasks, a sandboxed shell, and the score | `gyms-engine/` |
 | [`decisions/`](decisions/) | Decision records — findings that cost real time | — |
+| [`sprint-cleanup-validation.md`](sprint-cleanup-validation.md) | Deferred Sprint Cleanup acceptance and measurement plan | — |
 | [`conventions.md`](conventions.md) | The coding rules (R1–R21) every change is judged against | — |
 
 ## The shape of a module directory

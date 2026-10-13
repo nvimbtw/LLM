@@ -11,6 +11,7 @@ held out from training and therefore not training data.
     artifacts/tokenizers/<id>/   one built vocabulary, and what it was built from
     artifacts/models/<id>/       weights, a copy of the tokenizer, meta.json,
                                  and train_state.pt where the run left one
+    artifacts/.recovery-staging/ unpublished checkpoint directories
 
     datasets/corpus.bin          the pre-keyed singletons, left where they are
     datasets/segments.json       (see `legacy_pretrain_paths`)
@@ -178,6 +179,10 @@ def tokenizer_file(directory: Path | None = None) -> Path:
 
 def models_dir() -> Path:
     return root() / "artifacts" / "models"
+
+
+def recovery_staging_dir() -> Path:
+    return root() / "artifacts" / ".recovery-staging"
 
 
 def model_dir(model_name: str) -> Path:

@@ -4,7 +4,7 @@
 #
 # Every service hot-reloads from the source tree bind-mounted into it, so this
 # is the development setup and not a deployment artifact — `cargo watch` for the
-# backend, `next dev` for the frontend, `uvicorn --reload` for all three Python
+# backend, `next dev` for the frontend, `uvicorn --reload` for all four Python
 # services. Restart one without touching the rest:
 #
 #   docker compose restart backend
@@ -30,7 +30,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-slate}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slate}
-      # The backend's. deploy/postgres/init.sql adds the two the Python
+      # The backend's. deploy/postgres/init.sql adds the databases the Python
       # services own; it runs once, on an empty volume.
       POSTGRES_DB: llm
     volumes:
@@ -84,6 +84,26 @@ services:
       - ./data-engine:/app
     ports:
       - "127.0.0.1:8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bench-engine:
+    build:
+      context: ./bench-engine
+      target: dev
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8004 --reload"
+    environment:
+      BENCH_ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_bench
+      BENCH_ENGINE_SERVICE_SECRET: ${BENCH_ENGINE_SERVICE_SECRET:?set it in .env}
+      BACKEND_SERVICE_SECRET: ${BACKEND_SERVICE_SECRET:?set it in .env}
+      BACKEND_URL: http://backend:8080
+    volumes:
+      - ./bench-engine:/app
+    ports:
+      - "127.0.0.1:8004:8004"
     depends_on:
       postgres:
         condition: service_healthy
@@ -153,6 +173,9 @@ services:
       # binding is no longer there to make that private.
       BIND_ADDR: 0.0.0.0
       GYMS_ENGINE_SERVICE_SECRET: ${GYMS_ENGINE_SERVICE_SECRET:?set it in .env}
+      BENCH_ENGINE_SERVICE_SECRET: ${BENCH_ENGINE_SERVICE_SECRET:?set it in .env}
+      BENCH_ENGINE_HOST: bench-engine
+      BENCH_ENGINE_AUTOSTART: "false"
       GYMS_ENGINE_HOST: gyms-engine
       GYMS_ENGINE_AUTOSTART: "false"
       # All three Python services are their own containers here, so the supervisor
@@ -190,6 +213,8 @@ services:
       data-engine:
         condition: service_started
       gyms-engine:
+        condition: service_started
+      bench-engine:
         condition: service_started
 
   frontend:

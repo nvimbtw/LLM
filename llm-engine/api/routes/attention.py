@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from llm.orchestrate import attention
+from llm.model import device
 
 router = APIRouter(tags=["attention"])
 
@@ -28,8 +29,11 @@ def inspect_attention(model_name: str, body: AttentionRequest):
     `llm/orchestrate/attention.py` for why that is the whole point.
     """
     try:
-        return attention.matrix(model_name, body.text, body.layer, body.head)
+        with device.admit():
+            return attention.matrix(model_name, body.text, body.layer, body.head)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except device.Busy as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

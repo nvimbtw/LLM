@@ -134,7 +134,104 @@ async fn set_status(
     answer(gyms.post(&service.caller, &path, body.into_inner()).await?)
 }
 
+#[post("/bench/queue")]
+async fn benchmark_queue(
+    service: ServiceCaller,
+    body: web::Json<Value>,
+    engine: web::Data<llm_engine::Proxy>,
+) -> Answer {
+    answer(
+        engine
+            .post(&service.caller, "/eval?wait=true", body.into_inner())
+            .await?,
+    )
+}
+#[post("/bench/execute/{id}")]
+async fn benchmark_execute(
+    service: ServiceCaller,
+    id: web::Path<uuid::Uuid>,
+    body: web::Json<Value>,
+    bench: web::Data<bench_engine::Proxy>,
+) -> Answer {
+    answer(
+        bench
+            .post(
+                &service.caller,
+                &format!("/execute/{id}"),
+                body.into_inner(),
+            )
+            .await?,
+    )
+}
+#[get("/bench/benchmarks/{id}")]
+async fn benchmark_state(
+    service: ServiceCaller,
+    id: web::Path<uuid::Uuid>,
+    bench: web::Data<bench_engine::Proxy>,
+) -> Answer {
+    answer(
+        bench
+            .get(&service.caller, &format!("/benchmarks/{id}"))
+            .await?,
+    )
+}
+#[post("/bench/execute/{id}/cancel")]
+async fn benchmark_cancel(
+    service: ServiceCaller,
+    id: web::Path<uuid::Uuid>,
+    bench: web::Data<bench_engine::Proxy>,
+) -> Answer {
+    answer(
+        bench
+            .post(
+                &service.caller,
+                &format!("/execute/{id}/cancel"),
+                Value::Null,
+            )
+            .await?,
+    )
+}
+#[post("/inference/measure/{id}")]
+async fn measure(
+    service: crate::extractors::BenchCaller,
+    id: web::Path<uuid::Uuid>,
+    body: web::Json<Value>,
+    engine: web::Data<llm_engine::Proxy>,
+) -> Answer {
+    answer(
+        engine
+            .post(
+                &service.caller,
+                &format!("/measure/{id}"),
+                body.into_inner(),
+            )
+            .await?,
+    )
+}
+#[post("/inference/measure/{id}/cancel")]
+async fn measure_cancel(
+    service: crate::extractors::BenchCaller,
+    id: web::Path<uuid::Uuid>,
+    engine: web::Data<llm_engine::Proxy>,
+) -> Answer {
+    answer(
+        engine
+            .post(
+                &service.caller,
+                &format!("/measure/{id}/cancel"),
+                Value::Null,
+            )
+            .await?,
+    )
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(benchmark_queue);
+    cfg.service(benchmark_execute)
+        .service(benchmark_state)
+        .service(benchmark_cancel)
+        .service(measure)
+        .service(measure_cancel);
     cfg.service(catalogue);
     cfg.service(dataset);
     cfg.service(documents);

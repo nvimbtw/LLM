@@ -32,6 +32,7 @@ from llm.corpus import bpe, pack, remote, spans as spans_mod, vocab
 from llm.model import checkpoint
 from llm.model.checkpoint import TrainState
 from llm.model.transformer import Transformer
+from llm.orchestrate import recovery
 from llm.train import diagnostics, loop
 from llm.train.plan import DataPlan, Stage
 from llm.train.progress import BuildReport, Checkpoint, ProgressCallback, log_progress
@@ -86,45 +87,48 @@ class CheckpointWriter:
         stage: int,
         stage_name: str | None,
         loss: float | None,
+        cursor: dict | None = None,
     ) -> Checkpoint:
         self.index += 1
         model_id = str(uuid.uuid4())
-        directory = storage.ensure_dir(storage.model_dir(model_id))
-
-        checkpoint.save(model, storage.weights_path(model_id))
-        self.tokenizer.save(str(storage.tokenizer_file(directory)))
-        state = checkpoint.save_state(
-            storage.train_state_path(model_id),
-            model=model,
-            optimizer=optimizer,
-            step=step,
-            epoch=epoch,
-            stage=stage,
-            total_steps=total_steps,
-            rng=checkpoint.rng_state(),
-            extra={**self.state_extra, "config": self.config, "loss": loss},
-        )
-        storage.meta_path(model_id).write_text(
-            json.dumps(
-                {
-                    "config": self.config,
-                    "result": {
-                        "model_name": model_id,
-                        **self.provenance,
-                        "checkpoint": {
-                            "index": self.index,
-                            "step": step,
-                            "total_steps": total_steps,
-                            "epoch": epoch,
-                            "stage": stage,
-                            "loss": loss,
+        with recovery.stage(storage.model_dir(model_id)) as directory:
+            checkpoint.save(model, directory / storage.weights_path(model_id).name)
+            self.tokenizer.save(str(storage.tokenizer_file(directory)))
+            checkpoint.save_state(
+                directory / storage.train_state_path(model_id).name,
+                model=model,
+                optimizer=optimizer,
+                step=step,
+                epoch=epoch,
+                stage=stage,
+                total_steps=total_steps,
+                rng=checkpoint.rng_state(),
+                include_weights=False,
+                extra={**self.state_extra, "config": self.config, "loss": loss, "cursor": cursor},
+            )
+            (directory / storage.meta_path(model_id).name).write_text(
+                json.dumps(
+                    {
+                        "config": self.config,
+                        "result": {
+                            "model_name": model_id,
+                            "recovery": True,
+                            "output_model_id": self.config.get("model_name"),
+                            **self.provenance,
+                            "checkpoint": {
+                                "index": self.index,
+                                "step": step,
+                                "total_steps": total_steps,
+                                "epoch": epoch,
+                                "stage": stage,
+                                "loss": loss,
+                            },
                         },
                     },
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
         return Checkpoint(
             model_id=model_id,
             index=self.index,
@@ -133,7 +137,7 @@ class CheckpointWriter:
             epoch=epoch,
             stage=stage,
             stage_name=stage_name,
-            path=str(state),
+            path=str(storage.train_state_path(model_id)),
             loss=loss,
             # Off the model being saved rather than out of `self.config`, so it
             # cannot disagree with the `arch` in the file written two lines
@@ -650,7 +654,14 @@ def _train(
             }
         ),
     }
+    data_fingerprint = recovery.fingerprint(corpus, plan=data_plan)
     continuation = _continuation(cfg, state, corpus, data_plan, key)
+    if cfg.recover_exact:
+        mutable = {"model_name", "resume_from", "checkpoint_target", "recover_exact", "rebuild_dataset"}
+        if state is not None and TrainConfig(**state.extra.get("config", {})).model_dump(exclude=mutable) != cfg.model_dump(exclude=mutable):
+            raise ValueError("Exact recovery requires the original training configuration")
+        if state is None or state.extra.get("data_fingerprint") != data_fingerprint or continuation.record.get("resume", {}).get("mode") != "resumed":
+            raise ValueError("Exact recovery requires the original packed data and schedule")
 
     summary = loop.run(
         model,
@@ -667,6 +678,7 @@ def _train(
             provenance=provenance,
             state_extra={
                 "corpus_key": key,
+                "data_fingerprint": data_fingerprint,
                 "tokenizer_id": tokenizer_id,
                 "tokenizer_fingerprint": fingerprint,
             },
@@ -759,7 +771,7 @@ def _continuation(cfg, state, corpus, data_plan, corpus_key: str) -> _Continuati
         + (f" at step {state.step}/{total_steps}" if resumed else " with fresh data and schedule")
     )
     return _Continuation(
-        state if resumed else replace(state, step=0, rng={}),
+        state if resumed else replace(state, step=0, rng={}, extra={**state.extra, "cursor": None}),
         {
             "resume": {
                 "model": cfg.resume_from,

@@ -242,6 +242,7 @@ class _Checkpoints:
         stage_name: str | None,
         loss: Callable[[], float],
         epoch_end: bool = False,
+        cursor: dict | None = None,
     ) -> str | None:
         """Write one if this step calls for it, and answer with its state file.
 
@@ -271,6 +272,7 @@ class _Checkpoints:
             stage=stage,
             stage_name=stage_name,
             loss=loss(),
+            cursor=cursor,
         )
         if self.publish is not None:
             self.publish(frame)
@@ -332,13 +334,10 @@ def run(
     `on_checkpoint` is called at the moments `_Checkpoints` decides. Without one
     a run takes none at all, which is what `bench.py` and the tests want.
 
-    `resume` restarts inside the schedule rather than at the top of it — see
-    `_resume` for the division of labour, and note that the position is a *batch*
-    ordinal: a masked run drops windows with nothing trainable in them, so its
-    step count and its batch count differ by however many it dropped. That is the
-    same approximation `total_steps` above already makes, and a fine-tune that
-    resumes therefore re-enters within a few windows of where it stopped rather
-    than exactly on it.
+    `resume` restores optimizer/RNG state and an explicit epoch/batch cursor.
+    Masked batches can advance the cursor without an optimizer step. Legacy
+    points without a cursor use the old step-based fallback; exact SFT recovery
+    refuses those points in the orchestrator.
     """
     budget = memory.budget_bytes(device)
     resident_bytes = memory.other_allocated_bytes(model, device)
@@ -514,25 +513,29 @@ def run(
     # neither the skipped epochs nor the skipped head of the one being re-entered
     # is ever gathered.
     to_skip = resumed_at
+    cursor = resume.extra.get("cursor") if resume is not None else None
 
     for stage_index, stage in enumerate(stages):
       for stage_epoch in range(stage.epochs):
         epoch = epochs_done + stage_epoch
         steps_this_epoch = stage_steps[stage_index]
-        if to_skip >= steps_this_epoch:
+        if cursor is not None and epoch < cursor["epoch"]:
+            continue
+        if cursor is None and to_skip >= steps_this_epoch:
             to_skip -= steps_this_epoch
             continue
 
-        start_batch, to_skip = to_skip, 0
+        start_batch = cursor["batch"] if cursor is not None and epoch == cursor["epoch"] else to_skip
+        to_skip = 0
         epoch_started = time.time()
         log.start_epoch()
         chunk = start_batch
         stream = plan_mod.EpochStream(corpus, data_plan, epoch, mask, stage.documents)
 
-        for inputs, targets, weights, offset in plan_mod.iter_batches(
+        for batch_index, (inputs, targets, weights, offset) in enumerate(plan_mod.iter_batches(
             stream, cfg.ctx_window, cfg.batch_size, mask is not None, staging,
             start_batch=start_batch,
-        ):
+        ), start=start_batch):
             # Cooperative cancellation at a step boundary: the weights are
             # consistent here, mid-backward they are not.
             if cancel is not None and cancel.is_set():
@@ -613,6 +616,7 @@ def run(
                     model, optimizer,
                     step=step, epoch=epoch + 1, stage=stage_index,
                     stage_name=stage.name, loss=current_loss,
+                    cursor={"epoch": epoch, "batch": batch_index + 1},
                 )
                 if reporting
                 else None
@@ -631,6 +635,7 @@ def run(
             model, optimizer,
             step=step, epoch=epoch + 1, stage=stage_index, stage_name=stage.name,
             loss=current_loss, epoch_end=True,
+            cursor={"epoch": epoch + 1, "batch": 0},
         )
         if on_progress:
             grad = None

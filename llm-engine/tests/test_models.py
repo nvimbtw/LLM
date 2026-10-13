@@ -7,7 +7,6 @@ import pytest
 import store
 from api import auth
 from store import queries as q
-from store.schema import BenchmarkStatus, Suite
 from tests.fixtures.tiny_env import TINY_MODEL
 
 
@@ -60,16 +59,6 @@ async def test_only_published_models_when_the_caller_asks_for_those(client, reco
     assert "rowed" in [m["name"] for m in body["models"]]
 
 
-async def test_a_models_detail_carries_its_scores(client, recorded):
-    with store.session() as db:
-        model = q.get_model(db, recorded)
-        q.open_benchmark(
-            db, model=model, suite=Suite.language, score=41.0, status=BenchmarkStatus.done
-        )
-
-    body = (await client.get(f"/models/{recorded}")).json()
-    assert body["name"] == "rowed"
-    assert [b["score"] for b in body["benchmarks"]] == [41.0]
 
 
 async def test_an_absent_model_404s(client):
@@ -116,17 +105,6 @@ async def test_deleting_a_model_can_spare_its_weights(client, data_root):
     assert directory.exists()
 
 
-async def test_the_latest_comparable_score_matches_on_suite_and_version(client, recorded):
-    with store.session() as db:
-        model = q.get_model(db, recorded)
-        q.open_benchmark(db, model=model, suite=Suite.language, score=10.0, suite_version=1)
-        q.open_benchmark(db, model=model, suite=Suite.language, score=20.0, suite_version=2)
-
-    v1 = await client.get(f"/models/{recorded}/benchmarks/language?version=1")
-    v2 = await client.get(f"/models/{recorded}/benchmarks/language?version=2")
-    assert (v1.json()["score"], v2.json()["score"]) == (10.0, 20.0)
-
-    assert (await client.get(f"/models/{recorded}/benchmarks/markup")).status_code == 404
 
 
 async def test_a_fine_tune_reports_the_window_of_the_base_it_started_from(client, recorded):

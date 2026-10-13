@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 import store
-from api import auth, logs
+from api import auth, logs, recovery
 from api.routes import ROUTERS
 from api.runner import RUNNER
 from api.runs import REGISTRY
@@ -23,6 +23,7 @@ async def lifespan(_: FastAPI):
     # Worker threads publish progress onto this loop; see Registry.bind_loop.
     REGISTRY.bind_loop(asyncio.get_running_loop())
     store.configure()
+    recovery.reconcile()
 
     # Runs still marked live belong to a process that is gone. Queued rows are
     # deliberately untouched — draining them is the point of a durable queue.

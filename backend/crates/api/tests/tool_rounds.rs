@@ -25,12 +25,12 @@ const CALLS_A_TOOL: &str = concat!(
     "event: token\ndata: {\"token\": \"<|tool-call|>\"}\n\n",
     "event: token\ndata: {\"token\": \"{\\\"tool\\\": \\\"web-search\\\", \\\"argument\\\": \\\"elbrus height\\\"}\"}\n\n",
     "event: tool_call\ndata: {\"tool\": \"web-search\", \"argument\": \"elbrus height\"}\n\n",
-    "event: done\ndata: {\"message_id\": \"m1\", \"content\": \"asked\"}\n\n",
+    "event: done\ndata: {\"text\": \"asked\", \"generated_tokens\": 4}\n\n",
 );
 
 const ANSWERS_PLAINLY: &str = concat!(
     "event: token\ndata: {\"token\": \"5,642 m\"}\n\n",
-    "event: done\ndata: {\"message_id\": \"m2\", \"content\": \"answered\"}\n\n",
+    "event: done\ndata: {\"text\": \"answered\", \"generated_tokens\": 4}\n\n",
 );
 
 /// An engine that plays `script[n]` to the nth request and records each body.
@@ -44,31 +44,41 @@ fn stub(script: Vec<&'static str>) -> (String, Receiver<String>) {
     let (tx, rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
-        for (nth, socket) in listener.incoming().enumerate() {
+        let mut nth = 0;
+        for socket in listener.incoming() {
             let Ok(mut socket) = socket else { return };
             let mut buffer = [0u8; 8192];
             let read = socket.read(&mut buffer).unwrap_or(0);
 
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            if request.starts_with("POST /chat/prepare ") {
+                let ask = body_of(&request);
+                let turns = if let Some(text) = ask["text"].as_str() {
+                    json!([{"role":"user","text":text,"tokens":4}])
+                } else {
+                    json!([{"role":"tool","text":ask["tool_result"]["body"],"tokens":5}])
+                };
+                let body = json!({"turns":turns,"model_name":"tiny","model_id":null}).to_string();
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
+                let _ = socket.write_all(response.as_bytes());
+                let _ = tx.send(request);
+                continue;
+            }
             let body = script[nth.min(script.len() - 1)];
+            nth += 1;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = socket.write_all(response.as_bytes());
             let _ = socket.flush();
-            if tx
-                .send(String::from_utf8_lossy(&buffer[..read]).to_string())
-                .is_err()
-            {
-                return;
-            }
         }
     });
 
     (url, rx)
 }
 
-fn server(url: String, registry: Registry) -> actix_test::TestServer {
+fn server(url: String, registry: Registry, pool: sqlx::PgPool) -> actix_test::TestServer {
     actix_test::start(move || {
         App::new()
             .app_data(web::Data::new(JWT_SECRET.to_string()))
@@ -77,26 +87,31 @@ fn server(url: String, registry: Registry) -> actix_test::TestServer {
                 Some(SERVICE_SECRET.to_string()),
             )))
             .app_data(web::Data::new(registry.clone()))
+            .app_data(web::Data::new(pool.clone()))
             .configure(api::configure)
     })
 }
 
-fn sealed_token() -> String {
-    let jwt =
-        token::issue_user_token(Uuid::new_v4(), AccessLevel::User, JWT_SECRET).expect("issued");
+fn sealed_token(owner: Uuid) -> String {
+    let jwt = token::issue_user_token(owner, AccessLevel::User, JWT_SECRET).expect("issued");
     auth::token_cipher::encrypt(&jwt, JWT_SECRET).expect("sealed")
 }
 
 /// Ask a chat one question and collect every frame until the socket closes.
-async fn converse(server: &mut actix_test::TestServer) -> Vec<Value> {
+async fn converse(server: &mut actix_test::TestServer, pool: &sqlx::PgPool) -> Vec<Value> {
+    let owner = db::user::create(pool, &Uuid::new_v4().to_string(), "hash", None)
+        .await
+        .unwrap()
+        .id_user;
+    let chat = db::conversation::create(pool, owner, "test").await.unwrap();
     let mut socket = server
-        .ws_at(&format!("/ws/chats/{}", Uuid::new_v4()))
+        .ws_at(&format!("/ws/chats/{}", chat.id))
         .await
         .expect("socket opened");
 
     socket
         .send(actix_http::ws::Message::Text(
-            json!({ "token": sealed_token() }).to_string().into(),
+            json!({ "token": sealed_token(owner) }).to_string().into(),
         ))
         .await
         .expect("auth frame sent");
@@ -135,12 +150,12 @@ fn body_of(raw: &str) -> Value {
     serde_json::from_str(body.trim_end_matches('\0')).unwrap_or(Value::Null)
 }
 
-#[actix_web::test]
-async fn a_reply_that_calls_a_tool_comes_back_for_a_second_round() {
+#[sqlx::test(migrations = "../db/migrations")]
+async fn a_reply_that_calls_a_tool_comes_back_for_a_second_round(pool: sqlx::PgPool) {
     let (url, asked) = stub(vec![CALLS_A_TOOL, ANSWERS_PLAINLY]);
-    let mut server = server(url, Registry::new(vec![]));
+    let mut server = server(url, Registry::new(vec![]), pool.clone());
 
-    let frames = converse(&mut server).await;
+    let frames = converse(&mut server, &pool).await;
 
     // The call is forwarded as it happens, the result once it is in, and the
     // second round's tokens follow both.
@@ -176,12 +191,12 @@ async fn a_reply_that_calls_a_tool_comes_back_for_a_second_round() {
     assert!(second.get("text").is_none());
 }
 
-#[actix_web::test]
-async fn a_tool_with_no_credentials_answers_with_a_caveat_rather_than_nothing() {
+#[sqlx::test(migrations = "../db/migrations")]
+async fn a_tool_with_no_credentials_answers_with_a_caveat_rather_than_nothing(pool: sqlx::PgPool) {
     let (url, asked) = stub(vec![CALLS_A_TOOL, ANSWERS_PLAINLY]);
-    let mut server = server(url, Registry::new(vec![]));
+    let mut server = server(url, Registry::new(vec![]), pool.clone());
 
-    let frames = converse(&mut server).await;
+    let frames = converse(&mut server, &pool).await;
 
     let result = frames
         .iter()
@@ -200,12 +215,12 @@ async fn a_tool_with_no_credentials_answers_with_a_caveat_rather_than_nothing() 
         .contains("<|warn|>"));
 }
 
-#[actix_web::test]
-async fn a_reply_that_asks_for_nothing_is_one_round() {
+#[sqlx::test(migrations = "../db/migrations")]
+async fn a_reply_that_asks_for_nothing_is_one_round(pool: sqlx::PgPool) {
     let (url, asked) = stub(vec![ANSWERS_PLAINLY]);
-    let mut server = server(url, Registry::new(vec![]));
+    let mut server = server(url, Registry::new(vec![]), pool.clone());
 
-    let frames = converse(&mut server).await;
+    let frames = converse(&mut server, &pool).await;
     assert_eq!(kinds(&frames), vec!["token", "done"]);
     assert_eq!(frames[1]["final"], true);
 
@@ -215,12 +230,12 @@ async fn a_reply_that_asks_for_nothing_is_one_round() {
         .is_err());
 }
 
-#[actix_web::test]
-async fn a_model_that_calls_a_tool_every_round_is_stopped_rather_than_looping() {
+#[sqlx::test(migrations = "../db/migrations")]
+async fn a_model_that_calls_a_tool_every_round_is_stopped_rather_than_looping(pool: sqlx::PgPool) {
     let (url, asked) = stub(vec![CALLS_A_TOOL]);
-    let mut server = server(url, Registry::new(vec![]));
+    let mut server = server(url, Registry::new(vec![]), pool.clone());
 
-    let frames = converse(&mut server).await;
+    let frames = converse(&mut server, &pool).await;
 
     // The round that hits the ceiling is final even though it called a tool,
     // so the client stops waiting for an answer that is never coming.

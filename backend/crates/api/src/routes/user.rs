@@ -239,23 +239,13 @@ async fn delete_user(
     auth: AuthUser,
     path: web::Path<Uuid>,
     pool: web::Data<PgPool>,
-    engine: web::Data<llm_engine::Proxy>,
 ) -> impl Responder {
     let id = path.into_inner();
     if !is_self_or_admin(&auth.claims, id) {
         return forbidden();
     }
 
-    // The LLM engine goes first, and its erase is idempotent: this order can be
-    // retried, the other leaves chats owned by an id nothing can resolve.
-    if let Err(e) = engine
-        .delete(&::auth::Caller::System, &format!("/owners/{id}"))
-        .await
-    {
-        eprintln!("engine erase error: {e}");
-        return HttpResponse::BadGateway().body("failed to erase this user's conversations");
-    }
-
+    // Foreign keys erase owned chats, messages and uploads atomically.
     match db::user::delete(pool.get_ref(), id).await {
         Ok(true) => HttpResponse::NoContent().finish(),
         Ok(false) => not_found(),

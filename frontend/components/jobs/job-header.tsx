@@ -17,6 +17,7 @@ import {
   isRunning,
   isTerminal,
   retryJob,
+  recoverJob,
   type Job,
 } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
@@ -37,6 +38,20 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const router = useRouter()
   const parent = useParentTrail({ href: "/admin", label: "Admin" })
   const [busy, setBusy] = React.useState(false)
+  const [actionError, setActionError] = React.useState<string | null>(null)
+
+  const recover = async () => {
+    setBusy(true)
+    setActionError(null)
+    try {
+      const next = await recoverJob(job.id_job)
+      router.push(`/jobs/${next.id_job}`)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Recovery could not start.")
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const [now, setNow] = React.useState(() => Date.now())
   React.useEffect(() => {
@@ -119,15 +134,21 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
           {job.error && (
             <FormError className="mt-3 max-w-prose">{job.error}</FormError>
           )}
+          {actionError && <FormError className="mt-3">{actionError}</FormError>}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
           {isTerminal(job) ? (
             <>
+              {(job.kind === "train" || job.kind === "rl") && job.status !== "done" && (
+                <Button size="sm" variant="outline" disabled={busy} onClick={recover}>
+                  Recover latest
+                </Button>
+              )}
               {/* Most runs are a tweak of the last one, so re-running is the
                   primary action on anything finished. A chat turn is the
                   exception: its answer already exists. */}
-              {job.kind !== "chat" && (
+              {(
                 <Button
                   size="sm"
                   disabled={busy}
