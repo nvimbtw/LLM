@@ -15,4 +15,6 @@ pub mod turn;
 pub mod upstream;
 pub mod ws;
 
+mod streaming;
+
 pub use routes::configure;

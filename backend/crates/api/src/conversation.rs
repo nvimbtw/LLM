@@ -1,9 +1,14 @@
-use db::conversation::{self as queries, Message, NewMessage};
+//! Conversation use cases: authorization, canonical preparation and persistence acknowledgements.
+
+mod input;
+
+use db::conversation::{self as queries, Message};
 use llm_engine::Proxy;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Construct a public conversation failure with the given HTTP status and safe detail.
 pub fn failure(code: u16, detail: &str) -> service::Error {
     service::Error::Status {
         code,
@@ -11,6 +16,7 @@ pub fn failure(code: u16, detail: &str) -> service::Error {
     }
 }
 
+/// Log a storage cause and translate it to the established ownership, conflict or validation response.
 pub fn database(error: sqlx::Error) -> service::Error {
     eprintln!("conversation storage: {error}");
     match &error {
@@ -23,14 +29,17 @@ pub fn database(error: sqlx::Error) -> service::Error {
     }
 }
 
+/// Project a stored chat to its public metadata without exposing its owner.
 pub fn chat(row: &queries::Chat) -> Value {
     json!({"chat_id":row.id,"title":row.title,"tokens":row.tokens,"created_at":row.created_at})
 }
 
+/// Project attachment metadata without copying content bytes or internal ownership fields.
 pub fn attachment(row: &db::attachment::Metadata) -> Value {
     json!({"attachment_id":row.id,"filename":row.filename,"media_type":row.media_type,"size":row.size,"created_at":row.created_at})
 }
 
+/// Load authorized attachment metadata for a stored message and return its public representation.
 pub async fn message(pool: &PgPool, owner: Uuid, row: &Message) -> Result<Value, service::Error> {
     let files = db::attachment::for_message(pool, owner, row.id)
         .await
@@ -41,12 +50,14 @@ pub async fn message(pool: &PgPool, owner: Uuid, row: &Message) -> Result<Value,
     ))
 }
 
+/// Assemble a public message from its storage row and already-authorized attachment metadata.
 fn message_with_files(row: &Message, files: Vec<Value>) -> Value {
     json!({"message_id":row.id,"chat_id":row.chat_id,"role":row.role,"content":row.content,
         "tokens":row.tokens,"model_id":row.model_id,"model_name":row.model_name,"feedback":row.feedback,
         "attachments":files,"created_at":row.created_at})
 }
 
+/// Load ordered owner-scoped messages and join their attachment metadata without fetching file bytes.
 pub async fn history(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<Vec<Value>, service::Error> {
     let rows = queries::messages(pool, owner, id).await.map_err(database)?;
     let mut files: std::collections::HashMap<Uuid, Vec<Value>> = std::collections::HashMap::new();
@@ -64,6 +75,7 @@ pub async fn history(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<Vec<Value>,
         .collect())
 }
 
+/// Return an owner-scoped chat or the same 404 used for an unknown conversation.
 pub async fn owned(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<queries::Chat, service::Error> {
     queries::get(pool, owner, id)
         .await
@@ -78,73 +90,33 @@ pub struct Round {
     pub request: Uuid,
 }
 
+/// Authorize and prepare one round, then atomically persist its accepted input messages and bind uploads.
+/// Service preparation precedes attachment validation; generation receives only authorized stateless history.
 pub async fn prepare(
     pool: &PgPool,
     engine: &Proxy,
     owner: Uuid,
     id: Uuid,
-    mut ask: Value,
+    ask: Value,
 ) -> Result<Round, service::Error> {
     owned(pool, owner, id).await?;
-    let caller = auth::Caller::User(owner);
-    ask["model_name"]
-        .as_str()
-        .ok_or_else(|| failure(400, "model_name is required"))?;
-    let request = match ask.get("request_id") {
-        Some(value) => value
-            .as_str()
-            .and_then(|v| Uuid::parse_str(v).ok())
-            .ok_or_else(|| failure(400, "invalid request_id"))?,
-        None => Uuid::new_v4(),
-    };
-    let prepared = engine.post(&caller, "/chat/prepare", ask.clone()).await?;
+    let request = input::request_id(&ask)?;
+    let prepared = engine
+        .post(&auth::Caller::User(owner), "/chat/prepare", ask.clone())
+        .await?;
     let additions = prepared["turns"]
         .as_array()
         .ok_or_else(|| failure(502, "invalid prepared turns"))?;
     let mut history = queries::messages(pool, owner, id).await.map_err(database)?;
-    if let Some(floor) = ask["history_floor"]
-        .as_str()
-        .and_then(|v| Uuid::parse_str(v).ok())
-    {
-        if let Some(index) = history.iter().position(|m| m.id == floor) {
-            history.drain(..index);
-        }
-    }
-    let files: Vec<Uuid> =
-        serde_json::from_value(ask.get("attachment_ids").cloned().unwrap_or(json!([])))
-            .map_err(|_| failure(400, "invalid attachments"))?;
-    if files.len() > 5 {
-        return Err(failure(400, "at most five attachments are allowed"));
-    }
-    let mut turns: Vec<Value> = history
-        .iter()
-        .map(|m| json!({"role":m.role,"text":m.content,"tool":m.tool,"argument":m.argument}))
-        .collect();
-    let inputs = new_inputs(additions, request)?;
-    turns.extend(
-        inputs
-            .iter()
-            .map(|input| json!({"role":input.role,"text":input.content})),
-    );
+    input::apply_history_floor(&mut history, &ask);
+    let files = input::attachment_ids(&ask)?;
+    let inputs = input::new_inputs(additions, request)?;
+    let turns = input::inference_turns(&history, &inputs);
     queries::append_many(pool, owner, id, &inputs, &files)
         .await
         .map_err(database)?;
-    ask["turns"] = json!(turns);
-    let object = ask
-        .as_object_mut()
-        .ok_or_else(|| failure(400, "expected an object"))?;
-    for key in [
-        "text",
-        "tool_result",
-        "interject",
-        "attachment_ids",
-        "history_floor",
-        "request_id",
-    ] {
-        object.remove(key);
-    }
     Ok(Round {
-        config: ask,
+        config: input::inference_config(ask, turns)?,
         model: prepared["model_id"]
             .as_str()
             .and_then(|id| Uuid::parse_str(id).ok()),
@@ -153,34 +125,8 @@ pub async fn prepare(
     })
 }
 
-fn new_inputs(turns: &[Value], request: Uuid) -> Result<Vec<NewMessage>, service::Error> {
-    if turns.is_empty() || turns.len() > 2 {
-        return Err(failure(502, "invalid prepared turn count"));
-    }
-    turns
-        .iter()
-        .map(|turn| {
-            let role = turn["role"]
-                .as_str()
-                .filter(|role| matches!(*role, "user" | "tool"))
-                .ok_or_else(|| failure(502, "invalid prepared role"))?;
-            let content = turn["text"]
-                .as_str()
-                .ok_or_else(|| failure(502, "missing prepared text"))?;
-            Ok(NewMessage {
-                role: role.into(),
-                content: content.into(),
-                tokens: token_count(&turn["tokens"])?,
-                model_id: None,
-                model_name: None,
-                tool: None,
-                argument: None,
-                request_id: request,
-            })
-        })
-        .collect()
-}
-
+/// Persist a completed assistant reply before returning its public message and opaque inference usage.
+/// Invalid text/counts or storage failures leave acknowledgement to the caller's error policy.
 pub async fn finish(
     pool: &PgPool,
     owner: Uuid,
@@ -188,19 +134,7 @@ pub async fn finish(
     round: &Round,
     reply: &Value,
 ) -> Result<Value, service::Error> {
-    let input = NewMessage {
-        role: "assistant".into(),
-        content: reply["text"]
-            .as_str()
-            .ok_or_else(|| failure(502, "missing inference text"))?
-            .into(),
-        tokens: token_count(&reply["generated_tokens"])?,
-        model_id: round.model,
-        model_name: round.model_name.clone(),
-        tool: None,
-        argument: None,
-        request_id: round.request,
-    };
+    let input = input::assistant_input(round, reply)?;
     let stored = queries::append(pool, owner, id, &input, &[])
         .await
         .map_err(database)?;
@@ -230,11 +164,4 @@ pub async fn lock(id: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
         lock
     };
     lock.lock_owned().await
-}
-
-fn token_count(value: &Value) -> Result<i32, service::Error> {
-    value
-        .as_u64()
-        .and_then(|count| i32::try_from(count).ok())
-        .ok_or_else(|| failure(502, "invalid token count from inference"))
 }

@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, post, web};
+use actix_web::{post, web, HttpResponse, Responder};
 use serde::Deserialize;
 use sqlx::PgPool;
 
@@ -13,6 +13,8 @@ struct LoginPayload {
     password: String,
 }
 
+/// Validate credentials and issue an encrypted user token; invalid credentials share one refusal response.
+/// The accompanying access level is a UI hint; authorization still verifies server-side claims.
 #[post("")]
 async fn login(
     payload: web::Json<LoginPayload>,
@@ -37,14 +39,11 @@ async fn login(
         Err(e) => return failed(e),
     }
 
-    let token = match jwt::issue_user_token(user.id_user, user.access_level.clone(), secret) {
+    let token = match jwt::issue_user_token(user.id_user, user.access_level, secret) {
         Ok(token) => token,
         Err(e) => return failed(e),
     };
 
-    // The client holds the JWT encrypted, so its claims are not readable there;
-    // `access_level` rides alongside so the UI can branch without decrypting
-    // anything, and stays authoritative only server-side.
     match auth::token_cipher::encrypt(&token, secret) {
         Ok(encrypted) => HttpResponse::Ok().json(serde_json::json!({
             "token": encrypted,
@@ -54,11 +53,13 @@ async fn login(
     }
 }
 
+/// Log a login failure internally and return a safe, stable 500 response.
 fn failed(e: impl std::fmt::Display) -> HttpResponse {
     eprintln!("login error: {e}");
     HttpResponse::InternalServerError().body("login failed")
 }
 
+/// Register the login handler beneath the authentication route scope.
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(login);
 }
