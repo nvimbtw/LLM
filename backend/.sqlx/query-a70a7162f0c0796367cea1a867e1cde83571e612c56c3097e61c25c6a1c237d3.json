@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO chats(owner_id,title) VALUES($1,$2) RETURNING id,title,created_at,0::bigint AS \"tokens!\"",
+  "query": "SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS \"tokens!\" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 GROUP BY c.id ORDER BY c.created_at DESC",
   "describe": {
     "columns": [
       {
@@ -15,27 +15,32 @@
       },
       {
         "ordinal": 2,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "tokens!",
         "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Varchar"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
+      true,
       false,
       null
     ]
   },
-  "hash": "572fa03a724682eee24f7f4d837552ad18b7f796d063dc5d2dea75dca476619d"
+  "hash": "a70a7162f0c0796367cea1a867e1cde83571e612c56c3097e61c25c6a1c237d3"
 }

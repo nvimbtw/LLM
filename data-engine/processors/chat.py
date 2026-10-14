@@ -26,7 +26,11 @@ _CANONICAL = {
     "answer": "assistant",
     "system": "system",
     "tool": "tool",
+    "memory": "memory",
+    "project": "project",
 }
+
+_CONTEXT_ROLES = ("memory", "project")
 
 
 def _turns(doc: Document) -> list[dict]:
@@ -73,8 +77,12 @@ def _drop_tool_calls(doc: Document, params: dict, state: State) -> Document | No
     a model acting on a result it was never shown — a worse lesson than the row
     is worth. This exists for a first SFT that teaches the chat template and
     nothing else, where the point is a corpus with no tool use in it at all.
+    Input-only project and memory payloads may quote earlier calls; those are
+    context, so their JSON content is not interpreted as live tool use.
     """
     for turn in _turns(doc):
+        if turn.get("role") in _CONTEXT_ROLES:
+            continue
         if turn.get("role") == "tool":
             return None
         content = str(turn.get("content") or "")
@@ -100,15 +108,20 @@ def _convert_chat(doc: Document, params: dict, state: State) -> Document | None:
 
     Roles must already be canonical: `normalise-roles` owns that mapping, and
     doing it twice in two places is how the two spellings drift apart.
+    Project and memory turns retain their JSON content and source metadata;
+    validating and rendering that input-only context belongs to the LLM engine.
     """
-    # Anything but the one opt-out keeps the reasoning, matching how `_coerce`
-    # treats a value it cannot use: the reading that loses no text wins.
     strip = params["reasoning"] == "strip"
     messages: list[dict] = []
     for turn in _turns(doc):
         role = turn.get("role")
         content = turn.get("content")
-        if not isinstance(content, str) or role not in ("system", "user", "assistant"):
+        if not isinstance(content, str):
+            return None
+        if role in _CONTEXT_ROLES:
+            messages.append(dict(turn))
+            continue
+        if role not in ("system", "user", "assistant"):
             return None
 
         if role == "assistant":
@@ -119,7 +132,6 @@ def _convert_chat(doc: Document, params: dict, state: State) -> Document | None:
         if rendered:
             messages.append({"role": role, "content": rendered})
 
-    # A question left hanging at the end teaches nothing and costs window.
     while messages and messages[-1]["role"] == "user":
         messages.pop()
     return {**doc, "messages": messages} if messages else None

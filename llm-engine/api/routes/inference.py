@@ -96,11 +96,14 @@ def prepare_turn(body: "Ask"):
     except ValidationError as error:
         raise HTTPException(status_code=422, detail=str(error))
     try:
+        chat_pipeline.validate_context_tokenizer(body.model_name, body.memories)
         counted = [{"role": role, "text": text,
                     "tokens": chat_pipeline.count_tokens(body.model_name, text)["tokens"]}
                    for role, text in turns]
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     with store.session() as db:
         try:
             model = q.get_model(db, uuid.UUID(body.model_name))
@@ -114,10 +117,15 @@ def prepare_turn(body: "Ask"):
 
 @router.post("/chat/context-floor")
 def context_floor(body: ChatConfig):
+    """Return the surviving history index using the same project/memory fitting as serving."""
     try:
         with device.admit():
-            return {"start": chat_pipeline.history_floor(body.model_name, body.turns)}
+            return {"start": chat_pipeline.history_floor(
+                body.model_name, body.turns, body.system, body.budget, body.project, body.memories,
+            )}
     except device.Busy as error:
         raise HTTPException(status_code=409, detail=str(error))
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))

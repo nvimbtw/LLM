@@ -5,6 +5,7 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { cn } from "@/lib/utils"
 
+import { ProjectsProvider } from "@/components/projects/projects-provider"
 import { ChatsProvider } from "@/components/chat/chats-provider"
 import { ComposerChoiceProvider } from "@/components/chat/composer-choice-provider"
 import { JobsProvider } from "@/components/jobs/jobs-provider"
@@ -72,9 +73,11 @@ export default function RootLayout({
             <SettingsProvider>
               <SettingsDialog />
               <ChatsProvider>
-                <ComposerChoiceProvider>
-                  <JobsProvider>{children}</JobsProvider>
-                </ComposerChoiceProvider>
+                <ProjectsProvider>
+                  <ComposerChoiceProvider>
+                    <JobsProvider>{children}</JobsProvider>
+                  </ComposerChoiceProvider>
+                </ProjectsProvider>
               </ChatsProvider>
             </SettingsProvider>
           </ToastProvider>

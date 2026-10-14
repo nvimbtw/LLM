@@ -69,21 +69,23 @@ export function handleSessionExpired() {
  * logs the user out and redirects to /login instead of surfacing a generic
  * error on a broken page. Use this instead of raw fetch for every
  * authenticated call; the thrown error still rejects the caller's promise so
- * in-flight UI settles.
+ * in-flight UI settles. A late 401 can clear only the session that authorized
+ * its request. Multipart requests retain the browser-generated content boundary.
  */
 export async function apiFetch(
   path: string,
   init: RequestInit = {}
 ): Promise<Response> {
-  const headers = new Headers({ ...authHeaders(), ...(init.headers ?? {}) })
-  // A multipart body is only parseable with the boundary the browser generates,
-  // and it only writes the header when nothing has claimed it — so the JSON
-  // default `authHeaders` names has to come back off for an upload.
+  const headers = new Headers(authHeaders())
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value))
   if (init.body instanceof FormData) headers.delete("Content-Type")
 
   const response = await fetch(`${API_URL}${path}`, { ...init, headers })
   if (response.status === 401) {
-    handleSessionExpired()
+    const currentToken = getToken()
+    const currentAuthorization = currentToken ? `Bearer ${currentToken}` : null
+    if (headers.get("Authorization") === currentAuthorization)
+      handleSessionExpired()
     throw new Error("Your session has expired. Please log in again.")
   }
   return response

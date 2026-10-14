@@ -20,6 +20,9 @@ run it standalone (and point the backend at it with `LLM_ENGINE_AUTOSTART=false`
 
 `./test_routes.sh` exercises the routes end to end.
 
+Project/memory prompt contracts, reserved-token adoption and SFT source messages
+are documented in [project-memory.md](../docs/llm-engine/project-memory.md).
+
 ## Data
 
 `data/` is owned by this module and is not versioned. Corpora arrive through the

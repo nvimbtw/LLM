@@ -1,6 +1,7 @@
 //! Conversation use cases: authorization, canonical preparation and persistence acknowledgements.
 
 mod input;
+mod project;
 
 use db::conversation::{self as queries, Message};
 use llm_engine::Proxy;
@@ -24,6 +25,9 @@ pub fn database(error: sqlx::Error) -> service::Error {
         sqlx::Error::Database(error) if error.is_unique_violation() => {
             failure(409, "this request was already stored")
         }
+        sqlx::Error::Database(error) if error.is_foreign_key_violation() => {
+            failure(404, "conversation or project not found")
+        }
         sqlx::Error::Protocol(_) => failure(400, "an attachment is unknown or already sent"),
         _ => failure(500, "conversation storage failed"),
     }
@@ -31,7 +35,7 @@ pub fn database(error: sqlx::Error) -> service::Error {
 
 /// Project a stored chat to its public metadata without exposing its owner.
 pub fn chat(row: &queries::Chat) -> Value {
-    json!({"chat_id":row.id,"title":row.title,"tokens":row.tokens,"created_at":row.created_at})
+    json!({"chat_id":row.id,"title":row.title,"project_id":row.project_id,"tokens":row.tokens,"created_at":row.created_at})
 }
 
 /// Project attachment metadata without copying content bytes or internal ownership fields.
@@ -97,32 +101,49 @@ pub async fn prepare(
     engine: &Proxy,
     owner: Uuid,
     id: Uuid,
-    ask: Value,
+    mut ask: Value,
 ) -> Result<Round, service::Error> {
     owned(pool, owner, id).await?;
+    project::strip(&mut ask)?;
     let request = input::request_id(&ask)?;
+    let mut history = queries::messages(pool, owner, id).await.map_err(database)?;
+    input::apply_history_floor(&mut history, &ask);
+    let text = project::user_text(&ask, &history).map(str::to_owned);
+    project::apply(pool, owner, id, text.as_deref(), &mut ask).await?;
     let prepared = engine
         .post(&auth::Caller::User(owner), "/chat/prepare", ask.clone())
         .await?;
     let additions = prepared["turns"]
         .as_array()
         .ok_or_else(|| failure(502, "invalid prepared turns"))?;
-    let mut history = queries::messages(pool, owner, id).await.map_err(database)?;
-    input::apply_history_floor(&mut history, &ask);
     let files = input::attachment_ids(&ask)?;
     let inputs = input::new_inputs(additions, request)?;
     let turns = input::inference_turns(&history, &inputs);
+    let config = input::inference_config(ask, turns)?;
     queries::append_many(pool, owner, id, &inputs, &files)
         .await
         .map_err(database)?;
     Ok(Round {
-        config: input::inference_config(ask, turns)?,
+        config,
         model: prepared["model_id"]
             .as_str()
             .and_then(|id| Uuid::parse_str(id).ok()),
         model_name: prepared["model_name"].as_str().map(str::to_owned),
         request,
     })
+}
+
+/// Add stored project context to a context-floor request using only its authorized visible message history.
+pub async fn context_request(
+    pool: &PgPool,
+    owner: Uuid,
+    id: Uuid,
+    history: &[Message],
+    mut config: Value,
+) -> Result<Value, service::Error> {
+    let text = project::user_text(&Value::Null, history).map(str::to_owned);
+    project::apply(pool, owner, id, text.as_deref(), &mut config).await?;
+    Ok(config)
 }
 
 /// Persist a completed assistant reply before returning its public message and opaque inference usage.

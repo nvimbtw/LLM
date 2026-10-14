@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH ranked AS (\n               SELECT project_memory_text(m.role, m.content) AS content,\n                      m.chat_id AS thread, m.id AS message, m.role::text AS role, m.created_at\n               FROM messages m JOIN chats c ON c.id = m.chat_id\n               JOIN projects p ON p.id = c.project_id AND p.owner_id = c.owner_id\n               WHERE c.owner_id = $1 AND c.project_id = $2 AND c.id <> $3\n                 AND m.role IN ('user', 'assistant') AND m.memory_words @@ to_tsquery('simple', $4)\n               ORDER BY ts_rank_cd(m.memory_words, to_tsquery('simple', $4)) DESC, m.created_at DESC, m.id\n               LIMIT 8\n           )\n           SELECT CASE WHEN char_length(content) <= 2000 THEN content\n                  ELSE left(ts_headline('simple', content, to_tsquery('simple', $4),\n                      'MaxWords=60, MinWords=8, MaxFragments=1, StartSel=\"\", StopSel=\"\"'), 2000)\n                  END AS \"memory!\", thread, message, role AS \"role!\",\n                  GREATEST(0, floor(extract(epoch FROM now() - created_at)))::bigint AS \"age_seconds!\"\n           FROM ranked",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "memory!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "thread",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "message",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "role!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "age_seconds!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "fc4227add282cf2eb62f021a7087e04a2e8e84a9efcca646d8ec21d9ff311865"
+}

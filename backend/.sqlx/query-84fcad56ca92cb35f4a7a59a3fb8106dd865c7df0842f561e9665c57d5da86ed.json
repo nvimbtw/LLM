@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id,c.title,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS \"tokens!\" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 AND c.id=$2 GROUP BY c.id",
+  "query": "SELECT c.id, c.title, c.project_id, c.created_at, COALESCE(sum(m.tokens), 0)::bigint AS \"tokens!\"\n           FROM chats c LEFT JOIN messages m ON m.chat_id = c.id\n           WHERE c.owner_id = $1 AND c.project_id = $2 GROUP BY c.id\n           ORDER BY c.created_at DESC, c.id LIMIT $3 OFFSET $4",
   "describe": {
     "columns": [
       {
@@ -15,11 +15,16 @@
       },
       {
         "ordinal": 2,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "tokens!",
         "type_info": "Int8"
       }
@@ -27,15 +32,18 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
       false,
       false,
+      true,
       false,
       null
     ]
   },
-  "hash": "a68283191e78660ffae7d223ae2af0a67257fab58f4f2a4f253d3970ce5f91e4"
+  "hash": "84fcad56ca92cb35f4a7a59a3fb8106dd865c7df0842f561e9665c57d5da86ed"
 }

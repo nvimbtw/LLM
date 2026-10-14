@@ -40,7 +40,7 @@ import { prefetchChatHistory } from "@/lib/chat-history"
 // full /conversations page (reachable from NavMain when collapsed).
 const RECENT_LIMIT = 5
 
-// Compact, editorial relative time: "just now", "12m", "3h", "2d", then a date.
+/** Formats sidebar recency as a short age, using a date after one week and omitting invalid values. */
 function formatRelative(iso: string): string {
   const then = new Date(iso).getTime()
   if (Number.isNaN(then)) return ""
@@ -63,11 +63,14 @@ function formatRelative(iso: string): string {
 // recency list they were a second column nobody scans, and carrying them cost
 // every row a caption line and half again its height.
 
+/** Renders only recent ordinary conversations; project threads remain available through projects and the archive. */
 export function NavConversations() {
   const { conversations, isLoading } = useChats()
   const [expanded, setExpanded] = React.useState(true)
 
-  const recent = conversations.slice(0, RECENT_LIMIT)
+  const recent = conversations
+    .filter((chat) => chat.projectId === null)
+    .slice(0, RECENT_LIMIT)
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
@@ -107,6 +110,7 @@ export function NavConversations() {
   )
 }
 
+/** Renders an ordinary sidebar chat with prefetch, rename and delete actions. */
 function ConversationItem({ chat }: { chat: ChatSummary }) {
   const pathname = usePathname()
   const router = useRouter()
@@ -118,12 +122,14 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
 
   const isActive = pathname === `/chat/${chat.id}`
 
+  /** Warms the selected chat route and account-scoped history before navigation. */
   function prefetch() {
     if (isActive) return
     router.prefetch(`/chat/${chat.id}`)
     prefetchChatHistory(chat.id)
   }
 
+  /** Commits a nonblank changed title or restores the persisted title. */
   async function commitRename() {
     const next = title.trim()
     setRenaming(false)
@@ -134,6 +140,7 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
     }
   }
 
+  /** Deletes the selected chat and leaves its page if currently open. */
   async function handleDelete() {
     await deleteChat(chat.id)
     setConfirmOpen(false)
@@ -175,8 +182,6 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
           />
         }
         className={cn(
-          // One line, the same 32px as every other row in the sidebar, with a left
-          // marginalia rule that grows on hover and turns to the accent when active.
           "relative pl-3.5",
           "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-px before:-translate-y-1/2",
           "before:rounded-full before:bg-sidebar-foreground/30 before:transition-all before:content-['']",
@@ -186,11 +191,6 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
         )}
       >
         <span className="min-w-0 flex-1 truncate">{chat.title}</span>
-        {/* The age, set as a quiet trailing figure rather than a caption line of
-            its own — it is what orders the list, so it earns the corner, but it is
-            not a second thing to read. It fades as the row is hovered because the
-            ⋯ action lands in exactly this spot: one corner, one meaning at a time,
-            and no reserved gutter sitting empty the rest of the time. */}
         <span className="shrink-0 text-xs text-sidebar-foreground/45 tabular-nums transition-opacity group-focus-within/menu-item:opacity-0 group-hover/menu-item:opacity-0">
           {formatRelative(chat.createdAt)}
         </span>

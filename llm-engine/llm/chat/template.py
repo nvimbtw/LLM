@@ -25,13 +25,24 @@ same shape, so the format the model is *trained* on and the format it is
 Ported from backend/crates/llm/src/chat_template.rs.
 """
 
+import json
 from dataclasses import dataclass
 from enum import Enum
 
 from tokenizers import Tokenizer
 
+from llm.chat.context import (
+    CONTEXT_ALLOWANCE_DIVISOR,
+    MEMORY_CLOSE,
+    MEMORY_CONTEXT_MAX_TOKENS,
+    MEMORY_MAX_TOKENS,
+    MEMORY_OPEN,
+    PROJECT_CONTEXT_MAX_TOKENS,
+    MemoryContext,
+    ProjectContext,
+)
 from llm.chat.tools import TOOL_RESULT_CLOSE, TOOL_RESULT_OPEN
-from llm.corpus import bpe
+from llm.corpus import bpe, relabel
 
 # The trailing marker every prompt ends on; the model generates from right here.
 ASSISTANT_OPEN = "<|assistant|>"
@@ -47,6 +58,8 @@ class Role(str, Enum):
     #: and the one that uses it. Scaffold the model reads and never writes, so a
     #: turn with this role is never a training target — see `training_segments`.
     TOOL = "tool"
+    MEMORY = "memory"
+    PROJECT = "project"
 
 
 class ThinkBudget(str, Enum):
@@ -121,10 +134,7 @@ def strip_thinking(text: str) -> str:
     """
     out: list[str] = []
     rest = text
-    # Bounded: each iteration drops at least THINKING_OPEN, so `rest` shrinks.
     while (open_at := rest.find(THINKING_OPEN)) != -1:
-        # Searched from the opener, so a stray closer *before* it is not treated
-        # as this block's end (which would delete the text between them).
         close_at = rest.find(THINKING_CLOSE, open_at)
         if close_at == -1:
             break
@@ -132,6 +142,44 @@ def strip_thinking(text: str) -> str:
         rest = rest[close_at + len(THINKING_CLOSE) :]
     out.append(rest)
     return "".join(out).strip()
+
+
+def _scaffold_json(payload: dict[str, object]) -> str:
+    """Render JSON while escaping delimiter starts so values cannot close scaffold."""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("<|", r"\u003c|")
+
+
+def memory_block(memory: MemoryContext) -> str:
+    """Render one input-only memory with source, speaker and age; omit assistant thinking.
+
+    An unfinished thinking block and its suffix are omitted from remembered
+    assistant replies. JSON escapes keep all user-controlled markers inert.
+    """
+    content = memory.memory.strip()
+    if memory.role == "assistant":
+        content = strip_thinking(content).split(THINKING_OPEN, 1)[0].strip()
+    payload = {
+        "memory": content,
+        "speaker": memory.role,
+        "source": {"thread": str(memory.thread), "message": str(memory.message)},
+        "age_seconds": memory.age_seconds,
+    }
+    return f"{MEMORY_OPEN}{_scaffold_json(payload)}{MEMORY_CLOSE}"
+
+
+def project_block(project: ProjectContext) -> str:
+    """Render authorized project facts as a separate input-only system JSON block."""
+    payload = {"project": project.model_dump(mode="json")}
+    return f"<|system|>{_scaffold_json(payload)}<|/system|>"
+
+
+def context_turn_block(turn: Turn) -> str:
+    """Validate a training context turn's JSON payload and use the serving renderer."""
+    if turn.role is Role.MEMORY:
+        return memory_block(MemoryContext.model_validate_json(turn.text))
+    if turn.role is Role.PROJECT:
+        return project_block(ProjectContext.model_validate_json(turn.text))
+    raise ValueError("context turns must have memory or project role")
 
 
 def tool_block(turn: Turn) -> str:
@@ -159,10 +207,13 @@ def _format_turn(turn: Turn) -> str:
         return f"<|user|>{turn.text.strip()}<|/user|>"
     if turn.role is Role.TOOL:
         return tool_block(turn)
+    if turn.role in (Role.MEMORY, Role.PROJECT):
+        return context_turn_block(turn)
     return f"{ASSISTANT_OPEN}{strip_thinking(turn.text)}{ASSISTANT_CLOSE}"
 
 
 def _system_block(system: str | None) -> str:
+    """Wrap nonempty ordinary system text without changing its historical rendering."""
     if system and system.strip():
         return f"<|system|>{system.strip()}<|/system|>"
     return ""
@@ -193,10 +244,10 @@ def render_conversation(
             out.append(tool_block(turn))
             continue
 
-        # Kept, the marker describes real content — and this is the path that
-        # puts it into the pretrain corpus, which is what stops its embedding row
-        # arriving at SFT at random init. Stripped, there is no block for it to
-        # describe, so it goes too.
+        if turn.role in (Role.MEMORY, Role.PROJECT):
+            out.append(context_turn_block(turn))
+            continue
+
         if reasoning is Reasoning.KEEP:
             out.append(_budget_marker(budget))
             out.append(ASSISTANT_OPEN)
@@ -232,6 +283,82 @@ def _fit_history(
     return start
 
 
+def _fit_memory(memory: MemoryContext, tokenizer: Tokenizer, allowance: int) -> str:
+    """Shorten remembered text to a fitting JSON block, or omit it if metadata cannot fit."""
+    if allowance <= 0:
+        return ""
+    content = memory.memory.strip()
+    if memory.role == "assistant":
+        content = strip_thinking(content).split(THINKING_OPEN, 1)[0].strip()
+    lower, upper = 1, len(content)
+    fitted = ""
+    while lower <= upper:
+        take = (lower + upper) // 2
+        block = memory_block(memory.model_copy(update={"memory": content[:take]}))
+        if len(bpe.encode(tokenizer, block)) <= allowance:
+            fitted = block
+            lower = take + 1
+        else:
+            upper = take - 1
+    return fitted
+
+
+def _fit_project(project: ProjectContext, tokenizer: Tokenizer, allowance: int) -> str:
+    """Fit a project block, retaining identity/name and notes before description prefixes."""
+    if allowance <= 0:
+        return ""
+    lower, upper = 0, len(project.notes) + len(project.description)
+    fitted = ""
+    while lower <= upper:
+        take = (lower + upper) // 2
+        shortened = project.model_copy(update={
+            "notes": project.notes[:take],
+            "description": project.description[:max(0, take - len(project.notes))],
+        })
+        block = project_block(shortened)
+        if len(bpe.encode(tokenizer, block)) <= allowance:
+            fitted = block
+            lower = take + 1
+        else:
+            upper = take - 1
+    return fitted
+
+
+def _fit_context(
+    project: ProjectContext | None,
+    memories: list[MemoryContext],
+    tokenizer: Tokenizer,
+    allowance: int,
+    protected: int,
+) -> str:
+    """Allocate bounded optional context after reserving the complete latest turn and reply.
+
+    Combined project/memory input uses at most a third of prompt allowance.
+    Project and all memories each cap at 512 tokens; one memory caps at 256.
+    Earlier retrieved candidates have priority; oversized metadata is skipped.
+    """
+    room = min(allowance // CONTEXT_ALLOWANCE_DIVISOR, max(0, allowance - protected))
+    rendered = _fit_project(project, tokenizer, min(room, PROJECT_CONTEXT_MAX_TOKENS)) if project else ""
+    room = min(MEMORY_CONTEXT_MAX_TOKENS, room - len(bpe.encode(tokenizer, rendered)))
+    for memory in memories:
+        block = _fit_memory(memory, tokenizer, min(room, MEMORY_MAX_TOKENS))
+        rendered += block
+        room -= len(bpe.encode(tokenizer, block))
+    return rendered
+
+
+def _latest_question_cost(history: list[Turn], tokenizer: Tokenizer) -> int:
+    """Reserve the newest user question and every following continuation turn in full."""
+    if not history:
+        return 0
+    start = len(history) - 1
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].role is Role.USER:
+            start = index
+            break
+    return sum(len(bpe.encode(tokenizer, _format_turn(turn))) for turn in history[start:])
+
+
 def build_prompt(
     system: str | None,
     history: list[Turn],
@@ -239,31 +366,29 @@ def build_prompt(
     ctx_window: int,
     reserve_for_reply: int,
     budget: ThinkBudget | None = None,
+    project: ProjectContext | None = None,
+    memories: list[MemoryContext] | None = None,
 ) -> list[int]:
     """Render a conversation into token ids, dropping the oldest whole turns
     until it fits `ctx_window - reserve_for_reply` tokens.
 
-    The system block and the trailing open `<|assistant|>` are mandatory
-    scaffold and always kept; only history turns are dropped, always at whole-
-    turn boundaries so the prompt never begins mid-sentence. The most recent
-    turn is kept even if it alone busts the budget — better a hard-cut latest
-    message than nothing — and `_hard_cut` is where that cut actually happens.
+    Optional project/memory scaffold only uses space remaining after the full
+    latest turn, ordinary system and reply cue. It cannot cause that latest turn
+    to be cut. Oversized ordinary prompts retain the existing hard-cut policy.
     """
     system_str = _system_block(system)
     budget_str = _budget_marker(budget)
-
-    def cost(text: str) -> int:
-        return len(bpe.encode(tokenizer, text)) if text else 0
-
-    # The always-present scaffold. The budget marker is part of it — mandatory
-    # once asked for, exactly like the system block — so its cost comes out of
-    # the budget before history is fitted around it.
-    scaffold = cost(ASSISTANT_OPEN) + cost(budget_str) + cost(system_str)
+    memories = memories or []
+    tokenizer = relabel.adopt_memory_slots(tokenizer) if memories else tokenizer
+    scaffold = len(bpe.encode(tokenizer, system_str + budget_str + ASSISTANT_OPEN))
     allowance = max(0, ctx_window - reserve_for_reply)
+    context = ""
+    if project is not None or memories:
+        latest = _latest_question_cost(history, tokenizer)
+        context = _fit_context(project, memories, tokenizer, allowance, scaffold + latest)
+    system_str += context
+    scaffold += len(bpe.encode(tokenizer, context))
     start = _fit_history(history, tokenizer, scaffold, allowance)
-
-    # Assemble the kept turns chronologically and encode once, so the returned
-    # ids exactly match a single pass (no cross-turn BPE-merge surprises).
     rendered = system_str + "".join(_format_turn(t) for t in history[start:])
     rendered += budget_str + ASSISTANT_OPEN
     ids = bpe.encode(tokenizer, rendered)
@@ -290,27 +415,31 @@ def _hard_cut(ids: list[int], head: list[int], tail: list[int], allowance: int) 
     nothing left to give.
 
     The freshest end of the body survives: it is nearest the question, and it is
-    the direction every other eviction here already runs.
+    the direction every other eviction here already runs. An allowance smaller
+    than the reply cue raises rather than handing an oversized tensor to the model.
     """
+    if allowance < len(tail):
+        raise ValueError("prompt allowance is too small for the assistant reply cue")
     room = allowance - len(head) - len(tail)
     if room > 0:
         body = ids[len(head) : len(ids) - len(tail)]
         return head + body[-room:] + tail
-    # No room for the body at all: the scaffold alone is the window. Keep the
-    # tail whole and take what is left of the system block from its end, so the
-    # part nearest the conversation is the part that survives.
     return head[len(head) - max(0, allowance - len(tail)) :] + tail
 
 
-def context_floor(history: list[Turn], tokenizer: Tokenizer, ctx_window: int, reserve_for_reply: int) -> int:
+def context_floor(
+    history: list[Turn], tokenizer: Tokenizer, ctx_window: int, reserve_for_reply: int,
+    system: str | None = None, budget: ThinkBudget | None = None,
+    project: ProjectContext | None = None, memories: list[MemoryContext] | None = None,
+) -> int:
     """Index of the oldest turn `build_prompt` would still keep if it were
     fitting the model's own `ctx_window` rather than some multiplier's
     extension of it.
 
-    Read-only, and deliberately conservative rather than exact: `system` and
-    the budget marker are ignored, both being a handful of tokens next to a
-    real conversation, so the floor this returns is never later than the one a
-    real turn would land on. This is the boundary `/prune` (the frontend
+    Ordinary requests keep their historical conservative floor, ignoring system
+    and budget markers. A project or memory-bearing request accounts for those
+    markers and the identical optional-context fitting used by serving.
+    This is the boundary `/prune` (the frontend
     command) snapshots — see `docs/frontend/README.md` — so a chat's usable
     range can be pulled back to what the model actually trained on while a
     raised `context_multiplier` keeps the room past it free for new growth,
@@ -323,7 +452,14 @@ def context_floor(history: list[Turn], tokenizer: Tokenizer, ctx_window: int, re
     `docs/llm-engine/README.md`'s note on where a tool's answer is stored.
     """
     allowance = max(0, ctx_window - reserve_for_reply)
-    start = _fit_history(history, tokenizer, 0, allowance)
+    scaffold = 0
+    if project is not None or memories:
+        tokenizer = relabel.adopt_memory_slots(tokenizer) if memories else tokenizer
+        scaffold = len(bpe.encode(tokenizer, _system_block(system) + _budget_marker(budget) + ASSISTANT_OPEN))
+        latest = _latest_question_cost(history, tokenizer)
+        context = _fit_context(project, memories or [], tokenizer, allowance, scaffold + latest)
+        scaffold += len(bpe.encode(tokenizer, context))
+    start = _fit_history(history, tokenizer, scaffold, allowance)
     if start < len(history) and history[start].role is Role.TOOL:
         start += 1
     return start
@@ -361,22 +497,16 @@ def training_segments(
             segments.append((f"<|user|>{turn.text.strip()}<|/user|>", False))
             continue
 
-        # Untrained for the same reason the budget marker is: a tool result is
-        # something the caller hands the model, not something the model decides.
-        # Training it would teach the model to invent search results.
         if turn.role is Role.TOOL:
             segments.append((tool_block(turn), False))
             continue
 
-        # The opening marker is the cue the model conditions on (not a target);
-        # the reply body and the closing marker are the target — the model must
-        # learn both to answer and to stop.
-        #
-        # The budget marker is part of that cue, and untrained for the same
-        # reason: it is an *instruction* the caller supplies, never something the
-        # model chooses. Training it as a target would teach the model to predict
-        # how hard it is about to think, which is a fact about the request rather
-        # than about the reply. Only its embedding row is ever learned.
+        if turn.role in (Role.MEMORY, Role.PROJECT):
+            segments.append((context_turn_block(turn), False))
+            continue
+
+        if MEMORY_OPEN in turn.text or MEMORY_CLOSE in turn.text:
+            raise ValueError("memory scaffold is input-only and cannot appear in assistant targets")
         if reasoning is Reasoning.KEEP:
             if budget:
                 segments.append((budget.marker, False))
@@ -434,6 +564,8 @@ def build_training_example(
     have one (the benchmarks, and anything interactive).
     """
     segments = training_segments(system, turns, budget, reasoning)
+    if any(turn.role is Role.MEMORY for turn in turns):
+        tokenizer = relabel.adopt_memory_slots(tokenizer)
     return assemble_example(
         [bpe.encode(tokenizer, text) for text, _ in segments],
         [flag for _, flag in segments],
@@ -456,6 +588,8 @@ def encode_examples(
     which is the property the mask depends on.
     """
     flat = [text for segments in batch for text, _ in segments]
+    if any(text.startswith(MEMORY_OPEN) for text in flat):
+        tokenizer = relabel.adopt_memory_slots(tokenizer)
     encoded = bpe.encode_batch(tokenizer, flat)
 
     examples = []

@@ -1,7 +1,7 @@
 # Backend — Rust API
 
 The Rust half: people, sessions, and the seam to the services behind it. It owns
-users, presets, conversations, messages, uploads and usage. Models/training and
+users, presets, private projects, conversations, messages, uploads and usage. Models/training and
 queue scheduling belong to the LLM engine; benchmark scoring/history belongs to
 bench-engine. See [conversations.md](conversations.md) and
 [ownership-cutover.md](ownership-cutover.md).
@@ -25,7 +25,7 @@ a build stage has no route to the `postgres` service. **Regenerate the cache in
 the same change as any query or migration edit:**
 
 ```sh
-cargo sqlx prepare --workspace
+cargo sqlx prepare --workspace -- --workspace --all-targets
 ```
 
 Cargo fingerprints `.rs` files and not `migrations/`, so a migration edit alone
@@ -60,7 +60,7 @@ process.
 each — an audience, a set of defaults, and a `Proxy` newtype — and do **not**
 depend on each other: the four Python processes are siblings that never speak.
 
-The database holds `users`, `training_presets`, `chats`, `messages`, `attachments`
+The database holds `users`, `training_presets`, `projects`, `chats`, `messages`, `attachments`
 and the migration ledger. Conversation ownership/cascades and stream persistence
 are described in [conversations.md](conversations.md).
 
@@ -120,6 +120,7 @@ simply fails to compile. `crates/*` are workspace members subordinate to
 | --- | --- |
 | [HTTP and proxy routes](api.md) | Authorization, service-owned payloads, upload limits and route distinctions. |
 | [Conversations and files](conversations.md) | Owner isolation, atomic input persistence, commit-before-acknowledgement, retry identity and disconnect recovery. |
+| [Private projects and memories](projects.md) | Owner-scoped project metadata, chat membership, indexed word matching and trusted engine context. |
 | [Internal service routes](internal.md) | Issuer-scoped reverse calls, actor propagation and shared gym observations. |
 | [Chat tools](tools.md) | Bounded tool rounds, concurrent execution, interjections, search cache and sandbox policy. |
 | [Gym sockets](gyms.md) | Sequential episode commands, terminal grading and abandonment. |

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE projects SET name = COALESCE($3, name), description = COALESCE($4, description),\n                  notes = COALESCE($5, notes), updated_at = now()\n           WHERE owner_id = $1 AND id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc033af27066c2d5d7a168959e5179f393942a7917a9f6ee9b17128822371bdc"
+}

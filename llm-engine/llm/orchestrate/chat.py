@@ -14,10 +14,11 @@ from tokenizers import Tokenizer
 
 from llm import storage
 from llm.chat import tools
+from llm.chat.context import MemoryContext, ProjectContext
 from llm.chat.markup import OpenBlocks, Rules
 from llm.chat.template import Role, ThinkBudget, Turn, build_prompt, context_floor
 from llm.config import ChatConfig, ChatTurn
-from llm.corpus import bpe
+from llm.corpus import bpe, relabel
 from llm.model import checkpoint, sample, device
 from llm.train.loop import pick_device, release_device
 
@@ -184,22 +185,26 @@ def _stream(cfg: ChatConfig):
     `("tool_call", {"tool", "argument"})` the moment a call closes — emitted
     alongside the tokens that spell it, not instead of them, so a caller that
     only renders text still sees the whole reply.
+
+    Per-request RoPE tables and memory-token adoption leave cached resources
+    unchanged. The output cap reserves space for closing open markup blocks;
+    fragments are decoded against the produced prefix to preserve UTF-8.
     """
     started = time.time()
     model, tokenizer, device = load(cfg.model_name)
+    if cfg.memories:
+        tokenizer = relabel.adopt_memory_slots(tokenizer)
 
     history = _history(cfg.turns)
     budget = ThinkBudget.parse(cfg.budget) if cfg.budget else None
 
-    # NTK-scaled tables computed fresh per turn, never written into the cached
-    # model's own buffers — see `Transformer.extended_rope`. `context_window` is
-    # this turn's ceiling everywhere `model.ctx_window` used to be it.
     context_window = round(model.ctx_window * cfg.context_multiplier)
     rope = model.extended_rope(context_window) if context_window > model.ctx_window else None
 
     reserve = min(RESERVE_FOR_REPLY, max(1, context_window // 2))
     prompt_ids = build_prompt(
-        cfg.system, history, tokenizer, context_window, reserve, budget
+        cfg.system, history, tokenizer, context_window, reserve, budget,
+        cfg.project, cfg.memories,
     )
     if not prompt_ids:
         raise ValueError("Conversation rendered to zero tokens")
@@ -223,9 +228,6 @@ def _stream(cfg: ChatConfig):
     stopped = "length"
 
     for _ in range(cfg.max_tokens):
-        # The closers a drain would cost are reserved against the cap, so the
-        # markup this turn still has to close is budgeted rather than spent past
-        # the ceiling the caller set.
         if position >= context_window - blocks.depth:
             break
 
@@ -240,8 +242,6 @@ def _stream(cfg: ChatConfig):
 
         blocks.observe(next_id)
         produced.append(next_id)
-        # Decoded against what came before and diffed: a byte-level token can be
-        # half a UTF-8 character, so decoding it alone yields a replacement char.
         before = bpe.decode(tokenizer, produced[:-1])
         after = bpe.decode(tokenizer, produced)
         yield "token", {"token": after[len(before) :]}
@@ -254,16 +254,11 @@ def _stream(cfg: ChatConfig):
         )
         position += 1
 
-    # The token cap is the one stop the grammar cannot prevent, so anything still
-    # open is closed here — a truncated reply is still well-formed markup.
     drained = blocks.closers()
     for closer in drained:
         produced.append(closer)
         piece = bpe.decode(tokenizer, [closer])
         yield "token", {"token": piece}
-        # A call the cap cut short still closes here, and the caller is told
-        # about it: the argument is whatever the model got out before the
-        # ceiling, which is a poor query but a real one.
         if (call := calls.observe(closer, produced)) is not None:
             yield "tool_call", call
 
@@ -289,7 +284,11 @@ def run(cfg: ChatConfig) -> dict:
             return done.value
 
 
-def history_floor(model_name: str, turns: list[ChatTurn]) -> int:
+def history_floor(
+    model_name: str, turns: list[ChatTurn], system: str | None = None,
+    budget: str | None = None, project: ProjectContext | None = None,
+    memories: list[MemoryContext] | None = None,
+) -> int:
     """Index into `turns` where `/prune` should cut — see
     `llm.chat.template.context_floor` for what that means and why. Loads the
     model like `stream` does (cached the same way), because `ctx_window` is
@@ -297,7 +296,16 @@ def history_floor(model_name: str, turns: list[ChatTurn]) -> int:
     model, tokenizer, _ = load(model_name)
     history = _history(turns)
     reserve = min(RESERVE_FOR_REPLY, max(1, model.ctx_window // 2))
-    return context_floor(history, tokenizer, model.ctx_window, reserve)
+    return context_floor(history, tokenizer, model.ctx_window, reserve,
+                         system, ThinkBudget.parse(budget) if budget else None,
+                         project, memories)
+
+
+def validate_context_tokenizer(model_name: str, memories: list[MemoryContext]) -> None:
+    """Check reserved-slot compatibility without model loading before Rust persists input."""
+    if memories:
+        tokenizer = bpe.load(storage.model_dir(model_name))
+        relabel.adopt_memory_slots(tokenizer)
 
 
 def count_tokens(model_name: str, text: str) -> dict:

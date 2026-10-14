@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id,c.title,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS \"tokens!\" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 GROUP BY c.id ORDER BY c.created_at DESC",
+  "query": "INSERT INTO chats(owner_id, title, project_id)\n           SELECT $1, $2, $3::uuid\n           WHERE $3::uuid IS NULL OR EXISTS (SELECT 1 FROM projects WHERE id = $3 AND owner_id = $1)\n           RETURNING id, title, project_id, created_at, 0::bigint AS \"tokens!\"",
   "describe": {
     "columns": [
       {
@@ -15,26 +15,34 @@
       },
       {
         "ordinal": 2,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "tokens!",
         "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Varchar",
         "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
+      true,
       false,
       null
     ]
   },
-  "hash": "bf03e0a7059f705da3fe0bb67865619302105bae30a07dd12f0b25d5e0a3c067"
+  "hash": "3bbe2a3a650310df1c7ec691119273a944e6329f0d954eb6df714737ef184f8b"
 }

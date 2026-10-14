@@ -11,7 +11,7 @@ you was predicted by a model trained on this machine, on a corpus you chose.
 
 ```
 frontend/     chat, the job board, model, data and benchmark views — Next.js, Bun
-backend/      people, sessions, and the seam to every module — Rust, Actix, sqlx
+backend/      people, projects, conversations and service coordination — Rust, Actix, sqlx
 llm-engine/   training, model execution and scheduling — PyTorch, FastAPI
 bench-engine/ English benchmark scoring and history — FastAPI
 data-engine/  acquiring datasets from Hugging Face and cleaning them — FastAPI

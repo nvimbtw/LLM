@@ -1,33 +1,22 @@
 "use client"
 
 import * as React from "react"
-
 import type { ThinkBudget } from "@/lib/think-budget"
-
 import { apiFetch, getToken } from "@/lib/api"
 import type { Attachment } from "@/lib/attachments"
-import { useAuth } from "@/hooks/use-auth"
+import { useSessionToken } from "@/hooks/use-auth"
 import { invalidateChatHistory } from "@/lib/chat-history"
+import {
+  loadChats,
+  parseChatSummary,
+  parseResourceId,
+  assignChatProject,
+  type ChatSummary,
+} from "@/lib/chats"
+import { PendingChatMessages, type PendingMessage } from "@/lib/pending-chat"
 
-export interface ChatSummary {
-  id: string
-  title: string
-  createdAt: string
-  /** Cumulative tokens across the chat's messages (0 for a brand-new chat). */
-  tokens: number
-}
-
-export interface PendingMessage {
-  content: string
-  modelId: string
-  // Carried across the navigation into the new chat, so the budget picked in the
-  // composer is the one the first turn is actually generated under.
-  budget: ThinkBudget
-  // Rows, not files: they were stored while the composer still belonged to the
-  // home screen, and survive the navigation because they are already on the
-  // server by the time it happens.
-  attachments: Attachment[]
-}
+export type { ChatSummary } from "@/lib/chats"
+export type { PendingMessage } from "@/lib/pending-chat"
 
 interface ChatsContextValue {
   conversations: ChatSummary[]
@@ -38,203 +27,205 @@ interface ChatsContextValue {
     message: string,
     modelId: string,
     budget: ThinkBudget,
-    attachments: Attachment[]
+    attachments: Attachment[],
+    projectId?: string
   ) => Promise<string>
-  // The first message of a freshly-created chat, handed off to the chat page so
-  // it can stream the reply there (one-shot: returns and clears it).
   takePendingMessage: (chatId: string) => PendingMessage | null
   renameChat: (id: string, title: string) => Promise<void>
   deleteChat: (id: string) => Promise<void>
+  assignProject: (id: string, projectId: string | null) => Promise<void>
+}
+
+interface ChatsState {
+  token: string
+  conversations: ChatSummary[]
+  error: string | null
 }
 
 const ChatsContext = React.createContext<ChatsContextValue | null>(null)
-
-interface RawChat {
-  chat_id: string
-  title: string
-  created_at: string
-  tokens?: number
-}
-
-function mapChat(raw: RawChat): ChatSummary {
-  return {
-    id: raw.chat_id,
-    title: raw.title,
-    createdAt: raw.created_at,
-    tokens: raw.tokens ?? 0,
-  }
-}
-
 const NO_CHATS: ChatSummary[] = []
-
-/** How long a title taken from the opening message may be. */
 const TITLE_MAX = 60
 
-/**
- * The sidebar label for a new chat, from the message that starts it.
- *
- * Named here rather than server-side because this is the only place that knows
- * what the person typed before there is a chat to store it in.
- */
-function title(message: string): string {
+/** Derives the sidebar title from the opening message's first line, bounded to 60 characters. */
+function openingTitle(message: string): string {
   const line = message.trim().split("\n")[0] || "New chat"
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
 }
 
+/** Owns the account archive and pending first-message handoff; replacement sessions cannot publish old rows or drafts. */
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth()
-  const [conversations, setConversations] = React.useState<ChatSummary[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
+  const token = useSessionToken()
+  const [state, setState] = React.useState<ChatsState | null>(null)
+  const [pending] = React.useState(() => new PendingChatMessages())
+  const requestRef = React.useRef(0)
 
-  const refresh = React.useCallback(async () => {
-    // This provider lives in the root layout, so it mounts on unauthenticated
-    // pages (/login, /signup) too. Skip the fetch when there's no token: an
-    // unauthenticated /chat call 401s, which would redirect to /login and,
-    // once the token is cleared, spin in an endless reload loop.
-    if (!getToken()) return
+  /** Loads the active account's archive, keeping late or superseded responses away from replacement accounts. */
+  const refresh = React.useCallback(async (): Promise<void> => {
+    const owningToken = getToken()
+    if (!owningToken) return
+    const request = ++requestRef.current
     try {
-      const response = await apiFetch(`/chats`)
-      if (!response.ok) throw new Error("Unable to load your chats.")
-      const data = (await response.json()) as { chats: RawChat[] }
-      setConversations(data.chats.map(mapChat))
-      setError(null)
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to load your chats."
-      )
-    } finally {
-      setIsLoading(false)
+      const conversations = await loadChats(owningToken)
+      if (getToken() === owningToken && requestRef.current === request)
+        setState({ token: owningToken, conversations, error: null })
+    } catch (failure) {
+      if (getToken() !== owningToken || requestRef.current !== request) return
+      setState({
+        token: owningToken,
+        conversations: [],
+        error:
+          failure instanceof Error
+            ? failure.message
+            : "Unable to load your chats.",
+      })
     }
   }, [])
 
-  // The session drives the load. `useAuth` reads it as an external store now, so
-  // logging in re-runs this effect and logging out re-renders with an empty list
-  // *derived* below — which is why this hook no longer keeps its own
-  // `SESSION_CHANGED_EVENT` listener, and no longer has to remember to clear
-  // state on the way out.
-  //
-  // The fetch is inlined rather than calling `refresh`, so no state is written
-  // synchronously from the effect body; `refresh` stays for the mutations, which
-  // only run authenticated. Same shape as `use-signals.ts`.
   React.useEffect(() => {
-    if (!isAuthenticated) return
-    let active = true
-    apiFetch(`/chats`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Unable to load your chats.")
-        return (await response.json()) as { chats: RawChat[] }
-      })
-      .then((data) => {
-        if (!active) return
-        setConversations(data.chats.map(mapChat))
-        setError(null)
-      })
-      .catch((err: unknown) => {
-        if (!active) return
-        setError(
-          err instanceof Error ? err.message : "Unable to load your chats."
+    pending.setSession(token)
+    if (!token) return
+    const controller = new AbortController()
+    const request = ++requestRef.current
+    loadChats(token, controller.signal)
+      .then((conversations) => {
+        if (
+          !controller.signal.aborted &&
+          getToken() === token &&
+          requestRef.current === request
         )
+          setState({ token, conversations, error: null })
       })
-      .finally(() => {
-        if (active) setIsLoading(false)
+      .catch((failure: unknown) => {
+        if (
+          controller.signal.aborted ||
+          getToken() !== token ||
+          requestRef.current !== request
+        )
+          return
+        setState({
+          token,
+          conversations: [],
+          error:
+            failure instanceof Error
+              ? failure.message
+              : "Unable to load your chats.",
+        })
       })
-    return () => {
-      active = false
-    }
-  }, [isAuthenticated])
+    return () => controller.abort()
+  }, [token, pending])
 
-  // Pending first messages, keyed by the new chat id. A ref (not state) so the
-  // value is written synchronously before navigation and read once on the chat
-  // page's mount, with no re-render churn.
-  const pendingRef = React.useRef<Map<string, PendingMessage>>(new Map())
+  /** Requires a current account before writes and routes may use their results. */
+  const requireSession = React.useCallback((): string => {
+    if (!token || getToken() !== token)
+      throw new Error("Your account changed. Please try again.")
+    return token
+  }, [token])
 
-  const takePendingMessage = React.useCallback((chatId: string) => {
-    const msg = pendingRef.current.get(chatId)
-    if (msg) pendingRef.current.delete(chatId)
-    return msg ?? null
-  }, [])
+  /** Takes one session-owned first message after navigation to its conversation. */
+  const takePendingMessage = React.useCallback(
+    (chatId: string): PendingMessage | null => pending.take(getToken(), chatId),
+    [pending]
+  )
 
-  // Create the chat row only (no generation) so we can navigate immediately;
-  // the chat page streams the reply for the stashed first message on mount.
+  /** Creates an ordinary or project conversation row and carries the real composer's first message into its streaming page. */
   const createChat = React.useCallback(
     async (
       message: string,
       modelId: string,
       budget: ThinkBudget,
-      attachments: Attachment[] = []
+      attachments: Attachment[] = [],
+      projectId?: string
     ): Promise<string> => {
-      const response = await apiFetch(`/chats`, {
+      const owningToken = requireSession()
+      const response = await apiFetch("/chats", {
         method: "POST",
-        body: JSON.stringify({ title: title(message) }),
+        headers: { Authorization: `Bearer ${owningToken}` },
+        body: JSON.stringify({
+          title: openingTitle(message),
+          ...(projectId ? { project_id: parseResourceId(projectId) } : {}),
+        }),
       })
-      if (!response.ok) {
-        const text = await response.text()
-        throw new Error(text || "Unable to start a chat.")
-      }
-      const id = String((await response.json()).chat_id)
-      pendingRef.current.set(id, {
+      if (!response.ok) throw new Error("Unable to start a chat.")
+      const chat = parseChatSummary(await response.json())
+      if (getToken() !== owningToken)
+        throw new Error("Your account changed. Please try again.")
+      pending.setSession(owningToken)
+      pending.put(owningToken, chat.id, {
         content: message,
         modelId,
         budget,
         attachments,
       })
-      // Surface the new chat in the sidebar; no need to block navigation on it.
-      refresh()
-      return id
+      void refresh()
+      return chat.id
     },
-    [refresh]
+    [pending, refresh, requireSession]
   )
 
+  /** Renames a stored conversation, then refreshes archive titles for the owning account. */
   const renameChat = React.useCallback(
-    async (id: string, title: string) => {
+    async (id: string, title: string): Promise<void> => {
+      const owningToken = requireSession()
       const response = await apiFetch(`/chats/${id}`, {
         method: "PATCH",
+        headers: { Authorization: `Bearer ${owningToken}` },
         body: JSON.stringify({ title }),
       })
-      if (!response.ok) {
-        const text = await response.text()
-        throw new Error(text || "Unable to rename the chat.")
-      }
-      await refresh()
+      if (!response.ok) throw new Error("Unable to rename the chat.")
+      if (getToken() === owningToken) await refresh()
     },
-    [refresh]
+    [refresh, requireSession]
   )
 
+  /** Deletes a stored conversation and invalidates its prefetched history before refreshing the archive. */
   const deleteChat = React.useCallback(
-    async (id: string) => {
-      const response = await apiFetch(`/chats/${id}`, { method: "DELETE" })
-      if (!response.ok) {
-        const text = await response.text()
-        throw new Error(text || "Unable to delete the chat.")
-      }
+    async (id: string): Promise<void> => {
+      const owningToken = requireSession()
+      const response = await apiFetch(`/chats/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${owningToken}` },
+      })
+      if (!response.ok) throw new Error("Unable to delete the chat.")
       invalidateChatHistory(id)
-      await refresh()
+      if (getToken() === owningToken) await refresh()
     },
-    [refresh]
+    [refresh, requireSession]
   )
 
-  const value: ChatsContextValue = {
-    // Logged out is derived, not stored: the previous session's titles are still
-    // sitting in `conversations` until the next load replaces them, and a
-    // sidebar that keeps showing them after a logout is the bug this prevents.
-    conversations: isAuthenticated ? conversations : NO_CHATS,
-    isLoading: isAuthenticated && isLoading,
-    error,
-    refresh,
-    createChat,
-    takePendingMessage,
-    renameChat,
-    deleteChat,
-  }
+  /** Changes only project membership; messages and title remain stored with the same conversation identity. */
+  const assignProject = React.useCallback(
+    async (id: string, projectId: string | null): Promise<void> => {
+      const owningToken = requireSession()
+      await assignChatProject(owningToken, id, projectId)
+      if (getToken() !== owningToken)
+        throw new Error("Your account changed. Please try again.")
+    },
+    [requireSession]
+  )
 
-  return <ChatsContext.Provider value={value}>{children}</ChatsContext.Provider>
+  const current = state?.token === token ? state : null
+  return (
+    <ChatsContext.Provider
+      value={{
+        conversations: current?.conversations ?? NO_CHATS,
+        isLoading: Boolean(token) && !current,
+        error: current?.error ?? null,
+        refresh,
+        createChat,
+        takePendingMessage,
+        renameChat,
+        deleteChat,
+        assignProject,
+      }}
+    >
+      {children}
+    </ChatsContext.Provider>
+  )
 }
 
-export function useChats() {
-  const ctx = React.useContext(ChatsContext)
-  if (!ctx) {
-    throw new Error("useChats must be used within a ChatsProvider")
-  }
-  return ctx
+/** Returns the session's archive and mutation actions; requires a ChatsProvider. */
+export function useChats(): ChatsContextValue {
+  const value = React.useContext(ChatsContext)
+  if (!value) throw new Error("useChats must be used within a ChatsProvider")
+  return value
 }

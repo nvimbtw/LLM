@@ -20,6 +20,13 @@ index). The stream emits `token`, `tool_call`, `done` with generation summary,
 or `error`. Rust commits the assistant message before sending its client-facing
 `done`; Python writes no transcript.
 
+These chat requests also accept authorized `project` facts and up to eight
+retrieved `memories`, supplied by Rust. `/chat/prepare` validates their bounded
+schemas and checks memory-token adoption before Rust persists new inputs.
+`/chat/context-floor` accounts for their actual bounded fitting. No response or
+stream-event fields change. See [project-memory.md](project-memory.md) for the
+wire shapes, token ceilings and legacy tokenizer behavior.
+
 `POST /measure/{id}` returns model likelihood, unconstrained prompt samples and
 ablation measurements. `/measure/{id}/cancel` signals a cooperative stop. These
 are model primitives used by bench-engine through Rust, with no scoring policy

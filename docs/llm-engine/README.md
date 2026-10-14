@@ -48,6 +48,10 @@ table. It is imported by both the training path and the serving path, which is
 the point — the format the model is trained on and the format it is prompted
 with cannot drift apart if there is only one of them.
 
+Project facts and retrieved source messages use input-only context shared by
+serving and SFT; [project-memory.md](project-memory.md) documents their payloads,
+token limits and private adoption of legacy tokenizer slots.
+
 `llm/storage.py` is the authoritative map of the data tree; its module docstring
 is kept true and nothing else states a path.
 
@@ -272,6 +276,11 @@ retrain:
 Ids do not move, so `corpus.bin` stays valid and every checkpoint still loads.
 The renamed row is at its original init until an SFT run touches it, which
 `train/warm_start.py` already handles off the dataset's `special_ids_seen`.
+
+Memory-bearing requests adopt only the memory pair on a private tokenizer copy
+and keep cached/saved tokenizers unchanged. Memory SFT outputs save that adopted
+copy; ordinary SFT keeps the base tokenizer unchanged. See
+[project-memory.md](project-memory.md#legacy-tokenizer-compatibility).
 
 ## Conventions
 

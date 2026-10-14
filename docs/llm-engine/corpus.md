@@ -99,6 +99,21 @@ from `render_result` here, so neither is copied. An unknown tool drops the
 conversation rather than raising — the chat path can tell a caller it was wrong,
 a build over hundreds of thousands of rows cannot.
 
+## Project and memory source roles
+
+SFT also accepts input-only `project` and `memory` roles in the existing
+`messages` list. Their `content` is a JSON string: project payloads carry
+`project_id`, `name`, `description`, `notes`; memory payloads carry `memory`,
+`thread`, `message`, `role` (`user` or `assistant`) and `age_seconds`.
+They use the same validated payloads and canonical renderer as live chat,
+without training any context token as an assistant target. Each example allows
+one project and eight memories, and still ends on an assistant reply. Invalid
+context JSON drops the row. Full field bounds, examples, escaping and reserved
+slot adoption are documented in [project-memory.md](project-memory.md).
+
+Packed SFT keys/sidecars record `context_format: 1`. This intentionally rebuilds
+older packs that skipped the new roles; ordinary source rendering is unchanged.
+
 ## What the encoder is given, and why the pack is not slower than it is
 
 Packing is where a rebuild spends nearly all of its time, so the shape of what

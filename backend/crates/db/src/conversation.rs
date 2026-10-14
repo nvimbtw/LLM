@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct Chat {
     pub id: Uuid,
     pub title: String,
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub tokens: i64,
 }
@@ -36,18 +37,68 @@ pub struct NewMessage {
     pub request_id: Uuid,
 }
 
+/// Return all owned chat metadata, including optional project membership and stored token totals.
 pub async fn list(pool: &PgPool, owner: Uuid) -> Result<Vec<Chat>, sqlx::Error> {
-    sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS "tokens!" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 GROUP BY c.id ORDER BY c.created_at DESC"#, owner).fetch_all(pool).await
+    sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS "tokens!" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 GROUP BY c.id ORDER BY c.created_at DESC"#, owner).fetch_all(pool).await
 }
 
+/// Return an owned chat; foreign or unknown IDs yield none.
 pub async fn get(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<Option<Chat>, sqlx::Error> {
-    sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS "tokens!" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 AND c.id=$2 GROUP BY c.id"#, owner, id).fetch_optional(pool).await
+    sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS "tokens!" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 AND c.id=$2 GROUP BY c.id"#, owner, id).fetch_optional(pool).await
 }
 
+/// Create an owned chat without project membership, returning its committed metadata.
 pub async fn create(pool: &PgPool, owner: Uuid, title: &str) -> Result<Chat, sqlx::Error> {
-    sqlx::query_as!(Chat, r#"INSERT INTO chats(owner_id,title) VALUES($1,$2) RETURNING id,title,created_at,0::bigint AS "tokens!""#, owner, title).fetch_one(pool).await
+    create_in_project(pool, owner, title, None).await
 }
 
+/// Atomically create an owned chat with an optional owned project; invalid membership inserts nothing.
+pub async fn create_in_project(
+    pool: &PgPool,
+    owner: Uuid,
+    title: &str,
+    project: Option<Uuid>,
+) -> Result<Chat, sqlx::Error> {
+    sqlx::query_as!(
+        Chat,
+        r#"INSERT INTO chats(owner_id, title, project_id)
+           SELECT $1, $2, $3::uuid
+           WHERE $3::uuid IS NULL OR EXISTS (SELECT 1 FROM projects WHERE id = $3 AND owner_id = $1)
+           RETURNING id, title, project_id, created_at, 0::bigint AS "tokens!""#,
+        owner,
+        title,
+        project
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Move an owned chat to an owned project, or detach it, returning none without any mutation on invalid IDs.
+pub async fn assign_project(
+    pool: &PgPool,
+    owner: Uuid,
+    id: Uuid,
+    project: Option<Uuid>,
+) -> Result<Option<Chat>, sqlx::Error> {
+    sqlx::query_as!(
+        Chat,
+        r#"WITH updated AS (
+               UPDATE chats SET project_id = $3::uuid WHERE owner_id = $1 AND id = $2
+                 AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM projects WHERE id = $3 AND owner_id = $1))
+               RETURNING id, title, project_id, created_at
+           )
+           SELECT c.id, c.title, c.project_id, c.created_at,
+                  COALESCE((SELECT sum(tokens) FROM messages WHERE chat_id = c.id), 0)::bigint AS "tokens!"
+           FROM updated c"#,
+        owner,
+        id,
+        project
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Rename an owned chat, reporting whether a row changed without exposing another owner's metadata.
 pub async fn rename(
     pool: &PgPool,
     owner: Uuid,
@@ -66,6 +117,7 @@ pub async fn rename(
         == 1)
 }
 
+/// Delete an owned chat and its cascading messages and attachments; return false for foreign IDs.
 pub async fn remove(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query!(
         r#"DELETE FROM chats WHERE owner_id=$1 AND id=$2"#,
@@ -78,6 +130,7 @@ pub async fn remove(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<bool, sqlx::
         == 1)
 }
 
+/// Read ordered message history only from the authenticated owner's chat.
 pub async fn messages(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<Vec<Message>, sqlx::Error> {
     sqlx::query_as!(Message, r#"SELECT m.id,m.chat_id,m.role::text AS "role!",m.content,m.tokens,m.model_id,m.model_name,m.tool,m.argument,m.feedback::text,m.created_at FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=$1 AND c.id=$2 ORDER BY m.position"#, owner, id).fetch_all(pool).await
 }
@@ -129,6 +182,7 @@ pub async fn append_many(
     Ok(messages)
 }
 
+/// Set or clear feedback on an owned message, returning whether an authorized row changed.
 pub async fn feedback(
     pool: &PgPool,
     owner: Uuid,
@@ -138,6 +192,7 @@ pub async fn feedback(
     Ok(sqlx::query!(r#"UPDATE messages m SET feedback=$3::text::conversation_feedback FROM chats c WHERE m.chat_id=c.id AND c.owner_id=$1 AND m.id=$2"#, owner, id, value).execute(pool).await?.rows_affected() == 1)
 }
 
+/// Aggregate the owner's stored usage over the requested number of UTC calendar days.
 pub async fn usage(
     pool: &PgPool,
     owner: Uuid,

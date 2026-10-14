@@ -222,6 +222,7 @@ trips are not what a pack spends its time on.
 - Roles arrive from the Hub as the source wrote them (`human`, `gpt`). Mapping
   them is the `normalise-roles` processor's job — doing it during the fetch
   would hide from the user that it happened.
+  [Project and memory training context](project-memory.md) stays structured JSON.
 - **`convert-hermes` renders a tool result the way the live shell does, and that
   mirror is pinned rather than promised.** `processors/hermes.py::_result_body`
   reimplements `backend/crates/tools/src/bash.rs::render` because this service

@@ -21,7 +21,7 @@ from llm.orchestrate import recovery
 from llm.chat import template
 from llm.chat.template import Reasoning
 from llm.config import SftConfig, TrainConfig
-from llm.corpus import bpe, pack, remote, sft as sft_corpus, special
+from llm.corpus import bpe, pack, relabel, remote, sft as sft_corpus, special
 from llm.eval import chat as chat_eval
 from llm.model import checkpoint
 from llm.orchestrate import train as train_pipeline
@@ -174,6 +174,12 @@ def run(
 
 
 def _finetune(cfg, client, on_progress, cancel, started) -> dict:
+    """Build or reuse masked source data, train inherited weights and save a new model.
+
+    Memory-bearing corpora adopt only their reserved marker spellings on a private
+    tokenizer; the cached source tokenizer and every existing token ID stay unchanged.
+    Cancellation and resumable checkpoints retain the existing pipeline policy.
+    """
     resumed = recovery.resume(cfg, "sft")
     source = cfg.resume_from or cfg.base_model
     weights = storage.weights_path(source)
@@ -189,14 +195,9 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         f"{arch['layers']}L/{arch['heads']}H/{arch['dimensions']}d on {device}"
     )
 
-    # The base model's own tokenizer, not the shared build: a later pretrain may
-    # have replaced the shared one, and a fine-tune tokenized differently from
-    # the weights it starts from produces confident nonsense.
     tokenizer = bpe.load(storage.model_dir(source))
 
     reasoning = Reasoning.STRIP if cfg.strip_thinking else Reasoning.KEEP
-    # Resolved before the key is derived, so a dataset pulled again since the last
-    # build keys apart from the smaller one it replaced.
     selection = sft_corpus.resolve(client, cfg.datasets)
     key = sft_corpus.dataset_key(selection, reasoning)
     named = ", ".join(str(selected) for selected in selection)
@@ -224,10 +225,6 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
     corpus, mask = sft_corpus.load(key)
     eot_id, documents, info = sft_corpus.load_segments(key)
 
-    # A reused dataset reports what the files on disk say — the counts the build
-    # would have returned are not recorded in the sidecar, and summing the mask to
-    # recover the trainable share means reading the whole corpus for one number,
-    # so it stays unmeasured rather than paid for.
     report.finish(
         conversations=stats.conversations if stats else len(documents),
         total_tokens=stats.total_tokens if stats else len(corpus),
@@ -235,20 +232,17 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         skipped_too_long=stats.skipped if stats else None,
     )
 
-    # Markers this dataset uses that the base never saw, warm-started before the
-    # first step — see llm/train/warm_start.py for why the caller decides this.
     marker_ids = {
         tokenizer.token_to_id(name)
-        for name in special.token_list()
+        for name in special.block_names()
         if tokenizer.token_to_id(name) is not None
     }
-    # The build records this, so the corpus is normally never read for it. Only a
-    # dataset built before the field existed is scanned, and then in bounded
-    # chunks — this is the step that OOM-killed the LLM engine when it asked for the
-    # whole corpus as a Python list.
     used = info.get("special_ids_seen")
     if used is None:
         used = sft_corpus.special_ids_in(corpus, marker_ids, eot_id)
+    memory_slots = {special.SPECIAL_TOKENS.index(marker) for marker in (special.MEMORY_OPEN, special.MEMORY_CLOSE)}
+    if memory_slots.intersection(used):
+        tokenizer = relabel.adopt_memory_slots(tokenizer)
     base_seen = _base_special_ids(cfg.base_model)
     to_reset = untrained_marker_ids(used, base_seen)
     reset = 0 if resumed else warm_start_embeddings(model, to_reset)
@@ -263,9 +257,6 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         else DataPlan.whole_corpus(len(corpus))
     )
 
-    # The training loop takes its shape from a TrainConfig; SFT's architecture
-    # comes from the checkpoint, so the two are merged here rather than making
-    # every caller below understand two config types.
     train_cfg = TrainConfig(
         model_name=cfg.model_name,
         dimensions=arch["dimensions"],
@@ -292,27 +283,12 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         "parameters": model.parameter_count(),
         "device": device,
         "warm_started": reset,
-        # The one field both families answer "what shape is this" with, whatever
-        # their config happens to say: SFT states no architecture at all — it
-        # comes from the checkpoint by construction — and a *resumed* pretrain
-        # deliberately states none either. `train.py` records the same key from
-        # its own config for the same reason.
         "architecture": {name: arch[name] for name in train_pipeline.ARCHITECTURE_SUMMARY_FIELDS},
-        # What this model was actually fine-tuned on, which is the only durable
-        # way to tell two runs from the same base model apart afterwards.
         "dataset": {
             "sets": [one.record() for one in selection],
             "reasoning": reasoning.value,
             "key": key,
             **(stats.__dict__ if stats else {"reused": True}),
-            # The union of this corpus and the base's, so the record composes
-            # down a pretrain -> SFT -> SFT chain. Recording only this run's
-            # corpus loses the base's history at every hop: a thinking fine-tune
-            # chained off a strip-thinking one would read <|thinking|> as never
-            # trained and reset a row the *pretrain* had trained, throwing the
-            # signal away. Written last so it wins over the `stats` copy above,
-            # and derived from `used` rather than `stats` so a reused build —
-            # which carries no stats at all — still records one.
             "special_ids_seen": sorted(set(used) | set(base_seen or [])),
         },
         "trainable_tokens": int(mask.sum()),
@@ -340,9 +316,6 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         token_counts=info.get("token_counts"),
         probes=probes,
         resume=resumed,
-        # A fine-tune's checkpoints are models exactly as a pretrain's are, and
-        # the writer is the pretrain's — what differs is only what each run knows
-        # to record about itself.
         on_checkpoint=train_pipeline.CheckpointWriter(
             tokenizer=tokenizer,
             config=cfg.model_dump(),
@@ -356,17 +329,11 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
             },
         ),
     )
-    # The reference model is a second full copy of the weights, and this is the
-    # last frame holding one. `release_device` (from `api/runner.py`'s finally)
-    # hands back the *allocator's* pool, not memory something still points at, so
-    # dropping it here is what makes the opt-in KL anchor releasable at all.
     probes.reference = None
 
     print("[5/5] Saving")
     model_dir = storage.ensure_dir(storage.model_dir(cfg.model_name))
     checkpoint.save(model, storage.weights_path(cfg.model_name))
-    # The base tokenizer travels with the fine-tuned weights, so inference loads
-    # both from one directory.
     tokenizer.save(str(storage.tokenizer_file(model_dir)))
 
     result = {

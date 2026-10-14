@@ -3,6 +3,7 @@ import uuid
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from llm.chat import tools
+from llm.chat.context import MAX_MEMORIES, MemoryContext, ProjectContext
 
 MAX_PER_MESSAGE = 5
 
@@ -47,6 +48,8 @@ class Ask(BaseModel):
     #: `../decisions/attachments-are-stored-not-read.md`.
     attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_PER_MESSAGE)
     system: str | None = None
+    project: ProjectContext | None = None
+    memories: list[MemoryContext] = Field(default_factory=list, max_length=MAX_MEMORIES)
     #: "low" | "med" | "high". Absent is not a fourth value — it renders no
     #: marker, which is the prompt shape the model was trained under.
     budget: str | None = None

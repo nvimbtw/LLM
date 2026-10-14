@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Boxes, MessagesSquare, MessageSquarePlus } from "lucide-react"
+import { Boxes, MessagesSquare, MessageSquarePlus, Folder } from "lucide-react"
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -11,11 +11,11 @@ import {
 const items = [
   { title: "New", href: "/", icon: MessageSquarePlus },
   { title: "Models", href: "/models", icon: Boxes },
-  // Always visible (expanded and collapsed) — the entry point to the full
-  // archive. The recent-chats list (NavConversations) sits below it when expanded.
   { title: "Conversations", href: "/conversations", icon: MessagesSquare },
+  { title: "Projects", href: "/projects", icon: Folder },
 ]
 
+/** Renders primary navigation, keeping Projects directly underneath the full conversation archive. */
 export function NavMain() {
   return (
     <SidebarGroup>

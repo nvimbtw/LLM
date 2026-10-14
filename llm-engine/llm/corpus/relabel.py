@@ -20,7 +20,28 @@ it would silently repoint tokens in every corpus keyed on it.
 import json
 from pathlib import Path
 
+from tokenizers import Tokenizer
+
 from llm.corpus import special, vocab
+
+
+def adopt_memory_slots(tokenizer: Tokenizer) -> Tokenizer:
+    """Return a private copy adopting memory slots when needed, preserving every ID.
+
+    The shared tokenizer and its file remain untouched. Existing non-placeholder
+    collisions raise rather than changing the meaning of a trained embedding row.
+    """
+    markers = (special.MEMORY_OPEN, special.MEMORY_CLOSE)
+    slots = [special.SPECIAL_TOKENS.index(marker) for marker in markers]
+    if all(tokenizer.token_to_id(marker) == slot for marker, slot in zip(markers, slots)):
+        return tokenizer
+    document = json.loads(tokenizer.to_str())
+    renames = [rename for rename in slot_renames(document) if rename[2] in markers]
+    apply_renames(document, renames)
+    adopted = Tokenizer.from_str(json.dumps(document, ensure_ascii=False))
+    if any(adopted.token_to_id(marker) != slot for marker, slot in zip(markers, slots)):
+        raise ValueError("memory context requires the fixed64 reserved-token vocabulary")
+    return adopted
 
 
 def slot_renames(document: dict) -> list[tuple[int, str, str]]:

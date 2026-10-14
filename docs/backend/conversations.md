@@ -6,6 +6,10 @@ Every query scopes by authenticated owner; admin status does not open another
 person's conversations. `users → chats → messages → attachments` deletion
 cascades locally. Unsent attachments belong directly to their uploader.
 
+Chats may belong to an owned [private project](projects.md). Deleting a project
+clears chat membership and preserves conversations and files; project notes and
+matching source messages are injected through this same preparation path.
+
 Messages have a role and a per-chat position. Insertions lock the chat row;
 a tool result and buffered interjection commit in one transaction. A process-wide
 per-chat turn mutex spans generation and tool rounds, so sockets cannot interleave

@@ -8,6 +8,7 @@ pub mod health;
 pub mod internal;
 pub mod models;
 pub mod preset;
+pub mod projects;
 pub mod runs;
 pub mod stream;
 pub mod tokenize;
@@ -18,14 +19,13 @@ pub mod validate;
 
 use actix_web::web;
 
+/// Register backend-owned resources and authenticated adapters to domain services.
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    // Owned here: people, their sessions, and the presets they compose runs from.
     cfg.service(web::scope("/health").configure(health::configure));
     cfg.service(web::scope("/auth").configure(auth::configure));
     cfg.service(web::scope("/user").configure(user::configure));
     cfg.service(web::scope("/presets").configure(preset::configure));
-
-    // Owned by the LLM engine, reached through it.
+    cfg.service(web::scope("/projects").configure(projects::configure));
     cfg.service(web::scope("/chats").configure(chats::configure));
     cfg.service(web::scope("/attachments").configure(attachments::configure));
     cfg.service(web::scope("/messages").configure(chats::configure_messages));
@@ -37,13 +37,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/usage").configure(usage::configure));
     cfg.service(web::scope("/ws").configure(stream::configure));
 
-    // Owned by the data engine: what a corpus was before it was training data.
     cfg.service(web::scope("/data").configure(data::configure));
 
-    // Not for a browser: the LLM engine reading the data engine's documents, the one
-    // hop that runs toward the backend rather than away from it.
     cfg.service(web::scope("/internal").configure(internal::configure));
 
-    // Ephemeral gyms: one DB, one just-bash session per episode. Admin only.
     cfg.service(web::scope("/gym").configure(gym::configure));
 }

@@ -54,6 +54,7 @@ topic here adds a route automatically; deployed docs require a frontend rebuild.
 | [Composer](composer.md) | Uploads, dictation, context meter, pruning, choice persistence and commands |
 | [Plans](composer-plan.md) | Local plans, revision-aware edits, ordering and fixture behavior |
 | [Settings and profile](settings.md) | Dialog sections, account preferences and persistence |
+| [Private projects](projects.md) | Project navigation, notes, conversation membership and composer/session ownership |
 
 A token frame is a decoded delta. Concatenate it verbatim; insert no whitespace.
 Only final `done` ends a turn. Tool results and confirmed interjections fold into

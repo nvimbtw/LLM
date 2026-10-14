@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from llm.chat.context import MAX_MEMORIES, MemoryContext, ProjectContext
+
 # `model_name` collides with pydantic v2's protected `model_` namespace, which
 # would warn on every instantiation. The field name is worth keeping — it is
 # what the Rust config, the job rows, and the on-disk layout all call it.
@@ -522,6 +524,7 @@ class ChatTurn(BaseModel):
 
     @model_validator(mode="after")
     def _tool_turns_name_their_call(self) -> "ChatTurn":
+        """Reject incomplete call identities or call metadata outside a tool turn."""
         if (self.tool is None) != (self.argument is None):
             raise ValueError("a tool and its argument are given together or not at all")
         if self.role != "tool" and self.tool is not None:
@@ -537,6 +540,8 @@ class ChatConfig(BaseModel):
     model_name: str
     turns: list[ChatTurn]
     system: str | None = None
+    project: ProjectContext | None = None
+    memories: list[MemoryContext] = Field(default_factory=list, max_length=MAX_MEMORIES)
     # "low" | "med" | "high", or absent for no budget marker at all — the absence
     # is a real state, not a fourth level.
     budget: str | None = None

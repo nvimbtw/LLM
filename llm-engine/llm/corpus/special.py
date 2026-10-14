@@ -8,6 +8,9 @@ renders, and the thinking block.
 
 # Order is load-bearing: it fixes each marker's id. Append only, never reorder,
 # and take a reserved slot rather than inserting in the middle.
+MEMORY_OPEN = "<|memory|>"
+MEMORY_CLOSE = "<|/memory|>"
+
 SPECIAL_TOKENS: list[str] = [
     "<|endoftext|>",
     "<|par|>",
@@ -79,6 +82,8 @@ SPECIAL_TOKENS: list[str] = [
     # knowing anything about it.
     "<|tool-call|>",
     "<|/tool-call|>",
+    MEMORY_OPEN,
+    MEMORY_CLOSE,
 ]
 
 # The document separator, baked between documents in the packed corpus.

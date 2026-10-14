@@ -29,9 +29,14 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from tokenizers import Tokenizer
+from pydantic import ValidationError
 
 from llm import storage
 from llm.chat import template, tools
+from llm.chat.context import (
+    MAX_CONTEXT_SOURCE_CHARS, MAX_MEMORIES, MEMORY_CLOSE, MEMORY_OPEN,
+    MemoryContext, ProjectContext,
+)
 from llm.chat.template import Reasoning, Role, ThinkBudget, Turn
 from llm.corpus import bpe, remote, spans as spans_mod, special
 from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS
@@ -42,6 +47,7 @@ from llm.corpus.spans import SpanBuilder, Spans
 # makes the key unique.
 KEY_SLUG_SETS = 2
 KEY_DIGEST_CHARS = 10
+CONTEXT_FORMAT_VERSION = 1
 
 
 @dataclass
@@ -83,6 +89,7 @@ def dataset_key(selection: list[remote.Selected], reasoning: Reasoning) -> str:
         {
             "sets": [selected.identity() for selected in selection],
             "reasoning": reasoning.value,
+            "context_format": CONTEXT_FORMAT_VERSION,
         }
     )
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:KEY_DIGEST_CHARS]
@@ -173,35 +180,52 @@ def _turns(raw: dict) -> list[Turn] | None:
     strikes with a document that carries no messages.
     """
     turns: list[Turn] = []
+    memories = 0
+    projects = 0
     for turn in raw.get("turns", []):
         role = turn.get("role", "").lower()
-        if role not in ("user", "assistant", "tool"):
+        if role not in ("user", "assistant", "tool", "memory", "project"):
             return None
         text = turn.get("text", "")
+        if role in ("memory", "project"):
+            parsed = _context_turn(role, text)
+            if parsed is None:
+                return None
+            memories += role == "memory"
+            projects += role == "project"
+            if memories > MAX_MEMORIES or projects > 1:
+                return None
+            turns.append(parsed)
+            continue
+        if not isinstance(text, str):
+            return None
         name, argument = turn.get("tool"), turn.get("argument")
         if name is not None and argument is not None:
             if tools.by_name(name) is None:
                 return None
-            # The same call, rendered into whichever of its two positions this
-            # turn is. An assistant turn *made* the call, so the marker goes
-            # after its text, exactly where the model emits it and — since
-            # `training_segments` trains an assistant turn whole — inside the
-            # region that carries gradient. A tool turn *answers* one, so the
-            # marker opens the result block, where it is context and masked.
-            #
-            # Getting this backwards is not a cosmetic error: a corpus that
-            # stores every call on the tool turn alone teaches a model to
-            # narrate and then close its turn, having never once been trained
-            # to reach for a tool.
             if role == "assistant":
                 text = f"{text}{tools.call(name, argument)}"
             else:
                 text = tools.render_result(name, argument, text)
+        if role == "assistant" and (MEMORY_OPEN in text or MEMORY_CLOSE in text):
+            return None
         turns.append(Turn(role=Role(role), text=text))
 
     if not turns or turns[-1].role is not Role.ASSISTANT:
         return None
     return turns
+
+
+def _context_turn(role: str, text: object) -> Turn | None:
+    """Validate bounded source JSON, returning an input-only turn or rejecting the row."""
+    if not isinstance(text, str) or len(text) > MAX_CONTEXT_SOURCE_CHARS:
+        return None
+    schema = MemoryContext if role == "memory" else ProjectContext
+    try:
+        context = schema.model_validate_json(text)
+    except ValidationError:
+        return None
+    return Turn(role=Role(role), text=context.model_dump_json())
 
 
 def clear_legacy() -> int:
@@ -231,18 +255,19 @@ def build(
     `report` is the caller's `llm.train.progress.BuildReport`, handed down for
     the reason `pack.pack` takes one: `corpus` sits left of `train` in the
     layering, and this is the longest thing a fine-tune does before it trains.
+
+    IDs and masks are streamed to aligned partial files and published only
+    after nonempty rendering succeeds. Character-bounded batches accumulate
+    marker IDs and a token histogram without scanning the finished corpus.
     """
     key = dataset_key(selection, reasoning)
     expected = sum(selected.taken for selected in selection)
 
     eot_id = bpe.token_id(tokenizer, special.END_OF_TEXT)
 
-    # Intersected against each conversation as it is rendered, so the answer to
-    # "which markers does this dataset use?" is known by the time the build ends
-    # and the corpus never has to be scanned for it.
     marker_ids = {
         tokenizer.token_to_id(name)
-        for name in special.token_list()
+        for name in special.block_names()
         if tokenizer.token_to_id(name) is not None
     }
     seen: set[int] = set()
@@ -251,33 +276,21 @@ def build(
     skipped = 0
     total_tokens = 0
     trainable_tokens = 0
-    # Rows taken off the wire, as against `documents`, which counts the ones that
-    # survived rendering. The gap between the two is `skipped`, and watching it
-    # open is how a selection pointed at the wrong dataset shows up in the first
-    # seconds rather than in the error at the end.
     read = 0
 
     storage.ensure_dir(storage.sft_dataset_dir(key))
 
-    # Both files are streamed for the same reason `pack.pack` is — a Python list
-    # boxes every token, so buffering the whole corpus costs many times its packed
-    # size — and both go through a `.partial` so a failed or empty build cannot
-    # leave a half-written pair behind. They must stay aligned 1:1; `load()`
-    # rejects a length mismatch, and writing them in lockstep here is what makes
-    # that check pass.
     corpus_final, mask_final = storage.sft_corpus_path(key), storage.sft_mask_path(key)
     corpus_partial = corpus_final.with_suffix(".bin.partial")
     mask_partial = mask_final.with_suffix(".bin.partial")
 
     token_buffer: list[int] = []
     mask_buffer: list[int] = []
-    # The token histogram, accumulated on the way to disk exactly as `pack.pack`
-    # does it, and for the same reason: computing it later means reading the whole
-    # corpus back before the first training step.
     vocab = bpe.vocab_size(tokenizer)
     counts = np.zeros(vocab, dtype=np.int64)
 
     def flush() -> None:
+        """Append aligned buffered IDs/masks and update the bounded token histogram."""
         if token_buffer:
             block = np.asarray(token_buffer, dtype=CORPUS_DTYPE)
             counts[:] += np.bincount(block, minlength=vocab)[:vocab]
@@ -286,11 +299,6 @@ def build(
             token_buffer.clear()
             mask_buffer.clear()
 
-    # Conversations are cut into segments first and encoded a batch at a time, so
-    # the tokenizer gets every core instead of one — see `template.encode_examples`.
-    # The batch is bounded by the characters it holds rather than by how many
-    # conversations it holds: a chat set is millions of short conversations, and a
-    # count would be a different amount of work in every set.
     pending: list[list[tuple[str, bool]]] = []
     pending_chars = 0
 
@@ -308,8 +316,6 @@ def build(
             documents.append("sft", start=total_tokens, length=len(ids))
             token_buffer.extend(ids)
             mask_buffer.extend(example_mask)
-            # The separator is scaffold between conversations, never a target: the
-            # model must not learn to predict one conversation from another.
             token_buffer.append(eot_id)
             mask_buffer.append(0)
 
@@ -373,7 +379,8 @@ def build(
         raise ValueError(
             f"No trainable conversations in [{named}] — SFT needs documents whose "
             f"messages are [{{role, content}}] ending on an assistant reply, with role "
-            f"one of user, assistant, tool. Roles as the source wrote them (human, gpt) "
+            f"one of user, assistant, tool, project, memory. Context roles contain bounded "
+            f"JSON payloads. Roles as the source wrote them (human, gpt) "
             f"are the data engine's `normalise-roles` processor's job"
         )
 
@@ -383,19 +390,15 @@ def build(
     spans = documents.build()
     spans.save(storage.sft_spans_path(key))
 
-    # The selection is written beside the documents so a built dataset says what
-    # it is. `is_built` compares against this rather than trusting the directory
-    # name, which is the check that makes reuse safe.
     storage.sft_segments_path(key).write_text(
         json.dumps(
             {
                 "eot_id": eot_id,
                 "sets": [selected.record() for selected in selection],
                 "reasoning": reasoning.value,
+                "context_format": CONTEXT_FORMAT_VERSION,
                 "special_ids_seen": sorted(seen),
                 "token_counts": counts.tolist(),
-                # The rows are in spans.npy — `pack.pack` writes its table the
-                # same way, and `spans.from_sidecar` reads either shape.
                 "documents": len(spans),
                 "datasets": spans.names,
             },
@@ -436,7 +439,7 @@ def load(key: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def load_segments(key: str) -> tuple[int, Spans, dict]:
-    """Document boundaries plus what the build was made from."""
+    """Return document boundaries and provenance, including the context-rendering version."""
     path = storage.sft_segments_path(key)
     if not path.is_file():
         return 0, Spans.empty(), {}
@@ -444,11 +447,8 @@ def load_segments(key: str) -> tuple[int, Spans, dict]:
     info = {
         "sets": raw.get("sets", []),
         "reasoning": raw.get("reasoning"),
-        # Absent on a build made before it was recorded; None means "unknown", so
-        # the caller scans rather than concluding the dataset uses no markers.
+        "context_format": raw.get("context_format"),
         "special_ids_seen": raw.get("special_ids_seen"),
-        # Per-token frequencies for the diagnostics, as `pack.load_segments`
-        # returns them. None on a build that predates them.
         "token_counts": raw.get("token_counts"),
     }
     return raw["eot_id"], spans_mod.from_sidecar(storage.sft_spans_path(key), raw), info
@@ -504,4 +504,5 @@ def is_built(key: str, selection: list[remote.Selected], reasoning: Reasoning) -
     recorded = info.get("sets", [])
     return recorded == [selected.record() for selected in selection] and (
         info.get("reasoning") == reasoning.value
+        and info.get("context_format") == CONTEXT_FORMAT_VERSION
     )
