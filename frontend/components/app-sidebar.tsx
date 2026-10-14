@@ -21,7 +21,7 @@ import { NavProfile } from "./sidebar/nav-profile"
 const APP_NAME = "Slate"
 const APP_NAME_SHORT = "S"
 
-/** Renders the application navigation with a flat project section above recent ordinary conversations. */
+/** Renders application navigation with flat project links above recent conversations of any project membership. */
 export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">

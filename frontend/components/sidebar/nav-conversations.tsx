@@ -11,7 +11,6 @@ import {
   SidebarGroupContent,
   SidebarMenu,
   SidebarMenuItem,
-  SidebarMenuButton,
   SidebarMenuAction,
 } from "@/components/ui/sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -33,8 +32,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Input } from "@/components/ui/input"
 import { useChats, type ChatSummary } from "@/components/chat/chats-provider"
-import { cn } from "@/lib/utils"
 import { prefetchChatHistory } from "@/lib/chat-history"
+import { SidebarEntryButton } from "./sidebar-entry-button"
 
 // Keep the sidebar list short — only the most recent chats. The rest live on the
 // full /conversations page (reachable from NavMain when collapsed).
@@ -63,14 +62,12 @@ function formatRelative(iso: string): string {
 // recency list they were a second column nobody scans, and carrying them cost
 // every row a caption line and half again its height.
 
-/** Renders only recent ordinary conversations; project threads remain available through projects and the archive. */
+/** Renders recent conversations across all project memberships, with the full archive available at /conversations. */
 export function NavConversations() {
   const { conversations, isLoading } = useChats()
   const [expanded, setExpanded] = React.useState(true)
 
-  const recent = conversations
-    .filter((chat) => chat.projectId === null)
-    .slice(0, RECENT_LIMIT)
+  const recent = conversations.slice(0, RECENT_LIMIT)
 
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
@@ -110,7 +107,7 @@ export function NavConversations() {
   )
 }
 
-/** Renders an ordinary sidebar chat with prefetch, rename and delete actions. */
+/** Renders a sidebar chat with prefetch, rename and delete actions, independent of project membership. */
 function ConversationItem({ chat }: { chat: ChatSummary }) {
   const pathname = usePathname()
   const router = useRouter()
@@ -172,7 +169,7 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
 
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
+      <SidebarEntryButton
         isActive={isActive}
         render={
           <Link
@@ -181,20 +178,12 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
             onFocus={prefetch}
           />
         }
-        className={cn(
-          "relative pl-3.5",
-          "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-px before:-translate-y-1/2",
-          "before:rounded-full before:bg-sidebar-foreground/30 before:transition-all before:content-['']",
-          "hover:before:h-4",
-          isActive &&
-            "before:h-4 before:w-0.5 before:bg-primary hover:before:bg-primary"
-        )}
       >
         <span className="min-w-0 flex-1 truncate">{chat.title}</span>
         <span className="shrink-0 text-xs text-sidebar-foreground/45 tabular-nums transition-opacity group-focus-within/menu-item:opacity-0 group-hover/menu-item:opacity-0">
           {formatRelative(chat.createdAt)}
         </span>
-      </SidebarMenuButton>
+      </SidebarEntryButton>
 
       <DropdownMenu>
         <DropdownMenuTrigger

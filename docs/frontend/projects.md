@@ -8,9 +8,10 @@ the browser loads it through Rust using the actual bearer session identity.
 
 The sidebar's Projects navigation item sits directly below Conversations. A flat
 section of up to eight project links appears above recent conversations, with an
-All projects link when more exist. Recent conversations contain ordinary chats
-only. The full `/conversations` archive includes every chat, including project
-threads, and exposes membership management alongside rename and delete.
+All projects link when more exist. Project rows share conversation rows' text
+alignment and hover/selected marker. The five most recent conversations appear
+regardless of project membership. The full `/conversations` archive includes every
+chat and exposes membership management alongside rename and delete.
 
 ## Ownership and lifecycle
 
@@ -37,9 +38,9 @@ box. Create project or Save changes explicitly persists all three fields; failed
 saves preserve the draft. The privacy/conversation-count line sits underneath the
 description, and Delete project appears beside New chat in the page header. Deleting
 a project preserves its conversations and messages, removes their association and
-refreshes both project navigation and the ordinary chat archive. Moving a chat
-uses the same identity and history; selecting No project restores it to ordinary
-recent conversations.
+refreshes both project navigation and the chat archive. Moving a chat uses the same
+identity and history; selecting No project removes its association. Membership
+changes do not affect eligibility for the recent conversations sidebar.
 
 ## Composer and session boundaries
 

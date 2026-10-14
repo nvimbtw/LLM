@@ -2,7 +2,6 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Folder } from "lucide-react"
 import { useProjects } from "@/components/projects/projects-provider"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
@@ -14,8 +13,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { SidebarEntryButton } from "./sidebar-entry-button"
 
-/** Renders flat project links above recent ordinary chats, with bounded rows and a retryable catalogue failure. */
+/** Renders flat project links above recent chats, matching conversation rows and retaining a retryable catalogue failure. */
 export function NavProjects() {
   const pathname = usePathname()
   const { catalog, refresh } = useProjects()
@@ -55,13 +55,12 @@ export function NavProjects() {
           ) : (
             catalog.projects.slice(0, 8).map((project) => (
               <SidebarMenuItem key={project.project_id}>
-                <SidebarMenuButton
+                <SidebarEntryButton
                   isActive={pathname === `/projects/${project.project_id}`}
                   render={<Link href={`/projects/${project.project_id}`} />}
                 >
-                  <Folder className="opacity-60" />
-                  <span className="truncate">{project.name}</span>
-                </SidebarMenuButton>
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                </SidebarEntryButton>
               </SidebarMenuItem>
             ))
           )}
