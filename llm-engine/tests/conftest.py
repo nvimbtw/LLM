@@ -92,18 +92,22 @@ def recorded_trace() -> dict:
 
 
 @pytest.fixture
-def store_session():
-    """A throwaway database per test.
+def store_session(tmp_path):
+    """Bind a disposable SQLite database and restore the previous store on exit.
 
-    SQLite in memory rather than the real Postgres: the schema uses nothing
-    dialect-specific, and a test that needs a server is a test nobody runs.
-    The Postgres path is covered by the migration check in test_migrations.py.
+    A file gives HTTP waiters and worker threads independent connections so their
+    transactions cannot commit or roll back each other's work. PostgreSQL-specific
+    behavior remains covered by test_migrations.py.
     """
     import store
 
-    factory = store.configure("sqlite+pysqlite:///:memory:", create=True)
-    yield store.session
-    store._sessions = factory
+    previous = store._sessions
+    factory = store.configure(f"sqlite+pysqlite:///{tmp_path / 'store.sqlite3'}", create=True)
+    try:
+        yield store.session
+    finally:
+        factory.kw["bind"].dispose()
+        store._sessions = previous
 
 
 @pytest.fixture

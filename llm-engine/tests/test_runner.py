@@ -69,12 +69,17 @@ async def test_runs_execute_in_queue_order(store_session, registry, ran):
 
 
 async def test_a_failing_handler_fails_only_its_own_run(store_session, registry, ran):
+    """A failed training job leaves a valid queued benchmark free to complete."""
+
     def explode(config, progress, cancel, owner=None):
+        """Fail the training handler before it can return any output."""
         raise RuntimeError("kaboom")
 
     runner = Runner(registry, {RunKind.train: explode, RunKind.benchmark: handler_recording(ran)})
     bad = runner.enqueue(RunKind.train, label="bad", config={})
-    good = runner.enqueue(RunKind.benchmark, label="good", config={"n": 1})
+    good = runner.enqueue(
+        RunKind.benchmark, label="good", config={"n": 1, "model_name": str(uuid.uuid4())}
+    )
 
     await drain(runner)
 

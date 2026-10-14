@@ -3,6 +3,7 @@ import uuid
 import pytest
 from api.chat_request import Ask, _new_turns
 from fastapi import HTTPException
+from llm.chat.template import Role, Turn, render_conversation
 from tests.fixtures.tiny_env import TINY_MODEL
 
 
@@ -15,11 +16,19 @@ async def test_prepare_counts_without_persisting(engine_client):
 
 
 def test_tool_and_interjection_keep_canonical_order():
-    body = Ask(model_name='m',tool_result={'tool':'bash','argument':'pwd','body':'/tmp'},interject='also list files')
+    """Prepared continuation turns render one tool block before user steering."""
+    body = Ask(
+        model_name="m",
+        tool_result={"tool": "bash", "argument": "pwd", "body": "/tmp"},
+        interject="also list files",
+    )
     turns = _new_turns(body)
-    assert [role for role,text in turns] == ['tool','user']
-    assert '<|tool-result|>' in turns[0][1]
-    assert turns[1][1] == 'also list files'
+    assert [role for role, _ in turns] == ["tool", "user"]
+    rendered = render_conversation(None, [Turn(Role(role), text) for role, text in turns])
+    assert rendered == (
+        '<|tool-result|><|tool-call|>{"tool": "bash", "argument": "pwd"}'
+        '<|/tool-call|>/tmp<|/tool-result|><|user|>also list files<|/user|>'
+    )
 
 
 @pytest.mark.parametrize('extra',[{}, {'text':'a','tool_result':{'tool':'bash','argument':'pwd','body':'x'}}, {'text':'a','interject':'b'}])

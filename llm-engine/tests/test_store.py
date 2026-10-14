@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from store import queries as q
-from store.schema import RunKind, RunStatus
+from store.schema import Run, RunKind, RunStatus
 
 ALICE = uuid.uuid4()
 BOB = uuid.uuid4()
@@ -144,6 +144,20 @@ def test_finishing_records_what_it_produced(db):
     assert run.status is RunStatus.done
     assert run.ref_id == produced
     assert run.finished_at is not None
+
+
+def test_a_failed_reader_does_not_roll_back_a_worker_write(store_session):
+    """Overlapping request and worker transactions retain independent outcomes."""
+    with store_session() as worker:
+        run = q.enqueue(worker, kind=RunKind.train, label="worker", config={})
+        run_id = run.id
+        with pytest.raises(RuntimeError, match="reader failed"):
+            with store_session() as reader:
+                reader.get(Run, run_id)
+                raise RuntimeError("reader failed")
+
+    with store_session() as reader:
+        assert reader.get(Run, run_id) is not None
 
 
 def test_orphans_are_failed_at_startup_but_the_queue_survives(db):

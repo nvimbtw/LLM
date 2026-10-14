@@ -247,8 +247,15 @@ def _uuid(value):
 
 
 class TrainingRun(Base):
+    """Persist training inputs and outputs with the migrated training-type check."""
+
     __tablename__ = "training_runs"
-    __table_args__ = (CheckConstraint("training_type IN ('pretrain','sft','rl')"),)
+    __table_args__ = (
+        CheckConstraint(
+            "training_type IN ('pretrain','sft','rl')",
+            name="training_runs_training_type_check",
+        ),
+    )
     job_id: Mapped[uuid.UUID] = mapped_column(Key, ForeignKey("execution_jobs.id", ondelete="CASCADE"), primary_key=True)
     training_type: Mapped[str] = mapped_column(String(12))
     config: Mapped[dict] = mapped_column(Json, default=dict)
