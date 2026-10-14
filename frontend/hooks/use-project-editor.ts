@@ -54,7 +54,10 @@ export function useProjectEditor(
         await save(project.project_id, next)
         projectId = project.project_id
       } else projectId = await create(next)
-      if (active.current && getToken() === token) onSaved(projectId)
+      if (active.current && getToken() === token) {
+        setFields(next)
+        onSaved(projectId)
+      }
     } catch (failure) {
       if (active.current && getToken() === token)
         setError(
@@ -67,5 +70,9 @@ export function useProjectEditor(
       if (active.current && getToken() === token) setSubmitting(false)
     }
   }
-  return { fields, change, submitting, error, submit }
+  const hasChanges =
+    fields.name !== (project?.name ?? "") ||
+    fields.description !== (project?.description ?? "") ||
+    fields.notes !== (project?.notes ?? "")
+  return { fields, change, submitting, error, submit, hasChanges }
 }

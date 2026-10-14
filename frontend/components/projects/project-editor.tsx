@@ -1,6 +1,6 @@
 "use client"
 
-import { useRouter } from "next/navigation"
+import type { ReactNode } from "react"
 import { useSessionToken } from "@/hooks/use-auth"
 import { useProjectEditor } from "@/hooks/use-project-editor"
 import {
@@ -12,127 +12,121 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { PageHeader } from "@/components/ui/page-header"
 import { FormError } from "@/components/ui/error-state"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 
 export interface ProjectEditorProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
   project?: Project
+  actions?: ReactNode
+  onSaved: (projectId: string) => void
 }
 
-/** Presents an accessible create/edit dialog, resetting private drafts when its project or account changes. */
-export function ProjectEditor({
-  open,
-  onOpenChange,
-  project,
-}: ProjectEditorProps) {
+/** Renders page-native project fields, resetting private drafts when account or project identity changes. */
+export function ProjectEditor(props: ProjectEditorProps) {
   const token = useSessionToken()
-  return (
-    <Dialog open={open && Boolean(token)} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100svh-2rem)] max-w-2xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{project ? "Edit project" : "New project"}</DialogTitle>
-          <DialogDescription>
-            Only you can access this project and its conversations.
-          </DialogDescription>
-        </DialogHeader>
-        <ProjectEditorForm
-          key={`${token}:${project?.project_id ?? "new"}`}
-          project={project}
-          onOpenChange={onOpenChange}
-        />
-      </DialogContent>
-    </Dialog>
-  )
+  return token ? (
+    <ProjectEditorForm
+      key={token + ":" + (props.project?.project_id ?? "new")}
+      {...props}
+    />
+  ) : null
 }
 
-export interface ProjectEditorFormProps {
-  project?: Project
-  onOpenChange: (open: boolean) => void
-}
-
-/** Renders labelled project fields and submits through the session-owned editor hook. HTML limits allow two UTF-16 units per Unicode character; submission enforces the exact character budgets. */
-function ProjectEditorForm({ project, onOpenChange }: ProjectEditorFormProps) {
-  const router = useRouter()
-  const editor = useProjectEditor(project, (projectId) => {
-    onOpenChange(false)
-    if (!project) router.push(`/projects/${projectId}`)
-  })
+/** Edits project metadata as heading and prose fields. Explicit saves preserve failed drafts and enforce Unicode budgets. */
+function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
+  const editor = useProjectEditor(project, onSaved)
   return (
     <form
-      className="space-y-5"
       onSubmit={(event) => {
         event.preventDefault()
         void editor.submit()
       }}
     >
-      <label className="block space-y-2 text-sm">
-        <span>Name</span>
-        <Input
-          autoFocus
-          required
-          maxLength={PROJECT_NAME_LIMIT * 2}
-          value={editor.fields.name}
-          onChange={(event) => editor.change("name", event.target.value)}
-          disabled={editor.submitting}
-        />
-      </label>
-      <label className="block space-y-2 text-sm">
-        <span>Description</span>
+      <PageHeader
+        back={{ href: "/projects", label: "Projects" }}
+        contentClassName="min-w-48 flex-1"
+        title={
+          <>
+            <span className="sr-only">{project?.name ?? "New project"}</span>
+            <Input
+              aria-label="Project name"
+              autoFocus={!project}
+              required
+              placeholder="Project name"
+              maxLength={PROJECT_NAME_LIMIT * 2}
+              value={editor.fields.name}
+              onChange={(event) => editor.change("name", event.target.value)}
+              disabled={editor.submitting}
+              className="h-auto rounded-none border-0 bg-transparent px-0 py-0 font-display text-3xl font-semibold tracking-tight shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 md:text-3xl dark:bg-transparent"
+            />
+          </>
+        }
+        description={
+          <>
+            <Textarea
+              aria-label="Project description"
+              rows={1}
+              placeholder="Add a description…"
+              maxLength={PROJECT_DESCRIPTION_LIMIT * 2}
+              value={editor.fields.description}
+              onChange={(event) =>
+                editor.change("description", event.target.value)
+              }
+              disabled={editor.submitting}
+              className="min-h-5 resize-none rounded-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed text-muted-foreground shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 dark:bg-transparent"
+            />
+            <p className="text-xs text-muted-foreground">
+              Private project
+              {project && (
+                <>
+                  {" "}
+                  · {project.thread_count}{" "}
+                  {project.thread_count === 1
+                    ? "conversation"
+                    : "conversations"}
+                </>
+              )}
+            </p>
+          </>
+        }
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            {(!project || editor.hasChanges) && (
+              <Button
+                type="submit"
+                variant={project ? "outline" : "default"}
+                disabled={editor.submitting || !editor.fields.name.trim()}
+              >
+                {editor.submitting
+                  ? "Saving…"
+                  : project
+                    ? "Save changes"
+                    : "Create project"}
+              </Button>
+            )}
+            {actions}
+          </div>
+        }
+      />
+      <section className="mb-10" aria-labelledby="project-notes-heading">
+        <h2
+          id="project-notes-heading"
+          className="mb-3 font-display text-xl font-semibold"
+        >
+          Notes and instructions
+        </h2>
         <Textarea
-          rows={2}
-          maxLength={PROJECT_DESCRIPTION_LIMIT * 2}
-          value={editor.fields.description}
-          onChange={(event) => editor.change("description", event.target.value)}
-          disabled={editor.submitting}
-        />
-      </label>
-      <label className="block space-y-2 text-sm">
-        <span>Notes and instructions</span>
-        <Textarea
-          rows={8}
+          aria-labelledby="project-notes-heading"
+          rows={1}
+          placeholder="Add notes and instructions…"
           maxLength={PROJECT_NOTES_LIMIT * 2}
           value={editor.fields.notes}
           onChange={(event) => editor.change("notes", event.target.value)}
           disabled={editor.submitting}
-          aria-describedby="project-notes-hint"
+          className="min-h-6 resize-none rounded-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 dark:bg-transparent"
         />
-        <span
-          id="project-notes-hint"
-          className="block text-xs text-muted-foreground"
-        >
-          Shared context for conversations in this project.
-        </span>
-      </label>
-      {editor.error && <FormError>{editor.error}</FormError>}
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => onOpenChange(false)}
-          disabled={editor.submitting}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          disabled={editor.submitting || !editor.fields.name.trim()}
-        >
-          {editor.submitting
-            ? "Saving…"
-            : project
-              ? "Save changes"
-              : "Create project"}
-        </Button>
-      </DialogFooter>
+      </section>
+      {editor.error && <FormError className="mb-6">{editor.error}</FormError>}
     </form>
   )
 }

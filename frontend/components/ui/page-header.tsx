@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils"
 export interface PageHeaderProps {
   title: React.ReactNode
   description?: React.ReactNode
-  /** A single primary action, right-aligned against the title. */
+  /** Page actions, right-aligned against the title. */
   action?: React.ReactNode
   /**
    * Renders the "← Parent" link above the title. Pages that are reachable from
@@ -24,8 +24,11 @@ export interface PageHeaderProps {
   back?: { href: string; label: string }
   className?: string
   titleClassName?: string
+  /** Allows editable titles to occupy the space remaining beside page actions. */
+  contentClassName?: string
 }
 
+/** Renders the page title, optional metadata, back link and actions with shared typography and spacing. */
 export function PageHeader({
   title,
   description,
@@ -33,6 +36,7 @@ export function PageHeader({
   back,
   className,
   titleClassName,
+  contentClassName,
 }: PageHeaderProps) {
   return (
     <header className={cn("mb-8 border-b border-border pb-6", className)}>
@@ -46,7 +50,7 @@ export function PageHeader({
         </Link>
       )}
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
+        <div className={cn("min-w-0", contentClassName)}>
           <h1
             className={cn(
               "font-display text-3xl font-semibold tracking-tight",

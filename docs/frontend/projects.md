@@ -1,6 +1,7 @@
 # Private projects
 
-`/projects` lists the signed-in account's projects and creates new ones.
+`/projects` lists the signed-in account's projects. New project opens
+`/projects/new-project`, where the user fills in the page's editable fields.
 `/projects/{id}` presents one project's name, description, notes and instructions,
 conversation list and real new-chat composer. Project data is private to its owner;
 the browser loads it through Rust using the actual bearer session identity.
@@ -29,7 +30,12 @@ project views read 50 conversations per page and return to the last existing pag
 if moving or deleting chats empties a later page.
 
 Project names are nonblank and at most 120 Unicode characters; descriptions allow
-2,000 characters and notes allow 8,000. Editing persists all three fields. Deleting
+2,000 characters and notes allow 8,000. Title, description and notes are directly
+editable on both the creation and existing-project pages; no metadata modal is
+used. Fields retain the page's heading/prose style with no resting border or note
+box. Create project or Save changes explicitly persists all three fields; failed
+saves preserve the draft. The privacy/conversation-count line sits underneath the
+description, and Delete project appears beside New chat in the page header. Deleting
 a project preserves its conversations and messages, removes their association and
 refreshes both project navigation and the ordinary chat archive. Moving a chat
 uses the same identity and history; selecting No project restores it to ordinary

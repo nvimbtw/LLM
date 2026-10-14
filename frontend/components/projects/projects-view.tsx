@@ -1,10 +1,8 @@
 "use client"
 
-import * as React from "react"
 import Link from "next/link"
 import { Folder, Plus } from "lucide-react"
 import { useProjects } from "./projects-provider"
-import { ProjectEditor } from "./project-editor"
 import { Button } from "@/components/ui/button"
 import { PageHeader } from "@/components/ui/page-header"
 import { LoadError } from "@/components/ui/error-state"
@@ -13,13 +11,15 @@ import { Skeleton } from "@/components/ui/skeleton"
 /** Renders the private project directory, bounded pagination and the create-project flow. */
 export function ProjectsView() {
   const { catalog, refresh, loadMore } = useProjects()
-  const [creating, setCreating] = React.useState(false)
   return (
     <>
       <PageHeader
         title="Projects"
         action={
-          <Button onClick={() => setCreating(true)}>
+          <Button
+            nativeButton={false}
+            render={<Link href="/projects/new-project" />}
+          >
             <Plus />
             New project
           </Button>
@@ -39,7 +39,11 @@ export function ProjectsView() {
           <p className="text-sm text-muted-foreground">
             Keep related conversations, notes and instructions together.
           </p>
-          <Button variant="outline" onClick={() => setCreating(true)}>
+          <Button
+            variant="outline"
+            nativeButton={false}
+            render={<Link href="/projects/new-project" />}
+          >
             Create your first project
           </Button>
         </div>
@@ -81,7 +85,6 @@ export function ProjectsView() {
           {catalog.loading ? "Loading…" : "Load more projects"}
         </Button>
       )}
-      <ProjectEditor open={creating} onOpenChange={setCreating} />
     </>
   )
 }

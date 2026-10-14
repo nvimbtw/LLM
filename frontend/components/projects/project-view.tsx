@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { MessageSquarePlus, Plus, Pencil, Trash2 } from "lucide-react"
+import { MessageSquarePlus, Plus, Trash2 } from "lucide-react"
 import { useProject } from "@/hooks/use-project"
 import { useProjectRemoval } from "@/hooks/use-project-removal"
 import { PROJECT_PAGE_SIZE } from "@/lib/projects"
@@ -35,7 +35,6 @@ export function ProjectView({ projectId }: ProjectViewProps) {
   const view = useProject(projectId)
   const projects = useProjects()
   const router = useRouter()
-  const [editing, setEditing] = React.useState(false)
   const [adding, setAdding] = React.useState(false)
   const [composing, setComposing] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
@@ -65,61 +64,26 @@ export function ProjectView({ projectId }: ProjectViewProps) {
 
   return (
     <>
-      <PageHeader
-        title={project.name}
-        description={project.description || undefined}
-        back={{ href: "/projects", label: "Projects" }}
-        action={
-          <Button onClick={() => setComposing(true)}>
-            <MessageSquarePlus />
-            New chat
-          </Button>
+      <ProjectEditor
+        project={project}
+        onSaved={view.refresh}
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setDeleting(true)}
+            >
+              <Trash2 />
+              Delete project
+            </Button>
+            <Button type="button" onClick={() => setComposing(true)}>
+              <MessageSquarePlus />
+              New chat
+            </Button>
+          </>
         }
       />
-      <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
-        <span className="text-xs text-muted-foreground">
-          Private project · {project.threads_total}{" "}
-          {project.threads_total === 1 ? "conversation" : "conversations"}
-        </span>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-            <Pencil />
-            Edit project
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setDeleting(true)}>
-            <Trash2 />
-            Delete project
-          </Button>
-        </div>
-      </div>
-      <section className="mb-10" aria-labelledby="project-notes-heading">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2
-            id="project-notes-heading"
-            className="font-display text-xl font-semibold"
-          >
-            Notes and instructions
-          </h2>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setEditing(true)}
-            aria-label="Edit notes and instructions"
-          >
-            Edit
-          </Button>
-        </div>
-        {project.notes ? (
-          <p className="rounded-(--radius-sheet) border border-border px-5 py-4 text-sm leading-relaxed break-words whitespace-pre-wrap">
-            {project.notes}
-          </p>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Add context and instructions to use across this project’s
-            conversations.
-          </p>
-        )}
-      </section>
       {composing && (
         <section className="mb-10" aria-labelledby="project-new-chat-heading">
           <div className="mb-3 flex items-center justify-between">
@@ -212,11 +176,6 @@ export function ProjectView({ projectId }: ProjectViewProps) {
           </div>
         )}
       </section>
-      <ProjectEditor
-        open={editing}
-        onOpenChange={setEditing}
-        project={project}
-      />
       <AddConversation
         projectId={projectId}
         open={adding}
