@@ -19,6 +19,7 @@ const chartConfig = {
 
 type Point = UsageDay & { total: number }
 
+/** Formats an ISO usage date as a short chart label. */
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString("en-US", {
     month: "short",
@@ -26,6 +27,7 @@ function formatDate(value: string) {
   })
 }
 
+/** Displays a labeled token count, emphasizing totals when requested. */
 function Row({
   label,
   value,
@@ -51,6 +53,7 @@ function Row({
   )
 }
 
+/** Shows the total and input/output counts for the hovered usage day. */
 function TokenTooltip({
   active,
   payload,
@@ -81,17 +84,16 @@ export interface UsageChartProps {
   compact?: boolean
 }
 
+/** Plots daily token totals in an open panel, with tighter spacing in settings. */
 export function UsageChart({ series, compact = false }: UsageChartProps) {
   const data: Point[] = series.map((d) => ({ ...d, total: d.input + d.output }))
 
   return (
     <Panel
-      className={
-        compact ? "rounded-none border-0 bg-transparent shadow-none" : undefined
-      }
+      variant="open"
       title="Tokens over time"
       description="Total, last 30 days"
-      bodyClassName="px-2 py-3"
+      bodyClassName={compact ? "py-3" : "px-2 py-3"}
     >
       <ChartContainer config={chartConfig} className="aspect-auto h-64 w-full">
         <AreaChart data={data} margin={{ left: 4, right: 4, top: 8 }}>

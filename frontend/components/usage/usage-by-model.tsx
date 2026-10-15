@@ -7,15 +7,14 @@ export interface UsageByModelProps {
   compact?: boolean
 }
 
+/** Renders token shares by model, using a single column in compact settings. */
 export function UsageByModel({ models, compact = false }: UsageByModelProps) {
   const total = models.reduce((sum, m) => sum + m.tokens, 0) || 1
   const sorted = [...models].sort((a, b) => b.tokens - a.tokens)
 
   return (
     <Panel
-      className={
-        compact ? "rounded-none border-0 bg-transparent shadow-none" : undefined
-      }
+      variant="open"
       title="By model"
       description="Share of tokens"
     >
@@ -24,9 +23,6 @@ export function UsageByModel({ models, compact = false }: UsageByModelProps) {
           No usage yet.
         </p>
       ) : (
-        // Length carries the magnitude — every bar wears the single accent, so
-        // colour isn't asked to encode identity (the name does that). Flowed into
-        // columns so a long roster stays short instead of a tall stack.
         <ul
           className={
             compact

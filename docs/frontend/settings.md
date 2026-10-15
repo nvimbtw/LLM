@@ -20,8 +20,9 @@ support arrow-key navigation through the shared UI primitive. Account details,
 password changes, account deletion confirmation, and logout
 are available in Profile; successful logout or deletion closes the modal. Usage
 has its own section with totals, the token chart, and the model breakdown. Its
-sidebar entry is removed. `/profile` and `/usage` remain available as standalone
-pages.
+sidebar entry is removed. Profile and Usage are available only in this modal;
+the retired `/profile` and `/usage` page URLs return 404. Callers open the
+matching tab through `openSettings("profile")` or `openSettings("usage")`.
 
 `SettingsProvider` owns modal visibility and the selected section; section
 selection is session UI state and is not saved with preferences. Profile and
