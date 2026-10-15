@@ -1,18 +1,7 @@
 "use client"
 
-import { Trash2 } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
+import Link from "next/link"
+import { TokenizerDeleteButton } from "./tokenizer-delete-button"
 import { describeDatasets, type TokenizerInfo } from "@/lib/tokenizers"
 
 /** Formats a measured count compactly, keeping unavailable values explicit. */
@@ -71,7 +60,12 @@ function Row({
     <li className="flex items-start justify-between gap-4 py-5">
       <div className="min-w-0">
         <h2 className="font-display text-xl leading-snug break-words">
-          {tokenizer.name}
+          <Link
+            href={`/tokenizers/${tokenizer.id}`}
+            className="hover:text-primary focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            {tokenizer.name}
+          </Link>
         </h2>
         <p className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span>{tokenizer.implicit ? "Learned by a run" : "Named build"}</span>
@@ -90,38 +84,7 @@ function Row({
         </p>
       </div>
       <div className="shrink-0">
-        <AlertDialog>
-          <AlertDialogTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Delete ${tokenizer.name}`}
-              >
-                <Trash2 className="size-4" />
-              </Button>
-            }
-          />
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete {tokenizer.name}?</AlertDialogTitle>
-              <AlertDialogDescription>
-                The corpora packed under it go too — without this vocabulary
-                they are token ids nothing can read. Models trained with it keep
-                their own copy and are unaffected.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={onDelete}
-                className="bg-destructive text-white hover:bg-destructive/90"
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <TokenizerDeleteButton tokenizer={tokenizer} onDelete={onDelete} />
       </div>
     </li>
   )

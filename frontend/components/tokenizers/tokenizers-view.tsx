@@ -4,20 +4,13 @@ import * as React from "react"
 import Link from "next/link"
 import { Plus } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { useSessionToken } from "@/hooks/use-auth"
+import { ButtonLink } from "@/components/ui/button-link"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Throbber } from "@/components/ui/throbber"
 import { toast } from "@/components/ui/toast"
 import { TokenizerCatalogue } from "@/components/tokenizers/tokenizer-catalogue"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  Dialog,
-  DialogTrigger,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import { TokenizerComposer } from "@/components/tokenizers/tokenizer-composer"
 import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { jobHref, type Job } from "@/lib/jobs"
@@ -26,28 +19,26 @@ import { deleteTokenizer, type TokenizerInfo } from "@/lib/tokenizers"
 
 /**
  * A catalogue with category filters; named builds lead the combined list.
- * Building is a focused dialog, while automatic vocabularies remain inspectable
- * and deletable without competing with the form for a permanent column.
+ * Creation has its own page; automatic vocabularies retain their provenance and confirmed deletion.
  */
 export function TokenizersView() {
+  const token = useSessionToken()
+  return token ? <TokenizersCatalogue key={token} /> : null
+}
+
+/** Owns one session's vocabulary catalogue, category tabs and deletion refresh. */
+function TokenizersCatalogue() {
   const [refreshKey, setRefreshKey] = React.useState(0)
   const { tokenizers, isLoading, error } = useTokenizers(refreshKey)
   const refresh = () => setRefreshKey((k) => k + 1)
 
-  // The composer hands off to the job page, so a build queued *here* is watched
-  // there. This is for coming back: a vocabulary takes minutes, and a page that
-  // lists what has been built should say when one is being built right now
-  // instead of showing a stale list and no reason for it.
-  //
-  // Read from the app-wide subscription rather than a `useJobs()` of its own: a
-  // second instance is a second poll of `GET /runs` for as long as this page is
-  // open, saying the same thing as the one the provider already runs.
   const { running } = useJobsContext()
   const building = running?.kind === "tokenize" ? running : null
 
   const named = tokenizers.filter((t) => !t.implicit)
   const derived = tokenizers.filter((t) => t.implicit)
 
+  /** Deletes a confirmed vocabulary, reports failures and refreshes this catalogue. */
   const remove = async (tokenizer: TokenizerInfo) => {
     try {
       const corpora = await deleteTokenizer(tokenizer.id)
@@ -92,22 +83,10 @@ export function TokenizersView() {
               </span>
             </TabsTrigger>
           </TabsList>
-          <Dialog>
-            <DialogTrigger
-              render={
-                <Button size="sm">
-                  <Plus className="size-3.5" />
-                  Build vocabulary
-                </Button>
-              }
-            />
-            <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Build a vocabulary</DialogTitle>
-              </DialogHeader>
-              <TokenizerComposer onQueued={refresh} />
-            </DialogContent>
-          </Dialog>
+          <ButtonLink href="/tokenizers/new-tokenizer" size="sm">
+            <Plus className="size-3.5" />
+            Build vocabulary
+          </ButtonLink>
         </div>
         {error ? (
           <LoadError

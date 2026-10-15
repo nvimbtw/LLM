@@ -2,10 +2,10 @@ import { TokenizersView } from "@/components/tokenizers/tokenizers-view"
 import { PageHeader } from "@/components/ui/page-header"
 import { PageShell } from "@/components/ui/page-shell"
 
-/** Opens the vocabulary catalogue and build dialog in a reading-width workspace. */
+/** Opens the vocabulary catalogue and build dialog in the board-width workspace. */
 export default function TokenizersPage() {
   return (
-    <PageShell width="reading">
+    <PageShell width="board">
       <PageHeader
         title="Tokenizers"
         back={{ href: "/admin", label: "Admin" }}

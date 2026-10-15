@@ -1,18 +1,10 @@
-import { apiFetch } from "./api"
+import { apiFetch, getToken } from "./api"
+import { parseResourceId } from "./chats"
 import type { DatasetSelection } from "./training"
 
-// Built vocabularies: the tokenizers a training run can be pointed at.
-//
-// A vocabulary is learned from a selection of corpora and then kept, so several
-// runs can share one — and so a run's packed corpus can be cached, since a
-// corpus is only meaningful under the vocabulary that encoded it.
-//
-// Building one is a job (`queueTokenizer` in `lib/jobs.ts`); this is the reading
-// half.
+export const TOKENIZER_NAME_LIMIT = 120
+export const TOKENIZER_DESCRIPTION_LIMIT = 2000
 
-/** One corpus a vocabulary was learned from, as the LLM engine records it
- *  (`corpus.remote.Selected.record`): what was asked for — the cap, null for
- *  every document — beside what answered at build time. */
 export interface TokenizerDataset {
   id: string
   name: string
@@ -24,8 +16,7 @@ export interface TokenizerDataset {
 export interface TokenizerInfo {
   id: string
   name: string
-  // Learned by a training run for itself rather than built by name here. Listed,
-  // because it is a real build other runs will reuse, but not offered as a choice.
+  description: string
   implicit: boolean
   vocabSize: number | null
   merges: number | null
@@ -34,66 +25,183 @@ export interface TokenizerInfo {
   files: number | null
   bytes: number
   builtAt: string | null
-  // False when the row outlived its directory. Kept in the list so the models
-  // naming it are still explicable, but never offered to a new run.
+  createdAt: string | null
+  fingerprint: string | null
   hasVocab: boolean
 }
 
-/** What a build is asked for: the corpora, and how large a vocabulary to learn. */
+export interface TokenizerDetail extends TokenizerInfo {
+  models: { id: string; name: string }[]
+}
+
+export interface TokenizerFields {
+  name: string
+  description: string
+}
+
 export interface TokenizerBuild {
   tokenizer_id: string
   max_vocab: number
   datasets: DatasetSelection[]
 }
 
-interface RawTokenizer {
-  tokenizer_id: string
-  name: string
-  implicit: boolean
-  vocab_size: number | null
-  merges: number | null
-  max_vocab: number | null
-  datasets: TokenizerDataset[]
-  files: number | null
-  bytes: number
-  built_at: string | null
-  has_vocab: boolean
+/** Narrows an interpreted response object, rejecting malformed resource containers. */
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("The server returned invalid vocabulary metadata.")
+  return value as Record<string, unknown>
 }
 
-function fromRow(raw: RawTokenizer): TokenizerInfo {
+/** Reads a required text field without coercing unknown external values. */
+function string(value: unknown): string {
+  if (typeof value !== "string")
+    throw new Error("The server returned invalid vocabulary text.")
+  return value
+}
+
+/** Validates measured nonnegative counts, preserving null for unavailable measurements. */
+function count(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new Error("The server returned an invalid vocabulary count.")
+  return value
+}
+
+/** Validates and adapts a vocabulary response, keeping optional legacy metadata unavailable. */
+export function parseTokenizer(value: unknown): TokenizerInfo {
+  const raw = record(value)
+  if (
+    typeof raw.implicit !== "boolean" ||
+    typeof raw.has_vocab !== "boolean" ||
+    !Array.isArray(raw.datasets)
+  )
+    throw new Error("The server returned invalid vocabulary metadata.")
   return {
-    id: raw.tokenizer_id,
-    name: raw.name,
+    id: parseResourceId(raw.tokenizer_id),
+    name: string(raw.name),
+    description: raw.description == null ? "" : string(raw.description),
     implicit: raw.implicit,
-    vocabSize: raw.vocab_size,
-    merges: raw.merges,
-    maxVocab: raw.max_vocab,
-    datasets: raw.datasets ?? [],
-    files: raw.files,
-    bytes: raw.bytes ?? 0,
-    builtAt: raw.built_at,
+    vocabSize: count(raw.vocab_size),
+    merges: count(raw.merges),
+    maxVocab: count(raw.max_vocab),
+    datasets: raw.datasets.map((value) => {
+      const dataset = record(value)
+      return {
+        id: string(dataset.id),
+        name: string(dataset.name),
+        count: count(dataset.count),
+        documents: count(dataset.documents) ?? 0,
+        updated_at: string(dataset.updated_at),
+      }
+    }),
+    files: count(raw.files),
+    bytes: count(raw.bytes) ?? 0,
+    builtAt: raw.built_at == null ? null : string(raw.built_at),
+    createdAt: raw.created_at == null ? null : string(raw.created_at),
+    fingerprint: raw.fingerprint == null ? null : string(raw.fingerprint),
     hasVocab: raw.has_vocab,
   }
 }
 
-export async function listTokenizers(): Promise<TokenizerInfo[]> {
-  const res = await apiFetch("/tokenizers")
-  if (!res.ok) throw new Error("Unable to load tokenizers.")
-  const data = (await res.json()) as { tokenizers: RawTokenizer[] }
-  return data.tokenizers.map(fromRow)
+/** Validates detail metadata and its recorded model identities before rendering links. */
+export function parseTokenizerDetail(value: unknown): TokenizerDetail {
+  const raw = record(value)
+  if (!Array.isArray(raw.models))
+    throw new Error("The server returned invalid vocabulary model references.")
+  return {
+    ...parseTokenizer(value),
+    models: raw.models.map((value) => {
+      const model = record(value)
+      return { id: parseResourceId(model.model_id), name: string(model.name) }
+    }),
+  }
 }
 
+/** Trims display fields and validates Unicode character budgets before a metadata write. */
+export function validateTokenizerFields(
+  fields: TokenizerFields
+): TokenizerFields {
+  const name = fields.name.trim()
+  if (!name || Array.from(name).length > TOKENIZER_NAME_LIMIT)
+    throw new Error(`Name must contain 1–${TOKENIZER_NAME_LIMIT} characters.`)
+  if (Array.from(fields.description).length > TOKENIZER_DESCRIPTION_LIMIT)
+    throw new Error(
+      `Description must contain at most ${TOKENIZER_DESCRIPTION_LIMIT} characters.`
+    )
+  return { name, description: fields.description }
+}
+
+/** Reads engine JSON, surfacing actionable service validation and conflict messages. */
+async function responseBody(response: Response): Promise<unknown> {
+  const body: unknown = await response.json()
+  if (!response.ok) {
+    const raw = record(body)
+    throw new Error(
+      typeof raw.detail === "string"
+        ? raw.detail
+        : typeof raw.error === "string"
+          ? raw.error
+          : "Unable to update vocabulary metadata."
+    )
+  }
+  return body
+}
+
+/** Fetches the vocabulary catalogue; failed or malformed reads reject. */
+export async function listTokenizers(
+  signal?: AbortSignal
+): Promise<TokenizerInfo[]> {
+  const raw = record(
+    await responseBody(await apiFetch("/tokenizers", { signal }))
+  )
+  if (!Array.isArray(raw.tokenizers))
+    throw new Error("The vocabulary catalogue is invalid.")
+  return raw.tokenizers.map(parseTokenizer)
+}
+
+/** Fetches one vocabulary and recorded model references using its stable identity. */
+export async function getTokenizer(
+  id: string,
+  signal?: AbortSignal
+): Promise<TokenizerDetail> {
+  return parseTokenizerDetail(
+    await responseBody(
+      await apiFetch(`/tokenizers/${parseResourceId(id)}`, { signal })
+    )
+  )
+}
+
+/** Saves display metadata for the originating session; rejected writes leave the caller's draft intact. */
+export async function editTokenizer(
+  token: string,
+  id: string,
+  fields: TokenizerFields
+): Promise<TokenizerDetail> {
+  if (getToken() !== token)
+    throw new Error("Your account changed. Please try again.")
+  const next = validateTokenizerFields(fields)
+  const response = await apiFetch(`/tokenizers/${parseResourceId(id)}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      display_name: next.name,
+      description: next.description,
+    }),
+  })
+  return parseTokenizerDetail(await responseBody(response))
+}
+
+/** Deletes a vocabulary and its packed corpora, returning the number of removed packs. */
 export async function deleteTokenizer(id: string): Promise<number> {
-  const res = await apiFetch(`/tokenizers/${id}`, { method: "DELETE" })
-  if (!res.ok)
-    throw new Error((await res.text()) || "Failed to delete the tokenizer.")
-  // Deleting a vocabulary takes the corpora packed under it: without it they are
-  // token ids nothing can read. The count is reported so that is visible.
-  const data = (await res.json()) as { corpora_deleted?: number }
-  return data.corpora_deleted ?? 0
+  const body = record(
+    await responseBody(
+      await apiFetch(`/tokenizers/${parseResourceId(id)}`, { method: "DELETE" })
+    )
+  )
+  return count(body.corpora_deleted) ?? 0
 }
 
-/** What a vocabulary was learned from, for a list row. */
+/** Describes the recorded datasets and optional document limits for one vocabulary. */
 export function describeDatasets(tokenizer: TokenizerInfo): string {
   if (tokenizer.datasets.length === 0) return "—"
   return tokenizer.datasets

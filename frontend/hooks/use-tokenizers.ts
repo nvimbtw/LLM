@@ -13,8 +13,6 @@ export function useTokenizers(refreshKey?: unknown) {
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<Error | null>(null)
 
-  // Reset during render rather than in an effect, so a refresh puts the list
-  // back into loading without a cascading second render.
   const [loadedFor, setLoadedFor] = React.useState(refreshKey)
   if (loadedFor !== refreshKey) {
     setLoadedFor(refreshKey)
@@ -25,7 +23,10 @@ export function useTokenizers(refreshKey?: unknown) {
     let active = true
     listTokenizers()
       .then((next) => {
-        if (active) setTokenizers(next)
+        if (active) {
+          setTokenizers(next)
+          setError(null)
+        }
       })
       .catch((err: unknown) => {
         if (active) {

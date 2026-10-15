@@ -105,6 +105,7 @@ follow-ups, diagnostics, checkpoints and corpus-build figures.
 [Gyms](gyms.md) distinguishes browser-driven evaluation from queued RL practice,
 including episode transcripts and their socket protocol.
 [Models](models.md) covers architecture fallback, lineage and attention viewing.
+[Tokenizers](tokenizers.md) covers vocabulary detail/editing and page-native builds.
 [Ownership and recovery](recovery.md) records the current sprint boundaries and
 compatibility rules for older benchmark reports.
 
