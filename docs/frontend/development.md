@@ -67,9 +67,11 @@ for cache freshness, session isolation, and selection readiness.
 
 ## Styling
 
-- Page and settings section titles stand alone. Avoid introductions and panel
-  captions that repeat the heading. Secondary text is for model/run metadata,
-  measurements, or instructions needed to use a control. Admin directory links
+- Use the shared `PageHeader` for page titles, back links and actions. Keep its
+  default hairline unless an immediately opening ledger supplies the rule.
+  Short descriptions may orient the reader or show resource metadata; avoid
+  captions that repeat the heading. Settings section titles stand alone.
+  Secondary text carries measurements or instructions needed to use a control. Admin directory links
   show the destination's title and icon.
 - Tailwind utility classes in JSX. No separate `.module.css` files.
 - Use `cn()` from `@/lib/utils` for conditional class merging.

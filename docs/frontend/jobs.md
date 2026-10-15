@@ -26,12 +26,14 @@ subject you are reading.
   between groups. History keeps its date groups, fields, actions and pagination
   in a quiet ledger; on narrow screens row metadata wraps beneath the job name
   and menus remain visible without hovering.
-- The subpages carry the same open style: compact headers without a bottom
-  rule, 24–32px between sections, flush rows and line-style tab bars. Forms keep
-  labels, validation, explanations needed for a decision and their existing
-  controls. `PageHeader.titleClassName` lets the bounded Train form and the
-  Tokenizers catalogue use a smaller title. Run names stay at a modest display size; chart tooltips, dialogs,
-  and menus retain their overlay surfaces. Benchmark scores sit in an open
+- The subpages carry the same open style: shared `PageHeader` titles and a
+  bottom hairline, flush rows and line-style tab bars. A ledger that opens with
+  its own rule omits the header rule. The editable Train heading and gym-run
+  telemetry header retain their compact composition. Forms keep labels,
+  validation, explanations needed for a decision and their existing controls.
+  Job details use `PageHeader` with kind, status and elapsed time as provenance,
+  lifecycle actions beside the title, and the resolved `useParentTrail` back link.
+  Chart tooltips, dialogs and menus retain their overlay surfaces. Benchmark scores sit in an open
   ledger, and row actions are visible on touch screens and keyboard focus.
   Docs remains a reading destination with its existing article layout.
 - **`/data` is a `WORKBENCH` destination**, not a second nav row. It reads the

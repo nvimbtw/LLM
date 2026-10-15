@@ -22,7 +22,7 @@ import { PageShell } from "@/components/ui/page-shell"
 export default function AdminPage() {
   return (
     <PageShell>
-      <PageHeader title="Admin" className="mb-6 border-b-0 pb-0" />
+      <PageHeader title="Admin" />
       <div className="space-y-8">
         <QueueView />
         <AdminDirectory />

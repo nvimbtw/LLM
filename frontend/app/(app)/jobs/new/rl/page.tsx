@@ -24,7 +24,6 @@ export default async function NewRlJobPage({
   return (
     <PageShell width="board">
       <PageHeader
-        className="mb-6 border-b-0 pb-0"
         back={
           gym
             ? { href: "/gyms", label: "Gyms" }

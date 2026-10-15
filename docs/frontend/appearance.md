@@ -128,14 +128,14 @@ Four levels on one ladder — `shadow-raised`, `shadow-sheet`,
 `shadow-sheet-hover`, `shadow-overlay` — and one rule for deciding between the
 middle two:
 
-- **A surface you can act on is a sheet.** `bg-card`, an edge at `border/45`,
-  and `shadow-sheet` — the default `ui/panel.tsx`, `ui/card.tsx` and the model tiles. A tile
+- **A sheet surface uses** `bg-card`, an edge at `border/45`,
+  and `shadow-sheet` — the default `ui/panel.tsx` and `ui/card.tsx`. A tile
   that is also a link adds `group-hover:-translate-y-px
   group-hover:shadow-sheet-hover` (and `motion-reduce:` opts out of the move).
 - **A surface that summarises is furniture.** No box, no fill: rules only. The
   **ruled ledger** is the idiom — `grid … gap-x-8 gap-y-5 border-y border-border
   py-4`, cells carrying nothing but `pr-6`. It is what the headline figures use
-  on `/models`, `/usage`, a model page, and inside the benchmark and job panels.
+  in account usage, on a model page, and inside the benchmark and job panels.
 
 The app used to give both the same 1px box at the same radius, which is why a
 stat band and a model tile carried equal weight and a page of them read flat.
@@ -179,9 +179,15 @@ catches the light above it. This is why `shadow-sm`/`md`/`lg`/`xl` are banned:
 Tailwind's defaults are black at a fixed opacity, invisible on the dragon ground,
 which is what made those controls read flat in dark mode.
 
-A page that opens with a ruled ledger drops the rule under its `PageHeader`
-(`className="mb-6 border-b-0 pb-0"`): the ledger's own top rule is the section
-break, and two parallel rules 32px apart read as an accident.
+`PageHeader` supplies the display title, optional short description or resource
+metadata, back link, right-side actions and bottom hairline. Pages keep that
+rule when tabs, forms, section headings or unruled rows follow. Only a ledger
+that opens immediately with its own rule drops the header rule
+(`className="mb-6 border-b-0 pb-0"`), as the model registry does. The editable
+training heading and the gym-run telemetry header retain their existing compact
+composition. Model and tokenizer catalogues use open ledger entries; selection
+controls, data previews and markup source blocks use hairlines without outer
+boxes. Overlay dialogs and confirmations retain their surfaces.
 
 ## New-chat figure
 

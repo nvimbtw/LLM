@@ -47,7 +47,6 @@ export default function GymPage() {
   return (
     <PageShell>
       <PageHeader
-        className="mb-6 border-b-0 pb-0"
         title={gym?.name ?? gymId}
         back={{ href: "/gyms", label: "Gyms" }}
       />

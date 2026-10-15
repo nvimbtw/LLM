@@ -314,21 +314,18 @@ function sourceOf(turn: Turn): string {
   return rounds.join("\n\n")
 }
 
+/** Renders the fixture conversation and optionally exposes each turn’s original markup. */
 export function MarkupShowcase() {
   const [showSource, setShowSource] = React.useState(false)
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <ul className="flex flex-wrap items-center gap-1.5">
+        <ul className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           {COVERED.map((token) => (
             <li
               key={token}
-              className={
-                UNSHIPPED.has(token)
-                  ? "bg-kind-gather/14 text-kind-gather rounded-(--radius-marker) px-1.5 py-0.5 font-mono text-xs"
-                  : "rounded-(--radius-marker) bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
-              }
+              className="font-mono text-xs text-muted-foreground"
               title={
                 UNSHIPPED.has(token)
                   ? "Rendered here, not emitted by any model yet"
@@ -349,16 +346,12 @@ export function MarkupShowcase() {
       </div>
 
       <div className="border-y border-border/60 py-6">
-        {/* gap-7 matches the real thread, so the rhythm previewed here is the
-            rhythm you get in a conversation. */}
         <div className="flex flex-col gap-7">
           {CONVERSATION.map((turn) => (
             <div key={turn.id} className="flex flex-col gap-2">
               <ChatMessageBubble
                 message={
                   {
-                    // No byline: these were never persisted, and a fixture
-                    // claiming a model and a token count would be a lie.
                     id: turn.id,
                     role: turn.role,
                     content: turn.content,
@@ -369,7 +362,7 @@ export function MarkupShowcase() {
                 }
               />
               {showSource && (
-                <pre className="overflow-x-auto rounded-(--radius-control-sm) border border-border bg-muted px-3 py-2">
+                <pre className="overflow-x-auto border-y border-border/60 py-3">
                   <code className="font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
                     {sourceOf(turn)}
                   </code>

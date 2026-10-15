@@ -1,10 +1,10 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, RotateCcw, Trash2 } from "lucide-react"
+import { RotateCcw, Trash2 } from "lucide-react"
 
+import { PageHeader } from "@/components/ui/page-header"
 import { Button } from "@/components/ui/button"
 import { RunningDot } from "@/components/ui/running-dot"
 import { useParentTrail } from "@/hooks/use-parent-trail"
@@ -34,12 +34,14 @@ export interface JobHeaderProps {
   onChanged: () => void
 }
 
+/** Composes the shared page header with job provenance, parent navigation and lifecycle actions. */
 export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const router = useRouter()
   const parent = useParentTrail({ href: "/admin", label: "Admin" })
   const [busy, setBusy] = React.useState(false)
   const [actionError, setActionError] = React.useState<string | null>(null)
 
+  /** Starts recovery from the latest artifact and opens the new job, preserving actionable failures. */
   const recover = async () => {
     setBusy(true)
     setActionError(null)
@@ -47,7 +49,9 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
       const next = await recoverJob(job.id_job)
       router.push(`/jobs/${next.id_job}`)
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Recovery could not start.")
+      setActionError(
+        error instanceof Error ? error.message : "Recovery could not start."
+      )
     } finally {
       setBusy(false)
     }
@@ -63,23 +67,22 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const elapsed = elapsedSeconds(job, now)
   const stopping = job.status === "cancelling"
 
+  /** Queues the same job configuration again and navigates to the new job. */
   const retry = async () => {
     setBusy(true)
     try {
       const next = await retryJob(job)
-      // Straight to the new job: the point of re-running is to watch the new one,
-      // and leaving you on the finished original makes you find it yourself.
       router.push(`/jobs/${next.id_job}`)
     } finally {
       setBusy(false)
     }
   }
 
+  /** Deletes the job and returns to its resolved parent; failures refresh the current row. */
   const remove = async () => {
     setBusy(true)
     try {
       await deleteJob(job.id_job)
-      // The deleted job's page is gone, so leaving goes wherever back would have.
       router.push(parent.href)
     } catch {
       setBusy(false)
@@ -88,27 +91,18 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   }
 
   return (
-    <header className="mb-6">
-      {/* A job is reachable from the queue and from the cycle that queued it, so
-          back follows whoever linked here rather than always the queue. */}
-      <Link
-        href={parent.href}
-        className="mb-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ArrowLeft className="size-3" />
-        {parent.label}
-      </Link>
-
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-3">
-            <h1 className="truncate font-display text-2xl">{job.label}</h1>
-            {isRunning(job) && <RunningDot />}
-          </div>
-
-          {/* One line of provenance: kind, state, and how long it took. Dot
-              separators rather than a table — three short facts don't need one. */}
-          <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+    <PageHeader
+      back={parent}
+      contentClassName="min-w-0 flex-1 basis-64"
+      title={
+        <span className="flex items-center gap-3">
+          <span className="min-w-0 break-words">{job.label}</span>
+          {isRunning(job) && <RunningDot />}
+        </span>
+      }
+      description={
+        <>
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span>{KIND_LABEL[job.kind]}</span>
             <span aria-hidden className="text-muted-foreground/30">
               ·
@@ -135,30 +129,32 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
             <FormError className="mt-3 max-w-prose">{job.error}</FormError>
           )}
           {actionError && <FormError className="mt-3">{actionError}</FormError>}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
+        </>
+      }
+      action={
+        <div className="flex flex-wrap items-center gap-2">
           {isTerminal(job) ? (
             <>
-              {(job.kind === "train" || job.kind === "rl") && job.status !== "done" && (
-                <Button size="sm" variant="outline" disabled={busy} onClick={recover}>
-                  Recover latest
-                </Button>
-              )}
-              {/* Most runs are a tweak of the last one, so re-running is the
-                  primary action on anything finished. A chat turn is the
-                  exception: its answer already exists. */}
-              {(
-                <Button
-                  size="sm"
-                  disabled={busy}
-                  onClick={retry}
-                  className="gap-1.5"
-                >
-                  <RotateCcw className="size-3.5" />
-                  Run again
-                </Button>
-              )}
+              {(job.kind === "train" || job.kind === "rl") &&
+                job.status !== "done" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={recover}
+                  >
+                    Recover latest
+                  </Button>
+                )}
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={retry}
+                className="gap-1.5"
+              >
+                <RotateCcw className="size-3.5" />
+                Run again
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -181,7 +177,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
             </Button>
           )}
         </div>
-      </div>
-    </header>
+      }
+    />
   )
 }

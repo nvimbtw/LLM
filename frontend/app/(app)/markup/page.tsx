@@ -11,8 +11,8 @@ export default function MarkupPage() {
   return (
     <PageShell width="reading">
       <PageHeader
-        className="mb-6 border-b-0 pb-0"
         title="Markup"
+        description="Preview how model tokens render in conversations and inspect their source."
         back={{ href: "/admin", label: "Admin" }}
       />
       <MarkupShowcase />

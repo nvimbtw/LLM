@@ -4,7 +4,8 @@ import { ArrowLeft } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * Descriptions carry model or run metadata, not introductions to the page.
+ * Descriptions carry a short orientation line or resource metadata.
+ * Keep the default rule unless the next section opens with its own ledger rule.
  *
  * Pulled out of the pages because all fifteen of them had spelled the same header
  * by hand, and they had drifted: two type scales, two fonts, three paddings. One
@@ -65,7 +66,7 @@ export function PageHeader({
             </div>
           )}
         </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {action && <div className="max-w-full shrink-0">{action}</div>}
       </div>
     </header>
   )

@@ -9,12 +9,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { GymCard } from "@/components/gyms/gym-card"
 import { listGyms, type Gym } from "@/lib/gyms"
 
+/** Loads the service-owned gym catalogue and its practice and evaluation links. */
 export default function GymsPage() {
   const [gyms, setGyms] = React.useState<Gym[] | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
-  // The catalogue is the service's, not a constant here: a task type added in
-  // `gyms-engine/gyms/registry.py` shows up without a frontend change.
   React.useEffect(() => {
     let active = true
     listGyms()
@@ -36,8 +35,8 @@ export default function GymsPage() {
   return (
     <PageShell>
       <PageHeader
-        className="mb-6 border-b-0 pb-0"
         title="Gyms"
+        description="Practise against generated tasks or measure a model in a single evaluation."
         back={{ href: "/admin", label: "Admin" }}
       />
       {error ? (
