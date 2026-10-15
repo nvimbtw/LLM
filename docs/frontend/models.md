@@ -3,7 +3,8 @@
 ## Registry, details and inline editing
 
 `/models` presents open entries with serif names, quiet metadata and measured
-parameter/context figures, without a registry-wide summary strip. Search matches name, description and family; admins
+parameter/context figures in a single-column ledger. Filters and bulk-selection
+actions remain open rows above the entries, without a registry-wide summary strip. Search matches name, description and family; admins
 also have visibility filters and explicit bulk selection. `/models/[id]` uses
 open fact ledgers for architecture, training, lineage, checkpoints and attention.
 

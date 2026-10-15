@@ -135,11 +135,18 @@ function ModelsGridContent() {
     return (
       <div className="flex flex-col gap-6">
         <Skeleton className="h-8 w-72 rounded-(--radius-control-sm)" />
-        <div className="grid gap-x-10 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+        <ul
+          className="divide-y divide-border/60 border-y border-border/60"
+          aria-label="Loading models"
+        >
           {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-44 rounded-(--radius-sheet)" />
+            <li key={i} className="space-y-3 py-5">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-6 w-48" />
+              <Skeleton className="h-4 w-64 max-w-full" />
+            </li>
           ))}
-        </div>
+        </ul>
       </div>
     )
   }
@@ -193,17 +200,18 @@ function ModelsGridContent() {
           Nothing matches that.
         </p>
       ) : (
-        <div className="grid gap-x-10 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+        <ul className="border-b border-border">
           {shown.map((model) => (
-            <ModelCard
-              key={model.id}
-              model={model}
-              selectable={selecting && isAdmin}
-              selected={selected.has(model.id)}
-              onSelectedChange={(next) => toggle(model.id, next)}
-            />
+            <li key={model.id}>
+              <ModelCard
+                model={model}
+                selectable={selecting && isAdmin}
+                selected={selected.has(model.id)}
+                onSelectedChange={(next) => toggle(model.id, next)}
+              />
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   )
@@ -231,7 +239,7 @@ function SelectBar({
     shown.length > 0 && shown.every((m) => chosen.some((c) => c.id === m.id))
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-(--radius-sheet) border border-border bg-muted/30 px-4 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-y border-border/60 py-3">
       <p className="text-sm tabular-nums">
         {chosen.length === 0
           ? "Nothing selected"
@@ -252,7 +260,7 @@ function SelectBar({
           <AlertDialogTrigger
             render={
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 className="gap-2"
                 disabled={chosen.length === 0 || isDeleting}
