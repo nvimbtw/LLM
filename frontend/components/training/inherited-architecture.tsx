@@ -81,7 +81,7 @@ function InheritedArchitectureDetails({
           </div>
         ))}
       </dl>
-      <ArchitectureFlow cfg={{ ...cfg, ...architecture }} />
+      <ArchitectureFlow view="training" cfg={{ ...cfg, ...architecture }} />
     </Panel>
   )
 }

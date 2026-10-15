@@ -263,7 +263,7 @@ export function TrainBoard({
             onText={set}
             onNumber={setNumber}
           />
-          <ArchitectureFlow cfg={cfg} />
+          <ArchitectureFlow view="training" cfg={cfg} />
         </Panel>
       ) : inheritedModelId ? (
         <InheritedArchitecture cfg={effective} modelId={inheritedModelId} />

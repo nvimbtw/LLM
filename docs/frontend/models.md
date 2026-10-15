@@ -30,11 +30,12 @@ take precedence; only when absent does the shared training calculation estimate
 from shape and measured vocabulary. A requested `max_vocab` is a learning ceiling,
 not the vocabulary actually built. Nested legacy dataset summaries are supported.
 
-`components/training/architecture-flow.tsx` is the single diagram implementation
-used by both model details and the training composer. It accepts only shape and
-training mode, preserves bounded geometry and responsive layouts, and exposes
-Pause/Play while respecting reduced motion. SFT uses assistant-token targets;
-RL labels rewards and its policy objective. The attention viewer also uses the
+`components/training/architecture-flow.tsx` is shared with the training composer.
+Model details explicitly select its **generation** view, regardless of how the
+model was trained: token scores feed sampling, and the chosen token returns to
+the growing prompt before the next forward pass. The training page selects the
+training view. See [Architecture diagram](architecture.md) for motion, geometry,
+accessibility and the limits of the illustration. The attention viewer uses the
 resolved layer/head counts, so it remains available for inherited architectures.
 
 ## Lineage: how a model was constructed

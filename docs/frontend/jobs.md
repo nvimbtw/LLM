@@ -102,19 +102,17 @@ The same fields are rendered two ways, and neither may drift from the other:
   catalogue and counts repeated curriculum prefixes once at their largest limit;
   epochs do not weight the shares. Unknown sizes or invalid limits leave the
   composition unavailable instead of silently drawing a partial or zero share.
-  Below fresh-run architecture fields, `architecture-flow.tsx` illustrates the
-  training loop with one representative block and the configured repeat count:
-  embeddings, pre-norm attention/RoPE and feed-forward/GELU sublayers with residual
-  additions, final normalization and tied output weights, followed by targets,
-  cross-entropy loss, backward gradients and optimizer updates. Figures update
-  from the draft. The SVG uses fixed geometry rather than allocating one element per
-  requested layer/head, stacks on narrow screens and offers Pause/Play. Reduced
-  motion removes both the decorative pulse and synchronized block highlights.
-  It represents the architecture, not live activations. Fine-tuning and resumed
-  pretraining display the selected model's actual architecture and vocabulary as
-  read-only facts through `inherited-architecture.tsx`, with the same parameter
-  subtitle and diagram. Reads reset on session/model changes; missing metadata
-  stays unavailable instead of displaying draft defaults. The fine-tune diagram
+  Below fresh-run architecture fields, `architecture-flow.tsx` explicitly selects
+  the **training** view: a forward pass, target supervision, loss, gradients,
+  optimizer and weight updates before the next batch. Shape values update from
+  the draft. The shared [architecture diagram](architecture.md) uses a bounded
+  transformer stack, aligned responsive geometry and operation-specific motion.
+  Pause/Play retains the current frame; reduced motion shows a static diagram.
+  Fine-tuning and resumed pretraining display the selected model's actual
+  architecture and vocabulary as read-only facts through
+  `inherited-architecture.tsx`, with the same parameter subtitle and training
+  diagram. Reads reset on session/model changes; missing metadata stays
+  unavailable instead of displaying draft defaults. The fine-tune diagram
   identifies assistant-token targets and masked cross entropy.
   A quiet parameter count sits directly below the Architecture heading. The
   estimate uses the selected tokenizer's actual vocabulary size,

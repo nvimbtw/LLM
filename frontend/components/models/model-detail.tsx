@@ -266,7 +266,10 @@ function ModelArchitecture({ model }: { model: ModelData }) {
   return (
     <Panel variant="open" title="Architecture">
       <FactList facts={facts} />
-      <ArchitectureFlow cfg={{ ...arch, mode: model.trainingMode }} />
+      <ArchitectureFlow
+        view="generation"
+        cfg={{ ...arch, mode: model.trainingMode }}
+      />
     </Panel>
   )
 }
