@@ -32,24 +32,29 @@ not full diagrams of their training algorithms.
 ## Rendering and lifecycle
 
 `lib/architecture-flow.ts` owns phase calculation, bounded token windows, operation
-ports and route interpolation. The same polyline draws each connection and locates
-its traveling mark. Responsive layouts use the diagram container's width rather
-than the viewport width, so a sidebar cannot squeeze the horizontal chart into an
+ports and route interpolation. The same gently rounded route draws each
+connection and locates its traveling mark. Travel and processing use eased timing. Each operation reaches
+its final state before its phase ends and retains that result until the next input
+resets it; emphasis fades independently on the same clock. The longer generation
+return and weight-update stages have time to finish their full paths. Responsive
+layouts use the diagram container's width rather than the viewport width, so a sidebar cannot squeeze the horizontal chart into an
 unreadable column. Existing theme roles supply surfaces, strokes and one accent.
 Invalid draft dimensions remain unavailable instead of producing real counts.
 
-`use-architecture-playback.ts` owns one animation clock for the two layouts, with
-at most 30 React updates per second. Pause freezes the current phase and resumes
-from it. Offscreen diagrams and hidden tabs suspend their clock without catching
+`use-architecture-playback.ts` owns one clock across responsive layouts, using
+the browser’s animation-frame cadence to avoid uneven throttling on 60 Hz
+displays. Pause freezes the current phase and resumes from it. Offscreen diagrams and hidden tabs suspend their clock without catching
 up on return. Unmount cancels the frame and releases visibility observers.
-Reduced motion renders a complete static schematic and removes the play control.
+A resize observer mounts only the layout that fits the figure. Unchanged operation
+blocks retain their render while the active miniature animates. Reduced motion
+renders a complete static schematic and removes the play control.
 SVG titles and descriptions convey the flow without announcing every animation
 frame to screen readers. The drawing is labelled as an illustration.
 
 ## Verification
 
 `lib/architecture-flow.test.ts` covers generation continuity across append and
-scroll boundaries, training batch ordering, travel/processing separation, route
-bends, responsive view semantics and invalid dimensions. Browser checks cover
+scroll boundaries, training batch ordering, completed-operation retention, easing
+boundaries, route bends, responsive view semantics and invalid dimensions. Browser checks cover
 pause/resume, reduced motion, visibility, both page contexts and narrow layouts.
 Run the frontend verification commands in the [module map](README.md#verification).

@@ -1,25 +1,32 @@
-import type { Operation } from "@/lib/architecture-flow"
+import {
+  diagramPath,
+  phaseProgress,
+  pointOnRoute,
+  type Operation,
+} from "@/lib/architecture-flow"
 
 export interface ArchitectureOperationProps {
   operation: Operation
-  progress: number | null
+  progress: number
+  emphasis: number
 }
 
-/** Draws a schematic transformation inside an operation. Null progress keeps a legible static example; active fractions express processing rather than a passing particle. */
+/** Draws a complete operation from its retained progress and smoothly varying emphasis. Every miniature has a stable finished state; branch marks follow their actual curves. */
 export function ArchitectureOperation({
   operation,
-  progress,
+  progress: t,
+  emphasis,
 }: ArchitectureOperationProps) {
-  const t = progress ?? (operation === "sample" ? 1 : 0.5)
-  const active = progress !== null
   const wave = Math.sin(t * Math.PI)
   return (
     <g
-      className={active ? "text-primary" : "text-muted-foreground"}
+      style={{
+        color: `color-mix(in oklab, var(--primary) ${emphasis * 100}%, var(--muted-foreground))`,
+      }}
       fill="currentColor"
       stroke="currentColor"
       strokeWidth="1"
-      opacity={active ? 0.9 : 0.55}
+      opacity={0.55 + 0.35 * emphasis}
     >
       {operation === "embedding" &&
         [0, 1, 2, 3, 4, 5, 6].map((index) => {
@@ -48,10 +55,13 @@ export function ArchitectureOperation({
               opacity={
                 column > row
                   ? 0.08
-                  : active
-                    ? 0.15 +
-                      0.85 * Math.max(0, 1 - Math.abs(t * 5 - row - column / 4))
-                    : 0.3 + (row === column ? 0.5 : 0)
+                  : 0.12 +
+                    (row === column ? 0.88 : 0.5) *
+                      phaseProgress(
+                        t,
+                        row * 0.16 + column * 0.025,
+                        row * 0.16 + column * 0.025 + 0.35
+                      )
               }
             />
           ))
@@ -60,7 +70,7 @@ export function ArchitectureOperation({
         [0, 1, 2, 3, 4].map((index) => (
           <path
             key={index}
-            d={`M4 ${6 + index * 2} L38 ${10 + (index - 2) * (2 + wave * 3)} L76 ${6 + index * 2}`}
+            d={`M4 ${6 + index * 2} C20 ${6 + index * 2} 24 ${10 + (index - 2) * (2 + wave * 3)} 38 ${10 + (index - 2) * (2 + wave * 3)} S60 ${6 + index * 2} 76 ${6 + index * 2}`}
             fill="none"
             opacity={0.35 + wave * 0.5}
           />
@@ -104,34 +114,50 @@ export function ArchitectureOperation({
         ))}
       {operation === "loss" && (
         <>
-          <path d="M6 2L36 10L6 18 M36 10H72" fill="none" opacity="0.4" />
-          <circle cx={6 + 30 * t} cy={2 + 8 * t} r="2" stroke="none" />
-          <circle cx={6 + 30 * t} cy={18 - 8 * t} r="2" stroke="none" />
+          {[2, 18].map((y) => {
+            const route = [
+              { x: 6, y },
+              { x: 36, y: 10 },
+              { x: 68, y: 10 },
+            ]
+            const point = pointOnRoute(route, t)
+            return (
+              <g key={y}>
+                <path d={diagramPath(route)} fill="none" opacity="0.4" />
+                <circle
+                  cx={point.x}
+                  cy={point.y}
+                  r="2"
+                  stroke="none"
+                  opacity={1 - phaseProgress(t, 0.85, 1)}
+                />
+              </g>
+            )
+          })}
           <rect
-            x="64"
-            y={10 - (3 + t * 4)}
+            x="66"
+            y={10 - (3 + phaseProgress(t, 0.5, 1) * 4)}
             width="5"
-            height={6 + t * 8}
+            height={6 + phaseProgress(t, 0.5, 1) * 8}
             stroke="none"
           />
         </>
       )}
       {operation === "backward" &&
-        [-1, 0, 1].map((branch) => (
-          <g key={branch}>
-            <path
-              d={`M74 10H48L8 ${10 + branch * 8}`}
-              fill="none"
-              opacity="0.4"
-            />
-            <circle
-              cx={74 - 66 * t}
-              cy={10 + branch * 8 * t}
-              r="2"
-              stroke="none"
-            />
-          </g>
-        ))}
+        [-1, 0, 1].map((branch) => {
+          const route = [
+            { x: 74, y: 10 },
+            { x: 48, y: 10 },
+            { x: 8, y: 10 + branch * 8 },
+          ]
+          const point = pointOnRoute(route, t)
+          return (
+            <g key={branch}>
+              <path d={diagramPath(route)} fill="none" opacity="0.4" />
+              <circle cx={point.x} cy={point.y} r="2" stroke="none" />
+            </g>
+          )
+        })}
       {operation === "optimizer" &&
         [0, 1, 2, 3, 4, 5, 6].map((index) => (
           <g key={index}>

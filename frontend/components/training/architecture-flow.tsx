@@ -23,11 +23,13 @@ export interface ArchitectureFlowProps {
   view: ArchitectureView
 }
 
-/** Illustrates training on the composer and generation on model details. One owned clock drives both responsive layouts; pause retains the current transformation and reduced motion shows the complete static schematic. */
+/** Illustrates training on the composer and generation on model details. One owned clock drives the visible responsive layout; pause retains the current transformation and reduced motion shows the complete static schematic. */
 export function ArchitectureFlow({ cfg, view }: ArchitectureFlowProps) {
   const reducedMotion = usePrefersReducedMotion()
   const [paused, setPaused] = useState(false)
-  const { ref, time } = useArchitecturePlayback(!paused && !reducedMotion)
+  const { ref, time, vertical } = useArchitecturePlayback(
+    !paused && !reducedMotion
+  )
   const frame = reducedMotion ? null : architectureFrame(view, time)
   return (
     <figure
@@ -63,9 +65,8 @@ export function ArchitectureFlow({ cfg, view }: ArchitectureFlowProps) {
         cfg={cfg}
         view={view}
         frame={frame}
-        vertical={false}
+        vertical={vertical}
       />
-      <ArchitectureDiagram cfg={cfg} view={view} frame={frame} vertical />
     </figure>
   )
 }

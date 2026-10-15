@@ -1,9 +1,12 @@
-import { useId } from "react"
+import { memo, useId, useMemo } from "react"
 
 import {
   architectureLayout,
   diagramPath,
   operationProgress,
+  phaseProgress,
+  smooth,
+  stageEmphasis,
   pointOnRoute,
   port,
   promptTokens,
@@ -69,7 +72,7 @@ export function ArchitectureDiagram({
   vertical,
 }: ArchitectureDiagramProps) {
   const id = useId().replaceAll(":", "")
-  const layout = architectureLayout(vertical)
+  const layout = useMemo(() => architectureLayout(vertical), [vertical])
   const { nodes, stack, prompt } = layout
   const arrow = `url(#${id}-arrow)`
   const current = frame ?? { step: "input", progress: 0, cycle: 0 }
@@ -101,11 +104,7 @@ export function ArchitectureDiagram({
   return (
     <svg
       viewBox={`0 0 ${layout.width} ${height}`}
-      className={
-        vertical
-          ? "mx-auto block w-full max-w-sm @min-[640px]:hidden"
-          : "hidden w-full @min-[640px]:block"
-      }
+      className={vertical ? "mx-auto block w-full max-w-sm" : "block w-full"}
       role="img"
       aria-labelledby={`${id}-title ${id}-description`}
       data-diagram-layout={vertical ? "vertical" : "horizontal"}
@@ -147,7 +146,7 @@ export function ArchitectureDiagram({
       <TransformerStack
         box={stack}
         layers={cfg.layers}
-        active={frame?.step === "update" && frame.progress >= 0.8}
+        emphasis={stageEmphasis(frame, "update")}
       />
       <Edge points={inputPoints} arrow={arrow} frame={frame} step="embedding" />
       <ForwardConnections {...circuit} />
@@ -162,12 +161,11 @@ export function ArchitectureDiagram({
           box={nodes[operation]}
           operation={operation}
           {...labels[operation]}
-          progress={frame ? operationProgress(frame, operation) : null}
-          updating={
-            frame?.step === "update" &&
-            frame.progress >= 0.8 &&
-            FORWARD.includes(operation)
-          }
+          progress={operationProgress(frame, operation, view)}
+          emphasis={Math.max(
+            stageEmphasis(frame, operation),
+            FORWARD.includes(operation) ? stageEmphasis(frame, "update") : 0
+          )}
         />
       ))}
       <text x={prompt.x} y="17" className="fill-foreground text-xs">
@@ -190,13 +188,13 @@ export function ArchitectureDiagram({
             width={token.width}
             height="14"
             rx="1"
-            className={
-              frame?.step === "input"
-                ? "fill-primary/60"
-                : "fill-muted-foreground/40"
-            }
+            style={{
+              fill: `color-mix(in oklab, var(--primary) ${stageEmphasis(frame, "input") * 100}%, var(--muted-foreground))`,
+            }}
             opacity={
-              frame?.step === "batch" ? Math.abs(frame.progress * 2 - 1) : 1
+              frame?.step === "batch"
+                ? smooth(Math.abs(frame.progress * 2 - 1)) * 0.4
+                : 0.4 + stageEmphasis(frame, "input") * 0.2
             }
           />
         ))}
@@ -209,7 +207,10 @@ export function ArchitectureDiagram({
               width={sequence.next.width}
               height="14"
               rx="1"
-              className="fill-primary"
+              style={{
+                fill: `color-mix(in oklab, var(--primary) ${(1 - phaseProgress(frame.progress, 0.8, 1)) * 100}%, var(--muted-foreground))`,
+              }}
+              opacity={1 - 0.6 * phaseProgress(frame.progress, 0.8, 1)}
             />
           )}
       </g>
@@ -239,14 +240,14 @@ export function ArchitectureDiagram({
 }
 
 /** Draws a shallow flat stack, retaining the exact layer count even when only a few representative sheets are visible. */
-function TransformerStack({
+const TransformerStack = memo(function TransformerStack({
   box,
   layers,
-  active,
+  emphasis,
 }: {
   box: DiagramBox
   layers: number
-  active: boolean
+  emphasis: number
 }) {
   const sheets =
     Number.isSafeInteger(layers) && layers > 0 ? Math.min(layers, 4) : 1
@@ -261,11 +262,10 @@ function TransformerStack({
             width={box.width}
             height={box.height}
             rx="2"
-            className={
-              active
-                ? "fill-background stroke-primary"
-                : "fill-background stroke-border"
-            }
+            className="fill-background"
+            style={{
+              stroke: `color-mix(in oklab, var(--primary) ${emphasis * 100}%, var(--border))`,
+            }}
           />
         )
       )}
@@ -282,7 +282,7 @@ function TransformerStack({
       </text>
     </g>
   )
-}
+})
 
 /** Uses the same route for stationary arrows and traveling vector/token marks. Processing starts only after arrival, and return paths have an explicit endpoint. */
 function Edge({
@@ -298,7 +298,7 @@ function Edge({
   const active =
     frame?.step === step && frame.progress >= start && frame.progress < end
   const progress = frame ? unit((frame.progress - start) / (end - start)) : 0
-  const point = pointOnRoute(points, progress)
+  const point = pointOnRoute(points, smooth(progress))
   return (
     <g>
       <path
@@ -316,6 +316,10 @@ function Edge({
           height={tokenWidth ? 14 : 6}
           rx="1"
           className="fill-primary"
+          opacity={
+            smooth(progress / 0.12) *
+            (tokenWidth ? 1 : smooth((1 - progress) / 0.15))
+          }
         />
       )}
     </g>
@@ -509,48 +513,43 @@ function TrainingReturn({ cfg, layout, vertical, arrow, frame }: CircuitProps) {
 }
 
 /** Renders labels and an operation-specific miniature while preserving neutral page surfaces. */
-function OperationBlock({
+const OperationBlock = memo(function OperationBlock({
   box,
   operation,
   label,
   detail,
   note,
   progress,
-  updating,
+  emphasis,
 }: {
   box: DiagramBox
   operation: Operation
   label: string
   detail: string
   note?: string
-  progress: number | null
-  updating: boolean
+  progress: number
+  emphasis: number
 }) {
-  const active = progress !== null || updating
   return (
     <g
       transform={`translate(${box.x} ${box.y})`}
       data-flow-node={operation}
-      data-active={active}
+      data-active={emphasis > 0}
+      data-operation-progress={progress}
     >
       <rect
         width={box.width}
         height={box.height}
         rx="2"
-        className={
-          active
-            ? "fill-background stroke-primary"
-            : "fill-background stroke-border"
-        }
+        className="fill-background stroke-border"
       />
-      {active && (
-        <rect
-          width={box.width}
-          height={box.height}
-          rx="2"
-          className="fill-primary/5"
-        />
-      )}
+      <rect
+        width={box.width}
+        height={box.height}
+        rx="2"
+        className="fill-primary/5 stroke-primary"
+        opacity={emphasis}
+      />
       <text
         x={box.width / 2}
         y="20"
@@ -578,11 +577,15 @@ function OperationBlock({
         </text>
       )}
       <g transform={`translate(${(box.width - 80) / 2} 62)`}>
-        <ArchitectureOperation operation={operation} progress={progress} />
+        <ArchitectureOperation
+          operation={operation}
+          progress={progress}
+          emphasis={emphasis}
+        />
       </g>
     </g>
   )
-}
+})
 
 /** Describes configured shape and the supervision used by the current training family; generation is independent of that family. */
 function operationLabels(

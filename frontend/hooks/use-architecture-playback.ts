@@ -2,27 +2,33 @@
 
 import { useEffect, useRef, useState } from "react"
 
-/** Owns a diagram's active elapsed time at at most 30 updates/second. Pausing, offscreen layout and hidden tabs retain the exact frame; all observers and frames are released on unmount. */
+/** Owns a diagram’s active elapsed time and selects its visible layout from the figure width. Pausing, offscreen layout and hidden tabs retain the exact frame; all observers and frames are released on unmount. */
 export function useArchitecturePlayback(running: boolean) {
   const ref = useRef<HTMLElement>(null)
   const elapsed = useRef(0)
   const [time, setTime] = useState(0)
+  const [vertical, setVertical] = useState(false)
+
+  useEffect(() => {
+    if (!ref.current) return
+    const observer = new ResizeObserver(([entry]) => {
+      setVertical(entry.contentRect.width < 640)
+    })
+    observer.observe(ref.current)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     if (!running || !ref.current) return
     let visible = false
     let request = 0
     let previous = 0
-    let published = 0
 
     /** Advances only active time; resumed tabs and offscreen diagrams start from their retained frame. */
     function tick(now: number) {
       if (previous) elapsed.current += now - previous
       previous = now
-      if (now - published >= 1000 / 30) {
-        setTime(elapsed.current)
-        published = now
-      }
+      setTime(elapsed.current)
       request = requestAnimationFrame(tick)
     }
 
@@ -46,5 +52,5 @@ export function useArchitecturePlayback(running: boolean) {
     }
   }, [running])
 
-  return { ref, time }
+  return { ref, time, vertical }
 }
