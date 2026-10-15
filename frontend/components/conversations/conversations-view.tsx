@@ -21,16 +21,13 @@ function ArchiveHeader({ count, tokens }: { count: number; tokens: number }) {
   return (
     <PageHeader
       title="Conversations"
-      description={
-        <>
-          <p>The full archive of your chats.</p>
-          {count > 0 && (
-            <dl className="flex gap-6 text-right tabular-nums">
-              <Stat label="Threads" value={String(count)} />
-              <Stat label="Tokens" value={formatTokens(tokens)} />
-            </dl>
-          )}
-        </>
+      meta={
+        count > 0 && (
+          <dl className="flex gap-6 text-right tabular-nums">
+            <Stat label="Threads" value={String(count)} />
+            <Stat label="Tokens" value={formatTokens(tokens)} />
+          </dl>
+        )
       }
       action={
         <ButtonLink href="/">
