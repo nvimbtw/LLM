@@ -144,9 +144,14 @@ The distinction is the fix; the shadow is only how one half of it is drawn.
 **Admin workspaces use open sections.** Data, Tokenizers, Train, Benchmark,
 Gyms and their job/run views opt into `Panel variant="open"`: no card fill,
 outline or shadow, a restrained serif heading with quiet metadata, and a body
-aligned with the heading. Lists and recaps use rules between rows; fields keep
-their own control surfaces. The sheet remains the default elsewhere. Fixture
-pages use the same open frame while rendering the real chat and throbber
+aligned with the heading. Lists and recaps use rules between rows. Training fields
+use `Input` and `SelectTrigger`'s `inline` variant: no resting border or fill,
+with an outline on keyboard focus, matching the project editor's page-native
+fields. Quiet training actions use the transparent `Button` text variant.
+Training data policies use the `Checkbox` block variant: the entire labeled
+block toggles, and only selected blocks take a subtle theme-accent tint.
+Other forms keep their control surfaces. The sheet remains the default elsewhere.
+Fixture pages use the same open frame while rendering the real chat and throbber
 components, so their previews continue to represent the application.
 
 Either side of the sheet:
@@ -158,13 +163,13 @@ Either side of the sheet:
   *already* casting a shadow, so the difference is travel (48px) rather than
   darkness.
 
-**Two surfaces are frosted**, and only two: the composer and the toast
-(`bg-*/75 backdrop-blur-2xl backdrop-saturate-150`). Both land on top of content
+The composer, its command drawer and the toast are frosted
+(`bg-*/75 backdrop-blur-2xl backdrop-saturate-150`). They land on top of content
 that is still live underneath — a thread being scrolled, a queue that is moving —
 and a solid card cuts a hole in it. The blur is what stops what passes behind
 from being *readable*, and the saturate puts back the colour that blurring alone
-averages away. Everything else that floats is opaque: a menu or a dialog replaces
-your attention rather than sharing it.
+averages away. The command drawer has slight control corners and no shadow over
+the composer. Other menus and dialogs use opaque surfaces.
 
 Every elevation lives in the theme layer with the other roles. The two modes are
 deliberately **not** the same shape: light lifts with a shadow mixed from the ink

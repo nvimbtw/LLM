@@ -32,6 +32,7 @@ export interface ModelCheckpointsProps {
   canContinue: boolean
 }
 
+/** Lists available recovery models for a parent, with continuation controls only for administrators. */
 export function ModelCheckpoints({
   modelId,
   canContinue,
@@ -41,7 +42,7 @@ export function ModelCheckpoints({
   if (isLoading) return <Skeleton className="h-44 rounded-(--radius-sheet)" />
   if (error) {
     return (
-      <Panel title="Checkpoints" bodyClassName="p-0">
+      <Panel variant="open" title="Checkpoints" bodyClassName="p-0">
         <LoadError title={error.message} className="m-5" />
       </Panel>
     )
@@ -52,6 +53,7 @@ export function ModelCheckpoints({
 
   return (
     <Panel
+      variant="open"
       title="Recovery and saved checkpoints"
       aside={
         <span className="text-xs text-muted-foreground tabular-nums">
@@ -73,6 +75,7 @@ export function ModelCheckpoints({
   )
 }
 
+/** Presents a saved model’s step and measured loss, with optional retention and continuation actions. */
 function CheckpointRow({
   checkpoint,
   canContinue,
@@ -82,26 +85,34 @@ function CheckpointRow({
 }) {
   const [kept, setKept] = React.useState(checkpoint.kept)
   const [saving, setSaving] = React.useState(false)
+  /** Retains this recovery model and reports any persistence failure. */
   const keep = async () => {
     setSaving(true)
     try {
-      const response = await apiFetch(`/models/${checkpoint.id}`, {method: "PATCH", body: JSON.stringify({recovery_keep:true})})
+      const response = await apiFetch(`/models/${checkpoint.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ recovery_keep: true }),
+      })
       if (!response.ok) throw new Error(await response.text())
       setKept(true)
     } catch (error) {
-      toast.error("Could not keep checkpoint", error instanceof Error ? error.message : "Storage failed")
-    } finally { setSaving(false) }
+      toast.error(
+        "Could not keep checkpoint",
+        error instanceof Error ? error.message : "Storage failed"
+      )
+    } finally {
+      setSaving(false)
+    }
   }
   return (
-    <li className="flex items-baseline gap-4 border-b border-border/40 px-5 py-2.5 last:border-0">
+    <li className="flex items-baseline gap-4 border-b border-border/40 py-2.5 last:border-0">
       <span className="w-10 shrink-0 text-xs font-medium tabular-nums">
         #{checkpoint.index}
       </span>
       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground tabular-nums">
         Step {formatNumber(checkpoint.step)}
       </span>
-      {/* Absent is "nothing recorded a loss here", which is not the same
-          statement as a loss of zero — and a zero would read as a perfect model. */}
+
       <span className="w-16 shrink-0 text-right text-xs tabular-nums">
         {checkpoint.loss === null ? (
           <span className="text-muted-foreground/30">—</span>
@@ -110,10 +121,19 @@ function CheckpointRow({
         )}
       </span>
       <span className="flex shrink-0 items-baseline gap-3 text-xs">
-        {canContinue && <Button size="sm" variant="ghost" disabled={kept || saving} onClick={keep}>{kept ? "Kept" : "Keep"}</Button>}
+        {canContinue && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={kept || saving}
+            onClick={keep}
+          >
+            {kept ? "Kept" : "Keep"}
+          </Button>
+        )}
         {canContinue && checkpoint.hasWeights && (
           <Link
-            href={`/jobs/new/train?resume=${checkpoint.id}`}
+            href={`/jobs/new-train?resume=${checkpoint.id}`}
             className="text-primary hover:underline"
           >
             Continue

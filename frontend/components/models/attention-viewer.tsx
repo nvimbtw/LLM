@@ -23,15 +23,13 @@ export interface AttentionViewerProps {
   heads: number
 }
 
-// Long enough that the matrix has structure to look at, short enough to read.
 const SAMPLE_TEXT =
   "The cat sat on the mat. The cat ate the fish, and the dog watched it."
 
-// Two decimals says nothing about a weight of 0.0004, and a diffuse head is
-// mostly weights of that size.
 const WEIGHT_DIGITS = 4
 const MILLISECOND_DIGITS = 1
 
+/** Labels one attention control or input. */
 function Field({
   label,
   children,
@@ -47,6 +45,7 @@ function Field({
   )
 }
 
+/** Offers the available zero-based layer or head indices using descriptive option labels. */
 function IndexSelect({
   label,
   count,
@@ -64,14 +63,10 @@ function IndexSelect({
     <Field label={label}>
       <Select
         value={String(value)}
-        // A Select hands back `null` for "nothing chosen"; there is no such
-        // state here, so it falls back to what is already selected.
         onValueChange={(next) => onChange(Number(next ?? value))}
         disabled={disabled}
       >
         <SelectTrigger className="w-24">
-          {/* Bare, `<SelectValue />` renders the raw value — the trigger would
-              read `0` while the list it opens reads `Layer 0`. */}
           <SelectValue>{(chosen: string | null) => chosen ?? "0"}</SelectValue>
         </SelectTrigger>
         <SelectContent>
@@ -86,16 +81,16 @@ function IndexSelect({
   )
 }
 
-// A token is not prose: it can be a leading space, a newline, or half of a
-// multi-byte character, and all three have to be visible as what they are.
+/** Displays one token in the selected attention-cell readout, preserving significant spaces and newlines. */
 function TokenChip({ token }: { token: string }) {
   return (
-    <span className="tag rounded-(--radius-marker) bg-muted px-1 py-0.5 whitespace-pre text-foreground">
+    <span className="rounded-(--radius-marker) bg-muted px-1 py-0.5 tag whitespace-pre text-foreground">
       {token}
     </span>
   )
 }
 
+/** Requests and displays one selected attention head over the supplied text, preserving loading and failure feedback. */
 export function AttentionViewer({
   modelId,
   layers,
@@ -115,13 +110,11 @@ export function AttentionViewer({
 
   return (
     <Panel
+      variant="open"
       title="Attention"
       aside={
         drawMs !== null &&
         matrix && (
-          // The honest number, on the reader's own machine. Whether canvas2d is
-          // enough for this figure is a question that should be settled by
-          // measurement rather than by anyone's prior about canvas.
           <span className="text-xs text-muted-foreground tabular-nums">
             {matrix.size}×{matrix.size} drawn in{" "}
             {drawMs.toFixed(MILLISECOND_DIGITS)} ms
@@ -177,15 +170,11 @@ export function AttentionViewer({
               <AttentionCanvas
                 matrix={matrix}
                 cell={cell}
-                // A `useState` setter is identity-stable, so the canvas' draw
-                // effect fires on a new matrix and not on every hover.
                 onCellChange={setCell}
                 onDrawn={setDrawMs}
               />
             </div>
 
-            {/* Fixed height: a readout that appears on hover and disappears on
-                leave would reflow the figure out from under the pointer. */}
             <div className="flex min-h-9 flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               {cell ? (
                 <>

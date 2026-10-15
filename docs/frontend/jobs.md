@@ -73,18 +73,55 @@ catalogue keeps its width when no build is being composed.
 
 - **The board lives at `/admin`**, as the hero of the panel — `QueueView` and
   `HistoryView` are mounted there, and `/jobs` is a redirect kept only so
-  bookmarked URLs work. `/jobs/{id}` and `/jobs/new/*` are unchanged. The two
-  are separate components only so the panel can put its directory between them;
+  bookmarked URLs work. Job details remain `/jobs/{id}`; training is composed at
+  `/jobs/new-train`, with `/jobs/new/train` redirecting there while preserving
+  queries. The two are separate components only so the panel can put its directory between them;
   they read from the same `JobsProvider` and are one ledger.
 
 ### Composing a training run
 
 The same fields are rendered two ways, and neither may drift from the other:
 
-- `components/training/train-board.tsx` at `/jobs/new/train` — one bounded
-  form, with the mode and presets in a shared toolbar, identity controls next,
-  then data, architecture, optimization and follow-ups. Labels sit beside their
-  controls on wide screens; numeric settings use compact rows in two columns.
+- `components/training/train-board.tsx` at `/jobs/new-train` — one bounded
+  form whose model name is the editable page heading, like the project editor.
+  Presets sit beside the heading; quiet mode tabs precede compact identity rows,
+  then data, architecture, optimization and follow-ups. Identity values and their
+  popup menus align to the right without explanatory subtitles. Text actions
+  keep a transparent surface during hover. Selectors and numeric
+  values use borderless inline controls with visible keyboard focus. Labels sit
+  beside their controls on wide screens; numeric settings use two columns.
+  Dataset limits, curriculum names/epochs and follow-up fields use the same
+  inline treatment; menus retain their normal accessible overlay surfaces.
+  Switching between prose training and fine-tuning clears dataset/curriculum
+  selections from the other dataset kind, while preserving explicitly chosen
+  learning rates. Both editors use `run-config.ts::configForMode` for this policy.
+  Training data presents datasets, then settings, then a composition donut with
+  document counts and shares. Shuffle, Curriculum and Strip thinking use fully
+  clickable checkbox blocks, with a theme-accent tint only when selected and
+  visible keyboard focus. `lib/training-data.ts` resolves limits against the
+  catalogue and counts repeated curriculum prefixes once at their largest limit;
+  epochs do not weight the shares. Unknown sizes or invalid limits leave the
+  composition unavailable instead of silently drawing a partial or zero share.
+  Below fresh-run architecture fields, `architecture-flow.tsx` illustrates the
+  training loop with one representative block and the configured repeat count:
+  embeddings, pre-norm attention/RoPE and feed-forward/GELU sublayers with residual
+  additions, final normalization and tied output weights, followed by targets,
+  cross-entropy loss, backward gradients and optimizer updates. Figures update
+  from the draft. The SVG uses fixed geometry rather than allocating one element per
+  requested layer/head, stacks on narrow screens and offers Pause/Play. Reduced
+  motion removes both the decorative pulse and synchronized block highlights.
+  It represents the architecture, not live activations. Fine-tuning and resumed
+  pretraining display the selected model's actual architecture and vocabulary as
+  read-only facts through `inherited-architecture.tsx`, with the same parameter
+  subtitle and diagram. Reads reset on session/model changes; missing metadata
+  stays unavailable instead of displaying draft defaults. The fine-tune diagram
+  identifies assistant-token targets and masked cross entropy.
+  A quiet parameter count sits directly below the Architecture heading. The
+  estimate uses the selected tokenizer's actual vocabulary size,
+  or the learning ceiling before a vocabulary exists. It counts tied embeddings
+  once, attention/feed-forward weights, biases and layer norms; RoPE has no learned
+  positional table. Invalid draft shapes or unavailable vocabulary sizes show no
+  estimate. `lib/training-architecture.ts` owns this preview calculation.
   The **build sheet** follows the decisions as a compact Review ledger with the
   derived specification, validation and start action. There is no fixed recap
   column competing with the fields.
@@ -127,9 +164,9 @@ read by both `train-board.tsx` and `params-rail.tsx`), and `RESUMED_TOKENIZER_FI
 in `lib/jobs.ts`. It is a list of its own rather than folded into
 `RESUMED_ARCH_FIELDS` because neither field on it is an architecture field and
 `tokenizer_id` is not rendered through `ARCH_FIELDS` — the two are read together
-everywhere a resume's payload is stripped. The note under the Optimization panel
-says so as well, so a person picking "Continue from" is told once, in prose, that
-the vocabulary is not theirs to choose either.
+everywhere a resume's payload is stripped. The main editor's inherited Architecture
+section shows the checkpoint's resolved shape and vocabulary without making them
+editable; a follow-up's rail states the same inheritance in prose.
 
 **`max_vocab` is on that list too, and it is the one to keep an eye on.** It is
 neither refused nor honoured: the LLM engine's `tokenizer_for` returns the
@@ -193,8 +230,8 @@ on either side arrives as `undefined`. The LLM engine's side is documented in
   `Checkpoint` dataclass verbatim (`CheckpointFrame` in `lib/training.ts`) and
   announces every save as its weights land, so the list is complete and each row
   can say where in the run it was taken.
-- Composers live at `/jobs/new/*` and are *only* forms: submitting queues a run
-  and hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>`
+- Composers live at `/jobs/new-train` and `/jobs/new/{benchmark,rl}` and are
+  *only* forms: submitting queues a run and hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>`
   seeds a composer from a previous run's stored config.
 - **A chat turn is not a run.** It is answered directly, on the socket that
   asked for it — an interactive turn behind a three-hour training run is a chat

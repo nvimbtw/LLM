@@ -13,6 +13,10 @@ alignment and hover/selected marker. The five most recent conversations appear
 regardless of project membership. The full `/conversations` archive includes every
 chat and exposes membership management alongside rename and delete.
 
+Active chat threads have no Conversation / Add to project header. Manage their
+project membership from the conversation archive; the thread stays devoted to its
+messages and composer.
+
 ## Ownership and lifecycle
 
 [`lib/projects.ts`](../../frontend/lib/projects.ts) validates interpreted project

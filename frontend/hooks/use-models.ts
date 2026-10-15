@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { apiFetch } from "@/lib/api"
 import type { CurriculumStage, DatasetSelection } from "@/lib/training"
+import { estimateTrainingParameters } from "@/lib/training-architecture"
 
 export type ModelTier = "flagship" | "balanced" | "fast"
 
@@ -11,7 +12,7 @@ export interface Model {
   id: string
   name: string
   family: string
-  tier: ModelTier
+  tier: ModelTier | null
   /** Raw parameter count. 0 means unknown. */
   params: number
   /** Context window in tokens. */
@@ -21,9 +22,8 @@ export interface Model {
   published: boolean
 }
 
-// Shape returned by GET /models. `parameters` is the training run's stored
-// config and the summary it finished with.
 export interface RawModelConfig {
+  mode?: "pretrain" | "sft" | "kto"
   dimensions?: number
   ctx_window?: number
   heads?: number
@@ -32,28 +32,12 @@ export interface RawModelConfig {
   max_vocab?: number
   lr?: number
   epochs?: number
-  // Set only on an SFT run's config — the pretrained model it was fine-tuned
-  // from. Absent means this row is a pretrain.
   base_model?: string
-  // Set only on a pretrain's config — a model id (finished or a checkpoint) this
-  // run continued from. Mutually exclusive with `base_model`: a resumed
-  // pretrain and a fine-tune are different `family` values, so a model states
-  // at most one kind of ancestry. See `resumedFromOf`.
   resume_from?: string
-  // Which datasets this run trained on, and — for a pretrain with staged
-  // training — the curriculum they were packed into instead. Present on both
-  // families, at the same shape (`lib/training.ts::TrainConfig`/`SftConfig`).
-  // See `datasetsOf`.
   datasets?: DatasetSelection[]
   curriculum?: CurriculumStage[]
 }
 
-// The five fields that describe a transformer's shape, wherever they came
-// from. A *from-scratch* pretrain states these itself (`RawModelConfig`); an
-// SFT run and a resumed pretrain state none — both take the shape from the
-// checkpoint they start at, and saying nothing is how a resume asks for it —
-// so the LLM engine records what it actually built under `result.architecture`
-// instead. See `architectureOf`.
 export interface RawArchitecture {
   dimensions: number
   heads: number
@@ -62,10 +46,6 @@ export interface RawArchitecture {
   ctx_window: number
 }
 
-// What one intermediate save recorded about itself, as the LLM engine's
-// `CheckpointWriter` writes it — the run position it was taken at, and the loss
-// there. Every field is optional because it is only present on a checkpoint, and
-// only for a checkpoint whose row carries its `parameters` at all.
 export interface RawCheckpointResult {
   index?: number
   step?: number
@@ -76,21 +56,31 @@ export interface RawCheckpointResult {
 }
 
 export interface RawModelResult {
+  iterations?: number
+  parameters?: number
+  vocab?: number
+  dataset?: {
+    vocab_size?: number
+    documents?: number
+    conversations?: number
+    chars?: number
+    corpus_len?: number
+  }
   files?: number
   chars?: number
   vocab_size?: number
   merges?: number
   corpus_len?: number
   checkpoint?: RawCheckpointResult
-  // What the run built, as opposed to what it asked for: an SFT run, a resumed
-  // pretrain and every checkpoint row carry this — see `RawArchitecture`.
   architecture?: RawArchitecture
-  // Mirrors `RawModelConfig.base_model`; present in both places on an SFT run
-  // since the LLM engine writes `result` as the config plus its provenance.
   base_model?: string
 }
 
 export interface RawModel {
+  architecture?: RawArchitecture | null
+  vocab_size?: number | null
+  parameter_count?: number | null
+  size?: ModelTier | null
   recovery_kept?: boolean
   model_id: string
   name: string
@@ -104,53 +94,79 @@ export interface RawModel {
   published: boolean
   has_weights: boolean
   created_at: string | null
-  // The run that produced this model, and — on an intermediate save — the
-  // finished model it is an intermediate of and where in the run it was taken.
-  // `checkpoint_index` being non-null is the whole definition of "this is a
-  // checkpoint"; all four are null on an ordinary model.
   run_id: string | null
   parent_id: string | null
   checkpoint_step: number | null
   checkpoint_index: number | null
 }
 
-// The model's shape, however its run came by one: stated on the config by a
-// from-scratch pretrain, and recorded under `result.architecture` by everything
-// that inherits its shape rather than choosing it — an SFT run, a resumed
-// pretrain, and the checkpoints either leaves behind (see `RawArchitecture`).
-// Every caller that wants to render dimensions/heads/layers/ff_multiplier/
-// ctx_window goes through this rather than reading `parameters.config` and
-// silently rendering nothing for half the models in the list.
+/** Returns the resolved shape, preferring actual results over requested dimensions. Invalid or incomplete metadata stays unavailable. */
 export function architectureOf(raw: RawModel): RawArchitecture | null {
   const c = raw.parameters?.config
-  if (c?.dimensions && c.heads && c.layers && c.ff_multiplier && c.ctx_window) {
-    return {
-      dimensions: c.dimensions,
-      heads: c.heads,
-      layers: c.layers,
-      ff_multiplier: c.ff_multiplier,
-      ctx_window: c.ctx_window,
+  for (const shape of [
+    raw.architecture,
+    raw.parameters?.result?.architecture,
+    c,
+  ]) {
+    if (validArchitecture(shape)) {
+      return {
+        dimensions: shape.dimensions,
+        heads: shape.heads,
+        layers: shape.layers,
+        ff_multiplier: shape.ff_multiplier,
+        ctx_window: shape.ctx_window,
+      }
     }
   }
-  return raw.parameters?.result?.architecture ?? null
+  return null
 }
 
-// The pretrained model an SFT run started from, or null on a pretrain. Reads
-// the config first — where every SFT request names it — falling back to
-// `result` for the same reason `architectureOf` does.
+/** Narrows interpreted shape metadata to a complete set of positive integral dimensions. */
+function validArchitecture(
+  shape: RawModelConfig | RawArchitecture | null | undefined
+): shape is RawArchitecture {
+  return Boolean(
+    shape &&
+    validCount(shape.dimensions) &&
+    validCount(shape.heads) &&
+    validCount(shape.layers) &&
+    validCount(shape.ff_multiplier) &&
+    validCount(shape.ctx_window)
+  )
+}
+
+/** Accepts positive safe integral metadata counts; absent and malformed values are unavailable. */
+function validCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+}
+
+/** Returns measured vocabulary size across current and legacy result shapes; the requested learning ceiling is not a measurement. */
+export function vocabularySizeOf(raw: RawModel): number | null {
+  const result = raw.parameters?.result
+  return (
+    [
+      raw.vocab_size,
+      result?.vocab,
+      result?.vocab_size,
+      result?.dataset?.vocab_size,
+    ].find(validCount) ?? null
+  )
+}
+
+/** Returns the base model identity from a fine-tune request or its saved provenance. */
 export function baseModelOf(raw: RawModel): string | null {
-  return raw.parameters?.config?.base_model ?? raw.parameters?.result?.base_model ?? null
+  return (
+    raw.parameters?.config?.base_model ??
+    raw.parameters?.result?.base_model ??
+    null
+  )
 }
 
-// The model (finished or a checkpoint) a pretrain continued from, or null on a
-// from-scratch pretrain or an SFT run. Unlike `base_model`, `resume_from` has
-// no `result` mirror — it names a starting point, not a resolved fact an SFT
-// orchestrator derives — so this reads `config` alone.
+/** Returns the model or checkpoint a continued pretraining run started from. */
 export function resumedFromOf(raw: RawModel): string | null {
   return raw.parameters?.config?.resume_from ?? null
 }
 
-// One dataset a run trained on, resolved to a display name where one is known.
 export interface LineageDatasetRef {
   id: string
   /** The name stored with the selection at train time, or "" if none was. */
@@ -159,10 +175,7 @@ export interface LineageDatasetRef {
   count: number | null
 }
 
-// What a model actually trained on, pretrain or SFT alike, flattened out of a
-// curriculum's stages when it has one. Order is preserved and a dataset used by
-// more than one stage is listed once, at its first appearance — the lineage
-// panel shows *what* fed a model, not the schedule it was fed on.
+/** Flattens this model’s selected training datasets across curriculum stages, deduplicating by identity. */
 export function datasetsOf(raw: RawModel): LineageDatasetRef[] {
   const config = raw.parameters?.config
   if (!config) return []
@@ -180,39 +193,42 @@ export function datasetsOf(raw: RawModel): LineageDatasetRef[] {
   return out
 }
 
-// Rough transformer parameter count from the resolved architecture — enough
-// for a meaningful "size" stat on the card, pretrain or SFT alike. Returns 0
-// when no architecture is available.
+/** Returns recorded parameters, or the shared training estimate from shape and measured vocabulary; zero means unavailable. */
 export function estimateParams(raw: RawModel): number {
+  const measured = [
+    raw.parameter_count,
+    raw.parameters?.result?.parameters,
+  ].find(validCount)
+  if (measured !== undefined) return measured
   const arch = architectureOf(raw)
   if (!arch) return 0
-  const { dimensions: d, layers, ctx_window: ctx, ff_multiplier: ff } = arch
-  const vocab = raw.parameters?.result?.vocab_size ?? raw.parameters?.config?.max_vocab ?? 0
-  // embeddings (token in + out) + positions + per-layer attention & FFN
-  const perLayer = d * d * (4 + 2 * ff)
-  return Math.round(2 * vocab * d + ctx * d + layers * perLayer)
+  return estimateTrainingParameters(arch, vocabularySizeOf(raw)) ?? 0
 }
 
-// Bucket by parameter count: flagship > 100M, balanced > 50M, fast below.
-export function tierFor(raw: RawModel): ModelTier {
-  const params = estimateParams(raw)
-  if (params >= 100_000_000) return "flagship"
-  if (params >= 50_000_000) return "balanced"
-  return "fast"
+/** Returns only an explicitly assigned size category; unknown values never acquire an automatic tier. */
+export function tierFor(raw: RawModel): ModelTier | null {
+  return raw.size === "fast" ||
+    raw.size === "balanced" ||
+    raw.size === "flagship"
+    ? raw.size
+    : null
 }
 
+/** Maps a registry response into shared card and picker facts without inventing unavailable measurements. */
 export function mapModel(raw: RawModel): Model {
   const arch = architectureOf(raw)
   const description =
     raw.description ??
-    (arch ? `${arch.layers}-layer transformer, ${arch.dimensions}d` : "Custom trained model")
+    (arch
+      ? `${arch.layers}-layer transformer, ${arch.dimensions}d`
+      : "Custom trained model")
   return {
     id: raw.model_id,
     name: raw.name,
     family: raw.family ?? "Custom",
     tier: tierFor(raw),
     params: estimateParams(raw),
-    contextWindow: raw.context ?? 0,
+    contextWindow: raw.context ?? arch?.ctx_window ?? 0,
     description,
     published: raw.published,
   }
@@ -233,24 +249,12 @@ export async function deleteModel(id: string): Promise<void> {
   }
 }
 
-// `refreshKey` re-fetches the model list whenever it changes — pass a value that
-// advances when a new model is registered (e.g. after a training run finishes) so
-// the just-trained model appears without a page reload.
-//
-// This is the only place the model list is fetched, and it asks for `/models`
-// bare. That matters: the LLM engine leaves a run's ~10 intermediate checkpoints out
-// unless a request sets `checkpoints=true`, and nothing here ever should — one
-// run would otherwise outnumber every finished model in the grid, the chat
-// picker and the benchmark composer at once. A checkpoint is offered from the
-// one place it belongs to, its parent's page (`useCheckpoints`).
+/** Loads finished registry models for the supplied refresh key, ignoring obsolete reads. Checkpoints remain on their parent’s page. */
 export function useModels(refreshKey?: unknown) {
   const [models, setModels] = React.useState<Model[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<Error | null>(null)
 
-  // See `use-model.ts` — the same reset-during-render, keyed on `refreshKey`, so
-  // an advancing key puts the list back into its loading state without a
-  // cascading render out of the effect.
   const [loadedFor, setLoadedFor] = React.useState(refreshKey)
   if (loadedFor !== refreshKey) {
     setLoadedFor(refreshKey)
@@ -265,7 +269,6 @@ export function useModels(refreshKey?: unknown) {
         return res.json() as Promise<{ models: RawModel[] }>
       })
       .then((data) => {
-        // A directory with no row has no id to address, so it is not offered.
         if (active)
           setModels(data.models.filter((m) => m.parameters).map(mapModel))
       })

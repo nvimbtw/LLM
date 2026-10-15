@@ -1,18 +1,41 @@
 # Models
 
-## A model's architecture, pretrain or SFT
+## Registry, details and inline editing
 
-`hooks/use-models.ts` reads the LLM engine's `parameters` two different ways
-depending on family — see [`../llm-engine/README.md`](../llm-engine/README.md) for why
-a pretrain states its shape under `config.*` and an SFT run cannot — and
-`architectureOf(raw)` is the one place that hides the difference: it tries
-`config.*` first and falls back to `result.architecture`, so `/models` (the
-grid card's description, via `mapModel`) and `/models/[id]` (`ModelDetail`'s
-architecture panel) render the same five figures through the same code path
-regardless of which family produced them. `baseModelOf(raw)` does the same for
-an SFT run's ancestry, and `model-detail.tsx` links it to the base model's own
-page — named, when that model is in the (uncapped) `/models` listing, and by
-id otherwise.
+`/models` presents open entries with serif names, quiet metadata and measured
+parameter/context figures, without a registry-wide summary strip. Search matches name, description and family; admins
+also have visibility filters and explicit bulk selection. `/models/[id]` uses
+open fact ledgers for architecture, training, lineage, checkpoints and attention.
+
+Administrators edit the name, description, family and size directly in the page.
+Save changes persists the complete display draft; Cancel restores stored values
+and failures retain the draft. Size is an explicit Fast, Balanced or Flagship
+category, shown as quiet text. Unassigned models have no category; parameter
+counts never assign it. Readers see text without editing, publication or deletion
+controls. Rust's admin extractor remains the write-authorization boundary.
+Drafts, requests and diagram state reset when session or model identity changes.
+
+## Architecture and counts across training families
+
+The LLM engine resolves `architecture`, `vocab_size` and `parameter_count` for
+listings, details and checkpoints. Saved results override requested config;
+legacy gaps fall back to metadata on disk and a bounded base/resume ancestry walk.
+This supports older SFT/RL and resumed models without copying ancestor training
+data into the current run. Missing facts stay unavailable, including when an
+ancestor was deleted or a lineage cycles.
+
+`hooks/use-models.ts::architectureOf` consumes the resolved shape, then falls
+back to saved results and config for older servers. Recorded parameter counts
+take precedence; only when absent does the shared training calculation estimate
+from shape and measured vocabulary. A requested `max_vocab` is a learning ceiling,
+not the vocabulary actually built. Nested legacy dataset summaries are supported.
+
+`components/training/architecture-flow.tsx` is the single diagram implementation
+used by both model details and the training composer. It accepts only shape and
+training mode, preserves bounded geometry and responsive layouts, and exposes
+Pause/Play while respecting reduced motion. SFT uses assistant-token targets;
+RL labels rewards and its policy objective. The attention viewer also uses the
+resolved layer/head counts, so it remains available for inherited architectures.
 
 ## Lineage: how a model was constructed
 
@@ -45,8 +68,9 @@ model's own `baseModelId`/`resumedFromId` one `GET /models/{id}` hop at a time,
 stopping at the first ancestor with neither. A chain here is rarely more than a
 few hops — a training lineage isn't something people build ten deep — so a
 handful of small sequential requests reads more simply than adding a
-server-side walk (`_context()` in `llm-engine/api/routes/models.py` is the existing
-precedent for one, if a future chain gets long enough to need it) for traffic
+server-side lineage endpoint (`resolve_model_metadata` in
+`llm-engine/api/model_metadata.py` resolves inherited facts without returning
+the lineage itself) for traffic
 this light. A `MAX_LINEAGE_HOPS` bound guards the walk against a cycle the
 system does not otherwise allow.
 

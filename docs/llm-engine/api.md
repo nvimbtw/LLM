@@ -81,6 +81,24 @@ were intermediates.
 See [`README.md`](README.md#checkpoints) for what a checkpoint is and the
 cadence a run takes them at.
 
+Model listings, details and checkpoint responses also expose resolved
+`architecture` (the five shape fields or null), `vocab_size` and
+`parameter_count` (positive measured counts or null). `api/model_metadata.py`
+prefers saved results, then requested shape fields, with metadata on disk and
+base/resume ancestry filling legacy gaps. An ancestry walk stops at 25 models,
+cycles, invalid IDs or missing ancestors. It reads no weights and mutates no
+training provenance. The requested `max_vocab` never substitutes for a measured
+vocabulary. Clients may estimate parameters from a resolved shape and vocabulary
+when a measured count is unavailable.
+
+`PATCH /models/{id}` accepts an optional `size`: `fast`, `balanced`, `flagship`
+or null to clear. Omission preserves the category. It is an admin-authored display
+choice stored as `parameters.display_size`, returned as `size`; it is neither
+computed from parameters nor inherited. Edits preserve config, results and recovery
+flags. Names and families reject blank labels; duplicate names return 409 without
+partially saving other fields. Rust authorizes these shared-model writes as admin
+operations and forwards them as the service's system caller.
+
 ## Context extension (NTK-aware RoPE)
 
 `ChatConfig.context_multiplier` (default `1.0`) stretches a turn's context past

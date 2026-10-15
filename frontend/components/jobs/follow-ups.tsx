@@ -120,12 +120,14 @@ export interface FollowUpsProps {
   rootLabel?: string
 }
 
+/** Edits the ordered jobs that follow this run and reports each training step's validation to the owning composer. */
 export function FollowUps({
   steps,
   onChange,
   disabled,
   rootLabel = "this run",
 }: FollowUpsProps) {
+  /** Applies the supplied patch to one step while preserving the order and identities of other steps. */
   const update = (id: string, patch: Partial<Step>) =>
     onChange(steps.map((s) => (s.id === id ? { ...s, ...patch } : s)))
 
@@ -138,15 +140,13 @@ export function FollowUps({
       <div className="space-y-3">
         {steps.length === 0 ? (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Nothing follows this one. Add a step to fine-tune or score the model
-            it produces without waiting up for it — each step runs against what
-            the step before it built, and the whole chain is cancelled if any of
-            them fails.
+            Add a fine-tune or benchmark after this run. If a step fails, the
+            remaining steps are cancelled.
           </p>
         ) : (
           steps.map((step, i) => (
             <div key={step.id} className="border-y border-border/60 py-4">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="w-6 shrink-0 text-sm text-muted-foreground tabular-nums">
                   {i + 1}.
                 </span>
@@ -154,14 +154,17 @@ export function FollowUps({
                   value={step.kind}
                   onValueChange={(value) =>
                     update(step.id, {
-                      kind: (value as "train" | "benchmark" | null) ?? "train",
-                      // The other kind's problems are not this kind's problems.
+                      kind: value === "benchmark" ? "benchmark" : "train",
                       errors: [],
                     })
                   }
                   disabled={disabled}
                 >
-                  <SelectTrigger className="w-44">
+                  <SelectTrigger
+                    variant="inline"
+                    aria-label={`Step ${i + 1} kind`}
+                    className="w-32"
+                  >
                     <SelectValue>
                       {(value: string | null) =>
                         value === "benchmark" ? "Benchmark" : "Train"
@@ -184,11 +187,15 @@ export function FollowUps({
                     }
                     disabled={disabled}
                   >
-                    <SelectTrigger className="w-40">
+                    <SelectTrigger
+                      variant="inline"
+                      aria-label={`Step ${i + 1} benchmark suite`}
+                      className="w-40"
+                    >
                       <SelectValue>
                         {(value: string | null) =>
-                          ACTIVE_BENCHMARK_SUITES.find((s) => s.id === value)?.label ??
-                          "Assistant"
+                          ACTIVE_BENCHMARK_SUITES.find((s) => s.id === value)
+                            ?.label ?? "Assistant"
                         }
                       </SelectValue>
                     </SelectTrigger>
@@ -205,7 +212,7 @@ export function FollowUps({
                 <Button
                   type="button"
                   size="icon"
-                  variant="ghost"
+                  variant="text"
                   className="ml-auto"
                   disabled={disabled}
                   aria-label={`Remove step ${i + 1}`}
@@ -228,7 +235,6 @@ export function FollowUps({
                     cfg={step.train}
                     onChange={(train) => update(step.id, { train })}
                     disabled={disabled}
-                    // Never called: a follow-up rail renders no submit button.
                     onStart={() => {}}
                     followUp
                     onValidity={(errors) => update(step.id, { errors })}
@@ -242,10 +248,10 @@ export function FollowUps({
         <Button
           type="button"
           size="sm"
-          variant="outline"
+          variant="text"
           disabled={disabled}
           onClick={() => onChange([...steps, newStep()])}
-          className="gap-2"
+          className="gap-2 px-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
         >
           <Plus className="size-4" /> Add step
         </Button>

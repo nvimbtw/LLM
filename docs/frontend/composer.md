@@ -1,5 +1,29 @@
 # Chat composer
 
+## Layout
+
+An established conversation uses a compact editor for empty and one-line drafts.
+The model picker, attachments, microphone, Send/Stop and context footer stay
+available. Wrapping, additional paragraphs and attachments add only their natural
+height; typing the first character or focusing does not enlarge the editor.
+Sending or clearing reduces it again. The shell measures its content and animates
+height changes over 200ms; reduced motion removes that transition. The new-chat
+composer keeps a larger editor with a slightly reduced empty footprint; its
+heading artwork retains its full size. Loading placeholders reserve the
+corresponding editor height.
+
+In an active chat, the transcript extends behind the frosted composer so its
+translucency and blur remain visible while scrolling. The composer's measured,
+animated height reserves matching bottom padding in the transcript. This moves
+the latest content and status throbber above its edge as it grows. A reader at the
+bottom stays pinned; someone reading earlier messages keeps their position.
+Question navigation centers within the clear reading area above the composer.
+
+The composer shell keeps its resting border when focused. Its text caret indicates
+editor focus; individual buttons still show their keyboard focus outlines.
+Deleting a fully selected draft collapses the selection to a caret, so the empty
+placeholder carries no leftover selection highlight. Undo restores the draft.
+
 ## Attachments
 
 A file is uploaded **when it is picked**, not when the turn is sent
@@ -234,8 +258,22 @@ the interactive `/markup#composer-plan` fixture are documented in
 manage browser-local plans in live chat, with draft editing and drag or keyboard
 reordering. Plans are not yet synchronized with the backend or model.
 
-Typing a leading `/` in the composer brings up the floating fuzzy finder popover
+Typing a leading `/` in the composer opens its fuzzy finder drawer
 (`components/chat/slash-command-menu.tsx`, driven by `lib/commands.ts`).
+
+The suggestions rise from behind the composer's upper edge in a top drawer,
+slightly inset like the plan disclosure, with no floating gap and the app's slight
+top corners. Its translucency and blur match the composer, without a shadow
+falling over it. Padded command rows omit their leading slash and align with quiet
+current values; a thin left marker indicates keyboard selection. It opens with a
+short fade/slide clipped at its bottom join, leaves the composer's height alone,
+and removes its motion when reduced motion is requested. Longer lists scroll
+within a drawer capped at half the viewport height. The closest row to the editor
+remains the best match, so arrow-key order and completion retain their bottom-up
+contract. Completing a command or argument prefix preserves its separating space
+for further typing. A selected setting shows its current value beside its quiet
+command heading. Numeric helpers present plain presets and a small allowed range;
+other choices use text rows, and the steering prompt appears as quoted prose.
 
 - **Stage 1 (Command Discovery)**: Fuzzy-matches command names, aliases, and
   descriptions (e.g. `/model`, `/thinking`, `/show-thinking`, `/temperature`,

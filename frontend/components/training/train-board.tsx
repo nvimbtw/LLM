@@ -2,27 +2,28 @@
 
 import * as React from "react"
 
-import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
+import { Pow2Input } from "@/components/training/dataset-picker"
 import { PresetControls } from "@/components/training/preset-controls"
 import { ResumePicker } from "@/components/training/resume-picker"
 import { BuildSheet } from "@/components/training/build-sheet"
-import { CurriculumBuilder } from "@/components/training/curriculum-builder"
+import { TrainingDataFields } from "@/components/training/training-data-fields"
+import { ArchitectureFlow } from "@/components/training/architecture-flow"
+import { InheritedArchitecture } from "@/components/training/inherited-architecture"
+import { compact } from "@/components/training/stat-run"
+import { estimateTrainingParameters } from "@/lib/training-architecture"
 import {
-  KTO_DEFAULT_BETA,
   LEARN_WITH_RUN,
-  MODE_DEFAULT_LRS,
   STRING_FIELDS,
-  defaultLrFor,
+  configForMode,
   fieldsFor,
   hidesTokenizer,
-  inheritsArchitecture,
   validate,
   type Field,
 } from "@/components/training/run-config"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Panel } from "@/components/ui/panel"
+import { PageHeader } from "@/components/ui/page-header"
 import {
   Select,
   SelectContent,
@@ -33,22 +34,8 @@ import {
 import { useDatasets } from "@/hooks/use-datasets"
 import { useModels } from "@/hooks/use-models"
 import { useTokenizers } from "@/hooks/use-tokenizers"
-import {
-  isFineTune,
-  type DatasetInfo,
-  type TrainConfig,
-  type TrainMode,
-} from "@/lib/training"
+import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
 
-/**
- * A bounded training form: identity, data, shape, optimization, then review.
- * Labels sit beside controls; the derived specification and start action follow
- * the decisions they summarize, so no persistent sidebar repeats the form.
- *
- * A follow-up step renders the same fields as a narrow rail instead
- * (`ParamsRail`); both take their field list and their validation from
- * `run-config`, so the two arrangements cannot drift on what a run may be.
- */
 export interface TrainBoardProps {
   cfg: TrainConfig
   onChange: (cfg: TrainConfig) => void
@@ -60,6 +47,7 @@ export interface TrainBoardProps {
   footer?: React.ReactNode
 }
 
+/** Edits a run as page-native fields and queues its effective config after shared validation. Fine-tunes default to the first available base. */
 export function TrainBoard({
   cfg,
   onChange,
@@ -78,31 +66,30 @@ export function TrainBoard({
   const isCycleMode = cfg.mode === "kto" || cfg.mode === "raft"
   const { arch, run } = fieldsFor(cfg)
 
-  // The base id is derived: with none explicitly picked, default to the first
-  // available model, keeping the select controlled and the submit correct.
   const baseModelId = cfg.base_model_id || models[0]?.id
   const effective: TrainConfig = isSft
     ? { ...cfg, base_model_id: baseModelId }
     : cfg
   const errors = validate(effective)
+  const vocabularySize = cfg.tokenizer_id
+    ? (tokenizers.find((tokenizer) => tokenizer.id === cfg.tokenizer_id)
+        ?.vocabSize ?? null)
+    : cfg.max_vocab
+  const parameterCount = estimateTrainingParameters(cfg, vocabularySize)
+  const inheritedModelId = isSft ? baseModelId : cfg.resume_from
 
+  /** Parses a text edit into the parent config, preserving literal values for string fields. */
   const set = (key: keyof TrainConfig, value: string) =>
     onChange({ ...cfg, [key]: STRING_FIELDS.has(key) ? value : Number(value) })
 
+  /** Stores a resolved numeric field value in the parent config. */
   const setNumber = (key: keyof TrainConfig, value: number) =>
     onChange({ ...cfg, [key]: value })
 
-  // Switching mode nudges the learning rate to that mode's sane default — but
-  // only while it is still sitting on some mode's default, so a rate the user
-  // actually typed is never overwritten.
-  const setMode = (mode: TrainMode) => {
-    if (cfg.mode === mode) return
-    const next: TrainConfig = { ...cfg, mode }
-    if (MODE_DEFAULT_LRS.includes(cfg.lr)) next.lr = defaultLrFor(mode)
-    if (mode === "kto" && next.beta === undefined) next.beta = KTO_DEFAULT_BETA
-    onChange(next)
-  }
+  /** Changes mode and adjusts only learning rates that still match a mode default. */
+  const setMode = (mode: TrainMode) => onChange(configForMode(cfg, mode))
 
+  /** Prevents browser submission and starts the validated effective run. */
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (errors.length > 0) return
@@ -110,132 +97,150 @@ export function TrainBoard({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-4">
+    <form onSubmit={submit} className="space-y-10">
+      <PageHeader
+        back={{ href: "/admin", label: "Admin" }}
+        className="mb-0 border-b-0 pb-0"
+        contentClassName="min-w-48 flex-1"
+        title={
+          <>
+            <span className="sr-only">Train a model</span>
+            <Input
+              variant="inline"
+              aria-label="Model name"
+              value={cfg.model_name}
+              onChange={(event) => set("model_name", event.target.value)}
+              placeholder="Model name"
+              disabled={disabled}
+              className="h-auto py-0 font-display text-3xl font-semibold tracking-tight md:text-3xl"
+            />
+          </>
+        }
+        action={
+          <PresetControls
+            currentConfig={effective}
+            disabled={disabled}
+            onLoad={onChange}
+            modelsRefreshKey={modelsRefreshKey}
+          />
+        }
+      />
+      <div className="border-b border-border/60 pt-5">
         <ModeToggle
           mode={cfg.mode}
           isCycleMode={isCycleMode}
           disabled={disabled}
           onChange={setMode}
         />
-        <PresetControls
-          currentConfig={effective}
-          disabled={disabled}
-          onLoad={onChange}
-          modelsRefreshKey={modelsRefreshKey}
-        />
       </div>
       <section aria-label="Run identity">
-        <div className="space-y-3">
-          <label className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
-            <FieldLabel>Model name</FieldLabel>
-            <Input
-              value={cfg.model_name}
-              onChange={(e) => set("model_name", e.target.value)}
-              // Weight classes are the size convention: Feather · Light ·
-              // Welter · Middle · Heavy, smallest to largest. Only a naming
-              // convention — nothing validates it.
-              placeholder="Slate Feather"
-              disabled={disabled}
-              className="h-9"
-            />
-          </label>
-
+        <div className="space-y-5">
           {isSft ? (
-            <label className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
-              <FieldLabel hint="Its architecture is inherited">
-                Base model
-              </FieldLabel>
-              <Select
-                value={baseModelId ?? ""}
-                onValueChange={(v) => set("base_model_id", v ?? "")}
-                disabled={disabled || modelsLoading || models.length === 0}
-              >
-                <SelectTrigger className="h-9 w-full">
-                  <SelectValue
-                    placeholder={modelsLoading ? "Loading…" : "No models"}
+            <label className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-6">
+              <FieldLabel>Base model</FieldLabel>
+              <div className="min-w-0">
+                <Select
+                  value={baseModelId ?? ""}
+                  onValueChange={(v) => set("base_model_id", v ?? "")}
+                  disabled={disabled || modelsLoading || models.length === 0}
+                >
+                  <SelectTrigger
+                    variant="inline"
+                    aria-label="Base model"
+                    className="ml-auto h-9 max-w-full"
                   >
-                    {(value: string | null) =>
-                      models.find((m) => m.id === value)?.name ?? ""
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {models.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-          ) : !hidesTokenizer(cfg) ? (
-            <label className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
-              <FieldLabel hint="Reuse a build, or learn one as it packs">
-                Tokenizer
-              </FieldLabel>
-              <Select
-                value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
-                onValueChange={(v) =>
-                  onChange({
-                    ...cfg,
-                    tokenizer_id: !v || v === LEARN_WITH_RUN ? undefined : v,
-                  })
-                }
-                disabled={disabled || tokenizersLoading}
-              >
-                <SelectTrigger className="h-9 w-full">
-                  <SelectValue>
-                    {(value: string | null) =>
-                      !value || value === LEARN_WITH_RUN
-                        ? "Learn one with the run"
-                        : (tokenizers.find((t) => t.id === value)?.name ??
-                          value)
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {/* A real option, not a placeholder: learning one with
-                            the run is what every run did before builds existed,
-                            and it stays the default. */}
-                  <SelectItem value={LEARN_WITH_RUN}>
-                    Learn one with the run
-                  </SelectItem>
-                  {tokenizers
-                    .filter((t) => t.hasVocab && !t.implicit)
-                    .map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        {t.name}
-                        {t.vocabSize
-                          ? ` · ${t.vocabSize.toLocaleString()}`
-                          : ""}
+                    <SelectValue
+                      className="text-right"
+                      placeholder={modelsLoading ? "Loading…" : "No models"}
+                    >
+                      {(value: string | null) =>
+                        models.find((m) => m.id === value)?.name ?? ""
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent
+                    alignItemWithTrigger={false}
+                    align="end"
+                    className="w-64"
+                  >
+                    {models.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.name}
                       </SelectItem>
                     ))}
-                </SelectContent>
-              </Select>
+                  </SelectContent>
+                </Select>
+              </div>
+            </label>
+          ) : !hidesTokenizer(cfg) ? (
+            <label className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-6">
+              <FieldLabel>Tokenizer</FieldLabel>
+              <div className="min-w-0">
+                <Select
+                  value={cfg.tokenizer_id ?? LEARN_WITH_RUN}
+                  onValueChange={(v) =>
+                    onChange({
+                      ...cfg,
+                      tokenizer_id: !v || v === LEARN_WITH_RUN ? undefined : v,
+                    })
+                  }
+                  disabled={disabled || tokenizersLoading}
+                >
+                  <SelectTrigger
+                    variant="inline"
+                    aria-label="Tokenizer"
+                    className="ml-auto h-9 max-w-full"
+                  >
+                    <SelectValue className="text-right">
+                      {(value: string | null) =>
+                        !value || value === LEARN_WITH_RUN
+                          ? "Learn one with the run"
+                          : (tokenizers.find((t) => t.id === value)?.name ??
+                            value)
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent
+                    alignItemWithTrigger={false}
+                    align="end"
+                    className="w-64"
+                  >
+                    <SelectItem value={LEARN_WITH_RUN}>
+                      Learn one with the run
+                    </SelectItem>
+                    {tokenizers
+                      .filter((t) => t.hasVocab && !t.implicit)
+                      .map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name}
+                          {t.vocabSize
+                            ? ` · ${t.vocabSize.toLocaleString()}`
+                            : ""}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </label>
           ) : null}
 
-          {/* A `div` and not a `label`: two controls under one caption,
-                    and a label may only name one. */}
           {!isSft && (
-            <div className="grid min-w-0 gap-2 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
-              <FieldLabel hint="Carry on from a model, or one of its checkpoints">
-                Continue from
-              </FieldLabel>
+            <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-6">
+              <FieldLabel>Continue from</FieldLabel>
               <ResumePicker
                 value={cfg.resume_from}
                 onChange={(resume_from) => onChange({ ...cfg, resume_from })}
                 models={models}
                 modelsLoading={modelsLoading}
                 disabled={disabled}
+                variant="inline"
               />
             </div>
           )}
         </div>
       </section>
       <Panel variant="open" title="Training data">
-        <DataSection
+        <TrainingDataFields
           cfg={cfg}
           onChange={onChange}
           disabled={disabled}
@@ -243,8 +248,14 @@ export function TrainBoard({
           loading={datasetsLoading}
         />
       </Panel>
-      {arch.length > 0 && (
-        <Panel variant="open" title="Architecture" bodyClassName="p-0">
+      {arch.length > 0 ? (
+        <Panel
+          variant="open"
+          title="Architecture"
+          bodyClassName="p-0"
+          descriptionLayout="stacked"
+          description={`${parameterCount === null ? "—" : `≈ ${compact(parameterCount)}`} parameters`}
+        >
           <FieldGrid
             fields={arch}
             cfg={cfg}
@@ -252,8 +263,11 @@ export function TrainBoard({
             onText={set}
             onNumber={setNumber}
           />
+          <ArchitectureFlow cfg={cfg} />
         </Panel>
-      )}
+      ) : inheritedModelId ? (
+        <InheritedArchitecture cfg={effective} modelId={inheritedModelId} />
+      ) : null}
       <Panel variant="open" title="Optimization" bodyClassName="p-0">
         <FieldGrid
           fields={run}
@@ -262,19 +276,6 @@ export function TrainBoard({
           onText={set}
           onNumber={setNumber}
         />
-        {inheritsArchitecture(cfg) && (
-          <p className="border-t border-border py-3 text-xs text-muted-foreground">
-            Dimensions, context, heads and layers come from{" "}
-            {isSft ? "the base model" : "the checkpoint"} — only these apply.
-            {!isSft && (
-              <>
-                {" "}
-                Its tokenizer comes with them, so there is no vocabulary to pick
-                — the run trains against whatever it was trained with.
-              </>
-            )}
-          </p>
-        )}
       </Panel>
 
       {footer}
@@ -290,6 +291,7 @@ export function TrainBoard({
   )
 }
 
+/** Pairs a field's visible label with an optional explanation beneath it. */
 function FieldLabel({
   children,
   hint,
@@ -309,10 +311,7 @@ function FieldLabel({
   )
 }
 
-/**
- * Open field columns keep labels and controls aligned without a filled cell
- * around each decision. On narrow screens they form one continuous column.
- */
+/** Renders the applicable numeric settings as inline values beside labels, stacking columns on narrow screens. */
 function FieldGrid({
   fields,
   cfg,
@@ -331,7 +330,7 @@ function FieldGrid({
       {fields.map((f) => (
         <label
           key={f.key}
-          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/60 py-3"
+          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/40 py-4"
         >
           <FieldLabel hint={f.hint}>{f.label}</FieldLabel>
           {f.pow2 ? (
@@ -339,10 +338,14 @@ function FieldGrid({
               value={cfg[f.key] as number}
               disabled={disabled}
               maxExp={f.maxExp}
+              variant="inline"
+              ariaLabel={`${f.label} exponent`}
               onChange={(n) => onNumber(f.key, n)}
             />
           ) : (
             <Input
+              variant="inline"
+              aria-label={f.label}
               type="number"
               step={f.step ?? 1}
               value={String(cfg[f.key] ?? "")}
@@ -357,6 +360,7 @@ function FieldGrid({
   )
 }
 
+/** Offers pretraining and fine-tuning as quiet tabs; seeded cycle modes are shown as a fact. */
 function ModeToggle({
   mode,
   isCycleMode,
@@ -368,13 +372,9 @@ function ModeToggle({
   disabled: boolean
   onChange: (mode: TrainMode) => void
 }) {
-  // Self-train (RAFT) and preference (KTO) are stages of a cycle, not runs a
-  // person composes. They are still shown when `?from=` seeds this form from a
-  // cycle's own job — that config is real and re-runnable, so the mode is stated
-  // as a fact rather than silently rewritten to something the run was not.
   if (isCycleMode) {
     return (
-      <p className="rounded-(--radius-control-sm) border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+      <p className="pb-3 text-xs text-muted-foreground">
         Seeded from a cycle&rsquo;s{" "}
         <span className="font-medium text-foreground">
           {mode === "raft" ? "self-train" : "preference"}
@@ -385,7 +385,7 @@ function ModeToggle({
   }
 
   return (
-    <div className="inline-flex gap-1">
+    <div className="inline-flex gap-6">
       {(
         [
           ["pretrain", "Pretrain"],
@@ -396,11 +396,8 @@ function ModeToggle({
           key={value}
           type="button"
           size="sm"
-          // The selected half is a surface step and a weight change, not a filled
-          // primary: painting it in the accent made the quietest decision on the
-          // form its loudest mark, and it competed with the actual primary action.
-          variant={mode === value ? "secondary" : "ghost"}
-          className={mode === value ? "font-medium" : "text-muted-foreground"}
+          variant="text"
+          className={`h-auto rounded-none border-0 border-b-2 px-0 pb-3 hover:bg-transparent ${mode === value ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground"}`}
           disabled={disabled}
           aria-pressed={mode === value}
           onClick={() => onChange(value)}
@@ -409,159 +406,5 @@ function ModeToggle({
         </Button>
       ))}
     </div>
-  )
-}
-
-/**
- * What the run learns from: the picker, plus the two switches that decide how
- * its documents are ordered.
- *
- * The switches sit above the picker rather than below it because curriculum
- * changes what the picker *is* — one selection, or one per stage — and a control
- * that reshapes the thing under it should not be underneath it.
- */
-function DataSection({
-  cfg,
-  onChange,
-  disabled,
-  datasets,
-  loading,
-}: {
-  cfg: TrainConfig
-  onChange: (cfg: TrainConfig) => void
-  disabled: boolean
-  datasets: DatasetInfo[]
-  loading: boolean
-}) {
-  const isSft = isFineTune(cfg.mode)
-  const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
-
-  // Turning curriculum on seeds a first stage from the current flat selection so
-  // nothing is lost; turning it off restores the flat selection from stage one.
-  const setCurriculum = (on: boolean) => {
-    if (on) {
-      onChange({
-        ...cfg,
-        curriculum: [{ datasets: cfg.datasets ?? [], epochs: cfg.epochs }],
-      })
-    } else {
-      onChange({
-        ...cfg,
-        curriculum: [],
-        datasets: cfg.curriculum?.[0]?.datasets ?? cfg.datasets ?? [],
-      })
-    }
-  }
-
-  if (isSft) {
-    return (
-      <div className="space-y-3">
-        <DatasetPicker
-          available={datasets}
-          loading={loading}
-          value={cfg.datasets ?? []}
-          disabled={disabled}
-          emptyHint={
-            <>
-              No conversation datasets yet. Pull one from the Data view first.
-            </>
-          }
-          onChange={(next) => onChange({ ...cfg, datasets: next })}
-        />
-        {(cfg.datasets?.length ?? 0) === 0 && datasets.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            Pick at least one — a run names what it trains on. Pick it
-            deliberately, too: a thinking set folded into a no-think run is how
-            reasoning traces get stripped and trained as answer-only.
-          </p>
-        )}
-        {cfg.mode === "sft" && (
-          <label className="flex items-center justify-between gap-3 border-t border-border pt-3">
-            <span className="min-w-0 text-sm">
-              Strip thinking
-              <span className="block text-xs text-muted-foreground">
-                Drop the reasoning blocks, teaching it to answer directly.
-              </span>
-            </span>
-            <Checkbox
-              checked={cfg.strip_thinking ?? false}
-              disabled={disabled}
-              onCheckedChange={(on) =>
-                onChange({ ...cfg, strip_thinking: on === true })
-              }
-            />
-          </label>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
-        <Switch
-          label="Shuffle each epoch"
-          hint="Reorder documents every pass, separated by an end-of-text token."
-          checked={cfg.shuffle ?? true}
-          disabled={disabled}
-          onChange={(on) => onChange({ ...cfg, shuffle: on })}
-        />
-        <Switch
-          label="Curriculum"
-          hint="Train staged datasets in order, each for its own epochs."
-          checked={curriculumOn}
-          disabled={disabled}
-          onChange={setCurriculum}
-        />
-      </div>
-
-      {curriculumOn ? (
-        <CurriculumBuilder
-          available={datasets}
-          loading={loading}
-          value={cfg.curriculum ?? []}
-          disabled={disabled}
-          onChange={(curriculum) => onChange({ ...cfg, curriculum })}
-        />
-      ) : (
-        <DatasetPicker
-          available={datasets}
-          loading={loading}
-          value={cfg.datasets ?? []}
-          disabled={disabled}
-          onChange={(next) => onChange({ ...cfg, datasets: next })}
-        />
-      )}
-    </div>
-  )
-}
-
-function Switch({
-  label,
-  hint,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string
-  hint: string
-  checked: boolean
-  disabled: boolean
-  onChange: (on: boolean) => void
-}) {
-  return (
-    <label className="flex items-start justify-between gap-3 border-b border-border/60 pb-4">
-      <span className="min-w-0 text-sm">
-        {label}
-        <span className="mt-0.5 block text-xs text-muted-foreground">
-          {hint}
-        </span>
-      </span>
-      <Checkbox
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={(on) => onChange(on === true)}
-      />
-    </label>
   )
 }

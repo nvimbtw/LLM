@@ -1,138 +1,123 @@
 import Link from "next/link"
+import { ArrowUpRight } from "lucide-react"
 
 import { Checkbox } from "@/components/ui/checkbox"
 import type { Model } from "@/hooks/use-models"
 import { cn } from "@/lib/utils"
-import { ModelSizeMeter } from "./model-glyph"
 import { formatContext, formatParams } from "./format"
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="eyebrow text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="figure mt-0.5 text-base">
-        {value}
-      </dd>
-    </div>
-  )
-}
 
 export interface ModelCardProps {
   model: Model
-  /**
-   * Selecting instead of navigating. The whole card becomes the checkbox's label
-   * rather than a link — deliberately either/or, because a checkbox nested inside
-   * a link is ambiguous to click and worse to reach by keyboard.
-   */
   selectable?: boolean
   selected?: boolean
   onSelectedChange?: (next: boolean) => void
 }
 
+/** Presents a model as an open editorial entry or an accessible selection label for bulk deletion. */
 export function ModelCard({
   model,
   selectable = false,
   selected = false,
   onSelectedChange,
 }: ModelCardProps) {
-  if (selectable) {
-    return (
-      <label className="group block cursor-pointer rounded-(--radius-sheet) focus-within:ring-2 focus-within:ring-ring">
-        <CardBody
-          model={model}
-          selected={selected}
-          corner={
-            <Checkbox
-              checked={selected}
-              onCheckedChange={(next) => onSelectedChange?.(Boolean(next))}
-              aria-label={`Select ${model.name}`}
-            />
-          }
-        />
-      </label>
-    )
-  }
-
-  return (
-    <Link
-      href={`/models/${model.id}`}
-      className="group block rounded-(--radius-sheet) focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+  const content = (
+    <CardBody
+      model={model}
+      selected={selected}
+      corner={
+        selectable ? (
+          <Checkbox
+            checked={selected}
+            onCheckedChange={(next) => onSelectedChange?.(Boolean(next))}
+            aria-label={`Select ${model.name}`}
+          />
+        ) : (
+          <ArrowUpRight className="size-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+        )
+      }
+    />
+  )
+  const className =
+    "group block min-w-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring focus-within:ring-ring"
+  return selectable ? (
+    <label
+      className={cn(
+        className,
+        "cursor-pointer focus-within:outline-2 focus-within:outline-ring"
+      )}
     >
-      <CardBody model={model} />
+      {content}
+    </label>
+  ) : (
+    <Link href={`/models/${model.id}`} className={className}>
+      {content}
     </Link>
   )
 }
 
-/**
- * The card itself. Shared by both modes so selecting does not redraw the registry
- * into a different-looking thing — only the top-right corner and the border change.
- */
+/** Renders model identity and measured figures without a filled tile or decorative size meter. Explicit categories use quiet text. */
 function CardBody({
   model,
-  selected = false,
+  selected,
   corner,
 }: {
   model: Model
-  selected?: boolean
-  corner?: React.ReactNode
+  selected: boolean
+  corner: React.ReactNode
 }) {
   return (
-    <div
+    <article
       className={cn(
-        // A sheet: the card surface (this used to be `bg-background`, which made
-        // a tile the page colour with a line round it — the whole registry read
-        // flat because the only thing separating a card from the page was its
-        // border). The lift is a single pixel; anything more turns a grid of
-        // eight into a fairground.
-        "flex h-full flex-col rounded-(--radius-sheet) border bg-card p-5 shadow-sheet",
-        "transition-[box-shadow,border-color,translate] duration-150",
-        "group-hover:-translate-y-px group-hover:shadow-sheet-hover",
-        "motion-reduce:transition-none motion-reduce:group-hover:translate-y-0",
+        "flex h-full flex-col border-t py-5",
         selected
-          ? "border-foreground/40 bg-muted/40"
-          : "border-border/45 group-hover:border-border"
+          ? "border-primary"
+          : "border-border transition-colors group-hover:border-foreground/40"
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="min-w-0 flex-1 truncate font-display text-lg leading-tight font-semibold tracking-tight">
-          {model.name}
-        </h3>
-        <div className="flex shrink-0 flex-col items-end gap-1.5 pt-0.5">
-          {corner ?? (
-            <>
-              <ModelSizeMeter tier={model.tier} />
-              <span className="eyebrow text-muted-foreground">
-                {model.tier}
-              </span>
-            </>
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="truncate">
+          {model.family || "Custom"}
+          {!model.published && " · Private"}
+        </span>
+        <span className="flex shrink-0 items-center gap-3">
+          {model.tier && (
+            <span className="capitalize italic">{model.tier}</span>
           )}
-        </div>
+          {corner}
+        </span>
       </div>
-
-      {/* The grid is flat now, so the card carries the two facts the family and
-          visibility headings used to: which family it belongs to, and whether it
-          is visible to anyone but an admin. Private is called out; published is
-          the expected state and says nothing by being silent. */}
-      <div className="eyebrow mt-1.5 flex items-center gap-2 text-muted-foreground">
-        <span className="truncate">{model.family || "Custom"}</span>
-        {!model.published && (
-          <>
-            <span className="text-muted-foreground/30">·</span>
-            <span className="shrink-0">Private</span>
-          </>
-        )}
-      </div>
-
-      <p className="mt-3 line-clamp-2 min-h-[2.5rem] text-sm text-muted-foreground">
-        {model.description}
-      </p>
-
-      <dl className="mt-auto flex gap-8 border-t border-border pt-3">
-        <Stat label="Params" value={formatParams(model.params)} />
-        <Stat label="Context" value={formatContext(model.contextWindow)} />
+      <h2 className="line-clamp-2 font-display text-xl leading-snug tracking-tight transition-colors group-hover:text-primary">
+        {model.name}
+      </h2>
+      {model.description && (
+        <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+          {model.description}
+        </p>
+      )}
+      <dl className="mt-auto flex flex-wrap gap-x-8 gap-y-3 pt-5">
+        <Stat
+          label="Parameters"
+          value={model.params ? formatParams(model.params) : "—"}
+        />
+        <Stat
+          label="Context"
+          value={
+            model.contextWindow
+              ? `${formatContext(model.contextWindow)} tokens`
+              : "—"
+          }
+        />
       </dl>
+    </article>
+  )
+}
+
+/** Displays a compact model measurement with a prose label. */
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="mt-1 font-display text-lg tabular-nums">{value}</dd>
     </div>
   )
 }

@@ -32,6 +32,7 @@ export interface BuildSheetProps {
   disabled: boolean
 }
 
+/** Summarizes the effective run after its editable fields and disables queueing while validation fails or submission is pending. Inherited shape and vocabulary remain explicit. */
 export function BuildSheet({
   cfg,
   baseName,
@@ -55,8 +56,8 @@ export function BuildSheet({
   const stages = cfg.curriculum?.length ?? 0
 
   return (
-    <div className="min-w-0 border-y border-border/60">
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-4">
+    <div className="min-w-0 border-t border-border/60">
+      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 pt-6 pb-4">
         <h2 className="font-display text-xl">Review</h2>
         <p className="min-w-0 text-xs break-words text-muted-foreground">
           {cfg.model_name.trim() || "Unnamed"} ·{" "}
@@ -68,10 +69,6 @@ export function BuildSheet({
         {isSft && <Spec label="Base" value={baseName ?? "—"} />}
         {!isSft && (
           <>
-            {/* First of the pretrain rows, because it qualifies the ones under
-                it: a run that continues from a state takes its architecture
-                from that state, and a request restating it differently is
-                refused rather than silently overridden. */}
             <Spec
               label="Starts from"
               value={
@@ -83,7 +80,13 @@ export function BuildSheet({
             />
             <Spec
               label="Tokenizer"
-              value={cfg.tokenizer_id ? "Named build" : "Learned with the run"}
+              value={
+                cfg.resume_from
+                  ? "From the checkpoint"
+                  : cfg.tokenizer_id
+                    ? "Named build"
+                    : "Learned with the run"
+              }
             />
           </>
         )}
@@ -100,10 +103,6 @@ export function BuildSheet({
         )}
         {stages > 0 && <Spec label="Stages" value={String(stages)} />}
 
-        {/* Stated only when this run is the one deciding it. A resumed run trains
-            at the checkpoint's shape whatever the form last held, and printing
-            the form's numbers here would be the sheet's one job — saying what
-            the run *is* — done wrong. */}
         {!isSft &&
           (cfg.resume_from ? (
             <Spec label="Shape" value="From the checkpoint" muted />
@@ -163,6 +162,7 @@ export function BuildSheet({
   )
 }
 
+/** Displays one derived run fact, muting values that are absent or inherited. */
 function Spec({
   label,
   value,

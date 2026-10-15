@@ -14,11 +14,9 @@ import {
 import { CurriculumBuilder } from "@/components/training/curriculum-builder"
 import { DatasetPicker, Pow2Input } from "@/components/training/dataset-picker"
 import {
-  KTO_DEFAULT_BETA,
   LEARN_WITH_RUN,
-  MODE_DEFAULT_LRS,
   STRING_FIELDS,
-  defaultLrFor,
+  configForMode,
   derived,
   fieldsFor,
   hidesTokenizer,
@@ -35,9 +33,7 @@ import { cn } from "@/lib/utils"
 import { isFineTune } from "@/lib/training"
 import type { TrainConfig, TrainMode } from "@/lib/training"
 
-// One definition-list row: a muted label on the left, an edit-in-place value
-// right-aligned in tabular-nums. Borderless until focused, so at a glance the
-// rail reads as a spec sheet rather than a form.
+/** Aligns the supplied field label and inline control in one quiet settings row. */
 function Row({
   label,
   children,
@@ -46,15 +42,13 @@ function Row({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-1.5">
+    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/40 py-3">
       <span className="text-sm text-muted-foreground">{label}</span>
       {children}
     </div>
   )
 }
 
-// Proper input chrome (border, radius, padding from the base Input), just sized
-// for the rail and right-aligned with tabular figures.
 const fieldInputClass = "h-8 w-24 text-right tabular-nums"
 
 export interface ParamsRailProps {
@@ -62,8 +56,6 @@ export interface ParamsRailProps {
   onChange: (cfg: TrainConfig) => void
   disabled: boolean
   onStart: (cfg: TrainConfig) => void
-  // Advances when a new model is registered, so the base-model picker refetches
-  // and the just-trained model is selectable without a reload.
   modelsRefreshKey?: unknown
   /**
    * Render as a *step* inside another composer rather than as a composer of its
@@ -93,9 +85,7 @@ export interface ParamsRailProps {
   onValidity?: (errors: string[]) => void
 }
 
-// The left-rail params panel: the run's identity + knobs as a hairline definition
-// list. Config state is owned by the parent (so the continuation flow can seed it);
-// this component edits it through `onChange` and validates on every render.
+/** Edits parent-owned training settings, sharing field rules with the main form. Follow-ups inherit their base and report validation without a nested form or submit. */
 export function ParamsRail({
   cfg,
   onChange,
@@ -107,49 +97,27 @@ export function ParamsRail({
   footer,
 }: ParamsRailProps) {
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
-  // A fine-tune picks from the SFT conversation sets, a pretrain from the prose
-  // corpora — two different folders on disk, so the catalogue follows the mode.
   const { datasets: availableDatasets, isLoading: datasetsLoading } =
     useDatasets(isFineTune(cfg.mode))
   const { tokenizers, isLoading: tokenizersLoading } = useTokenizers()
-  // A vocabulary whose directory has gone cannot be trained against, and one a
-  // run derived for itself was never a choice — it is listed on the tokenizers
-  // page, not offered here.
   const offerable = tokenizers.filter((t) => t.hasVocab && !t.implicit)
-  // Only meaningful in preference mode, but hooks can't be conditional — and it
-  // is one small count, read once per mount.
 
+  /** Parses a text edit into the parent config, preserving literal string fields. */
   const setField = (key: keyof TrainConfig, value: string) => {
     onChange({ ...cfg, [key]: STRING_FIELDS.has(key) ? value : Number(value) })
   }
-
-  // Switching mode nudges the learning rate to that mode's sane default — but only
-  // while it is still sitting on some mode's default, so a rate the user actually
-  // typed is never overwritten.
-  const setMode = (mode: TrainMode) => {
-    if (cfg.mode === mode) return
-    const next: TrainConfig = { ...cfg, mode }
-    if (MODE_DEFAULT_LRS.includes(cfg.lr)) next.lr = defaultLrFor(mode)
-    if (mode === "kto" && next.beta === undefined) next.beta = KTO_DEFAULT_BETA
-    onChange(next)
-  }
+  /** Changes mode while preserving a learning rate the user has explicitly chosen. */
+  const setMode = (mode: TrainMode) => onChange(configForMode(cfg, mode))
 
   const isKto = cfg.mode === "kto"
   const isRaft = cfg.mode === "raft"
-  // The two the cycle owns. Reachable here only by seeding from one of its jobs.
   const isCycleMode = isKto || isRaft
   const isSft = isFineTune(cfg.mode)
-  // Strictly SFT, not the other two fine-tunes: RAFT and KTO train on the model's
-  // own generations, which have no thinking block to strip, so offering the switch
-  // there would be a control that does nothing.
   const isPlainSft = cfg.mode === "sft"
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
   const { arch, run } = fieldsFor(cfg)
   const numFields = [...arch, ...run]
-
-  // Toggle curriculum mode: turning it on seeds a first stage from the current
-  // flat selection (so nothing is lost); turning it off clears the stages and
-  // restores the flat selection from the first stage.
+  /** Seeds curriculum from the flat selection or restores the first stage when disabling it. */
   const setCurriculum = (on: boolean) => {
     if (on) {
       onChange({
@@ -164,40 +132,29 @@ export function ParamsRail({
       })
     }
   }
-
-  // The base id is derived: if the user hasn't explicitly picked one, default to
-  // the first available model, keeping the select controlled and the submit correct.
   const baseModelId = cfg.base_model_id || models[0]?.id
   const effectiveCfg: TrainConfig = followUp
-    ? // Stripped rather than left alone: the server refuses a follow-up that names
-      // its own base, so a stale id carried in from `?from=` would be a 400 rather
-      // than a field nobody can see.
-      { ...cfg, base_model_id: undefined }
+    ? { ...cfg, base_model_id: undefined }
     : isSft
       ? { ...cfg, base_model_id: baseModelId }
       : cfg
 
   const errors = validate(effectiveCfg, followUp)
-  // Reported to the composer this step sits in, which owns the submit button.
-  // Keyed on the joined text so an unchanged list doesn't re-notify every render.
   const errorKey = errors.join("\n")
+  const reportValidity = React.useEffectEvent(() =>
+    onValidity?.(errorKey ? errorKey.split("\n") : [])
+  )
   React.useEffect(() => {
-    if (followUp) onValidity?.(errorKey ? errorKey.split("\n") : [])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (followUp) reportValidity()
   }, [followUp, errorKey])
   const { headDim, dFf } = derived(cfg)
 
+  /** Prevents browser navigation and starts only the validated effective config. */
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (errors.length > 0) return
     onStart(effectiveCfg)
   }
-
-  // Held as a value rather than returned directly, because a follow-up is a step
-  // inside somebody else's form and so emits neither a form of its own (nested
-  // forms are not valid) nor a submit button (the composer it sits in owns the one
-  // submit). Everything between the two is identical, which is why this is a prop
-  // rather than a second rail.
   const body = (
     <>
       {!followUp && (
@@ -209,15 +166,6 @@ export function ParamsRail({
         />
       )}
 
-      {/* Mode toggle — two, not four.
-          Self-train (RAFT) and preference (KTO) are stages of a cycle, not runs a
-          person composes: the cycle decides when the catalogue is ready for each,
-          and queues them with its own learning rates (`backend/src/cycle.rs`).
-          Offering them here presented four peers when there are two decisions.
-
-          They are still rendered when `?from=` seeds this form from a cycle's own
-          job — that config is real and re-runnable, so the mode is shown as a fact
-          rather than silently rewritten to something the run was not. */}
       {isCycleMode ? (
         <p className="rounded-(--radius-control-sm) border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
           Seeded from a cycle&rsquo;s{" "}
@@ -228,7 +176,7 @@ export function ParamsRail({
           themselves.
         </p>
       ) : (
-        <div className="inline-flex w-full gap-0.5 rounded-(--radius-control-sm) border p-0.5">
+        <div className="inline-flex gap-6 border-b border-border/60">
           {(
             [
               ["pretrain", "Pretrain"],
@@ -239,15 +187,12 @@ export function ParamsRail({
               key={mode}
               type="button"
               size="sm"
-              // The selected half is a surface step and a weight change, not a
-              // filled primary. Two choices sitting inside a bordered track are
-              // already legible as a pair; painting one of them in the accent
-              // made the quietest decision on the form its loudest mark, and it
-              // competed with the actual primary action at the bottom of it.
-              variant={cfg.mode === mode ? "secondary" : "ghost"}
+              variant="text"
               className={cn(
-                "flex-1",
-                cfg.mode === mode ? "font-medium" : "text-muted-foreground"
+                "h-auto rounded-none border-0 border-b-2 px-0 pb-3 hover:bg-transparent",
+                cfg.mode === mode
+                  ? "border-foreground font-medium text-foreground"
+                  : "border-transparent text-muted-foreground"
               )}
               disabled={disabled}
               onClick={() => setMode(mode)}
@@ -258,31 +203,33 @@ export function ParamsRail({
         </div>
       )}
 
-      {/* Model name — the rail's headline / run identity */}
       <div className="space-y-1">
         <label className="text-xs text-muted-foreground">Model name</label>
         <Input
+          variant="inline"
+          aria-label="Follow-up model name"
           value={cfg.model_name}
           onChange={(e) => setField("model_name", e.target.value)}
-          // Weight classes are the size convention: Feather · Light · Welter ·
-          // Middle · Heavy, smallest to largest. Only a naming convention — nothing
-          // validates it, and the field takes any name.
           placeholder="Slate Feather"
           disabled={disabled}
-          className="h-10"
+          className="h-auto py-0 font-display text-xl md:text-xl"
         />
       </div>
 
-      <dl>
+      <div className="grid gap-x-8 sm:grid-cols-2">
         {isSft && !followUp && (
           <Row label="Base model">
             <Select
               value={baseModelId ?? ""}
-              // The Select reports `string | null`; the field is a plain id.
               onValueChange={(v) => setField("base_model_id", v ?? "")}
               disabled={disabled || modelsLoading || models.length === 0}
             >
-              <SelectTrigger size="sm" className="h-8 w-44">
+              <SelectTrigger
+                variant="inline"
+                aria-label="Base model"
+                size="sm"
+                className="h-8 w-44"
+              >
                 <SelectValue
                   placeholder={modelsLoading ? "Loading…" : "No models"}
                 >
@@ -314,7 +261,12 @@ export function ParamsRail({
               }
               disabled={disabled || tokenizersLoading}
             >
-              <SelectTrigger size="sm" className="h-8 w-44">
+              <SelectTrigger
+                variant="inline"
+                aria-label="Tokenizer"
+                size="sm"
+                className="h-8 w-44"
+              >
                 <SelectValue>
                   {(value: string | null) =>
                     !value || value === LEARN_WITH_RUN
@@ -324,10 +276,6 @@ export function ParamsRail({
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {/* A real option, not a placeholder: learning one with the run
-                    is what every run did before builds existed, and it stays
-                    the default. As a placeholder it would read as "not loaded
-                    yet". */}
                 <SelectItem value={LEARN_WITH_RUN}>
                   Learn one with the run
                 </SelectItem>
@@ -351,6 +299,7 @@ export function ParamsRail({
               modelsLoading={modelsLoading}
               disabled={disabled}
               compact
+              variant="inline"
             />
           </Row>
         )}
@@ -366,6 +315,7 @@ export function ParamsRail({
         {isPlainSft && (
           <Row label="Strip thinking">
             <Checkbox
+              aria-label="Strip thinking"
               checked={cfg.strip_thinking ?? false}
               disabled={disabled}
               onCheckedChange={(on) =>
@@ -379,6 +329,8 @@ export function ParamsRail({
           f.pow2 ? (
             <Row key={f.key} label={f.label}>
               <Pow2Input
+                variant="inline"
+                ariaLabel={`${f.label} exponent`}
                 value={cfg[f.key] as number}
                 disabled={disabled}
                 maxExp={f.maxExp}
@@ -388,6 +340,8 @@ export function ParamsRail({
           ) : (
             <Row key={f.key} label={f.label}>
               <Input
+                variant="inline"
+                aria-label={f.label}
                 type="number"
                 step={f.step ?? 1}
                 value={String(cfg[f.key])}
@@ -398,11 +352,12 @@ export function ParamsRail({
             </Row>
           )
         )}
-      </dl>
+      </div>
 
       {isSft && (
         <div className="space-y-3">
           <DatasetPicker
+            variant="inline"
             available={availableDatasets}
             loading={datasetsLoading}
             value={cfg.datasets ?? []}
@@ -427,7 +382,6 @@ export function ParamsRail({
 
       {!isSft && (
         <div className="space-y-3">
-          {/* Data-order controls: shuffle each epoch + curriculum staging. */}
           <div className="space-y-3 border-y border-border/60 py-3">
             <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
@@ -461,6 +415,7 @@ export function ParamsRail({
 
           {curriculumOn ? (
             <CurriculumBuilder
+              variant="inline"
               available={availableDatasets}
               loading={datasetsLoading}
               value={cfg.curriculum ?? []}
@@ -469,6 +424,7 @@ export function ParamsRail({
             />
           ) : (
             <DatasetPicker
+              variant="inline"
               available={availableDatasets}
               loading={datasetsLoading}
               value={cfg.datasets ?? []}

@@ -22,7 +22,7 @@ import {
  * is composed by talking, so it points at /chat rather than a form.
  */
 const OPTIONS = [
-  { label: "Train a model", href: "/jobs/new/train", icon: Dumbbell },
+  { label: "Train a model", href: "/jobs/new-train", icon: Dumbbell },
   // A vocabulary build is a queued job like the rest, so it belongs on the one
   // menu every door to the queue goes through. Its composer lives beside the
   // list of what has been built, which is where you would be choosing anyway.

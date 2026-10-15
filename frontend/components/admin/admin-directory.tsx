@@ -31,7 +31,7 @@ const WORKBENCH: Destination[] = [
   },
   {
     title: "Train",
-    href: "/jobs/new/train",
+    href: "/jobs/new-train",
     icon: Brain,
   },
   {

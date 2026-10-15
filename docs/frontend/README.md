@@ -25,7 +25,8 @@ The signed-in frame is `app/(app)`: sidebar, scroll container and content, witho
 an additional header. `/login` and `/signup` live outside it. `/docs` is public.
 `app/(app)/admin` contains the queue, workbench directory and history; `/jobs`
 redirects there. Job detail and composer routes remain `/jobs/[id]` and
-`/jobs/new/{train,benchmark,rl}`.
+`/jobs/new-train`, `/jobs/new/benchmark` and `/jobs/new/rl`. The old
+`/jobs/new/train` URL redirects to the training composer with its query intact.
 
 ## Development contracts
 

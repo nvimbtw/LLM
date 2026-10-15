@@ -46,8 +46,10 @@ export interface ResumePickerProps {
    * cannot end up drawing the same control at two different radii.
    */
   compact?: boolean
+  variant?: "default" | "inline"
 }
 
+/** Selects a starting model and optional checkpoint, emitting the chosen weight identity or undefined for scratch. */
 export function ResumePicker({
   value,
   onChange,
@@ -55,32 +57,31 @@ export function ResumePicker({
   modelsLoading,
   disabled,
   compact = false,
+  variant = "default",
 }: ResumePickerProps) {
   const size = compact ? "sm" : "default"
-  const triggerClassName = compact ? "h-8 w-44" : "h-10 w-full"
-  // Which model's intermediates the second select offers, for the one case the
-  // answer is not already in hand: an id the model list does not hold, arriving
-  // from a deep link off its parent's page or typed into the bar. An id that
-  // resolves to nothing leaves the second select unopened — the config still
-  // carries it, and the LLM engine is the one entitled to refuse a run for it.
+  const triggerClassName = compact
+    ? "h-8 w-44"
+    : variant === "inline"
+      ? "h-9 w-fit max-w-full"
+      : "h-10 w-full"
   const { parentId, record } = useCheckpointParent(value, models)
 
   const { checkpoints, isLoading: checkpointsLoading } = useCheckpoints(
     parentId || null
   )
 
+  /** Emits the selected model ID or undefined when starting from scratch. */
   const pickParent = (next: string | null) => {
     onChange(!next || next === FROM_SCRATCH ? undefined : next)
   }
 
+  /** Emits finished weights or the selected checkpoint, remembering its parent for later reads. */
   const pickPoint = (next: string | null) => {
     if (!next || next === FINISHED_WEIGHTS) {
       onChange(parentId)
       return
     }
-    // Recorded rather than looked up: this is the one moment the pairing is known
-    // for certain, and writing it here is what stops the hook above spending a
-    // request to re-learn what was just clicked.
     record(next, parentId)
     onChange(next)
   }
@@ -89,7 +90,7 @@ export function ResumePicker({
     <div
       className={cn(
         "flex flex-col gap-1.5",
-        compact ? "items-end" : "items-stretch"
+        compact || variant === "inline" ? "items-end" : "items-stretch"
       )}
     >
       <Select
@@ -97,8 +98,15 @@ export function ResumePicker({
         onValueChange={pickParent}
         disabled={disabled || modelsLoading}
       >
-        <SelectTrigger size={size} className={triggerClassName}>
-          <SelectValue>
+        <SelectTrigger
+          variant={variant}
+          aria-label="Continue from"
+          size={size}
+          className={triggerClassName}
+        >
+          <SelectValue
+            className={variant === "inline" ? "text-right" : undefined}
+          >
             {(selected: string | null) =>
               !selected || selected === FROM_SCRATCH
                 ? "Start from scratch"
@@ -106,10 +114,11 @@ export function ResumePicker({
             }
           </SelectValue>
         </SelectTrigger>
-        <SelectContent>
-          {/* A real option, not a placeholder: starting from random weights is
-              what every pretrain did before a run could be picked up again, and
-              it stays the default. */}
+        <SelectContent
+          alignItemWithTrigger={variant !== "inline"}
+          align="end"
+          className={variant === "inline" ? "w-64" : undefined}
+        >
           <SelectItem value={FROM_SCRATCH}>Start from scratch</SelectItem>
           {models.map((m) => (
             <SelectItem key={m.id} value={m.id}>
@@ -125,8 +134,15 @@ export function ResumePicker({
           onValueChange={pickPoint}
           disabled={disabled}
         >
-          <SelectTrigger size={size} className={triggerClassName}>
-            <SelectValue>
+          <SelectTrigger
+            variant={variant}
+            aria-label="Starting checkpoint"
+            size={size}
+            className={triggerClassName}
+          >
+            <SelectValue
+              className={variant === "inline" ? "text-right" : undefined}
+            >
               {(selected: string | null) => {
                 if (!selected || selected === FINISHED_WEIGHTS)
                   return "Its finished weights"
@@ -135,7 +151,11 @@ export function ResumePicker({
               }}
             </SelectValue>
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent
+            alignItemWithTrigger={variant !== "inline"}
+            align="end"
+            className={variant === "inline" ? "w-64" : undefined}
+          >
             <SelectItem value={FINISHED_WEIGHTS}>
               Its finished weights
             </SelectItem>

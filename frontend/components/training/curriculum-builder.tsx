@@ -5,30 +5,30 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from "lucide-react"
 
 import { DatasetPicker } from "@/components/training/dataset-picker"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Input, type InputProps } from "@/components/ui/input"
 import type { CurriculumStage, DatasetInfo } from "@/lib/training"
 
-// The curriculum builder: an ordered list of stages, each its own dataset
-// selection + epoch count, trained in sequence. Reuses DatasetPicker per stage so
-// a stage reads exactly like the flat picker. Stages can be reordered (the order
-// IS the curriculum) and removed; "Add stage" appends an empty one.
+export interface CurriculumBuilderProps {
+  available: DatasetInfo[]
+  loading: boolean
+  value: CurriculumStage[]
+  disabled: boolean
+  onChange: (next: CurriculumStage[]) => void
+  variant?: InputProps["variant"]
+}
+
+/** Edits an ordered curriculum with per-stage datasets, names and epochs; newly added stages open for editing. */
 export function CurriculumBuilder({
   available,
   loading,
   value,
   disabled,
   onChange,
-}: {
-  available: DatasetInfo[]
-  loading: boolean
-  value: CurriculumStage[]
-  disabled: boolean
-  onChange: (next: CurriculumStage[]) => void
-}) {
-  // Collapsed stages, tracked by index — a purely visual state so the rail can be
-  // kept compact. A freshly-added stage starts expanded so it can be configured.
+  variant = "default",
+}: CurriculumBuilderProps) {
   const [collapsed, setCollapsed] = React.useState<Set<number>>(new Set())
 
+  /** Toggles the visual expansion of the supplied stage index. */
   const toggleCollapsed = (i: number) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
@@ -37,11 +37,14 @@ export function CurriculumBuilder({
       return next
     })
 
+  /** Applies a patch to the supplied stage and emits the updated curriculum. */
   const update = (i: number, patch: Partial<CurriculumStage>) =>
     onChange(value.map((s, idx) => (idx === i ? { ...s, ...patch } : s)))
 
+  /** Removes the supplied stage index from the curriculum. */
   const remove = (i: number) => onChange(value.filter((_, idx) => idx !== i))
 
+  /** Moves a stage one place when the requested neighbor exists. */
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir
     if (j < 0 || j >= value.length) return
@@ -50,12 +53,11 @@ export function CurriculumBuilder({
     onChange(next)
   }
 
+  /** Appends an empty stage with one epoch. */
   const add = () => onChange([...value, { datasets: [], epochs: 1 }])
 
-  // One-line summary of a collapsed stage: its datasets and epoch count.
+  /** Formats a collapsed stage from its selected datasets and epoch count. */
   const summary = (stage: CurriculumStage) => {
-    // A selection saved before the dataset list loaded carries only an id; show
-    // the head of it rather than the word "undefined".
     const names = stage.datasets.map((d) => d.name || d.id.slice(0, 8))
     const datasets = names.length > 0 ? names.join(", ") : "no datasets"
     return `${datasets} · ${stage.epochs} ep`
@@ -69,9 +71,7 @@ export function CurriculumBuilder({
         const isCollapsed = collapsed.has(i)
         const title = stage.name?.trim() || `Stage ${i + 1}`
         return (
-          <div key={i} className="border-y border-border/60">
-            {/* Header: click the title to collapse/expand; reorder + remove stay
-                on the right. Kept compact so a long curriculum doesn't dominate. */}
+          <div key={i} className="border-t border-border/60">
             <div className="flex items-center justify-between gap-2 py-3">
               <button
                 type="button"
@@ -100,7 +100,7 @@ export function CurriculumBuilder({
                 <Button
                   type="button"
                   size="icon"
-                  variant="ghost"
+                  variant="text"
                   className="size-7"
                   disabled={disabled || i === 0}
                   onClick={() => move(i, -1)}
@@ -111,7 +111,7 @@ export function CurriculumBuilder({
                 <Button
                   type="button"
                   size="icon"
-                  variant="ghost"
+                  variant="text"
                   className="size-7"
                   disabled={disabled || i === value.length - 1}
                   onClick={() => move(i, 1)}
@@ -122,7 +122,7 @@ export function CurriculumBuilder({
                 <Button
                   type="button"
                   size="icon"
-                  variant="ghost"
+                  variant="text"
                   className="size-7 text-muted-foreground hover:text-destructive"
                   disabled={disabled}
                   onClick={() => remove(i)}
@@ -136,6 +136,8 @@ export function CurriculumBuilder({
             {!isCollapsed && (
               <div className="space-y-3 border-t border-border/60 py-3">
                 <Input
+                  variant={variant}
+                  aria-label={`Stage ${i + 1} name`}
                   value={stage.name ?? ""}
                   onChange={(e) =>
                     update(i, { name: e.target.value || undefined })
@@ -146,6 +148,7 @@ export function CurriculumBuilder({
                 />
 
                 <DatasetPicker
+                  variant={variant}
                   available={available}
                   loading={loading}
                   value={stage.datasets}
@@ -156,6 +159,8 @@ export function CurriculumBuilder({
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm text-muted-foreground">Epochs</span>
                   <Input
+                    variant={variant}
+                    aria-label={`Stage ${i + 1} epochs`}
                     type="number"
                     min={1}
                     step={1}
@@ -176,8 +181,8 @@ export function CurriculumBuilder({
       <Button
         type="button"
         size="sm"
-        variant="outline"
-        className="w-full"
+        variant="text"
+        className="px-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
         disabled={disabled}
         onClick={add}
       >

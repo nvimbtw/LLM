@@ -1,8 +1,6 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
-import { Folder, FolderInput } from "lucide-react"
 import { useSessionToken } from "@/hooks/use-auth"
 import { useProjectMembership } from "@/hooks/use-project-membership"
 import type { ChatSummary } from "@/lib/chats"
@@ -150,44 +148,5 @@ function ConversationProjectForm({
         </Button>
       </DialogFooter>
     </form>
-  )
-}
-
-export interface ConversationProjectControlProps {
-  chat: ChatSummary
-}
-
-/** Shows a conversation's project link and accessible membership action above the existing thread. */
-export function ConversationProjectControl({
-  chat,
-}: ConversationProjectControlProps) {
-  const { catalog } = useProjects()
-  const [open, setOpen] = React.useState(false)
-  const project = catalog.projects.find(
-    (entry) => entry.project_id === chat.projectId
-  )
-  return (
-    <div className="mx-auto flex w-full max-w-2xl items-center justify-between gap-3 border-b border-border px-4 py-3 text-xs">
-      {chat.projectId ? (
-        <Link
-          href={`/projects/${chat.projectId}`}
-          className="inline-flex min-w-0 items-center gap-2 text-muted-foreground hover:text-foreground"
-        >
-          <Folder className="size-3.5 shrink-0" />
-          <span className="truncate">{project?.name ?? "Project"}</span>
-        </Link>
-      ) : (
-        <span className="text-muted-foreground">Conversation</span>
-      )}
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        <FolderInput />
-        {chat.projectId ? "Move chat" : "Add to project"}
-      </Button>
-      <ConversationProjectDialog
-        chat={chat}
-        open={open}
-        onOpenChange={setOpen}
-      />
-    </div>
   )
 }

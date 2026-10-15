@@ -62,3 +62,16 @@ Shared Python libraries may share code, not service storage or network bypasses.
 - [Coding conventions](docs/conventions.md): read the complete file before edits.
 - [Setup, native development and tests](README.md).
 - [Architecture decisions](docs/decisions/README.md).
+
+## Application login
+
+Backend startup creates missing development accounts with these credentials:
+
+| Username | Password | Access |
+| --- | --- | --- |
+| `admin` | `admin` | Admin |
+| `agents` | `agents` | Admin |
+
+Use `agents` for agents working on the project, keeping their application data
+separate from the human admin account. Startup preserves existing passwords and
+access levels, so these defaults apply only when an account is first created.

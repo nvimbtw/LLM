@@ -6,14 +6,16 @@ no row is a model trained outside the queue, and a row with no directory is one
 whose weights were removed.
 """
 
-import json
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import IntegrityError
 
 import store
 from api import auth
+from api.model_metadata import read_model_meta, resolve_model_metadata
 from llm import storage
 from store import queries as q
 from store.schema import Model
@@ -27,10 +29,22 @@ class ModelEdit(BaseModel):
     family: str | None = Field(default=None, max_length=120)
     published: bool | None = None
     recovery_keep: bool | None = None
+    size: Literal["fast", "balanced", "flagship"] | None = None
+
+    @field_validator("display_name", "family")
+    @classmethod
+    def nonblank_label(cls, value: str | None) -> str | None:
+        """Trim supplied identity labels and reject whitespace-only names or families."""
+        if value is not None:
+            value = value.strip()
+            if not value:
+                raise ValueError("name and family cannot be empty")
+        return value
 
 
 @router.get("/models")
 def list_models(include_private: bool = True, checkpoints: bool = False):
+    """Join indexed models and weight directories, applying requested visibility and checkpoint filters."""
     with store.session() as db:
         rows = {
             m.id: m
@@ -44,6 +58,7 @@ def list_models(include_private: bool = True, checkpoints: bool = False):
 
 @router.get("/models/{model_id}")
 def get_model(model_id: uuid.UUID):
+    """Return one indexed model with resolved metadata, or 404 for an unknown identity."""
     with store.session() as db:
         model = q.get_model(db, model_id)
         if model is None:
@@ -55,6 +70,7 @@ def get_model(model_id: uuid.UUID):
 
 @router.patch("/models/{model_id}")
 def edit_model(model_id: uuid.UUID, body: ModelEdit):
+    """Apply authorized metadata edits; a supplied null size clears the admin's category."""
     fields = body.model_dump(exclude_none=True)
     if "display_name" in fields:
         fields["name"] = fields.pop("display_name")
@@ -64,8 +80,15 @@ def edit_model(model_id: uuid.UUID, body: ModelEdit):
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
         if "recovery_keep" in fields:
             model.parameters = {**(model.parameters or {}), "recovery_keep": fields.pop("recovery_keep")}
+        if "size" in body.model_fields_set:
+            fields.pop("size", None)
+            model.parameters = {**(model.parameters or {}), "display_size": body.size}
         for key, value in fields.items():
             setattr(model, key, value)
+        try:
+            db.flush()
+        except IntegrityError as error:
+            raise HTTPException(status_code=409, detail="A model with that name already exists.") from error
         return _model(db, model, storage.model_dir(str(model_id)))
 
 
@@ -74,8 +97,6 @@ def delete_model(model_id: uuid.UUID, weights: bool = True, _=Depends(auth.requi
     """Drop the row and its checkpoints', and by default the weights with them —
     a model kept only on disk is one nothing can find again."""
     with store.session() as db:
-        # Read before the delete takes them: afterwards nothing is left to say
-        # which directories on disk were this model's intermediates.
         intermediates = [c.id for c in q.checkpoints_of(db, model_id)]
         name = q.delete_model(db, model_id)
     if name is None:
@@ -109,6 +130,7 @@ def list_checkpoints(model_id: uuid.UUID):
 
 
 def _weight_dirs() -> list:
+    """Return model artifact directories in stable name order without loading weights."""
     return sorted((p for p in storage.models_dir().glob("*") if p.is_dir()), key=lambda p: p.name)
 
 
@@ -128,6 +150,7 @@ def _joinable_dirs(db, checkpoints: bool) -> dict:
 
 
 def _row_for(rows: dict[uuid.UUID, Model], directory_name: str) -> Model | None:
+    """Match an artifact directory to its indexed row, tolerating legacy non-UUID names."""
     try:
         return rows.get(uuid.UUID(directory_name))
     except ValueError:
@@ -136,13 +159,18 @@ def _row_for(rows: dict[uuid.UUID, Model], directory_name: str) -> Model | None:
 
 def _model(db, model: Model | None, directory) -> dict:
     """A model as the API reports it — whichever half of it exists."""
-    meta = _meta(directory)
+    meta = read_model_meta(directory)
+    facts = resolve_model_metadata(db, model, meta)
     entry = {
         "model_id": str(model.id) if model else None,
         "name": model.name if model else (directory.name if directory else None),
         "description": model.description if model else None,
         "family": model.family if model else None,
-        "context": _context(db, model, meta),
+        "context": facts.context,
+        "architecture": facts.architecture,
+        "vocab_size": facts.vocabulary_size,
+        "parameter_count": facts.parameter_count,
+        "size": (model.parameters or {}).get("display_size") if model else None,
         "published": model.published if model else False,
         "run_id": str(model.run_id) if model and model.run_id else None,
         "parent_id": str(model.parent_id) if model and model.parent_id else None,
@@ -152,67 +180,15 @@ def _model(db, model: Model | None, directory) -> dict:
         "parameters": model.parameters if model else None,
         "created_at": model.created_at.isoformat() if model and model.created_at else None,
         "has_weights": bool(directory and (directory / "model.pt").is_file()),
-        "config": meta,
+        "config": meta.get("config", {}),
     }
     if directory is not None and model is None:
         entry["model_id"] = directory.name
     return entry
 
 
-def _context(db, model: Model | None, meta: dict, seen: set | None = None) -> int | None:
-    """The window this model can actually be prompted with.
-
-    Three places hold it, and only the first is guaranteed to. The row is
-    written at registration, so anything trained since is answered there. A
-    model from before that column existed still has its `ctx_window` in the
-    meta.json beside its weights. A fine-tune has neither — it does not choose
-    a window, it inherits the one whose positions its weights already encode,
-    so the answer is its base's, resolved the same way.
-
-    Callers are entitled to a number: without one the chat UI cannot say how
-    much of the window a conversation has spent, and hides the meter entirely —
-    which reads as the meter breaking when you switch to a fine-tune.
-    """
-    if model is None:
-        return meta.get("ctx_window")
-    if model.context:
-        return model.context
-    if meta.get("ctx_window"):
-        return meta["ctx_window"]
-
-    config = (model.parameters or {}).get("config") or {}
-    base = config.get("base_model")
-    if not base:
-        return None
-    # A chain of fine-tunes resolves through as many hops as it has; a config
-    # that names itself (or a cycle between two) would otherwise not terminate.
-    seen = seen or set()
-    if base in seen:
-        return None
-    seen.add(base)
-    try:
-        base_id = uuid.UUID(str(base))
-    except ValueError:
-        return None
-    base_model = q.get_model(db, base_id)
-    if base_model is None:
-        return None
-    return _context(db, base_model, _meta(storage.model_dir(str(base_id))), seen)
-
-
-def _meta(directory) -> dict:
-    if directory is None:
-        return {}
-    meta = directory / "meta.json"
-    if not meta.is_file():
-        return {}
-    try:
-        return json.loads(meta.read_text()).get("config", {})
-    except ValueError:
-        return {}
-
-
 def _remove_weights(model_id: uuid.UUID) -> bool:
+    """Remove this model's artifact directory if present, returning whether anything was removed."""
     import shutil
 
     directory = storage.model_dir(str(model_id))

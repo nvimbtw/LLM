@@ -85,22 +85,21 @@ just-ended turn cannot accidentally re-queue the message being drained.
 
 ## Following the bottom
 
-`chat-thread.tsx` keeps the thread pinned to the bottom while a reply streams
-in, without fighting a reader who scrolls up mid-turn to check something
-earlier. Two refs carry the state a re-render shouldn't own:
+[`useChatFollowing`](../../frontend/hooks/use-chat-following.ts) keeps the thread
+pinned while a reply streams, without fighting a reader checking earlier text.
+It owns the following flag, one gesture frame, the composer-height inset and a
+resize observer. The observer watches the transcript, viewport and composer row.
+The transcript extends behind the frosted composer; measured bottom padding keeps
+the latest text and status above the composer's edge throughout animated growth.
 
-- **`stickRef`** — whether to follow at all. Set by the user's own wheel/touch
-  gestures (`trackStickIntent`), not by where the scroll happens to sit: it
-  reads live `scrollTop` only on a genuine gesture, so a programmatic scroll
-  this component just made never reads as the user asking to unstick.
-  Re-engages the moment a gesture lands within `STICK_TO_BOTTOM_THRESHOLD_PX`
-  of the bottom — scrolling back down by hand resumes following, no separate
-  "jump to latest" affordance needed.
-- **`lastHeightRef`** — the last measured `scrollHeight`, so the follow effect
-  only fires on genuine growth (a new line) and not on every token mutating
-  text within the line that's already on screen.
+Wheel/touch gestures pause following immediately, then measure their resulting
+position on the next frame. A gesture ending within 120px of the bottom resumes
+following. Selecting a question in the rail pauses it too. Programmatic navigation
+does not count as user intent to resume. Cleanup disconnects the observer and
+cancels the pending gesture frame and releases the inset when the conversation or
+session changes.
 
-**The scroll itself is always instant (`behavior: "auto"`), never
+**Streaming's bottom-following is always instant (`behavior: "instant"`), never
 `"smooth"`.** It used to glide during streaming, and a fast model breaks
 exactly that: a line wrapping is a new `scrollTo` call, a fast enough model
 wraps a line every render, and each call retargets a `smooth` animation that

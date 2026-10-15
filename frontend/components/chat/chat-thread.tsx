@@ -7,14 +7,13 @@ import { hasVisibleContent, isInThinkingBlock } from "@/lib/message-parser"
 import type { Attachment } from "@/lib/attachments"
 import { useSessionToken } from "@/hooks/use-auth"
 import { useChat } from "@/hooks/use-chat"
+import { useChatFollowing } from "@/hooks/use-chat-following"
 import { useLocalPlan } from "@/hooks/use-local-plan"
 import { ChatComposer } from "./chat-composer"
 import { useChats } from "./chats-provider"
-import { ConversationProjectControl } from "@/components/projects/conversation-project"
+import { ChatPositionRail } from "./chat-position-rail"
 import { useComposerChoice } from "./composer-choice-provider"
 
-/** How close (px) to the bottom the user must be for auto-scroll to engage. */
-const STICK_TO_BOTTOM_THRESHOLD_PX = 120
 import { AttachmentViewer } from "./attachment-viewer"
 import { ChatMessageBubble } from "./chat-message"
 import { Throbber } from "@/components/ui/throbber"
@@ -47,7 +46,7 @@ export function ChatThread({ chatId }: ChatThreadProps) {
   ) : null
 }
 
-/** Renders a conversation and its project association. Streaming follows growth only while the reader stays near the bottom; context totals include persisted and live tokens, excluding a model-matching prune floor. */
+/** Renders a conversation with message navigation and a compact resting composer. Streaming follows growth while the reader stays near the bottom; context totals exclude a model-matching prune floor. */
 function SessionChatThread({ chatId }: ChatThreadProps) {
   const localPlan = useLocalPlan(chatId)
   const {
@@ -70,8 +69,13 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
   const [draft, setDraft] = React.useState<{ text: string } | undefined>()
   const [viewing, setViewing] = React.useState<Attachment | null>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
-  const stickRef = React.useRef(true)
-  const lastHeightRef = React.useRef(0)
+  const contentRef = React.useRef<HTMLDivElement>(null)
+  const composerRef = React.useRef<HTMLDivElement>(null)
+  const { pauseFollowing, trackStickIntent } = useChatFollowing({
+    scrollRef,
+    contentRef,
+    composerRef,
+  })
 
   const lastMessage = messages[messages.length - 1]
   const contextTokensUsed =
@@ -100,40 +104,31 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
           count: contextTokensUsed,
         }
       : null
-  /** Updates bottom-following intent from a real wheel or touch gesture. */
-  const trackStickIntent = React.useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    stickRef.current = distanceFromBottom < STICK_TO_BOTTOM_THRESHOLD_PX
-  }, [])
-  React.useEffect(() => {
-    const el = scrollRef.current
-    if (!el || !stickRef.current) return
-    const grew = el.scrollHeight > lastHeightRef.current
-    lastHeightRef.current = el.scrollHeight
-    if (!grew) return
-    el.scrollTo({ top: el.scrollHeight, behavior: "auto" })
-  }, [messages, isSending])
 
   return (
     <div className="flex flex-1 overflow-hidden">
       <div
         className={cn(
-          "flex min-w-0 flex-1 flex-col overflow-hidden",
+          "@container/chat relative flex min-w-0 flex-1 flex-col overflow-hidden",
           viewing && "hidden lg:flex"
         )}
       >
-        {chatSummary && (
-          <ConversationProjectControl key={chatId} chat={chatSummary} />
-        )}
+        <ChatPositionRail
+          messages={isLoading ? [] : messages}
+          scrollRef={scrollRef}
+          contentRef={contentRef}
+          onNavigate={pauseFollowing}
+        />
         <div
           ref={scrollRef}
           onWheel={trackStickIntent}
           onTouchMove={trackStickIntent}
-          className="flex flex-1 flex-col overflow-y-auto"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-(--chat-composer-height)"
         >
-          <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-7 px-4 py-8">
+          <div
+            ref={contentRef}
+            className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-7 px-4 py-6 sm:px-8"
+          >
             {isLoading ? (
               <div className="flex justify-center px-1 py-8">
                 <Throbber mode="loading" />
@@ -142,26 +137,33 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
               messages.map((message, i) => {
                 const id = message.id
                 return (
-                  <ChatMessageBubble
+                  <div
                     key={i}
-                    message={message}
-                    streaming={
-                      isSending &&
-                      i === messages.length - 1 &&
-                      message.role === "assistant"
+                    data-message-index={i}
+                    data-chat-question={
+                      message.role === "user" ? "true" : undefined
                     }
-                    onRate={
-                      id && message.role === "assistant"
-                        ? (feedback) => void rateMessage(id, feedback)
-                        : undefined
-                    }
-                    onEdit={(content) => setDraft({ text: content })}
-                    onResend={(content) =>
-                      void sendMessage(content, model, budget)
-                    }
-                    busy={isSending || !model}
-                    onOpenAttachment={setViewing}
-                  />
+                  >
+                    <ChatMessageBubble
+                      message={message}
+                      streaming={
+                        isSending &&
+                        i === messages.length - 1 &&
+                        message.role === "assistant"
+                      }
+                      onRate={
+                        id && message.role === "assistant"
+                          ? (feedback) => void rateMessage(id, feedback)
+                          : undefined
+                      }
+                      onEdit={(content) => setDraft({ text: content })}
+                      onResend={(content) =>
+                        void sendMessage(content, model, budget)
+                      }
+                      busy={isSending || !model}
+                      onOpenAttachment={setViewing}
+                    />
+                  </div>
                 )
               })
             )}
@@ -214,22 +216,26 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
 
             {error && <LoadError title={error} />}
           </div>
-          <div className="sticky bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pb-4">
-            <ChatComposer
-              key={chatId}
-              plan={localPlan.plan}
-              onPlanChange={localPlan.save}
-              onSend={sendMessage}
-              sending={isSending}
-              onCancel={cancel}
-              title={chatSummary?.title ?? "New chat"}
-              onRenameTitle={(next) => void renameChat(chatId, next)}
-              contextTokensUsed={contextTokensUsed}
-              unseenTokens={prunedTokens}
-              draft={draft}
-              onPruneContext={() => pruneContext(model)}
-            />
-          </div>
+        </div>
+        <div
+          ref={composerRef}
+          className="absolute inset-x-0 bottom-0 z-10 mx-auto w-full max-w-2xl px-4 pt-2 pb-4 sm:px-8"
+        >
+          <ChatComposer
+            key={chatId}
+            plan={localPlan.plan}
+            onPlanChange={localPlan.save}
+            onSend={sendMessage}
+            sending={isSending}
+            compact={messages.length > 0}
+            onCancel={cancel}
+            title={chatSummary?.title ?? "New chat"}
+            onRenameTitle={(next) => void renameChat(chatId, next)}
+            contextTokensUsed={contextTokensUsed}
+            unseenTokens={prunedTokens}
+            draft={draft}
+            onPruneContext={() => pruneContext(model)}
+          />
         </div>
       </div>
 

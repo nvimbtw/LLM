@@ -11,6 +11,15 @@ import {
 
 type Suggestions = NonNullable<ReturnType<typeof getCommandSuggestions>>
 
+/** Loads a literal command prefix and focuses its end, preserving the separating space for the next argument. */
+function completeCommandInput(editor: Editor, text: string): void {
+  editor.commands.setContent({
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  })
+  editor.commands.focus("end")
+}
+
 /** Counts selectable command or argument rows, including the single action row. */
 function suggestionCount(result: Suggestions | null): number {
   if (!result) return 0
@@ -104,8 +113,7 @@ export function useComposerCommands(
         return
       }
 
-      ed.commands.setContent(`/${cmd.name} `)
-      ed.commands.focus("end")
+      completeCommandInput(ed, `/${cmd.name} `)
       setText(`/${cmd.name} `)
       setSelectedIndex(0)
     },
@@ -129,8 +137,7 @@ export function useComposerCommands(
         return
       }
 
-      ed.commands.setContent(`${fullCmd} `)
-      ed.commands.focus("end")
+      completeCommandInput(ed, `${fullCmd} `)
       setText(`${fullCmd} `)
     },
     [editorRef, resetInput, setText]

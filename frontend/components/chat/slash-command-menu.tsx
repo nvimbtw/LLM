@@ -1,12 +1,12 @@
 "use client"
 
 import * as React from "react"
-import { Check, Moon, Sun, SunMoon } from "lucide-react"
 
 import {
   fuzzyMatch,
   getCommandSuggestions,
   type CommandContext,
+  type ArgumentSuggestions,
   type SlashCommandDef,
 } from "@/lib/commands"
 import { Button } from "@/components/ui/button"
@@ -24,22 +24,18 @@ export interface SlashCommandMenuProps {
   ctx: CommandContext
 }
 
-// How long the slide/fade takes, in ms. Kept in one place since the exit
-// timer and the CSS duration below have to agree.
 const TRANSITION_MS = 150
 
-/**
- * Clean, subtle highlight for matched fuzzy characters without noisy underlines.
- */
-function HighlightMatched({
-  text,
-  query,
-  className,
-}: {
+interface HighlightMatchedProps {
   text: string
   query: string
   className?: string
-}) {
+}
+
+/**
+ * Emphasizes matching query ranges in command or option text with quiet weight changes.
+ */
+function HighlightMatched({ text, query, className }: HighlightMatchedProps) {
   if (!query) return <span className={className}>{text}</span>
 
   const { match, ranges } = fuzzyMatch(query, text)
@@ -58,7 +54,7 @@ function HighlightMatched({
       )
     }
     nodes.push(
-      <span key={`match-${i}`} className="font-semibold text-primary">
+      <span key={`match-${i}`} className="font-medium text-foreground">
         {text.slice(start, end)}
       </span>
     )
@@ -72,59 +68,79 @@ function HighlightMatched({
   return <span className={className}>{nodes}</span>
 }
 
-// The menu is the upper half of the composer's card, not a panel floating above
-// it: one outline around both, with a rule where they meet.
-//
-// That is why nothing here draws a border, a radius, a shadow or a surface. The
-// card owns all four, and this only contributes the rule along its own bottom
-// edge. It also settles the blur: joined, there is a single `backdrop-filter` on
-// the card, and a single backdrop root. As a separate floating panel this needed
-// its own blur, and a nested one samples only what its ancestor's root already
-// painted — which, for a panel sitting outside the card's box, was nothing at
-// all, so it rendered as plain transparency with the page crisply readable
-// through it.
-//
-// Opening animates `grid-template-rows` from 0fr to 1fr with the content in an
-// `overflow-hidden` track, which is the one way to transition to a height nobody
-// has measured. The card is bottom-anchored (sticky in chat-thread.tsx), so the
-// growth pushes its top edge up the page rather than shoving the editor down
-// under the reader's cursor.
-function Panel({
-  visible,
-  children,
-}: {
+interface CommandDrawerProps {
   visible: boolean
   children: React.ReactNode
-}) {
+}
+
+/** Reveals a glass command drawer from behind its composer's upper edge. The clipped join and lower stacking layer keep its motion out of the editor without changing editor height. */
+function CommandDrawer({ visible, children }: CommandDrawerProps) {
   return (
     <div
-      className={cn(
-        "grid transition-[grid-template-rows,opacity] duration-150 ease-out",
-        visible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
-      )}
+      data-slot="slash-command-drawer"
+      className="pointer-events-none absolute inset-x-3 bottom-full z-0 overflow-hidden rounded-t-(--radius-control)"
     >
-      <div className="overflow-hidden">
-        <div className="border-b border-border">{children}</div>
+      <div
+        role="region"
+        aria-label="Slash commands"
+        aria-hidden={!visible}
+        inert={!visible}
+        data-slot="slash-command-menu"
+        className={cn(
+          "max-h-[50dvh] overflow-y-auto overscroll-contain rounded-t-(--radius-control) border border-b-0 border-border/60 bg-card/75 text-foreground backdrop-blur-2xl backdrop-saturate-150 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
+          visible
+            ? "pointer-events-auto translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-3 opacity-0"
+        )}
+      >
+        {children}
       </div>
     </div>
   )
 }
 
-const HINT_CLASS =
-  "font-mono text-2xs tracking-normal lowercase text-muted-foreground"
+/** Formats a numeric command value at its declared precision without redundant zeros; context multipliers carry their × unit. */
+function numericDisplay(
+  commandName: string,
+  value: number,
+  precision: number
+): string {
+  const number = String(Number(value.toFixed(precision)))
+  return commandName === "context-multiplier" ? `${number}×` : number
+}
 
-// Row styling shared by every option list: a hairline accent rule on the left
-// that grows in on hover/active, rather than a filled highlight.
-function rowClass(isActive: boolean) {
+/** Reads the current setting for a selected command's quiet heading; actions and plan editing have no setting readout. */
+function argumentCurrentDisplay(
+  commandName: string,
+  data: ArgumentSuggestions
+): string | null {
+  switch (data.type) {
+    case "number":
+      return numericDisplay(commandName, data.info.current, data.info.precision)
+    case "model":
+      return data.options.find((option) => option.isCurrent)?.model.name ?? null
+    case "budget":
+    case "theme":
+      return data.options.find((option) => option.isCurrent)?.label ?? null
+    case "toggle":
+      return data.options.find((option) => option.isCurrent)?.value ?? null
+    default:
+      return null
+  }
+}
+
+/** Returns a transparent command/option row with a thin selection marker and visible keyboard focus. */
+function rowClass(isActive: boolean): string {
   return cn(
-    "relative flex w-full items-center justify-between gap-3 rounded-(--radius-control-sm) px-2.5 py-1.5 text-left text-xs transition-colors",
-    "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-['']",
+    "relative flex h-auto min-h-9 w-full items-center justify-between gap-3 rounded-none px-2 py-2 text-left text-sm font-normal transition-colors",
+    "before:absolute before:top-1/2 before:left-0 before:h-3 before:w-px before:-translate-y-1/2 before:bg-foreground before:opacity-0 before:content-['']",
     isActive
-      ? "bg-accent text-accent-foreground before:h-3.5"
-      : "text-foreground hover:bg-accent/60 hover:before:h-2"
+      ? "font-medium text-foreground before:opacity-70"
+      : "text-muted-foreground hover:text-foreground"
   )
 }
 
+/** Shows bottom-up fuzzy matches and argument controls in the composer's top drawer. Retains the last result during exit, owns its animation timers, and preserves keyboard selection near the editor. */
 export function SlashCommandMenu({
   open,
   input,
@@ -137,16 +153,7 @@ export function SlashCommandMenu({
     () => getCommandSuggestions(input, ctx),
     [input, ctx]
   )
-  // There's something to actually show once the composer wants a menu *and*
-  // the input resolves to real content — a bare "/" is `open` with no result.
   const shouldShow = open && liveResult !== null
-
-  // Freeze the last real result so a close (composer clears, command runs,
-  // "/" gets backspaced away) fades the content that was there rather than
-  // going blank a frame before the panel itself finishes animating out.
-  // Adjusted during render rather than in an Effect — the React-recommended
-  // way to derive state from a prop, and it keeps this in sync a render
-  // earlier than an Effect would.
   const [frozenResult, setFrozenResult] = React.useState(liveResult)
   if (liveResult && liveResult !== frozenResult) setFrozenResult(liveResult)
   const result = liveResult ?? frozenResult
@@ -154,23 +161,11 @@ export function SlashCommandMenu({
   const [mounted, setMounted] = React.useState(shouldShow)
   const [visible, setVisible] = React.useState(false)
   const [prevShouldShow, setPrevShouldShow] = React.useState(shouldShow)
-
-  // Also a render-time adjustment: mounting (and dropping back to the hidden
-  // pose to transition from) has to be visible in the very render that
-  // follows `shouldShow` flipping, not a render later via an Effect, or the
-  // browser would have nothing painted to transition from.
   if (shouldShow !== prevShouldShow) {
     setPrevShouldShow(shouldShow)
     setVisible(false)
     if (shouldShow) setMounted(true)
   }
-
-  // Once mounted in the hidden pose, flip to visible so the browser has
-  // something to transition from instead of snapping straight to open. A
-  // single rAF isn't enough: it fires *before* the browser paints, so
-  // flipping inside it would land in the same frame as the hidden pose above
-  // and there'd be nothing to transition from. Nesting a second rAF forces a
-  // real paint in between.
   React.useEffect(() => {
     if (!shouldShow || visible) return
     let inner = 0
@@ -182,8 +177,6 @@ export function SlashCommandMenu({
       cancelAnimationFrame(inner)
     }
   }, [shouldShow, visible])
-
-  // Unmount once the exit transition has had time to finish.
   React.useEffect(() => {
     if (shouldShow || !mounted) return
     const timer = setTimeout(() => setMounted(false), TRANSITION_MS)
@@ -191,8 +184,6 @@ export function SlashCommandMenu({
   }, [shouldShow, mounted])
 
   const listRef = React.useRef<HTMLDivElement>(null)
-
-  // Scroll active item into view
   React.useEffect(() => {
     if (!listRef.current) return
     const activeEl = listRef.current.querySelector("[data-active='true']")
@@ -202,96 +193,65 @@ export function SlashCommandMenu({
   }, [selectedIndex, result])
 
   if (!mounted || !result) return null
-
-  // -------------------------------------------------------------------------
-  // Every list here paints bottom-up (`flex-col-reverse`), so index 0 — the best
-  // match, and the one Enter and Tab act on — is the row closest to the line you
-  // are typing on. The menu grows upward out of the composer, so ranking upward
-  // is the direction that puts the answer where the eye already is; a best match
-  // at the far top of a six-row list is the furthest thing from the cursor.
-  //
-  // Reversed in paint rather than in the data: `selectedIndex` still means "nth
-  // best" for the composer's Tab/Enter handling, and only the arrow keys have to
-  // know about the flip (see chat-composer.tsx).
-  // -------------------------------------------------------------------------
-
-  // -------------------------------------------------------------------------
-  // Stage 1: Searching for commands — a bare "/" shows nothing (commands.ts
-  // returns null for an empty query), so by the time this renders the user
-  // has already typed something and every row here is a real match. No
-  // header, no args hint, no description: just the matched command per line,
-  // the same information a fuzzy finder anywhere else gives you.
-  // -------------------------------------------------------------------------
   if (result.mode === "command") {
     const { suggestions, query } = result
 
     if (suggestions.length === 0) {
       return (
-        <Panel visible={visible}>
+        <CommandDrawer visible={visible}>
           <div className="px-3.5 py-2.5 text-xs text-muted-foreground">
             No command matching{" "}
             <span className="font-mono text-foreground">“/{query}”</span>
           </div>
-        </Panel>
+        </CommandDrawer>
       )
     }
 
     return (
-      <Panel visible={visible}>
-        <div ref={listRef} className="flex flex-col-reverse gap-0.5 p-1">
+      <CommandDrawer visible={visible}>
+        <div ref={listRef} className="flex flex-col-reverse gap-0.5 p-2">
           {suggestions.map(({ command, currentDisplay }, idx) => {
             const isActive = idx === selectedIndex
-            const Icon = command.icon
 
             return (
-              <button
+              <Button
+                variant="text"
                 key={command.name}
                 type="button"
                 data-active={isActive}
                 onClick={() => onSelectCommand(command)}
                 className={rowClass(isActive)}
               >
-                <span className="flex items-center gap-2">
-                  <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="font-mono font-medium text-primary">
-                    /<HighlightMatched text={command.name} query={query} />
-                  </span>
-                </span>
+                <HighlightMatched text={command.name} query={query} />
 
                 {currentDisplay && (
-                  <span className="shrink-0 font-mono text-2xs text-muted-foreground tabular-nums">
+                  <span className="shrink-0 text-2xs text-muted-foreground tabular-nums">
                     {currentDisplay}
                   </span>
                 )}
-              </button>
+              </Button>
             )
           })}
         </div>
-      </Panel>
+      </CommandDrawer>
     )
   }
-
-  // -------------------------------------------------------------------------
-  // Stage 2: Sub-options & Argument Helpers
-  // -------------------------------------------------------------------------
   const { command, argQuery, data } = result
+  const currentDisplay = argumentCurrentDisplay(command.name, data)
 
   return (
-    <Panel visible={visible}>
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-3.5 py-1.5 eyebrow text-muted-foreground">
-        <div className="flex items-center gap-1.5">
-          <span className="font-mono font-medium text-primary">
-            /{command.name}
+    <CommandDrawer visible={visible}>
+      <div className="flex items-baseline gap-3 px-4 pt-3 pb-1 text-xs text-muted-foreground">
+        <span>{command.name}</span>
+        {currentDisplay && (
+          <span className="truncate text-foreground tabular-nums">
+            <span className="sr-only">Current: </span>
+            {currentDisplay}
           </span>
-          <span>·</span>
-          <span>{command.label}</span>
-        </div>
-        <span className={HINT_CLASS}>↵ execute · esc dismiss</span>
+        )}
       </div>
 
-      <div ref={listRef} className="max-h-64 overflow-y-auto p-1">
-        {/* Model Options */}
+      <div ref={listRef} className="p-2">
         {data.type === "model" && (
           <div className="flex flex-col-reverse gap-0.5">
             {data.options.length === 0 ? (
@@ -303,7 +263,8 @@ export function SlashCommandMenu({
               data.options.map(({ model, isCurrent }, idx) => {
                 const isActive = idx === selectedIndex
                 return (
-                  <button
+                  <Button
+                    variant="text"
                     key={model.id}
                     type="button"
                     data-active={isActive}
@@ -311,16 +272,10 @@ export function SlashCommandMenu({
                     className={rowClass(isActive)}
                   >
                     <span className="flex items-center gap-2">
-                      <Check
-                        className={cn(
-                          "size-3.5 text-primary transition-opacity",
-                          isCurrent ? "opacity-100" : "opacity-0"
-                        )}
-                      />
                       <span
                         className={cn(
                           isCurrent
-                            ? "font-medium text-primary"
+                            ? "font-medium text-foreground"
                             : "text-foreground"
                         )}
                       >
@@ -337,7 +292,7 @@ export function SlashCommandMenu({
                         {model.tier}
                       </span>
                     )}
-                  </button>
+                  </Button>
                 )
               })
             )}
@@ -349,7 +304,7 @@ export function SlashCommandMenu({
             {data.options.map((option, index) => (
               <Button
                 key={option.value}
-                variant="ghost"
+                variant="text"
                 data-active={index === selectedIndex}
                 className={rowClass(index === selectedIndex)}
                 onClick={() => onSelectOption(option.value, option.execute)}
@@ -368,13 +323,13 @@ export function SlashCommandMenu({
           </div>
         )}
 
-        {/* Budget Options */}
         {data.type === "budget" && (
           <div className="flex flex-col-reverse gap-0.5">
             {data.options.map((opt, idx) => {
               const isActive = idx === selectedIndex
               return (
-                <button
+                <Button
+                  variant="text"
                   key={opt.value}
                   type="button"
                   data-active={isActive}
@@ -382,16 +337,10 @@ export function SlashCommandMenu({
                   className={rowClass(isActive)}
                 >
                   <span className="flex items-center gap-2">
-                    <Check
-                      className={cn(
-                        "size-3.5 text-primary transition-opacity",
-                        opt.isCurrent ? "opacity-100" : "opacity-0"
-                      )}
-                    />
                     <span
                       className={cn(
                         "font-medium",
-                        opt.isCurrent && "text-primary"
+                        opt.isCurrent && "text-foreground"
                       )}
                     >
                       {opt.label}
@@ -400,19 +349,19 @@ export function SlashCommandMenu({
                   <span className="ml-auto text-2xs text-muted-foreground">
                     {opt.hint}
                   </span>
-                </button>
+                </Button>
               )
             })}
           </div>
         )}
 
-        {/* Toggle Options */}
         {data.type === "toggle" && (
           <div className="flex flex-col-reverse gap-0.5">
             {data.options.map((opt, idx) => {
               const isActive = idx === selectedIndex
               return (
-                <button
+                <Button
+                  variant="text"
                   key={opt.value}
                   type="button"
                   data-active={isActive}
@@ -420,43 +369,28 @@ export function SlashCommandMenu({
                   className={rowClass(isActive)}
                 >
                   <span className="flex items-center gap-2">
-                    <Check
-                      className={cn(
-                        "size-3.5 text-primary transition-opacity",
-                        opt.isCurrent ? "opacity-100" : "opacity-0"
-                      )}
-                    />
                     <span
                       className={cn(
-                        opt.isCurrent && "font-medium text-primary"
+                        opt.isCurrent && "font-medium text-foreground"
                       )}
                     >
                       {opt.label}
                     </span>
                   </span>
-                  <span className="ml-auto font-mono text-2xs text-muted-foreground">
-                    {opt.value}
-                  </span>
-                </button>
+                </Button>
               )
             })}
           </div>
         )}
 
-        {/* Theme Options */}
         {data.type === "theme" && (
           <div className="flex flex-col-reverse gap-0.5">
             {data.options.map((opt, idx) => {
               const isActive = idx === selectedIndex
-              const Icon =
-                opt.value === "light"
-                  ? Sun
-                  : opt.value === "dark"
-                    ? Moon
-                    : SunMoon
 
               return (
-                <button
+                <Button
+                  variant="text"
                   key={opt.value}
                   type="button"
                   data-active={isActive}
@@ -464,16 +398,9 @@ export function SlashCommandMenu({
                   className={rowClass(isActive)}
                 >
                   <span className="flex items-center gap-2">
-                    <Check
-                      className={cn(
-                        "size-3.5 text-primary transition-opacity",
-                        opt.isCurrent ? "opacity-100" : "opacity-0"
-                      )}
-                    />
-                    <Icon className="size-3.5 text-muted-foreground" />
                     <span
                       className={cn(
-                        opt.isCurrent && "font-medium text-primary"
+                        opt.isCurrent && "font-medium text-foreground"
                       )}
                     >
                       {opt.label}
@@ -482,57 +409,94 @@ export function SlashCommandMenu({
                   <span className="ml-auto text-2xs text-muted-foreground">
                     {opt.description}
                   </span>
-                </button>
+                </Button>
               )
             })}
           </div>
         )}
 
-        {/* Number Range & Presets */}
         {data.type === "number" && (
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2 px-2 pb-2">
+            <div className="flex flex-wrap gap-1">
+              {data.info.presets.map((preset, idx) => (
+                <Button
+                  key={preset.label}
+                  type="button"
+                  size="xs"
+                  variant="text"
+                  title={preset.label}
+                  aria-label={preset.label}
+                  aria-pressed={data.info.current === preset.value}
+                  data-active={idx === selectedIndex}
+                  onClick={() =>
+                    onSelectOption(
+                      preset.value.toFixed(data.info.precision),
+                      true
+                    )
+                  }
+                  className={cn(
+                    "h-6 rounded-none px-2 text-xs",
+                    idx === selectedIndex &&
+                      "font-medium text-foreground underline underline-offset-4"
+                  )}
+                >
+                  {numericDisplay(
+                    command.name,
+                    preset.value,
+                    data.info.precision
+                  )}
+                </Button>
+              ))}
+            </div>
+            <span className="ml-auto text-2xs text-muted-foreground tabular-nums">
+              <span className="sr-only">Allowed range: </span>
+              {numericDisplay(command.name, data.info.min, data.info.precision)}
+              –
+              {numericDisplay(command.name, data.info.max, data.info.precision)}
+            </span>
+          </div>
+        )}
+
+        {data.type === "text" && (
           <div className="flex flex-col gap-2 p-2.5">
-            <div className="flex items-baseline justify-between text-xs text-muted-foreground">
-              <span>
-                Range:{" "}
-                <span className="font-mono text-foreground">
-                  {data.info.min.toFixed(data.info.precision)} –{" "}
-                  {data.info.max.toFixed(data.info.precision)}
-                </span>
-              </span>
-              <span>
-                Current:{" "}
-                <span className="font-mono font-medium text-primary tabular-nums">
-                  {data.info.current.toFixed(data.info.precision)}
-                </span>
-              </span>
+            <div className="flex items-start justify-between gap-3 text-xs">
+              <div className="border-l border-border pl-3 leading-relaxed text-foreground">
+                {data.info.current
+                  ? `“${data.info.current}”`
+                  : "No system prompt configured."}
+              </div>
+              {data.info.current && (
+                <Button
+                  variant="text"
+                  type="button"
+                  onClick={() => onSelectOption("clear", true)}
+                  className="text-xs text-destructive hover:underline"
+                >
+                  Clear
+                </Button>
+              )}
             </div>
 
-            {data.info.presets.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="eyebrow text-muted-foreground">Presets:</span>
-                <div className="inline-flex gap-0.5 rounded-(--radius-control-sm) border border-border p-0.5">
-                  {data.info.presets.map((preset, idx) => {
-                    const isPresetActive =
-                      data.info.current === preset.value ||
-                      idx === selectedIndex
+            {data.info.templates.length > 0 && (
+              <div className="space-y-0.5 pt-0.5">
+                <div className="flex flex-col-reverse gap-0.5">
+                  {data.info.templates.map((tpl, idx) => {
+                    const isActive = idx === selectedIndex
                     return (
                       <Button
-                        key={preset.label}
+                        variant="text"
+                        key={tpl.label}
                         type="button"
-                        size="xs"
-                        variant={isPresetActive ? "secondary" : "ghost"}
-                        onClick={() =>
-                          onSelectOption(
-                            preset.value.toFixed(data.info.precision),
-                            true
-                          )
-                        }
-                        className={cn(
-                          "h-6 px-2 font-mono text-xs",
-                          isPresetActive && "font-medium text-primary"
-                        )}
+                        data-active={isActive}
+                        onClick={() => onSelectOption(tpl.value, true)}
+                        className={rowClass(isActive)}
                       >
-                        {preset.label}
+                        <span className="shrink-0 font-medium text-foreground">
+                          {tpl.label}
+                        </span>
+                        <span className="truncate text-2xs text-muted-foreground">
+                          {tpl.value}
+                        </span>
                       </Button>
                     )
                   })}
@@ -542,82 +506,21 @@ export function SlashCommandMenu({
           </div>
         )}
 
-        {/* System Prompt Helper */}
-        {data.type === "text" && (
-          <div className="flex flex-col gap-2 p-2.5">
-            <div className="flex items-baseline justify-between text-xs">
-              <span className="text-muted-foreground">
-                Current steering prompt:
-              </span>
-              {data.info.current && (
-                <button
-                  type="button"
-                  onClick={() => onSelectOption("clear", true)}
-                  className="text-xs text-destructive hover:underline"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-
-            <div className="rounded-(--radius-control-sm) border border-border bg-accent/30 p-2 font-mono text-xs text-foreground">
-              {data.info.current
-                ? `“${data.info.current}”`
-                : "No system prompt configured."}
-            </div>
-
-            {data.info.templates.length > 0 && (
-              <div className="space-y-0.5 pt-0.5">
-                <span className="eyebrow text-muted-foreground">
-                  Templates:
-                </span>
-                <div className="flex flex-col-reverse gap-0.5">
-                  {data.info.templates.map((tpl, idx) => {
-                    const isActive = idx === selectedIndex
-                    return (
-                      <button
-                        key={tpl.label}
-                        type="button"
-                        data-active={isActive}
-                        onClick={() => onSelectOption(tpl.value, true)}
-                        className={cn(
-                          "flex w-full items-baseline justify-between gap-2 rounded-(--radius-control-sm) px-2.5 py-1.5 text-left text-xs transition-colors",
-                          isActive
-                            ? "bg-accent font-medium text-accent-foreground"
-                            : "text-foreground hover:bg-accent/50"
-                        )}
-                      >
-                        <span className="shrink-0 font-medium text-primary">
-                          {tpl.label}
-                        </span>
-                        <span className="truncate text-2xs text-muted-foreground">
-                          {tpl.value}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Action summary */}
         {data.type === "action" && (
           <div className="flex items-center justify-between p-2.5 text-xs text-muted-foreground">
             <span>{data.description}</span>
             <Button
               type="button"
               size="xs"
-              variant="secondary"
+              variant="text"
               onClick={() => onSelectOption("", true)}
-              className="font-medium text-primary"
+              className="font-medium text-foreground"
             >
               Run
             </Button>
           </div>
         )}
       </div>
-    </Panel>
+    </CommandDrawer>
   )
 }

@@ -35,7 +35,13 @@ export interface ComposerEditorOptions {
  * Index zero remains the best match nearest the editor rather than reversing the suggestion data.
  */
 function handleMenuKey(menu: CommandMenu, event: KeyboardEvent): boolean {
-  if (!menu.isSlashActive || menu.suggestionsCount === 0) return false
+  if (!menu.isSlashActive) return false
+  if (event.key === "Escape") {
+    event.preventDefault()
+    menu.setMenuDismissed(true)
+    return true
+  }
+  if (menu.suggestionsCount === 0) return false
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault()
     const direction = event.key === "ArrowDown" ? -1 : 1
@@ -43,11 +49,6 @@ function handleMenuKey(menu: CommandMenu, event: KeyboardEvent): boolean {
       (previous) =>
         (previous + direction + menu.suggestionsCount) % menu.suggestionsCount
     )
-    return true
-  }
-  if (event.key === "Escape") {
-    event.preventDefault()
-    menu.setMenuDismissed(true)
     return true
   }
   if (event.key !== "Tab") return false
@@ -135,7 +136,10 @@ export function useComposerEditor(options: ComposerEditorOptions) {
     editorProps: {
       attributes: {
         class:
-          "tiptap max-h-72 min-h-20 overflow-y-auto px-3.5 py-3 text-sm leading-relaxed",
+          "tiptap max-h-72 overflow-y-auto px-3.5 py-3 text-sm leading-relaxed",
+        role: "textbox",
+        "aria-label": placeholder,
+        "aria-multiline": "true",
       },
       handleKeyDown: (_view, event) =>
         handleEditorKey(

@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils"
 export interface PanelProps {
   title: string
   description?: string
+  descriptionLayout?: "inline" | "stacked"
   /** A short fact about the section; actions belong with their content. */
   aside?: React.ReactNode
   /** Admin workspaces use open sections; other callers retain the sheet. */
@@ -12,9 +13,11 @@ export interface PanelProps {
   children: React.ReactNode
 }
 
+/** Groups supplied content under a section heading, with optional inline or stacked metadata and either an open or sheet surface. */
 export function Panel({
   title,
   description,
+  descriptionLayout = "inline",
   aside,
   variant = "sheet",
   className,
@@ -41,7 +44,9 @@ export function Panel({
         <div
           className={cn(
             "min-w-0",
-            open && "flex flex-wrap items-baseline gap-x-3 gap-y-1"
+            open &&
+              descriptionLayout === "inline" &&
+              "flex flex-wrap items-baseline gap-x-3 gap-y-1"
           )}
         >
           <h2
@@ -57,7 +62,8 @@ export function Panel({
             <p
               className={cn(
                 "text-muted-foreground",
-                open ? "text-xs" : "mt-0.5 eyebrow"
+                open ? "text-xs" : "mt-0.5 eyebrow",
+                descriptionLayout === "stacked" && "mt-1"
               )}
             >
               {description}

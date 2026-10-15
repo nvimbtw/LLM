@@ -130,6 +130,19 @@ export function defaultLrFor(mode: TrainMode): number {
   return DEFAULT_CONFIG.lr
 }
 
+/** Changes training mode while preserving explicitly edited learning rates. Crossing between prose training and fine-tuning clears incompatible dataset/curriculum selections; preference mode gains its missing beta default. */
+export function configForMode(cfg: TrainConfig, mode: TrainMode): TrainConfig {
+  if (cfg.mode === mode) return cfg
+  const next = { ...cfg, mode }
+  if (MODE_DEFAULT_LRS.includes(cfg.lr)) next.lr = defaultLrFor(mode)
+  if (mode === "kto" && next.beta === undefined) next.beta = KTO_DEFAULT_BETA
+  if (isFineTune(cfg.mode) !== isFineTune(mode)) {
+    next.datasets = []
+    next.curriculum = []
+  }
+  return next
+}
+
 export function isPowerOfTwo(n: number) {
   return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0
 }

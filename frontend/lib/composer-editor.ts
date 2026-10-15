@@ -1,7 +1,15 @@
 import { Extension, Mark, type Editor } from "@tiptap/core"
 import type { ResolvedPos } from "@tiptap/pm/model"
+import { AllSelection } from "@tiptap/pm/state"
 
 const CODE_INDENT = "  "
+
+/** Deletes a fully selected draft through its selection contract, leaving a caret in the empty paragraph and preserving undo. Other selections use the standard editor keys. */
+function deleteSelectedDocument(editor: Editor): boolean {
+  if (!(editor.state.selection instanceof AllSelection)) return false
+  editor.view.dispatch(editor.state.tr.deleteSelection().scrollIntoView())
+  return true
+}
 
 /**
  * Indents/outdents code lines touched by the selection, returning false outside code blocks.
@@ -65,9 +73,11 @@ function codeBlockDepth($pos: ResolvedPos): number | null {
 export const ComposerKeys = Extension.create({
   name: "composerKeys",
   priority: 1000,
-  /** Supplies list/code indentation keys, consuming Tab even when no indentation action is available. */
+  /** Supplies full-draft deletion and list/code indentation keys, consuming Tab even when no indentation action is available. */
   addKeyboardShortcuts() {
     return {
+      Backspace: () => deleteSelectedDocument(this.editor),
+      Delete: () => deleteSelectedDocument(this.editor),
       Tab: () =>
         indentCode(this.editor, false) ||
         this.editor.commands.sinkListItem("listItem") ||

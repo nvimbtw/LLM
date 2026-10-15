@@ -1,25 +1,19 @@
-import { Suspense } from "react"
+import { redirect } from "next/navigation"
 
-import { TrainComposer } from "@/components/jobs/train-composer"
-import { PageHeader } from "@/components/ui/page-header"
-import { PageShell } from "@/components/ui/page-shell"
+interface NewTrainRedirectPageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
 
-export default function NewTrainJobPage() {
-  return (
-    <PageShell width="board" className="max-w-4xl">
-      <PageHeader
-        titleClassName="text-2xl font-normal"
-        className="mb-6 border-b-0 pb-0"
-        back={{ href: "/admin", label: "Admin" }}
-        title="Train a model"
-      />
-
-      {/* The form reads `?from=` to seed itself from a previous run, which makes it
-          a client boundary that can't be prerendered. Suspense is what lets the
-          static half of the page (this header) still be. */}
-      <Suspense fallback={null}>
-        <TrainComposer />
-      </Suspense>
-    </PageShell>
-  )
+/** Redirects legacy training bookmarks to the new composer, preserving query values including repeated seeds. */
+export default async function NewTrainRedirectPage({
+  searchParams,
+}: NewTrainRedirectPageProps) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(await searchParams)) {
+    if (value === undefined) continue
+    for (const entry of Array.isArray(value) ? value : [value])
+      params.append(key, entry)
+  }
+  const query = params.toString()
+  redirect(`/jobs/new-train${query ? `?${query}` : ""}`)
 }

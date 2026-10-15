@@ -1,7 +1,8 @@
 "use client"
 
 import { Checkbox } from "@/components/ui/checkbox"
-import { Input } from "@/components/ui/input"
+import { useId } from "react"
+import { Input, type InputProps } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import type { DatasetInfo, DatasetSelection } from "@/lib/training"
 
@@ -14,27 +15,28 @@ import type { DatasetInfo, DatasetSelection } from "@/lib/training"
 export const EXP_MIN = 0
 export const EXP_MAX = 13
 
-// A power-of-two field, edited as its exponent: the input holds `k` and the value
-// sent upstream is 2^k. This is what makes cycling work — the native ±1 step (from
-// the spinner buttons, the wheel, or ↑/↓) moves the exponent by one, which
-// doubles/halves the value (… 16 · 32 · 64 …) instead of walking 65 · 66 · 67. A
-// muted "= 64" shows the resolved value so the exponent is never cryptic.
+export interface Pow2InputProps {
+  value: number
+  disabled: boolean
+  maxExp?: number
+  ariaLabel?: string
+  variant?: InputProps["variant"]
+  onChange: (n: number) => void
+}
+
+/** Edits a bounded exponent and emits its power-of-two value, displaying the resolved value beside it. */
 export function Pow2Input({
   value,
   disabled,
   maxExp = EXP_MAX,
   ariaLabel,
+  variant = "default",
   onChange,
-}: {
-  value: number
-  disabled: boolean
-  maxExp?: number
-  ariaLabel?: string
-  onChange: (n: number) => void
-}) {
+}: Pow2InputProps) {
   const exp = Math.max(0, Math.round(Math.log2(value > 0 ? value : 1)))
   const resolved = 2 ** Math.min(maxExp, Math.max(EXP_MIN, exp))
 
+  /** Clamps an edited exponent to the supported range and emits its power-of-two value. */
   const setExp = (raw: number) => {
     if (!Number.isFinite(raw)) return
     const k = Math.min(maxExp, Math.max(EXP_MIN, Math.round(raw)))
@@ -48,6 +50,7 @@ export function Pow2Input({
       </span>
       <span className="text-sm text-muted-foreground select-none">2^</span>
       <Input
+        variant={variant}
         aria-label={ariaLabel}
         type="number"
         step={1}
@@ -62,15 +65,17 @@ export function Pow2Input({
   )
 }
 
-// The dataset picker: one checkbox row per selectable dataset. Checking one adds
-// it to the run; the count field then dials how many of its documents to take
-// (blank/0 = all), with the total shown as "/ <documents>". Reads as an
-// extension of the spec-sheet rail — a hairline list, tabular figures, muted
-// labels — rather than a separate form.
-//
-// Serves both kinds. A selection carries the dataset's id: the LLM engine selects
-// by id because a name is something a person can rename in the data view
-// without meaning to change what a run trains on.
+export interface DatasetPickerProps {
+  available: DatasetInfo[]
+  loading: boolean
+  value: DatasetSelection[]
+  disabled: boolean
+  onChange: (next: DatasetSelection[]) => void
+  emptyHint?: React.ReactNode
+  variant?: InputProps["variant"]
+}
+
+/** Selects datasets by stable ID and bounds document limits to catalogue totals; zero means all documents. IDs are unique to each mounted picker. */
 export function DatasetPicker({
   available,
   loading,
@@ -78,24 +83,19 @@ export function DatasetPicker({
   disabled,
   onChange,
   emptyHint,
-}: {
-  available: DatasetInfo[]
-  loading: boolean
-  value: DatasetSelection[]
-  disabled: boolean
-  onChange: (next: DatasetSelection[]) => void
-  emptyHint?: React.ReactNode
-}) {
+  variant = "default",
+}: DatasetPickerProps) {
+  const pickerId = useId()
   const selected = new Map(value.map((d) => [d.id, d.count]))
 
+  /** Adds or removes a dataset selection, retaining its name for saved presets. */
   const toggle = (dataset: DatasetInfo, on: boolean) => {
-    // The name is stored alongside the id so a saved preset still reads as
-    // something; the run resolves the id and takes the current name from there.
     if (on)
       onChange([...value, { id: dataset.id, name: dataset.name, count: 0 }])
     else onChange(value.filter((d) => d.id !== dataset.id))
   }
 
+  /** Bounds the edited document limit to this dataset and updates its selection. */
   const setCount = (id: string, count: number, max: number) => {
     const clamped = Number.isFinite(count)
       ? Math.min(max, Math.max(0, Math.floor(count)))
@@ -137,7 +137,7 @@ export function DatasetPicker({
           {available.map((d) => {
             const checked = selected.has(d.id)
             const count = selected.get(d.id) ?? 0
-            const rowId = `dataset-${d.id}`
+            const rowId = `${pickerId}-dataset-${d.id}`
             return (
               <li
                 key={d.id}
@@ -163,6 +163,7 @@ export function DatasetPicker({
                   {checked ? (
                     <>
                       <Input
+                        variant={variant}
                         aria-label={`${d.name} document limit`}
                         type="number"
                         min={0}

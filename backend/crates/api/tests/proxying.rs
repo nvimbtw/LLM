@@ -164,6 +164,51 @@ async fn starting_a_run_is_admin_work() {
     );
 }
 
+/// Regular users cannot edit shared model metadata, including its manually assigned size.
+#[actix_web::test]
+async fn model_metadata_edits_require_an_admin() {
+    let (url, asked) = stub("{}");
+    let app = service!(url);
+    let (_, bearer) = session(AccessLevel::User);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/models/{}", Uuid::new_v4()))
+            .insert_header(("authorization", bearer))
+            .set_json(json!({"display_name": "Changed", "size": "flagship"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(asked.try_recv().is_err());
+}
+
+/// Admin display edits cross the proxy unchanged and carry the authorized system identity.
+#[actix_web::test]
+async fn admin_model_size_edits_are_forwarded() {
+    let (url, asked) = stub(r#"{"size":"flagship"}"#);
+    let app = service!(url);
+    let (_, bearer) = session(AccessLevel::Admin);
+    let model = Uuid::new_v4();
+    let response = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/models/{model}"))
+            .insert_header(("authorization", bearer))
+            .set_json(json!({"size": "flagship"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let raw = asked.recv().unwrap();
+    assert_eq!(
+        request_line(&raw),
+        format!("PATCH /models/{model} HTTP/1.1")
+    );
+    assert!(raw.contains(r#"{"size":"flagship"}"#));
+    assert!(matches!(acting_for(&raw), Caller::System));
+}
+
 #[actix_web::test]
 async fn watching_a_run_is_not() {
     let (url, asked) = stub(r#"{"active":[],"history":[]}"#);

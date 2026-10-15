@@ -17,29 +17,21 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
-import { useAuth } from "@/hooks/use-auth"
+import { useAuth, useSessionToken } from "@/hooks/use-auth"
+import { getToken } from "@/lib/api"
 import { deleteModel, useModels, type Model } from "@/hooks/use-models"
 import { LoadError } from "@/components/ui/error-state"
-import { formatCount } from "./format"
 import { ModelCard } from "./model-card"
 import { ModelsFilter, type Visibility } from "./models-filter"
 
-/**
- * The registry: a ledger of what exists, then one grid of it.
- *
- * Previously this nested a family section inside a visibility section inside the
- * grid — two levels of heading over a set that is usually a dozen rows, so the page
- * was mostly scaffolding and the same family appeared twice whenever it held both a
- * published and an unpublished model. Visibility is now a filter (`ModelsFilter`),
- * which is what it always was: a way of narrowing one list, not a hierarchy the
- * list has. Family is narrowed through the search — the query is matched against
- * it below — rather than through a second row of controls.
- *
- * The grid itself is sorted largest-first. Size is the one ordering that reads
- * without a heading to explain it, and it puts the model most likely to be wanted
- * in the top-left.
- */
+/** Scopes registry filters and selection to the current authenticated session. */
 export function ModelsGrid() {
+  const token = useSessionToken()
+  return token ? <ModelsGridContent key={token} /> : null
+}
+
+/** Owns one session's registry filters, selection and sequential batch deletion. */
+function ModelsGridContent() {
   const [refreshKey, setRefreshKey] = React.useState(0)
   const { models, isLoading, error } = useModels(refreshKey)
   const { isAdmin } = useAuth()
@@ -49,7 +41,6 @@ export function ModelsGrid() {
   const [selecting, setSelecting] = React.useState(false)
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(new Set())
 
-  const families = React.useMemo(() => countFamilies(models), [models])
   const counts = React.useMemo(
     () => ({
       all: models.length,
@@ -77,15 +68,12 @@ export function ModelsGrid() {
       .sort((a, b) => b.params - a.params)
   }, [models, visibility, query])
 
-  // Selection is held as ids and resolved against the *whole* registry, not the
-  // filtered view: narrowing the filter must not silently drop what is already
-  // ticked. The confirm dialog names every model it is about to delete, so a
-  // selection scrolled off screen can still never be deleted unseen.
   const chosen = React.useMemo(
     () => models.filter((m) => selected.has(m.id)),
     [models, selected]
   )
 
+  /** Updates selection by model identity without dropping selections hidden by a filter. */
   const toggle = React.useCallback((id: string, next: boolean) => {
     setSelected((prev) => {
       const copy = new Set(prev)
@@ -95,24 +83,25 @@ export function ModelsGrid() {
     })
   }, [])
 
+  /** Exits selection mode and clears the chosen identities. */
   const stopSelecting = React.useCallback(() => {
     setSelecting(false)
     setSelected(new Set())
   }, [])
 
+  /** Deletes chosen models sequentially, stops on account replacement and reports partial failures by name. */
   const deleteChosen = React.useCallback(async () => {
-    // Sequential rather than all at once: each delete is a transaction plus an
-    // `rm -rf` of the weights, and a batch is usually a post-train run's leftovers
-    // — a dozen or more. Firing those concurrently buys nothing and makes a
-    // partial failure harder to report honestly.
     const failures: string[] = []
+    const token = getToken()
     for (const model of chosen) {
+      if (getToken() !== token) return
       try {
         await deleteModel(model.id)
       } catch {
         failures.push(model.name)
       }
     }
+    if (getToken() !== token) return
 
     const deleted = chosen.length - failures.length
     if (failures.length === 0) {
@@ -123,8 +112,6 @@ export function ModelsGrid() {
         failures.join(", ")
       )
     } else {
-      // Partial failure is the case worth stating precisely — the grid is about to
-      // refresh and show a number that would otherwise need explaining.
       toast.error(
         `Deleted ${deleted} of ${chosen.length}.`,
         `Still there: ${failures.join(", ")}`
@@ -147,9 +134,8 @@ export function ModelsGrid() {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6">
-        <Skeleton className="h-20 rounded-(--radius-sheet)" />
         <Skeleton className="h-8 w-72 rounded-(--radius-control-sm)" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid gap-x-10 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-44 rounded-(--radius-sheet)" />
           ))}
@@ -171,8 +157,6 @@ export function ModelsGrid() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Ledger models={models} families={families} />
-
       <ModelsFilter
         visibility={visibility}
         onVisibility={setVisibility}
@@ -180,12 +164,19 @@ export function ModelsGrid() {
         query={query}
         onQuery={setQuery}
         showVisibility={isAdmin}
+        action={
+          isAdmin &&
+          !selecting && (
+            <Button variant="text" size="sm" onClick={() => setSelecting(true)}>
+              <Trash2 className="size-3.5" />
+              Select
+            </Button>
+          )
+        }
       />
 
-      {isAdmin && (
+      {isAdmin && selecting && (
         <SelectBar
-          selecting={selecting}
-          onStart={() => setSelecting(true)}
           onCancel={stopSelecting}
           chosen={chosen}
           shown={shown}
@@ -202,12 +193,12 @@ export function ModelsGrid() {
           Nothing matches that.
         </p>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid gap-x-10 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
           {shown.map((model) => (
             <ModelCard
               key={model.id}
               model={model}
-              selectable={selecting}
+              selectable={selecting && isAdmin}
               selected={selected.has(model.id)}
               onSelectedChange={(next) => toggle(model.id, next)}
             />
@@ -218,61 +209,8 @@ export function ModelsGrid() {
   )
 }
 
-// The headline figures, in the ruled-ledger idiom the model detail page and the
-// usage page share — so "how big is the registry" is answered in the same shape
-// wherever it is asked. Furniture: rules, no box, no fill.
-function Ledger({ models, families }: { models: Model[]; families: number }) {
-  const largest = models.reduce((max, m) => Math.max(max, m.params), 0)
-  const context = models.reduce((max, m) => Math.max(max, m.contextWindow), 0)
-
-  return (
-    <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
-      <Figure label="Models" value={String(models.length)} />
-      <Figure label="Families" value={String(families)} />
-      <Figure
-        label="Largest"
-        value={largest ? formatCount(largest) : "—"}
-        hint="parameters"
-      />
-      <Figure
-        label="Longest context"
-        value={context ? formatCount(context) : "—"}
-        hint="tokens"
-      />
-    </dl>
-  )
-}
-
-function Figure({
-  label,
-  value,
-  hint,
-}: {
-  label: string
-  value: string
-  hint?: string
-}) {
-  return (
-    <div className="pr-6">
-      <dt className="eyebrow text-muted-foreground">{label}</dt>
-      <dd className="mt-1.5 figure text-2xl">{value}</dd>
-      {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  )
-}
-
-/**
- * Selecting and deleting in bulk — the registry's one destructive affordance.
- *
- * Behind an explicit mode rather than a checkbox that is always on every card,
- * because the overwhelmingly common reason to be here is to open a model, and a
- * grid permanently dressed for deletion reads as a more dangerous page than it is.
- * A post-train run leaves a dozen models behind, though, and deleting those one
- * detail page at a time is the thing this exists to stop.
- */
+/** Presents selection controls and confirms every chosen model before sequential bulk deletion. */
 function SelectBar({
-  selecting,
-  onStart,
   onCancel,
   chosen,
   shown,
@@ -280,8 +218,6 @@ function SelectBar({
   onClear,
   onDelete,
 }: {
-  selecting: boolean
-  onStart: () => void
   onCancel: () => void
   chosen: Model[]
   shown: Model[]
@@ -290,17 +226,6 @@ function SelectBar({
   onDelete: () => Promise<void>
 }) {
   const [isDeleting, setIsDeleting] = React.useState(false)
-
-  if (!selecting) {
-    return (
-      <div className="flex justify-end">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={onStart}>
-          <Trash2 className="size-3.5" />
-          Select
-        </Button>
-      </div>
-    )
-  }
 
   const allShownChosen =
     shown.length > 0 && shown.every((m) => chosen.some((c) => c.id === m.id))
@@ -349,8 +274,6 @@ function SelectBar({
               </AlertDialogDescription>
             </AlertDialogHeader>
 
-            {/* Named, not just counted. Selection survives a filter change, so the
-                list is the only thing that guarantees nothing is deleted unseen. */}
             <ul className="max-h-48 space-y-1 overflow-y-auto rounded-(--radius-control-sm) border border-border bg-muted/30 px-3 py-2 text-sm">
               {chosen.map((m) => (
                 <li key={m.id} className="truncate">
@@ -404,10 +327,4 @@ function count(n: number, noun: string): string {
 /** A model with no family recorded is its own bucket rather than a blank one. */
 function familyOf(model: Model): string {
   return model.family || "Custom"
-}
-
-// How many distinct families the registry holds — a ledger figure, and the only
-// thing left that needs to know. The per-family counts went with the chips.
-function countFamilies(models: Model[]): number {
-  return new Set(models.map(familyOf)).size
 }

@@ -8,26 +8,25 @@ import {
   architectureOf,
   baseModelOf,
   datasetsOf,
-  estimateParams,
   mapModel,
   resumedFromOf,
+  vocabularySizeOf,
   type LineageDatasetRef,
   type Model,
+  type ModelTier,
   type RawArchitecture,
   type RawModel,
   type RawModelConfig,
   type RawModelResult,
 } from "./use-models"
 
-// The card-level Model plus the full training config, run summary and timestamps
-// the detail page surfaces.
 export interface ModelDetail extends Model {
   createdAt: string
-  estimatedParams: number
+  vocabularySize: number | null
+  storedDescription: string
+  trainingMode: "pretrain" | "sft" | "kto" | "rl"
   config: RawModelConfig | null
   dataset: RawModelResult | null
-  // Resolved regardless of family — see `architectureOf` for why a pretrain and
-  // an SFT run need different reads to answer the same question.
   architecture: RawArchitecture | null
   /** The pretrained model this was fine-tuned from, or null on a pretrain. */
   baseModelId: string | null
@@ -51,11 +50,25 @@ export interface ModelDetail extends Model {
   parentId: string | null
 }
 
+export interface ModelEdits {
+  display_name: string
+  description: string
+  family: string
+  size: ModelTier | null
+}
+
+/** Maps resolved model facts alongside the model's own immutable training provenance. */
 function mapDetail(raw: RawModel): ModelDetail {
   return {
     ...mapModel(raw),
     createdAt: raw.created_at ?? "",
-    estimatedParams: estimateParams(raw),
+    vocabularySize: vocabularySizeOf(raw),
+    storedDescription: raw.description ?? "",
+    trainingMode:
+      raw.parameters?.result?.iterations !== undefined
+        ? "rl"
+        : (raw.parameters?.config?.mode ??
+          (baseModelOf(raw) ? "sft" : "pretrain")),
     config: raw.parameters?.config ?? null,
     dataset: raw.parameters?.result ?? null,
     architecture: architectureOf(raw),
@@ -68,17 +81,13 @@ function mapDetail(raw: RawModel): ModelDetail {
   }
 }
 
+/** Loads one model and exposes admin mutations. Switching model identities resets read status and ignores obsolete responses. */
 export function useModel(id: string) {
   const [model, setModel] = React.useState<ModelDetail | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [notFound, setNotFound] = React.useState(false)
   const [error, setError] = React.useState<Error | null>(null)
 
-  // Reset during render rather than in the effect. Switching model ids has to
-  // clear the previous model's outcome *before* anything paints, or the page
-  // shows the last model's 404 (or its data) for one frame while the new fetch
-  // is in flight. React re-runs this render immediately and discards the
-  // in-progress output, so nothing downstream ever sees the mismatched pair.
   const [loadedFor, setLoadedFor] = React.useState(id)
   if (loadedFor !== id) {
     setLoadedFor(id)
@@ -115,23 +124,29 @@ export function useModel(id: string) {
     }
   }, [id])
 
-  // Admin only. Sends the fields; the backend COALESCEs unchanged ones.
+  /** Saves supplied admin display fields and replaces this model's persisted snapshot on success. */
   const update = React.useCallback(
-    async (name: string, description: string, family: string) => {
+    async (fields: ModelEdits) => {
       const res = await apiFetch(`/models/${id}`, {
         method: "PATCH",
-        body: JSON.stringify({ display_name: name, description, family }),
+        body: JSON.stringify(fields),
       })
       if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || "Unable to update the model.")
+        const body: unknown = await res.json().catch(() => null)
+        const detail =
+          body && typeof body === "object" && "detail" in body
+            ? body.detail
+            : null
+        throw new Error(
+          typeof detail === "string" ? detail : "Unable to update the model."
+        )
       }
       setModel(mapDetail((await res.json()) as RawModel))
     },
     [id]
   )
 
-  // Admin only. Publish/unpublish toggle.
+  /** Persists model publication and refreshes the local snapshot; rejected writes preserve the current row. */
   const setPublished = React.useCallback(
     async (published: boolean) => {
       const res = await apiFetch(`/models/${id}`, {
@@ -147,7 +162,7 @@ export function useModel(id: string) {
     [id]
   )
 
-  // Admin only. Removes the registry row and the on-disk weights.
+  /** Deletes the selected shared model through the admin-only route; failures reject without navigation. */
   const remove = React.useCallback(async () => {
     const res = await apiFetch(`/models/${id}`, { method: "DELETE" })
     if (!res.ok) {
@@ -159,9 +174,6 @@ export function useModel(id: string) {
   return { model, isLoading, notFound, error, update, setPublished, remove }
 }
 
-// A chain is rarely more than a handful of hops; this is a defensive bound
-// against a corrupt or (impossible today, but not enforced by a constraint) a
-// cyclic `resume_from`/`base_model`, not a figure anyone is expected to hit.
 const MAX_LINEAGE_HOPS = 25
 
 export type LineageRelation = "fine-tuned" | "continued"
@@ -189,6 +201,7 @@ export interface LineageNode {
   datasets: LineageDatasetRef[]
 }
 
+/** Returns the construction relationship and ancestor identity for one model response. */
 function relationOf(raw: RawModel): {
   relation: LineageRelation | null
   nextId: string | null
@@ -201,7 +214,8 @@ function relationOf(raw: RawModel): {
 }
 
 /**
- * The chain of models `model` was constructed from.
+ * The chain of models `model` was constructed from. Dataset catalogue failures
+ * keep stored names or identities instead of failing the construction history.
  *
  * There is no endpoint that returns a whole ancestry in one call, so this
  * walks it client-side, one `GET /models/{id}` per hop — small in practice,
@@ -215,7 +229,7 @@ function relationOf(raw: RawModel): {
  */
 export function useModelLineage(model: ModelDetail | null) {
   const rootId = model?.id ?? null
-  const rootNextId = model ? model.baseModelId ?? model.resumedFromId : null
+  const rootNextId = model ? (model.baseModelId ?? model.resumedFromId) : null
   const rootRelation: LineageRelation | null = model
     ? model.baseModelId
       ? "fine-tuned"
@@ -232,11 +246,6 @@ export function useModelLineage(model: ModelDetail | null) {
   const [error, setError] = React.useState<Error | null>(null)
   const [attempt, setAttempt] = React.useState(0)
 
-  // Reset during render, not in the effect — the same shape `useModel` and
-  // `useCheckpoints` use: switching to a model with no ancestry (or a
-  // different one) has to clear the previous chain before anything paints,
-  // and a synchronous `setState` in the effect body is what the
-  // `react-hooks/set-state-in-effect` rule (rightly) catches instead.
   const [loadedFor, setLoadedFor] = React.useState(rootNextId)
   if (loadedFor !== rootNextId) {
     setLoadedFor(rootNextId)
@@ -249,6 +258,7 @@ export function useModelLineage(model: ModelDetail | null) {
     if (!rootId || !rootNextId) return
     let active = true
 
+    /** Reads bounded ancestry until its end, an unavailable model or a cycle, preserving known ancestors. */
     async function walk(): Promise<LineageNode[]> {
       const seen = new Set<string>([rootId as string])
       const out: LineageNode[] = []
@@ -256,9 +266,6 @@ export function useModelLineage(model: ModelDetail | null) {
       while (nextId && !seen.has(nextId) && out.length < MAX_LINEAGE_HOPS) {
         seen.add(nextId)
         const res = await apiFetch(`/models/${nextId}`)
-        // A deleted or inaccessible ancestor ends the chain where it is known
-        // rather than failing the whole panel — the models already resolved
-        // are still true statements about how this one was built.
         if (!res.ok) break
         const raw = (await res.json()) as RawModel
         const { relation, nextId: pointsTo } = relationOf(raw)
@@ -295,19 +302,13 @@ export function useModelLineage(model: ModelDetail | null) {
     }
   }, [rootId, rootNextId, attempt])
 
-  // Dataset names embedded in a stored config can be empty — an older config,
-  // or a selection built before one was picked up — so they are resolved
-  // against the data engine's own list once, the same "named when we can, by
-  // id otherwise" fallback `model-detail.tsx` already uses for a base model.
   React.useEffect(() => {
     let active = true
     listDatasets()
       .then((rows) => {
         if (active) setDatasetNames(new Map(rows.map((d) => [d.id, d.name])))
       })
-      .catch(() => {
-        // Left empty: nodes fall back to their stored name, then their id.
-      })
+      .catch(() => {})
     return () => {
       active = false
     }
@@ -326,6 +327,7 @@ export function useModelLineage(model: ModelDetail | null) {
     return [root, ...ancestors]
   }, [model, rootRelation, ancestors])
 
+  /** Resolves a selected dataset's current name, falling back to its stored name and identity. */
   const resolveDatasetName = React.useCallback(
     (dataset: LineageDatasetRef) =>
       datasetNames.get(dataset.id) || dataset.name || dataset.id,

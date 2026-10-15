@@ -1,5 +1,24 @@
 # Chat message presentation
 
+## Message position rail
+
+Conversations show a quiet index of user questions centered vertically in the chat
+pane's left gutter when that pane is at least 768px wide. Each question has a
+neutral stroke; the current exchange has a slightly longer, darker hairline. The current position
+follows the question whose center has passed the viewport's center; replies retain
+their preceding question's position. At either end, the first or last question is
+current.
+Trace expansion, streaming growth and viewport changes update the position too.
+Long indices scroll within the rail and keep the current stroke in view.
+
+Hovering or focusing a stroke previews its question. Buttons expose the question
+number and current position to assistive technology. Selecting a stroke centers
+that question with a short eased scroll (240–420ms) and pauses automatic
+bottom-following. A new selection replaces the jump; a wheel, touch, pointer or
+keyboard gesture in the transcript cancels it. Reduced motion makes jumps instant;
+scrolling back to the bottom resumes following. Narrow screens retain the full
+reading width without the rail. Queued interjections get no position until sent.
+
 ## Opening one
 
 `AttachmentViewer` is a panel beside the thread, not a dialog over it — the
@@ -129,8 +148,8 @@ would have had to be authored, and then maintained, in both.
 throughout — the `word-ink-in` curve — and everything expressed as opacity,
 transform or a registered custom property, because a long trace is twenty of
 these on screen while the model is still writing. The disclosure is
-`grid-template-rows` between `0fr` and `1fr` (the idiom `slash-command-menu.tsx`
-already opens on), which animates a height nobody measured; it was a bare
+`grid-template-rows` between `0fr` and `1fr`, which animates a height nobody
+measured; it was a bare
 `{expanded && …}` before, so opening a note, closing it, and the auto-collapse
 when the answer arrives were all instant swaps — and that last one is the moment
 the panel is judged on, since it is where the working gets out of the way of the

@@ -34,6 +34,7 @@ export interface ModelBenchmarksProps {
   modelId: string
 }
 
+/** Loads the selected model’s latest benchmark figures and prior runs; unavailable reports retain an actionable empty state. */
 export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   const { data, isLoading, error } = useModelBenchmarks(modelId)
 
@@ -52,7 +53,7 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
   if (!latest?.report) {
     return (
       <Section>
-        <p className="px-5 py-6 text-sm text-muted-foreground">
+        <p className="py-4 text-sm text-muted-foreground">
           {runs.length > 0
             ? "Every run of this model failed before it produced a report."
             : "Never benchmarked."}{" "}
@@ -67,21 +68,13 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
 
   return (
     <Section subtitle={`Scored ${formatDate(latest.created_at)}`}>
-      {/* The model page shows the language bench only — a second and third set of
-          four figures beside it would compete for the same glance. The markup and
-          assistant scores are a click away on /benchmark. `getModelRuns` defaults to
-          the language suite, so no other report can arrive here; the guard is for the
-          type, not for a case — and it names the suite it wants rather than excluding
-          one, which stopped being sufficient the moment there were three. */}
       {isLanguageReport(latest.report) && <Headlines report={latest.report} />}
       {runs.length > 1 && <RunList runs={runs} />}
     </Section>
   )
 }
 
-// A sheet, via `Panel` — the section used to draw its own flat outline box and
-// title it with an eyebrow, which put it a tier below the spec panels beside it
-// when it is the same kind of thing.
+/** Groups benchmark content in an open section with an optional scoring date. */
 function Section({
   subtitle,
   children,
@@ -91,6 +84,7 @@ function Section({
 }) {
   return (
     <Panel
+      variant="open"
       title="Benchmarks"
       aside={
         subtitle && (
@@ -99,8 +93,6 @@ function Section({
           </span>
         )
       }
-      // The bands set their own padding: the headline grid is a divided ledger
-      // that has to reach the panel's edges, and the run list is rows.
       bodyClassName="p-0"
     >
       {children}
@@ -108,14 +100,12 @@ function Section({
   )
 }
 
-// The composite beside the three stage headlines — the same divided-ledger figure
-// the hero strip and /benchmark's score card both use, so a score reads the same
-// wherever it is met.
+/** Presents a language report’s composite score and available corpus/surface measurements. */
 function Headlines({ report }: { report: LanguageReport }) {
   const { corpus, surface, score } = report
 
   return (
-    <dl className="grid grid-cols-2 gap-px bg-border/60 sm:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border/40 py-4 sm:grid-cols-4">
       <Figure
         label="Eval score"
         value={formatNumber(score.score, 1)}
@@ -149,6 +139,7 @@ function Headlines({ report }: { report: LanguageReport }) {
   )
 }
 
+/** Renders a benchmark measurement with its unit or availability hint. */
 function Figure({
   label,
   value,
@@ -161,10 +152,7 @@ function Figure({
   lead?: boolean
 }) {
   return (
-    // `bg-card`, the sheet's own surface: these cells are what the `gap-px`
-    // divider above shows through, so they have to be the panel's colour and not
-    // the page's.
-    <div className="bg-card px-5 py-4">
+    <div className="py-1">
       <dt className="eyebrow text-muted-foreground">{label}</dt>
       <dd
         className={cn(
@@ -182,15 +170,14 @@ function Figure({
   )
 }
 
-// Earlier runs, so a score reads as a point on a trajectory rather than a fact.
-// Newest first, and the newest is the one the figures above describe.
+/** Lists prior benchmark results in chronological order as returned by the service. */
 function RunList({ runs }: { runs: BenchmarkRun[] }) {
   return (
     <ul className="border-t border-border/40">
       {runs.map((run) => (
         <li
           key={run.id_run}
-          className="flex items-baseline gap-3 border-b border-border/40 px-5 py-2 last:border-0"
+          className="flex items-baseline gap-3 border-b border-border/40 py-2 last:border-0"
         >
           <Link
             href="/benchmark"

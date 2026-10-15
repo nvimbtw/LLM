@@ -51,10 +51,7 @@ export function ModelLineage({ model }: ModelLineageProps) {
   if (!isLoading && !error && nodes.length <= 1) return null
 
   return (
-    <Panel
-      title="Lineage"
-      bodyClassName="p-0"
-    >
+    <Panel variant="open" title="Lineage" bodyClassName="p-0">
       {isLoading ? (
         <Skeleton className="m-5 h-28 rounded-(--radius-sheet)" />
       ) : error ? (
@@ -68,11 +65,13 @@ export function ModelLineage({ model }: ModelLineageProps) {
                 key={node.id}
                 className={cn(!isLast && "border-b border-border/40")}
               >
-                <LineageRow node={node} resolveDatasetName={resolveDatasetName} />
-                {/* The edge to the next ancestor down — how *this* node was
-                    built, not how the one below it was. */}
+                <LineageRow
+                  node={node}
+                  resolveDatasetName={resolveDatasetName}
+                />
+
                 {!isLast && node.relation && (
-                  <div className="flex items-center gap-1.5 px-5 pb-3 text-2xs text-muted-foreground">
+                  <div className="flex items-center gap-1.5 pb-3 text-2xs text-muted-foreground">
                     <span aria-hidden className="text-muted-foreground/50">
                       ↓
                     </span>
@@ -88,6 +87,7 @@ export function ModelLineage({ model }: ModelLineageProps) {
   )
 }
 
+/** Renders one model and its resolved training datasets, linking ancestor models to their detail pages. */
 function LineageRow({
   node,
   resolveDatasetName,
@@ -101,11 +101,8 @@ function LineageRow({
   })
 
   return (
-    <div className="px-5 pt-3.5 pb-2">
+    <div className="pt-3.5 pb-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        {/* The current model is a node like any other, so the chain reads as
-            one continuous object — it just isn't a link to the page already
-            open. */}
         {node.isRoot ? (
           <span className="text-sm font-semibold">{node.name}</span>
         ) : (
@@ -116,9 +113,9 @@ function LineageRow({
             {node.name}
           </Link>
         )}
-        <span className="eyebrow text-muted-foreground">{node.family}</span>
+        <span className="text-xs text-muted-foreground">{node.family}</span>
         {node.isRoot && (
-          <span className="eyebrow text-primary">This model</span>
+          <span className="text-xs text-primary">This model</span>
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">

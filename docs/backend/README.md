@@ -18,6 +18,11 @@ bench-engine. See [conversations.md](conversations.md) and
   `CARGO_MANIFEST_DIR`, so the directory and the `"./migrations"` literal must
   move together — mismatching them still compiles and fails at runtime.
 
+After migrations, `create_pool` calls `insert_users` to seed missing `admin` and
+`agents` administrator accounts. Existing accounts keep their passwords and access
+levels; other insertion failures stop startup. Development login credentials live
+in [`AGENTS.md`](../../AGENTS.md#application-login).
+
 `query_as!`/`query!` check against a live schema at **compile** time, so a build
 needs either `DATABASE_URL` pointing at a migrated database or the checked-in
 `.sqlx/` cache and `SQLX_OFFLINE=true`. The container images use the second —

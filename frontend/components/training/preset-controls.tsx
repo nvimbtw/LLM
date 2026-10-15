@@ -23,30 +23,32 @@ import { loadModelConfig, toTrainConfig } from "@/lib/training-presets"
 import type { TrainConfig } from "@/lib/training"
 import { FormError } from "@/components/ui/error-state"
 
-// The preset controls that live at the top of the params rail: a picker to load a
-// saved preset or clone an existing model's config, and a save/delete affordance.
-// Quiet and hairline to match the rail — no card chrome.
+export interface PresetControlsProps {
+  currentConfig: TrainConfig
+  disabled: boolean
+  onLoad: (cfg: TrainConfig) => void
+  modelsRefreshKey?: unknown
+}
+
+/** Loads saved or model-derived training configs and saves named presets; failed model reads leave the draft intact. */
 export function PresetControls({
   currentConfig,
   disabled,
   onLoad,
   modelsRefreshKey,
-}: {
-  currentConfig: TrainConfig
-  disabled: boolean
-  onLoad: (cfg: TrainConfig) => void
-  modelsRefreshKey?: unknown
-}) {
+}: PresetControlsProps) {
   const { presets, save, remove, error } = useTrainingPresets()
   const { models } = useModels(modelsRefreshKey)
   const [saving, setSaving] = React.useState(false)
   const [name, setName] = React.useState("")
 
+  /** Opens preset naming with the current model name as its initial value. */
   const beginSave = () => {
     setName(currentConfig.model_name)
     setSaving(true)
   }
 
+  /** Persists a nonblank preset name and closes naming only after success. */
   const commitSave = async () => {
     const trimmed = name.trim()
     if (!trimmed) return
@@ -54,12 +56,11 @@ export function PresetControls({
     if (ok) setSaving(false)
   }
 
+  /** Loads the supplied model config into the editor; failed reads preserve its existing draft. */
   const loadModel = async (id: string, modelName: string) => {
     try {
       onLoad(await loadModelConfig(id, modelName))
-    } catch {
-      // Non-fatal: leave the form as-is if the model config can't be read.
-    }
+    } catch {}
   }
 
   return (
@@ -70,10 +71,10 @@ export function PresetControls({
             render={
               <Button
                 type="button"
-                variant="outline"
+                variant="text"
                 size="sm"
                 disabled={disabled}
-                className="flex-1 justify-between font-normal"
+                className="flex-1 justify-between font-normal text-muted-foreground"
               >
                 Presets
                 <ChevronDown className="size-4 opacity-60" />
@@ -144,7 +145,7 @@ export function PresetControls({
         {!saving && (
           <Button
             type="button"
-            variant="ghost"
+            variant="text"
             size="sm"
             disabled={disabled}
             onClick={beginSave}
@@ -157,6 +158,8 @@ export function PresetControls({
       {saving && (
         <div className="flex items-center gap-1.5">
           <Input
+            variant="inline"
+            aria-label="Preset name"
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -174,7 +177,7 @@ export function PresetControls({
           <Button
             type="button"
             size="icon"
-            variant="ghost"
+            variant="text"
             className="size-8 shrink-0"
             aria-label="Confirm save"
             onClick={() => void commitSave()}

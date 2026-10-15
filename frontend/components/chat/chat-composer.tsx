@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils"
 import type { Attachment } from "@/lib/attachments"
 import { readyAttachments } from "@/lib/composer-attachments"
 import { useComposerAttachments } from "@/hooks/use-composer-attachments"
+import { useComposerHeight } from "@/hooks/use-composer-height"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { FormError } from "@/components/ui/error-state"
@@ -54,6 +55,8 @@ export interface ChatComposerProps {
   ) => Promise<void> | void
   disabled?: boolean
   sending?: boolean
+  /** Uses a smaller resting editor once a conversation has messages. */
+  compact?: boolean
   onCancel?: () => void
   placeholder?: string
   title?: string
@@ -69,6 +72,7 @@ export function ChatComposer({
   onSend,
   disabled = false,
   sending = false,
+  compact = false,
   onCancel,
   placeholder = "Message Slate…",
   title,
@@ -100,6 +104,7 @@ export function ChatComposer({
   const [isEmpty, setIsEmpty] = React.useState(true)
   const [isCommand, setIsCommand] = React.useState(false)
   const [editorText, setEditorText] = React.useState("")
+  const { shellRef, bodyRef } = useComposerHeight()
   const {
     attachments,
     addFiles,
@@ -326,19 +331,7 @@ export function ChatComposer({
           editing={planEditor.editing}
         />
       )}
-      <div
-        className={cn(
-          "z-10",
-          "relative overflow-hidden rounded-(--radius-composer) border shadow-raised transition-colors",
-          "bg-card/75 backdrop-blur-2xl backdrop-saturate-150",
-          "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/50",
-          disabled && "opacity-70"
-        )}
-        onDragEnter={handleDragEnter}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
+      <div className="relative z-20">
         <SlashCommandMenu
           open={isSlashActive}
           input={editorText}
@@ -347,79 +340,101 @@ export function ChatComposer({
           onSelectOption={handleSelectOption}
           ctx={commandContext}
         />
-
-        {isDraggingFiles && (
-          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-(--radius-composer) border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
-            <Paperclip className="size-4" />
-            Drop to add
-          </div>
-        )}
-
-        <AttachmentStrip
-          attachments={attachments}
-          onRemove={removeAttachment}
-        />
-
         <div
+          ref={shellRef}
+          data-composer-size={compact ? "compact" : "expanded"}
           className={cn(
-            isCommand &&
-              "[&_.tiptap]:font-medium [&_.tiptap]:text-primary [&_.tiptap]:caret-primary"
+            "z-10",
+            "relative overflow-hidden rounded-(--radius-composer) border shadow-raised transition-[height] duration-200 ease-out motion-reduce:transition-none",
+            "bg-card/75 backdrop-blur-2xl backdrop-saturate-150",
+            disabled && "opacity-70"
           )}
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
         >
-          {editor ? (
-            <EditorContent editor={editor} />
-          ) : (
-            <div className="min-h-20 px-3.5 py-3" role="status">
-              <span className="sr-only">Loading message editor</span>
-              <Skeleton
-                aria-hidden="true"
-                className="h-5 w-40 motion-reduce:animate-none"
-              />
-            </div>
-          )}
-        </div>
-        {voiceError && (
-          <FormError className="px-3.5 pb-1.5">{voiceError}</FormError>
-        )}
+          <div ref={bodyRef}>
+            {isDraggingFiles && (
+              <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-(--radius-composer) border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
+                <Paperclip className="size-4" />
+                Drop to add
+              </div>
+            )}
 
-        <div className="flex items-center gap-2 px-2.5 pb-2">
-          <AttachMenu onFiles={addFiles} disabled={disabled || sending} />
-          <ComposerPicker
-            model={model}
-            onModelChange={setModel}
-            budget={budget}
-            onBudgetChange={setBudget}
-          />
-          <div className="ml-auto flex items-center gap-2">
-            {voiceSupported && (
-              <MicButton
-                listening={listening}
-                onDevice={voiceOnDevice}
-                onStart={beginDictation}
-                onStop={stopDictation}
-                disabled={disabled}
-              />
-            )}
-            {sending && onCancel && !disabled && (
-              <Button
-                aria-label="Stop"
-                size="icon-sm"
-                variant="ghost"
-                className="rounded-full"
-                onClick={onCancel}
-              >
-                <Square className="size-3.5 fill-current" />
-              </Button>
-            )}
-            <Button
-              aria-label="Send"
-              size="icon-sm"
-              className="rounded-full"
-              disabled={!canSend}
-              onClick={submit}
+            <AttachmentStrip
+              attachments={attachments}
+              onRemove={removeAttachment}
+            />
+
+            <div
+              className={cn(
+                compact
+                  ? "[&_.tiptap]:min-h-0 [&_.tiptap]:py-2"
+                  : "[&_.tiptap]:min-h-16",
+                isCommand &&
+                  "[&_.tiptap]:font-medium [&_.tiptap]:text-primary [&_.tiptap]:caret-primary"
+              )}
             >
-              <ArrowUp />
-            </Button>
+              {editor ? (
+                <EditorContent editor={editor} />
+              ) : (
+                <div
+                  className={cn("px-3.5", compact ? "py-2" : "min-h-16 py-3")}
+                  role="status"
+                >
+                  <span className="sr-only">Loading message editor</span>
+                  <Skeleton
+                    aria-hidden="true"
+                    className="h-5 w-40 motion-reduce:animate-none"
+                  />
+                </div>
+              )}
+            </div>
+            {voiceError && (
+              <FormError className="px-3.5 pb-1.5">{voiceError}</FormError>
+            )}
+
+            <div className="flex items-center gap-2 px-2.5 pb-2">
+              <AttachMenu onFiles={addFiles} disabled={disabled || sending} />
+              <ComposerPicker
+                model={model}
+                onModelChange={setModel}
+                budget={budget}
+                onBudgetChange={setBudget}
+              />
+              <div className="ml-auto flex items-center gap-2">
+                {voiceSupported && (
+                  <MicButton
+                    listening={listening}
+                    onDevice={voiceOnDevice}
+                    onStart={beginDictation}
+                    onStop={stopDictation}
+                    disabled={disabled}
+                  />
+                )}
+                {sending && onCancel && !disabled && (
+                  <Button
+                    aria-label="Stop"
+                    size="icon-sm"
+                    variant="ghost"
+                    className="rounded-full"
+                    onClick={onCancel}
+                  >
+                    <Square className="size-3.5 fill-current" />
+                  </Button>
+                )}
+                <Button
+                  aria-label="Send"
+                  size="icon-sm"
+                  className="rounded-full"
+                  disabled={!canSend}
+                  onClick={submit}
+                >
+                  <ArrowUp />
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
