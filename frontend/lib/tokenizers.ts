@@ -133,6 +133,12 @@ export function validateTokenizerFields(
 
 /** Reads engine JSON, surfacing actionable service validation and conflict messages. */
 async function responseBody(response: Response): Promise<unknown> {
+  if (response.status === 409)
+    throw new Error(
+      "A vocabulary with that name already exists. Choose another name."
+    )
+  if (response.status === 404)
+    throw new Error("This vocabulary no longer exists.")
   const body: unknown = await response.json()
   if (!response.ok) {
     const raw = record(body)

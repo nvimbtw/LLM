@@ -16,6 +16,7 @@ import { useTokenizers } from "@/hooks/use-tokenizers"
 import { jobHref, type Job } from "@/lib/jobs"
 import { LoadError } from "@/components/ui/error-state"
 import { deleteTokenizer, type TokenizerInfo } from "@/lib/tokenizers"
+import { getToken } from "@/lib/api"
 
 /**
  * A catalogue with category filters; named builds lead the combined list.
@@ -23,11 +24,18 @@ import { deleteTokenizer, type TokenizerInfo } from "@/lib/tokenizers"
  */
 export function TokenizersView() {
   const token = useSessionToken()
-  return token ? <TokenizersCatalogue key={token} /> : null
+  return token ? <TokenizersCatalogue key={token} token={token} /> : null
 }
 
 /** Owns one session's vocabulary catalogue, category tabs and deletion refresh. */
-function TokenizersCatalogue() {
+function TokenizersCatalogue({ token }: { token: string }) {
+  const active = React.useRef(false)
+  React.useEffect(() => {
+    active.current = true
+    return () => {
+      active.current = false
+    }
+  }, [])
   const [refreshKey, setRefreshKey] = React.useState(0)
   const { tokenizers, isLoading, error } = useTokenizers(refreshKey)
   const refresh = () => setRefreshKey((k) => k + 1)
@@ -40,8 +48,10 @@ function TokenizersCatalogue() {
 
   /** Deletes a confirmed vocabulary, reports failures and refreshes this catalogue. */
   const remove = async (tokenizer: TokenizerInfo) => {
+    if (getToken() !== token) return
     try {
       const corpora = await deleteTokenizer(tokenizer.id)
+      if (!active.current || getToken() !== token) return
       toast.success(
         `Deleted ${tokenizer.name}.`,
         corpora > 0
@@ -49,12 +59,13 @@ function TokenizersCatalogue() {
           : undefined
       )
     } catch (e) {
+      if (!active.current || getToken() !== token) return
       toast.error(
         "Couldn't delete it",
         e instanceof Error ? e.message : "Something went wrong."
       )
     } finally {
-      refresh()
+      if (active.current && getToken() === token) refresh()
     }
   }
 

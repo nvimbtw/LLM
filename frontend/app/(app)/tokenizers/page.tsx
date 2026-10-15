@@ -2,7 +2,7 @@ import { TokenizersView } from "@/components/tokenizers/tokenizers-view"
 import { PageHeader } from "@/components/ui/page-header"
 import { PageShell } from "@/components/ui/page-shell"
 
-/** Opens the vocabulary catalogue and build dialog in the board-width workspace. */
+/** Opens the board-width vocabulary catalogue with links to detail and creation pages. */
 export default function TokenizersPage() {
   return (
     <PageShell width="board">

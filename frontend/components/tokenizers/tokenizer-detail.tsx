@@ -52,7 +52,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
       >
         <PageHeader
           back={{ href: "/tokenizers", label: "Tokenizers" }}
-          contentClassName="min-w-48 flex-1"
+          contentClassName="w-full min-w-0 flex-auto sm:w-auto sm:min-w-48 sm:flex-1"
           title={
             isAdmin ? (
               <>
