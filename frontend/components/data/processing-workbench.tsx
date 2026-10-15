@@ -267,10 +267,8 @@ function StepChip({
   return (
     <div
       className={cn(
-        "flex shrink-0 items-center gap-2 rounded-(--radius-control-sm) border px-3 py-1.5 transition-colors",
-        isOpen
-          ? "border-primary/50 bg-[color-mix(in_oklab,var(--primary)_7%,transparent)]"
-          : "border-border bg-background"
+        "flex shrink-0 items-center gap-2 border-y px-3 py-1.5 transition-colors",
+        isOpen ? "border-primary/50" : "border-border/60"
       )}
     >
       <span className="font-mono text-xs text-muted-foreground">
@@ -457,7 +455,7 @@ function DocumentDiff({
 
   if (dropped) {
     return (
-      <div className="grid overflow-hidden rounded-(--radius-control-sm) border border-border sm:grid-cols-2">
+      <div className="grid overflow-hidden border-y border-border/60 sm:grid-cols-2">
         <Side text={before} tone="removed" />
         <div className="flex items-center justify-center border-t border-border px-3 py-6 text-xs text-muted-foreground italic sm:border-t-0 sm:border-l">
           — removed —
@@ -467,7 +465,7 @@ function DocumentDiff({
   }
 
   return (
-    <div className="max-h-80 overflow-auto rounded-(--radius-control-sm) border border-border font-mono text-xs">
+    <div className="max-h-80 overflow-auto border-y border-border/60 font-mono text-xs">
       <table className="w-full table-fixed border-collapse">
         <colgroup>
           <col className="w-10" />
@@ -585,6 +583,7 @@ interface NameDialogProps {
   onQueued: (datasetId: string) => void
 }
 
+/** Collects a derived dataset name and queues the chosen pipeline, retaining failures for retry. */
 function NameDialog({
   open,
   source,
@@ -596,6 +595,7 @@ function NameDialog({
   const [submitting, setSubmitting] = React.useState(false)
   const [failure, setFailure] = React.useState<string | null>(null)
 
+  /** Queues processing under the entered name and hands the resulting dataset to the caller. */
   async function submit() {
     setSubmitting(true)
     setFailure(null)
@@ -621,7 +621,10 @@ function NameDialog({
         </DialogHeader>
 
         <div className="space-y-1.5">
-          <label htmlFor="derived-name" className="text-sm font-medium">
+          <label
+            htmlFor="derived-name"
+            className="eyebrow text-muted-foreground"
+          >
             Call it
           </label>
           <Input

@@ -19,12 +19,11 @@ export interface DatasetDetailProps {
   datasetId: string
 }
 
+/** Loads a dataset and presents its documents and cleaning workbench, polling active pulls. */
 export function DatasetDetail({ datasetId }: DatasetDetailProps) {
   const [refreshKey, setRefreshKey] = React.useState(0)
   const { data: dataset, isLoading, error } = useDataset(datasetId, refreshKey)
 
-  // A dataset still filling is worth re-reading: the document count and the
-  // status are what the rest of this page is drawn from.
   React.useEffect(() => {
     if (dataset?.status !== "pulling") return
     const timer = setInterval(() => setRefreshKey((k) => k + 1), 2000)
@@ -70,6 +69,7 @@ export function DatasetDetail({ datasetId }: DatasetDetailProps) {
   )
 }
 
+/** Presents the dataset’s recorded source, counts and cleaning provenance. */
 function Summary({ dataset }: { dataset: Dataset }) {
   return (
     <Panel
@@ -148,15 +148,17 @@ function Summary({ dataset }: { dataset: Dataset }) {
   )
 }
 
+/** Aligns one dataset fact with its label, keeping measured figures tabular. */
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex justify-between gap-4 sm:block">
       <dt className="eyebrow text-muted-foreground">{label}</dt>
-      <dd className="sm:mt-0.5">{value}</dd>
+      <dd className="tabular-nums sm:mt-0.5">{value}</dd>
     </div>
   )
 }
 
+/** Loads one bounded document page and provides navigation through the dataset. */
 function Documents({ datasetId, total }: { datasetId: string; total: number }) {
   const [page, setPage] = React.useState(0)
   const { data, isLoading, error } = useDocuments(datasetId, page * PAGE, PAGE)
@@ -172,6 +174,7 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
       variant="open"
       title="Documents"
       description={`${total.toLocaleString()} in total`}
+      className="tabular-nums"
       bodyClassName="p-0"
     >
       {isLoading ? (
@@ -187,7 +190,7 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
         <ul className="divide-y divide-border">
           {data.map((document) => (
             <li key={document.id} className="py-4">
-              <p className="mb-1 text-xs text-muted-foreground">
+              <p className="mb-1 text-xs text-muted-foreground tabular-nums">
                 #{document.ordinal}
               </p>
               <pre className="max-h-40 overflow-auto text-xs whitespace-pre-wrap">
@@ -207,7 +210,7 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
           >
             Previous
           </button>
-          <span className="text-muted-foreground">
+          <span className="text-muted-foreground tabular-nums">
             {page + 1} of {pages}
           </span>
           <button

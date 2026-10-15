@@ -44,6 +44,7 @@ export function DatasetList({
 }: DatasetListProps) {
   const [pending, setPending] = React.useState<Dataset | null>(null)
 
+  /** Deletes the confirmed dataset and refreshes the list, reporting failures by toast. */
   async function confirmDelete() {
     if (!pending) return
     const name = pending.name
@@ -107,7 +108,7 @@ export function DatasetList({
                   )}
                   <StatusBadge dataset={dataset} />
                 </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                <p className="mt-0.5 truncate text-xs text-muted-foreground tabular-nums">
                   {dataset.kind === "sft" ? "Conversations" : "Prose"}
                   {dataset.source_repo ? ` · ${dataset.source_repo}` : ""}
                   {` · ${dataset.document_count.toLocaleString()} documents`}
@@ -162,6 +163,7 @@ export function DatasetList({
   )
 }
 
+/** Shows an in-progress or failed acquisition state; ready datasets need no badge. */
 function StatusBadge({ dataset }: { dataset: Dataset }) {
   if (dataset.status === "pulling") {
     return (

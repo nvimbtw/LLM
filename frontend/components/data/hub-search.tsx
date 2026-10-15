@@ -467,7 +467,7 @@ function SamplePanel({
 }) {
   if (error) {
     return (
-      <p className="rounded-(--radius-control-sm) border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+      <p className="border-y border-border/60 py-3 text-xs text-muted-foreground">
         No preview: {error}. The pull reads the files directly and is
         unaffected.
       </p>
@@ -483,8 +483,6 @@ function SamplePanel({
     )
   }
 
-  // Which column to show: the one being pulled, or whichever holds the most
-  // text — showing every column turns a preview into a spreadsheet.
   const shown = column || widestColumn(sample)
 
   return (
@@ -500,7 +498,6 @@ function SamplePanel({
           <Select
             value={`${sample.config} ${sample.split}`}
             onValueChange={(v) => {
-              // A config id cannot hold a space, so one separates the pair.
               const [config, split] = (v ?? "").split(" ")
               if (config && split) onPick({ config, split })
             }}
@@ -525,7 +522,7 @@ function SamplePanel({
         )}
       </div>
 
-      <div className="min-h-48 flex-1 space-y-2 overflow-y-auto rounded-(--radius-control-sm) border border-border bg-muted/30 p-3">
+      <div className="min-h-48 flex-1 space-y-2 overflow-y-auto border-y border-border/60 py-3">
         {sample.rows.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             The split is indexed but empty.
@@ -617,6 +614,7 @@ function clamp(text: string): string {
   return text.length > CELL_CHARS ? `${text.slice(0, CELL_CHARS)}…` : text
 }
 
+/** Associates a pull-form label and optional hint with its supplied control. */
 function Field({
   label,
   htmlFor,
@@ -630,7 +628,7 @@ function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="text-sm font-medium">
+      <label htmlFor={htmlFor} className="eyebrow text-muted-foreground">
         {label}
       </label>
       {children}
