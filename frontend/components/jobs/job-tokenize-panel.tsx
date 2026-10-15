@@ -1,5 +1,6 @@
 "use client"
 
+import { ButtonLink } from "@/components/ui/button-link"
 import { Appendix } from "@/components/training/appendix"
 import { Panel } from "@/components/ui/panel"
 import { Progress } from "@/components/ui/progress"
@@ -16,24 +17,19 @@ export interface JobTokenizePanelProps {
   run: ReturnType<typeof useJob>
 }
 
+/** Shows vocabulary build progress and links its completed output to the resource detail page. */
 export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
   const { tokenize } = run
   const pct = Math.round((tokenize.progress ?? 0) * 100)
 
   return (
     <div className="space-y-6">
-      {/* Full width, no rail. The config recap that would sit beside it renders
-          nothing — the LLM engine's run row carries no `config` — so the column was
-          a quarter page of gutter. */}
       <Panel
         variant="open"
         title={tokenize.done ? "Built" : "Learning the merges"}
       >
         <div className="space-y-5">
           <dl className="grid grid-cols-1 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-3">
-            {/* `documents`, not `files`: a vocabulary is learned from documents
-                the data engine serves. `files` is what a run queued before that
-                move reported, and its stored frames still render here. */}
             <Figure
               label="Documents"
               value={count(tokenize.documents ?? tokenize.files)}
@@ -51,16 +47,23 @@ export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
         </div>
       </Panel>
 
+      {run.job?.output.type === "tokenizer" && run.job.output.id && (
+        <ButtonLink variant="text" href={`/tokenizers/${run.job.output.id}`}>
+          Open vocabulary
+        </ButtonLink>
+      )}
       <Appendix log={run.log} checkpoints={[]} />
     </div>
   )
 }
 
+/** Formats an available build count compactly, retaining the unavailable marker. */
 function count(n: number | undefined): string {
   if (n == null) return "—"
   return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
 }
 
+/** Displays one measured vocabulary-build figure. */
 function Figure({ label, value }: { label: string; value: string }) {
   return (
     <div className="pr-6">

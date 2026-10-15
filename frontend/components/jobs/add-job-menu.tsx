@@ -1,7 +1,14 @@
 "use client"
 
 import Link from "next/link"
-import { Dumbbell, Gauge, MessageSquare, Plus, Target, Type } from "lucide-react"
+import {
+  Dumbbell,
+  Gauge,
+  MessageSquare,
+  Plus,
+  Target,
+  Type,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -22,19 +29,14 @@ import {
  * is composed by talking, so it points at /chat rather than a form.
  */
 const OPTIONS = [
-  { label: "Train a model", href: "/jobs/new-train", icon: Dumbbell },
-  // A vocabulary build is a queued job like the rest, so it belongs on the one
-  // menu every door to the queue goes through. Its composer lives beside the
-  // list of what has been built, which is where you would be choosing anyway.
-  { label: "Build a tokenizer", href: "/tokenizers", icon: Type },
-  { label: "Benchmark a model", href: "/jobs/new/benchmark", icon: Gauge },
-  // Practising is a training run and belongs on this menu, even though the gym
-  // it practises against has a page of its own. Starting a run *there* evaluates
-  // a model once; this is the loop that keeps going, and a loop is a job.
-  { label: "Practise in a gym", href: "/jobs/new/rl", icon: Target },
+  { label: "Train a model", href: "/train/new-train", icon: Dumbbell },
+  { label: "Build a tokenizer", href: "/tokenizers/new-tokenizer", icon: Type },
+  { label: "Benchmark a model", href: "/bench/new-bench", icon: Gauge },
+  { label: "Practise in a gym", href: "/gyms/new-gym", icon: Target },
   { label: "Chat", href: "/chat", icon: MessageSquare },
 ]
 
+/** Opens the domain composer for the selected job kind. */
 export function AddJobMenu() {
   return (
     <DropdownMenu>

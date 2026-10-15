@@ -31,7 +31,10 @@ const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/cycles\/[^/]+$/, "Cycle"],
   [/^\/cycles$/, "Cycles"],
   [/^\/admin$/, "Admin"],
-  [/^\/benchmark$/, "Benchmark"],
+  [/^\/(bench|benchmark)(\/[^/]+)?$/, "Bench"],
+  [/^\/train\/[^/]+$/, "Train"],
+  [/^\/tokenizers(\/builds)?(\/[^/]+)?$/, "Tokenizers"],
+  [/^\/gyms(\/sources)?(\/[^/]+)?$/, "Gyms"],
   [/^\/models\/[^/]+$/, "Model"],
   [/^\/models$/, "Models"],
   [/^\/conversations$/, "Conversations"],
@@ -39,12 +42,11 @@ const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/data$/, "Data"],
 ]
 
+/** Resolves a recognized relative parent path while refusing external or unknown destinations. */
 export function useParentTrail(fallback: ParentTrail): ParentTrail {
   const params = useSearchParams()
   const parent = params.get("parent")
 
-  // Relative-only, and no protocol-relative `//host`: this value lands in an
-  // href, so an attacker-supplied query must not be able to point it offsite.
   if (!parent || !parent.startsWith("/") || parent.startsWith("//"))
     return fallback
 

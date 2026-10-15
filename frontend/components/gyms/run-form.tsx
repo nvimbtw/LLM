@@ -134,7 +134,7 @@ export function RunForm({ gym }: { gym: Gym }) {
         // A blank seed is a fresh draw; a given one makes the run repeatable.
         ...(seed.trim() === "" ? {} : { seedBase: Number(seed) }),
       })
-      router.push(`/gyms/${gym.id}/runs/${run.id}`)
+      router.push(`/gyms/${run.id}`)
     } catch (e) {
       toast.error(
         "Couldn't create the run",
@@ -302,7 +302,7 @@ export function RunForm({ gym }: { gym: Gym }) {
           <p className="text-xs text-muted-foreground">
             This scores the model once.{" "}
             <Link
-              href="/jobs/new/rl"
+              href={`/gyms/new-gym?gym=${gym.id}`}
               className="text-primary underline underline-offset-2"
             >
               Practise against this gym

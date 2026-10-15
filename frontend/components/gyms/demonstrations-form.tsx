@@ -103,7 +103,7 @@ export function DemonstrationsForm({
         {created && (
           <p className="text-sm">
             Examples saved. Select this dataset in{" "}
-            <Link href="/jobs/new-train" className="underline">
+            <Link href="/train/new-train" className="underline">
               a fine-tuning run
             </Link>
             .

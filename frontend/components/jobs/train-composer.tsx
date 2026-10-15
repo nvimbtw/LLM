@@ -18,7 +18,7 @@ import type { TrainConfig } from "@/lib/training"
 /**
  * The training form.
  *
- * Purely a form: submitting queues a job and hands off to /jobs/{id}, where the
+ * Purely a form: submitting queues a job and hands off to /train/{id}, where the
  * run's live figures live — so there is no telemetry state to own here.
  *
  * `?from=<job id>` seeds it from a previous run's stored config. Most runs are a

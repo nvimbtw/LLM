@@ -76,16 +76,17 @@ queue the build and hand off to its durable execution page. See
 
 - **The board lives at `/admin`**, as the hero of the panel — `QueueView` and
   `HistoryView` are mounted there, and `/jobs` is a redirect kept only so
-  bookmarked URLs work. Job details remain `/jobs/{id}`; training is composed at
-  `/jobs/new-train`, with `/jobs/new/train` redirecting there while preserving
-  queries. The two are separate components only so the panel can put its directory between them;
+  bookmarked URLs work. Job links use their domain URLs: `/train/{id}`,
+  `/bench/{id}`, `/gyms/{id}` and `/tokenizers/builds/{id}`. Legacy detail and
+  composer URLs redirect while preserving queries; see [routing](routing.md).
+  The two are separate components only so the panel can put its directory between them;
   they read from the same `JobsProvider` and are one ledger.
 
 ### Composing a training run
 
 The same fields are rendered two ways, and neither may drift from the other:
 
-- `components/training/train-board.tsx` at `/jobs/new-train` — one bounded
+- `components/training/train-board.tsx` at `/train/new-train` — one bounded
   form whose model name is the editable page heading, like the project editor.
   Presets sit beside the heading; quiet mode tabs precede compact identity rows,
   then data, architecture, optimization and follow-ups. Identity values and their
@@ -231,8 +232,9 @@ on either side arrives as `undefined`. The LLM engine's side is documented in
   `Checkpoint` dataclass verbatim (`CheckpointFrame` in `lib/training.ts`) and
   announces every save as its weights land, so the list is complete and each row
   can say where in the run it was taken.
-- Composers live at `/jobs/new-train` and `/jobs/new/{benchmark,rl}` and are
-  *only* forms: submitting queues a run and hands off to `/jobs/{id}`, where the telemetry lives. `?from=<job id>`
+- Composers live at `/train/new-train`, `/bench/new-bench` and `/gyms/new-gym`.
+  Submitting queues a run and hands off to its domain execution page, where
+  telemetry lives. `?from=<job id>`
   seeds a composer from a previous run's stored config.
 - **A chat turn is not a run.** It is answered directly, on the socket that
   asked for it — an interactive turn behind a three-hour training run is a chat
@@ -245,7 +247,7 @@ on either side arrives as `undefined`. The LLM engine's side is documented in
 - A **chain** is a flat list of steps, each running against the model the one
   before it produced. A follow-up waits rather than queueing: its model does not
   exist yet, so a queue position would be a lie about when it runs.
-- `/benchmark` is history and analysis only — it no longer starts runs.
+- `/bench` is history and analysis; starting runs uses `/bench/new-bench`.
 - The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are
   how a running job says what it is. Give **one** instance a changing `mode` so
   it morphs between them as the queue advances rather than cutting. `NowBand` is

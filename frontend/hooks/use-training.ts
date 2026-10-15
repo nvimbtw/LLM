@@ -4,7 +4,7 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 
 import { toast } from "@/components/ui/toast"
-import { queueTraining, type FollowUp } from "@/lib/jobs"
+import { jobHref, queueTraining, type FollowUp } from "@/lib/jobs"
 import type { TrainConfig } from "@/lib/training"
 
 export const DEFAULT_CONFIG: TrainConfig = {
@@ -44,7 +44,7 @@ export type { LossPoint, BatchPoint, BuildPoint } from "@/lib/job-telemetry"
  * Composing a training run.
  *
  * Starting a run is now queueing a job: the composer submits, the server puts it
- * in line, and the page hands off to /jobs/{id} where the run's telemetry lives.
+ * in line, and the page hands off to /train/{id} where the run's telemetry lives.
  * That split is what lets the composer stay a plain form — it has no live state to
  * own, because by the time there is any, you are on the job's own page.
  */
@@ -63,7 +63,7 @@ export function useTrainingComposer() {
             ? `${job.label}, and ${steps.length} job${steps.length === 1 ? "" : "s"} behind it.`
             : job.label
         )
-        router.push(`/jobs/${job.id_job}`)
+        router.push(jobHref(job))
       } catch (e) {
         // The backend's 400 names the offending field ("dimensions must be a
         // power of two"), which is the whole value of validating at enqueue —

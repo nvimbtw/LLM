@@ -20,7 +20,7 @@ import { Panel } from "@/components/ui/panel"
 /**
  * How the model scored, under the specs that say what it is.
  *
- * A summary, not a second copy of /benchmark. The question this section answers is
+ * A summary, not a second copy of /bench. The question this section answers is
  * "is this model any good", which is the composite plus the three stage headlines;
  * the paradigm-by-paradigm breakdown and the generated samples are a different
  * question, and they stay on the page built for them — the run list here links
@@ -57,7 +57,7 @@ export function ModelBenchmarks({ modelId }: ModelBenchmarksProps) {
           {runs.length > 0
             ? "Every run of this model failed before it produced a report."
             : "Never benchmarked."}{" "}
-          <Link href="/jobs/new/benchmark" className="underline">
+          <Link href="/bench/new-bench" className="underline">
             Queue a run
           </Link>
           .
@@ -180,7 +180,7 @@ function RunList({ runs }: { runs: BenchmarkRun[] }) {
           className="flex items-baseline gap-3 border-b border-border/40 py-2 last:border-0"
         >
           <Link
-            href="/benchmark"
+            href={`/bench/${run.id_run}`}
             className="text-xs text-muted-foreground tabular-nums hover:underline"
           >
             {formatDate(run.created_at)}

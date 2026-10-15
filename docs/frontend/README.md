@@ -23,10 +23,10 @@ KaTeX typesets maths; Recharts renders telemetry.
 
 The signed-in frame is `app/(app)`: sidebar, scroll container and content, without
 an additional header. `/login` and `/signup` live outside it. `/docs` is public.
-`app/(app)/admin` contains the queue, workbench directory and history; `/jobs`
-redirects there. Job detail and composer routes remain `/jobs/[id]` and
-`/jobs/new-train`, `/jobs/new/benchmark` and `/jobs/new/rl`. The old
-`/jobs/new/train` URL redirects to the training composer with its query intact.
+`app/(app)/admin` contains the queue, workbench directory and history. Executions
+and composers live under `/train`, `/bench`, `/gyms` and `/tokenizers`; old
+`/jobs` URLs redirect with their query intact. [Routing](routing.md) maps canonical
+pages, compatibility redirects and the distinct resource/execution identities.
 
 ## Development contracts
 

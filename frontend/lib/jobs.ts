@@ -1,3 +1,4 @@
+import { parseResourceId } from "./chats"
 import { apiFetch } from "./api"
 import type { BenchmarkSuite } from "./benchmark"
 import type { TokenizerBuild } from "./tokenizers"
@@ -104,8 +105,16 @@ export function isRunning(job: Job): boolean {
 /** A train job's config, or null when this isn't one. */
 export function trainConfig(job: Job): TrainConfig | null {
   if (job.kind !== "train") return null
-  const config = job.config as TrainConfig & { base_model?: string; display_name?: string }
-  return { ...config, model_name: config.display_name ?? config.model_name, mode: config.base_model ? "sft" : "pretrain", base_model_id: config.base_model ?? config.base_model_id }
+  const config = job.config as TrainConfig & {
+    base_model?: string
+    display_name?: string
+  }
+  return {
+    ...config,
+    model_name: config.display_name ?? config.model_name,
+    mode: config.base_model ? "sft" : "pretrain",
+    base_model_id: config.base_model ?? config.base_model_id,
+  }
 }
 
 /** The model a benchmark job scores. */
@@ -142,8 +151,16 @@ export function benchmarkBudgetOf(job: Job): Tier | null {
   return config?.budget ?? null
 }
 
-/** Every durable execution has its own job page. */
-export function jobHref(job: Job): string { return `/jobs/${job.id_job}` }
+/** Maps a durable execution to its canonical domain page, preserving the execution identity. */
+export function jobHref(job: Pick<Job, "kind" | "id_job">): string {
+  const prefix: Record<JobKind, string> = {
+    train: "/train",
+    benchmark: "/bench",
+    rl: "/gyms",
+    tokenize: "/tokenizers/builds",
+  }
+  return `${prefix[job.kind]}/${job.id_job}`
+}
 
 /**
  * The three thinking budgets, as the SFT corpus tags them.
@@ -183,10 +200,31 @@ export async function getBoard(offset = 0): Promise<JobBoard> {
   }
 }
 
-export async function getJob(id: string): Promise<Job> {
-  const res = await apiFetch(`/runs/${id}`)
+/** Reads an execution row, returning null only for an unknown UUID; service failures reject. */
+export async function findJob(
+  id: string,
+  signal?: AbortSignal
+): Promise<Job | null> {
+  const identity = parseResourceId(id).toLowerCase()
+  const res = await apiFetch(`/runs/${identity}`, { signal })
+  if (res.status === 404) return null
   if (!res.ok) throw new Error("Failed to load the job.")
-  return fromRow(await res.json())
+  const row: RunRow = await res.json()
+  if (
+    row.run_id !== identity ||
+    !["train", "tokenize", "benchmark", "rl"].includes(row.kind)
+  )
+    throw new Error(
+      "The server returned an invalid execution identity or kind."
+    )
+  return fromRow(row)
+}
+
+/** Reads the authoritative execution row or rejects an unknown identity. */
+export async function getJob(id: string): Promise<Job> {
+  const job = await findJob(id)
+  if (!job) throw new Error("This execution no longer exists.")
+  return job
 }
 
 /**
@@ -366,7 +404,10 @@ export async function deleteJob(id: string): Promise<void> {
 
 export async function recoverJob(id: string): Promise<Job> {
   const res = await apiFetch(`/runs/${id}/recover`, { method: "POST" })
-  if (!res.ok) throw new Error((await res.text()) || "No completed recovery point is available.")
+  if (!res.ok)
+    throw new Error(
+      (await res.text()) || "No completed recovery point is available."
+    )
   return fromRow((await res.json()) as RunRow)
 }
 

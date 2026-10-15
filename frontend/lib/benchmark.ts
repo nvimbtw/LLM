@@ -388,8 +388,12 @@ export async function getModelRuns(
   }
 }
 
-export async function getRun(id: string): Promise<BenchmarkRunDetail> {
-  const res = await apiFetch(`/benchmarks/${id}`)
+/** Reads a saved benchmark report; an optional signal cancels obsolete route resolution. */
+export async function getRun(
+  id: string,
+  signal?: AbortSignal
+): Promise<BenchmarkRunDetail> {
+  const res = await apiFetch(`/benchmarks/${id}`, { signal })
   if (!res.ok) throw new Error("Failed to load benchmark run.")
   const row = (await res.json()) as BenchmarkRow & { report: AnyReport | null }
   return { ...fromRow(row), report: row.report }
@@ -620,4 +624,6 @@ export function formatDate(iso: string): string {
 }
 
 /** Only English language measurements may be newly queued. */
-export const ACTIVE_BENCHMARK_SUITES = BENCHMARK_SUITES.filter((suite) => suite.id === "language")
+export const ACTIVE_BENCHMARK_SUITES = BENCHMARK_SUITES.filter(
+  (suite) => suite.id === "language"
+)

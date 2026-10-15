@@ -5,7 +5,7 @@ import { PageShell } from "@/components/ui/page-shell"
 /**
  * Practising against a gym — the composer for the run that *repeats*.
  *
- * Starting a gym run from `/gyms/<id>` evaluates a model once. This queues the
+ * Starting a gym run from `/gyms/sources/<slug>` evaluates a model once. This queues the
  * loop: roll a batch out, grade it, take one step, checkpoint, again.
  *
  * `?gym=<id>` is how the catalogue hands a gym over: a card there is one click

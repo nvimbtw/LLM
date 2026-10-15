@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { RunningDot } from "@/components/ui/running-dot"
 import { useParentTrail } from "@/hooks/use-parent-trail"
 import {
+  jobHref,
   KIND_LABEL,
   STATUS_LABEL,
   deleteJob,
@@ -47,7 +48,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
     setActionError(null)
     try {
       const next = await recoverJob(job.id_job)
-      router.push(`/jobs/${next.id_job}`)
+      router.push(jobHref(next))
     } catch (error) {
       setActionError(
         error instanceof Error ? error.message : "Recovery could not start."
@@ -72,7 +73,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
     setBusy(true)
     try {
       const next = await retryJob(job)
-      router.push(`/jobs/${next.id_job}`)
+      router.push(jobHref(next))
     } finally {
       setBusy(false)
     }

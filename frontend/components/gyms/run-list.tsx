@@ -29,7 +29,7 @@ export function RunList({ runs }: { runs: GymRun[] }) {
       {runs.map((run) => (
         <li key={run.id}>
           <Link
-            href={`/gyms/${run.gym_id}/runs/${run.id}`}
+            href={`/gyms/${run.id}`}
             className="flex items-baseline gap-4 py-3 transition-colors hover:text-foreground"
           >
             <span className="min-w-0 flex-1 truncate font-medium">

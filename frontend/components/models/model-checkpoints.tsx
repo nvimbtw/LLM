@@ -133,7 +133,7 @@ function CheckpointRow({
         )}
         {canContinue && checkpoint.hasWeights && (
           <Link
-            href={`/jobs/new-train?resume=${checkpoint.id}`}
+            href={`/train/new-train?resume=${checkpoint.id}`}
             className="text-primary hover:underline"
           >
             Continue

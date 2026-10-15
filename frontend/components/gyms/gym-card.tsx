@@ -40,14 +40,14 @@ export function GymCard({
       </header>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <ButtonLink
-          href={`/jobs/new/rl?gym=${id}`}
+          href={`/gyms/new-gym?gym=${id}`}
           size="sm"
           variant={featured ? "default" : "outline"}
         >
           Practise
         </ButtonLink>
         <Link
-          href={`/gyms/${id}`}
+          href={`/gyms/sources/${id}`}
           className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           Score once, and past runs

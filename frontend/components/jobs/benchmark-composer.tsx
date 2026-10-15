@@ -21,12 +21,12 @@ import {
   type BenchmarkSuite,
   type SuiteInfo,
 } from "@/lib/benchmark"
-import { queueBenchmark } from "@/lib/jobs"
+import { jobHref, queueBenchmark } from "@/lib/jobs"
 
 /**
  * Composing a benchmark: pick a model, queue it.
  *
- * Was the run bar on /benchmark. It moved because starting a run is now queueing a
+ * Was the run bar on /bench. It moved because starting a run is now queueing a
  * job, and that page is where you *read* scores — a control that puts work on the
  * GPU sitting above a history table was the reason a benchmark could previously be
  * fired while training held the device.
@@ -67,7 +67,7 @@ export function BenchmarkComposer() {
     try {
       const job = await queueBenchmark(modelId, which)
       toast.success("Benchmark queued.", job.label)
-      router.push(`/jobs/${job.id_job}`)
+      router.push(jobHref(job))
     } catch (e) {
       toast.error(
         "Couldn't queue the benchmark",
@@ -144,7 +144,10 @@ export function BenchmarkComposer() {
       </Panel>
 
       {suite && suite.corpus_files === 0 && (
-        <p className="text-sm text-muted-foreground">No held-out English corpus is installed. Compression measurements will be unavailable.</p>
+        <p className="text-sm text-muted-foreground">
+          No held-out English corpus is installed. Compression measurements will
+          be unavailable.
+        </p>
       )}
     </div>
   )

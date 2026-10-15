@@ -1,15 +1,14 @@
-import { JobDetail } from "@/components/jobs/job-detail"
-import { PageShell } from "@/components/ui/page-shell"
+import { ExecutionView } from "@/components/jobs/execution-view"
+import type { RouteQuery } from "@/lib/routes"
 
-export default async function JobPage({
+/** Resolves a legacy job UUID to its domain route, preserving queries and parent context. */
+export default async function LegacyJobPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>
+  searchParams: Promise<RouteQuery>
 }) {
   const { id } = await params
-  return (
-    <PageShell>
-      <JobDetail idJob={id} />
-    </PageShell>
-  )
+  return <ExecutionView id={id} kind="train" legacyQuery={await searchParams} />
 }

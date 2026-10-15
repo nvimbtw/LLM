@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select"
 import { useModels } from "@/hooks/use-models"
 import { listGyms, LEVELS, type Gym } from "@/lib/gyms"
-import { queueReinforcement } from "@/lib/jobs"
+import { jobHref, queueReinforcement } from "@/lib/jobs"
 import { DemonstrationsForm } from "@/components/gyms/demonstrations-form"
 
 /**
@@ -184,7 +184,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
         temperature: temperatureValue,
       })
       toast.success("Practice run queued.", job.label)
-      router.push(`/jobs/${job.id_job}`)
+      router.push(jobHref(job))
     } catch (e) {
       toast.error(
         "Couldn't queue the run",
@@ -367,8 +367,19 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
       <Panel variant="open" title="The loop">
         <div className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-4">
-            <Field label="Recovery saves" hint="Approximate saves per run; 0 disables">
-              <Input type="number" min={0} step={1} value={recoverySaves} onChange={(event) => setRecoverySaves(clamp(event.target.valueAsNumber, 0, 10000))} />
+            <Field
+              label="Recovery saves"
+              hint="Approximate saves per run; 0 disables"
+            >
+              <Input
+                type="number"
+                min={0}
+                step={1}
+                value={recoverySaves}
+                onChange={(event) =>
+                  setRecoverySaves(clamp(event.target.valueAsNumber, 0, 10000))
+                }
+              />
             </Field>
             <Field label="Iterations" hint="gym runs">
               <Input

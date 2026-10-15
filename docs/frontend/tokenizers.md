@@ -7,7 +7,9 @@ The new and detail pages use reading width and page-native fields.
 
 Creation queues a durable vocabulary build, preserving its existing dataset and
 learning-ceiling contracts. Empty dataset selection means all available corpora
-at execution time. The build page owns progress, cancellation and errors.
+at execution time. `/tokenizers/builds/{execution uuid}` owns progress,
+cancellation and errors, then links to the resulting vocabulary. Its execution
+identity is distinct from the vocabulary UUID; see [routing](routing.md).
 
 The detail page reads recorded vocabulary/merge/file/storage figures, origin,
 build time, stable identity, fingerprint, datasets and model references. Missing

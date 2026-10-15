@@ -1,12 +1,11 @@
 import { redirect } from "next/navigation"
+import { withRouteQuery, type RouteQuery } from "@/lib/routes"
 
-/**
- * The queue moved to /admin, where it is the hero of the panel.
- *
- * Kept as a redirect rather than deleted: `/jobs` is where every job detail page
- * lives (`/jobs/{id}`) and where every composer submits from, so the bare path is
- * a URL people have typed and bookmarked. It costs one file to keep those working.
- */
-export default function JobsPage() {
-  redirect("/admin")
+/** Keeps the former queue bookmark and its query context pointing at Admin. */
+export default async function JobsPage({
+  searchParams,
+}: {
+  searchParams: Promise<RouteQuery>
+}) {
+  redirect(withRouteQuery("/admin", await searchParams))
 }

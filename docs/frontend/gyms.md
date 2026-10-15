@@ -27,14 +27,14 @@ scores, read from the saved result after completion. Training pass rate is
 labelled separately because its difficulty changes. See
 [math practice](../llm-engine/math-practice.md).
 
-`/gyms/<id>` starts **one** run: the browser drives it over the socket below,
+`/gyms/sources/<gym slug>` composes **one** evaluation: the browser drives it over the socket below,
 the episodes are graded, and it ends. Nothing it scores reaches the weights —
 it is a measurement.
 
-The loop is a **job**, composed at `/jobs/new/rl`
+The loop is a **job**, composed at `/gyms/new-gym`
 (`components/jobs/rl-composer.tsx`) and watched on the job page like every other
 run. Each of its iterations is a gym run of its own, created by the LLM engine
-rather than the browser and kept off the `/gyms/<id>` board (`kind: "rl"`), so a
+rather than the browser and kept off the source evaluation history (`kind: "rl"`), so a
 fifty-iteration run does not bury the evaluations anyone made.
 
 That distinction is invisible from the run form, which is why the form links to
@@ -42,13 +42,19 @@ the composer in as many words: the shape of the question "why did my gym only
 run once" is someone standing at the first door looking for the second.
 
 **The catalogue leads with the loop.** Each entry at `/gyms` opens
-`/jobs/new/rl?gym=<id>` — practising is what anyone comes to a gym for, and it
+`/gyms/new-gym?gym=<id>` — practising is what anyone comes to a gym for, and it
 is one click from the list. The evaluation door is the card's second, quieter
 link. The gym id travels as a search param read by the *page* (a server
 component) and handed to the composer as a prop, rather than `useSearchParams`
 inside it, which would put the page behind a Suspense boundary to learn one
 string; an id no gym answers to falls back to the first, since the value comes
 off a URL anyone can type.
+
+Both practice execution UUIDs and evaluation UUIDs open at `/gyms/{uuid}`. The
+route first checks the durable execution; only a 404 permits evaluation lookup.
+It mounts that workflow's existing renderer and socket owner. Source slugs and
+old nested evaluation URLs redirect with their query intact. See
+[routing](routing.md); HTTP and socket API paths retain their existing contracts.
 
 ## Stream protocol (a gym run)
 

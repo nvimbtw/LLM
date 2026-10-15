@@ -1,16 +1,14 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 
 import { ConfigRecap } from "@/components/jobs/config-recap"
 import { Panel } from "@/components/ui/panel"
+import { Skeleton } from "@/components/ui/skeleton"
+import { LoadError } from "@/components/ui/error-state"
+import { BenchmarkReport } from "@/components/benchmark/benchmark-report-view"
 import type { useJob } from "@/hooks/use-job"
-import {
-  formatNumber,
-  getRun,
-  type BenchmarkRunDetail,
-} from "@/lib/benchmark"
+import { getRun, type BenchmarkRunDetail } from "@/lib/benchmark"
 import { isRunning, type Job } from "@/lib/jobs"
 
 export interface JobBenchmarkPanelProps {
@@ -18,21 +16,37 @@ export interface JobBenchmarkPanelProps {
   run: ReturnType<typeof useJob>
 }
 
+/** Keeps queued/running diagnostics and opens the execution's exact output report after completion. */
 export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
-  const [detail, setDetail] = React.useState<BenchmarkRunDetail | null>(null)
+  const [loaded, setLoaded] = React.useState<{
+    id: string
+    detail?: BenchmarkRunDetail
+    error?: string
+  } | null>(null)
+  const result = loaded?.id === job.output.id ? loaded : null
 
-  // The score lives on the benchmark run the job produced, not on the job row —
-  // jobs record scheduling, the run records results.
   React.useEffect(() => {
     if (job.status !== "done" || !job.output.id) return
     let cancelled = false
-    getRun(job.output.id)
+    const controller = new AbortController()
+    const id = job.output.id
+    getRun(id, controller.signal)
       .then((d) => {
-        if (!cancelled) setDetail(d)
+        if (!cancelled) setLoaded({ id, detail: d })
       })
-      .catch(() => {})
+      .catch((cause: unknown) => {
+        if (!cancelled)
+          setLoaded({
+            id,
+            error:
+              cause instanceof Error
+                ? cause.message
+                : "The report could not be loaded.",
+          })
+      })
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [job.status, job.output.id])
 
@@ -46,7 +60,8 @@ export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
             {run.stage ?? job.stage ?? "Measuring English language…"}
           </p>
           <p className="mt-4 text-sm text-muted-foreground">
-            Measuring held-out text and generated samples. Results appear when the measurement completes.
+            Measuring held-out text and generated samples. Results appear when
+            the measurement completes.
           </p>
         </Panel>
       </div>
@@ -67,29 +82,17 @@ export function JobBenchmarkPanel({ job, run }: JobBenchmarkPanelProps) {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
+    <div className="space-y-6">
       <ConfigRecap job={job} />
-
-      <Panel
-        variant="open"
-        title="Score"
-        description={detail?.model_name ?? "Benchmark"}
-      >
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-          <span className="figure text-5xl leading-none">
-            {formatNumber(detail?.score ?? null, 1)}
-          </span>
-          <span className="text-sm text-muted-foreground">/ 100</span>
-        </div>
-        {job.output.id && (
-          <Link
-            href="/benchmark"
-            className="mt-6 inline-block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-          >
-            See the full report and how it compares →
-          </Link>
-        )}
-      </Panel>
+      {result?.error ? (
+        <LoadError title={result.error} />
+      ) : result?.detail ? (
+        <BenchmarkReport run={result.detail} />
+      ) : job.output.id ? (
+        <Skeleton className="h-48" />
+      ) : (
+        <p className="text-sm text-muted-foreground">No report recorded.</p>
+      )}
     </div>
   )
 }
