@@ -44,3 +44,13 @@ model — and the only reason it is not `/runs/train` with a flag is that what i
 The one thing this side decides is **who is asking**: `upstream::caller` turns
 the verified user token into the `act` claim of a short-lived service token, and
 the service scopes by that. A user token is never forwarded.
+
+## Vocabulary display metadata
+
+`GET /tokenizers/{id}` includes the vocabulary's facts and recorded model
+references. `PATCH /tokenizers/{id}` is admin-only and forwards the engine-owned
+payload as the system caller. It accepts `display_name` (trimmed, nonblank, at
+most 120 characters) and an optional nullable `description` (at most 2,000).
+Duplicate names return 409 without partially saving the description; unknown
+identities return 404. UUIDs, files, fingerprints and training references remain
+unchanged. The backend owns no tokenizer metadata table.

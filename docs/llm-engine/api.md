@@ -215,3 +215,15 @@ runner; `GET /runs` reports that same process-local flag. Every restart starts
 unpaused. Job records, ordering, dependencies and interrupted-job handling stay
 durable; restarting does not itself resume interrupted training. Migration
 `d8c10f6a21b4` drops the old `queue_state` table without altering job history.
+
+## Vocabulary metadata
+
+`GET /tokenizers/{id}` joins the index and complete build on disk and includes
+recorded model references, following up to 25 base/resume ancestors. Missing
+provenance stays unavailable. `PATCH /tokenizers/{id}` requires the system caller
+after Rust admin authorization. `display_name` is required, trimmed, nonblank
+and limited to 120 characters; optional `description` is nullable and limited
+to 2,000 characters. Omission preserves it; null clears it. Duplicate names
+return 409 and roll back every field. Unknown IDs return 404. A disk-only build
+gains an index row on its first edit. Display changes never write artifacts,
+change vocabulary fingerprints or rewrite historical training configurations.

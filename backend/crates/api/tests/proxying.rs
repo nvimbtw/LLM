@@ -209,6 +209,52 @@ async fn admin_model_size_edits_are_forwarded() {
     assert!(matches!(acting_for(&raw), Caller::System));
 }
 
+/// Regular users cannot rename vocabulary metadata shared by all model users.
+#[actix_web::test]
+async fn tokenizer_metadata_edits_require_an_admin() {
+    let (url, asked) = stub("{}");
+    let app = service!(url);
+    let (_, bearer) = session(AccessLevel::User);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/tokenizers/{}", Uuid::new_v4()))
+            .insert_header(("authorization", bearer))
+            .set_json(json!({"display_name": "Changed"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(asked.try_recv().is_err());
+}
+
+/// Authorized vocabulary edits retain their payload and use the engine's system identity.
+#[actix_web::test]
+async fn admin_tokenizer_edits_are_forwarded() {
+    let (url, asked) = stub(r#"{"name":"Changed"}"#);
+    let app = service!(url);
+    let (_, bearer) = session(AccessLevel::Admin);
+    let tokenizer = Uuid::new_v4();
+    let response = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/tokenizers/{tokenizer}"))
+            .insert_header(("authorization", bearer))
+            .set_json(json!({"display_name": "Changed", "description": "Prose"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let raw = asked.recv().unwrap();
+    assert_eq!(
+        request_line(&raw),
+        format!("PATCH /tokenizers/{tokenizer} HTTP/1.1")
+    );
+    assert!(raw.contains(r#""display_name":"Changed""#));
+    assert!(raw.contains(r#""description":"Prose""#));
+    assert!(matches!(acting_for(&raw), Caller::System));
+}
+
 #[actix_web::test]
 async fn watching_a_run_is_not() {
     let (url, asked) = stub(r#"{"active":[],"history":[]}"#);

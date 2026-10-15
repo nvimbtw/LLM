@@ -8,13 +8,33 @@ a person calls it, so the listing is the join of the two — the same arrangemen
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 import store
 from api import auth
 from store import queries as q
-from store.schema import Tokenizer
+from store.schema import Model, Tokenizer
 
 router = APIRouter(tags=["tokenizers"])
+
+
+class TokenizerEdit(BaseModel):
+    """Validated display fields; changing them never rebuilds vocabulary artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("display_name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        """Trim a display name and reject whitespace-only labels."""
+        value = value.strip()
+        if not value:
+            raise ValueError("name cannot be empty")
+        return value
 
 
 @router.get("/tokenizers")
@@ -38,14 +58,73 @@ def list_tokenizers(include_implicit: bool = True):
 
 @router.get("/tokenizers/{tokenizer_id}")
 def get_tokenizer(tokenizer_id: uuid.UUID):
+    """Return vocabulary facts and recorded model references, or 404 for an unknown identity."""
     from llm.corpus import vocab
 
     built = vocab.info(str(tokenizer_id))
     with store.session() as db:
         row = q.get_tokenizer(db, tokenizer_id)
-    if row is None and built is None:
-        raise HTTPException(status_code=404, detail=f"no tokenizer {tokenizer_id}")
-    return _tokenizer(row, built)
+        if row is None and built is None:
+            raise HTTPException(status_code=404, detail=f"no tokenizer {tokenizer_id}")
+        return {**_tokenizer(row, built), "models": _using_models(db, tokenizer_id)}
+
+
+@router.patch("/tokenizers/{tokenizer_id}")
+def edit_tokenizer(tokenizer_id: uuid.UUID, body: TokenizerEdit, caller: str = Depends(auth.require_service)):
+    """Persist system-authorized display edits atomically; duplicate names return 409.
+
+    Disk-only vocabularies gain an index row. Identity, fingerprint, build provenance
+    and model references remain unchanged, and no artifact file is written.
+    """
+    from llm.corpus import vocab
+
+    if caller != auth.SYSTEM:
+        raise HTTPException(status_code=403, detail="tokenizer edits require the system caller")
+    built = vocab.info(str(tokenizer_id))
+    with store.session() as db:
+        row = q.get_tokenizer(db, tokenizer_id)
+        if row is None:
+            if built is None:
+                raise HTTPException(status_code=404, detail=f"no tokenizer {tokenizer_id}")
+            row = Tokenizer(id=tokenizer_id, name=body.display_name, implicit=True,
+                            vocab_size=built.get("vocab_size"), merges=built.get("merges"),
+                            max_vocab=built.get("max_vocab"), fingerprint=built.get("fingerprint"),
+                            datasets=built.get("datasets"))
+            db.add(row)
+        row.name = body.display_name
+        if "description" in body.model_fields_set:
+            row.description = body.description
+        try:
+            db.flush()
+        except IntegrityError as error:
+            raise HTTPException(status_code=409, detail="A vocabulary with that name already exists.") from error
+        return {**_tokenizer(row, built), "models": _using_models(db, tokenizer_id)}
+
+
+def _using_models(db: Session, tokenizer_id: uuid.UUID) -> list[dict]:
+    """Resolve recorded vocabulary provenance through at most 25 base/resume ancestors per model."""
+    rows = q.list_models(db, include_private=True, checkpoints=True)
+    by_id = {str(row.id): row for row in rows}
+    return [{"model_id": str(row.id), "name": row.name}
+            for row in rows if _uses_tokenizer(row, by_id, str(tokenizer_id))]
+
+
+def _uses_tokenizer(model: Model | None, by_id: dict[str, Model], tokenizer_id: str) -> bool:
+    """Match an indexed model's recorded vocabulary, stopping at missing, cyclic or bounded ancestry."""
+    visited = set()
+    for _ in range(25):
+        if model is None or model.id in visited:
+            return False
+        visited.add(model.id)
+        parameters = model.parameters or {}
+        result = parameters.get("result") or {}
+        config = parameters.get("config") or {}
+        recorded = result.get("tokenizer_id") or config.get("tokenizer_id")
+        if recorded:
+            return recorded == tokenizer_id
+        parent = result.get("base_model") or config.get("base_model") or config.get("resume_from")
+        model = by_id.get(parent)
+    return False
 
 
 @router.delete("/tokenizers/{tokenizer_id}")

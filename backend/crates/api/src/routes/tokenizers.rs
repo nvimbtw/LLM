@@ -1,13 +1,15 @@
 //! Built vocabularies. Listing one is reading; deleting one takes the artifacts
 //! a run may still be training against with it, so that stays with an admin.
 
-use actix_web::{delete, get, web, HttpRequest};
+use actix_web::{HttpRequest, delete, get, patch, web};
 use llm_engine::Proxy;
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{answer, caller, with_query, Answer};
+use crate::upstream::{Answer, answer, caller, with_query};
 
+/// Lists vocabulary facts for the authenticated caller.
 #[get("")]
 async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
     answer(
@@ -17,6 +19,7 @@ async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Ans
     )
 }
 
+/// Reads one vocabulary and its recorded model references.
 #[get("/{tokenizer_id}")]
 async fn get_one(user: AuthUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
     answer(
@@ -26,6 +29,26 @@ async fn get_one(user: AuthUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) 
     )
 }
 
+/// Forwards administrator-authorized display edits without reimplementing engine validation.
+#[patch("/{tokenizer_id}")]
+async fn edit(
+    _admin: AdminUser,
+    id: web::Path<Uuid>,
+    body: web::Json<Value>,
+    engine: web::Data<Proxy>,
+) -> Answer {
+    answer(
+        engine
+            .patch(
+                &auth::Caller::System,
+                &format!("/tokenizers/{id}"),
+                body.into_inner(),
+            )
+            .await?,
+    )
+}
+
+/// Removes vocabulary artifacts after administrator authorization.
 #[delete("/{tokenizer_id}")]
 async fn remove(_admin: AdminUser, id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
     answer(
@@ -35,8 +58,10 @@ async fn remove(_admin: AdminUser, id: web::Path<Uuid>, engine: web::Data<Proxy>
     )
 }
 
+/// Registers vocabulary reads and admin-only metadata/deletion routes.
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(list);
     cfg.service(get_one);
+    cfg.service(edit);
     cfg.service(remove);
 }
