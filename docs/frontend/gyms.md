@@ -9,7 +9,7 @@ so its empty catalogue tool list does not force practice to one round. Math
 episodes remain tool-free. General evaluations and mixed training reports show
 scores by source alongside the overall result. Demonstrations are available
 for every catalogue entry declaring that capability, including General. The
-catalogue places General first in a full-width card above the source gyms.
+catalogue places General first in a full-width open entry above the source gyms, with hairlines separating entries.
 The General RL job panel also shows the latest task-source sequence and a chart
 per source. Those charts accumulate correct answers only when that source appears
 in a batch; their adjacent correct/graded counts and percentage keep the count
@@ -41,7 +41,7 @@ That distinction is invisible from the run form, which is why the form links to
 the composer in as many words: the shape of the question "why did my gym only
 run once" is someone standing at the first door looking for the second.
 
-**The catalogue leads with the loop.** A card at `/gyms` opens
+**The catalogue leads with the loop.** Each entry at `/gyms` opens
 `/jobs/new/rl?gym=<id>` — practising is what anyone comes to a gym for, and it
 is one click from the list. The evaluation door is the card's second, quieter
 link. The gym id travels as a search param read by the *page* (a server

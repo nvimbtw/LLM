@@ -14,6 +14,7 @@ export interface DemonstrationsFormProps {
   taskTypes: string[]
 }
 
+/** Collects a dataset name and bounded demonstration range for the selected gym tasks. */
 export function DemonstrationsForm({
   gymId,
   gymWeights,
@@ -33,6 +34,7 @@ export function DemonstrationsForm({
     count <= 5000 &&
     Number.isSafeInteger(seed)
 
+  /** Saves demonstrations and advances the seed range on success, displaying failures for retry. */
   async function submit() {
     setBusy(true)
     setError(null)
@@ -61,12 +63,16 @@ export function DemonstrationsForm({
     <Panel variant="open" title="SFT demonstrations">
       <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-3">
-          <label className="space-y-1 text-sm">
-            Dataset name
+          <label className="space-y-1">
+            <span className="block eyebrow text-muted-foreground">
+              Dataset name
+            </span>
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </label>
-          <label className="space-y-1 text-sm">
-            Examples
+          <label className="space-y-1">
+            <span className="block eyebrow text-muted-foreground">
+              Examples
+            </span>
             <Input
               type="number"
               min={1}
@@ -75,8 +81,10 @@ export function DemonstrationsForm({
               onChange={(e) => setCount(e.target.valueAsNumber)}
             />
           </label>
-          <label className="space-y-1 text-sm">
-            First seed
+          <label className="space-y-1">
+            <span className="block eyebrow text-muted-foreground">
+              First seed
+            </span>
             <Input
               type="number"
               value={seed}

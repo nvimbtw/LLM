@@ -5,13 +5,14 @@ type SourceScoresProps =
   | { episodes: GymEpisode[]; scores?: never }
   | { scores: Record<string, GymSourceScore>; episodes?: never }
 
+/** Displays per-gym measured scores from saved totals or the supplied graded episodes. */
 export function SourceScores({ episodes, scores }: SourceScoresProps) {
   const sources = scores
     ? Object.keys(scores)
     : [...new Set(episodes.map((episode) => episode.gym_id))]
   return (
     <Panel variant="open" title="By gym">
-      <dl className="space-y-3 text-sm">
+      <dl className="divide-y divide-border/60 text-sm">
         {sources.map((source) => {
           const graded = (episodes ?? []).filter(
             (episode) => episode.gym_id === source && episode.score !== null
@@ -24,9 +25,12 @@ export function SourceScores({ episodes, scores }: SourceScoresProps) {
                 graded.length
               : null
           return (
-            <div key={source} className="flex justify-between gap-3">
+            <div
+              key={source}
+              className="flex justify-between gap-3 py-3 first:pt-0 last:pb-0"
+            >
               <dt>{source}</dt>
-              <dd className="text-muted-foreground">
+              <dd className="text-muted-foreground tabular-nums">
                 {mean === null
                   ? "Nothing graded"
                   : `${Math.round(mean * 100)}% · ${measured?.graded ?? graded.length} graded`}

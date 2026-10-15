@@ -42,10 +42,12 @@ export function EpisodeList({
             >
               <Mark episode={episode} live={isLive} />
               <span className="min-w-0 flex-1 truncate">
-                <span className="text-muted-foreground">{episode.index + 1}.</span>{" "}
+                <span className="text-muted-foreground">
+                  {episode.index + 1}.
+                </span>{" "}
                 {episode.task_type}
               </span>
-              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
                 {episode.seed}
               </span>
             </button>
@@ -56,6 +58,7 @@ export function EpisodeList({
   )
 }
 
+/** Displays the episode’s live, graded or abandoned status without changing its selection behavior. */
 function Mark({ episode, live }: { episode: GymEpisode; live: boolean }) {
   if (live) return <RunningDot label="running" />
   if (episode.status === "graded") {
@@ -66,9 +69,17 @@ function Mark({ episode, live }: { episode: GymEpisode; live: boolean }) {
     )
   }
   if (episode.status === "closed") {
-    return <Dot aria-label="abandoned" className="size-4 shrink-0 text-muted-foreground" />
+    return (
+      <Dot
+        aria-label="abandoned"
+        className="size-4 shrink-0 text-muted-foreground"
+      />
+    )
   }
   return (
-    <Circle aria-label="not run" className="size-3 shrink-0 text-muted-foreground/50" />
+    <Circle
+      aria-label="not run"
+      className="size-3 shrink-0 text-muted-foreground/50"
+    />
   )
 }
