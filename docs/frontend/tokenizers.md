@@ -5,6 +5,7 @@ filter the open ledger. Vocabulary names link to `/tokenizers/{id}`; Build
 vocabulary opens `/tokenizers/new-tokenizer`. There is no creation dialog.
 The new and detail pages also use board width and page-native fields. Their
 dataset selection and facts ledger share the catalogue's available workspace.
+The detail ledger supplies the single hairline below the editable header.
 
 Creation queues a durable vocabulary build, preserving its existing dataset and
 learning-ceiling contracts. Empty dataset selection means all available corpora
