@@ -66,8 +66,9 @@ running train for it, and because the queue already has the frames, the cancel
 and the job page it wants. `/tokenizers` opens on a vocabulary catalogue with
 All, Built and From runs filters. Named builds lead the combined list; automatic
 builds remain inspectable and deletable, with their reuse semantics stated below
-it. `TokenizerCatalogue` aligns counts and storage metadata in a table, moving
-secondary facts under the name on narrow screens. **Build vocabulary** opens
+it. `TokenizerCatalogue` presents a reading-width ledger: display names,
+provenance and datasets above compact vocabulary, merge, file and storage figures.
+Rows remain read-only and retain their delete confirmation. **Build vocabulary** opens
 `TokenizerComposer` in a dialog and hands off to the job page on queueing. The
 catalogue keeps its width when no build is being composed.
 

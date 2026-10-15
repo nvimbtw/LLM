@@ -15,11 +15,13 @@ import {
 } from "@/components/ui/alert-dialog"
 import { describeDatasets, type TokenizerInfo } from "@/lib/tokenizers"
 
+/** Formats a measured count compactly, keeping unavailable values explicit. */
 function compact(n: number | null): string {
   if (n == null) return "—"
   return Intl.NumberFormat("en-US", { notation: "compact" }).format(n)
 }
 
+/** Formats vocabulary storage bytes in megabytes, preserving the empty marker. */
 function megabytes(bytes: number): string {
   if (!bytes) return "—"
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -30,6 +32,7 @@ export interface TokenizerCatalogueProps {
   onDelete: (tokenizer: TokenizerInfo) => void
 }
 
+/** Lists read-only vocabularies with their provenance, figures and confirmed deletion. */
 export function TokenizerCatalogue({
   tokenizers,
   onDelete,
@@ -41,61 +44,22 @@ export function TokenizerCatalogue({
       </p>
     )
   return (
-    <table className="w-full table-fixed">
-      <caption className="sr-only">Vocabulary catalogue</caption>
-      <thead className="border-y border-border/60 text-xs text-muted-foreground">
-        <tr>
-          <th scope="col" className="py-3 pr-3 text-left font-normal">
-            Vocabulary
-          </th>
-          <th
-            scope="col"
-            className="hidden py-3 pr-3 text-left font-normal lg:table-cell"
-          >
-            Datasets
-          </th>
-          <th
-            scope="col"
-            className="w-16 py-3 pr-3 text-right font-normal md:w-20"
-          >
-            Vocab
-          </th>
-          <th
-            scope="col"
-            className="hidden w-20 py-3 pr-3 text-right font-normal md:table-cell"
-          >
-            Merges
-          </th>
-          <th
-            scope="col"
-            className="hidden w-16 py-3 pr-3 text-right font-normal md:table-cell"
-          >
-            Files
-          </th>
-          <th
-            scope="col"
-            className="hidden w-20 py-3 pr-3 text-right font-normal md:table-cell"
-          >
-            Size
-          </th>
-          <th scope="col" className="w-8 py-3">
-            <span className="sr-only">Actions</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {tokenizers.map((tokenizer) => (
-          <Row
-            key={tokenizer.id}
-            tokenizer={tokenizer}
-            onDelete={() => onDelete(tokenizer)}
-          />
-        ))}
-      </tbody>
-    </table>
+    <ul
+      aria-label="Vocabulary catalogue"
+      className="divide-y divide-border/60 border-y border-border/60"
+    >
+      {tokenizers.map((tokenizer) => (
+        <Row
+          key={tokenizer.id}
+          tokenizer={tokenizer}
+          onDelete={() => onDelete(tokenizer)}
+        />
+      ))}
+    </ul>
   )
 }
 
+/** Presents one vocabulary and invokes deletion only after the existing confirmation. */
 function Row({
   tokenizer,
   onDelete,
@@ -104,39 +68,28 @@ function Row({
   onDelete: () => void
 }) {
   return (
-    <tr className="border-b border-border/40">
-      <th scope="row" className="min-w-0 py-3 pr-3 text-left font-normal">
-        <p className="truncate text-sm font-medium">{tokenizer.name}</p>
-        <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+    <li className="flex items-start justify-between gap-4 py-5">
+      <div className="min-w-0">
+        <h2 className="font-display text-xl leading-snug break-words">
+          {tokenizer.name}
+        </h2>
+        <p className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span>{tokenizer.implicit ? "Learned by a run" : "Named build"}</span>
           {!tokenizer.hasVocab && (
             <span className="text-destructive">Missing on disk</span>
           )}
         </p>
-        <p className="mt-1 truncate text-xs text-muted-foreground lg:hidden">
+        <p className="mt-1 text-xs break-words text-muted-foreground">
           {describeDatasets(tokenizer)}
         </p>
-        <p className="mt-1 text-xs text-muted-foreground tabular-nums md:hidden">
-          {compact(tokenizer.merges)} merges · {compact(tokenizer.files)} files
-          · {megabytes(tokenizer.bytes)}
+        <p className="mt-3 text-sm text-muted-foreground tabular-nums">
+          {compact(tokenizer.vocabSize)} vocab · {compact(tokenizer.merges)}{" "}
+          merges
+          {" · "}
+          {compact(tokenizer.files)} files · {megabytes(tokenizer.bytes)}
         </p>
-      </th>
-      <td className="hidden min-w-0 py-3 pr-3 text-xs text-muted-foreground lg:table-cell">
-        <p className="truncate">{describeDatasets(tokenizer)}</p>
-      </td>
-      <td className="py-3 pr-3 text-right text-sm tabular-nums">
-        {compact(tokenizer.vocabSize)}
-      </td>
-      <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums md:table-cell">
-        {compact(tokenizer.merges)}
-      </td>
-      <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums md:table-cell">
-        {compact(tokenizer.files)}
-      </td>
-      <td className="hidden py-3 pr-3 text-right text-xs text-muted-foreground tabular-nums md:table-cell">
-        {megabytes(tokenizer.bytes)}
-      </td>
-      <td className="py-3 text-right">
+      </div>
+      <div className="shrink-0">
         <AlertDialog>
           <AlertDialogTrigger
             render={
@@ -169,7 +122,7 @@ function Row({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-      </td>
-    </tr>
+      </div>
+    </li>
   )
 }
