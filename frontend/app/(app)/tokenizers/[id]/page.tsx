@@ -9,7 +9,7 @@ export default async function TokenizerPage({
 }) {
   const { id } = await params
   return (
-    <PageShell width="reading">
+    <PageShell>
       <TokenizerDetailView tokenizerId={id} />
     </PageShell>
   )

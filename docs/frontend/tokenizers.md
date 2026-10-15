@@ -3,7 +3,8 @@
 `/tokenizers` is the board-width vocabulary catalogue. All, Built and From runs
 filter the open ledger. Vocabulary names link to `/tokenizers/{id}`; Build
 vocabulary opens `/tokenizers/new-tokenizer`. There is no creation dialog.
-The new and detail pages use reading width and page-native fields.
+The new and detail pages also use board width and page-native fields. Their
+dataset selection and facts ledger share the catalogue's available workspace.
 
 Creation queues a durable vocabulary build, preserving its existing dataset and
 learning-ceiling contracts. Empty dataset selection means all available corpora

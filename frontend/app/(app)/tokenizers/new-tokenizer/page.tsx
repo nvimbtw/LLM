@@ -4,7 +4,7 @@ import { PageShell } from "@/components/ui/page-shell"
 /** Opens the page-native vocabulary build form. */
 export default function NewTokenizerPage() {
   return (
-    <PageShell width="reading">
+    <PageShell>
       <TokenizerComposer />
     </PageShell>
   )

@@ -77,6 +77,10 @@ its measured deltas.
 
 ## Sizing
 
+Facts ledgers use the default `PageShell` board width, including tokenizer lists,
+detail and creation pages. Prose editing surfaces such as project notes retain
+reading width. Inline metadata fields do not make a facts ledger a prose page.
+
 The same two-layer split the colour tokens got, applied to everything with a
 size. In `globals.css`:
 

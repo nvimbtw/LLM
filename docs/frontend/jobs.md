@@ -69,7 +69,7 @@ and the job page it wants. `/tokenizers` opens on a vocabulary catalogue with
 All, Built and From runs filters. Named builds lead the combined list; automatic
 builds remain inspectable and deletable, with their reuse semantics stated below
 it. `TokenizerCatalogue` presents a board-width ledger of vocabulary names,
-provenance and compact figures. Names open the reading-width detail editor;
+provenance and compact figures. Names open the board-width detail editor;
 **Build vocabulary** opens `/tokenizers/new-tokenizer`, where page-native fields
 queue the build and hand off to its durable execution page. See
 [tokenizers](tokenizers.md) for metadata persistence and session boundaries.
@@ -247,7 +247,8 @@ on either side arrives as `undefined`. The LLM engine's side is documented in
 - A **chain** is a flat list of steps, each running against the model the one
   before it produced. A follow-up waits rather than queueing: its model does not
   exist yet, so a queue position would be a lie about when it runs.
-- `/bench` is history and analysis; starting runs uses `/bench/new-bench`.
+- `/bench` is history and analysis; its top-right **Bench a model** action opens
+  `/bench/new-bench`.
 - The throbber's per-kind modes (`training` / `benchmarking` / `generating`) are
   how a running job says what it is. Give **one** instance a changing `mode` so
   it morphs between them as the queue advances rather than cutting. `NowBand` is
