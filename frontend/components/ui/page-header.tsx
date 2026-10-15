@@ -4,7 +4,8 @@ import { ArrowLeft } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * Descriptions carry a short orientation line or resource metadata.
+ * Descriptions are stored resource content or functional metadata; decorative
+ * introductory prose does not belong in headers.
  * Keep the default rule unless the next section opens with its own ledger rule.
  *
  * Pulled out of the pages because all fifteen of them had spelled the same header
@@ -15,6 +16,8 @@ import { cn } from "@/lib/utils"
 export interface PageHeaderProps {
   title: React.ReactNode
   description?: React.ReactNode
+  /** Functional figures displayed beside page actions, with no introductory prose. */
+  meta?: React.ReactNode
   /** Page actions, right-aligned against the title. */
   action?: React.ReactNode
   /**
@@ -33,6 +36,7 @@ export interface PageHeaderProps {
 export function PageHeader({
   title,
   description,
+  meta,
   action,
   back,
   className,
@@ -66,7 +70,12 @@ export function PageHeader({
             </div>
           )}
         </div>
-        {action && <div className="max-w-full shrink-0">{action}</div>}
+        {(meta || action) && (
+          <div className="flex max-w-full flex-wrap items-center justify-end gap-x-8 gap-y-4">
+            {meta}
+            {action && <div className="max-w-full shrink-0">{action}</div>}
+          </div>
+        )}
       </div>
     </header>
   )

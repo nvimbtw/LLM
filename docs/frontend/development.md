@@ -69,10 +69,12 @@ for cache freshness, session isolation, and selection readiness.
 
 - Use the shared `PageHeader` for page titles, back links and actions. Keep its
   default hairline unless an immediately opening ledger supplies the rule.
-  Short descriptions may orient the reader or show resource metadata; avoid
-  captions that repeat the heading. Settings section titles stand alone.
-  Secondary text carries measurements or instructions needed to use a control. Admin directory links
-  show the destination's title and icon.
+  Headers contain no decorative description prose. Keep functional metadata
+  such as task counts, status or thread/token figures; use header meta for figures
+  beside actions. Stored resource descriptions and editable resource fields remain
+  content, not introductions. Settings section titles stand alone. Secondary text
+  carries measurements or instructions needed to use a control. Admin directory
+  links show the destination's title and icon.
 - Tailwind utility classes in JSX. No separate `.module.css` files.
 - Use `cn()` from `@/lib/utils` for conditional class merging.
 - Follow the existing design: Geist font (sans), the shadcn/ui color tokens, the sidebar layout.

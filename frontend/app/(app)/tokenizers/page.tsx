@@ -8,7 +8,6 @@ export default function TokenizersPage() {
     <PageShell width="reading">
       <PageHeader
         title="Tokenizers"
-        description="Vocabularies turn dataset text into the tokens a model learns and predicts."
         back={{ href: "/admin", label: "Admin" }}
       />
       <TokenizersView />

@@ -34,11 +34,7 @@ export default function GymsPage() {
 
   return (
     <PageShell>
-      <PageHeader
-        title="Gyms"
-        description="Practise against generated tasks or measure a model in a single evaluation."
-        back={{ href: "/admin", label: "Admin" }}
-      />
+      <PageHeader title="Gyms" back={{ href: "/admin", label: "Admin" }} />
       {error ? (
         <LoadError hint={error} />
       ) : orderedGyms === null ? (

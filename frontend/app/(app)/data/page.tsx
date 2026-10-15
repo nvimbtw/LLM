@@ -6,11 +6,7 @@ import { PageShell } from "@/components/ui/page-shell"
 export default function DataPage() {
   return (
     <PageShell width="board">
-      <PageHeader
-        title="Data"
-        description="Acquire datasets, inspect documents and preview cleaning pipelines."
-        back={{ href: "/admin", label: "Admin" }}
-      />
+      <PageHeader title="Data" back={{ href: "/admin", label: "Admin" }} />
       <DataView />
     </PageShell>
   )

@@ -179,8 +179,11 @@ catches the light above it. This is why `shadow-sm`/`md`/`lg`/`xl` are banned:
 Tailwind's defaults are black at a fixed opacity, invisible on the dragon ground,
 which is what made those controls read flat in dark mode.
 
-`PageHeader` supplies the display title, optional short description or resource
-metadata, back link, right-side actions and bottom hairline. Pages keep that
+`PageHeader` supplies the display title, back link, functional metadata,
+right-side actions and bottom hairline. Headers have no decorative description
+prose. Run task counts, status and elapsed time remain factual metadata;
+conversation thread/token figures sit in right-aligned header meta beside the
+action. Stored resource descriptions and their editable fields remain content. Pages keep that
 rule when tabs, forms, section headings or unruled rows follow. Only a ledger
 that opens immediately with its own rule drops the header rule
 (`className="mb-6 border-b-0 pb-0"`), as the model registry does. The editable

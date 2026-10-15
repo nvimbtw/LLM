@@ -10,11 +10,7 @@ import { PageShell } from "@/components/ui/page-shell"
 export default function MarkupPage() {
   return (
     <PageShell width="reading">
-      <PageHeader
-        title="Markup"
-        description="Preview how model tokens render in conversations and inspect their source."
-        back={{ href: "/admin", label: "Admin" }}
-      />
+      <PageHeader title="Markup" back={{ href: "/admin", label: "Admin" }} />
       <MarkupShowcase />
     </PageShell>
   )

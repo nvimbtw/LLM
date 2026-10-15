@@ -6,11 +6,7 @@ import { PageShell } from "@/components/ui/page-shell"
 export default function BenchmarkPage() {
   return (
     <PageShell>
-      <PageHeader
-        title="Benchmark"
-        description="Compare recorded scores and inspect how each model performed."
-        back={{ href: "/admin", label: "Admin" }}
-      />
+      <PageHeader title="Benchmark" back={{ href: "/admin", label: "Admin" }} />
       <BenchmarkView />
     </PageShell>
   )
