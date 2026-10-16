@@ -43,7 +43,7 @@ class PullRequest(BaseModel):
 class ProcessRequest(BaseModel):
     name: str
     description: str | None = None
-    steps: list[dict[str, Any]]
+    steps: list[dict[str, Any]] = Field(max_length=32)
 
 
 def _view(row: Dataset) -> dict:
@@ -211,11 +211,14 @@ def _resolved_steps(steps: list[dict], kind: DatasetKind) -> list[dict]:
     is the parameters used and not the parameters typed.
     """
     if not steps:
-        raise HTTPException(status_code=422, detail="a pipeline needs at least one step")
+        raise HTTPException(
+            status_code=422, detail="a pipeline needs at least one step"
+        )
 
     resolved = []
+    registry = processors.REGISTRY.snapshot()
     for step in steps:
-        processor = processors.REGISTRY.get(str(step.get("processor")))
+        processor = registry.get(str(step.get("processor")))
         if processor is None:
             raise HTTPException(
                 status_code=422, detail=f"unknown processor: {step.get('processor')!r}"
@@ -226,7 +229,11 @@ def _resolved_steps(steps: list[dict], kind: DatasetKind) -> list[dict]:
                 detail=f"{processor.name} does not apply to a {kind.value} dataset",
             )
         resolved.append(
-            {"processor": processor.name, "params": processor.resolve(step.get("params"))}
+            {
+                "processor": processor.name,
+                "params": processor.resolve(step.get("params")),
+                "version_hash": processor.version_hash,
+            }
         )
     return resolved
 

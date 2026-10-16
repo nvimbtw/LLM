@@ -13,6 +13,7 @@ protocols retain their existing contracts; requests still pass through Rust.
 | Gym practice execution or evaluation run | `/gyms/{uuid}` |
 | Vocabulary catalogue / composer / resource | `/tokenizers` / `/tokenizers/new-tokenizer` / `/tokenizers/{uuid}` |
 | Vocabulary build execution | `/tokenizers/builds/{uuid}` |
+| Processor directory / creation / source detail | `/processors` / `/processors/new-processor` / `/processors/{processor_id}` |
 
 `jobHref` maps each durable execution kind to its canonical URL. Gym UUID pages
 check the execution row first, falling back to an evaluation only after a 404.
@@ -27,6 +28,11 @@ report renderer used by history and historical report pages.
 Vocabulary resource IDs and build execution IDs are distinct. Build pages link
 to the output vocabulary; the vocabulary detail URL never interprets a build ID
 as an artifact. Metadata edits retain the vocabulary's stable identity.
+
+Processor IDs are their registered names, such as `strip-urls`. The Data page's
+Processors entry opens the full directory. Administrators author a new file on
+the dedicated creation page; detail pages inspect/edit existing source. The
+dataset Clean workbench remains available and links to these detail pages.
 
 ## Compatibility
 

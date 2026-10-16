@@ -4,15 +4,37 @@ Order is the user's, not ours, and it matters: stripping HTML before measuring
 length keeps a page of markup from passing a minimum it only met in tags.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TypedDict
 
 from processors.spec import Document, Processor, State
+
+
+class Provenance(TypedDict):
+    processor: str
+    params: dict
+    version_hash: str
+    executed_version_hash: str
+    version_mismatch: bool
 
 
 @dataclass(frozen=True)
 class Step:
     processor: Processor
     params: dict
+    submitted_version_hash: str | None = None
+
+    def provenance(self) -> Provenance:
+        """Describe submitted and executing versions, including detected source drift."""
+        submitted = self.submitted_version_hash or self.processor.version_hash
+        return {
+            "processor": self.processor.name,
+            "params": self.params,
+            "version_hash": submitted,
+            "executed_version_hash": self.processor.version_hash,
+            "version_mismatch": submitted != self.processor.version_hash,
+        }
 
 
 @dataclass
@@ -33,7 +55,7 @@ class Outcome:
         return self.after != self.before
 
 
-def resolve(steps: list[dict], registry: dict[str, Processor]) -> list[Step]:
+def resolve(steps: list[dict], registry: Mapping[str, Processor]) -> list[Step]:
     """Turn the wire's `[{processor, params}, …]` into runnable steps.
 
     An unknown processor name raises rather than being skipped: a pipeline that
@@ -46,7 +68,14 @@ def resolve(steps: list[dict], registry: dict[str, Processor]) -> list[Step]:
         processor = registry.get(str(name))
         if processor is None:
             raise KeyError(f"unknown processor: {name}")
-        resolved.append(Step(processor, processor.resolve(step.get("params"))))
+        version = step.get("version_hash")
+        if version is not None and (
+            not isinstance(version, str)
+            or len(version) != 64
+            or any(ch not in "0123456789abcdef" for ch in version)
+        ):
+            raise ValueError("version_hash must be a SHA256 hex digest")
+        resolved.append(Step(processor, processor.resolve(step.get("params")), version))
     return resolved
 
 

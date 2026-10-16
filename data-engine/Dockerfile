@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS dev
 # Source arrives as a bind mount; the command lives in compose so the migration
 # step is visible beside the service it belongs to.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002", "--reload", "--reload-exclude", "processors/custom/*"]
 
 FROM base AS runtime
 COPY . .

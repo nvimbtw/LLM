@@ -1,0 +1,38 @@
+{
+  "request": {
+    "source": "def broken("
+  },
+  "save_response": {
+    "name": "example",
+    "version_hash": "8201b8f4baeec22e95b05dcf1db19c1df78dbfd690f6e203a5c33cbf0a280631",
+    "active_version_hash": "04c2bbe70f1a9c97c8f524c0c8bd55c2fdd0da1051276e09a58d5460712a33ea",
+    "reload_error": "SyntaxError",
+    "saved": true
+  },
+  "source_response": {
+    "name": "example",
+    "version_hash": "8201b8f4baeec22e95b05dcf1db19c1df78dbfd690f6e203a5c33cbf0a280631",
+    "active_version_hash": "04c2bbe70f1a9c97c8f524c0c8bd55c2fdd0da1051276e09a58d5460712a33ea",
+    "reload_error": "SyntaxError",
+    "title": "Example",
+    "file": "processors/custom/example.py",
+    "source": "def broken(",
+    "editable": true
+  },
+  "catalogue": {
+    "processors": [
+      {
+        "name": "example",
+        "title": "Example",
+        "description": "",
+        "applies_to": [
+          "pretrain",
+          "sft"
+        ],
+        "params": [],
+        "file": "processors/custom/example.py",
+        "version_hash": "04c2bbe70f1a9c97c8f524c0c8bd55c2fdd0da1051276e09a58d5460712a33ea"
+      }
+    ]
+  }
+}

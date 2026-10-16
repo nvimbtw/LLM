@@ -139,6 +139,117 @@ export interface Processor {
   description: string
   applies_to: DatasetKind[]
   params: ProcessorParam[]
+  file: string
+  version_hash: string
+}
+
+export interface ProcessorSourceStatus {
+  name: string
+  version_hash: string
+  active_version_hash: string
+  reload_error: string | null
+}
+
+export interface ProcessorSource extends ProcessorSourceStatus {
+  title: string
+  file: string
+  source: string
+  editable: boolean
+}
+
+/** Validates saved/active source identity before the editor interprets a response. */
+function processorSourceStatus(raw: unknown): ProcessorSourceStatus {
+  if (typeof raw !== "object" || raw === null)
+    throw new Error("Invalid processor source response")
+  const value = raw as Record<string, unknown>
+  const { name, version_hash, active_version_hash, reload_error } = value
+  if (
+    typeof name !== "string" ||
+    typeof version_hash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(version_hash) ||
+    typeof active_version_hash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(active_version_hash) ||
+    !(reload_error === null || typeof reload_error === "string")
+  ) {
+    throw new Error("Invalid processor source identity")
+  }
+  return { name, version_hash, active_version_hash, reload_error }
+}
+
+/** Validates source text, editability and metadata at the editor's network boundary. */
+export function parseProcessorSource(raw: unknown): ProcessorSource {
+  const status = processorSourceStatus(raw)
+  const value = raw as Record<string, unknown>
+  const { title, file, source, editable } = value
+  if (
+    typeof title !== "string" ||
+    typeof file !== "string" ||
+    typeof source !== "string" ||
+    typeof editable !== "boolean"
+  ) {
+    throw new Error("Invalid processor source payload")
+  }
+  return { ...status, title, file, source, editable }
+}
+
+/** Reads saved source for one identity; cancellation aborts the browser request. */
+export async function getProcessorSource(
+  name: string,
+  signal?: AbortSignal
+): Promise<ProcessorSource> {
+  const result = parseProcessorSource(
+    await read<unknown>(
+      await apiFetch(`/data/processors/${encodeURIComponent(name)}/source`, {
+        signal,
+      })
+    )
+  )
+  if (result.name !== name) throw new Error("Processor source identity changed")
+  return result
+}
+
+/** Saves custom source as supplied and reports disk/active state, including reload errors. */
+export async function saveProcessorSource(
+  name: string,
+  source: string,
+  signal?: AbortSignal
+): Promise<ProcessorSourceStatus> {
+  const raw = await read<unknown>(
+    await apiFetch(`/data/processors/${encodeURIComponent(name)}/source`, {
+      method: "PUT",
+      body: JSON.stringify({ source }),
+      signal,
+    })
+  )
+  const result = processorSourceStatus(raw)
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    !("saved" in raw) ||
+    raw.saved !== true ||
+    result.name !== name
+  ) {
+    throw new Error("Processor source was not saved")
+  }
+  return result
+}
+
+/** Creates a valid first custom processor version from its complete Python source. */
+export async function createProcessor(
+  source: string,
+  signal?: AbortSignal
+): Promise<ProcessorSource> {
+  const result = parseProcessorSource(
+    await read<unknown>(
+      await apiFetch("/data/processors", {
+        method: "POST",
+        body: JSON.stringify({ source }),
+        signal,
+      })
+    )
+  )
+  if (!result.editable) throw new Error("The new processor is not editable")
+  return result
 }
 
 /** One document's journey through a pipeline, for the before/after view. */
@@ -250,22 +361,82 @@ export async function listDocuments(
   )
 }
 
-export async function listProcessors(kind: DatasetKind): Promise<Processor[]> {
-  const body = await read<{ processors: Processor[] }>(
-    await apiFetch(`/data/processors?kind=${kind}`)
+/** Checks the parameter metadata interpreted by generated forms. */
+function isProcessorParam(raw: unknown): raw is ProcessorParam {
+  if (typeof raw !== "object" || raw === null) return false
+  const p = raw as Record<string, unknown>
+  return (
+    typeof p.name === "string" &&
+    typeof p.label === "string" &&
+    typeof p.description === "string" &&
+    typeof p.type === "string" &&
+    ["int", "float", "bool", "string"].includes(p.type) &&
+    (typeof p.default === "string" ||
+      typeof p.default === "boolean" ||
+      (typeof p.default === "number" && Number.isFinite(p.default))) &&
+    [p.minimum, p.maximum].every(
+      (bound) =>
+        bound === null || (typeof bound === "number" && Number.isFinite(bound))
+    )
   )
-  return body.processors
+}
+
+/** Checks catalogue identities and forms before rendering them. */
+function isProcessor(raw: unknown): raw is Processor {
+  if (typeof raw !== "object" || raw === null) return false
+  const p = raw as Record<string, unknown>
+  return (
+    typeof p.name === "string" &&
+    typeof p.title === "string" &&
+    typeof p.description === "string" &&
+    typeof p.file === "string" &&
+    typeof p.version_hash === "string" &&
+    /^[a-f0-9]{64}$/.test(p.version_hash) &&
+    Array.isArray(p.applies_to) &&
+    p.applies_to.every((kind) => kind === "pretrain" || kind === "sft") &&
+    Array.isArray(p.params) &&
+    p.params.every(isProcessorParam)
+  )
+}
+
+/** Validates the catalogue wire contract, turning malformed responses into load errors. */
+export function parseProcessorCatalogue(raw: unknown): Processor[] {
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    !("processors" in raw) ||
+    !Array.isArray(raw.processors) ||
+    !raw.processors.every(isProcessor)
+  ) {
+    throw new Error("Invalid processor catalogue response")
+  }
+  return raw.processors
+}
+
+/** Lists every active processor when the kind filter is null. */
+export async function listProcessors(
+  kind: DatasetKind | null = null
+): Promise<Processor[]> {
+  return parseProcessorCatalogue(
+    await read<unknown>(
+      await apiFetch(
+        kind ? `/data/processors?kind=${kind}` : "/data/processors"
+      )
+    )
+  )
 }
 
 export async function preview(
   datasetId: string,
   steps: PipelineStep[],
-  limit: number
+  limit: number,
+  signal?: AbortSignal
 ): Promise<Preview> {
   return read<Preview>(
     await apiFetch("/data/preview", {
       method: "POST",
       body: JSON.stringify({ dataset_id: datasetId, steps, limit }),
+      signal,
     })
   )
 }

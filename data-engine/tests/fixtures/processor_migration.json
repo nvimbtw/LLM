@@ -1,0 +1,569 @@
+{
+  "documents": [
+    {
+      "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+    },
+    {
+      "content": ""
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "abc"
+        },
+        {
+          "role": "assistant",
+          "content": "de"
+        }
+      ],
+      "meta": {
+        "source": "fixture"
+      }
+    },
+    {
+      "content": "  \t\n  "
+    },
+    {
+      "content": "Ｃａｆｅ́\u0001\r\nhi"
+    }
+  ],
+  "metadata": [
+    {
+      "name": "strip-html",
+      "title": "Strip HTML",
+      "description": "Remove tags, and the contents of script and style blocks.",
+      "applies_to": [
+        "pretrain"
+      ],
+      "params": [
+        {
+          "name": "unescape_entities",
+          "label": "Unescape entities",
+          "type": "bool",
+          "default": true,
+          "description": "Turn &amp; and friends back into the characters they name.",
+          "minimum": null,
+          "maximum": null
+        }
+      ]
+    },
+    {
+      "name": "normalise-unicode",
+      "title": "Normalise Unicode",
+      "description": "Put text into one canonical form and drop control characters.",
+      "applies_to": [
+        "pretrain"
+      ],
+      "params": [
+        {
+          "name": "form",
+          "label": "Form",
+          "type": "string",
+          "default": "NFKC",
+          "description": "NFC, NFD, NFKC or NFKD.",
+          "minimum": null,
+          "maximum": null
+        },
+        {
+          "name": "strip_control",
+          "label": "Strip control characters",
+          "type": "bool",
+          "default": true,
+          "description": "Newlines and tabs are kept.",
+          "minimum": null,
+          "maximum": null
+        }
+      ]
+    },
+    {
+      "name": "collapse-whitespace",
+      "title": "Collapse whitespace",
+      "description": "Normalise line endings, trim trailing spaces, squeeze runs.",
+      "applies_to": [
+        "pretrain"
+      ],
+      "params": [
+        {
+          "name": "collapse_blank_lines",
+          "label": "Collapse blank lines",
+          "type": "bool",
+          "default": true,
+          "description": "Reduce three or more newlines to a paragraph break.",
+          "minimum": null,
+          "maximum": null
+        }
+      ]
+    },
+    {
+      "name": "strip-boilerplate",
+      "title": "Strip boilerplate lines",
+      "description": "Drop whole lines that are navigation furniture, not prose.",
+      "applies_to": [
+        "pretrain"
+      ],
+      "params": []
+    },
+    {
+      "name": "join-broken-lines",
+      "title": "Join broken lines",
+      "description": "Drop every blank line and pull the surviving lines together. For plain-text dumps — Gutenberg's is one — that put a blank line after every line rather than only between paragraphs, so a document reads as one line per line instead of one sentence per blank-separated fragment.",
+      "applies_to": [
+        "pretrain"
+      ],
+      "params": []
+    },
+    {
+      "name": "min-length",
+      "title": "Drop short documents",
+      "description": "Remove anything below a character count.",
+      "applies_to": [
+        "pretrain",
+        "sft"
+      ],
+      "params": [
+        {
+          "name": "characters",
+          "label": "Minimum characters",
+          "type": "int",
+          "default": 200,
+          "description": "",
+          "minimum": 0,
+          "maximum": 100000
+        }
+      ]
+    },
+    {
+      "name": "max-length",
+      "title": "Bound long documents",
+      "description": "Drop or truncate anything above a character count.",
+      "applies_to": [
+        "pretrain",
+        "sft"
+      ],
+      "params": [
+        {
+          "name": "characters",
+          "label": "Maximum characters",
+          "type": "int",
+          "default": 50000,
+          "description": "",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        {
+          "name": "truncate",
+          "label": "Truncate instead of dropping",
+          "type": "bool",
+          "default": false,
+          "description": "Conversations are always dropped — a half exchange is not data.",
+          "minimum": null,
+          "maximum": null
+        }
+      ]
+    },
+    {
+      "name": "dedup-exact",
+      "title": "Remove duplicates",
+      "description": "Keep the first copy of each document and drop the rest.",
+      "applies_to": [
+        "pretrain",
+        "sft"
+      ],
+      "params": [
+        {
+          "name": "ignore_whitespace",
+          "label": "Ignore whitespace",
+          "type": "bool",
+          "default": true,
+          "description": "",
+          "minimum": null,
+          "maximum": null
+        },
+        {
+          "name": "ignore_case",
+          "label": "Ignore case",
+          "type": "bool",
+          "default": false,
+          "description": "",
+          "minimum": null,
+          "maximum": null
+        }
+      ]
+    },
+    {
+      "name": "redact-pii",
+      "title": "Redact identifiers",
+      "description": "Replace emails, phone numbers and IP addresses with placeholders.",
+      "applies_to": [
+        "pretrain",
+        "sft"
+      ],
+      "params": [
+        {
+          "name": "emails",
+          "label": "Emails",
+          "type": "bool",
+          "default": true,
+          "description": "",
+          "minimum": null,
+          "maximum": null
+        },
+        {
+          "name": "phone_numbers",
+          "label": "Phone numbers",
+          "type": "bool",
+          "default": false,
+          "description": "",
+          "minimum": null,
+          "maximum": null
+        },
+        {
+          "name": "ip_addresses",
+          "label": "IP addresses",
+          "type": "bool",
+          "default": true,
+          "description": "",
+          "minimum": null,
+          "maximum": null
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "strip-html",
+      "given": {},
+      "after": [
+        {
+          "content": " hi   a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          },
+          "content": ""
+        },
+        {
+          "content": "  \t\n  "
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\r\nhi"
+        }
+      ]
+    },
+    {
+      "name": "normalise-unicode",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          },
+          "content": ""
+        },
+        {
+          "content": "  \t\n  "
+        },
+        {
+          "content": "Café\nhi"
+        }
+      ]
+    },
+    {
+      "name": "collapse-whitespace",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          },
+          "content": ""
+        },
+        {
+          "content": ""
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\nhi"
+        }
+      ]
+    },
+    {
+      "name": "strip-boilerplate",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          },
+          "content": ""
+        },
+        {
+          "content": "  \t\n  "
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\r\nhi"
+        }
+      ]
+    },
+    {
+      "name": "join-broken-lines",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          },
+          "content": ""
+        },
+        {
+          "content": ""
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\nhi"
+        }
+      ]
+    },
+    {
+      "name": "min-length",
+      "given": {},
+      "after": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "name": "min-length",
+      "given": {
+        "characters": 3,
+        "truncate": true
+      },
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        null,
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          }
+        },
+        {
+          "content": "  \t\n  "
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\r\nhi"
+        }
+      ]
+    },
+    {
+      "name": "max-length",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          }
+        },
+        {
+          "content": "  \t\n  "
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\r\nhi"
+        }
+      ]
+    },
+    {
+      "name": "max-length",
+      "given": {
+        "characters": 3,
+        "truncate": true
+      },
+      "after": [
+        {
+          "content": "<p>"
+        },
+        {
+          "content": ""
+        },
+        null,
+        {
+          "content": "  \t"
+        },
+        {
+          "content": "Ｃａｆ"
+        }
+      ]
+    },
+    {
+      "name": "dedup-exact",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> a@b.com www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          }
+        },
+        null,
+        {
+          "content": "Ｃａｆｅ́\u0001\r\nhi"
+        }
+      ]
+    },
+    {
+      "name": "redact-pii",
+      "given": {},
+      "after": [
+        {
+          "content": "<p>hi</p><script>bad</script> [email] www.example.com"
+        },
+        {
+          "content": ""
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "abc"
+            },
+            {
+              "role": "assistant",
+              "content": "de"
+            }
+          ],
+          "meta": {
+            "source": "fixture"
+          }
+        },
+        {
+          "content": "  \t\n  "
+        },
+        {
+          "content": "Ｃａｆｅ́\u0001\r\nhi"
+        }
+      ]
+    }
+  ]
+}

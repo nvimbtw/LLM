@@ -1,6 +1,7 @@
 "use client"
 
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import * as React from "react"
 import { ChevronDown, ChevronRight, Plus, X } from "lucide-react"
 
@@ -25,10 +26,11 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
-import { useProcessors } from "@/hooks/use-data"
+import { ProcessorSource } from "@/components/data/processor-source"
+import { useSessionToken } from "@/hooks/use-auth"
+import { useProcessingWorkbench } from "@/hooks/use-processing-workbench"
 import {
   documentText,
-  preview as runPreview,
   processDataset,
   type Dataset,
   type ParamValue,
@@ -38,12 +40,6 @@ import {
 } from "@/lib/data"
 import { hunks, splitDiff, type DiffRow } from "@/lib/diff"
 import { cn } from "@/lib/utils"
-
-/** Short enough to feel live while a number is being typed. */
-const DEBOUNCE_MS = 250
-
-/** How many documents the before/after is drawn from. */
-const SAMPLE = 8
 
 export interface ProcessingWorkbenchProps {
   dataset: Dataset
@@ -57,61 +53,33 @@ export interface ProcessingWorkbenchProps {
  * parameter compares two runs over the same text rather than over a new sample.
  */
 export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
-  const router = useRouter()
-  const { data: processors, isLoading, error } = useProcessors(dataset.kind)
-  const [steps, setSteps] = React.useState<PipelineStep[]>([])
-  const [preview, setPreview] = React.useState<Preview | null>(null)
-  const [previewError, setPreviewError] = React.useState<string | null>(null)
-  const [naming, setNaming] = React.useState(false)
-
-  React.useEffect(() => {
-    if (steps.length === 0) return
-    let active = true
-    const timer = setTimeout(() => {
-      runPreview(dataset.id, steps, SAMPLE)
-        .then((result) => {
-          if (!active) return
-          setPreview(result)
-          setPreviewError(null)
-        })
-        .catch(
-          (e) =>
-            active &&
-            setPreviewError(e instanceof Error ? e.message : "preview failed")
-        )
-    }, DEBOUNCE_MS)
-
-    return () => {
-      active = false
-      clearTimeout(timer)
-    }
-  }, [dataset.id, steps])
-
-  function add(name: string) {
-    const processor = processors.find((p) => p.name === name)
-    if (!processor) return
-    setSteps((current) => [
-      ...current,
-      { processor: name, params: defaults(processor) },
-    ])
-  }
-
-  function update(index: number, key: string, value: ParamValue) {
-    setSteps((current) =>
-      current.map((step, i) =>
-        i === index
-          ? { ...step, params: { ...step.params, [key]: value } }
-          : step
-      )
-    )
-  }
-
-  const unused = processors.filter(
-    (p) => !steps.some((s) => s.processor === p.name)
+  const token = useSessionToken()
+  return (
+    <Workbench
+      key={`${dataset.id}:${token ?? "anonymous"}`}
+      dataset={dataset}
+    />
   )
+}
 
-  // Which step's parameters are open under the rail. Kept by name rather than
-  // index so removing an earlier step does not silently open a different one.
+/** Presents one dataset/session's pipeline and overall preview with source controls. */
+function Workbench({ dataset }: ProcessingWorkbenchProps) {
+  const router = useRouter()
+  const {
+    processors,
+    isLoading,
+    error,
+    steps,
+    preview,
+    previewError,
+    unused,
+    add,
+    remove,
+    update,
+    sourceChanged,
+    sampleSize,
+  } = useProcessingWorkbench(dataset)
+  const [naming, setNaming] = React.useState(false)
   const [opened, setOpened] = React.useState<string | null>(null)
   const openIndex = steps.findIndex((s) => s.processor === opened)
   const openStep = openIndex === -1 ? null : steps[openIndex]
@@ -136,12 +104,10 @@ export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
         ) : (
           <>
             <div className="flex flex-wrap items-center gap-4 py-4">
-              {/* The rail scrolls rather than wraps: a pipeline is an order,
-                  and a second line reads as a second pipeline. */}
               <div className="flex min-w-0 basis-full items-center gap-2 overflow-x-auto pb-1 sm:flex-1 sm:basis-auto">
                 {steps.length === 0 && (
                   <p className="text-sm text-muted-foreground">
-                    Add a step to see what it would do to the first {SAMPLE}{" "}
+                    Add a step to see what it would do to the first {sampleSize}{" "}
                     documents.
                   </p>
                 )}
@@ -166,7 +132,7 @@ export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
                           )
                         }
                         onRemove={() => {
-                          setSteps((c) => c.filter((_, i) => i !== index))
+                          remove(index)
                           if (opened === step.processor) setOpened(null)
                         }}
                       />
@@ -215,6 +181,7 @@ export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
                 processor={openProcessor}
                 step={openStep}
                 onChange={(key, value) => update(openIndex, key, value)}
+                onSourceSaved={sourceChanged}
               />
             )}
           </>
@@ -226,9 +193,6 @@ export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
         error={steps.length === 0 ? null : previewError}
         steps={steps.length}
       />
-
-      {/* Keyed so each opening starts from the source's current name instead of
-          an effect writing over whatever was typed last time. */}
       <NameDialog
         key={naming ? "open" : "closed"}
         open={naming}
@@ -245,8 +209,12 @@ export function ProcessingWorkbench({ dataset }: ProcessingWorkbenchProps) {
   )
 }
 
-function defaults(processor: Processor): Record<string, ParamValue> {
-  return Object.fromEntries(processor.params.map((p) => [p.name, p.default]))
+export interface StepChipProps {
+  index: number
+  processor: Processor
+  isOpen: boolean
+  onOpen: () => void
+  onRemove: () => void
 }
 
 /** One stop on the rail: what it is, and a way to open or drop it. */
@@ -256,13 +224,7 @@ function StepChip({
   isOpen,
   onOpen,
   onRemove,
-}: {
-  index: number
-  processor: Processor
-  isOpen: boolean
-  onOpen: () => void
-  onRemove: () => void
-}) {
+}: StepChipProps) {
   const tunable = processor.params.length > 0
   return (
     <div
@@ -303,16 +265,20 @@ function StepChip({
   )
 }
 
+export interface StepSettingsProps {
+  processor: Processor
+  step: PipelineStep
+  onChange: (key: string, value: ParamValue) => void
+  onSourceSaved: () => void
+}
+
 /** The open step's description and parameters, under the rail it belongs to. */
 function StepSettings({
   processor,
   step,
   onChange,
-}: {
-  processor: Processor
-  step: PipelineStep
-  onChange: (key: string, value: ParamValue) => void
-}) {
+  onSourceSaved,
+}: StepSettingsProps) {
   return (
     <div className="border-t border-border/60 py-4">
       <p className="text-xs text-muted-foreground">{processor.description}</p>
@@ -361,19 +327,39 @@ function StepSettings({
           })}
         </div>
       )}
+      <div className="mt-4 border-t border-border/60 pt-4">
+        <ProcessorSource
+          key={processor.name}
+          name={processor.name}
+          onSaved={onSourceSaved}
+          actions={
+            <Button
+              variant="text"
+              size="sm"
+              nativeButton={false}
+              render={
+                <Link
+                  href={`/processors/${encodeURIComponent(processor.name)}`}
+                />
+              }
+            >
+              Open processor
+            </Button>
+          }
+        />
+      </div>
     </div>
   )
 }
 
-function PreviewPane({
-  preview,
-  error,
-  steps,
-}: {
+export interface PreviewPaneProps {
   preview: Preview | null
   error: string | null
   steps: number
-}) {
+}
+
+/** Presents aggregate pipeline changes and the processor responsible for each drop. */
+function PreviewPane({ preview, error, steps }: PreviewPaneProps) {
   if (error) {
     return (
       <Panel variant="open" title="Before and after">
@@ -499,7 +485,12 @@ const TONE = {
   none: "",
 } as const
 
-function Line({ row }: { row: DiffRow }) {
+export interface LineProps {
+  row: DiffRow
+}
+
+/** Aligns one pair of diff lines using the existing added/removed palette. */
+function Line({ row }: LineProps) {
   const left =
     row.kind === "removed" || row.kind === "changed" ? "removed" : "none"
   const right =
@@ -515,13 +506,13 @@ function Line({ row }: { row: DiffRow }) {
   )
 }
 
-function Gutter({
-  number,
-  tone,
-}: {
+export interface GutterProps {
   number?: number
   tone: keyof typeof TONE
-}) {
+}
+
+/** Renders a line number with the corresponding change tone. */
+function Gutter({ number, tone }: GutterProps) {
   return (
     <td
       className={cn(
@@ -534,7 +525,13 @@ function Gutter({
   )
 }
 
-function Cell({ text, tone }: { text?: string; tone: keyof typeof TONE }) {
+export interface CellProps {
+  text?: string
+  tone: keyof typeof TONE
+}
+
+/** Renders one diff line as literal text with its change tone. */
+function Cell({ text, tone }: CellProps) {
   return (
     <td
       className={cn(
@@ -547,8 +544,12 @@ function Cell({ text, tone }: { text?: string; tone: keyof typeof TONE }) {
   )
 }
 
+export interface FoldedProps {
+  count: number
+}
+
 /** A run of untouched lines, stated rather than shown. */
-function Folded({ count }: { count: number }) {
+function Folded({ count }: FoldedProps) {
   return (
     <tr>
       <td
@@ -561,8 +562,13 @@ function Folded({ count }: { count: number }) {
   )
 }
 
+export interface SideProps {
+  text: string
+  tone: keyof typeof TONE
+}
+
 /** The whole of one side, for a document that has no other side to align to. */
-function Side({ text, tone }: { text: string; tone: keyof typeof TONE }) {
+function Side({ text, tone }: SideProps) {
   return (
     <pre
       className={cn(
@@ -575,7 +581,7 @@ function Side({ text, tone }: { text: string; tone: keyof typeof TONE }) {
   )
 }
 
-interface NameDialogProps {
+export interface NameDialogProps {
   open: boolean
   source: Dataset
   steps: PipelineStep[]

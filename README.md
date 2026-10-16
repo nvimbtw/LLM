@@ -167,7 +167,7 @@ To run a Python service standalone instead, set its `*_AUTOSTART=false` and:
 
 ```sh
 cd llm-engine  && DATA_DIR=./data .venv/bin/uvicorn main:app --port 8001 --reload
-cd data-engine && .venv/bin/uvicorn main:app --port 8002 --reload
+cd data-engine && .venv/bin/uvicorn main:app --port 8002 --reload --reload-exclude 'processors/custom/*'
 cd gyms-engine && .venv/bin/uvicorn main:app --port 8003 --reload
 cd bench-engine && .venv/bin/uvicorn main:app --port 8004 --reload
 ```

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useSessionToken } from "@/hooks/use-auth"
 
 import {
   getDataset,
@@ -148,7 +149,12 @@ export function useDocuments(
   }
 }
 
-export function useProcessors(kind: DatasetKind | null): Loaded<Processor[]> {
+/** Loads current-session processors, with null kind selecting the full catalogue. */
+export function useProcessors(
+  kind: DatasetKind | null,
+  refreshKey = 0
+): Loaded<Processor[]> {
+  const token = useSessionToken()
   const [state, setState] = React.useState<Loaded<Processor[]>>({
     data: [],
     isLoading: true,
@@ -156,7 +162,7 @@ export function useProcessors(kind: DatasetKind | null): Loaded<Processor[]> {
   })
 
   React.useEffect(() => {
-    if (kind === null) return
+    if (token === null) return
     let active = true
     listProcessors(kind)
       .then(
@@ -170,7 +176,7 @@ export function useProcessors(kind: DatasetKind | null): Loaded<Processor[]> {
     return () => {
       active = false
     }
-  }, [kind])
+  }, [kind, token, refreshKey])
 
   return state
 }

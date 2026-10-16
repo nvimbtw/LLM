@@ -100,6 +100,9 @@ visible. Both Enter and the Send button wait for in-flight uploads.
 
 ## Jobs, gyms and models
 
+[Data processing](data-processing.md) covers processor directory/creation pages,
+source editing, saved/active versions and the dataset save/repreview loop.
+
 [Jobs and administration](jobs.md) documents the queue, training composers,
 follow-ups, diagnostics, checkpoints and corpus-build figures.
 [Gyms](gyms.md) distinguishes browser-driven evaluation from queued RL practice,

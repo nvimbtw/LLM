@@ -48,3 +48,7 @@ deploy/searxng/data/
 
 # Agent scratch, and the git worktrees it creates inside the repo.
 .claude/
+
+# Local Monaco assets are copied from the pinned dependency before dev/build.
+/frontend/public/monaco/*
+!/frontend/public/monaco/.gitkeep
