@@ -9,6 +9,7 @@ A handler runs on a worker thread, so it opens its own sessions and never
 touches the event loop.
 """
 
+import logging
 import threading
 import uuid
 from collections.abc import Callable, Iterator
@@ -42,6 +43,7 @@ DEFAULT_ROW_CAP = 10_000
 MAX_ROW_CAP = 5_000_000
 
 Report = Callable[[Any], None]
+LOGGER = logging.getLogger(__name__)
 
 
 def _cap(config: dict) -> int:
@@ -203,16 +205,36 @@ def process(config: dict, report: Report, cancel: threading.Event) -> dict:
 
     Reads the source in order and streams it, so cleaning a corpus costs the same
     memory whether it has a thousand documents or a million.
+    Capture current callbacks and record submitted/executed hashes before writing.
+    Failures condemn the target and recount rows that already landed.
     """
     source_id = uuid.UUID(str(config["source_id"]))
     target_id = uuid.UUID(str(config["target_id"]))
-    steps = processors.resolve(list(config.get("steps") or []), processors.REGISTRY)
-
-    with store.session() as db:
-        source = q.dataset(db, source_id)
-        if source is None:
-            raise LookupError(f"dataset {source_id} is gone")
-        total = source.document_count
+    try:
+        steps = processors.resolve(
+            list(config.get("steps") or []), processors.REGISTRY.snapshot()
+        )
+        provenance = [step.provenance() for step in steps]
+        for record in provenance:
+            if record["version_mismatch"]:
+                LOGGER.warning(
+                    "Processor %s version drift: submitted %s, executing %s",
+                    record["processor"],
+                    record["version_hash"],
+                    record["executed_version_hash"],
+                )
+        with store.session() as db:
+            source = q.dataset(db, source_id)
+            if source is None:
+                raise LookupError(f"dataset {source_id} is gone")
+            for step in steps:
+                if source.kind not in step.processor.applies_to:
+                    raise ValueError(f"{step.processor.name} does not apply to a {source.kind.value} dataset")
+            total = source.document_count
+            q.record_processing_steps(db, target_id, provenance)
+    except Exception:
+        _condemn(target_id)
+        raise
 
     seen = 0
     state: processors.State = {}
@@ -230,7 +252,9 @@ def process(config: dict, report: Report, cancel: threading.Event) -> dict:
             with store.session() as db:
                 page = [
                     _as_document(row)
-                    for row in q.documents(db, source_id, offset=offset, limit=READ_PAGE)
+                    for row in q.documents(
+                        db, source_id, offset=offset, limit=READ_PAGE
+                    )
                 ]
             if not page:
                 return
@@ -244,24 +268,19 @@ def process(config: dict, report: Report, cancel: threading.Event) -> dict:
                 if outcome.after is not None:
                     yield _sized(outcome.after)
 
-    # The cap is the source's own size: a pipeline cannot invent documents, so
-    # this bounds nothing in practice and keeps one write path for both kinds.
     try:
         written, cancelled = _write(
             cleaned(), target_id, max(total, 1), report, cancel, "processing"
         )
     except Exception:
-        # A dataset left in `pulling` is a dataset that never stops: the row is
-        # what the page reads, and nothing else ever comes back to close it. The
-        # run is marked failed by the runner and carries the traceback; this is
-        # only so the dataset says so too, with a count of what actually landed
-        # rather than the zero it was created with.
         _condemn(target_id)
         raise
 
     with store.session() as db:
         q.finish_dataset(
-            db, target_id, DatasetStatus.failed if cancelled and not written else DatasetStatus.ready
+            db,
+            target_id,
+            DatasetStatus.failed if cancelled and not written else DatasetStatus.ready,
         )
 
     return {
@@ -270,6 +289,7 @@ def process(config: dict, report: Report, cancel: threading.Event) -> dict:
         "read": seen,
         "dropped": max(seen - written, 0),
         "cancelled": cancelled,
+        "steps": provenance,
     }
 
 

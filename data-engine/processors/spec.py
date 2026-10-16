@@ -1,10 +1,9 @@
 """What a processor is.
 
-Processors are code in this repository, not scripts a user supplies. That is a
-security decision before it is a design one: running uploaded Python would put
-arbitrary execution on the machine holding the database, and nothing about
-cleaning a corpus needs it. A curated set with declared parameters covers the
-work and can be previewed, tested and reviewed like anything else here.
+Curated processors and trusted operator files use the same Apply contract.
+Administrators may edit known custom files through Rust's authenticated source
+routes. Custom code executes in process under an import policy, so this is an
+operator authoring interface, not an untrusted-code upload sandbox.
 """
 
 from collections.abc import Callable
@@ -51,8 +50,11 @@ class Processor:
     applies_to: tuple[DatasetKind, ...]
     apply: Apply
     params: tuple[Param, ...] = field(default_factory=tuple)
+    file: str = ""
+    version_hash: str = ""
 
     def defaults(self) -> dict:
+        """Return the declared parameter defaults for form initialization."""
         return {p.name: p.default for p in self.params}
 
     def resolve(self, given: dict | None) -> dict:
@@ -65,7 +67,9 @@ class Processor:
         supplied = given or {}
         resolved = {}
         for param in self.params:
-            resolved[param.name] = _coerce(param, supplied.get(param.name, param.default))
+            resolved[param.name] = _coerce(
+                param, supplied.get(param.name, param.default)
+            )
         return resolved
 
 

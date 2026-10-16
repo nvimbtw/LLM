@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
@@ -36,6 +37,13 @@ export function DataView() {
         <TabsTrigger value="runs">
           Runs{active > 0 ? ` (${active})` : ""}
         </TabsTrigger>
+        <TabsTrigger
+          value="processors"
+          nativeButton={false}
+          render={<Link href="/processors" />}
+        >
+          Processors
+        </TabsTrigger>
       </TabsList>
 
       <TabsContent value="datasets" className="mt-6">
@@ -62,15 +70,14 @@ export function DataView() {
   )
 }
 
-function RunList({
-  runs,
-  isLoading,
-  error,
-}: {
+export interface RunListProps {
   runs: DataRun[]
   isLoading: boolean
   error: string | null
-}) {
+}
+
+/** Presents stored run progress or the load failure supplied by the data hook. */
+function RunList({ runs, isLoading, error }: RunListProps) {
   if (error) {
     return (
       <Panel variant="open" title="Runs">

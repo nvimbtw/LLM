@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 import store
+import processors
 from api import auth
 from api.routes import ROUTERS
 from api.runner import RUNNER
@@ -24,25 +25,29 @@ from store import queries as q
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Worker threads publish progress onto this loop; see Registry.bind_loop.
+    """Reconcile durable runs, then own and drain the queue and processor watcher."""
     REGISTRY.bind_loop(asyncio.get_running_loop())
     store.configure()
 
-    # Runs still marked live belong to a process that is gone. Queued rows are
-    # deliberately untouched — draining them is the point of a durable queue.
     with store.session() as db:
         stranded = q.fail_orphaned(db)
     if stranded:
         print(f"data engine: failed {stranded} run(s) stranded by a restart")
 
     if not auth.enforced():
-        print("data engine: DATA_ENGINE_SERVICE_SECRET unset — accepting unauthenticated callers")
+        print(
+            "data engine: DATA_ENGINE_SERVICE_SECRET unset — accepting unauthenticated callers"
+        )
 
+    watcher = processors.Watcher(processors.REGISTRY)
+    watcher.start()
     drain = asyncio.create_task(RUNNER.drain_forever())
     try:
         yield
     finally:
         drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        await asyncio.to_thread(watcher.stop)
 
 
 # The dependency is on the app rather than on each route: a new endpoint is

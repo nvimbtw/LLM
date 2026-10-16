@@ -54,3 +54,20 @@ most 120 characters) and an optional nullable `description` (at most 2,000).
 Duplicate names return 409 without partially saving the description; unknown
 identities return 404. UUIDs, files, fingerprints and training references remain
 unchanged. The backend owns no tokenizer metadata table.
+
+## Processor source
+
+`GET /data/processors/{name}/source` requires `AuthUser` and forwards to the
+data engine's source reader. `PUT` at the same path requires `AdminUser`; browser
+access-level display alone cannot authorize a write. Source JSON stays service
+owned and the hop replaces browser tokens with audience-scoped service tokens.
+
+Only known custom files are writable. Builtins are read-only. Saves persist
+invalid code and return saved/active hashes plus a reload error while preview
+continues with the last working callback. See the
+[data-engine source contract](../data-engine/processors.md).
+
+`POST /data/processors` also requires `AdminUser`. It forwards a full source file
+for creation; the data engine validates the first definition, derives its stable
+name, prevents collisions and owns its durable file. Ordinary-user POSTs and PUTs
+are rejected in Rust before reaching the service.

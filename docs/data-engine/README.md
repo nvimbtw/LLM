@@ -83,9 +83,9 @@ Invariants the types do not express:
 - **`datasets.parent_id` is `SET NULL`, not cascade.** Deleting a source must
   not silently take its cleaned descendants with it.
 - **`datasets.steps` is the provenance record** — the pipeline that produced a
-  derived dataset, with the parameters *used* rather than the ones typed. There
-  is no recipe table: processors are code, versioned with the repo, and a saved
-  recipe that drifted from the run it describes would be a lie.
+  derived dataset, with resolved parameters and submitted/executed source hashes.
+  Queued jobs use current code and record any drift; historical source snapshots
+  are not retained. See [processor provenance](processors.md#version-records).
 - **The counters on `datasets` are recomputed at the end of a run**, never
   accumulated by the writer, for a dataset a `Run` fills — a cancelled pull
   must still report what it kept. The exceptions are the datasets the backend
@@ -136,7 +136,9 @@ polls.
 | `POST /datasets/pull` | Create the row, queue the run that fills it. |
 | `POST /datasets/{id}/process` | Queue a pipeline into a **new** dataset. |
 | `DELETE /datasets/{id}` | |
-| `GET /processors?kind=` | The catalogue, with each step's parameters. |
+| `GET /processors?kind=` | Active catalogue, parameters, source file and SHA256. |
+| `POST /processors` | Create a loadable first custom source version through Rust's admin gate. |
+| `GET` · `PUT /processors/{name}/source` | Saved source and active identity; custom-file saves through Rust's admin gate. See [processors](processors.md). |
 | `POST /preview` | A pipeline's before/after over the first *n* documents. |
 | `GET /runs` · `GET /runs/{id}` · `POST /runs/{id}/cancel` | The queue. |
 | `GET /runs/{id}/events` | SSE, replayed from the start. |
@@ -163,10 +165,10 @@ trips are not what a pack spends its time on.
 
 ## Conventions
 
-- **Processors are code here, never user-supplied.** Running uploaded Python
-  would put arbitrary execution on the machine holding the database, and
-  nothing about cleaning a corpus needs it. A processor declares its
-  parameters, so a form can be built from the registry.
+- **Processors are curated code or trusted operator files.** The
+  [authoring and reload contract](processors.md) covers the decorator, custom
+  import policy, admin source edits and submitted/executed hashes. Python
+  executes in process; this interface requires operator trust.
 - **A processor returns the document or `None` to drop it.** Cross-document
   state (deduplication) lives in the per-run `State` dict it is handed, never
   in a module global — two runs must not contaminate each other, and a preview

@@ -76,7 +76,8 @@ services:
       target: dev
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn main:app --host 0.0.0.0 --port 8002 --reload"
+             uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+             --reload-exclude 'processors/custom/*'"
     environment:
       DATA_ENGINE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-slate}:${POSTGRES_PASSWORD:-slate}@postgres:5432/slate_data
       DATA_ENGINE_SERVICE_SECRET: ${DATA_ENGINE_SERVICE_SECRET:?set it in .env}
@@ -238,6 +239,7 @@ services:
       # the package it cannot find as missing rather than as misplaced.
       # `.dockerignore` does not cover this — a bind mount bypasses it.
       - frontend-next:/app/.next
+      - frontend-monaco:/app/public/monaco
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -258,3 +260,4 @@ volumes:
   backend-target:
   llm-engine-torch-cache:
   frontend-next:
+  frontend-monaco:

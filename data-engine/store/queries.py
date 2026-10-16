@@ -94,6 +94,17 @@ def create_dataset(
     return row
 
 
+def record_processing_steps(
+    db: Session, dataset_id: uuid.UUID, steps: list[dict]
+) -> None:
+    """Record the pipeline actually selected at worker start on its derived dataset."""
+    row = db.get(Dataset, dataset_id)
+    if row is None:
+        raise LookupError(f"dataset {dataset_id} is gone")
+    row.steps = steps
+    row.updated_at = _now()
+
+
 def finish_dataset(db: Session, dataset_id: uuid.UUID, status: DatasetStatus) -> None:
     """Publish or condemn a dataset, recounting what actually landed.
 
