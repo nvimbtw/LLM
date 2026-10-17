@@ -4,7 +4,14 @@ Hovering or focusing a sidebar conversation prefetches both its Next.js route
 and its messages. Route prefetch alone cannot warm a client hook's API request.
 `lib/chat-history.ts` shares a pending request with `useChat`, and a completed
 prefetch supplies the first render so the thread opens without a loading flash.
-The hook still folds stored rows through the same tool-turn parser.
+The same response supplies the open thread's title and token total. The hook
+still folds stored rows through the same tool-turn parser.
+
+The signed-in frame initially requests only five recent conversation summaries.
+The full archive and its token totals load when `/conversations` opens or the
+project conversation picker opens. Mutations refresh the recent slice and any
+archive already opened in the current session. Account changes keep responses
+from the previous account out of both lists.
 
 The in-memory cache holds at most ten conversations for thirty seconds. It is
 cleared on session changes, including logout and cross-tab storage events, and

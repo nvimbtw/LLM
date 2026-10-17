@@ -42,6 +42,11 @@ pub async fn list(pool: &PgPool, owner: Uuid) -> Result<Vec<Chat>, sqlx::Error> 
     sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS "tokens!" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 GROUP BY c.id ORDER BY c.created_at DESC"#, owner).fetch_all(pool).await
 }
 
+/// Return a bounded recent slice, calculating token totals only for its selected chats.
+pub async fn list_recent(pool: &PgPool, owner: Uuid, limit: i64) -> Result<Vec<Chat>, sqlx::Error> {
+    sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(t.tokens,0)::bigint AS "tokens!" FROM (SELECT id,title,project_id,created_at FROM chats WHERE owner_id=$1 ORDER BY created_at DESC LIMIT $2) c LEFT JOIN LATERAL (SELECT sum(tokens) AS tokens FROM messages WHERE chat_id=c.id) t ON true ORDER BY c.created_at DESC"#, owner, limit).fetch_all(pool).await
+}
+
 /// Return an owned chat; foreign or unknown IDs yield none.
 pub async fn get(pool: &PgPool, owner: Uuid, id: Uuid) -> Result<Option<Chat>, sqlx::Error> {
     sqlx::query_as!(Chat, r#"SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS "tokens!" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 AND c.id=$2 GROUP BY c.id"#, owner, id).fetch_optional(pool).await

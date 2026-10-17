@@ -1,6 +1,7 @@
 import { apiFetch, getToken, SESSION_CHANGED_EVENT } from "./api"
 import type { AttachmentWire } from "./attachments"
 import type { Feedback } from "./feedback"
+import { parseChatSummary, type ChatSummary } from "./chats"
 
 export interface MessageWire {
   message_id: string
@@ -17,6 +18,7 @@ const HISTORY_CACHE_LIMIT = 10
 interface HistoryEntry {
   expiresAt: number
   messages?: MessageWire[]
+  summary?: ChatSummary
   pending: Promise<MessageWire[]>
 }
 
@@ -49,6 +51,11 @@ export function cachedChatHistory(chatId: string): MessageWire[] | undefined {
   return currentEntry(chatId)?.messages
 }
 
+/** Returns metadata from the same account-scoped request that loaded or prefetched a chat. */
+export function cachedChatSummary(chatId: string): ChatSummary | undefined {
+  return currentEntry(chatId)?.summary
+}
+
 export function invalidateChatHistory(chatId: string): void {
   history.delete(chatId)
 }
@@ -61,7 +68,15 @@ export function loadChatHistory(chatId: string): Promise<MessageWire[]> {
     pending: apiFetch(`/chats/${chatId}`)
       .then(async (response) => {
         if (!response.ok) throw new Error("Unable to load this chat.")
-        const data = (await response.json()) as { messages: MessageWire[] }
+        const data: unknown = await response.json()
+        if (
+          typeof data !== "object" ||
+          data === null ||
+          !("messages" in data) ||
+          !Array.isArray(data.messages)
+        )
+          throw new Error("The server returned an invalid conversation.")
+        entry.summary = parseChatSummary(data)
         entry.messages = data.messages
         return data.messages
       })

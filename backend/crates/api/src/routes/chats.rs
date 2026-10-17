@@ -31,12 +31,22 @@ fn project_id(body: &Value, required: bool) -> Result<Option<Uuid>, service::Err
         .map_err(|_| c::failure(400, "invalid project_id"))
 }
 
-/// List all owned chats, retaining project and standalone conversations in the existing collection.
+#[derive(Deserialize)]
+struct ListQuery {
+    limit: Option<i64>,
+}
+
+/// List owned chats, with an optional bounded recent slice for the sidebar.
 #[get("")]
-async fn list(user: AuthUser, pool: web::Data<PgPool>) -> Answer {
-    let rows = queries::list(&pool, user.claims.sub)
-        .await
-        .map_err(c::database)?;
+async fn list(user: AuthUser, query: web::Query<ListQuery>, pool: web::Data<PgPool>) -> Answer {
+    let rows = match query.limit {
+        Some(limit) if (1..=100).contains(&limit) => {
+            queries::list_recent(&pool, user.claims.sub, limit).await
+        }
+        Some(_) => return Err(c::failure(400, "invalid conversation limit").into()),
+        None => queries::list(&pool, user.claims.sub).await,
+    }
+    .map_err(c::database)?;
     answer(json!({"chats":rows.iter().map(c::chat).collect::<Vec<_>>()}))
 }
 /// Create one owned chat with optional owned project membership in the same database insert.

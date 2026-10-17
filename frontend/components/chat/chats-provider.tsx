@@ -22,6 +22,10 @@ interface ChatsContextValue {
   conversations: ChatSummary[]
   isLoading: boolean
   error: string | null
+  archive: ChatSummary[]
+  isArchiveLoading: boolean
+  archiveError: string | null
+  loadArchive: (force?: boolean) => Promise<void>
   refresh: () => Promise<void>
   createChat: (
     message: string,
@@ -45,6 +49,7 @@ interface ChatsState {
 const ChatsContext = React.createContext<ChatsContextValue | null>(null)
 const NO_CHATS: ChatSummary[] = []
 const TITLE_MAX = 60
+const RECENT_LIMIT = 5
 
 /** Derives the sidebar title from the opening message's first line, bounded to 60 characters. */
 function openingTitle(message: string): string {
@@ -52,20 +57,72 @@ function openingTitle(message: string): string {
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
 }
 
-/** Owns the account archive and pending first-message handoff; replacement sessions cannot publish old rows or drafts. */
+/** Owns recent chats, on-demand archive reads and pending first-message handoff for one account. */
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
   const token = useSessionToken()
   const [state, setState] = React.useState<ChatsState | null>(null)
+  const [archiveState, setArchiveState] = React.useState<ChatsState | null>(
+    null
+  )
   const [pending] = React.useState(() => new PendingChatMessages())
   const requestRef = React.useRef(0)
+  const archiveRequestRef = React.useRef(0)
+  const archiveLoadedRef = React.useRef<string | null>(null)
+  const archivePendingRef = React.useRef<{
+    token: string
+    promise: Promise<void>
+  } | null>(null)
 
-  /** Loads the active account's archive, keeping late or superseded responses away from replacement accounts. */
+  /** Loads the complete archive when a view needs it, rejecting results from replaced sessions. */
+  const loadArchive = React.useCallback((force = false): Promise<void> => {
+    const owningToken = getToken()
+    if (!owningToken) return Promise.resolve()
+    if (!force && archivePendingRef.current?.token === owningToken)
+      return archivePendingRef.current.promise
+    const request = ++archiveRequestRef.current
+    const promise = loadChats(owningToken)
+      .then((conversations) => {
+        if (
+          getToken() === owningToken &&
+          archiveRequestRef.current === request
+        ) {
+          archiveLoadedRef.current = owningToken
+          setArchiveState({ token: owningToken, conversations, error: null })
+        }
+      })
+      .catch((failure: unknown) => {
+        if (getToken() !== owningToken || archiveRequestRef.current !== request)
+          return
+        archiveLoadedRef.current = owningToken
+        setArchiveState({
+          token: owningToken,
+          conversations: [],
+          error:
+            failure instanceof Error
+              ? failure.message
+              : "Unable to load your chats.",
+        })
+      })
+      .finally(() => {
+        if (archivePendingRef.current?.promise === promise)
+          archivePendingRef.current = null
+      })
+    archivePendingRef.current = { token: owningToken, promise }
+    return promise
+  }, [])
+
+  /** Refreshes recent chats and any archive already opened in this session. */
   const refresh = React.useCallback(async (): Promise<void> => {
     const owningToken = getToken()
     if (!owningToken) return
     const request = ++requestRef.current
     try {
-      const conversations = await loadChats(owningToken)
+      if (archiveLoadedRef.current === owningToken) void loadArchive(true)
+      const conversations = await loadChats(
+        owningToken,
+        undefined,
+        RECENT_LIMIT
+      )
       if (getToken() === owningToken && requestRef.current === request)
         setState({ token: owningToken, conversations, error: null })
     } catch (failure) {
@@ -79,14 +136,14 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
             : "Unable to load your chats.",
       })
     }
-  }, [])
+  }, [loadArchive])
 
   React.useEffect(() => {
     pending.setSession(token)
     if (!token) return
     const controller = new AbortController()
     const request = ++requestRef.current
-    loadChats(token, controller.signal)
+    loadChats(token, controller.signal, RECENT_LIMIT)
       .then((conversations) => {
         if (
           !controller.signal.aborted &&
@@ -204,12 +261,17 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   )
 
   const current = state?.token === token ? state : null
+  const currentArchive = archiveState?.token === token ? archiveState : null
   return (
     <ChatsContext.Provider
       value={{
         conversations: current?.conversations ?? NO_CHATS,
         isLoading: Boolean(token) && !current,
         error: current?.error ?? null,
+        archive: currentArchive?.conversations ?? NO_CHATS,
+        isArchiveLoading: Boolean(token) && !currentArchive,
+        archiveError: currentArchive?.error ?? null,
+        loadArchive,
         refresh,
         createChat,
         takePendingMessage,

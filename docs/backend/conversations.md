@@ -49,3 +49,5 @@ The chat archive sums message tokens for every owned conversation. The
 `messages_chat_tokens` covering index supports those totals without reading
 message rows when PostgreSQL's visibility map permits an index-only scan;
 the unique `(chat_id, position)` index serves ordered history reads.
+`GET /chats?limit=N` accepts a limit from 1 through 100 and computes totals only
+for the selected newest chats. `GET /chats` retains the complete archive contract.

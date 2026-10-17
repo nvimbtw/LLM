@@ -50,8 +50,20 @@ export function AddConversation({
 }
 
 /** Filters the real archive and performs one membership write; failed archive loads remain retryable. */
-function ConversationPicker({ projectId, onOpenChange }: AddConversationProps) {
-  const { conversations, isLoading, error, refresh } = useChats()
+function ConversationPicker({
+  projectId,
+  open,
+  onOpenChange,
+}: AddConversationProps) {
+  const {
+    archive: conversations,
+    isArchiveLoading: isLoading,
+    archiveError: error,
+    loadArchive,
+  } = useChats()
+  React.useEffect(() => {
+    if (open) void loadArchive()
+  }, [open, loadArchive])
   const { catalog } = useProjects()
   const [query, setQuery] = React.useState("")
   const membership = useProjectMembership(() => onOpenChange(false))
@@ -74,7 +86,7 @@ function ConversationPicker({ projectId, onOpenChange }: AddConversationProps) {
           Loading conversations…
         </p>
       ) : error ? (
-        <LoadError title={error} onRetry={() => void refresh()} />
+        <LoadError title={error} onRetry={() => void loadArchive()} />
       ) : available.length === 0 ? (
         <p className="py-6 text-sm text-muted-foreground">
           {query

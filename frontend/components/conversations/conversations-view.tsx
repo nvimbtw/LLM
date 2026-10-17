@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from "react"
 import { MessageSquarePlus } from "lucide-react"
 
 import { ButtonLink } from "@/components/ui/button-link"
@@ -53,7 +54,15 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 /** Renders the current account’s archive with loading, failure and empty states. */
 export function ConversationsView() {
-  const { conversations, isLoading, error } = useChats()
+  const {
+    archive: conversations,
+    isArchiveLoading: isLoading,
+    archiveError: error,
+    loadArchive,
+  } = useChats()
+  React.useEffect(() => {
+    void loadArchive()
+  }, [loadArchive])
 
   if (isLoading) {
     return (

@@ -4,6 +4,7 @@ import * as React from "react"
 
 import {
   cachedChatHistory,
+  cachedChatSummary,
   invalidateChatHistory,
   loadChatHistory,
 } from "@/lib/chat-history"
@@ -26,6 +27,7 @@ import { useChats } from "@/components/chat/chats-provider"
 import { useComposerChoice } from "@/components/chat/composer-choice-provider"
 import { useSettings } from "@/components/settings/settings-provider"
 import type { ThinkBudget } from "@/lib/think-budget"
+import type { ChatSummary } from "@/lib/chats"
 
 export type { ChatMessage } from "@/lib/chat-messages"
 
@@ -74,6 +76,9 @@ export function useChat(chatId: string) {
   const [messages, setMessages] = React.useState<ChatMessage[]>(() =>
     groupTurns(cachedChatHistory(chatId) ?? [])
   )
+  const [summary, setSummary] = React.useState<ChatSummary | undefined>(() =>
+    cachedChatSummary(chatId)
+  )
   const [isLoading, setIsLoading] = React.useState(
     () => cachedChatHistory(chatId) === undefined
   )
@@ -84,6 +89,7 @@ export function useChat(chatId: string) {
     setLoadedFor(chatId)
     const cached = cachedChatHistory(chatId)
     setMessages(groupTurns(cached ?? []))
+    setSummary(cachedChatSummary(chatId))
     setIsLoading(cached === undefined)
     setError(null)
     setLoadedOnce(false)
@@ -136,7 +142,11 @@ export function useChat(chatId: string) {
     () =>
       new ChatSession(chatId, {
         changeMessages,
-        loadMessages: () => fetchMessages(true),
+        loadMessages: async () => {
+          const loaded = await fetchMessages(true)
+          setSummary(cachedChatSummary(chatId))
+          return loaded
+        },
         refreshChats,
       }),
     [chatId, changeMessages, fetchMessages, refreshChats]
@@ -158,7 +168,10 @@ export function useChat(chatId: string) {
     let active = true
     fetchMessages()
       .then((data) => {
-        if (active) setMessages(data)
+        if (active) {
+          setMessages(data)
+          setSummary(cachedChatSummary(chatId))
+        }
       })
       .catch((failure: unknown) => {
         if (active)
@@ -177,7 +190,7 @@ export function useChat(chatId: string) {
     return () => {
       active = false
     }
-  }, [fetchMessages])
+  }, [fetchMessages, chatId])
 
   /** Sends an ordinary turn or text steering; attachments are claimed only by ordinary turns. */
   const sendMessage = React.useCallback(
@@ -243,6 +256,7 @@ export function useChat(chatId: string) {
     ...stream,
     tokenArt: session.tokenArt,
     messages,
+    summary,
     isLoading,
     error: error ?? stream.error,
     sendMessage,
