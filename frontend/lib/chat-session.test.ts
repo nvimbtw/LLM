@@ -167,6 +167,36 @@ test("final reconciliation waits for sidebar totals and retains authoritative co
   view.session.dispose()
 })
 
+test("final history and archive reads overlap while sending waits for both", async () => {
+  const history = deferred<ChatMessage[]>()
+  const archive = deferred<void>()
+  let archiveStarted = false
+  const view = harness(
+    () => history.promise,
+    () => {
+      archiveStarted = true
+      return archive.promise
+    }
+  )
+  const sent = view.session.send("Ask", "model-a", "auto", [])
+  view.sockets[0].handlers.onDone({
+    messageId: "stored",
+    final: true,
+    elapsedSecs: 1,
+  })
+  await settle()
+  assert.equal(archiveStarted, true)
+  assert.equal(view.session.getSnapshot().isSending, true)
+  history.resolve([{ role: "assistant", content: "Saved" }])
+  await settle()
+  assert.equal(view.messages().at(-1)?.content, "Saved")
+  assert.equal(view.session.getSnapshot().isSending, true)
+  archive.resolve()
+  await sent
+  assert.equal(view.session.getSnapshot().isSending, false)
+  view.session.dispose()
+})
+
 test("cancelling during a delayed final history read cannot overwrite or settle the next turn", async () => {
   const history = deferred<ChatMessage[]>()
   const view = harness(() => history.promise)

@@ -24,14 +24,14 @@ is written when the last token lands, so closing the tab loses it rather than
 storing half of one.
 
 **A `token` frame is a delta, not a word — concatenate it, never join it.** The
-LLM engine yields `after[len(before):]`, the difference between decoding the reply
-so far and decoding it one id longer
-(`llm-engine/llm/orchestrate/chat.py`), so the pieces already carry whatever
-whitespace belongs to them and their concatenation is *byte-identical* to the
-`content` on `done`, which is one `decode` over the whole sequence. `use-chat.ts`
+LLM engine decodes ByteLevel BPE tokens incrementally, buffering an incomplete
+UTF-8 character until its remaining bytes arrive. Other tokenizer decoders use
+the difference between successive decoded prefixes. The pieces carry their own
+whitespace; the persisted `content` on `done` is authoritative, including a
+replacement character if a reply ends with incomplete UTF-8. `use-chat.ts`
 joined them with `" "` instead, on the belief that a token was a whitespace-split
-word. It is not: the tokenizer is byte-level BPE and a piece can be half a UTF-8
-character, let alone half a word. The symptom was a reply that streamed as
+word. It is not: the tokenizer is byte-level BPE and a token can contain only
+part of a UTF-8 character, let alone part of a word. The symptom was a reply that streamed as
 `b ust y b oot s` and `I ' ve` and then silently became `busty boots` and `I've`
 the moment the stored message replaced it — the two stages disagreeing about the
 same reply. Nothing downstream can repair that, because by then the extra spaces

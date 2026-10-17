@@ -188,7 +188,8 @@ def _stream(cfg: ChatConfig):
 
     Per-request RoPE tables and memory-token adoption leave cached resources
     unchanged. The output cap reserves space for closing open markup blocks;
-    fragments are decoded against the produced prefix to preserve UTF-8.
+    ByteLevel fragments wait for complete UTF-8 characters; other tokenizer
+    decoders retain the prefix-comparison path.
     """
     started = time.time()
     model, tokenizer, device = load(cfg.model_name)
@@ -224,6 +225,8 @@ def _stream(cfg: ChatConfig):
     )
 
     produced: list[int] = []
+    decoded = ""
+    incremental = bpe.stream_decoder(tokenizer)
     position = len(prompt_ids)
     stopped = "length"
 
@@ -242,9 +245,13 @@ def _stream(cfg: ChatConfig):
 
         blocks.observe(next_id)
         produced.append(next_id)
-        before = bpe.decode(tokenizer, produced[:-1])
-        after = bpe.decode(tokenizer, produced)
-        yield "token", {"token": after[len(before) :]}
+        if incremental is None:
+            current = bpe.decode(tokenizer, produced)
+            piece = current[len(decoded) :]
+            decoded = current
+        else:
+            piece = incremental.push(next_id)
+        yield "token", {"token": piece}
 
         if (call := calls.observe(next_id, produced)) is not None:
             yield "tool_call", call
@@ -257,7 +264,10 @@ def _stream(cfg: ChatConfig):
     drained = blocks.closers()
     for closer in drained:
         produced.append(closer)
-        piece = bpe.decode(tokenizer, [closer])
+        piece = (
+            incremental.push(closer) if incremental is not None
+            else bpe.decode(tokenizer, [closer])
+        )
         yield "token", {"token": piece}
         if (call := calls.observe(closer, produced)) is not None:
             yield "tool_call", call

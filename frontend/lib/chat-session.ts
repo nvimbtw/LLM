@@ -228,6 +228,9 @@ export class ChatSession {
       elapsedSecs: info.elapsedSecs,
     })
     if (!info.final) return
+    const refresh = Promise.resolve()
+      .then(() => this.effects.refreshChats())
+      .catch(() => {})
     try {
       const messages = await this.effects.loadMessages()
       if (!this.owns(turn)) return
@@ -238,10 +241,9 @@ export class ChatSession {
     } catch {
       if (!this.owns(turn)) return
     }
-    try {
-      await this.effects.refreshChats()
-    } catch {}
-    if (this.owns(turn)) this.finish(turn)
+    await refresh
+    if (!this.owns(turn)) return
+    this.finish(turn)
   }
 
   /** Settles one turn before draining its unconfirmed queue, preserving send-time options and FIFO order. */

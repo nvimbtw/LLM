@@ -5,6 +5,8 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 import { hasVisibleContent, isInThinkingBlock } from "@/lib/message-parser"
 import type { Attachment } from "@/lib/attachments"
+import type { Feedback } from "@/lib/feedback"
+import type { ChatMessage } from "@/lib/chat-messages"
 import { useSessionToken } from "@/hooks/use-auth"
 import { useChat } from "@/hooks/use-chat"
 import { useChatFollowing } from "@/hooks/use-chat-following"
@@ -38,6 +40,42 @@ export interface ChatThreadProps {
   chatId: string
 }
 
+/** Renders one visible turn and keeps unchanged history out of token-driven renders. */
+const ChatMessageRow = React.memo(function ChatMessageRow({
+  message,
+  streaming,
+  busy,
+  onRate,
+  onEdit,
+  onResend,
+  onOpenAttachment,
+}: {
+  message: ChatMessage
+  streaming: boolean
+  busy: boolean
+  onRate: (id: string, feedback: Feedback) => void
+  onEdit: (content: string) => void
+  onResend: (content: string) => void
+  onOpenAttachment: (attachment: Attachment) => void
+}) {
+  const id = message.id
+  return (
+    <ChatMessageBubble
+      message={message}
+      streaming={streaming}
+      onRate={
+        id && message.role === "assistant"
+          ? (feedback) => onRate(id, feedback)
+          : undefined
+      }
+      onEdit={onEdit}
+      onResend={onResend}
+      busy={busy}
+      onOpenAttachment={onOpenAttachment}
+    />
+  )
+})
+
 /** Keys the active conversation to its actual session, disposing sockets, drafts and private views on account replacement. */
 export function ChatThread({ chatId }: ChatThreadProps) {
   const token = useSessionToken()
@@ -68,6 +106,17 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
   const chatSummary = conversations.find((c) => c.id === chatId)
   const [draft, setDraft] = React.useState<{ text: string } | undefined>()
   const [viewing, setViewing] = React.useState<Attachment | null>(null)
+  const onRate = React.useCallback(
+    (id: string, feedback: Feedback) => void rateMessage(id, feedback),
+    [rateMessage]
+  )
+  const onEdit = React.useCallback((content: string) => {
+    setDraft({ text: content })
+  }, [])
+  const onResend = React.useCallback(
+    (content: string) => void sendMessage(content, model, budget),
+    [sendMessage, model, budget]
+  )
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const contentRef = React.useRef<HTMLDivElement>(null)
   const composerRef = React.useRef<HTMLDivElement>(null)
@@ -135,7 +184,6 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
               </div>
             ) : (
               messages.map((message, i) => {
-                const id = message.id
                 return (
                   <div
                     key={i}
@@ -144,22 +192,16 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
                       message.role === "user" ? "true" : undefined
                     }
                   >
-                    <ChatMessageBubble
+                    <ChatMessageRow
                       message={message}
                       streaming={
                         isSending &&
                         i === messages.length - 1 &&
                         message.role === "assistant"
                       }
-                      onRate={
-                        id && message.role === "assistant"
-                          ? (feedback) => void rateMessage(id, feedback)
-                          : undefined
-                      }
-                      onEdit={(content) => setDraft({ text: content })}
-                      onResend={(content) =>
-                        void sendMessage(content, model, budget)
-                      }
+                      onRate={onRate}
+                      onEdit={onEdit}
+                      onResend={onResend}
                       busy={isSending || !model}
                       onOpenAttachment={setViewing}
                     />
