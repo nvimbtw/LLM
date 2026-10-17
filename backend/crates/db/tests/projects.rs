@@ -180,6 +180,15 @@ async fn recent_chat_slice_matches_archive(pool: PgPool) -> Result<(), sqlx::Err
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].id, second.id);
     assert_eq!(recent[0].tokens, 8);
+    sqlx::query!(
+        "UPDATE chats SET created_at = '2026-10-17T00:00:00Z' WHERE owner_id = $1",
+        owner
+    )
+    .execute(&pool)
+    .await?;
+    let archive = chats::list(&pool, owner).await?;
+    let recent = chats::list_recent(&pool, owner, 1).await?;
+    assert_eq!(recent[0].id, archive[0].id);
     assert!(chats::list_recent(&pool, stranger, 1)
         .await?
         .iter()

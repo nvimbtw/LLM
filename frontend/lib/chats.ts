@@ -43,7 +43,7 @@ export function parseChatSummary(value: unknown): ChatSummary {
   }
 }
 
-/** Fetches this account's complete archive and rejects malformed interpreted rows. */
+/** Fetches this account's archive or a bounded recent slice and rejects malformed interpreted rows. */
 export async function loadChats(
   token: string,
   signal?: AbortSignal,

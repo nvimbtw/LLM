@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id,c.title,c.project_id,c.created_at,COALESCE(sum(m.tokens),0)::bigint AS \"tokens!\" FROM chats c LEFT JOIN messages m ON m.chat_id=c.id WHERE c.owner_id=$1 GROUP BY c.id ORDER BY c.created_at DESC",
+  "query": "SELECT c.id, c.title, c.project_id, c.created_at,\n                  COALESCE(t.tokens, 0)::bigint AS \"tokens!\"\n           FROM (SELECT id, title, project_id, created_at FROM chats\n                 WHERE owner_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2) c\n           LEFT JOIN LATERAL (SELECT sum(tokens) AS tokens FROM messages WHERE chat_id = c.id) t ON true\n           ORDER BY c.created_at DESC, c.id DESC",
   "describe": {
     "columns": [
       {
@@ -31,7 +31,8 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Int8"
       ]
     },
     "nullable": [
@@ -42,5 +43,5 @@
       null
     ]
   },
-  "hash": "a70a7162f0c0796367cea1a867e1cde83571e612c56c3097e61c25c6a1c237d3"
+  "hash": "08679874812bfd19eff35fa8c08f28aefdc8686ca38837874d55e025bd78e670"
 }

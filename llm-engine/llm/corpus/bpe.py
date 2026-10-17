@@ -193,18 +193,22 @@ class ByteStreamDecoder:
     """Decode ByteLevel token IDs incrementally, buffering incomplete UTF-8 bytes."""
 
     def __init__(self, tokenizer: Tokenizer):
-        """Keep the tokenizer's added tokens and a fresh UTF-8 state for one reply."""
+        """Keep ByteLevel bytes for added tokens and a fresh UTF-8 state for one reply."""
         self.tokenizer = tokenizer
-        self.added = tokenizer.get_added_tokens_decoder()
+        self.added = {
+            token_id: b"".join(
+                bytes([BYTE_GLYPHS[char]]) if char in BYTE_GLYPHS else char.encode("utf-8")
+                for char in token.content
+            )
+            for token_id, token in tokenizer.get_added_tokens_decoder().items()
+        }
         self.utf8 = codecs.getincrementaldecoder("utf-8")("replace")
 
     def push(self, token_id: int) -> str:
         """Return the new text for one valid ID, possibly empty for a partial character."""
         added = self.added.get(token_id)
         if added is not None:
-            text = self.utf8.decode(b"", final=True) + added.content
-            self.utf8 = codecs.getincrementaldecoder("utf-8")("replace")
-            return text
+            return self.utf8.decode(added)
         token = self.tokenizer.id_to_token(token_id)
         if token is None:
             raise ValueError(f"unknown token id {token_id}")

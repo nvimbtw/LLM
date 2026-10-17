@@ -7,12 +7,12 @@ import type { Attachment } from "@/lib/attachments"
 import { useSessionToken } from "@/hooks/use-auth"
 import { invalidateChatHistory } from "@/lib/chat-history"
 import {
-  loadChats,
   parseChatSummary,
   parseResourceId,
   assignChatProject,
   type ChatSummary,
 } from "@/lib/chats"
+import { ChatCatalog } from "@/lib/chat-catalog"
 import { PendingChatMessages, type PendingMessage } from "@/lib/pending-chat"
 
 export type { ChatSummary } from "@/lib/chats"
@@ -25,7 +25,8 @@ interface ChatsContextValue {
   archive: ChatSummary[]
   isArchiveLoading: boolean
   archiveError: string | null
-  loadArchive: (force?: boolean) => Promise<void>
+  loadArchive: () => Promise<void>
+  catalog: ChatCatalog
   refresh: () => Promise<void>
   createChat: (
     message: string,
@@ -40,16 +41,9 @@ interface ChatsContextValue {
   assignProject: (id: string, projectId: string | null) => Promise<void>
 }
 
-interface ChatsState {
-  token: string
-  conversations: ChatSummary[]
-  error: string | null
-}
-
 const ChatsContext = React.createContext<ChatsContextValue | null>(null)
 const NO_CHATS: ChatSummary[] = []
 const TITLE_MAX = 60
-const RECENT_LIMIT = 5
 
 /** Derives the sidebar title from the opening message's first line, bounded to 60 characters. */
 function openingTitle(message: string): string {
@@ -60,116 +54,19 @@ function openingTitle(message: string): string {
 /** Owns recent chats, on-demand archive reads and pending first-message handoff for one account. */
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
   const token = useSessionToken()
-  const [state, setState] = React.useState<ChatsState | null>(null)
-  const [archiveState, setArchiveState] = React.useState<ChatsState | null>(
-    null
-  )
+  const [catalog] = React.useState(() => new ChatCatalog())
   const [pending] = React.useState(() => new PendingChatMessages())
-  const requestRef = React.useRef(0)
-  const archiveRequestRef = React.useRef(0)
-  const archiveLoadedRef = React.useRef<string | null>(null)
-  const archivePendingRef = React.useRef<{
-    token: string
-    promise: Promise<void>
-  } | null>(null)
-
-  /** Loads the complete archive when a view needs it, rejecting results from replaced sessions. */
-  const loadArchive = React.useCallback((force = false): Promise<void> => {
-    const owningToken = getToken()
-    if (!owningToken) return Promise.resolve()
-    if (!force && archivePendingRef.current?.token === owningToken)
-      return archivePendingRef.current.promise
-    const request = ++archiveRequestRef.current
-    const promise = loadChats(owningToken)
-      .then((conversations) => {
-        if (
-          getToken() === owningToken &&
-          archiveRequestRef.current === request
-        ) {
-          archiveLoadedRef.current = owningToken
-          setArchiveState({ token: owningToken, conversations, error: null })
-        }
-      })
-      .catch((failure: unknown) => {
-        if (getToken() !== owningToken || archiveRequestRef.current !== request)
-          return
-        archiveLoadedRef.current = owningToken
-        setArchiveState({
-          token: owningToken,
-          conversations: [],
-          error:
-            failure instanceof Error
-              ? failure.message
-              : "Unable to load your chats.",
-        })
-      })
-      .finally(() => {
-        if (archivePendingRef.current?.promise === promise)
-          archivePendingRef.current = null
-      })
-    archivePendingRef.current = { token: owningToken, promise }
-    return promise
-  }, [])
-
-  /** Refreshes recent chats and any archive already opened in this session. */
-  const refresh = React.useCallback(async (): Promise<void> => {
-    const owningToken = getToken()
-    if (!owningToken) return
-    const request = ++requestRef.current
-    try {
-      if (archiveLoadedRef.current === owningToken) void loadArchive(true)
-      const conversations = await loadChats(
-        owningToken,
-        undefined,
-        RECENT_LIMIT
-      )
-      if (getToken() === owningToken && requestRef.current === request)
-        setState({ token: owningToken, conversations, error: null })
-    } catch (failure) {
-      if (getToken() !== owningToken || requestRef.current !== request) return
-      setState({
-        token: owningToken,
-        conversations: [],
-        error:
-          failure instanceof Error
-            ? failure.message
-            : "Unable to load your chats.",
-      })
-    }
-  }, [loadArchive])
-
+  const snapshot = React.useSyncExternalStore(
+    catalog.subscribe,
+    catalog.getSnapshot,
+    catalog.getSnapshot
+  )
+  const refresh = catalog.refresh
   React.useEffect(() => {
     pending.setSession(token)
-    if (!token) return
-    const controller = new AbortController()
-    const request = ++requestRef.current
-    loadChats(token, controller.signal, RECENT_LIMIT)
-      .then((conversations) => {
-        if (
-          !controller.signal.aborted &&
-          getToken() === token &&
-          requestRef.current === request
-        )
-          setState({ token, conversations, error: null })
-      })
-      .catch((failure: unknown) => {
-        if (
-          controller.signal.aborted ||
-          getToken() !== token ||
-          requestRef.current !== request
-        )
-          return
-        setState({
-          token,
-          conversations: [],
-          error:
-            failure instanceof Error
-              ? failure.message
-              : "Unable to load your chats.",
-        })
-      })
-    return () => controller.abort()
-  }, [token, pending])
+    catalog.setSession(token)
+    return () => catalog.dispose()
+  }, [token, pending, catalog])
 
   /** Requires a current account before writes and routes may use their results. */
   const requireSession = React.useCallback((): string => {
@@ -213,10 +110,11 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
         budget,
         attachments,
       })
+      catalog.updateSummary(chat)
       void refresh()
       return chat.id
     },
-    [pending, refresh, requireSession]
+    [catalog, pending, refresh, requireSession]
   )
 
   /** Renames a stored conversation, then refreshes archive titles for the owning account. */
@@ -229,9 +127,14 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ title }),
       })
       if (!response.ok) throw new Error("Unable to rename the chat.")
-      if (getToken() === owningToken) await refresh()
+      const chat = parseChatSummary(await response.json())
+      if (getToken() === owningToken) {
+        invalidateChatHistory(id)
+        catalog.updateSummary(chat)
+        await refresh()
+      }
     },
-    [refresh, requireSession]
+    [catalog, refresh, requireSession]
   )
 
   /** Deletes a stored conversation and invalidates its prefetched history before refreshing the archive. */
@@ -244,34 +147,41 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
       })
       if (!response.ok) throw new Error("Unable to delete the chat.")
       invalidateChatHistory(id)
-      if (getToken() === owningToken) await refresh()
+      if (getToken() === owningToken) {
+        catalog.remove(id)
+        await refresh()
+      }
     },
-    [refresh, requireSession]
+    [catalog, refresh, requireSession]
   )
 
   /** Changes only project membership; messages and title remain stored with the same conversation identity. */
   const assignProject = React.useCallback(
     async (id: string, projectId: string | null): Promise<void> => {
       const owningToken = requireSession()
-      await assignChatProject(owningToken, id, projectId)
+      const chat = await assignChatProject(owningToken, id, projectId)
       if (getToken() !== owningToken)
         throw new Error("Your account changed. Please try again.")
+      invalidateChatHistory(id)
+      catalog.updateSummary(chat)
     },
-    [requireSession]
+    [catalog, requireSession]
   )
 
-  const current = state?.token === token ? state : null
-  const currentArchive = archiveState?.token === token ? archiveState : null
+  const current = snapshot.token === token ? snapshot : null
   return (
     <ChatsContext.Provider
       value={{
-        conversations: current?.conversations ?? NO_CHATS,
-        isLoading: Boolean(token) && !current,
-        error: current?.error ?? null,
-        archive: currentArchive?.conversations ?? NO_CHATS,
-        isArchiveLoading: Boolean(token) && !currentArchive,
-        archiveError: currentArchive?.error ?? null,
-        loadArchive,
+        conversations: current?.recent ?? NO_CHATS,
+        isLoading: Boolean(token) && (!current || !current.recentLoaded),
+        error: current?.recentError ?? null,
+        archive: current?.archive ?? NO_CHATS,
+        isArchiveLoading:
+          Boolean(token) &&
+          (!current || (current.archive === null && !current.archiveError)),
+        archiveError: current?.archiveError ?? null,
+        loadArchive: catalog.loadArchive,
+        catalog,
         refresh,
         createChat,
         takePendingMessage,
@@ -290,4 +200,19 @@ export function useChats(): ChatsContextValue {
   const value = React.useContext(ChatsContext)
   if (!value) throw new Error("useChats must be used within a ChatsProvider")
   return value
+}
+
+/** Retains the complete archive only while its page or picker is open, including account replacements. */
+export function useChatArchive(open = true) {
+  const value = useChats()
+  const token = useSessionToken()
+  React.useEffect(() => {
+    if (open) return value.catalog.retainArchive()
+  }, [open, token, value.catalog])
+  return {
+    conversations: value.archive,
+    isLoading: value.isArchiveLoading,
+    error: value.archiveError,
+    refresh: value.loadArchive,
+  }
 }

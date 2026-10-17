@@ -1,5 +1,6 @@
 import type { Attachment } from "./attachments"
 import type { ChatMessage } from "./chat-messages"
+import type { ChatSummary } from "./chats"
 import {
   createChatTurn,
   reconcileChatTurn,
@@ -30,14 +31,20 @@ export interface ChatSessionSnapshot {
   error: string | null
 }
 
+export interface LoadedChatHistory {
+  messages: ChatMessage[]
+  summary: ChatSummary
+  version: number
+}
+
 export type ChatMessagesChange =
   | { type: "start"; content: string; attachments: Attachment[] }
   | { type: "stream"; message: ChatMessage }
-  | { type: "history"; messages: ChatMessage[] }
+  | ({ type: "history" } & LoadedChatHistory)
 
 export interface ChatSessionEffects {
   changeMessages: (change: ChatMessagesChange) => void
-  loadMessages: () => Promise<ChatMessage[]>
+  loadMessages: () => Promise<LoadedChatHistory>
   refreshChats: () => Promise<void>
 }
 
@@ -215,7 +222,8 @@ export class ChatSession {
 
   /**
    * Accumulates round durations and reconciles only final replies with committed history.
-   * Failed history reads retain streamed content; a failed sidebar refresh retains its prior totals.
+   * History and sidebar reads overlap; accepted history and metadata publish together with send settlement.
+   * Failed history reads retain streamed content; a failed sidebar refresh retains its prior rows.
    * Stale completions cannot write or drain another turn.
    */
   private async completeRound(
@@ -228,21 +236,18 @@ export class ChatSession {
       elapsedSecs: info.elapsedSecs,
     })
     if (!info.final) return
-    const refresh = Promise.resolve()
-      .then(() => this.effects.refreshChats())
-      .catch(() => {})
-    try {
-      const messages = await this.effects.loadMessages()
-      if (!this.owns(turn)) return
+    const [history] = await Promise.allSettled([
+      Promise.resolve().then(() => this.effects.loadMessages()),
+      Promise.resolve().then(() => this.effects.refreshChats()),
+    ])
+    if (!this.owns(turn)) return
+    if (history.status === "fulfilled") {
       this.effects.changeMessages({
         type: "history",
-        messages: reconcileChatTurn(messages, turn.state),
+        ...history.value,
+        messages: reconcileChatTurn(history.value.messages, turn.state),
       })
-    } catch {
-      if (!this.owns(turn)) return
     }
-    await refresh
-    if (!this.owns(turn)) return
     this.finish(turn)
   }
 

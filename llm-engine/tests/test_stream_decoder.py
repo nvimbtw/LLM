@@ -4,7 +4,7 @@ import random
 import unittest
 from pathlib import Path
 
-from tokenizers import Tokenizer, decoders
+from tokenizers import AddedToken, Tokenizer, decoders
 
 from llm.corpus import bpe
 
@@ -54,6 +54,17 @@ class StreamDecoderTests(unittest.TestCase):
         """A different decoder cannot enter the ByteLevel streaming path."""
         self.tokenizer.decoder = decoders.WordPiece(prefix="##")
         self.assertIsNone(bpe.stream_decoder(self.tokenizer))
+
+    def test_added_tokens_obey_the_same_bytelevel_decoder(self) -> None:
+        """Added glyphs remain byte fragments and may complete a preceding ordinary token."""
+        self.tokenizer.add_tokens([AddedToken(text) for text in ("é", "Ġ", "你好", "custom©")])
+        lead = self.tokenizer.token_to_id("Ã")
+        continuation = self.tokenizer.token_to_id("©")
+        for text in ("é", "Ġ", "你好", "custom©"):
+            token_id = self.tokenizer.token_to_id(text)
+            with self.subTest(text=text):
+                self.assert_decodes([token_id])
+                self.assert_decodes([lead, token_id, continuation])
 
 
 if __name__ == "__main__":

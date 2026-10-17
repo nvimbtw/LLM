@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useSessionToken } from "@/hooks/use-auth"
-import { useChats } from "@/components/chat/chats-provider"
+import { useChatArchive } from "@/components/chat/chats-provider"
 import { useProjectMembership } from "@/hooks/use-project-membership"
 import { useProjects } from "./projects-provider"
 import { Button } from "@/components/ui/button"
@@ -55,15 +55,7 @@ function ConversationPicker({
   open,
   onOpenChange,
 }: AddConversationProps) {
-  const {
-    archive: conversations,
-    isArchiveLoading: isLoading,
-    archiveError: error,
-    loadArchive,
-  } = useChats()
-  React.useEffect(() => {
-    if (open) void loadArchive()
-  }, [open, loadArchive])
+  const { conversations, isLoading, error, refresh } = useChatArchive(open)
   const { catalog } = useProjects()
   const [query, setQuery] = React.useState("")
   const membership = useProjectMembership(() => onOpenChange(false))
@@ -86,7 +78,7 @@ function ConversationPicker({
           Loading conversations…
         </p>
       ) : error ? (
-        <LoadError title={error} onRetry={() => void loadArchive()} />
+        <LoadError title={error} onRetry={() => void refresh()} />
       ) : available.length === 0 ? (
         <p className="py-6 text-sm text-muted-foreground">
           {query

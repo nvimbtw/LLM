@@ -102,20 +102,9 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
     pruneContext,
     tokenArt,
   } = useChat(chatId)
-  const { conversations, renameChat } = useChats()
+  const { renameChat } = useChats()
   const { model, budget } = useComposerChoice()
-  const recentSummary = conversations.find((c) => c.id === chatId)
-  const chatSummary = summary ?? recentSummary
-  const [renamedTitle, setRenamedTitle] = React.useState<string | null>(null)
-
-  /** Persists a changed title and keeps this open thread current after its history was cached. */
-  const renameCurrentChat = React.useCallback(
-    async (next: string) => {
-      await renameChat(chatId, next)
-      setRenamedTitle(next)
-    },
-    [chatId, renameChat]
-  )
+  const chatSummary = summary
   const [draft, setDraft] = React.useState<{ text: string } | undefined>()
   const [viewing, setViewing] = React.useState<Attachment | null>(null)
   const onRate = React.useCallback(
@@ -283,13 +272,8 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
             sending={isSending}
             compact={messages.length > 0}
             onCancel={cancel}
-            title={
-              renamedTitle ??
-              recentSummary?.title ??
-              summary?.title ??
-              "New chat"
-            }
-            onRenameTitle={(next) => void renameCurrentChat(next)}
+            title={chatSummary?.title ?? "New chat"}
+            onRenameTitle={(next) => void renameChat(chatId, next)}
             contextTokensUsed={contextTokensUsed}
             unseenTokens={prunedTokens}
             draft={draft}
