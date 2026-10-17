@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ChatSession, applyChatMessagesChange } from "./chat-session"
+import type { ChatSummary } from "./chats"
 import type { ChatMessage } from "./chat-messages"
 import type { streamChat, ChatStreamHandlers, Question } from "./chat-socket"
 
@@ -21,6 +22,14 @@ function harness(
   refreshChats: () => Promise<void> = async () => {}
 ) {
   let messages: ChatMessage[] = []
+  let summary: ChatSummary | undefined
+  const storedSummary: ChatSummary = {
+    id: "chat",
+    title: "Stored",
+    tokens: 12,
+    createdAt: "2026-10-17T00:00:00Z",
+    projectId: null,
+  }
   let system = "Initial prompt"
   const sockets: {
     handlers: ChatStreamHandlers
@@ -68,8 +77,13 @@ function harness(
     {
       changeMessages: (change) => {
         messages = applyChatMessagesChange(messages, change)
+        if (change.type === "history") summary = change.summary
       },
-      loadMessages,
+      loadMessages: async () => ({
+        messages: await loadMessages(),
+        summary: storedSummary,
+        version: 0,
+      }),
       refreshChats,
     },
     openStream
@@ -83,6 +97,7 @@ function harness(
     session,
     sockets,
     messages: () => messages,
+    summary: () => summary,
     setSystem: (value: string) => {
       system = value
     },
@@ -152,6 +167,9 @@ test("final reconciliation waits for sidebar totals and retains authoritative co
   })
   await settle()
   assert.equal(view.session.getSnapshot().isSending, true)
+  assert.equal(view.summary(), undefined)
+  sidebar.resolve()
+  await sent
   assert.deepEqual(view.messages()[0], {
     role: "assistant",
     content: "Stored intact",
@@ -161,8 +179,37 @@ test("final reconciliation waits for sidebar totals and retains authoritative co
     thinkingTokenCount: 0,
     elapsedSecs: 5,
   })
-  sidebar.resolve()
+  assert.equal(view.session.getSnapshot().isSending, false)
+  view.session.dispose()
+})
+
+test("final history and archive reads overlap while sending waits for both", async () => {
+  const history = deferred<ChatMessage[]>()
+  const archive = deferred<void>()
+  let archiveStarted = false
+  const view = harness(
+    () => history.promise,
+    () => {
+      archiveStarted = true
+      return archive.promise
+    }
+  )
+  const sent = view.session.send("Ask", "model-a", "auto", [])
+  view.sockets[0].handlers.onDone({
+    messageId: "stored",
+    final: true,
+    elapsedSecs: 1,
+  })
+  await settle()
+  assert.equal(archiveStarted, true)
+  assert.equal(view.session.getSnapshot().isSending, true)
+  history.resolve([{ role: "assistant", content: "Saved" }])
+  await settle()
+  assert.equal(view.summary(), undefined)
+  assert.equal(view.session.getSnapshot().isSending, true)
+  archive.resolve()
   await sent
+  assert.equal(view.messages().at(-1)?.content, "Saved")
   assert.equal(view.session.getSnapshot().isSending, false)
   view.session.dispose()
 })
@@ -185,6 +232,7 @@ test("cancelling during a delayed final history read cannot overwrite or settle 
   ])
   await settle()
   assert.equal(view.messages().at(-1)?.content, "Current")
+  assert.equal(view.summary(), undefined)
   assert.equal(view.session.getSnapshot().isSending, true)
   assert.equal(view.sockets.length, 2)
   view.session.dispose()
@@ -210,6 +258,7 @@ test("disposing closes the socket, settles the send and ignores every later call
   history.resolve([{ role: "assistant", content: "stale history" }])
   await settle()
   assert.equal(view.messages(), before)
+  assert.equal(view.summary(), undefined)
   assert.equal(view.sockets.length, 1)
   assert.equal(view.sockets[0].cancelled, 1)
 })

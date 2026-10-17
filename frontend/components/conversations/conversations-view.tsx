@@ -5,7 +5,7 @@ import { MessageSquarePlus } from "lucide-react"
 import { ButtonLink } from "@/components/ui/button-link"
 import { PageHeader } from "@/components/ui/page-header"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useChats } from "@/components/chat/chats-provider"
+import { useChatArchive } from "@/components/chat/chats-provider"
 import { LoadError } from "@/components/ui/error-state"
 import { ConversationItem } from "./conversation-item"
 
@@ -53,7 +53,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 /** Renders the current account’s archive with loading, failure and empty states. */
 export function ConversationsView() {
-  const { conversations, isLoading, error } = useChats()
+  const { conversations, isLoading, error } = useChatArchive()
 
   if (isLoading) {
     return (

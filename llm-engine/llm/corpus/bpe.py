@@ -7,11 +7,12 @@ special-token block, saving/loading as one self-contained file, and how much tex
 a vocabulary is allowed to learn from.
 """
 
+import codecs
 import functools
 import re
 from pathlib import Path
 
-from tokenizers import Tokenizer
+from tokenizers import Tokenizer, decoders, models
 from tokenizers.implementations import ByteLevelBPETokenizer
 
 from llm import storage
@@ -170,6 +171,69 @@ def _slug(name: str) -> str:
 # is affordable once per stored message and is not affordable per pause in
 # typing, which is what the composer's context meter asks for.
 CACHED_VOCABULARIES = 8
+
+
+def _byte_glyphs() -> dict[str, int]:
+    """Return the reversible ByteLevel glyph-to-byte table used by our BPE tokenizer."""
+    plain = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+    glyphs = plain.copy()
+    next_glyph = 256
+    for byte in range(256):
+        if byte not in plain:
+            plain.append(byte)
+            glyphs.append(next_glyph)
+            next_glyph += 1
+    return {chr(glyph): byte for byte, glyph in zip(plain, glyphs)}
+
+
+BYTE_GLYPHS = _byte_glyphs()
+
+
+class ByteStreamDecoder:
+    """Decode ByteLevel token IDs incrementally, buffering incomplete UTF-8 bytes."""
+
+    def __init__(self, tokenizer: Tokenizer):
+        """Keep ByteLevel bytes for added tokens and a fresh UTF-8 state for one reply."""
+        self.tokenizer = tokenizer
+        self.added = {
+            token_id: b"".join(
+                bytes([BYTE_GLYPHS[char]]) if char in BYTE_GLYPHS else char.encode("utf-8")
+                for char in token.content
+            )
+            for token_id, token in tokenizer.get_added_tokens_decoder().items()
+        }
+        self.utf8 = codecs.getincrementaldecoder("utf-8")("replace")
+
+    def push(self, token_id: int) -> str:
+        """Return the new text for one valid ID, possibly empty for a partial character."""
+        added = self.added.get(token_id)
+        if added is not None:
+            return self.utf8.decode(added)
+        token = self.tokenizer.id_to_token(token_id)
+        if token is None:
+            raise ValueError(f"unknown token id {token_id}")
+        return self.utf8.decode(bytes(BYTE_GLYPHS[char] for char in token))
+
+    def finish(self) -> str:
+        """Flush an unfinished UTF-8 character after the final generated ID."""
+        return self.utf8.decode(b"", final=True)
+
+
+def stream_decoder(tokenizer: Tokenizer) -> ByteStreamDecoder | None:
+    """Use incremental decoding only for validated ByteLevel BPE vocabularies."""
+    if not isinstance(tokenizer.model, models.BPE) or not isinstance(
+        tokenizer.decoder, decoders.ByteLevel
+    ):
+        return None
+    added_ids = tokenizer.get_added_tokens_decoder()
+    if any(
+        char not in BYTE_GLYPHS
+        for token, token_id in tokenizer.get_vocab().items()
+        if token_id not in added_ids
+        for char in token
+    ):
+        return None
+    return ByteStreamDecoder(tokenizer)
 
 
 @functools.lru_cache(maxsize=CACHED_VOCABULARIES)

@@ -4,7 +4,22 @@ Hovering or focusing a sidebar conversation prefetches both its Next.js route
 and its messages. Route prefetch alone cannot warm a client hook's API request.
 `lib/chat-history.ts` shares a pending request with `useChat`, and a completed
 prefetch supplies the first render so the thread opens without a loading flash.
-The hook still folds stored rows through the same tool-turn parser.
+The same response supplies the open thread's title and token total. Message,
+attachment and summary metadata are validated before entering the cache. The hook
+still folds stored rows through the same tool-turn parser.
+
+The signed-in frame initially requests only five recent conversation summaries.
+The full archive and its token totals load when `/conversations` opens or the
+project conversation picker opens. `lib/chat-catalog.ts` owns recent, archive and
+selected-chat metadata. Mutations immediately update known titles/membership and
+refresh the recent slice plus any currently mounted archive. Closing the final
+archive consumer aborts its read and drops the full list. Old reads cannot undo a
+committed write, restore deleted metadata or publish into a replacement account.
+
+Completed turns read fresh history and refresh navigation concurrently. History
+and its token total publish together with send settlement after both reads finish;
+cancelled or disposed turns cannot update either. This prevents the context meter
+from adding live reply tokens to a total that already includes that reply.
 
 The in-memory cache holds at most ten conversations for thirty seconds. It is
 cleared on session changes, including logout and cross-tab storage events, and

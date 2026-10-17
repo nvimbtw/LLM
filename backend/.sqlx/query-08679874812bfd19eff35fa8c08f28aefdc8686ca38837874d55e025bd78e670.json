@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.title, c.project_id, c.created_at,\n                  COALESCE(t.tokens, 0)::bigint AS \"tokens!\"\n           FROM (SELECT id, title, project_id, created_at FROM chats\n                 WHERE owner_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2) c\n           LEFT JOIN LATERAL (SELECT sum(tokens) AS tokens FROM messages WHERE chat_id = c.id) t ON true\n           ORDER BY c.created_at DESC, c.id DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "tokens!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "08679874812bfd19eff35fa8c08f28aefdc8686ca38837874d55e025bd78e670"
+}

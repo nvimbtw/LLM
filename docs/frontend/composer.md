@@ -106,9 +106,11 @@ again at 90% (`meterTone`). It counts two things that are known to different
 standards, and keeping them apart is the whole of the design.
 
 - **The conversation behind the draft is an estimate.** The last persisted total
-  from the sidebar, plus whatever a turn in flight has tallied client-side as it
-  streamed — see `chat-thread.tsx`. Neither half was checked against a
-  tokenizer.
+  from the chat's history response, plus whatever a turn in flight has tallied
+  client-side as it streamed — see `chat-thread.tsx`. A completed turn replaces
+  the live estimate and stored total together. Persisted totals sum the token
+  counts recorded with messages; they do not recount the fitted prompt under the
+  currently selected model's tokenizer.
 - **The draft in the composer is a real count.** `hooks/use-draft-tokens.ts`
   posts it to `/tokenize/count` 200ms after typing settles, and the LLM engine
   encodes it under that model's own vocabulary. A guess from character count

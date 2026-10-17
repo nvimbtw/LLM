@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useSessionToken } from "@/hooks/use-auth"
-import { useChats } from "@/components/chat/chats-provider"
+import { useChatArchive } from "@/components/chat/chats-provider"
 import { useProjectMembership } from "@/hooks/use-project-membership"
 import { useProjects } from "./projects-provider"
 import { Button } from "@/components/ui/button"
@@ -50,8 +50,12 @@ export function AddConversation({
 }
 
 /** Filters the real archive and performs one membership write; failed archive loads remain retryable. */
-function ConversationPicker({ projectId, onOpenChange }: AddConversationProps) {
-  const { conversations, isLoading, error, refresh } = useChats()
+function ConversationPicker({
+  projectId,
+  open,
+  onOpenChange,
+}: AddConversationProps) {
+  const { conversations, isLoading, error, refresh } = useChatArchive(open)
   const { catalog } = useProjects()
   const [query, setQuery] = React.useState("")
   const membership = useProjectMembership(() => onOpenChange(false))

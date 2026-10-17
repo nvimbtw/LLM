@@ -45,3 +45,9 @@ Metadata queries exclude content bytes.
 Usage is derived from stored messages: user tokens asked, assistant tokens
 produced, replies and model-name snapshots. Source cutover and recovery are in
 [ownership-cutover.md](ownership-cutover.md).
+The chat archive sums message tokens for every owned conversation. The
+`messages_chat_tokens` covering index supports those totals without reading
+message rows when PostgreSQL's visibility map permits an index-only scan;
+the unique `(chat_id, position)` index serves ordered history reads.
+`GET /chats?limit=N` accepts a limit from 1 through 100 and computes totals only
+for the selected newest chats. `GET /chats` retains the complete archive contract.

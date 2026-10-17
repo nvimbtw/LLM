@@ -7,12 +7,14 @@ import {
   prefetchChatHistory,
   type MessageWire,
 } from "./chat-history"
+import { parseChatSummary } from "./chats"
 import { SESSION_CHANGED_EVENT } from "./api"
 
 const originalFetch = globalThis.fetch
 const originalNow = Date.now
 const browser = new EventTarget()
 
+/** Installs a controlled history HTTP adapter and records authentication for cache tests. */
 function stubFetch(respond: () => Promise<Response>) {
   const stub = {
     calls: [] as { init?: RequestInit }[],
@@ -49,6 +51,15 @@ const messages: MessageWire[] = [
     attachments: [],
   },
 ]
+const chat = {
+  chat_id: "00000000-0000-4000-8000-000000000001",
+  title: "Prefetched question",
+  created_at: "2026-10-17T00:00:00Z",
+  tokens: 12,
+  project_id: null,
+}
+
+const savedHistory = { summary: parseChatSummary(chat), messages }
 
 beforeEach(() => {
   globalThis.fetch = originalFetch
@@ -81,10 +92,11 @@ test("hover, focus and navigation share an in-flight request and completed histo
   const navigation = loadChatHistory("chat-a")
   assert.equal(fetch.calls.length, 1)
   assert.equal(cachedChatHistory("chat-a"), undefined)
-  finish(Response.json({ messages }))
-  assert.deepEqual(await navigation, messages)
-  assert.deepEqual(cachedChatHistory("chat-a"), messages)
-  assert.deepEqual(await loadChatHistory("chat-a"), messages)
+  finish(Response.json({ ...chat, messages }))
+  assert.deepEqual(await navigation, savedHistory)
+  assert.deepEqual(cachedChatHistory("chat-a"), savedHistory)
+  assert.equal(cachedChatHistory("chat-a")?.summary.tokens, 12)
+  assert.deepEqual(await loadChatHistory("chat-a"), savedHistory)
   assert.equal(fetch.calls.length, 1)
   const headers = new Headers(fetch.calls[0].init?.headers)
   assert.equal(headers.get("Authorization"), "Bearer session-a")
@@ -95,14 +107,14 @@ test("a failed speculative load is retried on navigation", async () => {
   prefetchChatHistory("chat-a")
   await assert.rejects(loadChatHistory("chat-a"), /Unable to load/)
   assert.equal(cachedChatHistory("chat-a"), undefined)
-  fetch.respond = async () => Response.json({ messages })
-  assert.deepEqual(await loadChatHistory("chat-a"), messages)
+  fetch.respond = async () => Response.json({ ...chat, messages })
+  assert.deepEqual(await loadChatHistory("chat-a"), savedHistory)
   assert.equal(fetch.calls.length, 2)
 })
 
 test("expired history is fetched again", async () => {
   Date.now = () => 1_000
-  const fetch = stubFetch(async () => Response.json({ messages }))
+  const fetch = stubFetch(async () => Response.json({ ...chat, messages }))
   await loadChatHistory("chat-a")
   Date.now = () => 31_001
   assert.equal(cachedChatHistory("chat-a"), undefined)
@@ -111,15 +123,15 @@ test("expired history is fetched again", async () => {
 })
 
 test("the cache evicts old conversations instead of growing with the archive", async () => {
-  stubFetch(async () => Response.json({ messages }))
+  stubFetch(async () => Response.json({ ...chat, messages }))
   for (let index = 0; index < 11; index++)
     await loadChatHistory(`chat-${index}`)
   assert.equal(cachedChatHistory("chat-0"), undefined)
-  assert.deepEqual(cachedChatHistory("chat-10"), messages)
+  assert.deepEqual(cachedChatHistory("chat-10"), savedHistory)
 })
 
 test("session changes and cross-tab logout discard private history", async () => {
-  const fetch = stubFetch(async () => Response.json({ messages }))
+  const fetch = stubFetch(async () => Response.json({ ...chat, messages }))
   await loadChatHistory("chat-a")
   token = "session-b"
   assert.equal(cachedChatHistory("chat-a"), undefined)
@@ -145,9 +157,48 @@ test("invalidation cannot let an older request replace fresh history", async () 
   const old = loadChatHistory("chat-a")
   invalidateChatHistory("chat-a")
   const updated = [{ ...messages[0], content: "Updated question" }]
-  fetch.respond = async () => Response.json({ messages: updated })
+  fetch.respond = async () => Response.json({ ...chat, messages: updated })
   await loadChatHistory("chat-a")
-  finish(Response.json({ messages }))
+  finish(Response.json({ ...chat, messages }))
   await old
-  assert.deepEqual(cachedChatHistory("chat-a"), updated)
+  assert.deepEqual(cachedChatHistory("chat-a"), {
+    ...savedHistory,
+    messages: updated,
+  })
+})
+
+test("malformed interpreted history is rejected without poisoning a retry", async () => {
+  const fetch = stubFetch(async () =>
+    Response.json({ ...chat, messages: [{ ...messages[0], role: "system" }] })
+  )
+  await assert.rejects(loadChatHistory("chat-a"), /Invalid chat message/)
+  assert.equal(cachedChatHistory("chat-a"), undefined)
+  fetch.respond = async () =>
+    Response.json({
+      ...chat,
+      messages: [
+        {
+          ...messages[0],
+          attachments: [
+            {
+              attachment_id: "file",
+              filename: "file.txt",
+              media_type: "text/plain",
+              size: -1,
+            },
+          ],
+        },
+      ],
+    })
+  await assert.rejects(loadChatHistory("chat-a"), /Invalid chat attachment/)
+  fetch.respond = async () =>
+    Response.json({
+      ...chat,
+      messages: [
+        { message_id: "message-a", role: "user", content: "Older response" },
+      ],
+    })
+  const loaded = await loadChatHistory("chat-a")
+  assert.equal(loaded.messages[0].model_name, null)
+  assert.deepEqual(loaded.messages[0].attachments, [])
 })

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useSessionToken } from "./use-auth"
 
 import {
   cachedChatHistory,
@@ -12,6 +13,7 @@ import {
   applyChatMessagesChange,
   ChatSession,
   type ChatMessagesChange,
+  type LoadedChatHistory,
   type ChatSendOptions,
 } from "@/lib/chat-session"
 import {
@@ -67,12 +69,14 @@ function useChatContextFloor(chatId: string) {
  * Pure turn transformations live in lib/chat-turn; ChatSession owns socket/queue lifetimes.
  */
 export function useChat(chatId: string) {
-  const { takePendingMessage, refresh: refreshChats } = useChats()
+  const { takePendingMessage, refresh: refreshChats, catalog } = useChats()
+  const token = useSessionToken()
+  const ready = Boolean(token) && catalog.getSnapshot().token === token
   const { settings } = useSettings()
   const { model: currentModel } = useComposerChoice()
   const { floor, pruneContext } = useChatContextFloor(chatId)
   const [messages, setMessages] = React.useState<ChatMessage[]>(() =>
-    groupTurns(cachedChatHistory(chatId) ?? [])
+    groupTurns(cachedChatHistory(chatId)?.messages ?? [])
   )
   const [isLoading, setIsLoading] = React.useState(
     () => cachedChatHistory(chatId) === undefined
@@ -83,7 +87,7 @@ export function useChat(chatId: string) {
   if (loadedFor !== chatId) {
     setLoadedFor(chatId)
     const cached = cachedChatHistory(chatId)
-    setMessages(groupTurns(cached ?? []))
+    setMessages(groupTurns(cached?.messages ?? []))
     setIsLoading(cached === undefined)
     setError(null)
     setLoadedOnce(false)
@@ -100,11 +104,17 @@ export function useChat(chatId: string) {
 
   /** Loads folded history for this chat, bypassing a prefetched entry when fresh is requested. */
   const fetchMessages = React.useCallback(
-    async (fresh = false) => {
+    async (fresh = false): Promise<LoadedChatHistory> => {
+      const version = catalog.getVersion()
       if (fresh) invalidateChatHistory(chatId)
-      return groupTurns(await loadChatHistory(chatId))
+      const history = await loadChatHistory(chatId)
+      return {
+        messages: groupTurns(history.messages),
+        summary: history.summary,
+        version,
+      }
     },
-    [chatId]
+    [chatId, catalog]
   )
   /** Applies session notifications without performing effects inside React's replayable updater. */
   const changeMessages = React.useCallback(
@@ -113,9 +123,11 @@ export function useChat(chatId: string) {
         invalidateChatHistory(chatId)
         setError(null)
       }
+      if (change.type === "history")
+        catalog.rememberSummary(change.summary, change.version)
       setMessages((previous) => applyChatMessagesChange(previous, change))
     },
-    [chatId]
+    [chatId, catalog]
   )
   /** Reads current preferences at send time and applies a floor only to its matching model. */
   const sendOptions = React.useCallback((modelId: string): ChatSendOptions => {
@@ -155,10 +167,13 @@ export function useChat(chatId: string) {
     return () => session.dispose()
   }, [session])
   React.useEffect(() => {
+    if (!ready) return
     let active = true
     fetchMessages()
       .then((data) => {
-        if (active) setMessages(data)
+        if (active) {
+          changeMessages({ type: "history", ...data })
+        }
       })
       .catch((failure: unknown) => {
         if (active)
@@ -177,7 +192,7 @@ export function useChat(chatId: string) {
     return () => {
       active = false
     }
-  }, [fetchMessages])
+  }, [fetchMessages, changeMessages, ready])
 
   /** Sends an ordinary turn or text steering; attachments are claimed only by ordinary turns. */
   const sendMessage = React.useCallback(
@@ -243,6 +258,7 @@ export function useChat(chatId: string) {
     ...stream,
     tokenArt: session.tokenArt,
     messages,
+    summary: catalog.getSummary(chatId) ?? cachedChatHistory(chatId)?.summary,
     isLoading,
     error: error ?? stream.error,
     sendMessage,

@@ -145,6 +145,57 @@ async fn membership_is_private_and_deletion_keeps_chats(pool: PgPool) -> Result<
     Ok(())
 }
 
+/// A recent slice preserves account isolation, newest-first ordering and persisted token totals.
+#[sqlx::test(migrations = "./migrations")]
+async fn recent_chat_slice_matches_archive(pool: PgPool) -> Result<(), sqlx::Error> {
+    let owner = user::create(&pool, "recent-owner", "hash", None)
+        .await?
+        .id_user;
+    let stranger = user::create(&pool, "recent-stranger", "hash", None)
+        .await?
+        .id_user;
+    let first = chats::create(&pool, owner, "first").await?;
+    chats::append(
+        &pool,
+        owner,
+        first.id,
+        &message("user", "first message"),
+        &[],
+    )
+    .await?;
+    let second = chats::create(&pool, owner, "second").await?;
+    chats::append(
+        &pool,
+        owner,
+        second.id,
+        &message("user", "second message"),
+        &[],
+    )
+    .await?;
+    chats::append(&pool, owner, second.id, &message("assistant", "reply"), &[]).await?;
+    chats::create(&pool, stranger, "private").await?;
+    let archive = chats::list(&pool, owner).await?;
+    let recent = chats::list_recent(&pool, owner, 1).await?;
+    assert_eq!(archive.len(), 2);
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].id, second.id);
+    assert_eq!(recent[0].tokens, 8);
+    sqlx::query!(
+        "UPDATE chats SET created_at = '2026-10-17T00:00:00Z' WHERE owner_id = $1",
+        owner
+    )
+    .execute(&pool)
+    .await?;
+    let archive = chats::list(&pool, owner).await?;
+    let recent = chats::list_recent(&pool, owner, 1).await?;
+    assert_eq!(recent[0].id, archive[0].id);
+    assert!(chats::list_recent(&pool, stranger, 1)
+        .await?
+        .iter()
+        .all(|chat| chat.id != second.id));
+    Ok(())
+}
+
 /// Matching accepts a shared query word and keeps only user/assistant sources from other owned project threads.
 #[sqlx::test(migrations = "./migrations")]
 async fn memories_keep_real_sources_and_project_boundaries(
