@@ -123,6 +123,11 @@ def queue_chain(steps: list[Step], owner: str = Depends(auth.require_service)):
     """
     if not steps:
         raise HTTPException(status_code=400, detail="a chain needs at least one step")
+    if any(step.kind is RunKind.model_validation for step in steps):
+        raise HTTPException(
+            status_code=400,
+            detail="model validation does not produce a model and cannot be chained",
+        )
     if any(step.kind is RunKind.tokenize for step in steps):
         raise HTTPException(
             status_code=400,
@@ -370,8 +375,7 @@ def row(run: Run) -> dict:
         "progress": run.progress,
         "stage": run.stage,
         "ref_id": str(run.ref_id) if run.ref_id else None,
-        "output": {"type": "model" if run.kind in (RunKind.train, RunKind.rl) else "tokenizer" if run.kind == RunKind.tokenize else "benchmark",
-                   "id": str(run.ref_id) if run.ref_id else None},
+        "output": run.output,
         "depends_on": str(run.depends_on) if run.depends_on else None,
         "result": run.result,
         "error": run.error,

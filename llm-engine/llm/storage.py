@@ -12,6 +12,10 @@ held out from training and therefore not training data.
     artifacts/models/<id>/       weights, a copy of the tokenizer, meta.json,
                                  and train_state.pt where the run left one
     artifacts/.recovery-staging/ unpublished checkpoint directories
+    artifacts/validations/<uuid>/ immutable validation graphs/reports
+    artifacts/definitions/<sha>/ immutable resolved definition/source snapshots
+    artifacts/.runtime/<uuid>/   supervised worker session materializations
+    artifacts/.runtime/engine.lock engine lifetime exclusion
 
     datasets/corpus.bin          the pre-keyed singletons, left where they are
     datasets/segments.json       (see `legacy_pretrain_paths`)
@@ -19,6 +23,8 @@ held out from training and therefore not training data.
 """
 
 import os
+import re
+import uuid
 from pathlib import Path
 
 
@@ -183,6 +189,43 @@ def models_dir() -> Path:
 
 def recovery_staging_dir() -> Path:
     return root() / "artifacts" / ".recovery-staging"
+
+
+def validations_dir() -> Path:
+    """Return the engine-owned parent of immutable validation artifacts without creating it."""
+    return root() / "artifacts" / "validations"
+
+
+def validation_dir(run_id: uuid.UUID | str) -> Path:
+    """Resolve a validated run UUID to its report/graph directory without filesystem effects."""
+    return validations_dir() / str(uuid.UUID(str(run_id)))
+
+
+def definitions_dir() -> Path:
+    """Return the immutable semantic-definition artifact parent without creating it."""
+    return root() / "artifacts" / "definitions"
+
+
+def definition_dir(definition_id: str) -> Path:
+    """Resolve one lowercase SHA-256 definition identity, rejecting path traversal or names."""
+    if re.fullmatch(r"[0-9a-f]{64}", definition_id) is None:
+        raise ValueError("definition_id must be a lowercase SHA-256 digest")
+    return definitions_dir() / definition_id
+
+
+def runtime_root() -> Path:
+    """Return private supervised worker materializations, separate from published models."""
+    return root() / "artifacts" / ".runtime"
+
+
+def runtime_session_dir(worker_id: uuid.UUID | str) -> Path:
+    """Resolve a validated worker UUID beneath its engine-owned runtime directory."""
+    return runtime_root() / str(uuid.UUID(str(worker_id)))
+
+
+def runtime_lock_path() -> Path:
+    """Return the single engine-lifetime lock path; the supervisor owns locking and cleanup."""
+    return runtime_root() / "engine.lock"
 
 
 def model_dir(model_name: str) -> Path:

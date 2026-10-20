@@ -268,3 +268,15 @@ async def test_a_queued_config_keeps_what_the_request_stated(client):
     assert config["epochs"] == 3
     for field in ("dimensions", "heads", "layers", "ff_multiplier", "ctx_window"):
         assert field not in config, f"{field} was filled in behind the request"
+
+
+async def test_validation_cannot_be_a_model_producing_chain_step(client):
+    """Recognizing the new kind cannot partially enqueue a chain that consumes no model."""
+    steps = [
+        {"kind": "train", "config": {"model_name": "must-not-be-queued"}},
+        {"kind": "model_validation", "config": {}},
+    ]
+    response = await client.post("/runs/chain", json=steps)
+    assert response.status_code == 400
+    with store.session() as db:
+        assert q.active_runs(db) == []
