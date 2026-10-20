@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Generate bounded synthetic block inputs in workers rather than upload tensor blobs.",
+  "properties": {
+    "dtype": {
+      "enum": [
+        "int64",
+        "int32",
+        "bool",
+        "float32",
+        "float16",
+        "bfloat16"
+      ],
+      "title": "Dtype",
+      "type": "string"
+    },
+    "shape": {
+      "items": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Shape",
+      "type": "array"
+    }
+  },
+  "required": [
+    "dtype",
+    "shape"
+  ],
+  "title": "TensorInputSpec",
+  "type": "object"
+}

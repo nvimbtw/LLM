@@ -1,0 +1,552 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "blocks": {
+    "legacy_transformer": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000001",
+        "revision_id": "20000000-0000-4000-8000-000000000001",
+        "content_hash": "29be6e0c74fba20cfeb7629ee9aca54704a8d10051f3a916fb8ff9c76248b14d"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "legacy_transformer",
+        "title": "Legacy Transformer",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {
+          "vocab": {
+            "type": "integer",
+            "required": true,
+            "minimum": 1
+          },
+          "dimensions": {
+            "type": "integer",
+            "required": false,
+            "default": 32,
+            "minimum": 8,
+            "maximum": 1024
+          },
+          "heads": {
+            "type": "integer",
+            "required": false,
+            "default": 4,
+            "minimum": 1,
+            "maximum": 32
+          },
+          "layers": {
+            "type": "integer",
+            "required": false,
+            "default": 2,
+            "minimum": 1,
+            "maximum": 32
+          },
+          "ff_multiplier": {
+            "type": "integer",
+            "required": false,
+            "default": 4,
+            "minimum": 1,
+            "maximum": 16
+          },
+          "ctx_window": {
+            "type": "integer",
+            "required": false,
+            "default": 32,
+            "minimum": 2,
+            "maximum": 4096
+          },
+          "rope_base": {
+            "type": "number",
+            "required": false,
+            "default": 10000.0,
+            "minimum": 2.0
+          },
+          "learned_temperature": {
+            "type": "boolean",
+            "required": false,
+            "default": false
+          }
+        },
+        "inputs": {
+          "tokens": {
+            "dtype": "int64",
+            "shape": [
+              "batch",
+              "sequence"
+            ]
+          },
+          "positions": {
+            "dtype": "int64",
+            "shape": [
+              "batch",
+              "sequence"
+            ]
+          },
+          "key_mask": {
+            "dtype": "bool",
+            "shape": [
+              "batch",
+              "sequence"
+            ]
+          }
+        },
+        "outputs": {
+          "logits": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "vocabulary"
+            ]
+          }
+        },
+        "capabilities": [
+          "cache",
+          "introspection",
+          "attention",
+          "context_extension",
+          "recompute",
+          "token_rows"
+        ]
+      }
+    },
+    "token_embedding": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000002",
+        "revision_id": "20000000-0000-4000-8000-000000000002",
+        "content_hash": "8ac77e06dd71783fd447b661ee2024a054bf0726e61c03c09b78b87729ec05ff"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "token_embedding",
+        "title": "Token Embedding",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {
+          "vocab": {
+            "type": "integer",
+            "required": true,
+            "minimum": 1
+          },
+          "width": {
+            "type": "integer",
+            "required": true,
+            "minimum": 1
+          }
+        },
+        "inputs": {
+          "tokens": {
+            "dtype": "int64",
+            "shape": [
+              "batch",
+              "sequence"
+            ]
+          }
+        },
+        "outputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "capabilities": [
+          "token_rows"
+        ]
+      }
+    },
+    "transformer_layer": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000003",
+        "revision_id": "20000000-0000-4000-8000-000000000003",
+        "content_hash": "0b258c5da5d0307b0016ea1ac6cac6054785b97553756a6cd282abb14256e25c"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "transformer_layer",
+        "title": "Transformer Layer",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {
+          "dimensions": {
+            "type": "integer",
+            "required": false,
+            "default": 32,
+            "minimum": 8,
+            "maximum": 1024
+          },
+          "heads": {
+            "type": "integer",
+            "required": false,
+            "default": 4,
+            "minimum": 1,
+            "maximum": 32
+          },
+          "ff_multiplier": {
+            "type": "integer",
+            "required": false,
+            "default": 4,
+            "minimum": 1,
+            "maximum": 16
+          },
+          "ctx_window": {
+            "type": "integer",
+            "required": false,
+            "default": 32,
+            "minimum": 2,
+            "maximum": 4096
+          },
+          "rope_base": {
+            "type": "number",
+            "required": false,
+            "default": 10000.0,
+            "minimum": 2.0
+          },
+          "learned_temperature": {
+            "type": "boolean",
+            "required": false,
+            "default": false
+          }
+        },
+        "inputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          },
+          "positions": {
+            "dtype": "int64",
+            "shape": [
+              "batch",
+              "sequence"
+            ]
+          },
+          "key_mask": {
+            "dtype": "bool",
+            "shape": [
+              "batch",
+              "sequence"
+            ]
+          }
+        },
+        "outputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "capabilities": [
+          "cache",
+          "introspection",
+          "attention",
+          "recompute"
+        ]
+      }
+    },
+    "layer_norm": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000004",
+        "revision_id": "20000000-0000-4000-8000-000000000004",
+        "content_hash": "6eaca966c17fe2d10861355c41bf0e4c2417162e0daa8ad2c68344c0900fe636"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "layer_norm",
+        "title": "Layer Norm",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {
+          "width": {
+            "type": "integer",
+            "required": true,
+            "minimum": 1
+          },
+          "epsilon": {
+            "type": "number",
+            "required": false,
+            "default": 1e-05,
+            "minimum": 1e-08
+          }
+        },
+        "inputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "outputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "capabilities": []
+      }
+    },
+    "language_model_head": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000005",
+        "revision_id": "20000000-0000-4000-8000-000000000005",
+        "content_hash": "10415f492f3f60e49fa1b7beeb5bb37330edef5ce77ab2d40f27ed84fbe4b989"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "language_model_head",
+        "title": "Language Model Head",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {
+          "vocab": {
+            "type": "integer",
+            "required": true,
+            "minimum": 1
+          },
+          "width": {
+            "type": "integer",
+            "required": true,
+            "minimum": 1
+          }
+        },
+        "inputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "outputs": {
+          "logits": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "vocabulary"
+            ]
+          }
+        },
+        "capabilities": [
+          "token_rows"
+        ]
+      }
+    },
+    "add": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000006",
+        "revision_id": "20000000-0000-4000-8000-000000000006",
+        "content_hash": "aa1f64cd2eb7fc88b35c0bf372996003cbfdc7c2bf67e42fb2f43a50a3bf477e"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "add",
+        "title": "Add",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {},
+        "inputs": {
+          "left": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          },
+          "right": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "outputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "capabilities": []
+      }
+    },
+    "concat": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000007",
+        "revision_id": "20000000-0000-4000-8000-000000000007",
+        "content_hash": "1771fae8ba4a7ecbf63636cc479240f185cee7903fc2c14190588f46d59257ca"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "concat",
+        "title": "Concat",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {
+          "axis": {
+            "type": "integer",
+            "required": false,
+            "default": -1,
+            "minimum": -8,
+            "maximum": 7
+          }
+        },
+        "inputs": {
+          "left": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          },
+          "right": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "outputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "merged_width"
+            ]
+          }
+        },
+        "capabilities": []
+      }
+    },
+    "custom_scale": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000008",
+        "revision_id": "20000000-0000-4000-8000-000000000008",
+        "content_hash": "1eca38c60d4ba8c954e63db8f744edaef6603d9b3d7a465557d5b687695c19e4"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "custom_scale",
+        "title": "Custom Scale",
+        "description": "A learned, token-local residual scale with named tensor ports.",
+        "parameters": {
+          "gain": {
+            "type": "number",
+            "required": false,
+            "default": 0.25,
+            "minimum": -2.0,
+            "maximum": 2.0,
+            "title": "Gain",
+            "description": "Initial value of the learned scale."
+          }
+        },
+        "inputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "outputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "capabilities": []
+      },
+      "source_path": "custom_scale.py"
+    },
+    "custom_two_outputs": {
+      "reference": {
+        "kind": "block",
+        "resource_id": "10000000-0000-4000-8000-000000000009",
+        "revision_id": "20000000-0000-4000-8000-000000000009",
+        "content_hash": "b2fde0ddb23bf3653c0f00b9a7656aeb9d08f17225484fbcdf629a8b2320bda5"
+      },
+      "declaration": {
+        "sdk_version": 1,
+        "name": "custom_two_outputs",
+        "title": "Custom Two Outputs",
+        "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+        "parameters": {},
+        "inputs": {
+          "hidden": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "outputs": {
+          "left": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          },
+          "right": {
+            "dtype": "floating",
+            "shape": [
+              "batch",
+              "sequence",
+              "width"
+            ]
+          }
+        },
+        "capabilities": []
+      }
+    }
+  },
+  "architectures": {
+    "branch_pipeline": {
+      "reference": {
+        "kind": "architecture",
+        "resource_id": "10000000-0000-4000-8000-000000000100",
+        "revision_id": "20000000-0000-4000-8000-000000000100",
+        "content_hash": "2543a35b0a4b4c721e20ee311525e442047d4e666faeb77d405b11d91233b288"
+      },
+      "recipe_path": "../recipes/positive-custom-branch-nested.yaml"
+    }
+  }
+}

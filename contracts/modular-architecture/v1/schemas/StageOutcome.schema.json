@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "description": "Report finite validation stages independently of execution lifecycle status.",
+  "properties": {
+    "elapsed_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Elapsed Ms"
+    },
+    "outcome": {
+      "enum": [
+        "pending",
+        "running",
+        "passed",
+        "failed",
+        "skipped"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "stage": {
+      "enum": [
+        "inspection",
+        "resolution",
+        "construction",
+        "capture",
+        "numerical",
+        "admission",
+        "publication"
+      ],
+      "title": "Stage",
+      "type": "string"
+    }
+  },
+  "required": [
+    "stage",
+    "outcome"
+  ],
+  "title": "StageOutcome",
+  "type": "object"
+}

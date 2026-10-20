@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "legacy_transformer",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-legacy_transformer.json"
+    },
+    {
+      "name": "token_embedding",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-token_embedding.json"
+    },
+    {
+      "name": "transformer_layer",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-transformer_layer.json"
+    },
+    {
+      "name": "layer_norm",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-layer_norm.json"
+    },
+    {
+      "name": "language_model_head",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-language_model_head.json"
+    },
+    {
+      "name": "add",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-add.json"
+    },
+    {
+      "name": "concat",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-concat.json"
+    },
+    {
+      "name": "custom_scale",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-custom_scale.json"
+    },
+    {
+      "name": "custom_two_outputs",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-custom_two_outputs.json"
+    },
+    {
+      "name": "unknown-field",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-unknown-field.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "unsupported-capability",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-unsupported-capability.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "duplicate-capability",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-duplicate-capability.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "wrong-default-type",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-wrong-default-type.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "inverted-range",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-inverted-range.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "unknown-dtype",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-unknown-dtype.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "duplicate-enum-choice",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-duplicate-enum-choice.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "boolean-version",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-boolean-version.json",
+      "error_code": "invalid_declaration"
+    },
+    {
+      "name": "capability-cache-valid",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-capability-cache.json"
+    },
+    {
+      "name": "capability-cache-missing-evidence",
+      "model": "Capability",
+      "valid": false,
+      "path": "negative-capability-cache.json",
+      "error_code": "capability_evidence_required"
+    },
+    {
+      "name": "capability-introspection-valid",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-capability-introspection.json"
+    },
+    {
+      "name": "capability-introspection-missing-evidence",
+      "model": "Capability",
+      "valid": false,
+      "path": "negative-capability-introspection.json",
+      "error_code": "capability_evidence_required"
+    },
+    {
+      "name": "capability-attention-valid",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-capability-attention.json"
+    },
+    {
+      "name": "capability-attention-missing-evidence",
+      "model": "Capability",
+      "valid": false,
+      "path": "negative-capability-attention.json",
+      "error_code": "capability_evidence_required"
+    },
+    {
+      "name": "capability-context_extension-valid",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-capability-context_extension.json"
+    },
+    {
+      "name": "capability-context_extension-missing-evidence",
+      "model": "Capability",
+      "valid": false,
+      "path": "negative-capability-context_extension.json",
+      "error_code": "capability_evidence_required"
+    },
+    {
+      "name": "capability-recompute-valid",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-capability-recompute.json"
+    },
+    {
+      "name": "capability-recompute-missing-evidence",
+      "model": "Capability",
+      "valid": false,
+      "path": "negative-capability-recompute.json",
+      "error_code": "capability_evidence_required"
+    },
+    {
+      "name": "capability-token_rows-valid",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-capability-token_rows.json"
+    },
+    {
+      "name": "capability-token_rows-missing-evidence",
+      "model": "Capability",
+      "valid": false,
+      "path": "negative-capability-token_rows.json",
+      "error_code": "capability_evidence_required"
+    },
+    {
+      "name": "unsupported-token-rows",
+      "model": "Capability",
+      "valid": true,
+      "path": "positive-unsupported-token-rows.json"
+    },
+    {
+      "name": "typed-controls",
+      "model": "BlockDeclaration",
+      "valid": true,
+      "path": "positive-typed-controls.json"
+    },
+    {
+      "name": "hyphen-parameter",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-hyphen-parameter.json",
+      "error_code": "python_name_required"
+    },
+    {
+      "name": "hyphen-port",
+      "model": "BlockDeclaration",
+      "valid": false,
+      "path": "negative-hyphen-port.json",
+      "error_code": "python_name_required"
+    }
+  ]
+}

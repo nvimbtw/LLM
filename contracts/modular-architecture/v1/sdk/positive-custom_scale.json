@@ -1,0 +1,38 @@
+{
+  "sdk_version": 1,
+  "name": "custom_scale",
+  "title": "Custom Scale",
+  "description": "A learned, token-local residual scale with named tensor ports.",
+  "parameters": {
+    "gain": {
+      "type": "number",
+      "required": false,
+      "default": 0.25,
+      "minimum": -2.0,
+      "maximum": 2.0,
+      "title": "Gain",
+      "description": "Initial value of the learned scale."
+    }
+  },
+  "inputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "outputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "capabilities": []
+}

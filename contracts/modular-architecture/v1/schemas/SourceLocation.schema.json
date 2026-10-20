@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "description": "Locate packaged source by immutable revision and relative file, not private host paths.",
+  "properties": {
+    "column": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Column"
+    },
+    "file": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "File",
+      "type": "string"
+    },
+    "line": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Line"
+    },
+    "revision_id": {
+      "format": "uuid",
+      "title": "Revision Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "revision_id",
+    "file"
+  ],
+  "title": "SourceLocation",
+  "type": "object"
+}

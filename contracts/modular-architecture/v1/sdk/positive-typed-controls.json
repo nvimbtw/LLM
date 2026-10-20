@@ -1,0 +1,62 @@
+{
+  "sdk_version": 1,
+  "name": "typed_controls",
+  "title": "Typed controls",
+  "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+  "parameters": {
+    "width": {
+      "type": "integer",
+      "required": true,
+      "minimum": 1,
+      "maximum": 1024,
+      "title": "Width"
+    },
+    "gain": {
+      "type": "number",
+      "default": 0.25,
+      "minimum": -2.0,
+      "maximum": 2.0,
+      "title": "Gain"
+    },
+    "dropout": {
+      "type": "boolean",
+      "default": false,
+      "title": "Use dropout"
+    },
+    "label": {
+      "type": "string",
+      "default": "residual",
+      "title": "Label"
+    },
+    "activation": {
+      "type": "enum",
+      "default": "gelu",
+      "choices": [
+        "gelu",
+        "relu"
+      ],
+      "title": "Activation"
+    }
+  },
+  "inputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "outputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "capabilities": []
+}

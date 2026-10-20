@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "Acknowledge saved bytes, not inspection, full validation or revision acceptance.",
+  "properties": {
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "draft_version": {
+      "minimum": 1,
+      "title": "Draft Version",
+      "type": "integer"
+    },
+    "resource_id": {
+      "format": "uuid",
+      "title": "Resource Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "resource_id",
+    "draft_version",
+    "content_hash"
+  ],
+  "title": "DraftSaved",
+  "type": "object"
+}

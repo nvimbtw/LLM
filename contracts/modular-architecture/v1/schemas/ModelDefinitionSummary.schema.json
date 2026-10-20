@@ -1,0 +1,215 @@
+{
+  "$defs": {
+    "Capability": {
+      "additionalProperties": false,
+      "description": "Report optional supported behavior only when required profile evidence exists.",
+      "properties": {
+        "evidence_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Hash"
+        },
+        "name": {
+          "enum": [
+            "cache",
+            "introspection",
+            "attention",
+            "context_extension",
+            "recompute",
+            "token_rows"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "supported": {
+          "title": "Supported",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "supported"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Read saved definition metadata without importing source or loading weights.",
+  "properties": {
+    "architecture": {
+      "$ref": "#/$defs/RevisionRef"
+    },
+    "capabilities": {
+      "items": {
+        "$ref": "#/$defs/Capability"
+      },
+      "maxItems": 6,
+      "title": "Capabilities",
+      "type": "array"
+    },
+    "context_window": {
+      "minimum": 1,
+      "title": "Context Window",
+      "type": "integer"
+    },
+    "definition_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Definition Id",
+      "type": "string"
+    },
+    "dependencies": {
+      "items": {
+        "$ref": "#/$defs/RevisionRef"
+      },
+      "maxItems": 128,
+      "title": "Dependencies",
+      "type": "array"
+    },
+    "legacy_architecture": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxProperties": 5,
+          "propertyNames": {
+            "enum": [
+              "dimensions",
+              "heads",
+              "layers",
+              "ff_multiplier",
+              "ctx_window"
+            ]
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Legacy Architecture"
+    },
+    "parameter_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parameter Count"
+    },
+    "parameters": {
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,63}$": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "maxLength": 4096,
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "tokenizer_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Tokenizer Fingerprint",
+      "type": "string"
+    },
+    "vocabulary_size": {
+      "minimum": 1,
+      "title": "Vocabulary Size",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "definition_id",
+    "architecture",
+    "parameters",
+    "context_window",
+    "vocabulary_size",
+    "tokenizer_fingerprint",
+    "dependencies",
+    "capabilities",
+    "parameter_count",
+    "legacy_architecture"
+  ],
+  "title": "ModelDefinitionSummary",
+  "type": "object"
+}

@@ -1,0 +1,16 @@
+{
+  "additionalProperties": false,
+  "description": "Return the new stable UUID after source bytes and first draft are durable.",
+  "properties": {
+    "resource_id": {
+      "format": "uuid",
+      "title": "Resource Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "resource_id"
+  ],
+  "title": "ResourceCreated",
+  "type": "object"
+}

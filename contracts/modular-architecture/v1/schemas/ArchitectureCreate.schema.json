@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "Create a named architecture whose initial editable YAML may be invalid.",
+  "properties": {
+    "description": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "Description",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "yaml": {
+      "title": "Yaml",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "yaml"
+  ],
+  "title": "ArchitectureCreate",
+  "type": "object"
+}

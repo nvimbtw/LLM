@@ -1,0 +1,417 @@
+{
+  "$defs": {
+    "GraphEdge": {
+      "additionalProperties": false,
+      "description": "Connect explicit named ports between graph nodes with no implicit merge semantics.",
+      "properties": {
+        "source": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "source_port": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Source Port",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "target_port": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Target Port",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "source_port",
+        "target",
+        "target_port"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    },
+    "GraphNode": {
+      "additionalProperties": false,
+      "description": "Separate computation occurrence paths from shared parameter owner identity.",
+      "properties": {
+        "child_scope": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Child Scope"
+        },
+        "id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "instance_path": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instance Path"
+        },
+        "iterations": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iterations"
+        },
+        "kind": {
+          "enum": [
+            "input",
+            "output",
+            "module",
+            "call",
+            "loop",
+            "operation"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "occurrence_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Occurrence Path",
+          "type": "string"
+        },
+        "operation_target": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Target"
+        },
+        "outputs": {
+          "maxProperties": 32,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/TensorSummary"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameter_owner_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Parameter Owner Ids",
+          "type": "array"
+        },
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "unique_parameter_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Parameter Count"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "occurrence_path"
+      ],
+      "title": "GraphNode",
+      "type": "object"
+    },
+    "GraphQuery": {
+      "additionalProperties": false,
+      "description": "Read only published bounded graph scopes; a query never launches a capture.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
+        },
+        "identity_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Hash",
+          "type": "string"
+        },
+        "limit": {
+          "default": 256,
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "mode": {
+          "enum": [
+            "train",
+            "eval"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "scope": {
+          "default": "root",
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Scope",
+          "type": "string"
+        },
+        "signature": {
+          "enum": [
+            "full_prefix",
+            "prefill",
+            "decode"
+          ],
+          "title": "Signature",
+          "type": "string"
+        },
+        "view": {
+          "enum": [
+            "architecture",
+            "operations"
+          ],
+          "title": "View",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity_hash",
+        "view",
+        "mode",
+        "signature"
+      ],
+      "title": "GraphQuery",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "additionalProperties": false,
+      "description": "Locate packaged source by immutable revision and relative file, not private host paths.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "file": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision_id",
+        "file"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    },
+    "TensorSummary": {
+      "additionalProperties": false,
+      "description": "Show bounded shape/dtype metadata without embedding raw tensor contents.",
+      "properties": {
+        "dtype": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Dtype",
+          "type": "string"
+        },
+        "shape": {
+          "items": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              }
+            ]
+          },
+          "maxItems": 8,
+          "title": "Shape",
+          "type": "array"
+        }
+      },
+      "required": [
+        "shape",
+        "dtype"
+      ],
+      "title": "TensorSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Return bounded immutable scopes with explicit deferred children and pagination.",
+  "properties": {
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      },
+      "maxItems": 1024,
+      "title": "Edges",
+      "type": "array"
+    },
+    "graph_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Graph Hash",
+      "type": "string"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Cursor"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      },
+      "maxItems": 256,
+      "title": "Nodes",
+      "type": "array"
+    },
+    "query": {
+      "$ref": "#/$defs/GraphQuery"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "graph_hash",
+    "query",
+    "nodes",
+    "edges"
+  ],
+  "title": "GraphFragment",
+  "type": "object"
+}

@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "Bind authoritative vocabulary facts, including compatible derived token-label identity.",
+  "properties": {
+    "derived_from": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Derived From"
+    },
+    "fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "kind": {
+      "const": "final",
+      "title": "Kind",
+      "type": "string"
+    },
+    "reserved_token_ids": {
+      "maxProperties": 128,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,63}$": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "title": "Reserved Token Ids",
+      "type": "object"
+    },
+    "tokenizer_id": {
+      "format": "uuid",
+      "title": "Tokenizer Id",
+      "type": "string"
+    },
+    "vocabulary_size": {
+      "minimum": 1,
+      "title": "Vocabulary Size",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "kind",
+    "tokenizer_id",
+    "fingerprint",
+    "vocabulary_size"
+  ],
+  "title": "FinalTokenizer",
+  "type": "object"
+}

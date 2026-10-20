@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Pin immutable dependency source and import identity inside a self-contained package.",
+  "properties": {
+    "builtin_compatibility": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Builtin Compatibility"
+    },
+    "bytes": {
+      "maximum": 262144,
+      "minimum": 0,
+      "title": "Bytes",
+      "type": "integer"
+    },
+    "path": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+    },
+    "reference": {
+      "$ref": "#/$defs/RevisionRef"
+    },
+    "sdk_version": {
+      "const": 1,
+      "title": "Sdk Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "reference",
+    "path",
+    "bytes",
+    "sdk_version"
+  ],
+  "title": "SourceManifestEntry",
+  "type": "object"
+}

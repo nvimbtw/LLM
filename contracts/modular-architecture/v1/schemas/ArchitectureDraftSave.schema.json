@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "Save exact YAML bytes only if the current editable draft version matches.",
+  "properties": {
+    "expected_version": {
+      "minimum": 1,
+      "title": "Expected Version",
+      "type": "integer"
+    },
+    "yaml": {
+      "title": "Yaml",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_version",
+    "yaml"
+  ],
+  "title": "ArchitectureDraftSave",
+  "type": "object"
+}

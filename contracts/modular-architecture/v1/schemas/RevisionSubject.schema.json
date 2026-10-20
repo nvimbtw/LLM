@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Select an already accepted immutable source/recipe revision.",
+  "properties": {
+    "kind": {
+      "const": "revision",
+      "title": "Kind",
+      "type": "string"
+    },
+    "reference": {
+      "$ref": "#/$defs/RevisionRef"
+    }
+  },
+  "required": [
+    "kind",
+    "reference"
+  ],
+  "title": "RevisionSubject",
+  "type": "object"
+}

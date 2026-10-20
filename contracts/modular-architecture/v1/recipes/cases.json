@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "standard",
+      "model": "Recipe",
+      "valid": true,
+      "path": "positive-standard.yaml"
+    },
+    {
+      "name": "expanded-standard",
+      "model": "Recipe",
+      "valid": true,
+      "path": "positive-expanded-standard.yaml"
+    },
+    {
+      "name": "looped",
+      "model": "Recipe",
+      "valid": true,
+      "path": "positive-looped.yaml"
+    },
+    {
+      "name": "custom-branch-nested",
+      "model": "Recipe",
+      "valid": true,
+      "path": "positive-custom-branch-nested.yaml"
+    },
+    {
+      "name": "unknown-field",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-unknown-field.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "vocabulary-override",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-vocabulary-override.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "zero-repeat",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-zero-repeat.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "boolean-repeat",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-boolean-repeat.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "work-limit",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-work-limit.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "expression-binding",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-expression-binding.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "missing-result",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-missing-result.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "self-alias",
+      "model": "Recipe",
+      "valid": false,
+      "path": "negative-self-alias.yaml",
+      "error_code": "invalid_recipe"
+    },
+    {
+      "name": "reused-subarchitecture",
+      "model": "Recipe",
+      "valid": true,
+      "path": "positive-reused-subarchitecture.yaml"
+    },
+    {
+      "name": "custom-lm",
+      "model": "Recipe",
+      "valid": true,
+      "path": "positive-custom-lm.yaml"
+    },
+    {
+      "name": "unresolved-value",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-unresolved-value.yaml",
+      "error_code": "unresolved_value"
+    },
+    {
+      "name": "duplicate-value",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-duplicate-value.yaml",
+      "error_code": "duplicate_value"
+    },
+    {
+      "name": "uninitialized-carry",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-uninitialized-carry.yaml",
+      "error_code": "uninitialized_carry"
+    },
+    {
+      "name": "nested-work-limit",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-nested-work-limit.yaml",
+      "error_code": "expanded_work_limit"
+    },
+    {
+      "name": "stale-revision",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-stale-revision.yaml",
+      "error_code": "revision_snapshot_mismatch"
+    },
+    {
+      "name": "incompatible-alias",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-incompatible-alias.yaml",
+      "error_code": "incompatible_parameter_alias"
+    },
+    {
+      "name": "tokenizer-disagreement",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-tokenizer-disagreement.yaml",
+      "error_code": "tokenizer_binding_mismatch"
+    },
+    {
+      "name": "floating-token-input",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "resolution",
+      "path": "negative-floating-token-input.yaml",
+      "error_code": "causal_input_dtype"
+    },
+    {
+      "name": "duplicate-key",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "yaml",
+      "path": "negative-duplicate-key.yaml",
+      "error_code": "invalid_yaml"
+    },
+    {
+      "name": "unsafe-tag",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "yaml",
+      "path": "negative-unsafe-tag.yaml",
+      "error_code": "invalid_yaml"
+    },
+    {
+      "name": "yaml-alias",
+      "model": "Recipe",
+      "valid": false,
+      "stage": "yaml",
+      "path": "negative-yaml-alias.yaml",
+      "error_code": "invalid_yaml"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "additionalProperties": false,
+  "description": "Declare tensor rank, dtype family and resolved or named dimension constraints.",
+  "properties": {
+    "dtype": {
+      "enum": [
+        "int64",
+        "int32",
+        "bool",
+        "floating",
+        "float32",
+        "float16",
+        "bfloat16"
+      ],
+      "title": "Dtype",
+      "type": "string"
+    },
+    "shape": {
+      "items": {
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+            "type": "string"
+          }
+        ]
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Shape",
+      "type": "array"
+    }
+  },
+  "required": [
+    "dtype",
+    "shape"
+  ],
+  "title": "TensorPort",
+  "type": "object"
+}

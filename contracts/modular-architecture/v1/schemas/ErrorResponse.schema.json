@@ -1,0 +1,180 @@
+{
+  "$defs": {
+    "Diagnostic": {
+      "additionalProperties": false,
+      "description": "Return bounded actionable failures without tensor values, arbitrary objects or raw logs.",
+      "properties": {
+        "code": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Code",
+          "type": "string"
+        },
+        "instance_path": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instance Path"
+        },
+        "message": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "save",
+            "inspection",
+            "resolution",
+            "construction",
+            "capture",
+            "numerical",
+            "admission",
+            "execution",
+            "publication"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "resource_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource Id"
+        },
+        "revision_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision Id"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "yaml_path": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Yaml Path"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "phase"
+      ],
+      "title": "Diagnostic",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "additionalProperties": false,
+      "description": "Locate packaged source by immutable revision and relative file, not private host paths.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "file": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision_id",
+        "file"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Forward structured engine errors with unchanged HTTP status through Rust.",
+  "properties": {
+    "current_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Current Version"
+    },
+    "error": {
+      "$ref": "#/$defs/Diagnostic"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "title": "ErrorResponse",
+  "type": "object"
+}

@@ -1,0 +1,127 @@
+schema_version: 1
+interface: tensor
+parameters:
+  gain:
+    type: number
+    required: false
+    default: 0.25
+    minimum: -2.0
+    maximum: 2.0
+  outer_iterations:
+    type: integer
+    required: false
+    default: 65
+    minimum: 1
+    maximum: 65
+inputs:
+  hidden:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - width
+outputs:
+  hidden:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - width
+  joined:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - merged_width
+result:
+  hidden: final_hidden
+  joined: joined
+modules:
+  split:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000009
+      revision_id: 20000000-0000-4000-8000-000000000009
+      content_hash: b2fde0ddb23bf3653c0f00b9a7656aeb9d08f17225484fbcdf629a8b2320bda5
+    parameters: {}
+  left:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000008
+      revision_id: 20000000-0000-4000-8000-000000000008
+      content_hash: 1eca38c60d4ba8c954e63db8f744edaef6603d9b3d7a465557d5b687695c19e4
+    parameters:
+      gain: ${gain}
+  right:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000008
+      revision_id: 20000000-0000-4000-8000-000000000008
+      content_hash: 1eca38c60d4ba8c954e63db8f744edaef6603d9b3d7a465557d5b687695c19e4
+    parameters:
+      gain: 0.5
+  merge:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000006
+      revision_id: 20000000-0000-4000-8000-000000000006
+      content_hash: aa1f64cd2eb7fc88b35c0bf372996003cbfdc7c2bf67e42fb2f43a50a3bf477e
+    parameters: {}
+  join:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000007
+      revision_id: 20000000-0000-4000-8000-000000000007
+      content_hash: 1771fae8ba4a7ecbf63636cc479240f185cee7903fc2c14190588f46d59257ca
+    parameters:
+      axis: -1
+flow:
+- call: split
+  inputs:
+    hidden: hidden
+  outputs:
+    left: left_branch
+    right: right_branch
+- call: left
+  inputs:
+    hidden: left_branch
+  outputs:
+    hidden: left_scaled
+- call: right
+  inputs:
+    hidden: right_branch
+  outputs:
+    hidden: right_scaled
+- call: join
+  inputs:
+    left: left_scaled
+    right: right_scaled
+  outputs:
+    hidden: joined
+- call: merge
+  inputs:
+    left: left_scaled
+    right: right_scaled
+  outputs:
+    hidden: merged
+- repeat: ${outer_iterations}
+  carry:
+    hidden:
+      initial: merged
+      input: outer_hidden
+      output: inner_result
+      result: final_hidden
+  body:
+  - repeat: 2
+    carry:
+      hidden:
+        initial: outer_hidden
+        input: inner_hidden
+        output: next_inner
+        result: inner_result
+    body:
+    - call: left
+      inputs:
+        hidden: inner_hidden
+      outputs:
+        hidden: next_inner

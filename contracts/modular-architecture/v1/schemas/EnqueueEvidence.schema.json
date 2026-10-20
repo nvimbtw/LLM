@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "FinalTokenizer": {
+      "additionalProperties": false,
+      "description": "Bind authoritative vocabulary facts, including compatible derived token-label identity.",
+      "properties": {
+        "derived_from": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived From"
+        },
+        "fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "kind": {
+          "const": "final",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reserved_token_ids": {
+          "maxProperties": 128,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "title": "Reserved Token Ids",
+          "type": "object"
+        },
+        "tokenizer_id": {
+          "format": "uuid",
+          "title": "Tokenizer Id",
+          "type": "string"
+        },
+        "vocabulary_size": {
+          "minimum": 1,
+          "title": "Vocabulary Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "tokenizer_id",
+        "fingerprint",
+        "vocabulary_size"
+      ],
+      "title": "FinalTokenizer",
+      "type": "object"
+    },
+    "PendingTokenizer": {
+      "additionalProperties": false,
+      "description": "Mark unresolved tokenizer provenance; it cannot authorize acceptance or optimization.",
+      "properties": {
+        "build_request_id": {
+          "format": "uuid",
+          "title": "Build Request Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "pending",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "build_request_id"
+      ],
+      "title": "PendingTokenizer",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Pin an atomic queued/waiting step before catalog edits, archive or history pruning.",
+  "properties": {
+    "acceptance_receipt_id": {
+      "format": "uuid",
+      "title": "Acceptance Receipt Id",
+      "type": "string"
+    },
+    "architecture": {
+      "$ref": "#/$defs/RevisionRef"
+    },
+    "dependency_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dependency Digest",
+      "type": "string"
+    },
+    "exact_receipt_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Exact Receipt Id"
+    },
+    "final_preflight_required": {
+      "title": "Final Preflight Required",
+      "type": "boolean"
+    },
+    "parameter_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Parameter Digest",
+      "type": "string"
+    },
+    "tokenizer": {
+      "discriminator": {
+        "mapping": {
+          "final": "#/$defs/FinalTokenizer",
+          "pending": "#/$defs/PendingTokenizer"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FinalTokenizer"
+        },
+        {
+          "$ref": "#/$defs/PendingTokenizer"
+        }
+      ],
+      "title": "Tokenizer"
+    }
+  },
+  "required": [
+    "architecture",
+    "dependency_digest",
+    "parameter_digest",
+    "acceptance_receipt_id",
+    "tokenizer",
+    "exact_receipt_id",
+    "final_preflight_required"
+  ],
+  "title": "EnqueueEvidence",
+  "type": "object"
+}

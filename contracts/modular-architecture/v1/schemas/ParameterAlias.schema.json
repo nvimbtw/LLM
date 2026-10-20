@@ -1,0 +1,24 @@
+{
+  "additionalProperties": false,
+  "description": "Tie one exact compatible Parameter identity; the resolver rejects overlapping views.",
+  "properties": {
+    "owner": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "target": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "required": [
+    "owner",
+    "target"
+  ],
+  "title": "ParameterAlias",
+  "type": "object"
+}

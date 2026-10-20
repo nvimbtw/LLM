@@ -1,0 +1,861 @@
+{
+  "$defs": {
+    "Call": {
+      "additionalProperties": false,
+      "description": "Call an existing instance; named outputs introduce fresh lexical values.",
+      "properties": {
+        "call": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Call",
+          "type": "string"
+        },
+        "inputs": {
+          "maxProperties": 32,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputs": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "call",
+        "inputs",
+        "outputs"
+      ],
+      "title": "Call",
+      "type": "object"
+    },
+    "CarryBinding": {
+      "additionalProperties": false,
+      "description": "Initialize an iteration value and export its final value into a fresh outer name.",
+      "properties": {
+        "initial": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Initial",
+          "type": "string"
+        },
+        "input": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Input",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        },
+        "result": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "initial",
+        "input",
+        "output",
+        "result"
+      ],
+      "title": "CarryBinding",
+      "type": "object"
+    },
+    "FinalTokenizer": {
+      "additionalProperties": false,
+      "description": "Bind authoritative vocabulary facts, including compatible derived token-label identity.",
+      "properties": {
+        "derived_from": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived From"
+        },
+        "fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "kind": {
+          "const": "final",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reserved_token_ids": {
+          "maxProperties": 128,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "title": "Reserved Token Ids",
+          "type": "object"
+        },
+        "tokenizer_id": {
+          "format": "uuid",
+          "title": "Tokenizer Id",
+          "type": "string"
+        },
+        "vocabulary_size": {
+          "minimum": 1,
+          "title": "Vocabulary Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "tokenizer_id",
+        "fingerprint",
+        "vocabulary_size"
+      ],
+      "title": "FinalTokenizer",
+      "type": "object"
+    },
+    "ModuleDeclaration": {
+      "additionalProperties": false,
+      "description": "Create exactly one instance of a pinned block/subarchitecture with typed bindings.",
+      "properties": {
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "reference": {
+          "$ref": "#/$defs/RevisionRef"
+        }
+      },
+      "required": [
+        "reference"
+      ],
+      "title": "ModuleDeclaration",
+      "type": "object"
+    },
+    "ParameterAlias": {
+      "additionalProperties": false,
+      "description": "Tie one exact compatible Parameter identity; the resolver rejects overlapping views.",
+      "properties": {
+        "owner": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Owner",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "target"
+      ],
+      "title": "ParameterAlias",
+      "type": "object"
+    },
+    "ParameterDeclaration": {
+      "additionalProperties": false,
+      "description": "Declare constructor value types, defaults and editor bounds without executing code.",
+      "properties": {
+        "choices": {
+          "default": [],
+          "items": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "maxLength": 4096,
+                "type": "string"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "title": "Choices",
+          "type": "array"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "title": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "integer",
+            "number",
+            "boolean",
+            "string",
+            "enum"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ParameterDeclaration",
+      "type": "object"
+    },
+    "Recipe": {
+      "additionalProperties": false,
+      "description": "Version source composition independently of training controls and capture evidence.",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ParameterAlias"
+          },
+          "maxItems": 128,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Window"
+        },
+        "flow": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Call"
+              },
+              {
+                "$ref": "#/$defs/Repeat"
+              },
+              {
+                "$ref": "#/$defs/Stack"
+              }
+            ]
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "title": "Flow",
+          "type": "array"
+        },
+        "inputs": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "$ref": "#/$defs/TensorPort"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "interface": {
+          "enum": [
+            "causal_lm",
+            "tensor"
+          ],
+          "title": "Interface",
+          "type": "string"
+        },
+        "modules": {
+          "maxProperties": 128,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/ModuleDeclaration"
+            }
+          },
+          "title": "Modules",
+          "type": "object"
+        },
+        "outputs": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "$ref": "#/$defs/TensorPort"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "$ref": "#/$defs/ParameterDeclaration"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "result": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "interface",
+        "parameters",
+        "inputs",
+        "outputs",
+        "result",
+        "modules",
+        "flow"
+      ],
+      "title": "Recipe",
+      "type": "object"
+    },
+    "Repeat": {
+      "additionalProperties": false,
+      "description": "Run a fixed bounded body with shared instances and explicit lexical carry.",
+      "properties": {
+        "body": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Call"
+              },
+              {
+                "$ref": "#/$defs/Repeat"
+              },
+              {
+                "$ref": "#/$defs/Stack"
+              }
+            ]
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "title": "Body",
+          "type": "array"
+        },
+        "carry": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/CarryBinding"
+            }
+          },
+          "title": "Carry",
+          "type": "object"
+        },
+        "repeat": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Repeat"
+        }
+      },
+      "required": [
+        "repeat",
+        "carry",
+        "body"
+      ],
+      "title": "Repeat",
+      "type": "object"
+    },
+    "ResolvedDefinition": {
+      "additionalProperties": false,
+      "description": "Freeze semantic model identity without embedding device/profile/graph evidence.",
+      "properties": {
+        "aliases": {
+          "items": {
+            "$ref": "#/$defs/ParameterAlias"
+          },
+          "maxItems": 128,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "architecture": {
+          "$ref": "#/$defs/RevisionRef"
+        },
+        "context_window": {
+          "minimum": 1,
+          "title": "Context Window",
+          "type": "integer"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/SourceManifestEntry"
+          },
+          "maxItems": 128,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "recipe": {
+          "$ref": "#/$defs/Recipe"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "sdk_version": {
+          "const": 1,
+          "title": "Sdk Version",
+          "type": "integer"
+        },
+        "tokenizer": {
+          "$ref": "#/$defs/FinalTokenizer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "architecture",
+        "recipe",
+        "dependencies",
+        "parameters",
+        "tokenizer",
+        "context_window",
+        "aliases",
+        "sdk_version"
+      ],
+      "title": "ResolvedDefinition",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    },
+    "SourceManifestEntry": {
+      "additionalProperties": false,
+      "description": "Pin immutable dependency source and import identity inside a self-contained package.",
+      "properties": {
+        "builtin_compatibility": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Builtin Compatibility"
+        },
+        "bytes": {
+          "maximum": 262144,
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/RevisionRef"
+        },
+        "sdk_version": {
+          "const": 1,
+          "title": "Sdk Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reference",
+        "path",
+        "bytes",
+        "sdk_version"
+      ],
+      "title": "SourceManifestEntry",
+      "type": "object"
+    },
+    "Stack": {
+      "additionalProperties": false,
+      "description": "Construct independent indexed instances; carry maps template ports across them.",
+      "properties": {
+        "carry": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/CarryBinding"
+            }
+          },
+          "title": "Carry",
+          "type": "object"
+        },
+        "inputs": {
+          "maxProperties": 32,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "stack": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Stack"
+        },
+        "template": {
+          "$ref": "#/$defs/ModuleDeclaration"
+        }
+      },
+      "required": [
+        "stack",
+        "name",
+        "template",
+        "carry"
+      ],
+      "title": "Stack",
+      "type": "object"
+    },
+    "TensorPort": {
+      "additionalProperties": false,
+      "description": "Declare tensor rank, dtype family and resolved or named dimension constraints.",
+      "properties": {
+        "dtype": {
+          "enum": [
+            "int64",
+            "int32",
+            "bool",
+            "floating",
+            "float32",
+            "float16",
+            "bfloat16"
+          ],
+          "title": "Dtype",
+          "type": "string"
+        },
+        "shape": {
+          "items": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              }
+            ]
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Shape",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dtype",
+        "shape"
+      ],
+      "title": "TensorPort",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Discriminate new packages while keeping legacy version-one checkpoint loading intact.",
+  "properties": {
+    "definition": {
+      "$ref": "#/$defs/ResolvedDefinition"
+    },
+    "definition_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Definition Id",
+      "type": "string"
+    },
+    "format": {
+      "const": "slate.modular-model",
+      "title": "Format",
+      "type": "string"
+    },
+    "format_version": {
+      "const": 1,
+      "title": "Format Version",
+      "type": "integer"
+    },
+    "graph_hashes": {
+      "items": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 64,
+      "title": "Graph Hashes",
+      "type": "array"
+    },
+    "metadata_path": {
+      "const": "meta.json",
+      "default": "meta.json",
+      "title": "Metadata Path",
+      "type": "string"
+    },
+    "optimizer_parameter_order": {
+      "default": [],
+      "items": {
+        "maxLength": 512,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "title": "Optimizer Parameter Order",
+      "type": "array"
+    },
+    "receipt_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Receipt Ids",
+      "type": "array"
+    },
+    "tokenizer_path": {
+      "const": "tokenizer.json",
+      "default": "tokenizer.json",
+      "title": "Tokenizer Path",
+      "type": "string"
+    },
+    "training_state_path": {
+      "anyOf": [
+        {
+          "const": "train_state.pt",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Training State Path"
+    },
+    "weights_path": {
+      "const": "model.pt",
+      "default": "model.pt",
+      "title": "Weights Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "format",
+    "format_version",
+    "definition_id",
+    "definition",
+    "receipt_ids",
+    "graph_hashes"
+  ],
+  "title": "DefinitionPackage",
+  "type": "object"
+}

@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "description": "Report optional supported behavior only when required profile evidence exists.",
+  "properties": {
+    "evidence_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence Hash"
+    },
+    "name": {
+      "enum": [
+        "cache",
+        "introspection",
+        "attention",
+        "context_extension",
+        "recompute",
+        "token_rows"
+      ],
+      "title": "Name",
+      "type": "string"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "supported": {
+      "title": "Supported",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "supported"
+  ],
+  "title": "Capability",
+  "type": "object"
+}

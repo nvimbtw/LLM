@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "description": "Call an existing instance; named outputs introduce fresh lexical values.",
+  "properties": {
+    "call": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Call",
+      "type": "string"
+    },
+    "inputs": {
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "title": "Inputs",
+      "type": "object"
+    },
+    "outputs": {
+      "maxProperties": 32,
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "title": "Outputs",
+      "type": "object"
+    }
+  },
+  "required": [
+    "call",
+    "inputs",
+    "outputs"
+  ],
+  "title": "Call",
+  "type": "object"
+}

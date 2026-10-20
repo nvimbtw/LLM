@@ -1,0 +1,85 @@
+{
+  "additionalProperties": false,
+  "description": "Distinct absolute startup/request limits and completed-work training watchdogs.",
+  "properties": {
+    "artifact_adoption_seconds": {
+      "default": 30,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Artifact Adoption Seconds",
+      "type": "number"
+    },
+    "cancel_grace_seconds": {
+      "default": 0.15,
+      "exclusiveMinimum": 0,
+      "maximum": 10,
+      "title": "Cancel Grace Seconds",
+      "type": "number"
+    },
+    "construction_seconds": {
+      "default": 30,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Construction Seconds",
+      "type": "number"
+    },
+    "effect_seconds": {
+      "default": 30,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Effect Seconds",
+      "type": "number"
+    },
+    "import_seconds": {
+      "default": 30,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Import Seconds",
+      "type": "number"
+    },
+    "inference_seconds": {
+      "default": 120,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Inference Seconds",
+      "type": "number"
+    },
+    "measurement_seconds": {
+      "default": 120,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Measurement Seconds",
+      "type": "number"
+    },
+    "reap_seconds": {
+      "default": 2,
+      "exclusiveMinimum": 0,
+      "maximum": 30,
+      "title": "Reap Seconds",
+      "type": "number"
+    },
+    "serving_idle_seconds": {
+      "default": 300,
+      "exclusiveMinimum": 0,
+      "maximum": 86400,
+      "title": "Serving Idle Seconds",
+      "type": "number"
+    },
+    "training_progress_seconds": {
+      "default": 300,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Training Progress Seconds",
+      "type": "number"
+    },
+    "validation_seconds": {
+      "default": 120,
+      "exclusiveMinimum": 0,
+      "maximum": 604800,
+      "title": "Validation Seconds",
+      "type": "number"
+    }
+  },
+  "title": "RuntimeDeadlines",
+  "type": "object"
+}

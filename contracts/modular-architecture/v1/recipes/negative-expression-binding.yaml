@@ -1,0 +1,92 @@
+schema_version: 1
+interface: causal_lm
+parameters:
+  dimensions:
+    type: integer
+    required: false
+    default: 32
+    minimum: 8
+    maximum: 1024
+  heads:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    maximum: 32
+  layers:
+    type: integer
+    required: false
+    default: 2
+    minimum: 1
+    maximum: 32
+  ff_multiplier:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    maximum: 16
+  context_window:
+    type: integer
+    required: false
+    default: 32
+    minimum: 2
+    maximum: 4096
+  rope_base:
+    type: number
+    required: false
+    default: 10000.0
+    minimum: 2.0
+  learned_temperature:
+    type: boolean
+    required: false
+    default: false
+inputs:
+  tokens:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  positions:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  key_mask:
+    dtype: bool
+    shape:
+    - batch
+    - sequence
+outputs:
+  logits:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - vocabulary
+result:
+  logits: model_logits
+context_window: ${context_window}
+modules:
+  model:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000001
+      revision_id: 20000000-0000-4000-8000-000000000001
+      content_hash: 29be6e0c74fba20cfeb7629ee9aca54704a8d10051f3a916fb8ff9c76248b14d
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      dimensions: ${dimensions * 2}
+      heads: ${heads}
+      layers: ${layers}
+      ff_multiplier: ${ff_multiplier}
+      ctx_window: ${context_window}
+      rope_base: ${rope_base}
+      learned_temperature: ${learned_temperature}
+flow:
+- call: model
+  inputs:
+    tokens: tokens
+    positions: positions
+    key_mask: key_mask
+  outputs:
+    logits: model_logits

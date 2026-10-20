@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "description": "Mark unresolved tokenizer provenance; it cannot authorize acceptance or optimization.",
+  "properties": {
+    "build_request_id": {
+      "format": "uuid",
+      "title": "Build Request Id",
+      "type": "string"
+    },
+    "kind": {
+      "const": "pending",
+      "title": "Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "build_request_id"
+  ],
+  "title": "PendingTokenizer",
+  "type": "object"
+}

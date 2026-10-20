@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Preserve generic output typing while validation output identity equals its run UUID.",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Id"
+    },
+    "type": {
+      "enum": [
+        "model",
+        "tokenizer",
+        "benchmark",
+        "validation"
+      ],
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "id"
+  ],
+  "title": "RunOutput",
+  "type": "object"
+}
