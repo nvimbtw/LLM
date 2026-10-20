@@ -12,6 +12,16 @@ model computation. Rust owns conversations/files/usage; bench-engine owns
 benchmark scoring and history. All service communication passes through Rust.
 See [execution.md](execution.md) and the [bench-engine map](../bench-engine/README.md).
 
+The modular architecture [capture](architecture-capture.md) and
+[supervised runtime](modular-runtime-feasibility.md) records describe the dated
+ISS-48 CPU feasibility prototypes and their remaining production/GPU gates.
+The version-one [architecture contracts](architecture-contracts.md) map shared
+SDK/YAML/runtime/API schemas and fixtures; production integration follows those
+interfaces in the subsequent modular architecture slices.
+[Catalog persistence](architecture-storage.md) maps immutable revisions, evidence
+retention and transaction APIs. The [delivery ledger](modular-architecture-evidence.md)
+tracks implementation evidence and deferred hardware checks.
+
 What it does **not** own, and this is the boundary that moved most recently:
 **the text it trains on**. Corpora are the data engine's, and a run reads them a
 page at a time through the backend — see
