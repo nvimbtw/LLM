@@ -147,10 +147,15 @@ class Attention(nn.Module):
             nn.init.xavier_uniform_(third)
 
     def forward(self, x, cos, sin, cache=None, key_mask=None):
+        """Attend from hidden tokens using RoPE and optional request-owned KV state.
+
+        Return projected values and fresh cache tensors. A masked input uses its
+        explicit causal mask; unmasked single-token decode attends to all keys.
+        Resolve the causal flag to a Python bool so symbolic sequence bounds can
+        be guarded by strict export without passing a SymBool into SDPA.
+        """
         batch, seq, _ = x.shape
 
-        # [batch, seq, 3d] -> 3 x [batch, heads, seq, head_dim]. The projection's
-        # output is laid out q|k|v, so this is a view and an unbind, not a copy.
         q, k, v = (
             self.wqkv(x)
             .view(batch, seq, 3, self.heads, self.head_dim)
@@ -160,12 +165,6 @@ class Attention(nn.Module):
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
 
-        # Scaling q scales the scores, and scaling the scores IS the temperature:
-        # softmax(t*q.k/sqrt(d)) is what a per-head temperature t means. Folding it
-        # into q instead of into the scores keeps the whole thing inside
-        # `scaled_dot_product_attention` — the fused kernel never has to
-        # materialize an attention matrix for this, so per-head temperature costs
-        # one elementwise multiply and no flash-attention path.
         if self.log_temperature is not None:
             q = q * self.log_temperature.exp().view(1, -1, 1, 1).to(q.dtype)
 
@@ -176,15 +175,13 @@ class Attention(nn.Module):
                 v = torch.cat((past_v, v), dim=2)
             cache = (k, v)
 
-        # Causal only when attending over a fresh multi-token sequence. A cached
-        # single-token decode step must attend to ALL of the past, so masking it
-        # causally would hide every previous token from the one being generated.
         mask = attention_mask(seq, k.shape[2], key_mask) if key_mask is not None else None
         if self.record_attention:
             out = self._attention_recording(q, k, v, mask)
         else:
             out = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask, is_causal=mask is None and seq > 1
+                q, k, v, attn_mask=mask,
+                is_causal=True if mask is None and seq > 1 else False,
             )
 
         out = out.transpose(1, 2).contiguous().view(batch, seq, -1)
@@ -389,6 +386,10 @@ class Transformer(nn.Module):
         whole batch. Both default to None and every existing caller passes
         neither, which is why this stays the arithmetic it was.
 
+        Explicit positions must be nonnegative and below the supplied RoPE table
+        length. Eager execution raises ValueError; strict capture retains a tensor
+        runtime assertion instead of specializing on a Python scalar from input.
+
         A block covered by `recompute_depth` stores its *input* and nothing from
         inside it, and the backward pass runs it forward a second time to rebuild
         what it needs. That is the whole of the trade, and it is a large one on
@@ -410,26 +411,25 @@ class Transformer(nn.Module):
             cos = rope_cos[pos_offset : pos_offset + seq]
             sin = rope_sin[pos_offset : pos_offset + seq]
         else:
-            furthest = int(positions.max())
-            if furthest >= limit:
-                raise ValueError(f"position {furthest + 1} exceeds context window {limit}")
+            if torch.compiler.is_compiling():
+                torch._assert_async(
+                    ((positions >= 0) & (positions < limit)).all(),
+                    f"positions must be within context window [0, {limit})",
+                )
+            else:
+                furthest = int(positions.max())
+                if furthest >= limit:
+                    raise ValueError(f"position {furthest + 1} exceeds context window {limit}")
+                if bool((positions < 0).any()):
+                    raise ValueError("positions must be nonnegative")
             cos = rope_cos[positions]
             sin = rope_sin[positions]
 
         x = self.embedding(idx)
-        # Recomputing is for the backward pass and costs a second forward, so it
-        # is asked of a training step and of nothing else. `caches` excludes the
-        # generation path, which would otherwise be rebuilt without its cache;
-        # `requires_grad` excludes everything with no backward to save for —
-        # `no_grad` (evaluation, diagnostics, a rollout) and a model whose
-        # parameters are frozen, which is what the RL reference is.
         recomputing = bool(self._recomputed) and caches is None and x.requires_grad
         new_caches = []
         for i, block in enumerate(self.blocks):
             if recomputing and i in self._recomputed:
-                # Non-reentrant: it composes with autocast, tolerates a block
-                # returning a tuple, and does not need its inputs to require
-                # grad — the reentrant version is wrong on all three counts here.
                 x, cache = recompute(block, x, cos, sin, None, key_mask,
                                      use_reentrant=False)
             else:
@@ -437,7 +437,6 @@ class Transformer(nn.Module):
             new_caches.append(cache)
 
         x = self.ln_final(x)
-        # Tied: the embedding table IS the output projection, transposed.
         logits = x @ self.embedding.weight.T
         return logits, (new_caches if caches is not None else None)
 
