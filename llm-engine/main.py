@@ -6,7 +6,7 @@ in `llm/` or in `store/`.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
 
@@ -16,17 +16,19 @@ from api.routes import ROUTERS
 from api.runner import RUNNER
 from api.runs import REGISTRY
 from store import queries as q
+from llm import storage
+from llm.runtime.supervisor import WorkerManager
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Worker threads publish progress onto this loop; see Registry.bind_loop.
+    """Reconcile worker ownership before queue admission and drain process owners during shutdown."""
     REGISTRY.bind_loop(asyncio.get_running_loop())
     store.configure()
+    workers = WorkerManager(storage.runtime_root())
+    await asyncio.to_thread(workers.start)
+    RUNNER.attach_workers(workers)
     recovery.reconcile()
-
-    # Runs still marked live belong to a process that is gone. Queued rows are
-    # deliberately untouched — draining them is the point of a durable queue.
     with store.session() as db:
         stranded = q.fail_orphaned(db)
     if stranded:
@@ -39,7 +41,12 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        drain.cancel()
+        try:
+            await RUNNER.shutdown()
+        finally:
+            drain.cancel()
+            with suppress(asyncio.CancelledError):
+                await drain
 
 
 # The dependency is on the app rather than on each route: a new endpoint is

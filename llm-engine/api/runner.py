@@ -23,10 +23,12 @@ import store
 from api import chain, handlers
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
+from api.worker import SupervisedHandler, SupervisedRun
 from llm.orchestrate import chat as chat_pipeline
 from llm.model import device
 from llm.train.loop import release_device
 from llm.train.progress import Checkpoint, Progress, Tokenize
+from llm.runtime.supervisor import RequestCancelled, WorkerManager
 from store import queries as q
 from store.schema import RunKind, RunStatus
 
@@ -49,13 +51,43 @@ PROGRESS_WRITE_SECS = 2.0
 class Runner:
     """Drains the queue, one run at a time."""
 
-    def __init__(self, registry: Registry, handlers: dict[RunKind, Handler]) -> None:
+    def __init__(self, registry: Registry, handlers: dict[RunKind, Handler | SupervisedHandler]) -> None:
+        """Own one durable queue consumer, retaining optional supervised runtime dependencies explicitly."""
         self._registry = registry
         self._handlers = handlers
         self._wake: asyncio.Event | None = None
         self._current: uuid.UUID | None = None
         self._paused = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._workers: WorkerManager | None = None
+        self._worker_future: asyncio.Task | None = None
+
+    def attach_workers(self, workers: WorkerManager) -> None:
+        """Install the started parent runtime owner before queue draining begins."""
+        if self._current is not None:
+            raise RuntimeError("cannot replace runtime ownership while a job is active")
+        self._workers = workers
+
+    async def shutdown(self) -> None:
+        """Stop supervised processes first, then drain the actual active thread before loop cancellation.
+
+        Legacy builtin threads remain cooperative; their cancellation event is set
+        and a bounded wait never pretends to terminate their executing code.
+        """
+        self._paused = True
+        live = self._registry.get(str(self._current)) if self._current else None
+        if live is not None:
+            live.cancel.set()
+        if self._workers is not None:
+            await asyncio.to_thread(self._workers.close)
+        future = self._worker_future
+        if future is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(future), timeout=10)
+            except TimeoutError:
+                print("llm-engine: cooperative legacy worker is still stopping")
+            except Exception:
+                pass
 
     # ── queueing ────────────────────────────────────────────────────────────
 
@@ -152,6 +184,11 @@ class Runner:
     async def _execute(
         self, run_id: uuid.UUID, kind: RunKind, config: dict, owner: str | None = None
     ) -> None:
+        """Execute one admitted job and persist terminal state only after its worker lifetime drains.
+
+        Failed thread tracebacks are cleared because a retained future otherwise
+        keeps parent legacy tensors alive during allocator release.
+        """
         config = {**config, "execution_id": str(run_id)} if kind == RunKind.benchmark else config
         handler = self._handlers.get(kind)
         if handler is None:
@@ -162,10 +199,11 @@ class Runner:
         live = self._registry.adopt(str(run_id), kind.value, config)
         progress = _ThrottledProgress(self._registry, live, run_id)
 
-        # One device, so a model parked in the chat cache is memory this run
-        # cannot have. It is reloaded on the next chat; see `chat.evict`.
         try:
-            result = await asyncio.to_thread(_work, handler, config, progress, live.cancel, owner)
+            self._worker_future = asyncio.create_task(asyncio.to_thread(
+                _work, handler, config, progress, live.cancel, owner, self._workers, run_id,
+            ))
+            result = await asyncio.shield(self._worker_future)
             produced = _produced(result)
             if kind in (RunKind.train, RunKind.rl) and produced is not None:
                 handlers.attach_run(run_id, produced)
@@ -181,15 +219,17 @@ class Runner:
                     progress=1.0,
                 )
                 self._registry.finish(live, "completed", result=result)
+        except RequestCancelled:
+            self._finish(run_id, RunStatus.cancelled)
+            self._registry.finish(live, "cancelled")
         except Exception as e:
-            # The worker future can outlive this catch. Its traceback otherwise
-            # keeps the failed training frame (model, gradients, optimizer) alive
-            # while release_device tries to return their memory to the driver.
             traceback.clear_frames(e.__traceback__)
             self._registry.finish(live, "failed", error=f"{type(e).__name__}: {e}")
             self._finish(run_id, RunStatus.failed, error=f"{type(e).__name__}: {e}")
         finally:
             self._current = None
+            if self._worker_future is not None and self._worker_future.done():
+                self._worker_future = None
 
     def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> None:
         with store.session() as db:
@@ -223,14 +263,28 @@ class Runner:
         return self._current
 
 
-def _work(handler, config, progress, cancel, owner):
+def _work(handler, config, progress, cancel, owner, workers=None, run_id=None):
+    """Preserve builtin handler behavior while handing supervised work the actual parent lease.
+
+    Benchmark dispatch holds no device. Queue priority evicts an idle resident
+    worker before admission; legacy cache cleanup stays in this parent thread.
+    """
     if handler is handlers.benchmark:
         return handler(config, progress, cancel, owner)
-    with device.admit(wait=True):
+    if workers is not None:
+        workers.evict_for_queue()
+    with device.admit(wait=True) as lease:
         if cancel.is_set():
             return {"cancelled": True}
         chat_pipeline.evict()
         try:
+            if isinstance(handler, SupervisedHandler):
+                if workers is None or run_id is None:
+                    raise RuntimeError("supervised handler has no parent runtime owner")
+                return handler.run_supervised(SupervisedRun(
+                    job_id=run_id, config=config, actor=owner, progress=progress,
+                    cancel=cancel, lease=lease, workers=workers,
+                ))
             return handler(config, progress, cancel, owner)
         except Exception as error:
             traceback.clear_frames(error.__traceback__)
