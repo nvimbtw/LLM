@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from llm.chat import tools
 from llm.chat.context import MAX_MEMORIES, MemoryContext, ProjectContext
+from llm.config import DEFAULT_CHAT_MAX_TOKENS
 
 MAX_PER_MESSAGE = 5
 
@@ -53,7 +54,7 @@ class Ask(BaseModel):
     #: "low" | "med" | "high". Absent is not a fourth value — it renders no
     #: marker, which is the prompt shape the model was trained under.
     budget: str | None = None
-    max_tokens: int = 256
+    max_tokens: int = DEFAULT_CHAT_MAX_TOKENS
     temperature: float = 0.8
     top_k: int = 40
     top_p: float = 0.95

@@ -126,9 +126,12 @@ Optional measurements remain absent.
 
 ## Appearance and account pages
 
-[Appearance](appearance.md) describes theme layers, sizing roles, elevation,
-new-chat artwork and the classic throbber. [Authentication](authentication.md)
-covers login/signup composition, decorative pointer effects and field accessibility.
+[Design direction](design.md) summarizes Slate's editorial product and visual
+language. [Appearance](appearance.md) defines its current theme roles, sizing,
+surfaces, artwork and motion details.
+
+[Authentication](authentication.md) covers login/signup composition,
+decorative pointer effects and field accessibility.
 [Live throbber](live-throbber.md) covers the optional renderer, motion, token
 contract, fallback, showcase and build.
 

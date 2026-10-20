@@ -19,6 +19,8 @@ from llm.chat.context import MAX_MEMORIES, MemoryContext, ProjectContext
 # what the Rust config, the job rows, and the on-disk layout all call it.
 _ALLOW_MODEL_PREFIX = ConfigDict(protected_namespaces=())
 
+DEFAULT_CHAT_MAX_TOKENS = 2048
+
 
 class DatasetSelection(BaseModel):
     """A dataset to train on, optionally capped to its first `count` documents.
@@ -546,7 +548,7 @@ class ChatConfig(BaseModel):
     # is a real state, not a fourth level.
     budget: str | None = None
 
-    max_tokens: int = 256
+    max_tokens: int = DEFAULT_CHAT_MAX_TOKENS
     temperature: float = 0.8
     top_k: int = 40
     top_p: float = 0.95

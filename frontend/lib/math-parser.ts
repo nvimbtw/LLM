@@ -32,8 +32,9 @@ const LITERAL = new Set(["code block", "code inline", "tool-call"])
  * swallowing the rest of the reply while it streams.
  */
 const MATH_RE =
-  /\$\$([^]+?)\$\$|(?<![\w$])\$(?![\s$])((?:\\.|[^\\$\n])+?)(?<![\s\\])\$(?![\w$])/g
+  /\$\$([^]+?)\$\$|(?<![\w$])\$(?![\s$])((?:\\.|[^\\$\n])+?)(?<![\s\\])\$(?![\w$])|(?<!\\)\\\[([^]+?)\\\]|(?<!\\)\\\(([^]+?)\\\)|(?<!\\)\\boxed\s*\{/g
 
+/** Wraps delimiter-free TeX in the node vocabulary consumed by the math renderer. */
 function mathNode(tex: string, display: boolean): MElement {
   return {
     type: display ? "math block" : "math inline",
@@ -41,7 +42,26 @@ function mathNode(tex: string, display: boolean): MElement {
   }
 }
 
-/** The node split into text and math, or null when it holds no math at all. */
+/** Finds the end of a boxed argument, counting nested braces and skipping TeX escapes. */
+function boxedEnd(value: string, start: number): number | null {
+  let depth = 1
+  for (let index = start; index < value.length; index++) {
+    const character = value[index]
+    if (character === "\\") {
+      index++
+    } else if (character === "{") {
+      depth++
+    } else if (character === "}" && --depth === 0) {
+      return index + 1
+    }
+  }
+  return null
+}
+
+/**
+ * Splits complete delimited math and balanced bare boxed answers; unfinished streams stay text.
+ * Display math consumes adjacent layout newlines because its renderer supplies that spacing.
+ */
 function splitText(value: string): MNode[] | null {
   const out: MNode[] = []
   let last = 0
@@ -49,19 +69,24 @@ function splitText(value: string): MNode[] | null {
   MATH_RE.lastIndex = 0
 
   while ((m = MATH_RE.exec(value))) {
-    const display = m[1] !== undefined
+    const delimited = m[1] ?? m[2] ?? m[3] ?? m[4]
+    const end =
+      delimited === undefined
+        ? boxedEnd(value, MATH_RE.lastIndex)
+        : MATH_RE.lastIndex
+    if (end === null) continue
+    const display = m[1] !== undefined || m[3] !== undefined
+    const tex = delimited ?? value.slice(m.index, end)
     let before = value.slice(last, m.index)
-    // A displayed equation is a block of its own, so the newline that put it on
-    // its own line is layout the renderer supplies — keeping it would open the
-    // paragraph with a stray blank line.
     if (display) before = before.replace(/[ \t]*\n\s*$/, "")
     if (before) out.push({ type: "text", value: before })
-    out.push(mathNode(display ? m[1] : m[2], display))
-    last = MATH_RE.lastIndex
+    out.push(mathNode(tex, display))
+    last = end
     if (display) {
       const skip = /^\s*\n[ \t]*/.exec(value.slice(last))
       if (skip) last += skip[0].length
     }
+    MATH_RE.lastIndex = last
   }
 
   if (!out.length) return null

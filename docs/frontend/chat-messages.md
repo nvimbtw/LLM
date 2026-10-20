@@ -80,6 +80,9 @@ string: editing the same message twice has to load it twice.
 A reply's maths has **no special token**. The model writes it the way markdown
 does — `$$…$$` displayed, `$…$` inline — inside whatever `<|par|>` or list item
 it was already writing, so it reaches the frontend as ordinary text.
+The parser also accepts `\[...\]` for display maths, `\(...\)` inline, and
+bare `\boxed{...}` answers. Boxed arguments support nested and escaped braces;
+incomplete expressions remain literal text until their closing delimiter arrives.
 
 `lib/math-parser.ts::splitMath` runs as the last step of *both* parsers, over
 the finished tree rather than inside either scanner, and replaces the TeX inside

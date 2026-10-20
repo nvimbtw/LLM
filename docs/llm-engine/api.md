@@ -20,6 +20,12 @@ index). The stream emits `token`, `tool_call`, `done` with generation summary,
 or `error`. Rust commits the assistant message before sending its client-facing
 `done`; Python writes no transcript.
 
+Chat requests default to `max_tokens=2048`, shared by input preparation and
+generation. An explicit `max_tokens` overrides that default. Generation can
+finish earlier on an end-of-assistant/end-of-text marker or when the effective
+context window is full. The limit includes reasoning and answer tokens together;
+closing open markup blocks can append additional tokens after the limit.
+
 These chat requests also accept authorized `project` facts and up to eight
 retrieved `memories`, supplied by Rust. `/chat/prepare` validates their bounded
 schemas and checks memory-token adoption before Rust persists new inputs.
