@@ -60,6 +60,8 @@ class DeviceGate:
         """Yield a single lease, preserving queued-work priority and quarantine on exit."""
         self.require_parent()
         with self._condition:
+            if self._quarantined is not None:
+                raise Busy("Device admission is quarantined after uncertain worker cleanup")
             if not wait and (self._active is not None or self._waiters):
                 raise Busy("The device is busy; retry after the active execution finishes")
             self._waiters += 1

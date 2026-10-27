@@ -1,0 +1,353 @@
+{
+  "$defs": {
+    "FinalTokenizer": {
+      "additionalProperties": false,
+      "description": "Bind authoritative vocabulary facts, including compatible derived token-label identity.",
+      "properties": {
+        "derived_from": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived From"
+        },
+        "fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "kind": {
+          "const": "final",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reserved_token_ids": {
+          "maxProperties": 128,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "title": "Reserved Token Ids",
+          "type": "object"
+        },
+        "tokenizer_id": {
+          "format": "uuid",
+          "title": "Tokenizer Id",
+          "type": "string"
+        },
+        "vocabulary_size": {
+          "minimum": 1,
+          "title": "Vocabulary Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "tokenizer_id",
+        "fingerprint",
+        "vocabulary_size"
+      ],
+      "title": "FinalTokenizer",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    },
+    "RuntimeProfile": {
+      "additionalProperties": false,
+      "description": "Bind numerical/capture evidence to runtime compatibility and explicit shape guards.",
+      "properties": {
+        "allow_tf32": {
+          "default": false,
+          "title": "Allow Tf32",
+          "type": "boolean"
+        },
+        "capture_policy": {
+          "const": "torch-export-strict-v1",
+          "title": "Capture Policy",
+          "type": "string"
+        },
+        "device": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Device",
+          "type": "string"
+        },
+        "domains": {
+          "items": {
+            "$ref": "#/$defs/ShapeDomain"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Domains",
+          "type": "array"
+        },
+        "export_guards": {
+          "default": [],
+          "items": {
+            "maxLength": 1024,
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Export Guards",
+          "type": "array"
+        },
+        "modes": {
+          "items": {
+            "enum": [
+              "train",
+              "eval"
+            ],
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Modes",
+          "type": "array"
+        },
+        "numerical_seed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Numerical Seed",
+          "type": "integer"
+        },
+        "precision": {
+          "enum": [
+            "fp32",
+            "fp16",
+            "bf16"
+          ],
+          "title": "Precision",
+          "type": "string"
+        },
+        "sdk_version": {
+          "const": 1,
+          "title": "Sdk Version",
+          "type": "integer"
+        },
+        "token_dtype": {
+          "default": "int64",
+          "enum": [
+            "int64",
+            "int32"
+          ],
+          "title": "Token Dtype",
+          "type": "string"
+        },
+        "torch_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Torch Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "torch_version",
+        "sdk_version",
+        "device",
+        "precision",
+        "capture_policy",
+        "domains",
+        "modes"
+      ],
+      "title": "RuntimeProfile",
+      "type": "object"
+    },
+    "ShapeDomain": {
+      "additionalProperties": false,
+      "description": "Bound actual tensor signatures; singleton specializations are explicit profiles.",
+      "properties": {
+        "batch_max": {
+          "minimum": 1,
+          "title": "Batch Max",
+          "type": "integer"
+        },
+        "batch_min": {
+          "minimum": 1,
+          "title": "Batch Min",
+          "type": "integer"
+        },
+        "past_max": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Past Max",
+          "type": "integer"
+        },
+        "past_min": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Past Min",
+          "type": "integer"
+        },
+        "sequence_max": {
+          "minimum": 1,
+          "title": "Sequence Max",
+          "type": "integer"
+        },
+        "sequence_min": {
+          "minimum": 1,
+          "title": "Sequence Min",
+          "type": "integer"
+        },
+        "signatures": {
+          "items": {
+            "enum": [
+              "full_prefix",
+              "prefill",
+              "decode"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Signatures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "batch_min",
+        "batch_max",
+        "sequence_min",
+        "sequence_max",
+        "signatures"
+      ],
+      "title": "ShapeDomain",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Return resolved data-only configuration; final tokenization and admitted numerical preflight remain mandatory in the actual training job.",
+  "properties": {
+    "architecture": {
+      "$ref": "#/$defs/RevisionRef"
+    },
+    "context_window": {
+      "minimum": 1,
+      "title": "Context Window",
+      "type": "integer"
+    },
+    "dependency_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dependency Digest",
+      "type": "string"
+    },
+    "final_preflight_required": {
+      "default": true,
+      "title": "Final Preflight Required",
+      "type": "boolean"
+    },
+    "parameter_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Parameter Digest",
+      "type": "string"
+    },
+    "parameters": {
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,63}$": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "maxLength": 4096,
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "profile": {
+      "$ref": "#/$defs/RuntimeProfile"
+    },
+    "reserved_token_names": {
+      "default": [],
+      "items": {
+        "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+        "type": "string"
+      },
+      "maxItems": 128,
+      "title": "Reserved Token Names",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "tokenizer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FinalTokenizer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "architecture",
+    "parameters",
+    "parameter_digest",
+    "dependency_digest",
+    "context_window",
+    "profile"
+  ],
+  "title": "TrainingArchitecturePreview",
+  "type": "object"
+}

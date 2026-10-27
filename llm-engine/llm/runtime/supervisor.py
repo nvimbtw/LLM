@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
+from contextlib import ExitStack
 import fcntl
 import os
 from pathlib import Path
@@ -60,38 +61,55 @@ class WorkerSession:
         self.policy = policy
         self.worker_id = uuid4()
         self.directory = manager.root / str(self.worker_id)
-        self.directory.mkdir(mode=0o700)
         self.bootstrap = WorkerBootstrap(
             worker_id=self.worker_id, lease_id=lease.id if lease else uuid4(), startup_request_id=uuid4(),
             policy=policy, backend=backend, metadata_only=metadata_only,
         )
-        self.artifacts = ArtifactStore(self.directory / "artifacts", policy.resources)
         self.history: deque[RuntimeEnvelope] = deque(maxlen=policy.retained_progress)
         self._data_sequence = 0
         self._control_sequence = 0
         self._worker_sequence = 0
         self._request_id = self.bootstrap.startup_request_id
         self._closed = False
+        self._closing = False
         self._running = False
+        self._effects: EffectBroker | None = None
+        self._adoption: Future[ArtifactAdopted] | None = None
         self._certificate: CleanupVerified | None = None
         self._lease_scope = None
         self._evict_on_idle = False
         self._request_lock = threading.Lock()
         self._close_lock = threading.Lock()
+        self._callback_lock = threading.Lock()
         self._control_lock = threading.Lock()
         self._certificate_lock = threading.Lock()
-        self.channel, child_data = socket_pair(policy.pending_messages)
-        self.control, child_control = socket_pair(4)
-        if lease is not None:
-            lease.bind_worker(self.worker_id)
-        self.guardian = self._launch(child_data, child_control)
+        with ExitStack() as unlaunched:
+            self.directory.mkdir(mode=0o700)
+            unlaunched.callback(shutil.rmtree, self.directory)
+            self.artifacts = ArtifactStore(self.directory / "artifacts", policy.resources)
+            self.channel, child_data = socket_pair(policy.pending_messages)
+            unlaunched.callback(self.channel.close)
+            unlaunched.callback(child_data.close)
+            self.control, child_control = socket_pair(4)
+            unlaunched.callback(self.control.close)
+            unlaunched.callback(child_control.close)
+            if lease is not None:
+                lease.bind_worker(self.worker_id)
+            unlaunched.pop_all()
+        try:
+            self.guardian = self._launch(child_data, child_control)
+        except BaseException:
+            self.channel.close()
+            self.control.close()
+            raise
 
     def _launch(self, child_data: socket.socket, child_control: socket.socket) -> subprocess.Popen:
-        """Start an isolated trusted guardian only after durable identity and lock handoff."""
-        (self.directory / "bootstrap.json").write_text(self.bootstrap.model_dump_json())
-        write_record(self.directory, OwnershipRecord(status="starting"))
-        start_read, start_write = os.pipe()
+        """Own startup handles after binding; uncertain launch retains records and quarantines admission."""
+        start_read = start_write = None
         try:
+            (self.directory / "bootstrap.json").write_text(self.bootstrap.model_dump_json())
+            write_record(self.directory, OwnershipRecord(status="starting"))
+            start_read, start_write = os.pipe()
             guardian = subprocess.Popen(
                 [sys.executable, "-I", str(Path(__file__).with_name("entry.py")), "guardian", str(self.directory),
                  str(child_data.fileno()), str(child_control.fileno()), str(self.manager.lock_fd), str(start_read)],
@@ -104,14 +122,17 @@ class WorkerSession:
             os.write(start_write, b"1")
             return guardian
         except BaseException:
-            if self.lease is not None:
-                self.lease.quarantine("guardian launch did not complete verified ownership handoff")
+            self.manager._stopping = True
+            mark_quarantine(self.manager.root, "guardian launch did not complete verified ownership handoff")
+            self.manager.gate.quarantine("guardian launch did not complete verified ownership handoff")
             raise
         finally:
             child_data.close()
             child_control.close()
-            os.close(start_read)
-            os.close(start_write)
+            if start_read is not None:
+                os.close(start_read)
+            if start_write is not None:
+                os.close(start_write)
 
     def start(self) -> None:
         """Wait for bounded child-only backend import/construction, without a per-frame reset."""
@@ -119,6 +140,11 @@ class WorkerSession:
         result = self._drain(deadline=deadline)
         if result.outcome != "ok":
             raise WorkerStopped("worker startup was cancelled")
+
+    @property
+    def closed(self) -> bool:
+        """Expose session retirement to the resident-model owner without allowing it to mutate worker lifecycle state."""
+        return self._closed or self._closing
 
     def _send(self, payload: RuntimePayload) -> None:
         """Send one parent data command; the guardian serializes its separate cancellation channel."""
@@ -146,13 +172,14 @@ class WorkerSession:
         if not self._request_lock.acquire(blocking=False):
             raise WorkerStopped("one request may execute per worker")
         try:
-            if self._closed:
+            if self._closed or self._closing:
                 raise WorkerStopped("worker session is closed")
             if self.lease is not None:
                 self.lease.require_active()
             elif not isinstance(payload, Inspect):
                 raise Busy("metadata workers cannot execute numerical model requests")
             self._request_id = request_id or uuid4()
+            self._effects = effects
             self._running = True
             self._send(payload)
             return self._drain(on_event=on_event, effects=effects, adopt=adopt, cancel=cancel)
@@ -173,7 +200,7 @@ class WorkerSession:
         """Drain bounded events while guardian watchdogs remain independent from parent effects."""
         pending_effect: Future[EffectReply] | None = None
         pending_adoption: Future[ArtifactAdopted] | None = None
-        while not self._closed:
+        while not self._closed and not self._closing:
             if deadline is not None and time.monotonic() > deadline:
                 raise WorkerStopped("worker startup deadline exceeded")
             if cancel is not None and cancel.is_set():
@@ -193,7 +220,7 @@ class WorkerSession:
                 if isinstance(payload, EffectRequest):
                     if effects is None or pending_effect is not None:
                         raise WorkerStopped("worker effect has no available parent owner")
-                    pending_effect = effects.begin(payload, self.artifacts)
+                    pending_effect = self._begin_effect(effects, payload)
                 elif isinstance(payload, ArtifactReady):
                     if pending_adoption is not None:
                         raise WorkerStopped("worker has multiple pending publications")
@@ -205,6 +232,8 @@ class WorkerSession:
                         raise WorkerStopped("worker completed before parent acknowledgement")
                     if payload.result is not None:
                         self.artifacts.verify(payload.result)
+                    if on_event is not None:
+                        on_event(payload)
                     return payload
                 if on_event is not None:
                     on_event(payload)
@@ -228,15 +257,31 @@ class WorkerSession:
         return message
 
     def _adopt(self, notice: ArtifactReady, adopter: ArtifactAdopter | None) -> Future[ArtifactAdopted]:
-        """Bound parent adoption waits while the guardian independently supervises the child."""
-        if adopter is None:
-            raise WorkerStopped("worker publication has no parent adopter")
-        future: Future[ArtifactAdopted] = Future()
-        threading.Thread(
-            target=self._adopt_callback, args=(notice, adopter, future),
-            name="llm-runtime-publication", daemon=True,
-        ).start()
-        return future
+        """Own a parent adoption callback before launching it; closure atomically prevents new publication work."""
+        with self._callback_lock:
+            if adopter is None or self._closing:
+                raise WorkerStopped("worker publication has no available parent adopter")
+            future: Future[ArtifactAdopted] = Future()
+            self._adoption = future
+            threading.Thread(
+                target=self._adopt_callback, args=(notice, adopter, future),
+                name="llm-runtime-publication", daemon=True,
+            ).start()
+            return future
+
+    def _begin_effect(self, effects: EffectBroker, request: EffectRequest) -> Future[EffectReply]:
+        """Serialize external-effect issuance with session closure while the broker journals its write identity."""
+        with self._callback_lock:
+            if self._closing:
+                raise WorkerStopped("worker effect session is closing")
+            return effects.begin(request, self.artifacts)
+
+    def _drain_parent_callbacks(self) -> None:
+        """Wait for actual effect/adoption completion before grant retirement; completed adoption errors do not imply live resources."""
+        if self._effects is not None:
+            self._effects.close(timeout=self.policy.deadlines.effect_seconds)
+        if self._adoption is not None:
+            self._adoption.exception(timeout=self.policy.deadlines.artifact_adoption_seconds)
 
     def _adopt_callback(
         self, notice: ArtifactReady, adopter: ArtifactAdopter, future: Future[ArtifactAdopted],
@@ -265,10 +310,12 @@ class WorkerSession:
             self._certificate = message.payload
 
     def close(self) -> None:
-        """Drain cooperative shutdown and verified tree reap before releasing any owned admission."""
+        """Reap the worker tree and drain parent callbacks before retiring grants or releasing admission; uncertainty quarantines both."""
         with self._close_lock:
             if self._closed:
                 return
+            with self._callback_lock:
+                self._closing = True
             clean = False
             try:
                 if self._certificate is None:
@@ -281,8 +328,9 @@ class WorkerSession:
                         if select.select([self.control], [], [], 0.02)[0]:
                             self._receive_certificate()
                 self.guardian.wait(timeout=self.policy.deadlines.reap_seconds)
+                self._drain_parent_callbacks()
                 clean = self._certificate is not None and self._certificate.outcome == "reaped"
-            except (OSError, EOFError, ValueError, subprocess.TimeoutExpired):
+            except (OSError, EOFError, ValueError, TimeoutError, subprocess.TimeoutExpired):
                 clean = False
             finally:
                 self._closed = True
@@ -315,6 +363,8 @@ class WorkerManager:
         self._sessions: set[WorkerSession] = set()
         self._lock = threading.RLock()
         self._stopping = False
+        self._monitor_stop = threading.Event()
+        self._monitor_thread: threading.Thread | None = None
 
     def start(self, timeout: float = 5.0) -> None:
         """Acquire a stable cross-process lock and reconcile old ownership before execution."""
@@ -337,10 +387,44 @@ class WorkerManager:
             if (self.root / "quarantine.json").exists():
                 raise CleanupUncertain("runtime root is quarantined after uncertain cleanup")
             self._reconcile()
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_residents, name="llm-runtime-residents", daemon=True,
+            )
+            self._monitor_thread.start()
         except BaseException:
             self.lock_fd = -1
             os.close(descriptor)
             raise
+
+    def _monitor_residents(self) -> None:
+        """Retire idle serving workers after guardian expiry so their device leases become available.
+
+        Poll healthy residents without borrowing request ownership. Only a ready
+        guardian channel needs the request lock to keep retirement separate from
+        execution; durable job handlers continue to own their cleanup.
+        """
+        while not self._monitor_stop.wait(0.05):
+            with self._lock:
+                sessions = tuple(self._sessions)
+            for session in sessions:
+                if session._lease_scope is None or session._closed:
+                    continue
+                try:
+                    if not select.select([session.control], [], [], 0)[0]:
+                        continue
+                    if not session._request_lock.acquire(blocking=False):
+                        continue
+                    try:
+                        if not session._closed and select.select([session.control], [], [], 0)[0]:
+                            session.close()
+                    finally:
+                        session._request_lock.release()
+                except CleanupUncertain:
+                    pass
+                except (OSError, ValueError):
+                    if not session._closed:
+                        mark_quarantine(self.root, "resident worker monitoring failed")
+                        self.gate.quarantine("resident worker monitoring failed")
 
     def _reconcile(self) -> None:
         """Verify/stop recorded prior workers without ever killing a reused unrelated PID."""
@@ -423,6 +507,7 @@ class WorkerManager:
 
     def close(self) -> None:
         """Stop/drain all session owners before releasing the never-unlinked engine lock file."""
+        self._monitor_stop.set()
         with self._lock:
             self._stopping = True
             sessions = tuple(self._sessions)
@@ -432,6 +517,9 @@ class WorkerManager:
                 session.close()
             except CleanupUncertain as error:
                 errors.append(error)
+        if self._monitor_thread is not None:
+            self._monitor_thread.join()
+            self._monitor_thread = None
         if self.lock_fd >= 0:
             os.close(self.lock_fd)
             self.lock_fd = -1

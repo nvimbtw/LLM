@@ -1,7 +1,7 @@
 # Architecture recipes, version 1
 
-Status: **ISS-49 versioned contract**. Parsing/resolution/building belongs to
-ISS-50. The engine owns all interpretation; Rust forwards authorized bounded
+Status: **version-one contract; parsing/resolution/building implemented in ISS-50**.
+The engine owns all interpretation; Rust forwards authorized bounded
 payloads and the frontend renders engine metadata. See the
 [SDK](architecture-sdk.md), [`Recipe` declarations](../../llm-engine/llm/architecture/spec.py)
 and [shared cases](../../contracts/modular-architecture/v1/recipes/cases.json).
@@ -24,7 +24,8 @@ References resolve against the
 They describe compatibility contracts, not already accepted deployed catalog
 resources. The custom source hash and subarchitecture recipe hash match their
 fixture bytes. Other builtin identities are synthetic. ISS-53 supplies real
-builtin revisions and verifies standard/looped numerical behavior.
+builtin revisions and verifies standard/looped numerical behavior; see the
+[implemented builtin recipes](architecture-builtins.md) for usable examples.
 
 The standard composite retains legacy initialization order, normalization,
 GELU/bias/epsilon, adjacent-pair RoPE, fused QKV ordering, optional attention
@@ -97,7 +98,8 @@ that pinned block/subarchitecture's declaration.
 The tokenizer owns vocabulary size, fingerprint and reserved token IDs.
 `${tokenizer.vocabulary_size}` is the only vocabulary-size binding. Reserved ID
 bindings use `${tokenizer.<name>_id}` and are resolved from the selected tokenizer;
-architecture controls cannot invent or shift IDs. The `vocabulary` dimension in
+the reserved fact keeps that full key, for example `reserved_token_ids.pad_id`.
+Architecture controls cannot invent or shift IDs. The `vocabulary` dimension in
 an output shape refers to that same authoritative size. A public vocabulary
 parameter or incompatible constant in a vocabulary-bearing builtin is rejected.
 

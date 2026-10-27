@@ -1,13 +1,16 @@
 """Named tensor routing and bounded fixed-loop execution without storage or transport."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import torch
 from torch import Tensor, nn
 
 from llm.architecture.errors import ArchitectureError
+from llm.architecture.interfaces import ExecutionOccurrence
 from llm.architecture.plan import PlanCall, PlanRepeat, PlanStack
 from llm.architecture.spec import TensorPort
+
+CallExecutor = Callable[[nn.Module, Mapping[str, Tensor], ExecutionOccurrence], dict[str, Tensor]]
 
 
 class CompositionModule(nn.Module):
@@ -68,35 +71,44 @@ def compatible_carry(before: Tensor, after: Tensor) -> None:
         raise ArchitectureError("carry_shape", "loop carry changed shape, dtype or device")
 
 
-def execute_flow(operations: tuple, environment: dict[str, Tensor], modules: nn.ModuleDict) -> None:
+def execute_flow(operations: tuple, environment: dict[str, Tensor], modules: nn.ModuleDict, *,
+                 executor: CallExecutor | None = None, call_path: tuple[int, ...] = (), instance_path: str = "") -> None:
     """Evaluate already resolved operations, retaining autograd through all repeated calls."""
-    for operation in operations:
+    for index, operation in enumerate(operations):
+        occurrence = call_path + (index,)
         if isinstance(operation, PlanCall):
-            values = invoke(modules[operation.instance],
-                            {port: environment[name] for port, name in operation.inputs.items()})
+            inputs = {port: environment[name] for port, name in operation.inputs.items()}
+            module = modules[operation.instance]
+            values = (invoke(module, inputs) if executor is None else
+                      executor(module, inputs, ExecutionOccurrence(instance_path + operation.instance, occurrence)))
             if set(values) != set(operation.outputs):
                 raise ArchitectureError("port_names", "block output keys differ from the resolved call")
             environment.update({name: values[port] for port, name in operation.outputs.items()})
         elif isinstance(operation, PlanRepeat):
             carried = {carry.input: environment[carry.initial] for carry in operation.carry}
-            for _ in range(operation.count):
+            for iteration in range(operation.count):
                 inner = {**environment, **carried}
-                execute_flow(operation.body, inner, modules)
+                execute_flow(operation.body, inner, modules, executor=executor,
+                             call_path=occurrence + (iteration,), instance_path=instance_path)
                 updated = {carry.input: inner[carry.output] for carry in operation.carry}
                 for name, tensor in updated.items():
                     compatible_carry(carried[name], tensor)
                 carried = updated
             environment.update({carry.result: carried[carry.input] for carry in operation.carry})
         else:
-            execute_stack(operation, environment, modules)
+            execute_stack(operation, environment, modules, executor=executor,
+                          call_path=occurrence, instance_path=instance_path)
 
 
-def execute_stack(operation: PlanStack, environment: dict[str, Tensor], modules: nn.ModuleDict) -> None:
+def execute_stack(operation: PlanStack, environment: dict[str, Tensor], modules: nn.ModuleDict, *,
+                  executor: CallExecutor | None = None, call_path: tuple[int, ...] = (), instance_path: str = "") -> None:
     """Run distinct child instances with shared static inputs and explicit port-carried state."""
     carried = {carry.input: environment[carry.initial] for carry in operation.carry}
     static = {port: environment[value] for port, value in operation.inputs.items()}
-    for path in operation.instances:
-        values = invoke(modules[path], {**static, **carried})
+    for index, path in enumerate(operation.instances):
+        inputs = {**static, **carried}
+        values = (invoke(modules[path], inputs) if executor is None else
+                  executor(modules[path], inputs, ExecutionOccurrence(instance_path + path, call_path + (index,))))
         updated = {carry.input: values[carry.output] for carry in operation.carry}
         for name, tensor in updated.items():
             compatible_carry(carried[name], tensor)

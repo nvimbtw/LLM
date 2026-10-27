@@ -116,7 +116,9 @@ async def engine_client(data_root, store_session):
 
     `ASGITransport` never runs lifespan, so the store binding and the drain
     loop have to be started here — without the loop a queued run never
-    executes and anything waiting on one hangs rather than failing.
+    executes and anything waiting on one hangs rather than failing. This fixture
+    owns pause restoration until its drain loop has stopped, so nested visibility
+    fixtures cannot reopen admission during their teardown.
     """
     import asyncio
     import contextlib
@@ -127,6 +129,7 @@ async def engine_client(data_root, store_session):
     from api.runs import REGISTRY
 
     REGISTRY.bind_loop(asyncio.get_running_loop())
+    paused = main.RUNNER.paused
     drain = asyncio.create_task(main.RUNNER.drain_forever())
     try:
         async with AsyncClient(
@@ -134,12 +137,11 @@ async def engine_client(data_root, store_session):
         ) as client:
             yield client
     finally:
-        # Awaited, not just cancelled: the loop dies with this test, and a task
-        # left pending on it keeps a waiter on the runner's wake event that the
-        # next test's `set()` would then try to resolve on a closed loop.
+        main.RUNNER.set_paused(True)
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
+        main.RUNNER.set_paused(paused)
 
 
 @pytest.fixture

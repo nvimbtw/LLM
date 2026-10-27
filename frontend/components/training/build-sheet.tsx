@@ -106,6 +106,22 @@ export function BuildSheet({
         {!isSft &&
           (cfg.resume_from ? (
             <Spec label="Shape" value="From the checkpoint" muted />
+          ) : cfg.architecture ? (
+            <>
+              <Spec
+                label="Recipe revision"
+                value={cfg.architecture.revision_id}
+              />
+              <Spec label="Context" value="From the selected recipe" />
+              <Spec
+                label="Parameter bindings"
+                value={String(Object.keys(cfg.architecture.parameters).length)}
+              />
+              <Spec
+                label="Numerical preflight"
+                value="Required in the training job"
+              />
+            </>
           ) : (
             <>
               <Spec

@@ -97,7 +97,7 @@ function CardBody({
       <dl className="mt-auto flex flex-wrap gap-x-8 gap-y-3 pt-5">
         <Stat
           label="Parameters"
-          value={model.params ? formatParams(model.params) : "—"}
+          value={formatParams(model.params, model.parameterCountEstimated)}
         />
         <Stat
           label="Context"

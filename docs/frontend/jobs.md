@@ -84,6 +84,28 @@ queue the build and hand off to its durable execution page. See
 
 ### Composing a training run
 
+Training/SFT/RL submissions, complete chains, retry and recovery carry an
+actor-scoped `request_id` UUID in the query. `JobSubmission` owns that UUID and
+the captured bearer session. An uncertain network/5xx/response-decoding outcome
+retains the UUID for an explicit unchanged retry; changed inputs receive a new
+UUID. Concurrent clicks cannot queue a second operation. Session/resource
+replacement aborts HTTP observation and suppresses stale navigation. It never
+cancels an execution already committed by the engine. Definite HTTP rejections
+remain visible beside the form or lifecycle controls.
+
+Generic validation retries also honor the query UUID; a repeated request returns
+the original retry after source-history pruning and rechecks administrator scope.
+The validation detail observer retains its conservative unknown-outcome UI for
+older transports that do not supply a request UUID.
+
+The training composer's `?from=` seed belongs to the actual bearer and URL
+selection. It loads before editable controls mount, removes reusable validation
+receipts and applies an explicit `?resume=` override. A failed seed read displays
+a retry boundary instead of silently enabling the default configuration. Changing
+the session or seed aborts its read and remounts form state, so a late response
+cannot overwrite edits made in another selection. Reused SFT/KTO/RAFT settings
+retain their recorded mode instead of being converted to ordinary pretraining.
+
 The same fields are rendered two ways, and neither may drift from the other:
 
 - `components/training/train-board.tsx` at `/train/new-train` — one bounded
@@ -185,6 +207,14 @@ of a max-vocab row rather than reporting the LLM engine's default back as a
 decision.
 
 ### Reading a run back — the diagnostics panel
+
+`JobDiagnostics` selects the actual diagnostic variant. Custom models show
+bounded parameter-owner gradient norms/update ratios and execution occurrences
+with shapes, dtypes and output RMS. Repeated calls retain distinct call paths
+while shared parameter owners appear once. Missing measurements stay unavailable;
+Transformer layer/attention/embedding arrays are never fabricated. Legacy reports
+continue through the existing figure panel. New semantic reports carry the actual
+optimizer step; older retained reports without one show no invented step number.
 
 `components/training/diagnostics-panel.tsx` renders `DiagPoint[]`
 (`lib/training.ts`), which is the LLM engine's `Diagnostics` dataclass **verbatim**

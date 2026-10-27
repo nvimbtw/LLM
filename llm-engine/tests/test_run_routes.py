@@ -17,6 +17,7 @@ async def client(engine_client):
     import main
 
     main.app.dependency_overrides[auth.require_service] = lambda: auth.SYSTEM
+    main.app.dependency_overrides[auth.administration_visible] = lambda: True
     await engine_client.post("/runs/pause?paused=true")
     yield engine_client
     main.app.dependency_overrides.clear()
@@ -278,5 +279,122 @@ async def test_validation_cannot_be_a_model_producing_chain_step(client):
     ]
     response = await client.post("/runs/chain", json=steps)
     assert response.status_code == 400
+    with store.session() as db:
+        assert q.active_runs(db) == []
+
+
+@pytest.mark.parametrize("final", [
+    {"kind": "train", "config": {"lr": "invalid"}},
+    {"kind": "rl", "config": {"task_types": []}},
+    {"kind": "benchmark", "config": {"suite": "unsupported"}},
+])
+async def test_every_chain_config_is_validated_before_any_job_is_inserted(client, monkeypatch, final):
+    """A malformed later consumer returns its field location without inserting even the first step."""
+    inserted = []
+    enqueue = q.enqueue
+
+    def record_enqueue(*args, **kwargs):
+        """Record actual queue writes while preserving the production insert behavior."""
+        inserted.append(kwargs["kind"])
+        return enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(q, "enqueue", record_enqueue)
+    response = await client.post("/runs/chain", json=[{"kind": "train", "config": {}}, final])
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][:3] == ["body", 1, "config"]
+    assert inserted == []
+    with store.session() as db:
+        assert q.active_runs(db) == []
+
+
+async def test_a_chain_rejects_a_missing_first_step_vocabulary_before_storage(client):
+    """Chain pretraining applies the same owned-tokenizer check as direct submission."""
+    steps = [
+        {"kind": "train", "config": {"tokenizer_id": str(uuid.uuid4())}},
+        {"kind": "benchmark", "config": {}},
+    ]
+    response = await client.post("/runs/chain", json=steps)
+    assert response.status_code == 400
+    with store.session() as db:
+        assert q.active_runs(db) == []
+
+
+async def test_a_late_chain_insert_failure_rolls_back_the_first_job(client, monkeypatch):
+    """An error after a real first insert rolls back the transaction and never wakes admission."""
+    from api.runner import RUNNER
+
+    enqueue = q.enqueue
+    inserts, wakes = [], []
+
+    def fail_second_insert(*args, **kwargs):
+        """Insert one real job, then simulate a later storage failure in the same transaction."""
+        if inserts:
+            raise RuntimeError("late chain insertion failed")
+        result = enqueue(*args, **kwargs)
+        inserts.append(result.id)
+        return result
+
+    monkeypatch.setattr(q, "enqueue", fail_second_insert)
+    monkeypatch.setattr(RUNNER, "wake", lambda: wakes.append(True))
+    steps = [{"kind": "train", "config": {}}, {"kind": "benchmark", "config": {}}]
+    with pytest.raises(RuntimeError, match="late chain insertion failed"):
+        await client.post("/runs/chain", json=steps)
+    assert len(inserts) == 1
+    assert wakes == []
+    with store.session() as db:
+        assert q.active_runs(db) == []
+        assert db.get(store.Run, inserts[0]) is None
+
+
+async def test_chain_admission_wakes_once_after_all_rows_commit(client, monkeypatch):
+    """A wake reader sees the complete linked chain from a separate committed session."""
+    from api.runner import RUNNER
+
+    observed = []
+
+    def observe_commit():
+        """Read durable jobs exactly when submission asks the runner to admit work."""
+        with store.session() as db:
+            observed.append([(run.id, run.depends_on, run.status) for run in q.active_runs(db)])
+
+    monkeypatch.setattr(RUNNER, "wake", observe_commit)
+    steps = [
+        {"kind": "train", "config": {"model_name": "base", "epochs": 3}},
+        {"kind": "train", "config": {"model_name": "tuned", "lr": 0.00001}},
+        {"kind": "benchmark", "config": {}},
+    ]
+    response = await client.post("/runs/chain", json=steps)
+    assert response.status_code == 202
+    rows = response.json()
+    ids = [uuid.UUID(item["run_id"]) for item in rows]
+    assert observed == [[
+        (ids[0], None, RunStatus.queued),
+        (ids[1], ids[0], RunStatus.waiting),
+        (ids[2], ids[1], RunStatus.waiting),
+    ]]
+    assert rows[0]["config"]["epochs"] == 3
+    assert "ctx_window" not in rows[0]["config"]
+    assert "base_model" not in rows[1]["config"]
+    assert "model_name" not in rows[2]["config"]
+
+
+async def test_a_benchmark_cannot_supply_a_model_to_another_chain_step(client):
+    """Reject a report-producing predecessor before any rows are stored."""
+    steps = [
+        {"kind": "benchmark", "config": {"model_name": str(uuid.uuid4())}},
+        {"kind": "train", "config": {}},
+    ]
+    response = await client.post("/runs/chain", json=steps)
+    assert response.status_code == 400
+    with store.session() as db:
+        assert q.active_runs(db) == []
+
+
+async def test_chain_admission_is_bounded(client):
+    """Refuse an oversized operation at the request boundary without partial queue rows."""
+    from api.routes.runs import MAX_CHAIN_STEPS
+
+    response = await client.post("/runs/chain", json=[{"kind": "train", "config": {}}] * (MAX_CHAIN_STEPS + 1))
+    assert response.status_code == 422
     with store.session() as db:
         assert q.active_runs(db) == []

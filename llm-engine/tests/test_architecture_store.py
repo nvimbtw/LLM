@@ -276,6 +276,79 @@ def test_late_chain_error_rolls_back_all_queued_pins(sessions, sample):
         assert db.scalar(select(func.count()).select_from(TrainingRun)) == 0
 
 
+def test_http_chain_wake_observes_the_complete_postgres_commit(sessions, monkeypatch):
+    """The route's wake callback sees all linked jobs through an independent PostgreSQL transaction."""
+    import store
+    from api.routes.runs import Step, queue_chain
+    from api.runner import RUNNER
+
+    monkeypatch.setattr(store, "_sessions", sessions)
+    observed = []
+
+    def observe_commit():
+        """Read the full durable chain from a connection other than its enqueue transaction."""
+        with sessions.begin() as db:
+            observed.append([(run.id, run.depends_on) for run in queries.active_runs(db)])
+
+    monkeypatch.setattr(RUNNER, "wake", observe_commit)
+    result = queue_chain([Step(kind=RunKind.train, config={}),
+                          Step(kind=RunKind.benchmark, config={})], owner=str(uuid.uuid4()))
+    ids = [uuid.UUID(run["run_id"]) for run in result]
+    assert observed == [[(ids[0], None), (ids[1], ids[0])]]
+
+
+def test_http_chain_postgres_constraint_failure_leaves_no_jobs(sessions, monkeypatch):
+    """A real later database constraint failure rolls back the earlier queue/domain insert and never wakes."""
+    import store
+    from api.routes.runs import Step, queue_chain
+    from api.runner import RUNNER
+
+    monkeypatch.setattr(store, "_sessions", sessions)
+    enqueue = queries.enqueue
+    inserted, wakes = [], []
+
+    def fail_later_insert(*args, **kwargs):
+        """Violate the actual nonnullable job label on the second insert in the route transaction."""
+        if inserted:
+            kwargs["label"] = None
+        run = enqueue(*args, **kwargs)
+        inserted.append(run.id)
+        return run
+
+    monkeypatch.setattr(queries, "enqueue", fail_later_insert)
+    monkeypatch.setattr(RUNNER, "wake", lambda: wakes.append(True))
+    steps = [Step(kind=RunKind.train, config={}), Step(kind=RunKind.benchmark, config={})]
+    with pytest.raises(IntegrityError):
+        queue_chain(steps, owner=str(uuid.uuid4()))
+    assert len(inserted) == 1
+    assert wakes == []
+    with sessions.begin() as db:
+        assert db.scalar(select(func.count()).select_from(Run)) == 0
+        assert db.scalar(select(func.count()).select_from(TrainingRun)) == 0
+
+
+def test_http_recipe_chain_pins_waiting_consumers_and_deduplicates_postgres(sessions, sample, monkeypatch):
+    """The production route commits all inherited source pins and replays every original chain UUID on PostgreSQL."""
+    import store
+    from api.routes.runs import Step, queue_chain
+    from api.runner import RUNNER
+
+    monkeypatch.setattr(store, "_sessions", sessions)
+    monkeypatch.setattr(RUNNER, "wake", lambda: None)
+    operation = uuid.uuid4()
+    steps = [Step(kind=RunKind.train, config={"architecture": {
+                "revision_id": str(sample.architecture_revision), "parameters": {}}}),
+             Step(kind=RunKind.train, config={})]
+    first = queue_chain(steps, request_id=operation, owner=str(sample.actor), administration=True)
+    again = queue_chain(steps, request_id=operation, owner=str(sample.actor), administration=True)
+    assert [value["run_id"] for value in again] == [value["run_id"] for value in first]
+    with sessions.begin() as db:
+        pins = [db.get(RunArchitecturePin, uuid.UUID(value["run_id"])) for value in first]
+        assert pins[0].snapshot == pins[1].snapshot
+        assert pins[0].evidence == pins[1].evidence
+        assert db.scalar(select(func.count()).select_from(TrainingRun)) == 2
+
+
 def test_actor_request_retries_are_atomic_and_conflicts_do_not_reexecute(sessions):
     """Actual PostgreSQL unique-key blocking commits one identical actor/request effect."""
     actor, request_id = uuid.uuid4(), uuid.uuid4()

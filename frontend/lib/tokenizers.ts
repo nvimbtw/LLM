@@ -153,12 +153,18 @@ async function responseBody(response: Response): Promise<unknown> {
   return body
 }
 
-/** Fetches the vocabulary catalogue; failed or malformed reads reject. */
+/** Fetches vocabulary metadata with an optional captured session; failed or malformed reads reject. */
 export async function listTokenizers(
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  token?: string
 ): Promise<TokenizerInfo[]> {
   const raw = record(
-    await responseBody(await apiFetch("/tokenizers", { signal }))
+    await responseBody(
+      await apiFetch("/tokenizers", {
+        signal,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
+    )
   )
   if (!Array.isArray(raw.tokenizers))
     throw new Error("The vocabulary catalogue is invalid.")

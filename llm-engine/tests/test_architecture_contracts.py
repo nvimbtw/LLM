@@ -41,6 +41,9 @@ def test_every_public_family_has_positive_and_negative_schema_examples():
         "GraphQuery", "GraphCursor", "GraphFragment", "ArchitectureSelection",
         "EnqueueEvidence", "AuthorizedVisibility", "ValidationRun", "ValidationEvent",
         "ModelDefinitionSummary", "DefinitionPackage", "Capability", "RuntimeEnvelope",
+        "ArchitectureLimits", "ArchitectureSchema", "RecipeDraftInspection",
+        "TrainingArchitectureRequest", "TrainingArchitecturePreview",
+        "RetainedSource",
     }
     assert {name: covered.get(name) for name in required if covered.get(name) != {False, True}} == {}
 

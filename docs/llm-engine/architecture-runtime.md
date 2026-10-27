@@ -80,6 +80,24 @@ it is not an extension allowing arbitrary commands. No tensor-operation RPC is
 permitted. Final preflight for a job holding the device lease runs inside its
 worker, not as a queued prerequisite waiting for that same lease.
 
+Training has an explicit startup form: `train.pins` may be null only
+for a prepared command entering an empty worker. Pretrain/SFT require a corpus;
+inherited SFT additionally requires its saved `model_package_v1` grant. Inherited
+RL requires the saved policy package and forbids a corpus grant. Its typed
+preparation carries the exact saved tokenizer/profile and, on recovery, a separate
+original frozen-reference package. Prepared records freeze source, final
+tokenizer, profile and domain input facts. The approved
+backend must verify inputs, construct/capture/probe and establish final RuntimePins
+before optimizer construction. Null pins cannot replace an already loaded model
+or bypass final preflight. This avoids inventing a receipt/definition for pending tokenizer
+work. Ordinary resident operations still require exact loaded pins.
+
+Fresh pretraining recovery carries a complete `model_package_v1` grant, including
+definition/source/tokenizer and matching weight/optimizer state. Resident pinned
+training retains the separate `checkpoint_v1` recovery format. The command
+validator distinguishes these roles before worker execution; copied model
+objects that bypass validation are not wire-contract evidence.
+
 `generate` uses a prompt grant, seed, temperature and finite `max_tokens`.
 The worker retains occurrence-specific explicit cache tensors only for that
 request and clears them on completion/cancellation/disconnect. Bounded `tokens`
@@ -93,6 +111,15 @@ The parent retains ownership of the resident cache and admission lifecycle.
 Queued numerical work with priority triggers serving-worker eviction and
 verified tree/resource cleanup before another worker obtains that device.
 Workers never import/reacquire a process-local copy of `llm.model.device`.
+
+The [serving adapter](modular-serving.md) now connects saved packages to these
+resident Load/Generate/Measure commands. Final pretrain/SFT profiles include batch
+one through the configured batch; older receipts that cover only a larger fixed
+batch cannot authorize one-row serving. Generate returns `generation_result_v1`
+alongside bounded token-ID events. Parent result callbacks consume complete result
+bytes before queue-priority eviction retires private grants. Declared models use
+the validated full-prefix path; optional declared caching/context extension still
+requires separate evidence before it can be enabled.
 
 ## Effects and publication
 
@@ -130,6 +157,18 @@ snapshots are at most **262144 bytes**. Source/package/config/result formats are
 distinct and role confusion is rejected before loading. Input grant lifetimes
 end when their owning request/session is drained.
 
+Training preparation uses separate `tokenizer_v1` and `span_table_v1` grants;
+spans load as a numeric array with pickle disabled and verified dtype/row bounds.
+SFT uses `loss_mask_v1` for aligned binary targets and `sft_probe_v1` for bounded
+numeric NPY probes. A separate original-reference package is required for resumed
+chat KL. The [SFT adapter](modular-sft.md) describes parent tokenizer authority
+and reference memory admission.
+`training_progress_v1` carries the existing measured training frame. Its bounded
+grant is acknowledged through publication before removal, preventing telemetry
+files from accumulating during long jobs. It creates no checkpoint/model row.
+The worker also reports actual consumed batches separately from optimizer-step
+telemetry so masked batches can refresh liveness without inventing updates.
+
 `artifact_ready` carries publication UUID, complete staged artifact, completed
 step and final flag. The worker flushes/fsyncs before announcing; the parent
 verifies, publishes and durably registers before replying `artifact_adopted`.
@@ -166,6 +205,15 @@ alone is never a stopped worker. Missing or uncertain cleanup closes admission.
 Startup reconciliation must verify old worker ownership/cleanup before starting
 a replacement scheduler beside them.
 
+The parent also drains outstanding effect and publication callbacks before
+retiring session grants or releasing admission. Reaping the child alone cannot
+stop an already-issued HTTP write or storage transaction. Session closure
+atomically prevents new callbacks; draining uses each configured effect/adoption
+deadline. If it expires, cleanup stays uncertain, the session directory remains
+and admission is quarantined. A known finished adoption error still fails its
+job without implying a live callback. Uncertain external writes remain
+nonretryable.
+
 `RuntimeResources` declares per-process virtual-address limits **separately**
 from aggregate owned-tree resident bytes, allocator device bytes, process count,
 open descriptors and per-artifact/total artifact bytes. All numerical budgets
@@ -197,6 +245,7 @@ engine/.venv/bin/python -m pytest --noconftest llm-engine/tests/test_architectur
 
 The tests use shared positive/negative fixtures, stale identities, UTF-8 byte
 limits, duplicate fields, sender authority and finite numeric constraints.
-The runtime suite currently passes **129 checks**, including **119 shared
-fixture cases**; compilation and whitespace checks pass.
+The original contract checkpoint passed **129 checks**, including **119 shared
+fixture cases**. Added training-bootstrap/output cases and current regression
+results are tracked in the [delivery ledger](modular-architecture-evidence.md).
 They do not launch a production supervisor or claim Rust/GPU integration.

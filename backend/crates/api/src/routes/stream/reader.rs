@@ -55,23 +55,29 @@ fn interjection(text: &str) -> Option<String> {
     }
 }
 
-/// Forward explicit admin cancellation to the durable job service; stopping this reader alone never cancels a job.
+/// Forward best-effort explicit cancellation with the verified administrator actor/scope; lifecycle acknowledgement stays in job events.
+/// Stopping this reader alone never cancels a job, and an ordinary observer has no control identity.
 pub(super) async fn cancellation(
     mut stream: actix_ws::MessageStream,
     engine: llm_engine::Proxy,
     run_id: Uuid,
-    is_admin: bool,
+    administrator: Option<Uuid>,
 ) {
     while let Some(Ok(message)) = stream.next().await {
         let actix_ws::Message::Text(text) = message else {
             continue;
         };
-        if is_admin && matches!(serde_json::from_str::<Control>(&text), Ok(Control::Cancel)) {
+        if let Some(actor) = administrator
+            .filter(|_| matches!(serde_json::from_str::<Control>(&text), Ok(Control::Cancel)))
+        {
             let _ = engine
-                .post(
-                    &auth::Caller::System,
+                .scoped_json(
+                    &auth::Caller::User(actor),
+                    "administration",
+                    llm_engine::Method::POST,
                     &format!("/runs/{run_id}/cancel"),
-                    Value::Null,
+                    Some(Value::Null),
+                    8 * 1024,
                 )
                 .await;
         }

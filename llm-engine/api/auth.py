@@ -25,10 +25,12 @@ LEEWAY_SECS = 5
 
 
 def secret() -> str | None:
+    """Return the configured hop secret, or the explicit open-development setting."""
     return os.environ.get("LLM_ENGINE_SERVICE_SECRET") or None
 
 
 def enforced() -> bool:
+    """Report whether inbound service tokens require signature verification."""
     return secret() is not None
 
 
@@ -37,12 +39,18 @@ SYSTEM = "system"
 
 def require_service(authorization: str | None = Header(default=None)) -> str:
     """The acting caller, or 401. `"system"` is the backend acting as itself."""
+    return service_claims(authorization).get("act", SYSTEM)
+
+
+def service_claims(authorization: str | None) -> dict:
+    """Verify audience/issuer/signature, retaining claims for trusted visibility decisions.
+
+    Open development accepts unsigned claims, matching the existing actor policy.
+    Missing or malformed development tokens provide no administrative scope.
+    """
     configured = secret()
     if configured is None:
-        # Still read the claim when one is offered: without a secret the LLM engine
-        # trusts the caller either way, and dropping `act` would make every
-        # owner-scoped route unusable in development.
-        return _unverified_act(authorization)
+        return _unverified_claims(authorization)
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing service token")
@@ -59,19 +67,29 @@ def require_service(authorization: str | None = Header(default=None)) -> str:
     except jwt.PyJWTError as e:
         raise HTTPException(status_code=401, detail=f"invalid service token: {e}") from e
 
-    return claims.get("act", SYSTEM)
+    return claims
 
 
-def _unverified_act(authorization: str | None) -> str:
+def _unverified_claims(authorization: str | None) -> dict:
+    """Read optional development claims without treating malformed headers as identity."""
     if not authorization or not authorization.lower().startswith("bearer "):
-        return SYSTEM
+        return {}
     try:
         claims = jwt.decode(
             authorization.split(" ", 1)[1], options={"verify_signature": False}
         )
     except jwt.PyJWTError:
-        return SYSTEM
-    return claims.get("act", SYSTEM)
+        return {}
+    return claims
+
+
+def administration_visible(authorization: str | None = Header(default=None)) -> bool:
+    """Derive administrative visibility only from Rust's exact signed singleton scope.
+
+    Browser query parameters are never consulted. Legacy or missing scopes have
+    public visibility, including in open development mode.
+    """
+    return service_claims(authorization).get("scope") == ["administration"]
 
 
 def require_owner(caller: str = Depends(require_service)) -> uuid.UUID:

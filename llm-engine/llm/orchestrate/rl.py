@@ -218,7 +218,11 @@ def _frame(cfg, iteration, batch, update, rollouts, started, lr) -> Progress:
 
 
 def _iterate(cfg, client, model, reference, optimizer, state, iteration) -> Progress:
-    """One iteration: a batch rolled out, scored, and one optimizer step."""
+    """Roll out and update the evaluated policy once; a batch without actionable targets applies no weight decay.
+
+    Autograd remains enabled for recomputation, matching sampling's eval behavior
+    even when custom models contain dropout. The update owns no sampling cache.
+    """
     rollouts, runs = _rollouts(
         cfg, client, model, state.tokenizer, iteration, state.rng,
         state.window, state.rope, state.generator,
@@ -226,16 +230,12 @@ def _iterate(cfg, client, model, reference, optimizer, state, iteration) -> Prog
     )
     batch = policy.score(rollouts)
 
-    model.train()
     optimizer.zero_grad(set_to_none=True)
     update = policy.accumulate(
         model, reference, rollouts, batch,
         beta=cfg.beta, micro_batch=cfg.micro_batch, rope=state.rope,
     )
-    # A batch every one of whose groups was all-pass or all-fail has an exactly
-    # zero gradient. Stepping on it would be an optimizer step made of nothing
-    # but weight decay, which is a real change to the weights for no reason.
-    if batch.advantages:
+    if update.tokens:
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
     model.eval()

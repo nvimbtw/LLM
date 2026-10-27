@@ -48,6 +48,32 @@ def tokenizer() -> FinalTokenizer:
     return FinalTokenizer(kind="final", tokenizer_id=uuid4(), fingerprint="a" * 64, vocabulary_size=32)
 
 
+def test_reserved_token_binding_uses_the_authoritative_full_id_name():
+    """A real tokenizer's pad_id reaches recipe construction unchanged; absent marker bindings fail resolution."""
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from llm.architecture.tokenizer_binding import binding_from_bytes
+
+    raw = Tokenizer(WordLevel(vocab={"one": 0, "two": 1, "<|endoftext|>": 2},
+                              unk_token="<|endoftext|>")).to_str().encode()
+    binding = binding_from_bytes(uuid4(), raw, ("pad_id",))
+    assert binding.reserved_token_ids == {"pad_id": 2}
+    with SourceLoader() as loader:
+        definition = loader.load(revision(SOURCE))
+        value = tensor_recipe(definition.reference).model_dump(mode="python")
+        value["modules"]["scale"]["parameters"]["gain"] = "${tokenizer.pad_id}"
+        recipe = Recipe.model_validate(value)
+        dependencies = {definition.reference.revision_id: definition}
+        plan = resolve_recipe(recipe, {}, dependencies, binding)
+        model = build_model(plan)
+        hidden = torch.ones(1, 2, 8)
+        torch.testing.assert_close(model.forward_named({"hidden": hidden})["hidden"], hidden * 16)
+        assert model.instances["scale"].gain.item() == 2
+        with pytest.raises(ArchitectureError) as raised:
+            resolve_recipe(recipe, {}, dependencies, binding.model_copy(update={"reserved_token_ids": {}}))
+        assert raised.value.code == "tokenizer_binding"
+
+
 def fixture_dependencies() -> dict:
     """Read synthetic declaration snapshots, not production builtin implementations."""
     catalog = json.loads((ROOT / "sdk/catalog.json").read_text())
@@ -528,6 +554,24 @@ def test_module_cache_cleanup_identity_conflicts_and_effective_source_limit():
     owned_names = set(loader.modules)
     loader.close()
     assert not owned_names & sys.modules.keys()
+
+
+@pytest.mark.parametrize("expression", ["torch.get_default_dtype()", "torch.get_default_device()"])
+def test_source_rejects_unrecorded_ambient_defaults(expression):
+    """Reject ambient execution defaults even where export could silently specialize a branch."""
+    source = SOURCE.replace('return {"hidden": hidden * self.gain}',
+                            f'ambient = {expression}\n        return {{"hidden": hidden * self.gain}}')
+    with SourceLoader() as loader, pytest.raises(ArchitectureError) as raised:
+        loader.load(revision(source))
+    assert raised.value.code == "unsupported_source"
+
+
+def test_source_rejects_import_alias_of_ambient_default_reader():
+    """The supported import policy rejects renamed default readers before executing source."""
+    source = "from torch import get_default_dtype as current_dtype\n" + SOURCE
+    with SourceLoader() as loader, pytest.raises(ArchitectureError) as raised:
+        loader.load(revision(source))
+    assert raised.value.code == "unsupported_import"
 
 
 def test_recipe_snapshots_own_their_values_and_initializer_order():

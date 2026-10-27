@@ -12,6 +12,7 @@ import time
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from llm.architecture.errors import ArchitectureError
 from llm.runtime.artifacts import ArtifactStore
 from llm.runtime.bootstrap import WorkerBootstrap, read_bootstrap
 from llm.runtime.protocol import (
@@ -133,8 +134,12 @@ class WorkerContext:
         self.artifacts.remove(artifact)
 
     def require_pins(self, payload: RuntimePayload) -> None:
-        """Reject stale/missing authorization before executing a resident train/serve/measurement request."""
+        """Reject stale resident pins; empty-worker training establishes exact final authorization inside its backend."""
         if isinstance(payload, (Train, Generate, Measure)):
+            if isinstance(payload, Train) and payload.pins is None:
+                if self.pins is not None:
+                    raise ValueError("runtime_training_bootstrap_requires_empty_worker")
+                return
             if self.pins is None:
                 raise ValueError("runtime_model_not_loaded")
             payload.pins.require_current(self.pins)
@@ -170,7 +175,7 @@ def configure_cuda(bootstrap: WorkerBootstrap) -> None:
 
 
 def execute_request(backend: WorkerBackend, context: WorkerContext, message: RuntimeEnvelope) -> None:
-    """Run one request; finish caches before emitting success and retain no custom exceptions in parent."""
+    """Run one request with owned cleanup and bounded failures, exposing domain reasons only for administrative training."""
     context.request_id = message.request_id
     context._last_phase = None
     try:
@@ -189,6 +194,13 @@ def execute_request(backend: WorkerBackend, context: WorkerContext, message: Run
         context.emit(Completed(type="completed", outcome="cancelled"))
     except Exception as error:
         backend.finish_request()
+        if isinstance(message.payload, Train) and isinstance(error, ArchitectureError):
+            context.emit(Failed(type="failed", phase=context.phase, code=error.code, message=str(error)[:512]))
+            return
+        if isinstance(message.payload, Train) and type(error) is ValueError:
+            context.emit(Failed(type="failed", phase=context.phase, code="runtime_backend_failed",
+                                message=f"ValueError: {error}"[:512]))
+            return
         context.emit(Failed(
             type="failed", phase=context.phase, code="runtime_backend_failed", message=type(error).__name__,
         ))

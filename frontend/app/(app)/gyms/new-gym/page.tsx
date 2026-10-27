@@ -1,6 +1,7 @@
 import { RlComposer } from "@/components/jobs/rl-composer"
 import { PageHeader } from "@/components/ui/page-header"
 import { PageShell } from "@/components/ui/page-shell"
+import { AdminBoundary } from "@/components/admin/admin-boundary"
 
 /**
  * Practising against a gym — the composer for the run that *repeats*.
@@ -31,7 +32,9 @@ export default async function NewRlJobPage({
         }
         title="Practise in a gym"
       />
-      <RlComposer gym={gym} />
+      <AdminBoundary>
+        <RlComposer gym={gym} />
+      </AdminBoundary>
     </PageShell>
   )
 }

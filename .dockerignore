@@ -5,6 +5,8 @@
 !frontend/**
 !docs/
 !docs/**
+!contracts/
+!contracts/**
 !README.md
 !AGENTS.md
 

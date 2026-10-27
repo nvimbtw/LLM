@@ -7,7 +7,8 @@ from llm.train.curriculum import Lessons
 VALIDATION_SEED_STRIDE = 10_000
 
 
-def prepare(cfg, client, saved=None):
+def prepare(cfg, client, saved=None, *, inherit_base=True):
+    """Build mastery from selected public tasks and explicit saved state; legacy callers may read base metadata locally."""
     if cfg.curriculum is None:
         return None
     catalogue = next((gym for gym in client.catalogue() if gym["id"] == cfg.gym_id), None)
@@ -18,7 +19,7 @@ def prepare(cfg, client, saved=None):
              for task in catalogue["task_types"] if task["id"] in selected]
     if len(tasks) != len(selected):
         raise ValueError("curriculum contains unknown task types")
-    if saved is None:
+    if saved is None and inherit_base:
         saved = train.run_record(cfg.base_model).get("curriculum")
     return Lessons(tasks, cfg.curriculum, saved)
 

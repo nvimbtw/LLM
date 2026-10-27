@@ -8,19 +8,23 @@ files; immutable source rows and retained evidence survive execution pruning.
 from __future__ import annotations
 
 import hashlib
+import copy
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from llm.architecture import dependencies
+from llm.architecture.errors import ArchitectureError
 from llm.architecture.spec import (
-    MAX_DEPENDENCIES, MAX_NESTING, BlockDeclaration, DraftSubject, Recipe, Repeat,
-    ResolvedDefinition, RevisionRef, RevisionSubject, Stack, ValidationReceipt,
+    MAX_DEPENDENCIES, MAX_NESTING, BlockDeclaration, DraftSubject, Recipe,
+    FinalTokenizer, ResolvedDefinition, RevisionRef, RevisionSubject, ValidationReceipt,
     canonical_digest,
 )
 from llm.architecture.wire import (
@@ -36,6 +40,7 @@ from store.schema import (
 
 ResourceKind = Literal["block", "architecture"]
 CatalogResource = ModelBlock | Architecture
+TRAINING_SNAPSHOT_BYTES = 8 << 20
 
 
 class CatalogError(ValueError):
@@ -54,6 +59,7 @@ class MutationOutcome:
 
     kind: Literal["validation", "revision", "training"]
     id: uuid.UUID
+    job_ids: tuple[uuid.UUID, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,17 @@ class RevisionSnapshot:
     reference: RevisionRef
     source: str
     metadata: dict
+    compatibility: dict | None = None
+    origin: Literal["builtin", "custom"] | None = None
+
+
+@dataclass(frozen=True)
+class PreparedTrainingPin:
+    """Own validated source/evidence snapshots while their preparing Session retains root/evidence locks."""
+
+    evidence: EnqueueEvidence
+    parameters: dict
+    snapshot: dict
 
 
 def text_hash(source: str) -> str:
@@ -106,6 +123,47 @@ def create_architecture(db: Session, actor_id: uuid.UUID, request: ArchitectureC
                        draft_yaml=request.yaml, draft_hash=text_hash(request.yaml), creator_id=actor_id,
                        origin="builtin" if builtin else "custom")
     db.add(row)
+    db.flush()
+    return row
+
+
+def seed_builtin_block(db: Session, actor_id: uuid.UUID, reference: RevisionRef, request: BlockCreate) -> ModelBlock:
+    """Reconcile shipped source under exclusive startup ownership; public builtin edits remain forbidden and old revisions survive."""
+    if reference.kind != "block":
+        raise CatalogError("identity_conflict","builtin block identity requires a block reference")
+    return _seed_builtin_resource(db,"block",reference.resource_id,actor_id,request)
+
+
+def seed_builtin_architecture(db: Session, actor_id: uuid.UUID, resource_id: uuid.UUID, request: ArchitectureCreate) -> Architecture:
+    """Reconcile supplied recipe drafts under exclusive startup ownership, retaining all prior accepted source/pins."""
+    return _seed_builtin_resource(db,"architecture",resource_id,actor_id,request)
+
+
+def _seed_builtin_resource(db: Session, kind: ResourceKind, resource_id: uuid.UUID, actor_id: uuid.UUID,
+                           request: BlockCreate | ArchitectureCreate) -> CatalogResource:
+    """Own shared supplied-source and metadata version transitions; callers hold exclusive startup ownership."""
+    row = db.get(_resource_type(kind),resource_id)
+    if row is None:
+        return (create_block(db,actor_id,request,resource_id=resource_id,builtin=True) if kind == "block"
+                else create_architecture(db,actor_id,request,resource_id=resource_id,builtin=True))
+    row = _locked_resource(db,kind,resource_id)
+    if row.origin != "builtin":
+        raise CatalogError("identity_conflict","installed builtin UUID belongs to a custom resource")
+    source = request.source if kind == "block" else request.yaml
+    previous = row.draft_source if kind == "block" else row.draft_yaml
+    digest = text_hash(source)
+    if previous != source or row.draft_hash != digest:
+        if kind == "block":
+            row.draft_source = source
+        else:
+            row.draft_yaml = source
+        row.draft_hash = digest
+        row.draft_version += 1
+        row.updated_at = _now()
+    if row.name != request.name or row.description != request.description:
+        row.name, row.description = request.name, request.description
+        row.metadata_version += 1
+        row.updated_at = _now()
     db.flush()
     return row
 
@@ -172,6 +230,70 @@ def list_resources(db: Session, kind: ResourceKind, *, archived: bool = False, o
     return list(db.scalars(statement.order_by(model.id).limit(limit)))
 
 
+def get_resource(db: Session, kind: ResourceKind, resource_id: uuid.UUID) -> CatalogResource:
+    """Read one resource's saved data without importing source or acquiring a mutation lock."""
+    row = db.get(_resource_type(kind),resource_id)
+    if row is None:
+        raise CatalogError("not_found", "catalog resource not found")
+    return row
+
+
+def validation_resource(db: Session, kind: ResourceKind, resource_id: uuid.UUID) -> CatalogResource:
+    """Serialize validation admission with draft/archive edits under the caller's queue transaction."""
+    row = _locked_resource(db,kind,resource_id)
+    if row.archived:
+        raise CatalogError("archived","archived resources cannot start new validation")
+    return row
+
+
+def revision_rows(db: Session, kind: ResourceKind, resource_id: uuid.UUID, *, after: int = 0,
+                  limit: int = 50, latest: bool = False) -> list[BlockRevision | ArchitectureRevision]:
+    """Read a bounded ordered revision page or latest accepted row without source execution."""
+    if not 1 <= limit <= 100 or after < 0:
+        raise CatalogError("invalid_page", "invalid revision page budget")
+    model = BlockRevision if kind == "block" else ArchitectureRevision
+    owner = model.block_id if kind == "block" else model.architecture_id
+    statement = select(model).where(owner == resource_id,model.revision_number > after)
+    order = model.revision_number.desc() if latest else model.revision_number.asc()
+    return list(db.scalars(statement.order_by(order).limit(limit)))
+
+
+def revision_count(db: Session, kind: ResourceKind, resource_id: uuid.UUID) -> int:
+    """Count immutable accepted revisions without loading any source bodies."""
+    model = BlockRevision if kind == "block" else ArchitectureRevision
+    owner = model.block_id if kind == "block" else model.architecture_id
+    return db.scalar(select(func.count()).select_from(model).where(owner == resource_id)) or 0
+
+
+def architecture_revision_for_source(db: Session, resource_id: uuid.UUID, content_hash: str,
+                                     dependency_digest: str) -> ArchitectureRevision | None:
+    """Find an already accepted exact source/pin identity, including an older revision restored by a shipped-code rollback."""
+    return db.scalar(select(ArchitectureRevision).where(ArchitectureRevision.architecture_id == resource_id,
+        ArchitectureRevision.content_hash == content_hash,ArchitectureRevision.dependency_digest == dependency_digest).limit(1))
+
+
+def get_catalog_revision(db: Session, kind: ResourceKind, resource_id: uuid.UUID,
+                         revision_id: uuid.UUID) -> BlockRevision | ArchitectureRevision:
+    """Read immutable source only under its actual family/resource identity, refusing cross-resource replay."""
+    model = BlockRevision if kind == "block" else ArchitectureRevision
+    row = db.get(model,revision_id)
+    if row is None or (row.block_id if kind == "block" else row.architecture_id) != resource_id:
+        raise CatalogError("not_found", "catalog revision not found")
+    return row
+
+
+def evidence_for_job(db: Session, run_id: uuid.UUID) -> ValidationEvidence | None:
+    """Find independently retained evidence without requiring the prunable source validation job."""
+    return db.scalar(select(ValidationEvidence).where(ValidationEvidence.source_run_id == run_id))
+
+
+def bound_training_publication(db: Session) -> None:
+    """Keep parent publication locks/statements finite within its caller-owned PostgreSQL transaction."""
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        db.execute(text("SET LOCAL statement_timeout = '30s'"))
+
+
 def record_evidence(db: Session, source_run_id: uuid.UUID, receipt: ValidationReceipt) -> ValidationEvidence:
     """Retain exact immutable evidence independently of execution/history deletion."""
     existing = db.get(ValidationEvidence, receipt.receipt_id)
@@ -203,6 +325,67 @@ def _receipt(db: Session, receipt_id: uuid.UUID) -> ValidationReceipt:
     return ValidationReceipt.model_validate(row.receipt)
 
 
+def _require_training_definition(receipt: ValidationReceipt, definition: ResolvedDefinition) -> None:
+    """Require valid final revision evidence to name the exact saved root, parameters, tokenizer and context."""
+    identity = receipt.identity
+    receipt.require_current(identity)
+    if (not isinstance(identity.subject, RevisionSubject) or identity.subject.reference != definition.architecture
+            or identity.parameter_digest != canonical_digest(definition.parameters)
+            or identity.tokenizer != definition.tokenizer or identity.context_window != definition.context_window):
+        raise CatalogError("definition_mismatch", "training evidence differs from the saved definition")
+
+
+def record_training_evidence(db: Session, source_run_id: uuid.UUID, receipt: ValidationReceipt,
+                             definition: ResolvedDefinition, *, prepared_tokenizer: FinalTokenizer | None = None) -> ValidationEvidence:
+    """Retain published final-preflight evidence for an admitted immutable training pin.
+
+    The parent verifies the complete package before this call. An interrupted or
+    finished job may retain its published evidence during startup reconciliation;
+    queued/waiting jobs cannot. Numerical validity is independent of the later
+    training outcome. Existing identical evidence remains readable after pruning.
+    Validation-job evidence still uses the separate done-only record_evidence.
+    An SFT caller may finalize a pending chain tokenizer or derive labels only
+    after checking registered saved inputs and durable parent preparation against
+    actual output bytes. Other training retains its enqueue binding rules;
+    immutable pins are never rewritten.
+    """
+    _require_training_definition(receipt, definition)
+    existing = db.get(ValidationEvidence, receipt.receipt_id)
+    if existing is not None:
+        if existing.receipt != receipt.model_dump(mode="json") or existing.source_run_id != source_run_id:
+            raise CatalogError("identity_conflict", "receipt UUID already identifies different evidence")
+        return existing
+    run = queries.lock_run(db, source_run_id)
+    pin = db.get(RunArchitecturePin, source_run_id)
+    if (run is None or run.kind not in (RunKind.train, RunKind.rl) or run.training is None or pin is None
+            or run.status in (RunStatus.queued, RunStatus.waiting)):
+        raise CatalogError("training_not_admitted", "new training evidence requires an admitted pinned job")
+    evidence = EnqueueEvidence.model_validate(pin.evidence)
+    if prepared_tokenizer is not None and run.training.training_type != "sft":
+        raise CatalogError("definition_mismatch", "only parent-prepared SFT can finalize tokenizer labels")
+    expected_tokenizer = prepared_tokenizer or evidence.tokenizer
+    identity = receipt.identity
+    expected_sources = {item["reference"]["revision_id"]: item["reference"] for item in pin.snapshot["dependencies"]}
+    actual_sources = {str(item.reference.revision_id): item.reference.model_dump(mode="json") for item in definition.dependencies}
+    if (identity.subject.reference != evidence.architecture
+            or identity.dependency_digest != evidence.dependency_digest
+            or identity.parameter_digest != canonical_digest(pin.parameters)
+            or definition.architecture != evidence.architecture or definition.parameters != pin.parameters
+            or Recipe.model_validate(pin.snapshot["recipe"]) != definition.recipe
+            or actual_sources != expected_sources
+            or identity.tokenizer != definition.tokenizer or identity.context_window != definition.context_window
+            or (expected_tokenizer.kind == "final" and identity.tokenizer != expected_tokenizer)):
+        raise CatalogError("definition_mismatch", "training evidence differs from the queued immutable bindings")
+    previous = evidence_for_job(db, source_run_id)
+    if previous is not None:
+        raise CatalogError("identity_conflict", "training job already owns different final-preflight evidence")
+    row = ValidationEvidence(receipt_id=receipt.receipt_id, identity_hash=receipt.identity_hash,
+                             receipt=receipt.model_dump(mode="json"), source_run_id=source_run_id)
+    db.add(row)
+    db.flush()
+    return row
+
+
 def _acceptance_evidence(db: Session, resource: CatalogResource, request: AcceptRevision) -> ValidationReceipt:
     """Verify current draft/source/dependency identity and successful fully bound example evidence."""
     if resource.archived:
@@ -226,18 +409,26 @@ def _acceptance_evidence(db: Session, resource: CatalogResource, request: Accept
     return receipt
 
 
-def accept_block(db: Session, block_id: uuid.UUID, request: AcceptRevision, declaration: BlockDeclaration, *, compatibility: dict | None = None, internal_builtin: bool = False) -> BlockRevision:
-    """Accept exact validated Python bytes once, assigning revision numbers under the root lock."""
+def accept_block(db: Session, block_id: uuid.UUID, request: AcceptRevision, declaration: BlockDeclaration, *, compatibility: dict | None = None, builtin_reference: RevisionRef | None = None) -> BlockRevision:
+    """Accept validated source under the root lock; internal builtin pins identify their complete implementation manifest."""
     row = _locked_resource(db, "block", block_id)
-    if not internal_builtin:
+    if builtin_reference is None:
         _require_custom(row)
+    elif row.origin != "builtin" or builtin_reference.kind != "block" or builtin_reference.resource_id != row.id:
+        raise CatalogError("identity_conflict","builtin acceptance requires its actual read-only resource")
     receipt = _acceptance_evidence(db, row, request)
-    existing = db.scalar(select(BlockRevision).where(BlockRevision.block_id == block_id, BlockRevision.content_hash == row.draft_hash))
+    content_hash = builtin_reference.content_hash if builtin_reference is not None else row.draft_hash
+    if builtin_reference is not None and receipt.identity.dependency_digest != dependency_digest({"builtin":builtin_reference}):
+        raise CatalogError("stale_evidence","builtin evidence differs from its complete implementation manifest")
+    existing = db.scalar(select(BlockRevision).where(BlockRevision.block_id == block_id, BlockRevision.content_hash == content_hash))
     if existing is not None:
+        if builtin_reference is not None and revision_reference(existing) != builtin_reference:
+            raise CatalogError("identity_conflict","builtin revision UUID differs from its implementation manifest")
         return existing
     number = (db.scalar(select(func.max(BlockRevision.revision_number)).where(BlockRevision.block_id == block_id)) or 0) + 1
-    revision = BlockRevision(block_id=block_id, revision_number=number, source=row.draft_source,
-                             content_hash=row.draft_hash, declaration=declaration.model_dump(mode="json"),
+    revision = BlockRevision(id=builtin_reference.revision_id if builtin_reference is not None else uuid.uuid4(),
+                             block_id=block_id, revision_number=number, source=row.draft_source,
+                             content_hash=content_hash, declaration=declaration.model_dump(mode="json"),
                              compatibility=compatibility or {"sdk_version": 1}, acceptance_receipt_id=receipt.receipt_id)
     db.add(revision)
     db.flush()
@@ -262,26 +453,15 @@ def require_revision(db: Session, reference: RevisionRef) -> BlockRevision | Arc
 
 def recipe_dependencies(recipe: Recipe) -> dict[str, RevisionRef]:
     """Collect declared direct pins, including nested independent stack templates, without expansion."""
-    pins = {f"modules/{name}": declaration.reference for name, declaration in recipe.modules.items()}
-    pending = [(recipe.flow, "flow", 0)]
-    while pending:
-        operations, prefix, depth = pending.pop()
-        if depth > MAX_NESTING:
-            raise CatalogError("nesting_limit", "recipe nesting exceeds the catalog contract")
-        for index, operation in enumerate(operations):
-            path = f"{prefix}/{index}"
-            if isinstance(operation, Stack):
-                pins[f"{path}/template"] = operation.template.reference
-            elif isinstance(operation, Repeat):
-                pending.append((operation.body, f"{path}/body", depth + 1))
-        if len(pins) > MAX_DEPENDENCIES:
-            raise CatalogError("dependency_limit", "too many direct recipe dependencies")
-    return pins
+    try:
+        return dependencies.recipe_dependencies(recipe)
+    except ArchitectureError as error:
+        raise CatalogError(error.code, str(error)) from error
 
 
 def dependency_digest(pins: dict[str, RevisionRef]) -> str:
     """Hash normalized path-to-revision pins independently of mutable archive/display metadata."""
-    return canonical_digest({name: reference.model_dump(mode="json") for name, reference in sorted(pins.items())})
+    return dependencies.dependency_digest(pins)
 
 
 def accept_architecture(db: Session, architecture_id: uuid.UUID, request: AcceptRevision, recipe: Recipe, *, internal_builtin: bool = False) -> ArchitectureRevision:
@@ -335,7 +515,9 @@ def dependency_closure(db: Session, revision_id: uuid.UUID) -> tuple[RevisionSna
                 raise CatalogError("missing_dependency", "retained dependency source is missing")
             if row.id not in found:
                 metadata = row.declaration if block else row.recipe
-                found[row.id] = RevisionSnapshot(revision_reference(row), row.source if block else row.yaml, metadata)
+                origin = get_resource(db, "block", row.block_id).origin if block else None
+                found[row.id] = RevisionSnapshot(revision_reference(row), row.source if block else row.yaml, metadata,
+                                                copy.deepcopy(row.compatibility) if block else None, origin)
             if not block:
                 pending.append((row.id, ancestry | {current}, depth + 1))
             if len(found) > MAX_DEPENDENCIES:
@@ -343,10 +525,8 @@ def dependency_closure(db: Session, revision_id: uuid.UUID) -> tuple[RevisionSna
     return tuple(found[key] for key in sorted(found, key=str))
 
 
-def pin_training_run(db: Session, run: Run, evidence: EnqueueEvidence, parameters: dict) -> RunArchitecturePin:
-    """Pin an existing transaction-owned training/waiting run under its mutable root lock."""
-    if run.kind not in (RunKind.train, RunKind.rl):
-        raise CatalogError("invalid_job_kind", "only model-producing training jobs carry architecture pins")
+def prepare_training_pin(db: Session, evidence: EnqueueEvidence, parameters: dict) -> PreparedTrainingPin:
+    """Validate and freeze one selection before any queue inserts, retaining locks until the caller commits."""
     revision = require_revision(db, evidence.architecture)
     if not isinstance(revision, ArchitectureRevision):
         raise CatalogError("invalid_root", "training root must be an architecture")
@@ -366,25 +546,71 @@ def pin_training_run(db: Session, run: Run, evidence: EnqueueEvidence, parameter
         if exact.identity.parameter_digest != evidence.parameter_digest or exact.identity.dependency_digest != evidence.dependency_digest or exact.identity.tokenizer != evidence.tokenizer:
             raise CatalogError("stale_evidence", "exact receipt differs from submitted bindings")
     closure = dependency_closure(db, revision.id)
+    return PreparedTrainingPin(evidence.model_copy(deep=True), dict(parameters), _training_snapshot(revision, closure))
+
+
+def _training_snapshot(revision: ArchitectureRevision, closure: tuple[RevisionSnapshot, ...]) -> dict:
+    """Freeze the same bounded immutable source/compatibility closure for fresh selections and saved-definition consumers."""
     snapshot = {"architecture": revision_reference(revision).model_dump(mode="json"), "yaml": revision.yaml,
                 "recipe": revision.recipe, "dependencies": [
-                    {"reference": item.reference.model_dump(mode="json"), "source": item.source, "metadata": item.metadata}
+                    {"reference": item.reference.model_dump(mode="json"), "source": item.source, "metadata": item.metadata,
+                     "compatibility": item.compatibility, "origin": item.origin}
                     for item in closure]}
-    pin = RunArchitecturePin(job_id=run.id, architecture_revision_id=revision.id,
+    if len(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()) > TRAINING_SNAPSHOT_BYTES:
+        raise CatalogError("snapshot_byte_limit", "training source snapshot exceeds worker artifact budget")
+    return snapshot
+
+
+def prepare_saved_training_pin(db: Session, definition_id: str) -> PreparedTrainingPin:
+    """Inherit saved semantic/source/tokenizer authority without requiring an unpruned job or an unarchived catalog root."""
+    row = db.get(ModelDefinition, definition_id)
+    if row is None:
+        raise CatalogError("missing_definition", "saved model definition is unavailable")
+    definition = ResolvedDefinition.model_validate(row.definition)
+    if canonical_digest(definition) != definition_id:
+        raise CatalogError("definition_mismatch", "saved model semantic identity differs from its retained definition")
+    revision = require_revision(db, definition.architecture)
+    if not isinstance(revision, ArchitectureRevision) or Recipe.model_validate(revision.recipe) != definition.recipe:
+        raise CatalogError("definition_mismatch", "saved definition differs from its immutable recipe")
+    closure = dependency_closure(db, revision.id)
+    if ({item.reference.revision_id: item.reference for item in closure}
+            != {item.reference.revision_id: item.reference for item in definition.dependencies}):
+        raise CatalogError("definition_mismatch", "saved definition differs from its immutable source closure")
+    acceptance = _receipt(db, revision.acceptance_receipt_id)
+    acceptance.require_current(acceptance.identity)
+    evidence = EnqueueEvidence(architecture=definition.architecture, dependency_digest=revision.dependency_digest,
+        parameter_digest=canonical_digest(definition.parameters), acceptance_receipt_id=revision.acceptance_receipt_id,
+        tokenizer=definition.tokenizer, exact_receipt_id=None, final_preflight_required=True)
+    return PreparedTrainingPin(evidence, dict(definition.parameters), _training_snapshot(revision, closure))
+
+
+def attach_training_pin(db: Session, run: Run, prepared: PreparedTrainingPin) -> RunArchitecturePin:
+    """Insert a previously prepared pin in its preparing transaction, after all chain selections validate."""
+    if run.kind not in (RunKind.train, RunKind.rl):
+        raise CatalogError("invalid_job_kind", "only model-producing training jobs carry architecture pins")
+    evidence = prepared.evidence
+    pin = RunArchitecturePin(job_id=run.id, architecture_revision_id=evidence.architecture.revision_id,
                              acceptance_receipt_id=evidence.acceptance_receipt_id, exact_receipt_id=evidence.exact_receipt_id,
-                             evidence=evidence.model_dump(mode="json"), parameters=dict(parameters), snapshot=snapshot)
+                             evidence=evidence.model_dump(mode="json"), parameters=dict(prepared.parameters), snapshot=copy.deepcopy(prepared.snapshot))
     db.add(pin)
     db.flush()
     return pin
 
 
+def pin_training_run(db: Session, run: Run, evidence: EnqueueEvidence, parameters: dict) -> RunArchitecturePin:
+    """Validate and attach an immutable selection to an existing caller-owned training transaction."""
+    if run.kind not in (RunKind.train, RunKind.rl):
+        raise CatalogError("invalid_job_kind", "only model-producing training jobs carry architecture pins")
+    return attach_training_pin(db, run, prepare_training_pin(db, evidence, parameters))
+
+
 def enqueue_pinned_training(db: Session, *, actor_id: uuid.UUID, label: str, config: dict, evidence: EnqueueEvidence, parameters: dict, depends_on: uuid.UUID | None = None, kind: RunKind = RunKind.train) -> Run:
     """Create a queued/waiting run and its complete snapshot in one caller-owned transaction."""
-    resource = _locked_resource(db, "architecture", evidence.architecture.resource_id)
-    if resource.archived:
-        raise CatalogError("archived", "archived architecture cannot be newly selected")
+    if kind not in (RunKind.train, RunKind.rl):
+        raise CatalogError("invalid_job_kind", "only model-producing training jobs carry architecture pins")
+    prepared = prepare_training_pin(db, evidence, parameters)
     run = queries.enqueue(db, kind=kind, label=label, config=config, owner_id=actor_id, depends_on=depends_on)
-    pin_training_run(db, run, evidence, parameters)
+    attach_training_pin(db, run, prepared)
     return run
 
 
@@ -428,6 +654,20 @@ def _receipt_matches_revision(receipt: ValidationReceipt, revision: Architecture
         raise CatalogError("stale_evidence", "receipt source does not match the pinned architecture")
 
 
+def completed_mutation(db: Session, *, actor_id: uuid.UUID, request_id: uuid.UUID,
+                       operation: str, payload: dict) -> MutationOutcome | None:
+    """Replay a completed operation before resolving prunable input jobs; absence never reserves a new request."""
+    row = db.get(MutationRequest, (actor_id, request_id))
+    if row is None:
+        return None
+    if row.operation != operation or row.payload_hash != canonical_digest(payload):
+        raise CatalogError("request_conflict", "request UUID was reused with different arguments")
+    if row.outcome is None:
+        return None
+    return MutationOutcome(row.outcome["kind"], uuid.UUID(row.outcome["id"]),
+                           tuple(uuid.UUID(value) for value in row.outcome.get("job_ids", ())))
+
+
 def idempotent_mutation(db: Session, *, actor_id: uuid.UUID, request_id: uuid.UUID, operation: str, payload: dict, execute: Callable[[], MutationOutcome]) -> MutationOutcome:
     """Serialize actor/request retries, atomically committing one matching operation/outcome."""
     dialect = db.get_bind().dialect.name
@@ -441,9 +681,12 @@ def idempotent_mutation(db: Session, *, actor_id: uuid.UUID, request_id: uuid.UU
     if row.operation != operation or row.payload_hash != digest:
         raise CatalogError("request_conflict", "request UUID was reused with different arguments")
     if row.outcome is not None:
-        return MutationOutcome(row.outcome["kind"], uuid.UUID(row.outcome["id"]))
+        return MutationOutcome(row.outcome["kind"], uuid.UUID(row.outcome["id"]),
+                               tuple(uuid.UUID(value) for value in row.outcome.get("job_ids", ())))
     outcome = execute()
     row.outcome = {"kind": outcome.kind, "id": str(outcome.id)}
+    if outcome.job_ids:
+        row.outcome = {**row.outcome, "job_ids": [str(value) for value in outcome.job_ids]}
     db.flush()
     return outcome
 

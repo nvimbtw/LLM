@@ -25,7 +25,8 @@ export function ScoreCard({ report }: { report: AnyReport }) {
  *
  * `model.name` is what a person calls the model; `model.id` is the weights
  * directory. A report from before the name was recorded has only the id, which
- * is a poor label but a true one.
+ * is a poor label but a true one. Custom models omit unavailable Transformer
+ * shape labels while retaining their measured parameter count.
  */
 function Composite({
   label,
@@ -53,12 +54,15 @@ function Composite({
           </div>
           <Uncertainty stderr={stderr} />
           <p className="mt-3 text-xs text-muted-foreground">
-            {model.name ?? model.id} · {model.layers}L · {model.dimensions}d ·{" "}
-            {formatCompact(model.parameters)} params
+            {[
+              model.name ?? model.id,
+              ...(model.layers == null ? [] : [`${model.layers}L`]),
+              ...(model.dimensions == null ? [] : [`${model.dimensions}d`]),
+              `${formatCompact(model.parameters)} params`,
+            ].join(" · ")}
           </p>
         </div>
 
-        {/* The component metrics share one open ledger with the composite. */}
         <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
           {children}
         </dl>

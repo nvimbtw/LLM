@@ -1,3 +1,4 @@
+pub mod architectures;
 pub mod attachments;
 pub mod auth;
 pub mod benchmarks;
@@ -29,6 +30,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/chats").configure(chats::configure));
     cfg.service(web::scope("/attachments").configure(attachments::configure));
     cfg.service(web::scope("/messages").configure(chats::configure_messages));
+    cfg.configure(architectures::configure);
     cfg.service(web::scope("/models").configure(models::configure));
     cfg.service(web::scope("/benchmarks").configure(benchmarks::configure));
     cfg.service(web::scope("/runs").configure(runs::configure));

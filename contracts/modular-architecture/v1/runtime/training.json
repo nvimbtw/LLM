@@ -1,0 +1,538 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "training-bootstrap-final-preflight",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "pretrain",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "training-bootstrap-needs-corpus",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "pretrain",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": null
+        }
+      }
+    },
+    {
+      "name": "training-bootstrap-cannot-start-sft",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "training-bootstrap-cannot-start-rl",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "training-bootstrap-recovery-package",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "pretrain",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "training-bootstrap-rejects-resident-checkpoint",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "pretrain",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "training-resident-rejects-bootstrap-package",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "sft-bootstrap-inherited-model-package",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "sft-bootstrap-rejects-resident-checkpoint",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "sft-bootstrap-requires-corpus",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "sft-bootstrap-mask-is-not-corpus",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "loss_mask_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "sft-bootstrap-probe-is-not-package",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "sft_probe_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "artifact-loss_mask_v1",
+      "model": "RuntimeArtifact",
+      "valid": true,
+      "value": {
+        "artifact_id": "11111111-1111-4111-8111-111111111111",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size_bytes": 1024,
+        "format": "loss_mask_v1"
+      }
+    },
+    {
+      "name": "artifact-sft_probe_v1",
+      "model": "RuntimeArtifact",
+      "valid": true,
+      "value": {
+        "artifact_id": "11111111-1111-4111-8111-111111111111",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size_bytes": 1024,
+        "format": "sft_probe_v1"
+      }
+    },
+    {
+      "name": "rl-bootstrap-inherited-model-package",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "rl-bootstrap-rejects-corpus",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "rl-bootstrap-requires-original-policy",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": null
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "rl-bootstrap-rejects-checkpoint-grant",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": null,
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    }
+  ]
+}

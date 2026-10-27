@@ -46,10 +46,9 @@ def resolve_value(value: Scalar, parameters: Mapping[str, Scalar], tokenizer: Fi
         key = name[len("tokenizer."):]
         if key == "vocabulary_size":
             return tokenizer.vocabulary_size
-        token_name = key[:-3] if key.endswith("_id") else key
-        if token_name not in tokenizer.reserved_token_ids:
+        if key not in tokenizer.reserved_token_ids:
             raise ArchitectureError("tokenizer_binding", "unknown tokenizer token ID binding")
-        return tokenizer.reserved_token_ids[token_name]
+        return tokenizer.reserved_token_ids[key]
     if name not in parameters:
         raise ArchitectureError("unresolved_parameter", f"unknown parameter reference {name}")
     return parameters[name]

@@ -28,6 +28,8 @@ MAX_NESTING = 8
 MAX_MODULES = 128
 MAX_CATALOG_PAGE = 100
 MAX_GRAPH_PAGE_NODES = 256
+MAX_ATTENTION_SEQUENCE = 512
+MAX_ATTENTION_HEADS = 256
 MAX_DEPENDENCIES = 128
 MAX_PARAMETERS = 64
 MAX_PORTS = 32
@@ -489,6 +491,9 @@ class DefinitionPackage(Contract):
     tokenizer_path: Literal["tokenizer.json"] = "tokenizer.json"
     metadata_path: Literal["meta.json"] = "meta.json"
     training_state_path: Literal["train_state.pt"] | None = None
+    parameter_precision: Literal["fp32", "fp16", "bf16"] | None = Field(
+        default=None, description="Saved floating parameter/buffer dtype; absent legacy packages use receipt precision.",
+    )
     optimizer_parameter_order: Annotated[tuple[Annotated[str, Field(min_length=1, max_length=512)], ...], Field(max_length=4096)] = ()
 
     @model_validator(mode="after")

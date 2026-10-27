@@ -1,4 +1,5 @@
 import type { GymSourceScore } from "./gyms"
+import type { ArchitectureSelection } from "./architecture/contracts.generated"
 
 // The shape of a training run: its config, and the frames it reports while it
 // executes.
@@ -57,6 +58,12 @@ export interface CurriculumStage {
 }
 
 export interface TrainConfig {
+  architecture?: ArchitectureSelection
+  /** Browser change-detection key; actual receipt/profile authorization remains engine-owned and this key is never sent upstream. */
+  architecture_validation_key?: string
+  precision?: "fp32" | "fp16" | "bf16"
+  seed?: number
+  allow_tf32?: boolean
   model_name: string
   dimensions: number
   ctx_window: number
@@ -138,12 +145,23 @@ export interface TrainConfig {
 // being rejected before it starts. Hence one list: the composer reads it to know
 // what not to show, `lib/jobs.ts` reads it to know what not to send.
 export const RESUMED_ARCH_FIELDS = [
+  "architecture",
   "dimensions",
   "ctx_window",
   "heads",
   "layers",
   "ff_multiplier",
 ] as const satisfies readonly (keyof TrainConfig)[]
+
+export const LEGACY_STRUCTURE_FIELDS = [
+  "dimensions",
+  "heads",
+  "layers",
+  "ff_multiplier",
+  "ctx_window",
+  "rope_base",
+  "learned_temperature",
+] as const
 
 // The vocabulary a resumed run inherits, the same way `RESUMED_ARCH_FIELDS`
 // covers the shape — the LLM engine's `resumed_tokenizer` refuses a *stated*
@@ -464,6 +482,22 @@ export interface DiagPoint {
   policy_tokens?: number
 }
 
+export interface ModelDiagnosticOccurrence {
+  instance_path: string
+  call_path: number[]
+  shapes: number[][]
+  dtypes: string[]
+  output_rms: number[]
+}
+
+export interface ModelDiagPoint extends Partial<DiagPoint> {
+  parameter_grad_norm: Record<string, number>
+  parameter_update_ratio?: Record<string, number>
+  occurrences?: ModelDiagnosticOccurrence[]
+}
+
+export type TrainingDiagnosticPoint = DiagPoint | ModelDiagPoint
+
 export interface TrainStats {
   epoch: number
   total_epochs: number
@@ -502,7 +536,7 @@ export interface TrainStats {
   peak_mib: number | null
   budget_mib: number | null
   // Diagnostics sampled on this report frame, or null on epoch-boundary frames.
-  diag: DiagPoint | null
+  diag: TrainingDiagnosticPoint | null
 }
 
 export interface TrainingSnapshot {
@@ -512,7 +546,7 @@ export interface TrainingSnapshot {
   train: Partial<TrainStats>
   loss_series: [number, number][]
   batch_series: [number, number, number, number][]
-  diag_series: DiagPoint[]
+  diag_series: TrainingDiagnosticPoint[]
   log: string[]
   error: string | null
   // Present (non-null) only when a *successful* run registered a model — the

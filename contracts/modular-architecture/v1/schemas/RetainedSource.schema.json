@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "Expose exact retained text independently of mutable catalog rows or installed implementations.",
+  "properties": {
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "definition_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Definition Id"
+    },
+    "file": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "File",
+      "type": "string"
+    },
+    "language": {
+      "enum": [
+        "python",
+        "yaml",
+        "json"
+      ],
+      "title": "Language",
+      "type": "string"
+    },
+    "revision_id": {
+      "format": "uuid",
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "source": {
+      "maxLength": 262144,
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "revision_id",
+    "content_hash",
+    "file",
+    "language",
+    "source"
+  ],
+  "title": "RetainedSource",
+  "type": "object"
+}

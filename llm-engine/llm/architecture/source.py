@@ -30,10 +30,12 @@ FORBIDDEN_CALLS = frozenset({
 FORBIDDEN_MEMBERS = frozenset({
     "save", "load", "load_state_dict", "state_dict", "from_file", "numpy", "item", "tolist",
     "manual_seed", "seed", "set_rng_state", "set_default_device", "set_default_dtype",
+    "get_default_dtype", "get_default_device",
     "register_forward_hook", "register_forward_pre_hook", "register_backward_hook",
     "register_full_backward_hook", "compile", "synchronize", "set_device", "data",
     "hub", "distributed", "multiprocessing", "cpp_extension", "__dict__", "__class__",
     "os", "sys", "subprocess", "importlib", "builtins", "inspect",
+    "fx", "_dynamo", "export", "compiler",
 })
 
 
@@ -43,6 +45,21 @@ class SourceRevision:
 
     reference: RevisionRef
     source: str
+
+
+def imports_public_builtins(source: str) -> bool:
+    """Detect eligible builtin imports structurally without executing source; malformed drafts defer to worker diagnostics."""
+    if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
+        raise ArchitectureError("source_byte_limit", "block source exceeds byte budget")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, ast.ImportFrom) and node.module == "llm.architecture.builtins"
+        or isinstance(node, ast.Import) and any(alias.name == "llm.architecture.builtins" for alias in node.names)
+        for node in ast.walk(tree)
+    )
 
 
 def immutable_literal(node: ast.AST) -> bool:

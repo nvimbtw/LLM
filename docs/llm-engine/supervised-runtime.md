@@ -41,11 +41,36 @@ capture/compilation/serving: pinned torch reimports revision module names.
 Closing it immediately after construction is incorrect. The backend closes
 the loader on unload, after model execution has stopped.
 
+Training failures raised as `ArchitectureError` retain their stable domain code
+and at most 512 characters of explanation, including unsupported captured
+operation names. Plain `ValueError` contract refusals also retain a bounded
+explanation for administrative training; arbitrary exception subclasses do not.
+Ordinary run projections still replace private error text.
+Generation and other runtime failures retain the exception-class-only response;
+training diagnostics are not copied into public serving errors. No traceback or
+custom exception object crosses IPC.
+
 `manager.session(None, ..., metadata_only=True)` permits CPU inspection only;
 it rejects numerical commands. `manager.resident_session()` owns a parent
 lease for a cached serving lifetime. Queue admission calls `evict_for_queue()`
 to evict idle caches or request eviction when the current operation finishes.
 The worker never acquires an independent process-local device lock.
+
+An owned parent monitoring thread drains idle resident cleanup certificates and
+releases their leases even when no later request arrives. It polls healthy
+workers without taking their request lock; only a ready guardian channel can
+reserve that lock for retirement. This prevents an idle health check from
+rejecting a valid load or generation as an overlapping request, while keeping
+retirement separate from active execution. Startup reconciliation
+failure before the application yields also drains the manager and releases its
+cross-process lock; a partial startup cannot strand admission.
+
+Socket option setup failures close both newly created endpoints. Session setup
+owns its directory and channels until the worker binding/launch handoff; failure
+before binding removes those resources and leaves admission reusable. Once a
+launch handoff is uncertain, local handles close but ownership records remain,
+quarantine is persisted and the manager refuses numerical and metadata sessions.
+Restart cannot treat that uncertainty as verified cleanup.
 
 `session.run()` is blocking and belongs on the existing runner thread or another
 explicitly owned adapter thread, not the async executor. It accepts a
@@ -106,8 +131,10 @@ that compatibility is not a claim that those paths have already been converted.
 ## Effects and adoption callbacks
 
 `EffectBroker(actor, dispatch, EffectJournal(path))` keeps authorization and
-service handles in the parent. `dispatch(actor, operation, artifacts)` validates
-operation-specific data and uses the existing finite-timeout Rust hop. Issued
+service handles in the parent. `dispatch(actor, request, artifacts)` receives the
+full typed `EffectRequest`, including its operation UUID, validates domain data
+and uses the existing finite-timeout Rust hop. The RL adapter uses that same UUID
+for durable job/resource ownership before returning a result grant. Issued
 write UUIDs are fsynced before the remote call; partial/corrupt or duplicate
 issuance is not retryable. Existing safe read retries remain adapter-owned.
 Durable journal retention/recovery belongs to the queued operation owner.

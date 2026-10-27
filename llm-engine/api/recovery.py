@@ -7,13 +7,22 @@ import uuid
 from sqlalchemy import select
 
 import store
-from api import handlers
+from api import handlers, rl_recovery, sft_authority, training_publications, validation_recovery
 from llm import storage
+from llm.architecture import package
 from llm.train.progress import Checkpoint
 from store import queries as q
 
 
 def reconcile() -> None:
+    """Reconcile complete parent-owned model/validation publications after exclusive worker cleanup.
+
+    Modular packages use their verified job/generation metadata, without entering
+    legacy tensor handling. Also finish physical retirement after a crash between
+    registration and deletion, retaining published/kept/referenced generations.
+    """
+    validation_recovery.reconcile()
+    package.remove_staging()
     staging = storage.recovery_staging_dir()
     if staging.exists():
         shutil.rmtree(staging)
@@ -24,14 +33,15 @@ def reconcile() -> None:
         if not metadata.is_file():
             continue
         try:
+            if (directory / "package.json").is_file():
+                training_publications.reconcile(directory)
+                continue
             result = json.loads(metadata.read_text()).get("result", {})
             if result.get("recovery"):
                 _adopt(directory, result)
         except (OSError, ValueError, KeyError, TypeError) as error:
             print(f"recovery: cannot reconcile {directory.name}: {error}")
 
-    # Also handle a crash after registration but before physical retirement,
-    # and consolidate legacy automatic generations after reference migration.
     with store.session() as db:
         parents = set(db.scalars(select(store.Model.parent_id).where(store.Model.parent_id.is_not(None))))
         retired = []
@@ -41,6 +51,8 @@ def reconcile() -> None:
                 retired.extend(q.retire_recovery(db, parent, siblings[-1].id))
     for model_id in retired:
         shutil.rmtree(storage.model_dir(str(model_id)), ignore_errors=True)
+    sft_authority.reconcile()
+    rl_recovery.reconcile()
 
 
 def _adopt(directory, result: dict) -> None:

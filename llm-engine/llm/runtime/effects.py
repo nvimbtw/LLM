@@ -5,15 +5,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future
 import json
+import logging
 import os
 from pathlib import Path
 import threading
+import math
 from uuid import UUID
 
 from llm.runtime.artifacts import ArtifactStore, sync_directory
-from llm.runtime.protocol import EffectOperation, EffectReply, EffectRequest, RuntimeArtifact
+from llm.runtime.protocol import EffectReply, EffectRequest, RuntimeArtifact
 
-EffectDispatch = Callable[[str, EffectOperation, ArtifactStore], RuntimeArtifact | None]
+EffectDispatch = Callable[[str, EffectRequest, ArtifactStore], RuntimeArtifact | None]
+LOG = logging.getLogger(__name__)
 
 
 class EffectJournal:
@@ -65,6 +68,7 @@ class EffectBroker:
         self.journal = journal
         self._active: Future[EffectReply] | None = None
         self._lock = threading.Lock()
+        self._closed = False
 
     def begin(self, request: EffectRequest, artifacts: ArtifactStore) -> Future[EffectReply]:
         """Start one parent callback while the guardian independently supervises deadlines.
@@ -73,6 +77,8 @@ class EffectBroker:
         validate operation-specific data. A late reply never reissues the effect.
         """
         with self._lock:
+            if self._closed:
+                raise ValueError("runtime_effect_broker_closed")
             if self._active is not None and not self._active.done():
                 raise ValueError("runtime_effect_still_outstanding")
             if request.effect.operation not in {"dataset_read", "gym_read", "gym_catalogue"}:
@@ -86,15 +92,31 @@ class EffectBroker:
             thread.start()
             return future
 
+    def close(self, timeout: float) -> None:
+        """Stop new effects and drain the actual parent callback before its grant/session resources can retire.
+
+        Timeout never certifies that an external write stopped; the session
+        owner must retain artifacts and quarantine admission on that outcome.
+        Issued writes keep their journal identity regardless of the reply.
+        """
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("runtime_effect_drain_timeout")
+        with self._lock:
+            self._closed = True
+            active = self._active
+        if active is not None:
+            active.result(timeout=timeout)
+
     def _dispatch(self, request: EffectRequest, artifacts: ArtifactStore, future: Future[EffectReply]) -> None:
         """Translate a callback result without exposing internal exception text or retrying writes."""
         try:
-            result = self.dispatch(self.actor, request.effect, artifacts)
+            result = self.dispatch(self.actor, request, artifacts)
             if result is not None:
                 artifacts.verify(result)
             reply = EffectReply(type="effect_reply", operation_id=request.operation_id, outcome="completed", result=result)
         except Exception:
             write = request.effect.operation not in {"dataset_read", "gym_read", "gym_catalogue"}
+            LOG.exception("Parent effect %s (%s) failed; write_issued=%s", request.operation_id, request.effect.operation, write)
             reply = EffectReply(
                 type="effect_reply", operation_id=request.operation_id,
                 outcome="uncertain" if write else "failed", error_code="remote_effect_failed",

@@ -32,8 +32,18 @@ no trajectory**, the same rule `llm/corpus/remote.py` states for corpora.
 | --- | --- |
 | `llm/backend.py` | The hop toward the Rust backend: the token, the base URL, the failure. `corpus/remote.py` and `gym/client.py` both read it, so there is one token minter. |
 | `llm/gym/client.py` | Creating a run, stepping an episode, grading it. **Nothing here retries** — see below. |
+| `llm/gym/interfaces.py` | Typed rollout/curriculum seam shared by the legacy hop and worker effect client. |
+| `llm/gym/effect_client.py` | Worker-only typed effects, one outstanding operation, consumed grant cleanup and terminal uncertainty/cancellation. |
+| `api/rl_handler.py` | Queued saved-package preparation and one supervised policy/reference/effect/publication lifetime under the existing lease. |
+| `api/rl_admission.py` | Separate finite parent journal/response memory and aggregate retained-evidence disk admission. |
+| `api/rl_effects.py` | Parent dispatcher: queued actor/configuration/seed position, fixed bounded Rust routes, public response projection and job-owned resource/tool/round checks. |
+| `api/rl_effect_log.py` | Bounded durable job authority, issued-before-write intent, returned resource ownership and terminal fences. Contains no command/reply/observation history. |
+| `api/rl_recovery.py` | Drained-job/startup resource retirement without surviving job configuration or uncertain write replay. |
 | `llm/train/rollout.py` | A batch of episodes in lockstep: one batched forward per round, then every command at once. |
 | `llm/train/policy.py` | The return, the group advantage, the masked loss, the KL. |
+| `llm/train/rl_records.py` | Saved-definition preparation, exact full-prefix runtime profile and finite schedule/history admission. |
+| `llm/train/rl_packages.py` | Exact policy/original-reference load and completed-iteration recovery packages using the shared bounded package publisher. |
+| `llm/train/rl_worker.py` | Child backend reusing the existing rollout/objective/curriculum semantics with effect-only gym access. |
 | `llm/orchestrate/rl.py` | Load, roll out, score, update, checkpoint, repeat. |
 | `llm/config.py::RlConfig` | What a run is asked for. States no architecture, like `SftConfig`. |
 
@@ -45,6 +55,66 @@ ran in a real filesystem: asking again after a lost response runs it twice,
 records two steps, and pays the shaping reward twice for one action. So
 `backend.Hop` makes exactly one attempt and the retry lives with the caller that
 can afford it.
+
+The worker effect adapter uses bounded interpreted create/step/finish/status
+records, finite results, duplicate-safe JSON and public task projection. It owns
+no URL, actor or credentials. The rollout thread pool shares one locked effect
+exchange. A failed/uncertain exchange latches the client so queued calls cannot
+issue fresh writes from the interrupted iteration. Payload/result grants retire
+after consumption.
+
+The parent dispatcher separately pins the actor and configuration digest, rejects
+foreign run/episode UUIDs, restricts task pools and general sampling weights, and
+enforces batch/exam counts, tool names, round allowances and terminal transitions.
+Its durable completed-iteration/task-group position restricts creation to the
+exact next seed and remaining iteration count, including inherited curriculum
+offsets. Returned training siblings must share that seed and public question;
+source runs additionally retain their pre-drawn group assignment.
+Its transport disables compression, bounds response bytes before accumulation,
+checks elapsed time between bounded reads and makes exactly one HTTP attempt.
+Per-I/O timeouts do not prove an in-flight callback stopped; session draining
+still owns that boundary. Duplicate-field/nonfinite JSON and malformed typed
+responses cannot become success grants.
+
+The ownership ledger fsyncs the same operation ID used by the runtime broker
+before Rust issuance. Creation fsyncs returned run/episode IDs and tools before
+granting public tasks. Finish/abandon and terminal status fence resources before
+the write, including when its response is lost. An incomplete write fences the
+whole job across parent restart; a recovery job has new authority and no access
+to previous job IDs. Only resource/selection/issuance metadata persists locally;
+gyms retains trajectories. An unknown run ID after a lost creation response
+cannot be rediscovered by replaying creation. Sandbox expiry belongs to gyms.
+
+The production queued handler verifies actual actor/job/source identity, admits
+private saved policy/reference packages and effect storage, then supplies the
+broker alongside the existing acknowledged package adopter. It refuses a final
+summary without the exact settled remaining iteration resources and registered
+output. Known untouched resources close only after child/callback draining, with
+new fsynced parent cleanup identities. Lost cleanup acknowledgements are not
+retried. Startup uses the durable actor/IDs even after job-history pruning and
+checks an elapsed allowance between finite requests. Original uncertainty remains
+recorded; it cannot become a completed worker operation.
+
+Schedule-based journal admission has exact write ceilings of at most 64 MiB per
+ledger. Retained job evidence is capped at 512 MiB and 1024 job directories;
+exhaustion refuses new RL admission. Parent response/reconstruction memory is
+reserved separately from the worker tree. Fully settled evidence is removed
+after draining; uncertain evidence remains, including an unknown creation UUID.
+Gyms owns expiry of unknown/unconfirmed sandboxes.
+
+These adapters have in-process transport/grant/restart and queue transaction
+tests. Standard/looped/custom arithmetic and exact recovery, curriculum/mastery
+restoration and partial-iteration cancellation run in trusted numerical tests.
+Real direct RL workers and queued recovery have separate runnable gates; current
+CPU runs stop at denied socket setup, CUDA is user-deferred, and PostgreSQL/Rust
+network checks remain blocked. Adapter/numerical evidence does not establish
+supervised RL acceptance. Declared cache/profile integration also remains open.
+
+The shared session closes new callback issuance and drains actual parent effect
+and publication work before grants/admission retire. Timeout does not certify
+that an external write stopped: artifacts remain and admission quarantines.
+Real effect/adoption cancel/reap/drain acceptance cases are retained, but
+currently fail at denied socket configuration before child execution.
 
 ## The mask is written down as it is drawn
 
@@ -91,6 +161,47 @@ the decode; between rounds it is dropped, because rows append different numbers
 of observation tokens and a ragged cache is a class of bug rather than a saving
 at these lengths.
 
+The declared-model rollout adapter now uses explicit vocabulary/context facts
+and the common full-prefix logits interface. It preserves ragged logical
+positions and visibility on every step. Legacy Transformers retain their
+private per-round cache. Cache state is dropped on completion/error; declared
+models currently use full-prefix fallback until capability/profile-backed cache
+authorization is connected. A child method's presence alone does not enable it.
+
+Sampling runs in evaluation mode under no-grad. Policy recomputation also uses
+evaluation behavior with autograd enabled, so custom dropout does not change
+the policy being optimized. Heterogeneous module modes restore after success or
+failure. Actual standard/shared-loop/custom dropout updates match independent
+unpadded objectives across micro-batch sizes; reference gradients remain absent.
+This is numerical library evidence. Actual supervised RL/gym-effect/recovery
+acceptance remains open.
+
+The RL backend also runs actual saved-package policy/reference construction,
+strict capture, sampling, gradients and immutable checkpoint publication in its
+numerical lifetime. The policy/reference use fp32 master arithmetic and explicit
+train/eval full-prefix evidence for the actual rollout/exam batch bounds. Every
+reference tensor is independently loaded from the original base, including on
+recovery. It shares package serialization/adoption with pretraining and SFT;
+RL packages carry task/sampling/global RNG, original request, source history and
+curriculum at completed iteration boundaries. Historical fixed-test UUIDs remain
+measurement links; they grant no resource authority to a recovery job. Live gym
+grants and replayable trajectories are absent. Interrupted iterations cannot
+publish a recovery generation.
+
+RL preserves known producer marker facts but marks their history incomplete,
+because it does not measure every marker used in rollout context/actions.
+Subsequent SFT therefore preserves those learned rows instead of treating them
+as unseen and reinitializing them from the mean.
+
+Declared RL currently requires the inherited context without extension; extended
+or cached signatures still need their own capability/profile evidence. Effective
+batch, seed, optimizer/sampling and finite history bounds are validated before
+construction. Retained schedule/history metadata has a conservative 4 MiB
+allowance, also reserved in checkpoint planning. GPU-mapped checkpoint RNG tensors
+return to their owning CPU generators before restoration; CUDA hardware evidence
+remains user-deferred. In-process numerical tests do not establish production
+queue, supervisor, durable database adoption or live Rust integration.
+
 ## The return, and what cannot outrank an answer
 
 ```
@@ -107,11 +218,16 @@ identical contributes **nothing**, all-failed and all-passed alike, and is
 skipped — with the skipped fraction reported, because that is the number saying
 whether a run is learning or merely spending.
 
-One update per batch, so the importance ratio is 1 by construction: no ratio, no
-clipping, no stored old log-probabilities. The loss is REINFORCE with a group
-baseline, plus `beta * KL(policy || base)` against the frozen model the run
-started from — k3, so a single rollout cannot contribute a negative divergence
-and pay the policy for moving away.
+One current-weight update per batch uses no old-policy ratio, clipping or stored
+old log-probabilities. The existing objective recomputes unfiltered,
+unit-temperature next-token probabilities even though sampling applies
+temperature, top-k/top-p and grammar masks. It is a surrogate group-baseline
+policy objective, not an exact unbiased gradient of that transformed sampling
+distribution. The reference penalty retains the nonnegative per-sample k3
+expression against the original frozen model; its expectation under the
+transformed sampler is likewise not an exact unconditional KL measurement.
+This approximation and the grammar/sampler behavior are preserved deliberately.
+An update with no actionable target tokens applies no optimizer step/weight decay.
 
 **A run needs both models resident.** That is the cost `SftConfig.measure_base_kl`
 documents for the diagnostic version of the same idea, made mandatory.

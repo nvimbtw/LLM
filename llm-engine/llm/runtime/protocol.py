@@ -108,8 +108,8 @@ class RuntimeArtifact(Contract):
     size_bytes: PositiveCounter
     format: Literal[
         "source_snapshot_v1", "validation_snapshot_v1", "definition_v1", "model_package_v1",
-        "training_config_v1", "corpus_v1", "prompt_v1", "measurement_v1", "effect_data_v1",
-        "validation_result_v1", "training_result_v1", "measurement_result_v1", "checkpoint_v1",
+        "training_config_v1", "corpus_v1", "tokenizer_v1", "span_table_v1", "loss_mask_v1", "sft_probe_v1", "prompt_v1", "measurement_v1", "effect_data_v1",
+        "validation_result_v1", "training_result_v1", "training_progress_v1", "generation_result_v1", "measurement_result_v1", "checkpoint_v1",
     ]
 
     @model_validator(mode="after")
@@ -167,7 +167,7 @@ class Train(Contract):
     """Run the complete pretrain/SFT/RL lifecycle with resident model and optimizer state."""
 
     type: Literal["train"]
-    pins: RuntimePins
+    pins: RuntimePins | None = None
     job_id: UUID
     training_kind: Literal["pretrain", "sft", "rl"]
     config: RuntimeArtifact
@@ -176,12 +176,21 @@ class Train(Contract):
 
     @model_validator(mode="after")
     def training_inputs(self) -> Train:
-        """Require the existing typed training configuration and optional packed/recovery inputs."""
+        """Allow prepared pretraining or inherited SFT/RL to establish final pins inside the admitted job.
+
+        Resident work retains exact loaded pins and its separate checkpoint
+        format. Package and checkpoint grants cannot substitute for one another.
+        """
         require_format(self.config, "training_config_v1")
         if self.corpus is not None:
             require_format(self.corpus, "corpus_v1")
         if self.recovery is not None:
-            require_format(self.recovery, "checkpoint_v1")
+            require_format(self.recovery, "model_package_v1" if self.pins is None else "checkpoint_v1")
+        if self.pins is None and self.training_kind == "rl":
+            if self.recovery is None or self.corpus is not None:
+                raise ValueError("runtime_rl_bootstrap_requires_saved_package_without_corpus")
+        elif self.pins is None and (self.corpus is None or self.training_kind == "sft" and self.recovery is None):
+            raise ValueError("runtime_training_bootstrap_requires_corpus_and_inherited_sft_package")
         return self
 
 
@@ -382,7 +391,7 @@ class ArtifactReady(Contract):
         """Refuse source/input grants presented as complete publishable worker output."""
         if self.artifact.format not in {
             "checkpoint_v1", "model_package_v1", "validation_result_v1",
-            "training_result_v1", "measurement_result_v1",
+            "training_result_v1", "training_progress_v1", "measurement_result_v1",
         }:
             raise ValueError("runtime_output_format")
         return self
@@ -408,7 +417,7 @@ class Completed(Contract):
     def result_artifact(self) -> Completed:
         """Return only typed operation results; model/checkpoint publication uses adoption."""
         if self.result is not None and self.result.format not in {
-            "validation_result_v1", "training_result_v1", "measurement_result_v1",
+            "validation_result_v1", "training_result_v1", "generation_result_v1", "measurement_result_v1",
         }:
             raise ValueError("runtime_result_format")
         return self

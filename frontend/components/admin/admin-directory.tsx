@@ -10,6 +10,7 @@ import {
   MessageSquareCode,
   Type,
   BookText,
+  Network,
 } from "lucide-react"
 
 interface Destination {
@@ -19,6 +20,7 @@ interface Destination {
 }
 
 const WORKBENCH: Destination[] = [
+  { title: "Architectures", href: "/arch", icon: Network },
   {
     title: "Data",
     href: "/data",
@@ -64,6 +66,7 @@ const INTERFACE: Destination[] = [
   },
 ]
 
+/** Lists administrator destinations through the existing directory, keeping private authoring out of ordinary navigation. */
 export function AdminDirectory() {
   const total = WORKBENCH.length + INTERFACE.length
 

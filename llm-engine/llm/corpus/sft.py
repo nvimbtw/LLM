@@ -24,8 +24,9 @@ not interchangeable with another and they cannot share a path — see
 import hashlib
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from tokenizers import Tokenizer
@@ -39,7 +40,7 @@ from llm.chat.context import (
 )
 from llm.chat.template import Reasoning, Role, ThinkBudget, Turn
 from llm.corpus import bpe, remote, spans as spans_mod, special
-from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS
+from llm.corpus.pack import CORPUS_DTYPE, ENCODE_BATCH_CHARS, FLUSH_TOKENS, PackBudget
 from llm.corpus.spans import SpanBuilder, Spans
 
 # How much of the selection survives into the directory name before the hash
@@ -48,6 +49,7 @@ from llm.corpus.spans import SpanBuilder, Spans
 KEY_SLUG_SETS = 2
 KEY_DIGEST_CHARS = 10
 CONTEXT_FORMAT_VERSION = 1
+MAX_BOUNDED_CONVERSATION_CHARS = 8 << 20
 
 
 @dataclass
@@ -249,6 +251,10 @@ def build(
     selection: list[remote.Selected],
     reasoning: Reasoning = Reasoning.KEEP,
     report=None,
+    *,
+    directory: Path | None = None,
+    budget: PackBudget | None = None,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> SftStats:
     """Render every conversation in `selection` into the aligned corpus/mask pair.
 
@@ -259,6 +265,11 @@ def build(
     IDs and masks are streamed to aligned partial files and published only
     after nonempty rendering succeeds. Character-bounded batches accumulate
     marker IDs and a token histogram without scanning the finished corpus.
+    Private preparation can supply its own directory without mutating DATA_DIR.
+    An explicit budget bounds combined token/mask bytes and document rows before
+    append, and caps each source conversation at 8,388,608 characters or one
+    character per admitted output byte, whichever is smaller. Failure removes partial files and
+    leaves prior complete token/mask files intact before publication begins.
     """
     key = dataset_key(selection, reasoning)
     expected = sum(selected.taken for selected in selection)
@@ -278,9 +289,10 @@ def build(
     trainable_tokens = 0
     read = 0
 
-    storage.ensure_dir(storage.sft_dataset_dir(key))
+    storage.ensure_dir(storage.sft_dataset_dir(key, directory=directory))
 
-    corpus_final, mask_final = storage.sft_corpus_path(key), storage.sft_mask_path(key)
+    corpus_final = storage.sft_corpus_path(key, directory=directory)
+    mask_final = storage.sft_mask_path(key, directory=directory)
     corpus_partial = corpus_final.with_suffix(".bin.partial")
     mask_partial = mask_final.with_suffix(".bin.partial")
 
@@ -308,10 +320,19 @@ def build(
         if not pending:
             return
 
+        if any(text.startswith(special.MEMORY_OPEN) for segments in pending for text, _ in segments):
+            marker_ids.update(special.SPECIAL_TOKENS.index(marker)
+                              for marker in (special.MEMORY_OPEN, special.MEMORY_CLOSE))
         for ids, example_mask in template.encode_examples(pending, tokenizer):
+            if check_cancelled is not None:
+                check_cancelled()
             if not ids:
                 skipped += 1
                 continue
+
+            if budget is not None and ((total_tokens + len(ids) + 1) * 3 > budget.max_corpus_bytes
+                                        or len(documents) >= budget.max_documents):
+                raise ValueError("SFT corpus/mask bytes or document rows exceed the preparation budget")
 
             documents.append("sft", start=total_tokens, length=len(ids))
             token_buffer.extend(ids)
@@ -351,26 +372,36 @@ def build(
             skipped_too_long=skipped,
         )
 
-    with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
-        for raw in read_conversations(client, selection):
-            read += 1
-            turns = _turns(raw)
-            if turns is None:
-                skipped += 1
-                continue
+    try:
+        with corpus_partial.open("wb") as corpus_out, mask_partial.open("wb") as mask_out:
+            for raw in read_conversations(client, selection):
+                if check_cancelled is not None:
+                    check_cancelled()
+                read += 1
+                turns = _turns(raw)
+                if turns is None:
+                    skipped += 1
+                    continue
 
-            budget = ThinkBudget.parse(raw["budget"]) if raw.get("budget") else None
-            segments = template.training_segments(
-                raw.get("system"), turns, budget, reasoning
-            )
-            pending.append(segments)
-            pending_chars += sum(len(text) for text, _ in segments)
-            if pending_chars >= ENCODE_BATCH_CHARS:
-                drain()
+                thinking = ThinkBudget.parse(raw["budget"]) if raw.get("budget") else None
+                segments = template.training_segments(raw.get("system"), turns, thinking, reasoning)
+                characters = sum(len(text) for text, _ in segments)
+                if budget is not None and characters > min(MAX_BOUNDED_CONVERSATION_CHARS, budget.max_corpus_bytes):
+                    raise ValueError("SFT source conversation exceeds the preparation character budget")
+                pending.append(segments)
+                pending_chars += characters
+                if pending_chars >= ENCODE_BATCH_CHARS:
+                    drain()
 
-        drain()
-        flush()
-        announce(force=True)
+            drain()
+            flush()
+            announce(force=True)
+            if check_cancelled is not None:
+                check_cancelled()
+    except BaseException:
+        corpus_partial.unlink(missing_ok=True)
+        mask_partial.unlink(missing_ok=True)
+        raise
 
     if not documents:
         corpus_partial.unlink(missing_ok=True)
@@ -388,9 +419,9 @@ def build(
     mask_partial.replace(mask_final)
 
     spans = documents.build()
-    spans.save(storage.sft_spans_path(key))
+    spans.save(storage.sft_spans_path(key, directory=directory))
 
-    storage.sft_segments_path(key).write_text(
+    storage.sft_segments_path(key, directory=directory).write_text(
         json.dumps(
             {
                 "eot_id": eot_id,
@@ -416,7 +447,7 @@ def build(
     )
 
 
-def load(key: str) -> tuple[np.ndarray, np.ndarray]:
+def load(key: str, *, directory: Path | None = None) -> tuple[np.ndarray, np.ndarray]:
     """The corpus and its mask, checked for alignment.
 
     A length mismatch means the dataset was built inconsistently and every
@@ -429,8 +460,8 @@ def load(key: str) -> tuple[np.ndarray, np.ndarray]:
     them (`EpochStream.gather`). A mapping is backed by the file, so the kernel
     reclaims it under pressure instead of the process being killed.
     """
-    corpus = np.memmap(storage.sft_corpus_path(key), dtype=CORPUS_DTYPE, mode="r")
-    mask = np.memmap(storage.sft_mask_path(key), dtype=np.uint8, mode="r")
+    corpus = np.memmap(storage.sft_corpus_path(key, directory=directory), dtype=CORPUS_DTYPE, mode="r")
+    mask = np.memmap(storage.sft_mask_path(key, directory=directory), dtype=np.uint8, mode="r")
     if len(corpus) != len(mask):
         raise ValueError(
             f"SFT corpus/mask length mismatch: {len(corpus)} tokens vs {len(mask)} mask bytes"
@@ -438,9 +469,9 @@ def load(key: str) -> tuple[np.ndarray, np.ndarray]:
     return corpus, mask
 
 
-def load_segments(key: str) -> tuple[int, Spans, dict]:
+def load_segments(key: str, *, directory: Path | None = None) -> tuple[int, Spans, dict]:
     """Return document boundaries and provenance, including the context-rendering version."""
-    path = storage.sft_segments_path(key)
+    path = storage.sft_segments_path(key, directory=directory)
     if not path.is_file():
         return 0, Spans.empty(), {}
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -451,7 +482,7 @@ def load_segments(key: str) -> tuple[int, Spans, dict]:
         "special_ids_seen": raw.get("special_ids_seen"),
         "token_counts": raw.get("token_counts"),
     }
-    return raw["eot_id"], spans_mod.from_sidecar(storage.sft_spans_path(key), raw), info
+    return raw["eot_id"], spans_mod.from_sidecar(storage.sft_spans_path(key, directory=directory), raw), info
 
 
 # How many tokens to test at a time when a dataset has to be scanned. 8M tokens

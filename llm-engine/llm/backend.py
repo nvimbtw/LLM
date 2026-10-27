@@ -18,6 +18,7 @@ and pays the shaping reward twice for one action. So `Hop` makes exactly one
 attempt and the retry lives with the caller that can afford it.
 """
 
+import math
 import os
 import time
 import uuid
@@ -143,3 +144,49 @@ class Hop:
                 f"{path}: {response.status_code} {detail(response)}", response.status_code
             )
         return response.json(), len(response.content)
+
+    def request_bytes(self, method: str, path: str, *, limit_bytes: int,
+                      timeout_seconds: float = REQUEST_TIMEOUT_SECS, **kwargs) -> bytes:
+        """Perform one bounded Rust request and return raw UTF-8 JSON bytes for the caller's typed decoder.
+
+        Identity encoding prevents hidden decompression allocations. Size is
+        checked before accumulation; the elapsed deadline is checked between
+        bounded reads, with the same finite per-I/O timeout. A parent callback
+        remains supervised/drained if an in-flight read outlives that deadline.
+        No read or write is retried by this operation.
+        """
+        if type(limit_bytes) is not int or limit_bytes < 1 or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("bounded Rust request needs positive byte/time limits")
+        deadline = time.monotonic() + timeout_seconds
+        headers = {"Authorization": f"Bearer {self.token()}", "Accept-Encoding": "identity"}
+        try:
+            with self._http.stream(method, f"{self.base_url}{path}", headers=headers, timeout=timeout_seconds, **kwargs) as response:
+                raw = bounded_response(response, limit_bytes, deadline)
+                if response.status_code >= 400:
+                    error = httpx.Response(response.status_code, content=raw)
+                    raise RemoteError(f"{path}: {response.status_code} {detail(error)}", response.status_code)
+                return raw
+        except httpx.HTTPError as error:
+            raise RemoteError(f"{path}: {error}") from error
+
+
+def bounded_response(response: httpx.Response, limit_bytes: int, deadline: float) -> bytes:
+    """Consume identity-encoded chunks within byte/elapsed bounds and require the declared length; the caller owns response closure."""
+    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+        raise RemoteError("bounded Rust response must use identity encoding")
+    declared = response.headers.get("Content-Length")
+    if declared is not None and (not declared.isdecimal() or int(declared) > limit_bytes):
+        raise RemoteError("bounded Rust response exceeds its declared byte budget")
+    body = bytearray()
+    chunks = response.iter_raw(chunk_size=min(65536, limit_bytes + 1))
+    while True:
+        if time.monotonic() > deadline:
+            raise RemoteError("bounded Rust response exceeded its elapsed deadline")
+        block = next(chunks, None)
+        if block is None:
+            if declared is not None and len(body) != int(declared):
+                raise RemoteError("bounded Rust response differs from its declared length")
+            return bytes(body)
+        if len(body) + len(block) > limit_bytes:
+            raise RemoteError("bounded Rust response exceeds its byte budget")
+        body.extend(block)

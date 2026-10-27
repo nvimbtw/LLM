@@ -21,6 +21,7 @@ const CHANNELS = 4
 const CELL_CENTRE = 0.5
 const PERCENT = 100
 
+/** Draws one bounded matrix and exposes pointer-selected token pairs without changing the underlying probabilities. */
 export function AttentionCanvas({
   matrix,
   cell,
@@ -37,11 +38,6 @@ export function AttentionCanvas({
     if (!context) return
 
     const started = performance.now()
-    // One backing pixel per cell, scaled to the panel by CSS with
-    // nearest-neighbour. A cell is not a shape, it is a pixel — so there is
-    // nothing a `fillRect` per cell could buy, and at the 512-token ceiling
-    // that would be 262,144 draw calls where this is one `putImageData` and a
-    // blit the compositor does.
     canvas.width = size
     canvas.height = size
 
@@ -54,14 +50,12 @@ export function AttentionCanvas({
       pixels[to + 2] = attentionRamp[from + 2]
       pixels[to + 3] = attentionRamp[from + 3]
     }
-    // Left transparent below the diagonal's ink rather than filled with a
-    // background colour: the panel's surface is what shows through, which is
-    // how one ramp serves both themes. See `attention-ramp.ts`.
     context.putImageData(new ImageData(pixels, size, size), 0, 0)
 
     onDrawn(performance.now() - started)
   }, [size, weights, onDrawn])
 
+  /** Maps a pointer position to a bounded actual matrix cell, or returns no selection outside the canvas. */
   function cellAt(clientX: number, clientY: number): AttentionCell | null {
     const canvas = ref.current
     if (!canvas) return null
@@ -77,9 +71,7 @@ export function AttentionCanvas({
       <canvas
         ref={ref}
         role="img"
-        aria-label={`Attention from layer ${matrix.layer}, head ${matrix.head}, over ${tokens.length} tokens`}
-        // `pixelated`, because the browser's default smoothing would blend
-        // neighbouring cells into each other and invent weights between them.
+        aria-label={`Attention from ${matrix.pointId ? "selected model view" : `layer ${matrix.layer}`}, head ${matrix.head}, over ${tokens.length} tokens`}
         style={{ imageRendering: "pixelated" }}
         className="block aspect-square w-full cursor-crosshair"
         onPointerMove={(event) =>

@@ -20,17 +20,21 @@ from dataclasses import asdict
 from typing import Any
 
 import store
-from api import chain, handlers
+from api import builtin_catalog, chain, handlers, validation_jobs
 from api.handlers import HANDLERS
 from api.runs import REGISTRY, Event, Registry, Run
-from api.worker import SupervisedHandler, SupervisedRun
+from api.worker import RegisteredCheckpoint, SupervisedHandler, SupervisedRun
+from api.training_handler import TrainingHandler
+from api.sft_handler import SftHandler
+from api.rl_handler import RlHandler
 from llm.orchestrate import chat as chat_pipeline
 from llm.model import device
 from llm.train.loop import release_device
 from llm.train.progress import Checkpoint, Progress, Tokenize
 from llm.runtime.supervisor import RequestCancelled, WorkerManager
+from llm.architecture.wire import ValidationEvent
 from store import queries as q
-from store.schema import RunKind, RunStatus
+from store.schema import RunArchitecturePin, RunKind, RunStatus
 
 #: Given a config, report progress, check for cancellation and say who the run
 #: is for, return a result. The first two are the seams the pipelines already
@@ -130,7 +134,7 @@ class Runner:
         """Ask a run to stop. Queued rows stop immediately; a running one stops
         at its next step boundary, which is a real interval and a real state."""
         with store.session() as db:
-            run = db.get(store.Run, run_id)
+            run = q.lock_run(db,run_id)
             if run is None or run.status.is_terminal:
                 return False
             if run.status in (RunStatus.queued, RunStatus.waiting):
@@ -196,7 +200,8 @@ class Runner:
             return
 
         self._current = run_id
-        live = self._registry.adopt(str(run_id), kind.value, config)
+        observed = config.get("request",config) if kind == RunKind.model_validation else config
+        live = self._registry.adopt(str(run_id), kind.value, observed)
         progress = _ThrottledProgress(self._registry, live, run_id)
 
         try:
@@ -211,29 +216,40 @@ class Runner:
                 self._finish(run_id, RunStatus.cancelled, result=result, ref_id=produced)
                 self._registry.finish(live, "cancelled", result=result)
             else:
-                self._finish(
+                status = self._finish(
                     run_id,
                     RunStatus.done,
                     result=result,
                     ref_id=produced,
                     progress=1.0,
                 )
-                self._registry.finish(live, "completed", result=result)
+                self._registry.finish(live, "cancelled" if status == RunStatus.cancelled else "completed", result=result)
         except RequestCancelled:
             self._finish(run_id, RunStatus.cancelled)
             self._registry.finish(live, "cancelled")
         except Exception as e:
             traceback.clear_frames(e.__traceback__)
-            self._registry.finish(live, "failed", error=f"{type(e).__name__}: {e}")
             self._finish(run_id, RunStatus.failed, error=f"{type(e).__name__}: {e}")
+            self._registry.finish(live, "failed", error=f"{type(e).__name__}: {e}")
         finally:
             self._current = None
             if self._worker_future is not None and self._worker_future.done():
                 self._worker_future = None
 
-    def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> None:
+    def _finish(self, run_id: uuid.UUID, status: RunStatus, **fields) -> RunStatus:
+        """Commit terminal publication/evidence while preserving a cancellation that won the durable row lock."""
         with store.session() as db:
+            existing = q.lock_run(db,run_id)
+            if existing is not None and status == RunStatus.done and existing.status == RunStatus.cancelling:
+                status = RunStatus.cancelled
+                if existing.kind == RunKind.model_validation:
+                    fields = {}
+            if existing is not None and existing.kind == RunKind.model_validation and status == RunStatus.cancelled:
+                fields.pop("result",None)
             finished = q.finish_run(db, run_id, status, **fields)
+            if finished is not None and finished.kind == RunKind.model_validation and status == RunStatus.done:
+                validation_jobs.complete_validation(db,finished,fields["result"])
+                builtin_catalog.queue_ready_recipes(db)
             produced = fields.get("ref_id") if status == RunStatus.done else None
             if finished is not None and finished.kind == RunKind.benchmark and status == RunStatus.done:
                 produced = uuid.UUID(finished.config["model_name"])
@@ -241,6 +257,7 @@ class Runner:
                 produced = None
         if chain.promote(run_id, produced):
             self.wake()
+        return status
 
     async def wait(self, run_id: uuid.UUID, poll_secs: float = 0.05) -> None:
         """Block until a run reaches a terminal state.
@@ -268,9 +285,18 @@ def _work(handler, config, progress, cancel, owner, workers=None, run_id=None):
 
     Benchmark dispatch holds no device. Queue priority evicts an idle resident
     worker before admission; legacy cache cleanup stays in this parent thread.
+    Pinned pretraining/SFT/RL dispatch through their complete parent/child
+    adapters; a saved custom model cannot fall through a legacy handler.
     """
     if handler is handlers.benchmark:
         return handler(config, progress, cancel, owner)
+    if handler in (handlers.train, handlers.reinforce) and run_id is not None:
+        with store.session() as db:
+            if db.get(RunArchitecturePin, run_id) is not None:
+                if workers is None:
+                    raise RuntimeError("pinned recipe training requires the supervised training adapter")
+                handler = (RlHandler() if handler is handlers.reinforce
+                    else SftHandler() if config.get("base_model") else TrainingHandler())
     if workers is not None:
         workers.evict_for_queue()
     with device.admit(wait=True) as lease:
@@ -303,13 +329,14 @@ class _ThrottledProgress:
         self._last_write = 0.0
 
     def __call__(self, payload: Any) -> None:
+        """Publish measured events; legacy checkpoints register here while supervised publications arrive already committed."""
         kind, frame = _frame(payload)
         self._registry.publish(self._live, Event(kind, frame))
 
+        if isinstance(payload, RegisteredCheckpoint):
+            return
+
         if isinstance(payload, Checkpoint):
-            # Written now, not on the timer below. That throttle exists so a
-            # progress bar does not cost a row per step; a checkpoint frame it
-            # swallowed would be weights on disk that nothing can name.
             if handlers.record_checkpoint(self._run_id, payload) is None and not payload.final:
                 raise RuntimeError("Recovery point was saved but registration failed; stopping to preserve bounded recovery storage")
             return
@@ -322,9 +349,6 @@ class _ThrottledProgress:
             run = db.get(store.Run, self._run_id)
             if run is None:
                 return
-            # Phase 1 has its own `progress`, deliberately not written here: the
-            # row's bar is how far the *run* is, and filling it while the dataset
-            # builds would send it back to zero the moment training began.
             if isinstance(frame.get("fraction"), (int, float)):
                 run.progress = float(frame["fraction"])
             label = _stage_label(kind, frame)
@@ -347,6 +371,8 @@ def _stage_label(kind: str, frame: dict) -> str | None:
         return "tokenizing"
     if kind == "rl":
         return "practising"
+    if kind == "validation":
+        return frame["stage"]["stage"] if frame.get("stage") else None
     stage = frame.get("stage")
     return stage if isinstance(stage, str) else None
 
@@ -362,17 +388,22 @@ def _frame(payload: Any) -> tuple[str, dict]:
     A `Tokenize` is the same arrangement for the phase that builds the data, and
     a `Checkpoint` is the announcement of a model the run has already written to
     disk — the one frame whose consumer is a database row rather than a chart.
+    Unmeasured tokenization fields remain absent. Typed validation stages retain
+    their shared wire envelope.
 
     Everything else already reports a plain dict — a stage line — and keeps
     `progress`.
     """
+    if isinstance(payload, ValidationEvent):
+        return "validation",payload.model_dump(mode="json",exclude_none=True)
     if isinstance(payload, Progress):
         return "train", {**asdict(payload), "fraction": payload.fraction}
     if isinstance(payload, Tokenize):
-        # A field this phase does not measure is absent, not zero — see `Tokenize`.
         return "tokenize", {k: v for k, v in asdict(payload).items() if v is not None}
     if isinstance(payload, Checkpoint):
         return "checkpoint", asdict(payload)
+    if isinstance(payload, RegisteredCheckpoint):
+        return "checkpoint", asdict(payload.frame)
     if isinstance(payload, dict):
         return "progress", payload
     return "log", {"line": str(payload)}

@@ -6,16 +6,21 @@ these records without introducing a second queue, catalog or graph interpreter.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import math
+import struct
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, StrictBool, StrictInt, StringConstraints, field_validator, model_validator
+from pydantic import Field, JsonValue, StrictBool, StrictInt, StringConstraints, field_validator, model_validator
 
 from llm.architecture.spec import (
-    MAX_CATALOG_PAGE, MAX_GRAPH_PAGE_NODES, MAX_PARAMETERS, MAX_SOURCE_BYTES,
+    MAX_CATALOG_PAGE, MAX_GRAPH_PAGE_NODES, MAX_PARAMETERS, MAX_SOURCE_BYTES, MAX_ATTENTION_HEADS, MAX_ATTENTION_SEQUENCE,
     MAX_YAML_BYTES, BlockDeclaration, Capability, Contract, Identifier,
-    NonnegativeInt, ParameterDeclaration, PositiveInt, ReceiptIdentity,
-    Recipe, RevisionRef, RuntimeProfile, Scalar, Sha256, Subject, TokenizerBinding,
+    DraftSubject, NonnegativeInt, ParameterDeclaration, PositiveInt, ReceiptIdentity,
+    Recipe, RevisionRef, RuntimeProfile, Scalar, Sha256, Subject, TokenizerBinding, FinalTokenizer,
     ValidationReceipt, checked_relative_path,
 )
 
@@ -123,6 +128,41 @@ class ArchitectureDraftView(DraftSaved):
     def bounded_yaml(cls, value: str) -> str:
         """Bound UTF-8 YAML while retaining invalid drafts for repair."""
         return checked_text_bytes(value, MAX_YAML_BYTES)
+
+
+class ArchitectureLimits(Contract):
+    """Expose actual engine authoring ceilings as data; worker admission remains a separate execution boundary."""
+
+    source_bytes: PositiveInt
+    yaml_bytes: PositiveInt
+    expanded_calls: PositiveInt
+    nesting: PositiveInt
+
+
+class ArchitectureSchema(Contract):
+    """Supply the authoritative recipe schema and prospective runtime defaults without claiming validation or device admission."""
+
+    schema_version: Literal[1]
+    recipe: dict[str, JsonValue]
+    limits: ArchitectureLimits
+    binding_syntax: Literal["${parameter}"]
+    default_profile: RuntimeProfile
+    available_devices: Annotated[tuple[Literal["cpu", "cuda"], ...], Field(min_length=1, max_length=2)]
+
+    @model_validator(mode="after")
+    def available_default(self):
+        """Require unique device names and a prospective default selecting an actually reported device."""
+        if len(set(self.available_devices)) != len(self.available_devices) or self.default_profile.device not in self.available_devices:
+            raise ValueError("prospective default profile requires an available device")
+        return self
+
+
+class RecipeDraftInspection(Contract):
+    """Return safely parsed saved YAML declarations with exact draft identity, without imports, resolution, construction or evidence."""
+
+    subject: DraftSubject
+    recipe: Recipe
+    verdict: Literal["inspection_only"] = "inspection_only"
 
 
 class ResourceSummary(Contract):
@@ -283,6 +323,26 @@ class SourceLocation(Contract):
         return checked_relative_path(value)
 
 
+class RetainedSource(Contract):
+    """Expose exact retained text independently of mutable catalog rows or installed implementations."""
+
+    revision_id: UUID
+    definition_id: Sha256 | None = None
+    content_hash: Sha256
+    file: Annotated[str, Field(min_length=1, max_length=512)]
+    language: Literal["python", "yaml", "json"]
+    source: Annotated[str, Field(max_length=MAX_SOURCE_BYTES)]
+
+    @model_validator(mode="after")
+    def exact_bytes(self) -> RetainedSource:
+        """Require normalized display paths, bounded UTF-8 and an exact raw-byte source digest."""
+        checked_relative_path(self.file)
+        checked_text_bytes(self.source, MAX_SOURCE_BYTES)
+        if hashlib.sha256(self.source.encode("utf-8")).hexdigest() != self.content_hash:
+            raise ValueError("retained source hash mismatch")
+        return self
+
+
 class Diagnostic(Contract):
     """Return bounded actionable failures without tensor values, arbitrary objects or raw logs."""
 
@@ -336,10 +396,11 @@ class ValidationReport(Contract):
         names = [stage.stage for stage in self.stages]
         if len(set(names)) != len(names):
             raise ValueError("duplicate validation stage")
-        if self.verdict in {"valid", "provisional"}:
+        if self.verdict == "valid":
             outcomes = {stage.stage: stage.outcome for stage in self.stages}
             if any(outcomes.get(stage) != "passed" for stage in ("capture", "numerical")):
                 raise ValueError("successful report requires capture and numerical checks")
+        if self.verdict in {"valid", "provisional"}:
             if any(stage.outcome in {"pending", "running", "failed"} for stage in self.stages):
                 raise ValueError("successful report contains unfinished or failed stage")
         if len({item.name for item in self.capabilities}) != len(self.capabilities):
@@ -437,6 +498,47 @@ class ArchitectureSelection(Contract):
     revision_id: UUID
     parameters: Annotated[dict[Identifier, Scalar], Field(max_length=MAX_PARAMETERS)]
     validation_run_id: UUID | None = None
+
+
+class TrainingArchitectureRequest(Contract):
+    """Read prospective selected-recipe bindings/profile without allocating a model, queue row or future tokenizer identity."""
+
+    schema_version: Literal[1] = 1
+    selection: ArchitectureSelection
+    batch_size: Annotated[PositiveInt, Field(le=9007199254740991)]
+    precision: Literal["fp32", "fp16", "bf16"] = "bf16"
+    seed: Annotated[NonnegativeInt, Field(le=9007199254740991)] = 0
+    allow_tf32: StrictBool = True
+    tokenizer_id: UUID | None = None
+
+
+class TrainingArchitecturePreview(Contract):
+    """Return resolved data-only configuration; final tokenization and admitted numerical preflight remain mandatory in the actual training job."""
+
+    schema_version: Literal[1] = 1
+    architecture: RevisionRef
+    parameters: Annotated[dict[Identifier, Scalar], Field(max_length=MAX_PARAMETERS)]
+    parameter_digest: Sha256
+    dependency_digest: Sha256
+    context_window: PositiveInt
+    profile: RuntimeProfile
+    tokenizer: FinalTokenizer | None = None
+    reserved_token_names: Annotated[tuple[Identifier, ...], Field(max_length=128)] = ()
+    final_preflight_required: StrictBool = True
+
+    @model_validator(mode="after")
+    def training_domain(self) -> TrainingArchitecturePreview:
+        """Require a causal training-shaped prospective profile, never a contradictory or partial validation claim."""
+        domains = self.profile.domains
+        if not self.final_preflight_required or self.architecture.kind != "architecture" or len(domains) != 1 or set(self.profile.modes) != {"train", "eval"}:
+            raise ValueError("training preview requires one causal recipe domain and both train/eval modes")
+        domain = domains[0]
+        if (domain.batch_min != 1 or domain.sequence_min != 1 or domain.sequence_max != self.context_window
+                or domain.signatures != ("full_prefix",) or domain.past_min or domain.past_max or self.profile.token_dtype != "int64"):
+            raise ValueError("training preview differs from canonical full-prefix input bounds")
+        if len(set(self.reserved_token_names)) != len(self.reserved_token_names):
+            raise ValueError("training preview has duplicate reserved token names")
+        return self
 
 
 class EnqueueEvidence(Contract):
@@ -540,16 +642,142 @@ class ModelDefinitionSummary(Contract):
     capabilities: Annotated[tuple[Capability, ...], Field(max_length=6)]
     parameter_count: NonnegativeInt | None
     legacy_architecture: Annotated[dict[Literal["dimensions", "heads", "layers", "ff_multiplier", "ctx_window"], PositiveInt], Field(max_length=5)] | None
+    validation_receipts: Annotated[tuple[ValidationReceipt, ...], Field(max_length=64)] = ()
+
+
+class AttentionSelection(Contract):
+    """Select an actual declared observation or a compatible legacy layer; one request never guesses between the two."""
+
+    text: Annotated[str, Field(min_length=1, max_length=1048576)]
+    layer: NonnegativeInt | None = None
+    head: NonnegativeInt = 0
+    point_id: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def unambiguous_selection(self):
+        """Retain the default legacy layer zero while rejecting a request that supplies both selection identities."""
+        if self.point_id is not None and self.layer is not None:
+            raise ValueError("select an attention point or a legacy layer, not both")
+        return self
+
+
+class InspectionPointView(Contract):
+    """Expose declared view identity separately from worker-lifetime numerical evidence and its exact tested bound."""
+
+    id: Sha256
+    title: Annotated[str, Field(min_length=1, max_length=120)]
+    instance_path: Annotated[str, Field(min_length=1, max_length=1024)]
+    call_path: Annotated[tuple[NonnegativeInt, ...], Field(max_length=64)]
+    heads: Annotated[PositiveInt, Field(le=MAX_ATTENTION_HEADS)] | None = None
+    validated_sequence_max: Annotated[NonnegativeInt, Field(le=MAX_ATTENTION_SEQUENCE)] = 0
+    evidence_hash: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def complete_runtime_evidence(self):
+        """A declared point cannot claim a supported runtime bound without its observed head count and exact evidence hash."""
+        if bool(self.validated_sequence_max) != (self.evidence_hash is not None) or self.evidence_hash is not None and self.heads is None:
+            raise ValueError("validated attention points require heads, sequence bounds and matching evidence")
+        return self
+
+
+class InspectionCatalog(Contract):
+    """Describe bounded model-local attention candidates; reading declarations alone never certifies their measurement path."""
+
+    model_name: Annotated[str, Field(min_length=1, max_length=255)]
+    definition_id: Sha256 | None = None
+    profile_digest: Sha256 | None = None
+    runtime_id: UUID | None = None
+    context_window: PositiveInt | None = None
+    max_tokens: Annotated[PositiveInt, Field(le=MAX_ATTENTION_SEQUENCE)] | None = None
+    legacy_layers: PositiveInt | None = None
+    legacy_heads: PositiveInt | None = None
+    points: Annotated[tuple[InspectionPointView, ...], Field(max_length=128)] = ()
+    unavailable_reason: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
+
+    @model_validator(mode="after")
+    def coherent_catalog(self):
+        """Keep runtime identity, actual legacy dimensions and unavailable metadata explicit and refuse duplicate/stale view bounds."""
+        if (self.legacy_layers is None) != (self.legacy_heads is None):
+            raise ValueError("legacy attention metadata requires both layers and heads")
+        if (self.context_window is None) != (self.max_tokens is None):
+            raise ValueError("attention context and token ceiling must be given together")
+        if self.legacy_layers is not None and self.context_window is None:
+            raise ValueError("legacy attention metadata requires actual context")
+        if self.max_tokens is not None and self.max_tokens > self.context_window:
+            raise ValueError("attention token ceiling exceeds trained context")
+        if len({point.id for point in self.points}) != len(self.points):
+            raise ValueError("attention point IDs must be unique")
+        identity = (self.definition_id, self.profile_digest, self.runtime_id)
+        if any(value is not None for value in identity) and any(value is None for value in identity):
+            raise ValueError("attention runtime identity must be complete")
+        if self.points and any(value is None for value in (self.definition_id, self.profile_digest, self.runtime_id, self.context_window)):
+            raise ValueError("declared attention points require exact resident definition/profile/runtime identity")
+        if any(point.validated_sequence_max > (self.max_tokens or 0) for point in self.points):
+            raise ValueError("attention point proof exceeds the available token ceiling")
+        if not self.points and self.legacy_layers is None and self.unavailable_reason is None:
+            raise ValueError("unavailable attention requires an explicit reason")
+        return self
+
+
+class AttentionMatrix(Contract):
+    """Return one bounded real fp32 little-endian head matrix, with actual axes and optional modular measurement identity."""
+
+    model_name: Annotated[str, Field(min_length=1, max_length=255)]
+    layer: NonnegativeInt | None = None
+    head: NonnegativeInt
+    layers: PositiveInt | None = None
+    heads: PositiveInt
+    max_tokens: Annotated[PositiveInt, Field(le=MAX_ATTENTION_SEQUENCE)]
+    tokens: Annotated[tuple[Annotated[str, Field(max_length=8192)], ...], Field(min_length=1, max_length=MAX_ATTENTION_SEQUENCE)]
+    shape: tuple[Annotated[PositiveInt, Field(le=MAX_ATTENTION_SEQUENCE)], Annotated[PositiveInt, Field(le=MAX_ATTENTION_SEQUENCE)]]
+    dtype: Literal["float32"] = "float32"
+    encoding: Literal["base64"] = "base64"
+    weights: Annotated[str, Field(min_length=8, max_length=((MAX_ATTENTION_SEQUENCE**2 * 4 + 2) // 3) * 4, pattern=r"^[A-Za-z0-9+/]+={0,2}$")]
+    point_id: Sha256 | None = None
+    definition_id: Sha256 | None = None
+    profile_digest: Sha256 | None = None
+    runtime_id: UUID | None = None
+    validated_sequence_max: Annotated[NonnegativeInt, Field(le=MAX_ATTENTION_SEQUENCE)] = 0
+    evidence_hash: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def actual_matrix_identity(self):
+        """Refuse inconsistent axes, resource ranges, byte lengths or a modular result without its exact measurement proof."""
+        size = len(self.tokens)
+        if self.shape != (size, size) or size > self.max_tokens or self.head >= self.heads:
+            raise ValueError("attention matrix axes or head are outside actual bounds")
+        if self.layer is not None and (self.layers is None or self.layer >= self.layers):
+            raise ValueError("attention layer is outside actual legacy bounds")
+        try:
+            raw = base64.b64decode(self.weights, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("attention weights are not valid base64") from error
+        if len(raw) != size * size * 4:
+            raise ValueError("attention matrix byte length differs from its axes")
+        if any(not math.isfinite(value) or not 0 <= value <= 1.00001 for (value,) in struct.iter_unpack("<f", raw)):
+            raise ValueError("attention matrix contains invalid probabilities")
+        proof = (self.definition_id, self.profile_digest, self.runtime_id, self.evidence_hash)
+        if self.point_id is not None:
+            if any(value is None for value in proof) or not size <= self.validated_sequence_max <= self.max_tokens or self.heads > MAX_ATTENTION_HEADS:
+                raise ValueError("modular attention requires complete bounded runtime evidence")
+        else:
+            if any(value is not None for value in proof) or self.validated_sequence_max:
+                raise ValueError("legacy attention cannot claim modular runtime evidence")
+            if self.layer is None or self.layers is None:
+                raise ValueError("legacy attention requires actual layer identity")
+        return self
 
 
 CONTRACT_MODELS = {model.__name__: model for model in (
     BlockCreate, ArchitectureCreate, MetadataPatch, BlockDraftSave,
     ArchitectureDraftSave, DraftSaved, BlockDraftView, ArchitectureDraftView,
+    ArchitectureLimits, ArchitectureSchema, RecipeDraftInspection,
     ResourceSummary, CatalogPage, ResourceCreated, ResourceDetail, CatalogQuery,
     AcceptRevision, AcceptedRevision, RevisionPage, BlockRevisionView,
     ArchitectureRevisionView, TensorInputSpec, ValidationRequest,
-    SourceLocation, Diagnostic, ErrorResponse, StageOutcome, ValidationReport,
+    SourceLocation, RetainedSource, Diagnostic, ErrorResponse, StageOutcome, ValidationReport,
     GraphQuery, GraphCursor, TensorSummary, GraphNode, GraphEdge, GraphFragment,
-    ArchitectureSelection, EnqueueEvidence, AuthorizedVisibility, RunOutput,
+    ArchitectureSelection, TrainingArchitectureRequest, TrainingArchitecturePreview, EnqueueEvidence, AuthorizedVisibility, RunOutput,
     ValidationRun, ValidationEvent, ModelDefinitionSummary,
+    AttentionSelection, InspectionPointView, InspectionCatalog, AttentionMatrix,
 )}

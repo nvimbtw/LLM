@@ -54,6 +54,210 @@
       "title": "Capability",
       "type": "object"
     },
+    "DraftSubject": {
+      "additionalProperties": false,
+      "description": "Select exact saved draft bytes; later saves cannot mutate this snapshot.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "draft_version": {
+          "minimum": 1,
+          "title": "Draft Version",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "draft",
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "draft_version",
+        "content_hash"
+      ],
+      "title": "DraftSubject",
+      "type": "object"
+    },
+    "FinalTokenizer": {
+      "additionalProperties": false,
+      "description": "Bind authoritative vocabulary facts, including compatible derived token-label identity.",
+      "properties": {
+        "derived_from": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived From"
+        },
+        "fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "kind": {
+          "const": "final",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reserved_token_ids": {
+          "maxProperties": 128,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "title": "Reserved Token Ids",
+          "type": "object"
+        },
+        "tokenizer_id": {
+          "format": "uuid",
+          "title": "Tokenizer Id",
+          "type": "string"
+        },
+        "vocabulary_size": {
+          "minimum": 1,
+          "title": "Vocabulary Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "tokenizer_id",
+        "fingerprint",
+        "vocabulary_size"
+      ],
+      "title": "FinalTokenizer",
+      "type": "object"
+    },
+    "PendingTokenizer": {
+      "additionalProperties": false,
+      "description": "Mark unresolved tokenizer provenance; it cannot authorize acceptance or optimization.",
+      "properties": {
+        "build_request_id": {
+          "format": "uuid",
+          "title": "Build Request Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "pending",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "build_request_id"
+      ],
+      "title": "PendingTokenizer",
+      "type": "object"
+    },
+    "ReceiptIdentity": {
+      "additionalProperties": false,
+      "description": "Identify one exact snapshot/configuration/profile, never all parameter combinations.",
+      "properties": {
+        "context_window": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Context Window"
+        },
+        "dependency_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Dependency Digest",
+          "type": "string"
+        },
+        "input_profile_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Input Profile Digest",
+          "type": "string"
+        },
+        "parameter_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Parameter Digest",
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/RuntimeProfile"
+        },
+        "subject": {
+          "discriminator": {
+            "mapping": {
+              "draft": "#/$defs/DraftSubject",
+              "revision": "#/$defs/RevisionSubject"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DraftSubject"
+            },
+            {
+              "$ref": "#/$defs/RevisionSubject"
+            }
+          ],
+          "title": "Subject"
+        },
+        "tokenizer": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "final": "#/$defs/FinalTokenizer",
+                  "pending": "#/$defs/PendingTokenizer"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/FinalTokenizer"
+                },
+                {
+                  "$ref": "#/$defs/PendingTokenizer"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tokenizer"
+        }
+      },
+      "required": [
+        "subject",
+        "dependency_digest",
+        "parameter_digest",
+        "input_profile_digest",
+        "tokenizer",
+        "context_window",
+        "profile"
+      ],
+      "title": "ReceiptIdentity",
+      "type": "object"
+    },
     "RevisionRef": {
       "additionalProperties": false,
       "description": "Pin immutable bytes separately from their resource's editable display identity.",
@@ -89,6 +293,252 @@
         "content_hash"
       ],
       "title": "RevisionRef",
+      "type": "object"
+    },
+    "RevisionSubject": {
+      "additionalProperties": false,
+      "description": "Select an already accepted immutable source/recipe revision.",
+      "properties": {
+        "kind": {
+          "const": "revision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/RevisionRef"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ],
+      "title": "RevisionSubject",
+      "type": "object"
+    },
+    "RuntimeProfile": {
+      "additionalProperties": false,
+      "description": "Bind numerical/capture evidence to runtime compatibility and explicit shape guards.",
+      "properties": {
+        "allow_tf32": {
+          "default": false,
+          "title": "Allow Tf32",
+          "type": "boolean"
+        },
+        "capture_policy": {
+          "const": "torch-export-strict-v1",
+          "title": "Capture Policy",
+          "type": "string"
+        },
+        "device": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Device",
+          "type": "string"
+        },
+        "domains": {
+          "items": {
+            "$ref": "#/$defs/ShapeDomain"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Domains",
+          "type": "array"
+        },
+        "export_guards": {
+          "default": [],
+          "items": {
+            "maxLength": 1024,
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Export Guards",
+          "type": "array"
+        },
+        "modes": {
+          "items": {
+            "enum": [
+              "train",
+              "eval"
+            ],
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Modes",
+          "type": "array"
+        },
+        "numerical_seed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Numerical Seed",
+          "type": "integer"
+        },
+        "precision": {
+          "enum": [
+            "fp32",
+            "fp16",
+            "bf16"
+          ],
+          "title": "Precision",
+          "type": "string"
+        },
+        "sdk_version": {
+          "const": 1,
+          "title": "Sdk Version",
+          "type": "integer"
+        },
+        "token_dtype": {
+          "default": "int64",
+          "enum": [
+            "int64",
+            "int32"
+          ],
+          "title": "Token Dtype",
+          "type": "string"
+        },
+        "torch_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Torch Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "torch_version",
+        "sdk_version",
+        "device",
+        "precision",
+        "capture_policy",
+        "domains",
+        "modes"
+      ],
+      "title": "RuntimeProfile",
+      "type": "object"
+    },
+    "ShapeDomain": {
+      "additionalProperties": false,
+      "description": "Bound actual tensor signatures; singleton specializations are explicit profiles.",
+      "properties": {
+        "batch_max": {
+          "minimum": 1,
+          "title": "Batch Max",
+          "type": "integer"
+        },
+        "batch_min": {
+          "minimum": 1,
+          "title": "Batch Min",
+          "type": "integer"
+        },
+        "past_max": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Past Max",
+          "type": "integer"
+        },
+        "past_min": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Past Min",
+          "type": "integer"
+        },
+        "sequence_max": {
+          "minimum": 1,
+          "title": "Sequence Max",
+          "type": "integer"
+        },
+        "sequence_min": {
+          "minimum": 1,
+          "title": "Sequence Min",
+          "type": "integer"
+        },
+        "signatures": {
+          "items": {
+            "enum": [
+              "full_prefix",
+              "prefill",
+              "decode"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Signatures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "batch_min",
+        "batch_max",
+        "sequence_min",
+        "sequence_max",
+        "signatures"
+      ],
+      "title": "ShapeDomain",
+      "type": "object"
+    },
+    "ValidationReceipt": {
+      "additionalProperties": false,
+      "description": "Persist acceptance/enqueue evidence separately from a prunable execution-job row.",
+      "properties": {
+        "capabilities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "maxItems": 6,
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "graph_manifest_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Graph Manifest Hash"
+        },
+        "identity": {
+          "$ref": "#/$defs/ReceiptIdentity"
+        },
+        "identity_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Hash",
+          "type": "string"
+        },
+        "receipt_id": {
+          "format": "uuid",
+          "title": "Receipt Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "verdict": {
+          "enum": [
+            "inspection_only",
+            "invalid",
+            "valid",
+            "provisional"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "receipt_id",
+        "identity",
+        "identity_hash",
+        "verdict"
+      ],
+      "title": "ValidationReceipt",
       "type": "object"
     }
   },
@@ -191,6 +641,15 @@
       "pattern": "^[0-9a-f]{64}$",
       "title": "Tokenizer Fingerprint",
       "type": "string"
+    },
+    "validation_receipts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationReceipt"
+      },
+      "maxItems": 64,
+      "title": "Validation Receipts",
+      "type": "array"
     },
     "vocabulary_size": {
       "minimum": 1,

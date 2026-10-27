@@ -1,7 +1,7 @@
 # Modular architecture SDK, version 1
 
-Status: **ISS-49 contract**, not an implemented authoring endpoint or SDK runtime.
-The decorator/builder implementation belongs to ISS-50. The declarations in
+Status: **version-one contract with an implemented ISS-50 SDK and model builder**.
+Authoring HTTP and training integration remain separate delivery slices. The declarations in
 [`spec.py`](../../llm-engine/llm/architecture/spec.py), tensor capabilities in
 [`interfaces.py`](../../llm-engine/llm/architecture/interfaces.py), and shared
 [SDK fixtures](../../contracts/modular-architecture/v1/sdk/cases.json) freeze the
@@ -13,8 +13,9 @@ initial contract. See [YAML composition](architecture-yaml.md) and the
 An author supplies a standard `torch.nn.Module` class decorated with
 `@block(BlockDeclaration(...))`. The public import surface is
 `llm.architecture.sdk`: `block`, `BlockDeclaration`, `ParameterDeclaration` and
-`TensorPort`. These SDK exports are the implementation contract for ISS-50;
-that module is not introduced by this contract-only slice.
+`TensorPort`. These exports, source loader, resolver and builder are implemented
+by ISS-50. The [real builtin examples](architecture-builtins.md) extend the
+synthetic compatibility fixtures below.
 
 The [complete CustomScale source](../../contracts/modular-architecture/v1/sdk/custom_scale.py)
 and its [metadata](../../contracts/modular-architecture/v1/sdk/positive-custom_scale.json)
@@ -96,6 +97,8 @@ does not alias caller inputs or persistent state.
 [Strict export alone can freeze ambient Python values](architecture-capture.md#unsupported-source-and-limits-of-export).
 Source eligibility, alias/state checks, complete capture and numerical preflight
 are separate gates. No opaque custom section counts as a complete graph.
+Custom source cannot access `torch.fx`, `torch._dynamo`, `torch.export` or
+`torch.compiler`: tracing policy and occurrence annotations belong to the engine.
 
 ## Model adapter and optional capabilities
 
@@ -120,7 +123,7 @@ Optional names map to these typed behaviors:
 | Capability | Contract |
 | --- | --- |
 | `cache` | `CachedLanguageModel.prefill` / `decode` return `CachedResult(logits, cache)`. |
-| `introspection` | `ModelIntrospection` lists explicit inspection points and measures one supported view. |
+| `introspection` | `ModelIntrospection` or internal `BlockIntrospection` lists explicit inspection points and measures one supported view. |
 | `attention` | An introspection point of kind `attention`, with `[batch, heads, queries, keys]` values. |
 | `recompute` | `RecomputableModel` advertises/configures legal execution occurrences between steps. |
 | `token_rows` | `TokenRowInitializer` applies its explicit tied/untied initialization policy. |
@@ -130,6 +133,15 @@ A supported capability requires evidence for the exact definition/profile.
 Unsupported capabilities carry a reason and remain absent from usable controls.
 Python structural `isinstance(..., Protocol)` checks establish attribute presence
 only. They do not validate numerical behavior or authorize a capability.
+
+Internal blocks implement `BlockIntrospection.inspect_named(inputs, point_id=...)`
+over their actual named tensor inputs. `InspectionPoint` optionally declares an
+actual head count; the measurement path checks it against observed axes. Attention
+discovery combines the local point with each resolved execution occurrence.
+The [serving worker](modular-serving.md#occurrence-aware-attention) separately
+captures and proves each requested view/domain before returning its matrix.
+Live proof bounds expire with the resident worker and cannot broaden saved
+training, cache or extension receipts.
 
 `ExecutionOccurrence(instance_path, call_path)` uses zero-based flow/loop indices.
 One module instance can appear at several call paths. Its parameters share an
@@ -179,8 +191,9 @@ replace worker time/memory/device admission. Budgets are validated before the
 corresponding expansion/allocation; unsupported or oversized drafts remain savable
 within the draft byte budget but cannot authorize training.
 
-The SDK fixture index contains declaration and capability positives/negatives;
-the source example is syntax-checked only until ISS-50 supplies the SDK runtime.
-The shared contract harness distinguishes schema/syntax checks from resolver-owned
-negative expectations. CUDA/bf16 evidence is user-deferred and unverified; it must
+The SDK fixture index contains declaration and capability positives/negatives.
+The production core tests execute the source example and all eight resolver-negative
+fixtures; the shared contract harness separately checks schema and syntax. The
+builtin suite also executes eligible custom copies through the real loader.
+CUDA/bf16 evidence is user-deferred and unverified; it must
 remain visible in the later runtime/integration results without blocking CPU work.

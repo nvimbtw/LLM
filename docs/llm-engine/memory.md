@@ -1,5 +1,20 @@
 # Training memory
 
+[Modular training support](modular-training-support.md) documents the separate
+custom-model tensor/export planner, parameter ownership, occurrence recomputation
+and bounded diagnostics. The measured legacy planner below retains its existing
+Transformer calibration.
+
+Modular pretraining selects occurrence replay from exact ordinary strict-capture
+partitions, retaining unselected work, all named output backing storage and the
+largest replay region. `null` chooses the fewest fitting prefix occurrences;
+explicit true/false/count policies must fit their own estimate. Unknown work or
+nonfitting candidates refuse before optimization. Packages retain the profile,
+storage bounds and selected/candidate policies; exact recovery preserves its
+saved selection even when the allocator ceiling changes. This supported-operation
+estimate is separate from hardware calibration. Selected CUDA replay requires
+eager execution (`compile_model=false`) until checkpoint compilation is validated.
+
 Pretraining and SFT share `llm/train/loop.py` and its memory planner. RL has a
 separate loop and is not covered by this policy. The default keeps bf16,
 compilation, the requested batch size and the full context window; it trades

@@ -26,6 +26,7 @@ export interface JobFrameHandlers {
   // to stream and the REST row is the whole story.
   onInactive?: () => void
   onError?: (message: string) => void
+  onClose?: () => void
 }
 
 export interface Attachment {
@@ -33,20 +34,26 @@ export interface Attachment {
   detach: () => void
 }
 
-/** Follows one job's live frames. Returns cancel + detach controls. */
+/** Follows one job using its captured bearer token. Terminal frames close observation; only explicit cancel sends a control frame, and detach suppresses all late callbacks. */
 export function attachJob(
   idJob: string,
-  handlers: JobFrameHandlers
+  handlers: JobFrameHandlers,
+  token: string | null = getToken()
 ): Attachment {
   let closed = false
   const ws = new WebSocket(`${WS_URL}/ws/runs/${idJob}`)
 
-  ws.onopen = () => ws.send(JSON.stringify({ token: getToken() }))
+  ws.onopen = () => {
+    if (!closed) ws.send(JSON.stringify({ token }))
+  }
 
   ws.onmessage = (event) => {
+    if (closed) return
     let msg: Record<string, unknown>
     try {
-      msg = JSON.parse(event.data) as Record<string, unknown>
+      const value: unknown = JSON.parse(event.data)
+      if (!value || typeof value !== "object" || Array.isArray(value)) return
+      msg = value as Record<string, unknown>
     } catch {
       return
     }
@@ -63,41 +70,45 @@ export function attachJob(
         break
     }
     handlers.onFrame(msg)
-    // A terminal frame ends the run's stream for good, same as `final` does on the
-    // chat socket. Closing here — rather than only on unmount/detach — means a job
-    // page left open after its run finishes stops listening immediately instead of
-    // staying attached (and able to keep writing state) for as long as the page
-    // happens to stay mounted.
-    if (msg.type === "done" || msg.type === "error" || msg.type === "cancelled") {
+    if (
+      msg.type === "done" ||
+      msg.type === "error" ||
+      msg.type === "cancelled"
+    ) {
       closed = true
       try {
         ws.close()
       } catch {
-        // already closing
+        return
       }
     }
   }
 
   ws.onerror = () => {
-    // A socket we closed on purpose also fires this; only a live one is a real
-    // failure worth reporting.
     if (!closed) handlers.onError?.("Connection error.")
+  }
+  ws.onclose = () => {
+    if (!closed) handlers.onClose?.()
+    closed = true
   }
 
   return {
+    /** Requests cooperative cancellation only while this attachment is still live; REST controls remain available after disconnect. */
     cancel: () => {
+      if (closed) return
       try {
         ws.send(JSON.stringify({ type: "cancel" }))
       } catch {
-        // Socket not open; the REST cancel is the fallback.
+        return
       }
     },
+    /** Releases observation and suppresses late frames without cancelling durable execution. */
     detach: () => {
       closed = true
       try {
         ws.close()
       } catch {
-        // already closing
+        return
       }
     },
   }

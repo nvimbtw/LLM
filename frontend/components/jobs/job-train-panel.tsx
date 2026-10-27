@@ -1,7 +1,7 @@
 "use client"
 
 import { Appendix } from "@/components/training/appendix"
-import { DiagnosticsPanel } from "@/components/training/diagnostics-panel"
+import { JobDiagnostics } from "@/components/training/job-diagnostics"
 import { Telemetry } from "@/components/training/telemetry"
 import { TrainingHero } from "@/components/training/training-hero"
 import type { useJob } from "@/hooks/use-job"
@@ -20,33 +20,19 @@ export interface JobTrainPanelProps {
   run: ReturnType<typeof useJob>
 }
 
+/** Presents one execution's measured training telemetry, choosing diagnostics from its actual model contract. */
 export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
-  // The config the run is actually executing. Live frames carry it once attached;
-  // before that (queued, or reloaded after it finished) the row's stored config is
-  // the same thing, and is always present.
   const config = run.runConfig ?? (job.config as TrainConfig | null)
-  // Every fine-tune renders conversations in phase 1 rather than training a BPE
-  // tokenizer, which is the whole of what the figures switch on here.
   const isSft = config ? isFineTune(config.mode) : false
 
   const status = runPhase(job, {
     training: run.train.step != null,
-    // Phase 1 has to *say* it is happening. Inferring it from the absence of
-    // training frames instead would put "building the corpus" on the screen of
-    // any run reporting nothing at all — an engine that predates the phase-1
-    // frames, or one that has stopped talking — which is a claim about a run
-    // rather than a fact about it.
     building:
       Object.keys(run.tokenize).length > 0 && run.tokenize.done !== true,
   })
 
   return (
     <div className="space-y-8">
-      {/* Everything here spans the width. There is no rail beside it: the config
-          recap that used to hold that column renders nothing for a training job,
-          because the LLM engine's run row carries no `config` field for it to
-          describe — and half a page of empty gutter beside the hero is worse
-          than no rail at all. */}
       <TrainingHero
         status={status}
         isSft={isSft}
@@ -67,7 +53,7 @@ export function JobTrainPanel({ job, run }: JobTrainPanelProps) {
         ctxWindow={config?.ctx_window ?? 0}
       />
 
-      <DiagnosticsPanel diag={run.diag} />
+      <JobDiagnostics diag={run.diag} />
       <Appendix log={run.log} checkpoints={run.checkpoints} />
     </div>
   )

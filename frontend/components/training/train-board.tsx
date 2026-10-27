@@ -9,6 +9,9 @@ import { BuildSheet } from "@/components/training/build-sheet"
 import { TrainingDataFields } from "@/components/training/training-data-fields"
 import { ArchitectureFlow } from "@/components/training/architecture-flow"
 import { InheritedArchitecture } from "@/components/training/inherited-architecture"
+import { ArchitectureChoice } from "@/components/training/architecture-choice"
+import { TrainingExecutionFields } from "@/components/training/execution-fields"
+import type { TrainingArchitectureCheck } from "@/lib/training-selection"
 import { compact } from "@/components/training/stat-run"
 import { estimateTrainingParameters } from "@/lib/training-architecture"
 import {
@@ -70,12 +73,16 @@ export function TrainBoard({
   const effective: TrainConfig = isSft
     ? { ...cfg, base_model_id: baseModelId }
     : cfg
-  const errors = validate(effective)
+  const [architectureCheck, setArchitectureCheck] =
+    React.useState<TrainingArchitectureCheck | null>(null)
+  const errors = validate(effective, false, architectureCheck)
   const vocabularySize = cfg.tokenizer_id
     ? (tokenizers.find((tokenizer) => tokenizer.id === cfg.tokenizer_id)
         ?.vocabSize ?? null)
     : cfg.max_vocab
-  const parameterCount = estimateTrainingParameters(cfg, vocabularySize)
+  const parameterCount = cfg.architecture
+    ? null
+    : estimateTrainingParameters(cfg, vocabularySize)
   const inheritedModelId = isSft ? baseModelId : cfg.resume_from
 
   /** Parses a text edit into the parent config, preserving literal values for string fields. */
@@ -248,14 +255,24 @@ export function TrainBoard({
           loading={datasetsLoading}
         />
       </Panel>
-      {arch.length > 0 ? (
+      {!isSft && !cfg.resume_from ? (
         <Panel
           variant="open"
           title="Architecture"
           bodyClassName="p-0"
           descriptionLayout="stacked"
-          description={`${parameterCount === null ? "—" : `≈ ${compact(parameterCount)}`} parameters`}
+          description={
+            cfg.architecture
+              ? "Parameter count is measured during numerical validation."
+              : `${parameterCount === null ? "—" : `≈ ${compact(parameterCount)}`} parameters`
+          }
         >
+          <ArchitectureChoice
+            config={effective}
+            onChange={onChange}
+            disabled={disabled}
+            onValidity={setArchitectureCheck}
+          />
           <FieldGrid
             fields={arch}
             cfg={cfg}
@@ -263,7 +280,7 @@ export function TrainBoard({
             onText={set}
             onNumber={setNumber}
           />
-          <ArchitectureFlow view="training" cfg={cfg} />
+          {!cfg.architecture && <ArchitectureFlow view="training" cfg={cfg} />}
         </Panel>
       ) : inheritedModelId ? (
         <InheritedArchitecture cfg={effective} modelId={inheritedModelId} />
@@ -275,6 +292,11 @@ export function TrainBoard({
           disabled={disabled}
           onText={set}
           onNumber={setNumber}
+        />
+        <TrainingExecutionFields
+          config={effective}
+          disabled={disabled}
+          onChange={onChange}
         />
       </Panel>
 

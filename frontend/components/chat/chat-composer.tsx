@@ -42,6 +42,7 @@ import { ComposerPlan } from "./composer-plan"
 import type { Plan } from "@/lib/plan"
 import { usePlanEditor } from "@/hooks/use-plan-editor"
 import { useLocalPlan } from "@/hooks/use-local-plan"
+import { effectiveContextMultiplier } from "@/lib/model-context"
 
 export interface ChatComposerProps {
   plan?: Plan | null
@@ -99,6 +100,7 @@ export function ChatComposer({
     budget,
     setBudget,
     isLoading: choiceLoading,
+    modelFacts,
   } = useComposerChoice()
   const router = useRouter()
   const [isEmpty, setIsEmpty] = React.useState(true)
@@ -276,8 +278,11 @@ export function ChatComposer({
     !uploading &&
     (isCommand || (!choiceLoading && !modelsLoading && Boolean(model)))
 
-  const contextWindow =
-    models.find((m) => m.id === model)?.contextWindow ?? null
+  const selectedModel =
+    modelFacts?.id === model
+      ? modelFacts
+      : models.find((item) => item.id === model)
+  const contextWindow = selectedModel?.contextWindow ?? null
 
   /** Returns the exact outgoing markdown for token counting, or an empty string for local commands. */
   const readDraft = () => {
@@ -447,13 +452,25 @@ export function ChatComposer({
           draftTokens={draftTokens}
           contextWindow={contextWindow}
           isLoading={modelsLoading || choiceLoading}
-          contextMultiplier={settings.contextMultiplier}
+          contextMultiplier={effectiveContextMultiplier(
+            selectedModel,
+            settings.contextMultiplier
+          )}
           unseenTokens={unseenTokens}
           listening={listening}
           onDeviceDictation={voiceOnDevice}
           className="mx-2 -mt-3 rounded-b-(--radius-composer) bg-card/60 px-2 pt-4 pb-1 backdrop-blur-md"
         />
       )}
+      {selectedModel &&
+        !choiceLoading &&
+        settings.contextMultiplier > 1 &&
+        !selectedModel.supportsContextExtension && (
+          <p className="px-4 pt-1 text-xs text-muted-foreground" role="status">
+            This model uses its trained context window; the extension preference
+            does not apply.
+          </p>
+        )}
     </div>
   )
 }

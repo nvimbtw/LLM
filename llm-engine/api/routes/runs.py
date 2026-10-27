@@ -6,20 +6,28 @@ an hour — so a busy LLM engine is not an error.
 """
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from sqlalchemy.orm import Session
 
 import store
 from api import auth, sse
+from api import training_jobs, validation_jobs
 from api.runner import RUNNER
 from api.runs import REGISTRY
-from llm.config import EvalConfig, RlConfig, SftConfig, TokenizerConfig, TrainConfig
-from store import queries as q
+from api.visibility import public_run, visible_events
+from llm.config import LEGACY_STRUCTURE_FIELDS, EvalConfig, RlConfig, SftConfig, TokenizerConfig, TrainConfig
+from llm.architecture.validation_records import ValidationSnapshot
+from store import architecture_queries as catalog, queries as q
 from store.schema import Run, RunKind
 
 router = APIRouter(tags=["runs"])
+
+MAX_CHAIN_STEPS = 100
 
 
 @router.post("/train", status_code=202)
@@ -27,7 +35,9 @@ async def train(
     cfg: TrainConfig,
     display_name: str | None = None,
     wait: bool = False,
+    request_id: uuid.UUID | None = None,
     owner: str = Depends(auth.require_service),
+    administration: bool = Depends(auth.administration_visible),
 ):
     """Queue a pretraining run.
 
@@ -39,9 +49,16 @@ async def train(
     from any checkpoint that was not the composer's default shape was refused
     for restating an architecture nobody had typed.
     """
-    _require_vocabulary(cfg.tokenizer_id)
-    config = _identified(cfg.model_dump(exclude_unset=True), display_name)
-    return await _queue(RunKind.train, _train_label(config), config, wait, owner)
+    payload = {"config": cfg.model_dump(mode="json", exclude_unset=True), "display_name": display_name}
+    with store.session() as db:
+        definition_id = training_jobs.saved_definition(db, cfg.resume_from)
+    if cfg.architecture is not None or definition_id is not None:
+        _require_recipe_request(request_id, owner, administration)
+    if definition_id is not None and cfg.model_fields_set & LEGACY_STRUCTURE_FIELDS:
+        raise HTTPException(422, "saved recipe training inherits its structural definition")
+    config = _identified(payload["config"], display_name)
+    return await _queue(RunKind.train, _train_label(config), config, wait, owner,
+                        request_id=request_id, payload=payload, definition_id=definition_id, administration=administration)
 
 
 @router.post("/sft", status_code=202)
@@ -49,12 +66,19 @@ async def sft(
     cfg: SftConfig,
     display_name: str | None = None,
     wait: bool = False,
+    request_id: uuid.UUID | None = None,
     owner: str = Depends(auth.require_service),
+    administration: bool = Depends(auth.administration_visible),
 ):
-    """Queue a fine-tune. The same kind of run as /train — what makes it a
-    fine-tune is naming a base model to start from."""
-    config = _identified(cfg.model_dump(), display_name)
-    return await _queue(RunKind.train, _train_label(config), config, wait, owner)
+    """Queue SFT with immutable saved-definition authority and actor/request checks for modular source execution."""
+    payload = {"config": cfg.model_dump(mode="json", exclude_unset=True), "display_name": display_name}
+    with store.session() as db:
+        definition_id = training_jobs.saved_definition(db, cfg.resume_from or cfg.base_model)
+    if definition_id is not None:
+        _require_recipe_request(request_id, owner, administration)
+    config = _identified(payload["config"], display_name)
+    return await _queue(RunKind.train, _train_label(config), config, wait, owner, request_id=request_id,
+        payload=payload, definition_id=definition_id, administration=administration)
 
 
 @router.post("/rl", status_code=202)
@@ -62,20 +86,19 @@ async def rl(
     cfg: RlConfig,
     display_name: str | None = None,
     wait: bool = False,
+    request_id: uuid.UUID | None = None,
     owner: str = Depends(auth.require_service),
+    administration: bool = Depends(auth.administration_visible),
 ):
-    """Queue a reinforcement-learning run against a gym.
-
-    A kind of its own rather than a `train` run that names a gym, because what it
-    reports is a pass rate and not a loss curve — and a consumer that had to
-    guess which of those a frame carried would guess from the numbers.
-
-    `exclude_unset` for the reason `/train` documents: the run is queued now and
-    started later, and what the config *stated* is the whole of what the pipeline
-    is handed.
-    """
-    config = _identified(cfg.model_dump(exclude_unset=True), display_name)
-    return await _queue(RunKind.rl, _train_label(config), config, wait, owner)
+    """Queue RL with sparse original configuration, inherited saved-definition authority and modular actor/request authorization."""
+    payload = {"config": cfg.model_dump(mode="json", exclude_unset=True), "display_name": display_name}
+    with store.session() as db:
+        definition_id = training_jobs.saved_definition(db, cfg.resume_from or cfg.base_model)
+    if definition_id is not None:
+        _require_recipe_request(request_id, owner, administration)
+    config = _identified(payload["config"], display_name)
+    return await _queue(RunKind.rl, _train_label(config), config, wait, owner, request_id=request_id,
+        payload=payload, definition_id=definition_id, administration=administration)
 
 
 @router.post("/tokenize", status_code=202)
@@ -107,19 +130,15 @@ class Step(BaseModel):
 
 
 @router.post("/runs/chain", status_code=202)
-def queue_chain(steps: list[Step], owner: str = Depends(auth.require_service)):
-    """Queue a sequence, each step running against the model the one before it
-    produced.
+def queue_chain(steps: Annotated[list[Step], Body(max_length=MAX_CHAIN_STEPS)],
+                request_id: uuid.UUID | None = None,
+                owner: str = Depends(auth.require_service),
+                administration: bool = Depends(auth.administration_visible)) -> list[dict]:
+    """Validate every step, then commit the complete bounded chain before waking admission.
 
-    A flat list rather than a tree: "then, then, then" is what a person means,
-    and a step naming its own model would be a second answer to the question the
-    chain exists to leave open — so the first config names a model and the rest
-    have theirs filled in when their predecessor lands.
-
-    Only the kinds that consume a model can be chained. A `tokenize` step would
-    be accepted and then leave the run after it with no `tokenizer_id`, because
-    promotion fills in a model — so it is refused rather than silently
-    pretraining against a vocabulary nobody chose.
+    Later training steps fine-tune their predecessor's eventual model. Benchmark
+    dispatch cannot precede another step because its output is a report. Invalid
+    configuration or a late storage failure leaves no jobs from this submission.
     """
     if not steps:
         raise HTTPException(status_code=400, detail="a chain needs at least one step")
@@ -135,23 +154,88 @@ def queue_chain(steps: list[Step], owner: str = Depends(auth.require_service)):
             "name it on the runs that use it",
         )
 
-    queued, after = [], None
-    for step in steps:
-        config = _identified(step.config) if step.kind is RunKind.train else step.config
-        run_id = RUNNER.enqueue(
-            step.kind,
-            label=_step_label(step.kind, config),
-            config=config,
-            owner_id=_owner_id(owner),
-            depends_on=after,
-        )
-        queued.append(snapshot(run_id))
-        after = run_id
-    return queued
+    if any(step.kind is RunKind.benchmark for step in steps[:-1]):
+        raise HTTPException(400, "a benchmark produces a report and must be the final chain step")
+    with store.session() as db:
+        definition_id = (training_jobs.saved_definition(db, steps[0].config.get("resume_from") or steps[0].config.get("base_model"))
+                         if steps[0].kind in (RunKind.train, RunKind.rl) else None)
+    if any(step.config.get("architecture") is not None for step in steps) or definition_id is not None:
+        _require_recipe_request(request_id, owner, administration)
+    actor = _owner_id(owner)
+    if request_id is not None and actor is None:
+        raise HTTPException(403, "idempotent training submission requires an actor UUID")
+    with store.session() as db:
+        def enqueue() -> catalog.MutationOutcome:
+            """Prepare and insert the full chain while this request owns its one queue transaction."""
+            return _enqueue_chain(db, steps, actor, definition_id=definition_id)
+        outcome = (catalog.idempotent_mutation(db, actor_id=actor, request_id=request_id,
+            operation="training_chain", payload={"steps": [step.model_dump(mode="json") for step in steps]},
+            execute=enqueue) if request_id is not None else enqueue())
+        ids = outcome.job_ids
+        if any(training_jobs.inherited_pin(db, run_id) is not None for run_id in ids) and not administration:
+            raise HTTPException(403, "recipe training chain requires administrator access")
+        if any(db.get(Run, run_id) is None for run_id in ids):
+            raise catalog.CatalogError("operation_pruned", "original chain history was pruned; use a fresh request UUID")
+    RUNNER.wake()
+    return [snapshot(run_id) for run_id in ids]
+
+
+def _enqueue_chain(db: Session, steps: list[Step], actor: uuid.UUID | None, *, definition_id: str | None = None) -> catalog.MutationOutcome:
+    """Validate and freeze every waiting-step selection before creating any linked queue/domain rows."""
+    configs = []
+    for index, step in enumerate(steps):
+        predecessor = configs[-1]["model_name"] if configs else None
+        configs.append(_chain_config(step, index, predecessor))
+    labels = [_step_label(step.kind, config) for step, config in zip(steps, configs)]
+    if definition_id is not None and LEGACY_STRUCTURE_FIELDS.intersection(configs[0]):
+        raise HTTPException(422, "saved recipe training inherits its structural definition")
+    ids = tuple(uuid.uuid4() for _ in steps)
+    pins = []
+    for index, (step, config, job_id) in enumerate(zip(steps, configs, ids)):
+        pin = training_jobs.prepare_selection(db, config, job_id) if config.get("architecture") is not None else None
+        if index == 0 and pin is None and definition_id is not None:
+            pin = catalog.prepare_saved_training_pin(db, definition_id)
+        if index and step.kind in (RunKind.train, RunKind.rl):
+            pin = pins[-1]
+        pins.append(pin)
+    for index, (step, config, label, job_id, pin) in enumerate(zip(steps, configs, labels, ids, pins)):
+        run = q.enqueue(db, kind=step.kind, label=label, config=config, id=job_id,
+                        owner_id=actor, depends_on=ids[index - 1] if index else None)
+        if pin is not None:
+            catalog.attach_training_pin(db, run, pin)
+    return catalog.MutationOutcome("training", ids[0], ids)
+
+
+def _chain_config(step: Step, index: int, predecessor: str | None) -> dict:
+    """Validate one effective step without persisting defaults or a future model input.
+
+    A predecessor's reserved output UUID satisfies validation for waiting
+    consumers; promotion supplies its actual produced model. Errors retain the
+    failing step and config field in the standard HTTP validation response.
+    """
+    config = _identified(step.config) if step.kind in (RunKind.train, RunKind.rl) else dict(step.config)
+    effective = dict(config)
+    if predecessor is not None:
+        effective["model_name" if step.kind is RunKind.benchmark else "base_model"] = predecessor
+    if step.kind is RunKind.train:
+        model = SftConfig if effective.get("base_model") else TrainConfig
+    else:
+        model = RlConfig if step.kind is RunKind.rl else EvalConfig
+    try:
+        parsed = model.model_validate(effective)
+    except ValidationError as error:
+        errors = [{**item, "loc": ("body", index, "config", *item["loc"])} for item in error.errors()]
+        raise RequestValidationError(errors) from error
+    if isinstance(parsed, TrainConfig):
+        _require_vocabulary(parsed.tokenizer_id)
+    return config
 
 
 @router.get("/runs")
-def list_runs(limit: int = 50, offset: int = 0):
+def list_runs(
+    limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0),
+    administration: bool = Depends(auth.administration_visible),
+):
     """The live band and the history behind it.
 
     Two lists rather than one: the band is short and complete, the history is
@@ -159,61 +243,82 @@ def list_runs(limit: int = 50, offset: int = 0):
     """
     with store.session() as db:
         return {
-            "active": [row(r) for r in q.active_runs(db)],
-            "history": [row(r) for r in q.run_history(db, limit, offset)],
+            "active": [row(r, administration=administration) for r in q.active_runs(db, include_validation=administration)],
+            "history": [row(r, administration=administration) for r in q.run_history(db, limit, offset, include_validation=administration)],
             "history_offset": offset,
             "history_limit": limit,
-            "history_total": q.count_history(db),
+            "history_total": q.count_history(db, include_validation=administration),
             "paused": RUNNER.paused,
         }
 
 
 @router.get("/runs/{run_id}")
-def get_run(run_id: uuid.UUID):
-    return snapshot(run_id)
+def get_run(run_id: uuid.UUID, administration: bool = Depends(auth.administration_visible)):
+    """Read an authorized job snapshot; validation identities are private before serialization."""
+    return snapshot(run_id, administration=administration)
 
 
 @router.get("/runs/{run_id}/events")
-async def run_events(run_id: uuid.UUID):
+async def run_events(run_id: uuid.UUID, administration: bool = Depends(auth.administration_visible)):
     """Stream a run's progress as SSE, replaying what it has already emitted.
 
     A queued run has no frames yet and no live state; it gets the durable row
     and nothing else until the runner reaches it.
     """
+    seen = snapshot(run_id, administration=administration)
     live = REGISTRY.get(str(run_id))
     if live is None:
-        require_row(run_id)
         return StreamingResponse(
-            sse.once("state", snapshot(run_id)), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS
+            sse.once("state", seen), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS
         )
     return StreamingResponse(
-        sse.run_events(REGISTRY, live), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS
+        _visible_frames(live, administration), media_type=sse.MEDIA_TYPE, headers=sse.HEADERS
     )
 
 
 @router.post("/runs/{run_id}/cancel")
-def cancel_run(run_id: uuid.UUID):
+def cancel_run(run_id: uuid.UUID, administration: bool = Depends(auth.administration_visible)):
     """Ask a run to stop.
 
     A queued run stops at once. A running one stops at its next step boundary,
     where the weights are consistent — so this returns while it is still
     running, and the caller learns it stopped from the event stream.
     """
-    require_row(run_id)
+    require_row(run_id,administration=administration)
     if not RUNNER.cancel(run_id):
         raise HTTPException(status_code=409, detail="run is already finished")
     return {"run_id": str(run_id), "cancelling": True}
 
 
 @router.post("/runs/{run_id}/retry", status_code=202)
-async def retry_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service)):
+async def retry_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service),
+                    administration: bool = Depends(auth.administration_visible),
+                    request_id: uuid.UUID | None = None):
+    """Retry a finished job, preserving validation pins while minting fresh request/job identities."""
     with store.session() as db:
+        replay = _replayed_training(db, request_id, owner, administration, {"retry_of": str(run_id)})
+        if replay is not None:
+            return replay
         run = db.get(Run, run_id)
         if run is None:
             raise HTTPException(404, "run not found")
+        if run.kind == RunKind.model_validation and not administration:
+            raise HTTPException(403,"validation requires administrator access")
         if not run.status.is_terminal:
             raise HTTPException(409, "only finished runs can retry")
         config, kind, label = dict(run.config), run.kind, run.label
+        pin_from = run_id if training_jobs.inherited_pin(db, run_id) is not None else None
+        if pin_from is not None and not administration:
+            raise HTTPException(403, "recipe retry requires administrator access")
+        if kind == RunKind.model_validation:
+            actor = _owner_id(owner)
+            if actor is None:
+                raise HTTPException(403,"validation retry requires an actor UUID")
+            retried = validation_jobs.retry_validation(db,run,actor,request_id)
+            response = row(retried)
+    if kind == RunKind.model_validation:
+        RUNNER.wake()
+        return response
     config.pop("execution_id", None)
     if kind == RunKind.benchmark:
         if config.get("suite", "language") != "language":
@@ -221,18 +326,28 @@ async def retry_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service
     else:
         field = "tokenizer_id" if kind == RunKind.tokenize else "model_name"
         config[field] = str(uuid.uuid4())
-    return await _queue(kind, label, config, False, owner)
+    return await _queue(kind, label, config, False, owner, request_id=request_id,
+                        payload={"retry_of": str(run_id)}, pin_from=pin_from, administration=administration)
 
 
 @router.post("/runs/{run_id}/recover", status_code=202)
-async def recover_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service)):
+async def recover_run(run_id: uuid.UUID, owner: str = Depends(auth.require_service),
+                      administration: bool = Depends(auth.administration_visible),
+                      request_id: uuid.UUID | None = None):
+    """Queue exact recovery from the last registered generation, retaining any original immutable recipe pin."""
     with store.session() as db:
+        replay = _replayed_training(db, request_id, owner, administration, {"recover_of": str(run_id)})
+        if replay is not None:
+            return replay
         run = db.get(Run, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         if run.kind not in (RunKind.train, RunKind.rl) or not run.status.is_terminal:
             raise HTTPException(status_code=409, detail="only finished training runs can recover")
         config = dict(run.config or {})
+        pin_from = run_id if training_jobs.inherited_pin(db, run_id) is not None else None
+        if pin_from is not None and not administration:
+            raise HTTPException(403, "recipe recovery requires administrator access")
         try:
             output_id = uuid.UUID(config.get("model_name", ""))
         except ValueError:
@@ -242,18 +357,21 @@ async def recover_run(run_id: uuid.UUID, owner: str = Depends(auth.require_servi
             raise HTTPException(status_code=409, detail="no completed recovery point")
         latest = checkpoints[-1]
         config["resume_from"] = str(latest.id)
+        if pin_from is not None:
+            config.pop("architecture", None)
         kind = run.kind
         if kind == RunKind.train and not config.get("base_model"):
             config["recover_exact"] = True
     config["model_name"] = str(uuid.uuid4())
     config = _identified(config, config.get("display_name"))
-    return await _queue(kind, _train_label(config), config, False, owner)
+    return await _queue(kind, _train_label(config), config, False, owner, request_id=request_id,
+                        payload={"recover_of": str(run_id)}, pin_from=pin_from, administration=administration)
 
 
 @router.delete("/runs/{run_id}")
-def delete_run(run_id: uuid.UUID):
+def delete_run(run_id: uuid.UUID, administration: bool = Depends(auth.administration_visible)):
     """Forget a finished run. A live one is cancelled first."""
-    require_row(run_id)
+    require_row(run_id,administration=administration)
     with store.session() as db:
         if not q.delete_run(db, run_id):
             raise HTTPException(status_code=409, detail="a live run is cancelled, not deleted")
@@ -261,12 +379,14 @@ def delete_run(run_id: uuid.UUID):
 
 
 @router.patch("/runs/{run_id}")
-def reorder_run(run_id: uuid.UUID, after: uuid.UUID | None = None):
+def reorder_run(run_id: uuid.UUID, after: uuid.UUID | None = None,
+                administration: bool = Depends(auth.administration_visible)):
     """Move a queued run within the line, to sit after another or at the front."""
+    require_row(run_id,administration=administration)
     with store.session() as db:
         if not q.reorder(db, run_id, after):
             raise HTTPException(status_code=409, detail="only a queued run can be reordered")
-    return snapshot(run_id)
+    return snapshot(run_id,administration=administration)
 
 
 @router.post("/runs/pause")
@@ -346,11 +466,76 @@ def _label(model_name: str) -> str:
         return model.name if model else model_name
 
 
-async def _queue(kind: RunKind, label: str, config: dict, wait: bool, owner: str) -> dict:
-    run_id = RUNNER.enqueue(kind, label=label, config=config, owner_id=_owner_id(owner))
+async def _queue(kind: RunKind, label: str, config: dict, wait: bool, owner: str, *,
+                 request_id: uuid.UUID | None = None, payload: dict | None = None,
+                 pin_from: uuid.UUID | None = None, definition_id: str | None = None,
+                 administration: bool = False) -> dict:
+    """Commit a reserved output and optional immutable recipe pin before waking or awaiting execution."""
+    if request_id is None and pin_from is None and definition_id is None:
+        if kind is RunKind.train and not config.get("base_model"):
+            _require_vocabulary(config.get("tokenizer_id"))
+        run_id = RUNNER.enqueue(kind, label=label, config=config, owner_id=_owner_id(owner))
+    else:
+        actor = _owner_id(owner)
+        if actor is None:
+            raise HTTPException(403, "idempotent training submission requires an actor UUID")
+        with store.session() as db:
+            def enqueue() -> catalog.MutationOutcome:
+                """Reserve one output and pin the accepted source/evidence under the request's transaction."""
+                job_id = uuid.uuid4()
+                pin = training_jobs.inherited_pin(db, pin_from) if pin_from is not None else None
+                if pin_from is not None and pin is None:
+                    raise catalog.CatalogError("operation_pruned", "original immutable training pin was pruned")
+                if pin is None and config.get("architecture") is not None:
+                    pin = training_jobs.prepare_selection(db, config, job_id)
+                if pin is None and definition_id is not None:
+                    pin = catalog.prepare_saved_training_pin(db, definition_id)
+                if kind is RunKind.train and not config.get("base_model") and pin is None:
+                    _require_vocabulary(config.get("tokenizer_id"))
+                run = q.enqueue(db, kind=kind, label=label, config=config, owner_id=actor, id=job_id)
+                if pin is not None:
+                    catalog.attach_training_pin(db, run, pin)
+                return catalog.MutationOutcome("training", run.id)
+            outcome = (catalog.idempotent_mutation(db, actor_id=actor, request_id=request_id,
+                operation="training", payload=payload or {"kind": kind.value, "config": config}, execute=enqueue)
+                if request_id is not None else enqueue())
+            run_id = outcome.id
+            if training_jobs.inherited_pin(db, run_id) is not None and not administration:
+                raise HTTPException(403, "recipe training requires administrator access")
+            if db.get(Run, run_id) is None:
+                raise catalog.CatalogError("operation_pruned", "original training history was pruned; use a fresh request UUID")
+        RUNNER.wake()
     if wait:
         await RUNNER.wait(run_id)
     return snapshot(run_id)
+
+
+def _require_recipe_request(request_id: uuid.UUID | None, owner: str, administration: bool) -> None:
+    """Require verified administrative actor attribution and retry identity for new recipe selections."""
+    if not administration or _owner_id(owner) is None:
+        raise HTTPException(403, "recipe selection requires an administrative actor UUID")
+    if request_id is None:
+        raise HTTPException(422, "recipe submission requires a request_id UUID")
+
+
+def _replayed_training(db: Session, request_id: uuid.UUID | None, owner: str,
+                       administration: bool, payload: dict) -> dict | None:
+    """Return a prior retry/recovery output before looking up its potentially pruned input job."""
+    if request_id is None:
+        return None
+    actor = _owner_id(owner)
+    if actor is None:
+        raise HTTPException(403, "idempotent training submission requires an actor UUID")
+    outcome = catalog.completed_mutation(db, actor_id=actor, request_id=request_id, operation="training", payload=payload)
+    if outcome is None:
+        return None
+    if outcome.kind == "validation" and not administration:
+        raise HTTPException(403, "validation retry requires administrator access")
+    if db.get(Run, outcome.id) is None:
+        raise catalog.CatalogError("operation_pruned", "original training history was pruned; use a fresh request UUID")
+    if training_jobs.inherited_pin(db, outcome.id) is not None and not administration:
+        raise HTTPException(403, "recipe retry/recovery requires administrator access")
+    return snapshot(outcome.id)
 
 
 def _owner_id(caller: str) -> uuid.UUID | None:
@@ -362,13 +547,16 @@ def _owner_id(caller: str) -> uuid.UUID | None:
         return None
 
 
-def row(run: Run) -> dict:
+def row(run: Run, *, administration: bool = True) -> dict:
     """One run as the API reports it. The durable row is the whole answer for
     everything except a run that is live right now."""
-    return {
+    config = run.config
+    if run.kind == RunKind.model_validation and isinstance(config,dict) and "request" in config and "run_id" in config:
+        config = ValidationSnapshot.model_validate(config).request.model_dump(mode="json")
+    value = {
         "run_id": str(run.id),
         "kind": run.kind.value,
-        "config": run.config,
+        "config": config,
         "status": run.status.value,
         "label": run.label,
         "rank": run.rank,
@@ -383,19 +571,29 @@ def row(run: Run) -> dict:
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
     }
+    return value if administration else public_run(value)
 
 
-def require_row(run_id: uuid.UUID) -> dict:
+def require_row(run_id: uuid.UUID, *, administration: bool = True) -> dict:
+    """Look up a durable row and reject private validation before projecting any metadata."""
     with store.session() as db:
         run = db.get(store.Run, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"no run {run_id}")
-        return row(run)
+        if run.kind == RunKind.model_validation and not administration:
+            raise HTTPException(status_code=403, detail="validation requires administrator access")
+        return row(run, administration=administration)
 
 
-def snapshot(run_id: uuid.UUID) -> dict:
+def snapshot(run_id: uuid.UUID, *, administration: bool = True) -> dict:
     """The row, plus how many frames the live run has emitted if it is live."""
-    seen = require_row(run_id)
+    seen = require_row(run_id, administration=administration)
     live = REGISTRY.get(str(run_id))
     seen["frames"] = len(live.history) if live else 0
     return seen
+
+
+async def _visible_frames(live, administration: bool):
+    """Frame visibility-filtered replay and live events for an already authorized durable job."""
+    async for event in visible_events(REGISTRY, live, administration):
+        yield sse.frame(event)

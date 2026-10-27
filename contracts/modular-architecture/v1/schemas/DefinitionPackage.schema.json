@@ -812,6 +812,24 @@
       "title": "Optimizer Parameter Order",
       "type": "array"
     },
+    "parameter_precision": {
+      "anyOf": [
+        {
+          "enum": [
+            "fp32",
+            "fp16",
+            "bf16"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Saved floating parameter/buffer dtype; absent legacy packages use receipt precision.",
+      "title": "Parameter Precision"
+    },
     "receipt_ids": {
       "items": {
         "format": "uuid",

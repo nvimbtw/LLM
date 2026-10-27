@@ -8,10 +8,15 @@ from llm.runtime.protocol import MAX_RUNTIME_PACKET_BYTES, RuntimeEnvelope
 def socket_pair(pending: int = 64) -> tuple[socket.socket, socket.socket]:
     """Create bounded independent packet endpoints; callers own closing both handles."""
     first, second = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    for channel in (first, second):
-        channel.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, pending * MAX_RUNTIME_PACKET_BYTES)
-        channel.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, pending * MAX_RUNTIME_PACKET_BYTES)
-        channel.settimeout(1.0)
+    try:
+        for channel in (first, second):
+            channel.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, pending * MAX_RUNTIME_PACKET_BYTES)
+            channel.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, pending * MAX_RUNTIME_PACKET_BYTES)
+            channel.settimeout(1.0)
+    except BaseException:
+        first.close()
+        second.close()
+        raise
     return first, second
 
 

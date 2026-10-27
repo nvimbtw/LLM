@@ -818,11 +818,17 @@
             "model_package_v1",
             "training_config_v1",
             "corpus_v1",
+            "tokenizer_v1",
+            "span_table_v1",
+            "loss_mask_v1",
+            "sft_probe_v1",
             "prompt_v1",
             "measurement_v1",
             "effect_data_v1",
             "validation_result_v1",
             "training_result_v1",
+            "training_progress_v1",
+            "generation_result_v1",
             "measurement_result_v1",
             "checkpoint_v1"
           ],
@@ -981,7 +987,15 @@
           "type": "string"
         },
         "pins": {
-          "$ref": "#/$defs/RuntimePins"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimePins"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "recovery": {
           "anyOf": [
@@ -1011,7 +1025,6 @@
       },
       "required": [
         "type",
-        "pins",
         "job_id",
         "training_kind",
         "config"

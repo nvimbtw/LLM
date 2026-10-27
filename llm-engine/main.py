@@ -9,13 +9,16 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
+from fastapi.exceptions import RequestValidationError
 
 import store
-from api import auth, logs, recovery
+from api import auth, builtin_catalog, catalog, logs, recovery
 from api.routes import ROUTERS
 from api.runner import RUNNER
 from api.runs import REGISTRY
+from api.serving import SERVING
 from store import queries as q
+from store.architecture_queries import CatalogError
 from llm import storage
 from llm.runtime.supervisor import WorkerManager
 
@@ -27,26 +30,32 @@ async def lifespan(_: FastAPI):
     store.configure()
     workers = WorkerManager(storage.runtime_root())
     await asyncio.to_thread(workers.start)
-    RUNNER.attach_workers(workers)
-    recovery.reconcile()
-    with store.session() as db:
-        stranded = q.fail_orphaned(db)
-    if stranded:
-        print(f"llm-engine: failed {stranded} run(s) stranded by a restart")
-
-    if not auth.enforced():
-        print("llm-engine: LLM_ENGINE_SERVICE_SECRET unset — accepting unauthenticated callers")
-
-    drain = asyncio.create_task(RUNNER.drain_forever())
+    drain = None
     try:
+        RUNNER.attach_workers(workers)
+        SERVING.attach_workers(workers)
+        recovery.reconcile()
+        with store.session() as db:
+            stranded = q.fail_orphaned(db)
+        if stranded:
+            print(f"llm-engine: failed {stranded} run(s) stranded by a restart")
+        builtin_catalog.seed_blocks()
+        builtin_catalog.seed_recipes()
+        if not auth.enforced():
+            print("llm-engine: LLM_ENGINE_SERVICE_SECRET unset — accepting unauthenticated callers")
+        drain = asyncio.create_task(RUNNER.drain_forever())
         yield
     finally:
         try:
             await RUNNER.shutdown()
         finally:
-            drain.cancel()
-            with suppress(asyncio.CancelledError):
-                await drain
+            try:
+                if drain is not None:
+                    drain.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await drain
+            finally:
+                await asyncio.to_thread(workers.close)
 
 
 # The dependency is on the app rather than on each route: a new endpoint is
@@ -68,12 +77,16 @@ app = FastAPI(
 )
 
 logs.quieten()
+app.add_exception_handler(CatalogError,catalog.http_error)
+app.add_exception_handler(RequestValidationError,catalog.request_error)
 
 for router in ROUTERS:
     app.include_router(router)
 
 
 @app.get("/")
-def health():
+def health(administration: bool = Depends(auth.administration_visible)):
+    """Report liveness while keeping private validation identities out of public health metadata."""
     active = REGISTRY.active()
-    return {"status": "ok", "active_run": active.id if active else None}
+    visible = active is not None and (administration or active.kind != "model_validation")
+    return {"status": "ok", "active_run": active.id if visible else None}

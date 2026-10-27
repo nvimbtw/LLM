@@ -80,6 +80,7 @@ class InspectionPoint:
     port: str
     kind: Literal["hidden", "attention"]
     title: str
+    heads: int | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +190,24 @@ class ModelIntrospection(Protocol):
         Reject unknown IDs and preserve RNG, mode, parameters, buffers and caller
         tensors. Attention shape is [batch, heads, queries, keys]; hidden shape is
         [batch, sequence, channels]. Return no fabricated substitute for absent data.
+        """
+        ...
+
+
+@runtime_checkable
+class BlockIntrospection(Protocol):
+    """Optional named-port inspection for hidden/attention blocks inside an assembled language model."""
+
+    def inspection_points(self) -> tuple[InspectionPoint, ...]:
+        """List block-local view identities without running a forward or allocating measurement tensors."""
+        ...
+
+    def inspect_named(self, inputs: Mapping[str, Tensor], *, point_id: str) -> Tensor:
+        """Return one declared observation from actual named block inputs, preserving caller/persistent state, modes and RNG.
+
+        The composition supplies explicit execution occurrence and request bounds.
+        Attention is floating [batch, heads, queries, keys]; hidden views remain
+        optional. Declaration/protocol presence requires separate runtime evidence.
         """
         ...
 

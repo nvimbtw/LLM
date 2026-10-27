@@ -1,0 +1,122 @@
+schema_version: 1
+interface: causal_lm
+parameters:
+  dimensions:
+    type: integer
+    required: false
+    default: 32
+    minimum: 2
+    choices: []
+    title: ''
+    description: ''
+  context_window:
+    type: integer
+    required: false
+    default: 32
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  iterations:
+    type: integer
+    required: false
+    default: 2
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+inputs:
+  tokens:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  positions:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  key_mask:
+    dtype: bool
+    shape:
+    - batch
+    - sequence
+outputs:
+  logits:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - vocabulary
+result:
+  logits: logits
+context_window: ${context_window}
+modules:
+  embedding:
+    reference:
+      kind: block
+      resource_id: e36f74dc-b4ee-54b4-b6db-4a94690c9c88
+      revision_id: ccda902c-1e69-53b1-af00-fb3f9efc8947
+      content_hash: 29012d07fb46434a7a93106aa19604243b50ab171f9d5a4adb0786145157cfc0
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      width: ${dimensions}
+  final_norm:
+    reference:
+      kind: block
+      resource_id: b65f7a8c-36e9-5a5c-ad4a-e5eac1bd5a52
+      revision_id: b73bb4c4-b055-5e26-9d14-2fc2b271680c
+      content_hash: 24551ee991689eed7349d68c23c0986d8f58463bd220e0f719f7ca32c86c9c14
+    parameters:
+      width: ${dimensions}
+      epsilon: 1.0e-05
+  head:
+    reference:
+      kind: block
+      resource_id: 34df4f5b-8410-5c72-8623-fb62924b445e
+      revision_id: 380401b5-b447-56d0-ac3a-be34a2670698
+      content_hash: 1fb5f44f9e7de9fb2a1aaecb31a2a2f06da600fceaed2ba57556303a55178c4d
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      width: ${dimensions}
+  core:
+    reference:
+      kind: block
+      resource_id: cbbfa7fd-a571-5954-9b15-67718cefe794
+      revision_id: ef8bfa49-4888-5f5b-a3a4-020dfd6d1be0
+      content_hash: abfee9adee29efcbf97fc73d98eae82b5628caee089ac385201f042c85745a84
+    parameters:
+      width: ${dimensions}
+      expansion: 3
+aliases:
+- owner: embedding.weight
+  target: head.weight
+flow:
+- call: embedding
+  inputs:
+    tokens: tokens
+  outputs:
+    hidden: embedded
+- repeat: ${iterations}
+  carry:
+    hidden:
+      initial: embedded
+      input: iteration_hidden
+      output: next_hidden
+      result: trunk
+  body:
+  - call: core
+    inputs:
+      hidden: iteration_hidden
+    outputs:
+      hidden: next_hidden
+- call: final_norm
+  inputs:
+    hidden: trunk
+  outputs:
+    hidden: normalized
+- call: head
+  inputs:
+    hidden: normalized
+  outputs:
+    logits: logits

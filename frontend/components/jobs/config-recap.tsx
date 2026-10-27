@@ -1,7 +1,13 @@
 "use client"
 
 import { Panel } from "@/components/ui/panel"
-import { benchmarkBudgetOf, benchmarkSuiteOf, TIER_LABEL } from "@/lib/jobs"
+import {
+  benchmarkBudgetOf,
+  benchmarkSuiteOf,
+  validationConfig,
+  trainConfig,
+  TIER_LABEL,
+} from "@/lib/jobs"
 import type { Job } from "@/lib/jobs"
 import type { TokenizerBuild } from "@/lib/tokenizers"
 import { isFineTune, type TrainConfig, type TrainMode } from "@/lib/training"
@@ -24,6 +30,7 @@ export interface ConfigRecapProps {
   className?: string
 }
 
+/** Renders the queued family's actual configuration, including exact validation snapshot/profile identity. */
 export function ConfigRecap({ job, config, className }: ConfigRecapProps) {
   const recap = describe(job, config)
   if (!recap) return null
@@ -43,13 +50,15 @@ export function ConfigRecap({ job, config, className }: ConfigRecapProps) {
             className="flex items-baseline justify-between gap-3 py-2"
           >
             <dt className="text-xs text-muted-foreground">{label}</dt>
-            <dd className="text-right text-xs tabular-nums">{value}</dd>
+            <dd className="min-w-0 text-right text-xs break-all tabular-nums">
+              {value}
+            </dd>
           </div>
         ))}
         {recap.blocks.map(([label, text]) => (
           <div key={label} className="py-2">
             <dt className="text-xs text-muted-foreground">{label}</dt>
-            <dd className="mt-1 text-xs leading-relaxed">{text}</dd>
+            <dd className="mt-1 text-xs leading-relaxed break-words">{text}</dd>
           </div>
         ))}
       </dl>
@@ -71,15 +80,14 @@ const MODE_LABEL: Record<TrainMode, string> = {
   raft: "Rejection tune",
 }
 
+/** Describes the actual queued family configuration, keeping validation identity/profile separate from model training settings. */
 function describe(job: Job, override?: TrainConfig | null): Recap | null {
   switch (job.kind) {
     case "train":
-      return train((override ?? job.config) as TrainConfig | null)
+      return train(override ?? trainConfig(job))
     case "tokenize":
       return tokenize(job.config as TokenizerBuild | null)
     case "benchmark": {
-      // The assistant suite was missing here and fell through to the language
-      // description, so a queued assistant run described itself as scoring grammar.
       const suite = benchmarkSuiteOf(job)
       const suiteRow =
         suite === "markup"
@@ -93,8 +101,6 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
         rows: [
           ["Model", job.label],
           ["Suite", suiteRow],
-          // Only when one was forced. An unbudgeted run renders each conversation's
-          // own marker, which is the default and not a setting worth a row.
           ...(budget
             ? ([
                 [
@@ -126,6 +132,44 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
         blocks: [],
       }
     }
+    case "model_validation": {
+      const request = validationConfig(job)
+      if (!request) return null
+      const subject = request.subject
+      const profile = request.profile
+      return {
+        description: "Saved validation snapshot",
+        rows: [
+          [
+            "Mode",
+            request.mode === "inspect"
+              ? "Declaration inspection"
+              : "Full validation",
+          ],
+          [
+            "Subject",
+            subject.kind === "draft"
+              ? `Draft ${subject.draft_version}`
+              : "Accepted revision",
+          ],
+          [
+            "Source identity",
+            subject.kind === "draft"
+              ? subject.content_hash
+              : subject.reference.content_hash,
+          ],
+          ["Parameters", String(Object.keys(request.parameters ?? {}).length)],
+          ...(profile
+            ? ([
+                ["Device", profile.device],
+                ["Precision", profile.precision],
+                ["Modes", profile.modes.join(", ")],
+              ] as [string, string][])
+            : []),
+        ],
+        blocks: [],
+      }
+    }
   }
 }
 
@@ -145,102 +189,100 @@ function tokenize(config: TokenizerBuild | null): Recap | null {
   }
 }
 
+/** Summarizes actual queued bindings and inherited definitions, never filling missing modular/SFT structure from legacy form defaults. */
 function train(config: TrainConfig | null): Recap | null {
   if (!config) return null
-
   const fineTune = isFineTune(config.mode)
-
-  // A fine-tune's architecture is the base model's — it loads those weights — and
-  // the two knobs below it are pretraining's alone: there is no BPE train to cap a
-  // vocabulary for, and conversation order is always reshuffled. Listing them for a
-  // fine-tune was the whole of the "why does it say 64 dimensions" problem: the
-  // numbers came from a form the fine-tune composers never show.
-  // A resumed pretrain states no architecture — it inherits the checkpoint's,
-  // and the composer neither shows a control for one nor sends a number — so
-  // the stored config has nothing under these keys and the form's hidden values
-  // are not what the run will train at. One honest row instead of five invented
-  // ones; the shape it resolved to is on the model the run produces.
-  const rows: [string, string][] = [["Mode", MODE_LABEL[config.mode]]]
-  if (config.resume_from) {
-    rows.push(["Architecture", "The checkpoint's"])
-  } else {
+  const inherited = fineTune || Boolean(config.resume_from)
+  const rows: [string, string][] = [
+    ["Mode", MODE_LABEL[config.mode] ?? "Training"],
+  ]
+  if (config.resume_from)
+    rows.push(["Architecture", "Inherited from the checkpoint"])
+  else if (fineTune)
+    rows.push(["Architecture", "Inherited from the saved base model"])
+  else if (config.architecture)
     rows.push(
-      ["Dimensions", String(config.dimensions)],
-      ["Context", String(config.ctx_window)],
-      ["Heads", String(config.heads)],
-      ["Layers", String(config.layers)]
+      ["Recipe revision", config.architecture.revision_id],
+      ["Numerical preflight", "Required in the training job"]
     )
-  }
+  else
+    for (const [label, value] of [
+      ["Dimensions", config.dimensions],
+      ["Context", config.ctx_window],
+      ["Heads", config.heads],
+      ["Layers", config.layers],
+      ["FF multiplier", config.ff_multiplier],
+    ] as const)
+      rows.push([label, Number.isFinite(value) ? String(value) : "Unavailable"])
   rows.push(
-    ["Epochs", String(config.epochs)],
-    ["Learning rate", config.lr.toExponential(0)],
-    // Recapped beside the learning rate rather than with the architecture: it is
-    // an optimization hyperparameter that the two of them were tuned together
-    // against, and only incidentally the other half of what decides whether a
-    // run fits on the card.
-    ["Batch size", String(config.batch_size)]
+    [
+      "Epochs",
+      Number.isFinite(config.epochs) ? String(config.epochs) : "Unavailable",
+    ],
+    [
+      "Learning rate",
+      Number.isFinite(config.lr) ? config.lr.toExponential(0) : "Unavailable",
+    ],
+    [
+      "Batch size",
+      Number.isFinite(config.batch_size)
+        ? String(config.batch_size)
+        : "Unavailable",
+    ]
   )
-  if (!config.resume_from) {
-    rows.push(["FF multiplier", `${config.ff_multiplier}×`])
-  }
-  if (!fineTune) {
-    // Which vocabulary, before how large: a run that names one ignores
-    // `max_vocab` entirely, since the size belongs to the build.
-    // What it started from, before what it started with: a run that continued
-    // from a state took its architecture from there, so the rows above are the
-    // request rather than the last word on it.
+  if (inherited)
     rows.push([
-      "Starts from",
-      config.resume_from ? "A saved state" : "Random weights",
+      "Tokenizer",
+      config.resume_from
+        ? "Inherited from the checkpoint"
+        : "Inherited from the saved base model",
     ])
-    // A resumed run states neither: the vocabulary is the checkpoint's, and
-    // `max_vocab` is never read. Both are stripped from what is sent and the
-    // stored config keeps only what was stated, so there is nothing here to
-    // report — and a default reported as a choice is a decision nobody made.
-    if (config.resume_from) {
-      rows.push(["Tokenizer", "The checkpoint's"])
-    } else {
-      rows.push([
+  else {
+    rows.push(
+      ["Starts from", "Random weights"],
+      [
         "Tokenizer",
         config.tokenizer_id ? "A built vocabulary" : "Learned with the run",
+      ]
+    )
+    if (!config.tokenizer_id)
+      rows.push([
+        "Max vocab",
+        Number.isFinite(config.max_vocab)
+          ? String(config.max_vocab)
+          : "Unavailable",
       ])
-      if (!config.tokenizer_id)
-        rows.push(["Max vocab", String(config.max_vocab)])
-    }
-    rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
   }
-  // SFT only: pretrain always strips, and RAFT/KTO have no thinking to strip, so
-  // the row would be noise in both cases.
-  if (config.mode === "sft") {
+  if (!fineTune) rows.push(["Shuffle", config.shuffle ? "On" : "Off"])
+  if (config.mode === "sft")
     rows.push(["Strip thinking", config.strip_thinking ? "On" : "Off"])
-  }
-  if (config.mode === "kto" && config.beta !== undefined) {
+  if (config.mode === "kto" && config.beta !== undefined)
     rows.push(["Beta", String(config.beta)])
-  }
-
-  // Pretrain builds its corpus from the selected uploads and SFT from the
-  // selected conversation sets — both are a dataset pick and both are recapped,
-  // because which sets went in is the thing that tells two runs from the same
-  // base apart. RAFT and KTO are not: their data is the model's own generations
-  // and the rated catalogue, neither of which is chosen here.
-  const picksDatasets = !fineTune || config.mode === "sft"
-  // Defaulted rather than read straight: the stored config is what the request
-  // *stated*, so a caller that named no curriculum has no key here at all.
   const curriculum = config.curriculum ?? []
+  const picksDatasets = !fineTune || config.mode === "sft"
   const datasets = !picksDatasets
     ? ""
-    : curriculum.length > 0
-      ? curriculum.map((stage, i) => stage.name ?? `Stage ${i + 1}`).join(" → ")
-      : // Empty is not "none" — the LLM engine resolves it to every set on disk, so
-        // say that rather than showing a blank where a selection should be.
-        (config.datasets ?? []).map((d) => d.name).join(", ") ||
-        (config.mode === "sft" ? "Every set on disk" : "")
-
+    : curriculum.length
+      ? curriculum
+          .map((stage, index) => stage.name ?? `Stage ${index + 1}`)
+          .join(" → ")
+      : (config.datasets ?? [])
+          .map((dataset) => dataset.name ?? dataset.id)
+          .join(", ")
+  const blocks: [string, string][] = datasets
+    ? [[curriculum.length ? "Curriculum" : "Datasets", datasets]]
+    : []
+  if (!inherited && config.architecture)
+    blocks.unshift([
+      "Recipe parameters",
+      Object.entries(config.architecture.parameters)
+        .map(([name, value]) => `${name}=${String(value)}`)
+        .join(", ") || "Declared defaults",
+    ])
   return {
-    description: fineTune ? "Inherited from the base" : "As queued",
+    description: inherited ? "Inherited saved definition" : "As queued",
     rows,
-    blocks: datasets
-      ? [[curriculum.length > 0 ? "Curriculum" : "Datasets", datasets]]
-      : [],
+    blocks,
   }
 }

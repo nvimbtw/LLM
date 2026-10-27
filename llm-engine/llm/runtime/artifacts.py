@@ -1,6 +1,6 @@
 """Session-scoped immutable byte grants; durable publication belongs to parent adapters."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 import hashlib
 import os
 from pathlib import Path
@@ -39,11 +39,20 @@ class ArtifactStore:
         """Publish bounded bytes as a new immutable grant without changing an earlier file."""
         return self._write(iter((data,)), len(data), format)
 
-    def stage_file(self, source: Path, format: str) -> RuntimeArtifact:
-        """Snapshot a parent-authorized file in bounded chunks; source paths never cross IPC."""
+    def stage_file(self, source: Path, format: str, *, check_cancelled: Callable[[], None] = lambda: None) -> RuntimeArtifact:
+        """Snapshot a parent-authorized file in bounded cancellable chunks; source paths never cross IPC."""
         size = source.stat().st_size
         with source.open("rb") as stream:
-            return self._write(iter(lambda: stream.read(1 << 20), b""), size, format)
+            def chunks():
+                """Observe the owning request before each finite read without abandoning a partial output file."""
+                while True:
+                    check_cancelled()
+                    block = stream.read(1 << 20)
+                    if not block:
+                        return
+                    yield block
+
+            return self._write(chunks(), size, format)
 
     def _write(self, chunks: Iterator[bytes], expected_bytes: int, format: str) -> RuntimeArtifact:
         """Atomically materialize a pre-budgeted input/output and retain prior complete grants on failure."""

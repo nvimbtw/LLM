@@ -24,6 +24,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as recompute
 
+from llm.architecture.interfaces import TokenRowResult
+
 # The frequency base for RoPE. 10000 is the value from the original paper and
 # what the Rust side uses; changing it changes what every trained model expects,
 # so it travels in the checkpoint's arch block rather than being read from here
@@ -155,18 +157,7 @@ class Attention(nn.Module):
         be guarded by strict export without passing a SymBool into SDPA.
         """
         batch, seq, _ = x.shape
-
-        q, k, v = (
-            self.wqkv(x)
-            .view(batch, seq, 3, self.heads, self.head_dim)
-            .permute(2, 0, 3, 1, 4)
-            .unbind(0)
-        )
-        q = apply_rope(q, cos, sin)
-        k = apply_rope(k, cos, sin)
-
-        if self.log_temperature is not None:
-            q = q * self.log_temperature.exp().view(1, -1, 1, 1).to(q.dtype)
+        q, k, v = self.project(x, cos, sin)
 
         if cache is not None:
             past_k, past_v = cache
@@ -187,8 +178,17 @@ class Attention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(batch, seq, -1)
         return self.wo(out), cache
 
-    def _attention_recording(self, q, k, v, mask=None):
-        """The same attention, computed explicitly so the weights can be read."""
+    def project(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project fused QKV with the canonical RoPE and learned temperature, preserving normal forward arithmetic and RNG."""
+        batch, seq, _ = x.shape
+        q, k, v = self.wqkv(x).view(batch, seq, 3, self.heads, self.head_dim).permute(2, 0, 3, 1, 4).unbind(0)
+        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        if self.log_temperature is not None:
+            q = q * self.log_temperature.exp().view(1, -1, 1, 1).to(q.dtype)
+        return q, k, v
+
+    def probabilities(self, q: torch.Tensor, k: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Return canonical causal attention probabilities without storing diagnostic state or modifying caller tensors."""
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         seq, keys = scores.shape[-2], scores.shape[-1]
         if mask is not None:
@@ -198,7 +198,18 @@ class Attention(nn.Module):
                 diagonal=keys - seq
             )
             scores = scores.masked_fill(~causal, float("-inf"))
-        weights = torch.softmax(scores, dim=-1)
+        return torch.softmax(scores, dim=-1)
+
+    def attention_weights(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
+                         key_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Measure full-prefix attention through the same projection/softmax owners without changing legacy recording flags or caches."""
+        q, k, _ = self.project(x, cos, sin)
+        mask = attention_mask(x.shape[1], k.shape[2], key_mask) if key_mask is not None else None
+        return self.probabilities(q, k, mask)
+
+    def _attention_recording(self, q, k, v, mask=None):
+        """Use canonical explicit probabilities and retain a detached view only while legacy diagnostics request it."""
+        weights = self.probabilities(q, k, mask)
         self.last_attention = weights.detach()
         return weights @ v
 
@@ -389,6 +400,8 @@ class Transformer(nn.Module):
         Explicit positions must be nonnegative and below the supplied RoPE table
         length. Eager execution raises ValueError; strict capture retains a tensor
         runtime assertion instead of specializing on a Python scalar from input.
+        Shape-only meta execution retains that assertion without reading values;
+        it cannot certify position values and never authorizes real execution.
 
         A block covered by `recompute_depth` stores its *input* and nothing from
         inside it, and the backward pass runs it forward a second time to rebuild
@@ -411,7 +424,7 @@ class Transformer(nn.Module):
             cos = rope_cos[pos_offset : pos_offset + seq]
             sin = rope_sin[pos_offset : pos_offset + seq]
         else:
-            if torch.compiler.is_compiling():
+            if torch.compiler.is_compiling() or positions.device.type == "meta":
                 torch._assert_async(
                     ((positions >= 0) & (positions < limit)).all(),
                     f"positions must be within context window [0, {limit})",
@@ -439,6 +452,26 @@ class Transformer(nn.Module):
         x = self.ln_final(x)
         logits = x @ self.embedding.weight.T
         return logits, (new_caches if caches is not None else None)
+
+    def initialize_token_rows(self, token_ids: tuple[int, ...]) -> TokenRowResult:
+        """Initialize unique valid tied token rows to their original table mean; report out-of-vocabulary IDs.
+
+        Marker provenance belongs to the SFT caller. Validation happens before
+        mutation, and the same operation serves the legacy and standard-recipe
+        adapters without separate numerical policies.
+        """
+        if len(token_ids) > 65536 or any(type(token_id) is not int for token_id in token_ids):
+            raise ValueError("token row initialization requires at most 65536 integer IDs")
+        ids = tuple(dict.fromkeys(token_ids))
+        table = self.embedding.weight
+        valid = tuple(token_id for token_id in ids if 0 <= token_id < table.shape[0])
+        skipped = tuple(token_id for token_id in ids if token_id not in valid)
+        if valid:
+            with torch.no_grad():
+                mean = table.mean(dim=0)
+                for token_id in valid:
+                    table[token_id] = mean
+        return TokenRowResult("initialized", valid, skipped)
 
     def empty_caches(self):
         """Fresh per-layer KV cache slots for an incremental decode."""

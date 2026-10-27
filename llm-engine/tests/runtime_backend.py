@@ -9,6 +9,7 @@ import time
 
 import torch
 
+from llm.architecture.errors import ArchitectureError
 from llm.runtime.protocol import (
     Completed, EffectData, Generate, GymFinishEffect, Load, Progress, Train,
 )
@@ -125,6 +126,27 @@ class ConstructionHang(ResidentBackend):
     def __init__(self, context: WorkerContext) -> None:
         """Hang inside actual constructor execution after import completed."""
         hang()
+
+
+class DomainFailure(ResidentBackend):
+    """Raise a bounded domain error to distinguish private training diagnostics from public generation failures."""
+
+    def inject(self, context: WorkerContext) -> None:
+        """Reject training admission with a known code and an overlong Unicode explanation."""
+        raise ArchitectureError("memory_estimate", "unsupported captured operation: " + "Ω" * 1500)
+
+    def generate(self, payload: Generate, context: WorkerContext) -> Completed:
+        """Raise the same failure during serving, where private domain explanations must remain hidden."""
+        self.inject(context)
+        raise AssertionError("domain failure must raise")
+
+
+class ContractFailure(DomainFailure):
+    """Raise a plain contract refusal while retaining DomainFailure's real serving/training paths."""
+
+    def inject(self, context: WorkerContext) -> None:
+        """Represent a failed saved-input check with a deliberately overlong private explanation."""
+        raise ValueError("saved input contract differs: " + "Ω" * 1500)
 
 
 class ForwardHang(ResidentBackend):

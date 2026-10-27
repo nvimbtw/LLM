@@ -1,0 +1,184 @@
+{
+  "additionalProperties": false,
+  "description": "Return one bounded real fp32 little-endian head matrix, with actual axes and optional modular measurement identity.",
+  "properties": {
+    "definition_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Definition Id"
+    },
+    "dtype": {
+      "const": "float32",
+      "default": "float32",
+      "title": "Dtype",
+      "type": "string"
+    },
+    "encoding": {
+      "const": "base64",
+      "default": "base64",
+      "title": "Encoding",
+      "type": "string"
+    },
+    "evidence_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence Hash"
+    },
+    "head": {
+      "minimum": 0,
+      "title": "Head",
+      "type": "integer"
+    },
+    "heads": {
+      "minimum": 1,
+      "title": "Heads",
+      "type": "integer"
+    },
+    "layer": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layer"
+    },
+    "layers": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layers"
+    },
+    "max_tokens": {
+      "maximum": 512,
+      "minimum": 1,
+      "title": "Max Tokens",
+      "type": "integer"
+    },
+    "model_name": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Model Name",
+      "type": "string"
+    },
+    "point_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Point Id"
+    },
+    "profile_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile Digest"
+    },
+    "runtime_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Id"
+    },
+    "shape": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "maximum": 512,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "maximum": 512,
+          "minimum": 1,
+          "type": "integer"
+        }
+      ],
+      "title": "Shape",
+      "type": "array"
+    },
+    "tokens": {
+      "items": {
+        "maxLength": 8192,
+        "type": "string"
+      },
+      "maxItems": 512,
+      "minItems": 1,
+      "title": "Tokens",
+      "type": "array"
+    },
+    "validated_sequence_max": {
+      "default": 0,
+      "maximum": 512,
+      "minimum": 0,
+      "title": "Validated Sequence Max",
+      "type": "integer"
+    },
+    "weights": {
+      "maxLength": 1398104,
+      "minLength": 8,
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+      "title": "Weights",
+      "type": "string"
+    }
+  },
+  "required": [
+    "model_name",
+    "head",
+    "heads",
+    "max_tokens",
+    "tokens",
+    "shape",
+    "weights"
+  ],
+  "title": "AttentionMatrix",
+  "type": "object"
+}

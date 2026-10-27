@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 import store
 from api import auth
 from api.model_metadata import read_model_meta, resolve_model_metadata
+from api.visibility import public_model
 from llm import storage
 from store import queries as q
 from store.schema import Model
@@ -43,7 +44,7 @@ class ModelEdit(BaseModel):
 
 
 @router.get("/models")
-def list_models(include_private: bool = True, checkpoints: bool = False):
+def list_models(include_private: bool = True, checkpoints: bool = False, administration: bool = Depends(auth.administration_visible)):
     """Join indexed models and weight directories, applying requested visibility and checkpoint filters."""
     with store.session() as db:
         rows = {
@@ -53,19 +54,18 @@ def list_models(include_private: bool = True, checkpoints: bool = False):
         directories = _joinable_dirs(db, checkpoints)
         listed = [_model(db, _row_for(rows, name), d) for name, d in directories.items()]
         listed += [_model(db, m, None) for m in rows.values() if str(m.id) not in directories]
-    return {"models": listed}
+    return {"models": listed if administration else [public_model(model) for model in listed]}
 
 
 @router.get("/models/{model_id}")
-def get_model(model_id: uuid.UUID):
+def get_model(model_id: uuid.UUID, administration: bool = Depends(auth.administration_visible)):
     """Return one indexed model with resolved metadata, or 404 for an unknown identity."""
     with store.session() as db:
         model = q.get_model(db, model_id)
         if model is None:
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
-        return {
-            **_model(db, model, storage.model_dir(str(model_id))),
-        }
+        value = _model(db, model, storage.model_dir(str(model_id)))
+        return value if administration else public_model(value)
 
 
 @router.patch("/models/{model_id}")
@@ -114,7 +114,7 @@ def delete_model(model_id: uuid.UUID, weights: bool = True, _=Depends(auth.requi
 
 
 @router.get("/models/{model_id}/checkpoints")
-def list_checkpoints(model_id: uuid.UUID):
+def list_checkpoints(model_id: uuid.UUID, administration: bool = Depends(auth.administration_visible)):
     """One model's intermediates, in the order they were taken.
 
     Its own route rather than a flag on the detail: a model detail is loaded on
@@ -124,7 +124,9 @@ def list_checkpoints(model_id: uuid.UUID):
         found = q.checkpoints_of(db, model_id)
         return {
             "checkpoints": [
-                _model(db, c, storage.model_dir(str(c.id))) for c in found
+                _model(db, c, storage.model_dir(str(c.id))) if administration else public_model(
+                    _model(db, c, storage.model_dir(str(c.id)))
+                ) for c in found
             ]
         }
 
@@ -160,7 +162,7 @@ def _row_for(rows: dict[uuid.UUID, Model], directory_name: str) -> Model | None:
 def _model(db, model: Model | None, directory) -> dict:
     """A model as the API reports it — whichever half of it exists."""
     meta = read_model_meta(directory)
-    facts = resolve_model_metadata(db, model, meta)
+    facts = resolve_model_metadata(db, model, meta, directory)
     entry = {
         "model_id": str(model.id) if model else None,
         "name": model.name if model else (directory.name if directory else None),
@@ -170,6 +172,8 @@ def _model(db, model: Model | None, directory) -> dict:
         "architecture": facts.architecture,
         "vocab_size": facts.vocabulary_size,
         "parameter_count": facts.parameter_count,
+        "definition_id": facts.definition_id,
+        "context_extension_supported": facts.definition_id is None and facts.architecture is not None,
         "size": (model.parameters or {}).get("display_size") if model else None,
         "published": model.published if model else False,
         "run_id": str(model.run_id) if model and model.run_id else None,

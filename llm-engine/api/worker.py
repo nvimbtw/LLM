@@ -8,6 +8,14 @@ from uuid import UUID
 
 from llm.model.device import DeviceLease
 from llm.runtime.supervisor import WorkerManager
+from llm.train.progress import Checkpoint
+
+
+@dataclass(frozen=True)
+class RegisteredCheckpoint:
+    """Announce an already committed parent publication without asking the legacy progress sink to register it again."""
+
+    frame: Checkpoint
 
 
 @dataclass(frozen=True)

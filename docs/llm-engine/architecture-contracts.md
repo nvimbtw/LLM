@@ -78,9 +78,12 @@ uploaded tensor blobs. Architecture inputs follow the causal LM interface.
 
 `execution_jobs` remains the only lifecycle authority. A completed `invalid`
 validation differs from worker failure. Verdicts are `inspection_only`, `invalid`,
-`provisional`, `valid`. Successful full reports require passed capture/numerical
+`provisional`, `valid`. Valid full reports require passed capture/numerical
 stages, no failed/unfinished stages and a receipt naming published complete-graph
-evidence. Inspection/provisional results never authorize acceptance or optimizer
+evidence. Pending tokenizer reports may skip unresolved construction/capture/
+numerical stages and retain provisional metadata without graphs. Shared fixtures
+accept that provisional report and reject the same skipped stages on a valid
+report. Inspection/provisional results never authorize acceptance or optimizer
 execution.
 
 Receipt identity includes exact source/dependencies/parameters, named input-profile
@@ -124,10 +127,14 @@ Literal `/architectures/schema` precedes UUID routes.
 | GET `/{id}/revisions[/{revision_id}]` | `RevisionPage`, immutable `BlockRevisionView`/`ArchitectureRevisionView`. |
 | POST `/{id}/validations` | `ValidationRequest` → 202 normal `ValidationRun` envelope. |
 | POST `/{id}/revisions` | `AcceptRevision` → 201 `AcceptedRevision`. |
-| GET `/architectures/schema` | `Recipe` JSON Schema plus authoritative limits and binding syntax. |
+| GET `/architectures/schema` | `ArchitectureSchema`: real recipe schema/limits and prospective installed runtime profile/devices; no evidence. |
+| POST `/architectures/{id}/declaration` | Exact `DraftSubject` → `RecipeDraftInspection`, safe YAML declarations only, never numerical authorization. |
 | GET `/validations/{id}` | Durable `ValidationReport`. |
 | GET `/validations/{id}/graph`, `/models/{id}/graph` | `GraphQuery` → `GraphFragment`; never recapture during reads. |
 | GET `/models/{id}/definition` | `ModelDefinitionSummary`, no source import or weight loading. |
+| GET `/models/{id}/sources/{revision_id}`, `/validations/{id}/sources/{revision_id}` | `RetainedSource`: exact bounded UTF-8 bytes/hash and relative display path from immutable package/publication; no imports, tensor reads or current catalog fallback. |
+| GET `/architectures/revisions/{revision_id}` | Exact accepted `ArchitectureRevisionView`, without mutable head selection. |
+| POST `/architectures/revisions/{revision_id}/training-preview` | `TrainingArchitectureRequest` → `TrainingArchitecturePreview`; prospective resolved metadata, no validation receipt or queue work. |
 | Existing training/run/event routes | Add `ArchitectureSelection`, validation output and `ValidationEvent`; retain cancel/observer separation. |
 
 Use 403 authorization/read-only, 404 missing, 409 stale/archive/conflict, 413 byte
@@ -140,6 +147,14 @@ attempts to set it. Engine filters active/history/counts before pagination. Deny
 validation detail/events before any bytes stream; generic model/run metadata,
 errors and logs cannot expose administrative source/graphs. Ordinary published
 chat and compatible existing attention access remain available.
+
+Ordinary signed-in users can explicitly discover `/models/{id}/attention-points`
+(`InspectionCatalog`) and request `/models/{id}/attention` (`AttentionSelection`
+→ `AttentionMatrix`). Candidates expose actual instance/call identities separately
+from numerical proof bounds. Matrix axes, base64 length, finite probabilities and
+definition/profile/worker/view evidence are checked in both language decoders.
+Legacy numeric layer/head selection retains its actual model dimensions; generic
+views never synthesize that layout. These reads contain no custom source/graphs.
 
 Graphs distinguish instance, execution occurrence and shared parameter owner.
 Frontend lays out engine semantics. Cursors bind graph hash, receipt/profile,

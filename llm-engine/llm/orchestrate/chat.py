@@ -6,103 +6,20 @@ so a reply is well-formed markup rather than something the frontend has to
 guess at.
 """
 
-import time
-from dataclasses import dataclass, field
-
 import torch
-from tokenizers import Tokenizer
 
 from llm import storage
-from llm.chat import tools
 from llm.chat.context import MemoryContext, ProjectContext
-from llm.chat.markup import OpenBlocks, Rules
-from llm.chat.template import Role, ThinkBudget, Turn, build_prompt, context_floor
+from llm.chat.template import ThinkBudget, context_floor
 from llm.config import ChatConfig, ChatTurn
 from llm.corpus import bpe, relabel
-from llm.model import checkpoint, sample, device
+from llm.model import checkpoint, device
 from llm.train.loop import pick_device, release_device
 
-# Headroom left for the reply before the prompt starts evicting its own freshest
-# tokens. The prompt is truncated oldest-first to leave this much room.
-RESERVE_FOR_REPLY = 256
-
-# How many tools one turn may call.
-#
-# Not a limit anyone has hit deliberately: it bounds a degenerate model that has
-# learned to open a search and open another instead of answering. Without it a
-# reply can spend its whole budget on calls the backend then has to execute.
-MAX_TOOL_CALLS_PER_TURN = 4
-
-
-@dataclass
-class _ToolCalls:
-    """The tool calls a turn has made, recognised as they close.
-
-    Watching ids rather than the decoded text is the whole reason detection
-    lives here: a marker is one token, while the pieces this generator yields
-    are byte-level fragments that a caller downstream would have to reassemble
-    before it could even see one.
-    """
-
-    rules: Rules
-    tokenizer: Tokenizer
-    #: How many calls this turn may open. `0` is a real value and not "unset":
-    #: it refuses the opener from the first token, which is how a caller asks
-    #: for an answer rather than another command.
-    budget: int = MAX_TOOL_CALLS_PER_TURN
-    made: list[dict] = field(default_factory=list)
-    _opened_at: int | None = None
-
-    def observe(self, token_id: int, produced: list[int]) -> dict | None:
-        """The call `token_id` just completed, or None. `produced` must already
-        include `token_id`, so the body is everything between the two.
-
-        A body that is not a JSON object naming a tool this build has is not a
-        call: it is reported as nothing and the reply carries on. That is the
-        cost of one marker for every tool — the grammar guarantees the *shape*
-        of a call and can no longer guarantee that a tool by that name exists —
-        and it is why this returns None rather than raising. A model that
-        mangles its JSON has written a sentence nobody acts on, which is a far
-        better failure than a turn that dies.
-        """
-        if self.rules.tool_call is None:
-            return None
-        opener, closer = self.rules.tool_call
-
-        if token_id == opener:
-            self._opened_at = len(produced)
-            return None
-        if token_id != closer or self._opened_at is None:
-            return None
-
-        body = bpe.decode(self.tokenizer, produced[self._opened_at : -1])
-        self._opened_at = None
-        named = tools.parse(body)
-        if named is None:
-            return None
-
-        name, argument = named
-        call = {"tool": name, "argument": argument}
-        self.made.append(call)
-        return call
-
-    def mask(self, logits: torch.Tensor) -> None:
-        """Refuse every tool opener once the turn has called enough of them.
-
-        Applied after the grammar's own mask rather than inside it, because this
-        is a budget the caller set and not a statement about well-formedness.
-
-        At a budget of zero this fires before the first token, which is the
-        whole mechanism behind a gym episode's terminal round: masking the
-        opener is the only way to make a model *stop searching and answer*, and
-        it is a mask rather than an instruction because a model this size does
-        not reliably follow one.
-        """
-        if len(self.made) < self.budget or self.rules.tool_call is None:
-            return
-        opener = self.rules.tool_call[0]
-        if opener < logits.numel():
-            logits[opener] = float("-inf")
+from llm.model.generation import (
+    MAX_TOOL_CALLS_PER_TURN, RESERVE_FOR_REPLY, ToolCalls as _ToolCalls,
+    history as _history, stream_model,
+)
 
 _CACHE: dict = {}
 
@@ -132,9 +49,6 @@ def load(model_name: str):
     short generation.
     """
     if _CACHE.get("name") != model_name:
-        # Dropped *before* the replacement is built, not overwritten by it: for
-        # the moment both are referenced, the card holds two models, and the one
-        # being replaced is exactly the size of the one arriving.
         evict()
         device = pick_device()
         model, _ = checkpoint.load(storage.weights_path(model_name), device)
@@ -143,145 +57,17 @@ def load(model_name: str):
     return _CACHE["model"], _CACHE["tokenizer"], _CACHE["device"]
 
 
-def _history(turns: list[ChatTurn]) -> list[Turn]:
-    """The conversation as the template reads it.
-
-    A tool turn that named its call is rendered here rather than by whoever sent
-    it — see `ChatTurn` for why there is exactly one renderer of that block. An
-    unnamed one is text that was already rendered, which is how a stored chat's
-    tool message comes back, and it passes through untouched.
-
-    There is no role branch here, and there is one in `corpus.sft._turns`, which
-    is worth stating because the two are otherwise mirrors. An **assistant**
-    turn can also name a call — the one it made rather than the one it answers,
-    with the marker after its text — and that is how a gym demonstration is
-    stored. It cannot reach here: `ChatTurn` refuses the pairing on anything but
-    a tool turn, and a live assistant reply needs no naming anyway, because the
-    engine stores it as the raw text the model produced with its markers already
-    in it. A corpus row has no validator to refuse it, which is why the other
-    function has to decide by role and this one does not.
-    """
-    rendered: list[Turn] = []
-    for turn in turns:
-        text = turn.text
-        if turn.tool is not None and turn.argument is not None:
-            if tools.by_name(turn.tool) is None:
-                raise ValueError(f"unknown tool {turn.tool!r}")
-            text = tools.render_result(turn.tool, turn.argument, turn.text)
-        rendered.append(Turn(role=Role(turn.role), text=text))
-    return rendered
-
-
-@torch.inference_mode()
+@torch.no_grad()
 def stream(cfg: ChatConfig):
+    """Own parent device admission for one legacy model generation and release it when the iterator closes."""
     with device.admit():
         return (yield from _stream(cfg))
 
 
 def _stream(cfg: ChatConfig):
-    """Yield `(kind, data)` frames of the assistant turn, then return a summary.
-
-    Two kinds: `("token", {"token": piece})` for every decoded fragment, and
-    `("tool_call", {"tool", "argument"})` the moment a call closes — emitted
-    alongside the tokens that spell it, not instead of them, so a caller that
-    only renders text still sees the whole reply.
-
-    Per-request RoPE tables and memory-token adoption leave cached resources
-    unchanged. The output cap reserves space for closing open markup blocks;
-    ByteLevel fragments wait for complete UTF-8 characters; other tokenizer
-    decoders retain the prefix-comparison path.
-    """
-    started = time.time()
-    model, tokenizer, device = load(cfg.model_name)
-    if cfg.memories:
-        tokenizer = relabel.adopt_memory_slots(tokenizer)
-
-    history = _history(cfg.turns)
-    budget = ThinkBudget.parse(cfg.budget) if cfg.budget else None
-
-    context_window = round(model.ctx_window * cfg.context_multiplier)
-    rope = model.extended_rope(context_window) if context_window > model.ctx_window else None
-
-    reserve = min(RESERVE_FOR_REPLY, max(1, context_window // 2))
-    prompt_ids = build_prompt(
-        cfg.system, history, tokenizer, context_window, reserve, budget,
-        cfg.project, cfg.memories,
-    )
-    if not prompt_ids:
-        raise ValueError("Conversation rendered to zero tokens")
-
-    rules = Rules.build(tokenizer)
-    blocks = OpenBlocks(rules)
-    budget = MAX_TOOL_CALLS_PER_TURN if cfg.max_tool_calls is None else cfg.max_tool_calls
-    calls = _ToolCalls(rules, tokenizer, budget)
-
-    generator = torch.Generator(device=device).manual_seed(cfg.seed) if cfg.seed else None
-
-    logits, caches = model(
-        torch.tensor([prompt_ids], device=device),
-        caches=model.empty_caches(),
-        pos_offset=0,
-        rope=rope,
-    )
-
-    produced: list[int] = []
-    decoded = ""
-    incremental = bpe.stream_decoder(tokenizer)
-    position = len(prompt_ids)
-    stopped = "length"
-
-    for _ in range(cfg.max_tokens):
-        if position >= context_window - blocks.depth:
-            break
-
-        step = logits[0, -1].clone()
-        blocks.mask(step)
-        calls.mask(step)
-        next_id = sample.pick(step, cfg.temperature, cfg.top_k, cfg.top_p, generator)
-
-        if next_id in (rules.end_of_assistant, rules.end_of_text):
-            stopped = "marker"
-            break
-
-        blocks.observe(next_id)
-        produced.append(next_id)
-        if incremental is None:
-            current = bpe.decode(tokenizer, produced)
-            piece = current[len(decoded) :]
-            decoded = current
-        else:
-            piece = incremental.push(next_id)
-        yield "token", {"token": piece}
-
-        if (call := calls.observe(next_id, produced)) is not None:
-            yield "tool_call", call
-
-        logits, caches = model(
-            torch.tensor([[next_id]], device=device), caches=caches, pos_offset=position, rope=rope
-        )
-        position += 1
-
-    drained = blocks.closers()
-    for closer in drained:
-        produced.append(closer)
-        piece = (
-            incremental.push(closer) if incremental is not None
-            else bpe.decode(tokenizer, [closer])
-        )
-        yield "token", {"token": piece}
-        if (call := calls.observe(closer, produced)) is not None:
-            yield "tool_call", call
-
-    return {
-        "model_name": cfg.model_name,
-        "text": bpe.decode(tokenizer, produced),
-        "prompt_tokens": len(prompt_ids),
-        "generated_tokens": len(produced),
-        "drained_blocks": len(drained),
-        "tool_calls": calls.made,
-        "stopped": stopped,
-        "elapsed_secs": round(time.time() - started, 2),
-    }
+    """Render/generate through the canonical model adapter after legacy cache loading."""
+    model, tokenizer, device_name = load(cfg.model_name)
+    return (yield from stream_model(cfg, model, tokenizer, device_name))
 
 
 def run(cfg: ChatConfig) -> dict:

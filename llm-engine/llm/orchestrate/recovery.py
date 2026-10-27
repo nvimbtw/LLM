@@ -9,6 +9,7 @@ from pathlib import Path
 from llm import storage
 from llm.model.checkpoint import sync_directory
 from llm.model import checkpoint
+from llm.train.data_identity import fingerprint
 
 
 def resume(config, kind: str):
@@ -50,20 +51,3 @@ def stage(destination: Path):
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
-
-
-def fingerprint(*arrays, plan=None) -> str:
-    """Hash packed bytes once; equal-length rebuilt data is still different data."""
-    import hashlib
-    import json
-    digest = hashlib.sha256()
-    if plan is not None:
-        digest.update(json.dumps([plan.eot_id,plan.shuffle,plan.seed,plan.documents.names],sort_keys=True).encode())
-        arrays = (*arrays,plan.documents.rows)
-        for stage in plan.stages:
-            digest.update(json.dumps([stage.name,stage.epochs,stage.documents.names]).encode())
-            arrays = (*arrays,stage.documents.rows)
-    for array in arrays:
-        digest.update(str((array.shape, str(array.dtype))).encode())
-        digest.update(memoryview(array).cast("B"))
-    return digest.hexdigest()

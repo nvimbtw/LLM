@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { toast } from "@/components/ui/toast"
+import { useJobSubmission } from "./use-job-submission"
 import {
   HISTORY_PAGE_SIZE,
   cancelJob,
@@ -24,9 +25,6 @@ const EMPTY: JobBoard = {
   paused: false,
 }
 
-//: How often the board resyncs. A queue moves when a job is queued, starts or
-//: ends — rare enough that a poll says the same thing a nudge would, and there is
-//: no second live connection to keep alive across sleeps, restarts and blips.
 const POLL_MS = 3000
 
 /**
@@ -37,80 +35,66 @@ const POLL_MS = 3000
  * apart.
  */
 export function useJobs(enabled = true) {
+  const submission = useJobSubmission("queue-retry")
   const [board, setBoard] = React.useState<JobBoard>(EMPTY)
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
 
-  // Which page of history is on screen. Held here rather than in the view because
-  // every queue nudge refetches the board, and the refetch has to ask for the page
-  // the reader is on — otherwise finishing a job would silently snap them back to
-  // the first page.
   const [historyPage, setHistoryPage] = React.useState(0)
-  // Read by `refresh`, which is a stable callback the socket holds for the life of
-  // the subscription: a page in its dependency list would tear down and rebuild the
-  // socket on every page turn.
   const pageRef = React.useRef(0)
 
-  // Guards against a slow refetch landing after a newer one and reviving stale
-  // rows — the socket can fire several nudges in quick succession.
   const generation = React.useRef(0)
+  const lifetime = React.useRef({ active: false })
+  React.useEffect(() => {
+    const owner = { active: true }
+    lifetime.current = owner
+    return () => {
+      owner.active = false
+    }
+  }, [])
 
+  /** Refreshes only this mounted queue owner and ignores obsolete pages/responses. */
   const refresh = React.useCallback(async () => {
+    const owner = lifetime.current
+    if (!enabled || !owner.active) return
     const mine = ++generation.current
     try {
       let next = await getBoard(pageRef.current * HISTORY_PAGE_SIZE)
-      // A page can empty out under the reader: deleting its last row, or
-      // re-queueing a job, moves the whole tail up by one. Land on the last page
-      // that does exist rather than on a blank one under a pager insisting there is
-      // something there. The response says how many there are, so this corrects in
-      // one hop rather than walking back a page at a time.
+      if (!owner.active || mine !== generation.current) return
       if (next.history.length === 0 && pageRef.current > 0) {
         pageRef.current = lastPage(next.historyTotal)
         setHistoryPage(pageRef.current)
         next = await getBoard(pageRef.current * HISTORY_PAGE_SIZE)
       }
-      if (mine === generation.current) {
+      if (owner.active && mine === generation.current) {
         setBoard(next)
         setError(null)
       }
     } catch (e) {
-      if (mine === generation.current) {
+      if (owner.active && mine === generation.current) {
         setError(e instanceof Error ? e.message : "Failed to load the queue.")
       }
     } finally {
-      if (mine === generation.current) setIsLoading(false)
+      if (owner.active && mine === generation.current) setIsLoading(false)
     }
-  }, [])
+  }, [enabled])
 
   React.useEffect(() => {
-    // The queue is admin-only, so a non-admin session must not fetch it or open
-    // a socket for it — both would just collect 403s for the whole session.
-    // Nothing is cleared here: a disabled board reports itself as loaded and
-    // empty below, derived rather than written, so this stays a plain guard.
     if (!enabled) return
-    // Deferred by a microtask instead of called straight from the effect body.
-    // Unlike the other hooks this one cannot inline its fetch — `refresh` owns
-    // the generation guard and the "the page you were on no longer exists" hop,
-    // and a second copy of that would be a second thing to keep correct. Its
-    // state writes are already after an `await`; the deferral only makes that
-    // legible to the compiler's effect analysis. Timing is otherwise unchanged.
     void Promise.resolve().then(refresh)
 
-    // A hidden tab is nobody watching a queue. Left running, the poll is a
-    // request every few seconds for the life of a backgrounded session, about a
-    // board no one can see — and the board it would have drawn is a board that no
-    // longer exists by the time anyone looks. So the interval only runs while the
-    // page is visible, and coming back refetches at once rather than showing
-    // whatever was on screen when the tab went away for up to another POLL_MS.
     let timer: ReturnType<typeof setInterval> | undefined
 
+    /** Starts a single visible-page polling timer. */
     const start = () => {
       if (timer === undefined) timer = setInterval(refresh, POLL_MS)
     }
+    /** Stops this effect owner's polling timer. */
     const stop = () => {
       if (timer !== undefined) clearInterval(timer)
       timer = undefined
     }
+    /** Pauses hidden-page polling and reconciles the current board when visible again. */
     const onVisibility = () => {
       if (document.hidden) {
         stop()
@@ -120,8 +104,6 @@ export function useJobs(enabled = true) {
       start()
     }
 
-    // The first fetch above is unconditional — a board that mounts in a
-    // background tab still has to finish loading, or it comes back to a spinner.
     if (!document.hidden) start()
     document.addEventListener("visibilitychange", onVisibility)
     return () => {
@@ -130,50 +112,62 @@ export function useJobs(enabled = true) {
     }
   }, [enabled, refresh])
 
-  // Every mutation refetches rather than patching local state: the server decides
-  // ordering and status, and a queued job the runner claimed mid-request would
-  // make an optimistic patch wrong in exactly the moment it matters.
-  //
-  // Outcomes are toasts, not the `error` banner above — that one is reserved for
-  // "the board could not be loaded", which is a state of the page. Whether a
-  // cancel took is an event, and an event that silently repaints a row four
-  // seconds later is indistinguishable from nothing happening.
+  /** Performs an explicit mutation and reports/reconciles it only for its still-mounted session. */
   const act = React.useCallback(
     async (run: () => Promise<unknown>, done: string) => {
+      const owner = lifetime.current
+      if (!owner.active || !enabled) return
       try {
         await run()
-        toast.success(done)
+        if (owner.active) toast.success(done)
       } catch (e) {
-        toast.error(
-          "That didn't work",
-          e instanceof Error ? e.message : "Something went wrong."
-        )
+        if (owner.active)
+          toast.error(
+            "That didn't work",
+            e instanceof Error ? e.message : "Something went wrong."
+          )
       } finally {
-        await refresh()
+        if (owner.active) await refresh()
       }
     },
-    [refresh]
+    [refresh, enabled]
   )
 
+  /** Requests cooperative cancellation through the existing engine queue owner. */
   const cancel = React.useCallback(
     (id: string) => act(() => cancelJob(id), "Cancelling the job."),
     [act]
   )
+  /** Deletes a finished row and refreshes the authoritative page. */
   const remove = React.useCallback(
     (id: string) => act(() => deleteJob(id), "Job deleted."),
     [act]
   )
+  /** Requests a new attempt over the saved job inputs. */
   const retry = React.useCallback(
-    (job: Job) => act(() => retryJob(job), "Re-queued."),
-    [act]
+    async (job: Job) => {
+      if (!enabled) return
+      const next = await submission.owner?.submit(
+        `retry:${job.id_job}`,
+        (request) => retryJob(job, request)
+      )
+      if (next) {
+        toast.success("Re-queued.")
+        submission.owner?.acknowledge()
+        await refresh()
+      }
+    },
+    [submission.owner, enabled, refresh]
   )
 
+  /** Moves a queued row relative to its selected neighbour. */
   const reorder = React.useCallback(
     (id: string, afterId: string | null) =>
       act(() => reorderJob(id, afterId), "Queue reordered."),
     [act]
   )
 
+  /** Changes admission pause without cancelling the active execution. */
   const pause = React.useCallback(
     (paused: boolean) =>
       act(
@@ -183,8 +177,7 @@ export function useJobs(enabled = true) {
     [act]
   )
 
-  // Turning a page is a refetch, not a slice of something already held: the client
-  // only ever has one page, which is the point of paging it server-side.
+  /** Loads a bounded server page rather than retaining unbounded history. */
   const goToHistoryPage = React.useCallback(
     (page: number) => {
       const next = Math.max(0, page)
@@ -195,34 +188,29 @@ export function useJobs(enabled = true) {
     [refresh]
   )
 
-  const historyPages = lastPage(board.historyTotal) + 1
+  const visibleBoard = enabled ? board : EMPTY
+  const historyPages = lastPage(visibleBoard.historyTotal) + 1
 
-  // One device, one line, so one job is running.
+  /** Identifies execution still holding or releasing its active lease. */
   const isLive = (job: Job) =>
     job.status === "running" || job.status === "cancelling"
-  const running: Job | null = board.active.find(isLive) ?? null
-  const queued = board.active.filter((j) => j.status === "queued")
-  // Kept apart from `queued` because they are not in the line: a waiting job runs
-  // when the job it follows finishes, which no queue position can express. The band
-  // draws them as a chain under the queue instead of as numbered positions.
-  const waiting = board.active.filter((j) => j.status === "waiting")
+  const running: Job | null = visibleBoard.active.find(isLive) ?? null
+  const queued = visibleBoard.active.filter((j) => j.status === "queued")
+  const waiting = visibleBoard.active.filter((j) => j.status === "waiting")
 
   return {
-    board,
+    board: visibleBoard,
     running,
     queued,
     waiting,
-    history: board.history,
-    historyTotal: board.historyTotal,
+    history: visibleBoard.history,
+    historyTotal: visibleBoard.historyTotal,
     historyPage,
     historyPages,
     goToHistoryPage,
-    paused: board.paused,
-    // A disabled board never loads, so it is never loading. Derived rather than
-    // written from the effect, which is also what keeps a non-admin session out
-    // of a permanent spinner.
+    paused: visibleBoard.paused,
     isLoading: enabled && isLoading,
-    error,
+    error: enabled ? (submission.state?.error ?? error) : null,
     refresh,
     cancel,
     remove,

@@ -200,6 +200,12 @@ for why every tool shares one marker.
 
 ### Tests
 
+The modular architecture feature has a grouped verification entry point:
+`bash scripts/verify_modular_architecture.sh`. Its
+[acceptance map](docs/llm-engine/modular-architecture-acceptance.md) documents
+disposable PostgreSQL, browser prerequisites, report output and connected flows
+that automated fixture checks do not prove.
+
 ```sh
 cd llm-engine   && .venv/bin/python -m pytest tests/    # incl. the dataflow trace
 cd data-engine  && .venv/bin/python -m pytest tests/

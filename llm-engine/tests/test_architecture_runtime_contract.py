@@ -61,6 +61,21 @@ def test_runtime_packet_roundtrip_and_byte_boundaries():
             RuntimeEnvelope.from_packet(packet)
 
 
+@pytest.mark.parametrize("name", ["training-bootstrap-final-preflight", "sft-bootstrap-inherited-model-package", "rl-bootstrap-inherited-model-package"])
+def test_fresh_training_bootstrap_cannot_replace_loaded_runtime_pins(name):
+    """Only an empty worker may enter admitted pretrain/SFT/RL; null pins cannot bypass loaded model authorization."""
+    from llm.runtime.worker import WorkerContext
+
+    case = next(value for value in fixture_cases() if value["name"] == name)
+    command = RuntimeEnvelope.model_validate(case["value"]).payload
+    context = object.__new__(WorkerContext)
+    context.pins = None
+    context.require_pins(command)
+    context.pins = example_envelope().payload.pins
+    with pytest.raises(ValueError, match="requires_empty_worker"):
+        context.require_pins(command)
+
+
 def test_nested_duplicate_payload_fields_are_rejected():
     """Duplicate rejection applies inside interpreted command payloads as well as envelopes."""
     raw = example_envelope("shutdown").to_packet().replace(

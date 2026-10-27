@@ -14,6 +14,9 @@ protocols retain their existing contracts; requests still pass through Rust.
 | Vocabulary catalogue / composer / resource | `/tokenizers` / `/tokenizers/new-tokenizer` / `/tokenizers/{uuid}` |
 | Vocabulary build execution | `/tokenizers/builds/{uuid}` |
 | Processor directory / creation / source detail | `/processors` / `/processors/new-processor` / `/processors/{processor_id}` |
+| Architecture directory / draft creation / workspace | `/arch` / `/arch/new-arch` / `/arch/{uuid}` |
+| Block directory / draft creation / workspace | `/arch/blocks` / `/arch/blocks/new-block` / `/arch/blocks/{uuid}` |
+| Durable architecture validation execution | `/arch/validations/{uuid}` |
 
 `jobHref` maps each durable execution kind to its canonical URL. Gym UUID pages
 check the execution row first, falling back to an evaluation only after a 404.
@@ -36,7 +39,10 @@ dataset Clean workbench remains available and links to these detail pages.
 
 ## Compatibility
 
-Old URLs redirect rather than disappear:
+Architecture creation retains `/arch/new` and `/arch/blocks/new` as aliases
+of the canonical creation pages, preserving copy/revision query parameters.
+
+Other old URLs redirect rather than disappear:
 
 - `/jobs` → `/admin`.
 - `/jobs/{uuid}` → that execution's canonical URL, resolved with browser auth.

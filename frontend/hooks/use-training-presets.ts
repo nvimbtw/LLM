@@ -1,88 +1,146 @@
 "use client"
 
 import * as React from "react"
-
+import { useSessionToken } from "./use-auth"
+import { getToken } from "@/lib/api"
 import {
   createPreset,
   deletePreset,
   listPresets,
   updatePreset,
   type Preset,
+  type PresetRequest,
 } from "@/lib/training-presets"
 import type { TrainConfig } from "@/lib/training"
 
-// Owns the user's preset list and the CRUD callbacks. Components consume the list
-// + callbacks; they don't fetch themselves. Mutations refetch the list so the
-// picker stays consistent (the list is small — a preset set, not a feed).
+interface PresetOwner {
+  resource: string
+  active: boolean
+  loaded: boolean
+  writing: boolean
+  controllers: Set<AbortController>
+}
+
+/** Owns one actual-session preset list and serialized explicit writes; replaced sessions abort transport, mask old settings and ignore late acknowledgements. */
 export function useTrainingPresets() {
-  const [presets, setPresets] = React.useState<Preset[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
-
-  const refresh = React.useCallback(async () => {
-    try {
-      setPresets(await listPresets())
-    } catch {
-      // A failed list is non-fatal — the picker just shows empty.
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  // Inlined rather than calling `refresh`, so no state is written synchronously
-  // from the effect body; `refresh` stays for the mutations that re-read the
-  // list. Same shape as `use-signals.ts`.
+  const token = useSessionToken()
+  const [epoch, retry] = React.useReducer((value: number) => value + 1, 0)
+  const resource = `${token}:${epoch}`
+  const [state, setState] = React.useState<{
+    resource: string
+    presets: Preset[]
+    error: string | null
+  } | null>(null)
+  const lifetime = React.useRef<PresetOwner | null>(null)
   React.useEffect(() => {
-    let active = true
-    listPresets()
-      .then((next) => {
-        if (active) setPresets(next)
-      })
-      .catch(() => {
-        // A failed list is non-fatal — the picker just shows empty.
-      })
-      .finally(() => {
-        if (active) setIsLoading(false)
-      })
-    return () => {
-      active = false
+    if (!token) return
+    const owner: PresetOwner = {
+      resource,
+      active: true,
+      loaded: false,
+      writing: false,
+      controllers: new Set(),
     }
-  }, [])
-
-  // Save the current config. If a preset with this name already exists, update it
-  // in place (so "save over" is one action); otherwise create a new one.
-  const save = React.useCallback(
-    async (name: string, config: TrainConfig) => {
-      setError(null)
-      try {
-        const existing = presets.find((p) => p.name === name)
-        if (existing) {
-          await updatePreset(existing.id_preset, { name, config })
-        } else {
-          await createPreset(name, config)
+    lifetime.current = owner
+    const controller = new AbortController()
+    owner.controllers.add(controller)
+    void listPresets({ token, signal: controller.signal })
+      .then((presets) => {
+        if (owner.active) {
+          owner.loaded = true
+          setState({ resource, presets, error: null })
         }
-        await refresh()
-        return true
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to save preset.")
+      })
+      .catch((cause: unknown) => {
+        if (owner.active)
+          setState({
+            resource,
+            presets: [],
+            error:
+              cause instanceof Error
+                ? cause.message.slice(0, 2000)
+                : "Presets did not load.",
+          })
+      })
+      .finally(() => owner.controllers.delete(controller))
+    return () => {
+      owner.active = false
+      owner.controllers.forEach((value) => value.abort())
+      owner.controllers.clear()
+    }
+  }, [token, resource])
+  const current = state?.resource === resource ? state : null
+
+  /** Applies one explicit preset mutation only after the current list loaded, then reads authoritative saved envelopes before publishing success. */
+  const writePreset = React.useCallback(
+    async (
+      mutation: (request: PresetRequest) => Promise<unknown>
+    ): Promise<boolean> => {
+      const owner = lifetime.current
+      if (
+        !token ||
+        !owner?.active ||
+        owner.resource !== resource ||
+        !owner.loaded ||
+        owner.writing ||
+        getToken() !== token
+      )
         return false
-      }
-    },
-    [presets, refresh]
-  )
-
-  const remove = React.useCallback(
-    async (id: string) => {
-      setError(null)
+      owner.writing = true
+      const controller = new AbortController()
+      owner.controllers.add(controller)
       try {
-        await deletePreset(id)
-        await refresh()
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to delete preset.")
+        await mutation({ token, signal: controller.signal })
+        const presets = await listPresets({ token, signal: controller.signal })
+        if (!owner.active || getToken() !== token) return false
+        setState({ resource, presets, error: null })
+        return true
+      } catch (cause) {
+        if (owner.active && getToken() === token)
+          setState((previous) =>
+            previous?.resource === resource
+              ? {
+                  ...previous,
+                  error:
+                    cause instanceof Error
+                      ? cause.message.slice(0, 2000)
+                      : "Preset operation failed. Refresh to check its saved result.",
+                }
+              : previous
+          )
+        return false
+      } finally {
+        owner.writing = false
+        owner.controllers.delete(controller)
       }
     },
-    [refresh]
+    [token, resource]
   )
 
-  return { presets, isLoading, error, save, remove }
+  /** Saves the explicit name/settings, updating a same-name preset only from this session's currently displayed list. */
+  const save = React.useCallback(
+    (name: string, config: TrainConfig): Promise<boolean> => {
+      const existing = current?.presets.find((preset) => preset.name === name)
+      return writePreset((request) =>
+        existing
+          ? updatePreset(existing.id_preset, { name, config }, request)
+          : createPreset(name, config, request)
+      )
+    },
+    [current, writePreset]
+  )
+  /** Deletes a selected preset under the same serialized owner and refreshes its authoritative list. */
+  const remove = React.useCallback(
+    (id: string): Promise<boolean> =>
+      writePreset((request) => deletePreset(id, request)),
+    [writePreset]
+  )
+  return {
+    presets: current?.presets ?? [],
+    isLoading: Boolean(token && !current),
+    error: current?.error ?? null,
+    save,
+    remove,
+    retry,
+  }
 }

@@ -8,9 +8,10 @@ from torch import Tensor, nn
 from llm.architecture.errors import ArchitectureError
 from llm.architecture.cache import execute_cached_flow
 from llm.architecture.execute import CompositionModule, execute_flow, validate_tensors
-from llm.architecture.interfaces import CacheIdentity, CachedBlock, LanguageModelFacts, RequestCache
+from llm.architecture.interfaces import CacheIdentity, CachedBlock, ExecutionOccurrence, LanguageModelFacts, RequestCache
 from llm.architecture.plan import BlockDefinition, ResolvedPlan
 from llm.architecture.resolve import bound_port
+from llm.architecture.recompute import module_occurrences, recomputation_executor
 from llm.architecture.spec import Scalar
 
 
@@ -30,6 +31,7 @@ class RecipeModule(CompositionModule):
         super().__init__()
         self.plan = plan
         self.instances = nn.ModuleDict(modules)
+        self._recomputed: frozenset[ExecutionOccurrence] = frozenset()
 
     @property
     def facts(self) -> LanguageModelFacts:
@@ -40,12 +42,30 @@ class RecipeModule(CompositionModule):
 
     def forward_named(self, inputs: Mapping[str, Tensor]) -> dict[str, Tensor]:
         """Execute validated named inputs and return declared named tensors without persistent state."""
+        return self.forward_recomputed(inputs, selected=self._recomputed)
+
+    def forward_recomputed(self, inputs: Mapping[str, Tensor], *, selected: frozenset[ExecutionOccurrence],
+                           call_path: tuple[int, ...] = (), instance_path: str = "") -> dict[str, Tensor]:
+        """Execute an explicit occurrence storage policy while preserving lexical port contracts."""
         symbols = validate_tensors(inputs, self.plan.inputs)
         environment = dict(inputs)
-        execute_flow(self.plan.operations, environment, self.instances)
+        execute_flow(self.plan.operations, environment, self.instances,
+                     executor=recomputation_executor(selected) if selected or torch.compiler.is_compiling() else None,
+                     call_path=call_path, instance_path=instance_path)
         result = {port: environment[value] for port, value in self.plan.result.items()}
         validate_tensors(result, self.plan.outputs, symbols)
         return result
+
+    def recomputation_targets(self) -> tuple[ExecutionOccurrence, ...]:
+        """List supported immutable named-port occurrences; capability authorization still requires profile evidence."""
+        return tuple(occurrence for occurrence, _ in module_occurrences(self))
+
+    def configure_recomputation(self, occurrences: tuple[ExecutionOccurrence, ...]) -> None:
+        """Select exact between-step occurrence identities without modifying saved model structure."""
+        targets = set(self.recomputation_targets())
+        if len(set(occurrences)) != len(occurrences) or any(value not in targets for value in occurrences):
+            raise ArchitectureError("recompute_occurrence", "unknown or duplicate recomputation occurrence")
+        self._recomputed = frozenset(occurrences)
 
     def forward(
         self, tokens: Tensor, *, positions: Tensor | None = None, key_mask: Tensor | None = None,
@@ -55,6 +75,15 @@ class RecipeModule(CompositionModule):
         Bounds, caller tensor ranks/dtypes and final vocabulary shape are checked;
         numerical causality/capture acceptance remains a separate validation gate.
         """
+        inputs = self.language_inputs(tokens, positions=positions, key_mask=key_mask)
+        result = self.forward_named(inputs)["logits"]
+        if result.shape != (*tokens.shape, self.facts.vocabulary_size) or not result.is_floating_point():
+            raise ArchitectureError("causal_output", "logits do not match the tokenizer-bound causal interface")
+        return result
+
+    def language_inputs(self, tokens: Tensor, *, positions: Tensor | None = None,
+                        key_mask: Tensor | None = None) -> dict[str, Tensor]:
+        """Validate one causal input boundary and supply explicit position/mask defaults for ordinary execution and declared inspection."""
         facts = self.facts
         if tokens.dtype != torch.int64 or tokens.dim() != 2:
             raise ArchitectureError("causal_input_dtype", "tokens must be rank-two int64")
@@ -72,10 +101,28 @@ class RecipeModule(CompositionModule):
         if key_mask.dtype != torch.bool or key_mask.shape != tokens.shape or key_mask.device != tokens.device:
             raise ArchitectureError("mask_shape", "key mask must be matching bool tensors on the token device")
         external = {"tokens": tokens, "positions": positions, "key_mask": key_mask}
-        result = self.forward_named({name: external[name] for name in self.plan.inputs})["logits"]
-        if result.shape != (batch, sequence, facts.vocabulary_size) or not result.is_floating_point():
-            raise ArchitectureError("causal_output", "logits do not match the tokenizer-bound causal interface")
-        return result
+        return {name: external[name] for name in self.plan.inputs}
+
+    def inspection_points(self):
+        """List actual declared observation identities; the owning worker must validate their capability/profile before enabling them."""
+        from llm.architecture.inspection import inspection_bindings
+
+        return tuple(binding.point for binding in inspection_bindings(self))
+
+    def inspect(self, tokens: Tensor, *, point_id: str, positions: Tensor | None = None,
+                key_mask: Tensor | None = None) -> Tensor:
+        """Measure one declared attention occurrence under caller admission, preserving model state/modes/RNG and input tensors."""
+        from llm.architecture.inspection import inspection_bindings, PreparedInspection
+        from llm.architecture.numerical import preserved_model
+
+        with preserved_model(self), torch.no_grad():
+            self.eval()
+            binding = next((value for value in inspection_bindings(self) if value.point.id == point_id), None)
+            if binding is None:
+                raise ArchitectureError("inspection_unsupported", "this model has no declared matching attention inspection point")
+            return PreparedInspection(self, binding)(tokens,
+                positions if positions is not None else torch.arange(tokens.shape[1], device=tokens.device).expand_as(tokens),
+                key_mask if key_mask is not None else torch.ones_like(tokens, dtype=torch.bool))[0]
 
     def parameter_paths(self) -> dict[str, nn.Parameter]:
         """Enumerate stable public paths including aliases without multiplying unique owners."""
@@ -169,10 +216,10 @@ def reject_overlapping_parameters(model: nn.Module) -> None:
 
 
 def parameter_groups(
-    model: RecipeModule, policies: Mapping[str, Mapping[str, Scalar]] | None = None,
+    model: nn.Module, policies: Mapping[str, Mapping[str, Scalar]] | None = None,
 ) -> tuple[dict, ...]:
     """Deduplicate stable Parameter owners and reject conflicting alias-specific optimizer policies."""
-    paths = model.parameter_paths()
+    paths = model.parameter_paths() if isinstance(model, RecipeModule) else dict(model.named_parameters(remove_duplicate=False))
     policies = policies or {}
     if policies.keys() - paths.keys():
         raise ArchitectureError("optimizer_policy", "optimizer policy refers to an unknown Parameter")

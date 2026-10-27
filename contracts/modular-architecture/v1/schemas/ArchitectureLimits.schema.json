@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Expose actual engine authoring ceilings as data; worker admission remains a separate execution boundary.",
+  "properties": {
+    "expanded_calls": {
+      "minimum": 1,
+      "title": "Expanded Calls",
+      "type": "integer"
+    },
+    "nesting": {
+      "minimum": 1,
+      "title": "Nesting",
+      "type": "integer"
+    },
+    "source_bytes": {
+      "minimum": 1,
+      "title": "Source Bytes",
+      "type": "integer"
+    },
+    "yaml_bytes": {
+      "minimum": 1,
+      "title": "Yaml Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "source_bytes",
+    "yaml_bytes",
+    "expanded_calls",
+    "nesting"
+  ],
+  "title": "ArchitectureLimits",
+  "type": "object"
+}

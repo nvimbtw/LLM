@@ -22,6 +22,8 @@ import { useTrainingPresets } from "@/hooks/use-training-presets"
 import { loadModelConfig, toTrainConfig } from "@/lib/training-presets"
 import type { TrainConfig } from "@/lib/training"
 import { FormError } from "@/components/ui/error-state"
+import { useSessionToken } from "@/hooks/use-auth"
+import { ArchitectureReadOwner } from "@/lib/architecture/read-owner"
 
 export interface PresetControlsProps {
   currentConfig: TrainConfig
@@ -37,10 +39,23 @@ export function PresetControls({
   onLoad,
   modelsRefreshKey,
 }: PresetControlsProps) {
-  const { presets, save, remove, error } = useTrainingPresets()
+  const { presets, save, remove, error, retry, isLoading } =
+    useTrainingPresets()
+  const token = useSessionToken()
+  const reader = React.useRef<ArchitectureReadOwner | null>(null)
+  React.useEffect(() => {
+    if (!token) return
+    const owner = new ArchitectureReadOwner({
+      token,
+      resource: "training-preset-model-load",
+    })
+    reader.current = owner
+    return () => owner.dispose()
+  }, [token])
   const { models } = useModels(modelsRefreshKey)
   const [saving, setSaving] = React.useState(false)
   const [name, setName] = React.useState("")
+  const [loadError, setLoadError] = React.useState<string | null>(null)
 
   /** Opens preset naming with the current model name as its initial value. */
   const beginSave = () => {
@@ -59,8 +74,32 @@ export function PresetControls({
   /** Loads the supplied model config into the editor; failed reads preserve its existing draft. */
   const loadModel = async (id: string, modelName: string) => {
     try {
-      onLoad(await loadModelConfig(id, modelName))
-    } catch {}
+      if (!token || !reader.current) return
+      const value = await reader.current.read((signal) =>
+        loadModelConfig(id, modelName, { token, signal })
+      )
+      if (value) {
+        setLoadError(null)
+        onLoad(value)
+      }
+    } catch (cause) {
+      setLoadError(
+        cause instanceof Error ? cause.message : "Model settings did not load."
+      )
+    }
+  }
+
+  /** Interprets a deliberate preset choice before replacing the form, preserving local settings when its version or immutable pin is invalid. */
+  function loadPreset(value: Record<string, unknown>, name: string) {
+    try {
+      const config = toTrainConfig(value, name)
+      setLoadError(null)
+      onLoad(config)
+    } catch (cause) {
+      setLoadError(
+        cause instanceof Error ? cause.message : "Preset settings are invalid."
+      )
+    }
   }
 
   return (
@@ -92,14 +131,7 @@ export function PresetControls({
                 presets.map((p) => (
                   <DropdownMenuItem
                     key={p.id_preset}
-                    onClick={() =>
-                      onLoad(
-                        toTrainConfig(
-                          p.config as unknown as Record<string, unknown>,
-                          p.config?.model_name ?? "my-model"
-                        )
-                      )
-                    }
+                    onClick={() => loadPreset(p.config, p.name)}
                     className="justify-between"
                   >
                     <span className="truncate">{p.name}</span>
@@ -147,7 +179,7 @@ export function PresetControls({
             type="button"
             variant="text"
             size="sm"
-            disabled={disabled}
+            disabled={disabled || isLoading}
             onClick={beginSave}
           >
             Save
@@ -188,6 +220,12 @@ export function PresetControls({
       )}
 
       {error && <FormError className="text-xs">{error}</FormError>}
+      {loadError && <FormError className="text-xs">{loadError}</FormError>}
+      {error && (
+        <Button type="button" size="sm" variant="ghost" onClick={retry}>
+          Reload presets
+        </Button>
+      )}
     </div>
   )
 }

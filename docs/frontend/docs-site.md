@@ -15,6 +15,10 @@ signed-in chrome.
   the deployed site. The frontend container uses the repository root as its
   build context and copies `docs/`, `README.md`, and `AGENTS.md` into the paths
   this renderer expects; Compose mounts those paths in development too.
+  The architecture schema freshness check also reads `../contracts`: the image
+  build includes `contracts/`, and Compose mounts it read-only at `/contracts`.
+  After changing these mounts, recreate the frontend container; an image rebuild
+  alone does not change an existing container's mounts.
 - **Relative links are rewritten** to routes, so the same markdown reads
   correctly on the site and in an editor. A link that resolves to nothing
   **fails the build** — deliberately; that is what keeps the docs from drifting
