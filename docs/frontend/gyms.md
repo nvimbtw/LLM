@@ -10,7 +10,7 @@ episodes remain tool-free. General evaluations and mixed training reports show
 scores by source alongside the overall result. Demonstrations are available
 for every catalogue entry declaring that capability, including General. The
 catalogue places General first in the same single-column open list as the source
-gyms, with one rule between entries. Name/description links open practice and
+gyms, using shared open rows without decorative separators. Name/description links open practice and
 the separate **Evaluate and view history** link opens evaluation and prior runs.
 The General RL job panel also shows the latest task-source sequence and a chart
 per source. Those charts accumulate correct answers only when that source appears

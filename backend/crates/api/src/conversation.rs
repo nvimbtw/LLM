@@ -95,11 +95,12 @@ pub struct Round {
 }
 
 /// Authorize and prepare one round, then atomically persist its accepted input messages and bind uploads.
-/// Service preparation precedes attachment validation; generation receives only authorized stateless history.
+/// The verified caller visibility reaches engine admission before tokenizer access or stored input; generation receives only authorized stateless history.
 pub async fn prepare(
     pool: &PgPool,
     engine: &Proxy,
     owner: Uuid,
+    visibility: &str,
     id: Uuid,
     mut ask: Value,
 ) -> Result<Round, service::Error> {
@@ -110,9 +111,24 @@ pub async fn prepare(
     input::apply_history_floor(&mut history, &ask);
     let text = project::user_text(&ask, &history).map(str::to_owned);
     project::apply(pool, owner, id, text.as_deref(), &mut ask).await?;
-    let prepared = engine
-        .post(&auth::Caller::User(owner), "/chat/prepare", ask.clone())
+    let (status, prepared) = engine
+        .scoped_json(
+            &auth::Caller::User(owner),
+            visibility,
+            llm_engine::Method::POST,
+            "/chat/prepare",
+            Some(ask.clone()),
+            8 * 1024 * 1024,
+        )
         .await?;
+    if !(200..300).contains(&status) {
+        return Err(failure(
+            status,
+            prepared["detail"]
+                .as_str()
+                .unwrap_or("model preparation refused"),
+        ));
+    }
     let additions = prepared["turns"]
         .as_array()
         .ok_or_else(|| failure(502, "invalid prepared turns"))?;

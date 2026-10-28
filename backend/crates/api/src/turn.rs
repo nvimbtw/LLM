@@ -19,6 +19,7 @@ pub struct ChatTurn<'a> {
     registry: &'a Registry,
     pool: &'a sqlx::PgPool,
     owner: uuid::Uuid,
+    visibility: &'static str,
     chat_id: uuid::Uuid,
     tool_session: String,
 }
@@ -43,6 +44,7 @@ impl<'a> ChatTurn<'a> {
         registry: &'a Registry,
         pool: &'a sqlx::PgPool,
         owner: uuid::Uuid,
+        visibility: &'static str,
         chat_id: uuid::Uuid,
     ) -> Self {
         Self {
@@ -50,6 +52,7 @@ impl<'a> ChatTurn<'a> {
             registry,
             pool,
             owner,
+            visibility,
             chat_id,
             tool_session: chat_id.to_string(),
         }
@@ -67,9 +70,15 @@ impl<'a> ChatTurn<'a> {
         let settings = ask.clone();
         let rounds = max_tool_rounds();
         for round in 0..rounds {
-            let prepared =
-                conversation::prepare(self.pool, self.engine, self.owner, self.chat_id, ask)
-                    .await?;
+            let prepared = conversation::prepare(
+                self.pool,
+                self.engine,
+                self.owner,
+                self.visibility,
+                self.chat_id,
+                ask,
+            )
+            .await?;
             let frames = self
                 .engine
                 .stream(&caller, "/chat/stream", prepared.config.clone())

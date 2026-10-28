@@ -32,10 +32,19 @@ Vocabulary resource IDs and build execution IDs are distinct. Build pages link
 to the output vocabulary; the vocabulary detail URL never interprets a build ID
 as an artifact. Metadata edits retain the vocabulary's stable identity.
 
-Processor IDs are their registered names, such as `strip-urls`. The Data page's
-Processors entry opens the full directory. Administrators author a new file on
+Processor IDs are their registered names, such as `strip-urls`. The Admin
+Workbench Data group opens the processor directory and datasets as separate
+destinations. Administrators author a new file on
 the dedicated creation page; detail pages inspect/edit existing source. The
 dataset Clean workbench remains available and links to these detail pages.
+
+Workbench training entries use `/train/new-train?mode=pretrain` and
+`?mode=sft`. They initialize fresh forms only; retained drafts and explicit
+rerun/resume selections preserve their mode until the user changes it.
+Workbench Bench links use `/bench?suite=language`, `language_v3`, `markup` or
+`assistant`. Unknown suites fall back to Language. Legacy selections open their
+own recorded history and offer no new-run action. Architecture and block
+catalogues return to **Admin**.
 
 ## Compatibility
 

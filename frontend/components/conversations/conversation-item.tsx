@@ -15,6 +15,11 @@ import { Button } from "@/components/ui/button"
 import { ConversationRename } from "@/components/chat/conversation-rename"
 import { ConversationProjectDialog } from "@/components/projects/conversation-project"
 import { useProjects } from "@/components/projects/projects-provider"
+import {
+  ResourceRow,
+  ResourceTitle,
+  ResourceMetadata,
+} from "@/components/ui/resource-list"
 import { cn } from "@/lib/utils"
 import { useChats, type ChatSummary } from "@/components/chat/chats-provider"
 
@@ -57,8 +62,8 @@ export function ConversationItem({
   const [confirmOpen, setConfirmOpen] = React.useState(false)
 
   return (
-    <li className="group relative border-b border-border before:absolute before:top-1/2 before:left-0 before:h-0 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-primary before:transition-all before:content-[''] hover:before:h-9">
-      <div className="flex items-baseline gap-5 py-5 pr-1 pl-4">
+    <ResourceRow>
+      <div className="flex items-baseline gap-5 pr-1">
         <span className="w-7 shrink-0 font-display text-xs text-muted-foreground tabular-nums transition-colors group-hover:text-primary">
           {String(index + 1).padStart(2, "0")}
         </span>
@@ -77,10 +82,8 @@ export function ConversationItem({
             href={`/chat/${chat.id}`}
             className="min-w-0 flex-1 rounded-(--radius-marker) outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <span className="block truncate font-display text-lg leading-snug tracking-tight underline-offset-4 group-hover:underline">
-              {chat.title}
-            </span>
-            <span className="mt-1.5 flex items-center gap-2.5 eyebrow text-muted-foreground tabular-nums">
+            <ResourceTitle>{chat.title}</ResourceTitle>
+            <ResourceMetadata className="tabular-nums">
               <span>{formatDate(chat.createdAt)}</span>
               {chat.projectId && (
                 <span className="max-w-32 truncate">
@@ -93,7 +96,7 @@ export function ConversationItem({
                   <span>{formatTokens(chat.tokens)} tokens</span>
                 </>
               )}
-            </span>
+            </ResourceMetadata>
           </Link>
         )}
 
@@ -105,7 +108,7 @@ export function ConversationItem({
                 size="icon-sm"
                 aria-label="Chat options"
                 className={cn(
-                  "size-10 shrink-0 self-center text-muted-foreground opacity-100 transition-opacity md:opacity-0 [@media(pointer:coarse)]:opacity-100",
+                  "size-10 shrink-0 self-center text-muted-foreground opacity-100 transition-opacity md:opacity-70 [@media(pointer:coarse)]:opacity-100",
                   "group-hover:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100 data-open:opacity-100"
                 )}
               >
@@ -154,6 +157,6 @@ export function ConversationItem({
           }}
         />
       )}
-    </li>
+    </ResourceRow>
   )
 }

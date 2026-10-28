@@ -3,12 +3,8 @@
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { FormError } from "@/components/ui/error-state"
 import { toast } from "@/components/ui/toast"
 import { AuthField } from "@/components/auth/auth-field"
 
@@ -17,6 +13,7 @@ export interface ChangePasswordFormProps {
   compact?: boolean
 }
 
+/** Validates password confirmation, reports failures through notifications and preserves invalid-field focus. */
 export function ChangePasswordForm({
   onSubmit,
   compact = false,
@@ -26,13 +23,16 @@ export function ChangePasswordForm({
   const [isSubmitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  /** Rejects mismatched confirmation locally; submits matching values once and clears them only after success. */
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     setError(null)
 
-    // A mismatch is about the two fields in front of you, so it stays inline.
     if (password !== confirm) {
       setError("Passwords do not match.")
+      event.currentTarget
+        .querySelector<HTMLInputElement>("#confirm-password")
+        ?.focus()
       return
     }
 
@@ -73,7 +73,10 @@ export function ChangePasswordForm({
             placeholder="••••••••"
             required
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setError(null)
+              setPassword(e.target.value)
+            }}
           />
           <AuthField
             id="confirm-password"
@@ -83,9 +86,18 @@ export function ChangePasswordForm({
             placeholder="••••••••"
             required
             value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? "password-confirmation-error" : undefined}
+            onChange={(e) => {
+              setError(null)
+              setConfirm(e.target.value)
+            }}
           />
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && (
+            <span id="password-confirmation-error">
+              <FormError>{error}</FormError>
+            </span>
+          )}
           <Button type="submit" className="self-start" disabled={isSubmitting}>
             {isSubmitting ? "Saving…" : "Update password"}
           </Button>

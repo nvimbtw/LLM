@@ -40,6 +40,10 @@ export function useStartChat(projectId?: string) {
     budget: ThinkBudget,
     attachments: Attachment[]
   ): Promise<void> => {
+    if (!token || getToken() !== token) {
+      router.push("/login")
+      return
+    }
     if (sending.current) return
     sending.current = true
     setState({ token, sending: true, error: null })

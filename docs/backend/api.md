@@ -153,3 +153,21 @@ WebSocket replay. `SLATE_ENGINE_PYTHON` may select an installed engine interpret
 the default is `engine/.venv/bin/python`. The fixture process is stopped/reaped
 and its scratch directory removed when the test finishes. This privacy contract
 check does not replace the remaining full engine feature gates above.
+
+## Public published-model browsing
+
+`GET /models`, `/models/{id}` and `/models/{id}/checkpoints` accept a missing
+browser Authorization header. Rust signs these anonymous reads as the system
+actor with explicit public scope. A supplied invalid or malformed bearer still
+returns 401; it never falls back to anonymous access. Verified ordinary users
+retain their actor with public scope; administrators receive administration scope.
+
+The engine authorizes publication before projecting a detail or checkpoints.
+Private and nonexistent IDs both return 404 to public readers. Public lists
+exclude private rows and unindexed artifact directories, regardless of query
+flags. Public checkpoint lists contain only published checkpoints of a published
+parent. Opaque configuration, training sources, run/parent identities, recovery
+flags, artifact paths and saved source/graphs remain private. Model detail adds
+benchmark records only for administrators. Signed-in attention and benchmark
+reads first check the same model visibility. Chat and attention computation
+remain login-gated; model mutations and saved-source/graph reads remain admin-only.

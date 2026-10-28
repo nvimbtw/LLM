@@ -1,22 +1,20 @@
 import { BenchmarkView } from "@/components/benchmark/benchmark-view"
-import { ButtonLink } from "@/components/ui/button-link"
-import { PageHeader } from "@/components/ui/page-header"
 import { PageShell } from "@/components/ui/page-shell"
+import { BENCHMARK_SUITES } from "@/lib/benchmark"
 
-/** Opens recorded benchmark comparisons and individual reports. */
-export default function BenchmarkPage() {
+/** Opens the requested recorded suite, falling back to supported Language for unknown query values. */
+export default async function BenchmarkPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ suite?: string | string[] }>
+}) {
+  const params = await searchParams
+  const suite =
+    BENCHMARK_SUITES.find((suite) => suite.id === params.suite)?.id ??
+    "language"
   return (
     <PageShell>
-      <PageHeader
-        title="Benchmark"
-        back={{ href: "/admin", label: "Admin" }}
-        action={
-          <ButtonLink href="/bench/new-bench" size="sm">
-            Bench a model
-          </ButtonLink>
-        }
-      />
-      <BenchmarkView />
+      <BenchmarkView key={suite} initialSuite={suite} />
     </PageShell>
   )
 }

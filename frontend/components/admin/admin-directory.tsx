@@ -1,123 +1,105 @@
 import Link from "next/link"
+import { ChevronDown } from "lucide-react"
 import { AdminSectionHeader } from "./admin-section-header"
-import {
-  ArrowRight,
-  Brain,
-  Database,
-  Dumbbell,
-  Gauge,
-  Loader,
-  MessageSquareCode,
-  Type,
-  BookText,
-  Network,
-} from "lucide-react"
 
 interface Destination {
   title: string
   href: string
-  icon: React.ComponentType<{ className?: string }>
+  legacy?: boolean
+}
+interface DestinationGroup {
+  title: string
+  destinations: Destination[]
 }
 
-const WORKBENCH: Destination[] = [
-  { title: "Architectures", href: "/arch", icon: Network },
+const WORKBENCH: DestinationGroup[] = [
   {
     title: "Data",
-    href: "/data",
-    icon: Database,
+    destinations: [
+      { title: "Processors", href: "/processors" },
+      { title: "Datasets", href: "/data" },
+    ],
   },
   {
-    title: "Tokenizers",
-    href: "/tokenizers",
-    icon: Type,
+    title: "Architectures",
+    destinations: [
+      { title: "Blocks", href: "/arch/blocks" },
+      { title: "Architectures", href: "/arch" },
+    ],
   },
   {
     title: "Train",
-    href: "/train/new-train",
-    icon: Brain,
+    destinations: [
+      { title: "Tokenizers", href: "/tokenizers" },
+      { title: "Pre-train", href: "/train/new-train?mode=pretrain" },
+      { title: "Fine-tune", href: "/train/new-train?mode=sft" },
+      { title: "Gyms", href: "/gyms" },
+    ],
   },
   {
-    title: "Benchmark",
-    href: "/bench",
-    icon: Gauge,
-  },
-  {
-    title: "Gyms",
-    href: "/gyms",
-    icon: Dumbbell,
+    title: "Bench",
+    destinations: [
+      { title: "Language", href: "/bench?suite=language" },
+      { title: "Language v3", href: "/bench?suite=language_v3", legacy: true },
+      { title: "Markup", href: "/bench?suite=markup", legacy: true },
+      { title: "Assistant", href: "/bench?suite=assistant", legacy: true },
+    ],
   },
 ]
+const INTERFACE: DestinationGroup = {
+  title: "Interface",
+  destinations: [
+    { title: "Throbber", href: "/throbber" },
+    { title: "Markup", href: "/markup" },
+    { title: "Docs", href: "/docs" },
+  ],
+}
 
-const INTERFACE: Destination[] = [
-  {
-    title: "Throbber",
-    href: "/throbber",
-    icon: Loader,
-  },
-  {
-    title: "Markup",
-    href: "/markup",
-    icon: MessageSquareCode,
-  },
-  {
-    title: "Docs",
-    href: "/docs",
-    icon: BookText,
-  },
-]
-
-/** Lists administrator destinations through the existing directory, keeping private authoring out of ordinary navigation. */
+/** Groups Workbench destinations beside the queue; native disclosures retain keyboard and narrow-screen access. */
 export function AdminDirectory() {
-  const total = WORKBENCH.length + INTERFACE.length
-
   return (
-    <section>
-      <AdminSectionHeader title="Elsewhere" meta={`${total} pages`} />
-
-      <Band label="Workbench" destinations={WORKBENCH} />
-      <Band
-        label="Interface"
-        destinations={INTERFACE}
-        className="mt-4 border-t border-border/60 pt-4"
-      />
+    <section aria-label="Workbench">
+      <AdminSectionHeader title="Workbench" />
+      <div className="space-y-5">
+        {WORKBENCH.map((group) => (
+          <DirectoryGroup key={group.title} group={group} open />
+        ))}
+        <DirectoryGroup group={INTERFACE} />
+      </div>
     </section>
   )
 }
 
-function Band({
-  label,
-  destinations,
-  className,
+/** Renders a collapsible destination group, with legacy suites explicitly distinguished from new execution. */
+function DirectoryGroup({
+  group,
+  open = false,
 }: {
-  label: string
-  destinations: Destination[]
-  className?: string
+  group: DestinationGroup
+  open?: boolean
 }) {
   return (
-    <div className={className}>
-      <p className="mb-2 eyebrow text-muted-foreground">{label}</p>
-      <ul className="-mx-3 space-y-1">
-        {destinations.map((destination) => (
+    <details open={open} className="group/directory">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        {group.title}
+        <ChevronDown
+          aria-hidden
+          className="size-3.5 text-muted-foreground transition-transform group-open/directory:rotate-180"
+        />
+      </summary>
+      <ul className="mt-1 space-y-1">
+        {group.destinations.map((destination) => (
           <li key={destination.href}>
             <Link
               href={destination.href}
-              className="group flex items-center gap-3 rounded-(--radius-control-sm) px-3 py-2 transition-colors outline-none hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex min-h-9 items-center justify-between gap-3 py-1 pl-3 text-sm text-muted-foreground outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <destination.icon
-                className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground group-focus-visible:text-foreground"
-                aria-hidden
-              />
-              <div className="min-w-0 flex-1">
-                <span className="block text-sm">{destination.title}</span>
-              </div>
-              <ArrowRight
-                className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-                aria-hidden
-              />
+              <span>{destination.title}</span>
+              {destination.legacy && <span className="text-xs">Legacy</span>}
             </Link>
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   )
 }

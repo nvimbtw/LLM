@@ -1,14 +1,26 @@
 "use client"
 
+import { EmptyState } from "@/components/ui/empty-state"
+
 import Link from "next/link"
 import * as React from "react"
-import { GitBranch, Trash2 } from "lucide-react"
+import { GitBranch, Trash2, MoreHorizontal } from "lucide-react"
 
 import { DeleteConfirmation } from "@/components/ui/delete-confirmation"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
-import { RunningDot } from "@/components/ui/running-dot"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceMetadata,
+} from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
 import { deleteDataset, formatBytes, type Dataset } from "@/lib/data"
@@ -64,19 +76,19 @@ export function DatasetList({
           <Skeleton className="h-12 w-full" />
         </div>
       ) : datasets.length === 0 ? (
-        <p className="py-6 text-sm text-muted-foreground">
-          Nothing pulled yet. Find a dataset on the Hub and pull a slice of it.
-        </p>
+        <EmptyState title="No datasets yet">
+          Find a dataset in Browse and pull a slice of it.
+        </EmptyState>
       ) : (
-        <ul className="divide-y divide-border">
+        <ResourceList>
           {datasets.map((dataset) => (
-            <li key={dataset.id} className="group flex items-center gap-4">
+            <ResourceRow key={dataset.id} className="flex items-center gap-4">
               <Link
                 href={`/data/${dataset.id}`}
-                className="min-w-0 flex-1 self-stretch py-4 outline-none"
+                className="min-w-0 flex-1 self-stretch outline-none"
               >
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-display text-xl leading-snug group-hover:underline">
+                  <span className="font-display text-xl leading-snug break-words group-hover:underline">
                     {dataset.name}
                   </span>
                   {dataset.origin === "derived" && (
@@ -87,29 +99,43 @@ export function DatasetList({
                   )}
                   <StatusBadge dataset={dataset} />
                 </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground tabular-nums">
+                <ResourceMetadata className="tabular-nums">
                   {dataset.kind === "sft" ? "Conversations" : "Prose"}
                   {dataset.source_repo ? ` · ${dataset.source_repo}` : ""}
                   {` · ${dataset.document_count.toLocaleString()} documents`}
                   {dataset.byte_size > 0
                     ? ` · ${formatBytes(dataset.byte_size)}`
                     : ""}
-                </p>
+                </ResourceMetadata>
               </Link>
 
               {isAdmin && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Delete ${dataset.name}`}
-                  onClick={() => setPending(dataset)}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Options for ${dataset.name}`}
+                      >
+                        <MoreHorizontal />
+                      </Button>
+                    }
+                  />
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => setPending(dataset)}
+                    >
+                      <Trash2 />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
-            </li>
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       )}
 
       {pending && (
@@ -138,7 +164,6 @@ function StatusBadge({ dataset }: { dataset: Dataset }) {
   if (dataset.status === "pulling") {
     return (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <RunningDot />
         pulling
       </span>
     )

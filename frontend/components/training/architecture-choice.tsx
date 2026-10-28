@@ -24,7 +24,8 @@ import type { ParameterValue } from "@/lib/architecture/parameters"
 import { ParameterFields } from "@/components/authoring/parameter-fields"
 import { ValidationResult } from "@/components/authoring/validation-result"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { SearchField } from "@/components/ui/search-field"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { FormError, LoadError } from "@/components/ui/error-state"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -175,7 +176,7 @@ export function ArchitectureChoice({
         </span>
         <Button
           type="button"
-          variant="outline"
+          variant="text"
           size="sm"
           disabled={busy}
           onClick={() => choose((current) => !current)}
@@ -222,6 +223,7 @@ export function ArchitectureChoice({
                 onSelect={select}
               />
               <ParameterFields
+                variant="inline"
                 declarations={selected.value.recipe.parameters}
                 values={Object.fromEntries(
                   Object.entries(selected.value.recipe.parameters).map(
@@ -240,7 +242,7 @@ export function ArchitectureChoice({
               <Button
                 type="button"
                 className="w-fit"
-                variant="outline"
+                variant="text"
                 disabled={
                   busy ||
                   Object.keys(parameters).length > 0 ||
@@ -260,7 +262,7 @@ export function ArchitectureChoice({
           {preview.value && (
             <section
               aria-label="Prospective training profile"
-              className="grid gap-3 border-t border-border pt-4 text-sm"
+              className="grid gap-3 pt-4 text-sm"
             >
               {preview.stale && (
                 <p role="status">
@@ -343,11 +345,11 @@ function TrainingRecipeCatalog({
 }: TrainingRecipeCatalogProps) {
   const catalog = useArchitectureCatalog("architecture")
   return (
-    <div className="grid gap-3 rounded border border-border p-3">
+    <div className="grid gap-3 py-3">
       <div className="flex items-end gap-2">
         <label className="grid gap-2 text-sm">
           Search accepted recipes
-          <Input
+          <SearchField
             value={catalog.search}
             maxLength={200}
             disabled={disabled}
@@ -362,7 +364,7 @@ function TrainingRecipeCatalog({
         </label>
         <Button
           type="button"
-          variant="outline"
+          variant="text"
           disabled={disabled}
           onClick={() => catalog.filter({ search: catalog.search })}
         >
@@ -377,30 +379,30 @@ function TrainingRecipeCatalog({
           onRetry={catalog.refresh}
         />
       )}
-      <ul className="max-h-72 divide-y divide-border overflow-auto">
+      <ResourceList density="compact" className="max-h-72 overflow-auto">
         {catalog.page?.items
           .filter((item) => !item.archived && item.accepted_revision)
           .map((item) => (
-            <li key={item.resource_id}>
+            <ResourceRow density="compact" key={item.resource_id}>
               <Button
                 type="button"
                 variant="ghost"
                 disabled={disabled}
-                className="h-auto w-full justify-start py-3 text-left whitespace-normal"
+                className="h-auto w-full justify-start py-0 text-left whitespace-normal"
                 onClick={() => onSelect(item.accepted_revision!)}
               >
                 {item.name} ·{" "}
                 {item.accepted_revision!.content_hash.slice(0, 12)}
               </Button>
-            </li>
+            </ResourceRow>
           ))}
-      </ul>
+      </ResourceList>
       {catalog.page && (
         <div className="flex gap-2">
           <Button
             type="button"
             size="sm"
-            variant="outline"
+            variant="text"
             disabled={disabled || !catalog.query.cursor}
             onClick={() => catalog.filter({})}
           >
@@ -409,7 +411,7 @@ function TrainingRecipeCatalog({
           <Button
             type="button"
             size="sm"
-            variant="outline"
+            variant="text"
             disabled={disabled || !catalog.page.next_cursor}
             onClick={catalog.next}
           >
@@ -467,7 +469,7 @@ function PinnedRecipeHistory({
               key={item.reference.revision_id}
               type="button"
               size="sm"
-              variant="outline"
+              variant="text"
               disabled={
                 disabled || item.reference.revision_id === reference.revision_id
               }

@@ -6,11 +6,7 @@ import { ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { CheckpointFrame } from "@/lib/training"
 
-// The one place progressive-disclosure detail lives: the tokenizer/build log and
-// the saved checkpoints, framed as an article's appendix at the foot of the main
-// column. Always present (even when empty), collapsed by default. It opens
-// *downward* and its body scrolls internally at a fixed max-height, so expanding
-// it never reflows the telemetry above — the "reserve the slot, fill it in" rule.
+/** Discloses bounded build logs and checkpoint facts, scrolling new log lines into view only while expanded. */
 export function Appendix({
   log,
   checkpoints,
@@ -26,7 +22,7 @@ export function Appendix({
   }, [log, open])
 
   return (
-    <section className="border-t pt-4">
+    <section className="pt-4">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -65,10 +61,6 @@ export function Appendix({
                 No checkpoints yet.
               </span>
             ) : (
-              /* Where the run was when it saved, not where the file went: a
-                 checkpoint is a model, and the step and the loss are what a
-                 person picks one by. The path stays as the row's title, for the
-                 times the question really is which file on disk. */
               <ul className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-xs text-muted-foreground">
                 {checkpoints.map((cp) => (
                   <li key={cp.model_id} className="truncate" title={cp.path}>

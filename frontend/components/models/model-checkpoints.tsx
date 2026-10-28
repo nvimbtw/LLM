@@ -8,6 +8,7 @@ import { toast } from "@/components/ui/toast"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useCheckpoints, type Checkpoint } from "@/hooks/use-checkpoints"
 import { formatNumber } from "./format"
@@ -62,7 +63,7 @@ export function ModelCheckpoints({
       }
       bodyClassName="p-0"
     >
-      <ul>
+      <ResourceList density="compact">
         {checkpoints.map((checkpoint) => (
           <CheckpointRow
             key={checkpoint.id}
@@ -70,7 +71,7 @@ export function ModelCheckpoints({
             canContinue={canContinue}
           />
         ))}
-      </ul>
+      </ResourceList>
     </Panel>
   )
 }
@@ -105,7 +106,7 @@ function CheckpointRow({
     }
   }
   return (
-    <li className="flex items-baseline gap-4 border-b border-border/40 py-2.5 last:border-0">
+    <ResourceRow density="compact" className="flex items-baseline gap-4">
       <span className="w-10 shrink-0 text-xs font-medium tabular-nums">
         #{checkpoint.index}
       </span>
@@ -146,6 +147,6 @@ function CheckpointRow({
           Inspect
         </Link>
       </span>
-    </li>
+    </ResourceRow>
   )
 }

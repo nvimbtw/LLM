@@ -7,28 +7,23 @@ footer, above the profile/settings entry — not a labelled nav group. The row i
 you have access to, which is what the footer holds; the content above it is the
 subject you are reading.
 
-- `/admin` is the panel, in three parts: `QueueView` as the hero,
-  `AdminDirectory` under it, and `HistoryView` last. **The directory sits
-  between the two halves of the queue on purpose** — history is unbounded, so
-  anything below it is reached only by scrolling past every run ever made.
-  **Add an admin destination to the directory, not to the sidebar** — it keeps
-  admin destinations discoverable without crowding the main navigation.
-  The two bands separate data and model work (`WORKBENCH`) from interface
-  fixtures and documentation (`INTERFACE`).
-  The panel uses open sections with shared serif headings and inline counts,
-  matching settings rather than repeating filled cards. The running job is the
-  visual focus: its name, per-kind throbber, progress and elapsed time sit above
-  a thin progress rule. Idle and paused states are stated beside the Queue
-  heading; an empty queue has no repeated status sentence or instructional
-  caption. Pausing holds the next claim while the running job remains visible;
-  follow-ups stay separate from numbered queue positions. Directory links use
-  icon-and-title rows with hover and keyboard-focus treatment, with a rule only
-  between groups. History keeps its date groups, fields, actions and pagination
-  in a quiet ledger; on narrow screens row metadata wraps beneath the job name
-  and menus remain visible without hovering.
-- The subpages carry the same open style: shared `PageHeader` titles and a
-  bottom hairline, flush rows and line-style tab bars. A ledger that opens with
-  its own rule omits the header rule. The editable Train heading and gym-run
+- `/admin` places `QueueView` and `HistoryView` in the left column and the
+  grouped, collapsible `AdminDirectory` Workbench in the right column. Narrow
+  screens stack the Workbench after the ledger. Data links to Processors and
+  Datasets; Architectures links to Blocks and Architectures; Train links to
+  Tokenizers, Pre-train, Fine-tune and Gyms. Bench links directly to Language and
+  each labelled legacy suite. Interface tools remain in a collapsed group.
+  Add administrator destinations here rather than crowding the sidebar.
+  The restrained current job shows its kind once, state, measured progress,
+  elapsed time and Cancel action. Pause queue holds only the next dispatch;
+  the current job continues. Queue ordering, Run next and dependency labels
+  remain distinct. History defaults to five recent rows from its current page;
+  Full history reveals that page in full. Both views retain pagination and all
+  metadata/actions. Lists have no decorative row separators, names wrap, and
+  quiet overflow actions remain visible for touch and keyboard access.
+- The subpages carry the same open style: shared `PageHeader` titles,
+  open rows and text-only page tabs with a steel-blue active label. The editable
+  Train heading and gym-run
   telemetry header retain their compact composition. Forms keep labels,
   validation, explanations needed for a decision and their existing controls.
   Job details use `PageHeader` with kind, status and elapsed time as provenance,
@@ -49,8 +44,8 @@ subject you are reading.
 - **`NavJobs` stays in the sidebar content** as **Currently working**, with the
   browser-local training draft first and active executions below it. The draft
   links back to the composer; executions provide the ambient "the GPU is busy"
-  signal. `NavAdmin`'s `QueueTell` carries execution activity when the sidebar is
-  collapsed to icons and that group is hidden.
+  signal through state words and progress. The Admin row has no standalone
+  status dot.
 - Admin-ness is a client fact (`useAuth().isAdmin`, read from the stored access
   level), so these are hidden rather than guarded. **The endpoints are the
   boundary** — the LLM engine's queue routes are admin-only, and `JobsProvider` is
@@ -80,8 +75,7 @@ queue the build and hand off to its durable execution page. See
   bookmarked URLs work. Job links use their domain URLs: `/train/{id}`,
   `/bench/{id}`, `/gyms/{id}` and `/tokenizers/builds/{id}`. Legacy detail and
   composer URLs redirect while preserving queries; see [routing](routing.md).
-  The two are separate components only so the panel can put its directory between them;
-  they read from the same `JobsProvider` and are one ledger.
+  Both read the same `JobsProvider` and form one ledger beside the Workbench.
 
 ### Composing a training run
 
@@ -107,6 +101,13 @@ the session or seed aborts its read and remounts form state, so a late response
 cannot overwrite edits made in another selection. Reused SFT/KTO/RAFT settings
 retain their recorded mode instead of being converted to ordinary pretraining.
 
+Workbench Pre-train and Fine-tune use `?mode=pretrain` and `?mode=sft`.
+A fresh form starts in that mode. A retained draft, including KTO/RAFT, restores
+unchanged and offers an explicit switch when its mode differs. Rerun/resume seeds
+retain their existing precedence. The mode hint never silently clears data or
+follow-ups from a saved draft. Background draft-save reassurance is omitted;
+storage failures and the explicit Discard draft action remain visible.
+
 The training composer autosaves changes to one browser-local draft per account,
 including incomplete settings and ordered follow-ups. `/train/new-train` restores
 it after navigation or reload; explicit `?from=`/`?resume=` choices take precedence
@@ -128,7 +129,9 @@ The same fields are rendered two ways, and neither may drift from the other:
   form whose model name is the editable page heading, like the project editor.
   Presets sit beside the heading; quiet mode tabs precede compact identity rows,
   then data, architecture, optimization and follow-ups. Identity values and their
-  popup menus align to the right without explanatory subtitles. Text actions
+  popup menus align to the right without explanatory subtitles. Numerical seed,
+  precision and declared recipe parameters use the same inline control style.
+  Review, curricula and follow-ups use spacing rather than decorative rules. Text actions
   keep a transparent surface during hover. Selectors and numeric
   values use borderless inline controls with visible keyboard focus. Labels sit
   beside their controls on wide screens; numeric settings use two columns.

@@ -10,6 +10,7 @@ import {
 } from "@/lib/tokenizers"
 import { formatBytes } from "@/lib/data"
 import { PageHeader } from "@/components/ui/page-header"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Panel } from "@/components/ui/panel"
 import { EditableTitle } from "@/components/ui/editable-title"
 import { EditActions } from "@/components/ui/edit-actions"
@@ -117,7 +118,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
         )}
       </form>
       <div className="space-y-8">
-        <dl className="grid gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-2">
+        <dl className="grid gap-x-8 gap-y-5 py-4 sm:grid-cols-2">
           <Fact
             label="Vocabulary"
             value={tokenizer.vocabSize?.toLocaleString() ?? "—"}
@@ -159,11 +160,12 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
         </dl>
         <Panel variant="open" title="Datasets">
           {tokenizer.datasets.length ? (
-            <ul className="divide-y divide-border">
+            <ResourceList density="compact">
               {tokenizer.datasets.map((dataset) => (
-                <li
+                <ResourceRow
+                  density="compact"
                   key={dataset.id}
-                  className="flex flex-wrap justify-between gap-3 py-3"
+                  className="flex flex-wrap justify-between gap-3"
                 >
                   <Link
                     href={`/data/${encodeURIComponent(dataset.id)}`}
@@ -177,9 +179,9 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
                       ? ` · limit ${dataset.count.toLocaleString()}`
                       : ""}
                   </span>
-                </li>
+                </ResourceRow>
               ))}
-            </ul>
+            </ResourceList>
           ) : (
             <p className="text-sm text-muted-foreground">
               No datasets recorded.
@@ -188,18 +190,18 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
         </Panel>
         <Panel variant="open" title="Models">
           {tokenizer.models.length ? (
-            <ul className="divide-y divide-border">
+            <ResourceList density="compact">
               {tokenizer.models.map((model) => (
-                <li key={model.id} className="py-3">
+                <ResourceRow density="compact" key={model.id}>
                   <Link
                     href={`/models/${model.id}`}
                     className="font-display text-lg hover:underline"
                   >
                     {model.name}
                   </Link>
-                </li>
+                </ResourceRow>
               ))}
-            </ul>
+            </ResourceList>
           ) : (
             <p className="text-sm text-muted-foreground">
               No model references recorded.

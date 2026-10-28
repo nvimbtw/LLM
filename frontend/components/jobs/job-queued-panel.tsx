@@ -6,7 +6,6 @@ import { ConfigRecap } from "@/components/jobs/config-recap"
 import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { Button } from "@/components/ui/button"
 import { Panel } from "@/components/ui/panel"
-import { RunningDot } from "@/components/ui/running-dot"
 import { benchmarkSections } from "@/lib/benchmark"
 import {
   KIND_LABEL,
@@ -100,7 +99,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
 
             {running && (
               <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-                <RunningDot />
+                <span>Running</span>
                 <span>Running now:</span>
                 <Link
                   href={jobHref(running)}

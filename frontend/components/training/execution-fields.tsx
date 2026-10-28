@@ -26,9 +26,15 @@ export function TrainingExecutionFields({
 }: TrainingExecutionFieldsProps) {
   const id = useId()
   return (
-    <fieldset disabled={disabled} className="grid gap-4 py-4 sm:grid-cols-2">
+    <fieldset
+      disabled={disabled}
+      className="grid gap-x-8 gap-y-4 py-4 sm:grid-cols-2"
+    >
       <legend className="sr-only">Numerical execution</legend>
-      <label className="grid gap-2 text-sm" htmlFor={`${id}-precision`}>
+      <label
+        className="flex min-w-0 items-center justify-between gap-3 text-sm"
+        htmlFor={`${id}-precision`}
+      >
         Precision
         <Select
           disabled={disabled}
@@ -42,7 +48,11 @@ export function TrainingExecutionFields({
               onChange({ ...config, precision })
           }}
         >
-          <SelectTrigger id={`${id}-precision`}>
+          <SelectTrigger
+            variant="inline"
+            className="h-9 w-auto"
+            id={`${id}-precision`}
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -54,9 +64,12 @@ export function TrainingExecutionFields({
           </SelectContent>
         </Select>
       </label>
-      <label className="grid gap-2 text-sm">
+      <label className="flex min-w-0 items-center justify-between gap-3 text-sm">
         Numerical seed
         <Input
+          variant="inline"
+          className="h-9 w-24 text-right tabular-nums"
+          aria-label="Numerical seed"
           type="number"
           step={1}
           min={0}
@@ -73,13 +86,13 @@ export function TrainingExecutionFields({
           }
         />
       </label>
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center justify-between gap-3 text-sm">
+        <span>Allow TF32 on supported hardware</span>
         <Switch
           checked={config.allow_tf32 ?? true}
           disabled={disabled}
           onCheckedChange={(allow_tf32) => onChange({ ...config, allow_tf32 })}
         />
-        Allow TF32 on supported hardware
       </label>
       <p className="text-xs text-muted-foreground">
         The current device determines effective precision. A recipe profile read

@@ -1,6 +1,8 @@
 "use client"
 
 import Link from "next/link"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
+import { EmptyState } from "@/components/ui/empty-state"
 
 import { cn } from "@/lib/utils"
 import { useModelNames } from "@/hooks/use-model-names"
@@ -17,22 +19,18 @@ export function RunList({ runs }: { runs: GymRun[] }) {
   const { names } = useModelNames()
 
   if (runs.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No runs yet. Create one above and it will appear here.
-      </p>
-    )
+    return <EmptyState title="No runs yet" />
   }
 
   return (
-    <ul className="divide-y divide-border">
+    <ResourceList density="compact">
       {runs.map((run) => (
-        <li key={run.id}>
+        <ResourceRow density="compact" key={run.id}>
           <Link
             href={`/gyms/${run.id}`}
-            className="flex items-baseline gap-4 py-3 transition-colors hover:text-foreground"
+            className="flex items-baseline gap-4 transition-colors hover:text-foreground"
           >
-            <span className="min-w-0 flex-1 truncate font-medium">
+            <span className="min-w-0 flex-1 font-medium break-words">
               {modelLabel(names, run.model_name)}
             </span>
             <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
@@ -43,9 +41,9 @@ export function RunList({ runs }: { runs: GymRun[] }) {
             </span>
             <Score run={run} />
           </Link>
-        </li>
+        </ResourceRow>
       ))}
-    </ul>
+    </ResourceList>
   )
 }
 

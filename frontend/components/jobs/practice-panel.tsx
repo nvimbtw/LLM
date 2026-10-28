@@ -11,9 +11,11 @@ const STATUS = {
   mastered: "Mastered",
   needs_sft: "Needs SFT examples",
 }
+/** Formats measured practice accuracy without replacing absence with zero. */
 const percent = (value: number | null | undefined) =>
   value == null ? "—" : `${(value * 100).toFixed(0)}%`
 
+/** Presents per-skill progression and fixed before/after evidence without changing practice or grading. */
 export function PracticePanel({ report }: PracticePanelProps) {
   if (!report.mastery) return null
   return (
@@ -38,7 +40,7 @@ export function PracticePanel({ report }: PracticePanelProps) {
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-border text-xs text-muted-foreground">
+            <thead className="text-xs text-muted-foreground">
               <tr>
                 <th className="py-2">Skill</th>
                 <th>Status</th>
@@ -50,7 +52,7 @@ export function PracticePanel({ report }: PracticePanelProps) {
             </thead>
             <tbody>
               {report.mastery.map((skill) => (
-                <tr key={skill.task_type} className="border-b border-border">
+                <tr key={skill.task_type} className="align-top">
                   <td className="py-2 pr-3">{skill.label}</td>
                   <td className="pr-3">{STATUS[skill.status]}</td>
                   <td className="pr-3 tabular-nums">

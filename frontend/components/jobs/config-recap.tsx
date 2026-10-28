@@ -43,7 +43,7 @@ export function ConfigRecap({ job, config, className }: ConfigRecapProps) {
       bodyClassName="p-0"
       className={className}
     >
-      <dl className="divide-y divide-border/40">
+      <dl className="space-y-1">
         {recap.rows.map(([label, value]) => (
           <div
             key={label}
@@ -173,13 +173,12 @@ function describe(job: Job, override?: TrainConfig | null): Recap | null {
   }
 }
 
+/** Describes vocabulary inputs; an empty selection means every stored corpus at execution time. */
 function tokenize(config: TokenizerBuild | null): Recap | null {
   if (!config) return null
   return {
     description: "As queued",
     rows: [["Max vocab", String(config.max_vocab)]],
-    // Empty is not "none": the LLM engine resolves it to every corpus on disk, and a
-    // blank here would read as a build that learned from nothing.
     blocks: [
       [
         "Corpora",

@@ -1,23 +1,16 @@
-/* The plan shares the composer's footprint; only its full disclosure overlays
-   the thread. Row positions persist across updates so progress has continuity. */
+/* The plan shares the textured upper composer region; row positions retain progress continuity. */
 .composer-plan {
   --plan-row-height: 2rem;
   --plan-ease: cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   z-index: 0;
-  clip-path: inset(-100vmax -100vmax 0);
-  margin-inline: 0.75rem;
   font-size: var(--text-xs);
 }
-.plan-preview, .plan-disclosure {
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: var(--radius-composer) var(--radius-composer) 0 0;
+.plan-preview,
+.plan-disclosure {
   padding: 0.75rem 1rem 0.625rem;
 }
 .plan-preview {
-  background: color-mix(in oklab, var(--card) 75%, transparent);
-  backdrop-filter: blur(24px) saturate(1.5);
   transition: opacity 180ms;
 }
 .plan-heading {
@@ -27,7 +20,9 @@
   color: var(--muted-foreground);
   min-height: 1rem;
 }
-.plan-leader { height: 1px; flex: 1; background: var(--border); }
+.plan-leader {
+  flex: 1;
+}
 .plan-rows {
   position: relative;
   overflow: hidden;
@@ -44,7 +39,10 @@
   align-items: center;
   gap: 0.625rem;
   transform: translateY(calc(var(--plan-index) * var(--plan-row-height)));
-  transition: transform 460ms var(--plan-ease), color 280ms, opacity 280ms;
+  transition:
+    transform 460ms var(--plan-ease),
+    color 280ms,
+    opacity 280ms;
   color: var(--muted-foreground);
 }
 .plan-task-mark {
@@ -62,7 +60,9 @@
   border: 1px solid var(--muted-foreground);
   border-radius: 50%;
 }
-.plan-task[data-status="in_progress"] { color: var(--foreground); }
+.plan-task[data-status="in_progress"] {
+  color: var(--foreground);
+}
 .plan-task[data-status="in_progress"] .plan-task-mark::before {
   content: "";
   width: 0.375rem;
@@ -70,12 +70,19 @@
   background: var(--muted-foreground);
   border-radius: 50%;
 }
-.plan-task[data-status="in_progress"][data-running="true"] .plan-task-mark::before {
+.plan-task[data-status="in_progress"][data-running="true"]
+  .plan-task-mark::before {
   background: var(--throbber-spark);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--throbber-spark) 12%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklab, var(--throbber-spark) 12%, transparent);
   animation: plan-breathe 2.8s ease-in-out infinite;
 }
-.plan-task-title { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-task-title {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .plan-task-title::after {
   content: "";
   position: absolute;
@@ -87,25 +94,37 @@
   transition: transform 300ms var(--plan-ease);
 }
 .plan-task[data-status="completed"] .plan-task-title::after,
-.plan-task[data-status="cancelled"] .plan-task-title::after { transform: scaleX(1); }
-.plan-task-now { margin-left: auto; padding-left: 0.5rem; color: var(--muted-foreground); }
-.plan-task-retiring { animation: plan-finish 760ms var(--plan-ease) forwards; }
-.plan-disclosure {
-  position: absolute;
-  bottom: 0;
-  inset-inline: 0;
-  background: var(--card);
-  box-shadow: var(--elevation-overlay);
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(0.75rem);
-  transform-origin: bottom;
-  transition: opacity 220ms, transform 360ms var(--plan-ease), visibility 360ms;
+.plan-task[data-status="cancelled"] .plan-task-title::after {
+  transform: scaleX(1);
 }
-.composer-plan[data-expanded="true"] .plan-disclosure { opacity: 1; visibility: visible; transform: translateY(0); }
-.composer-plan[data-expanded="true"] .plan-preview { opacity: 0; }
-.plan-caption { margin: 0.75rem 0 0.375rem; font-size: var(--text-sm); color: var(--foreground); }
-.plan-scroll { max-height: min(18rem, 45dvh); overflow-y: auto; overscroll-behavior: contain; }
+.plan-task-now {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  color: var(--muted-foreground);
+}
+.plan-task-retiring {
+  animation: plan-finish 760ms var(--plan-ease) forwards;
+}
+.plan-disclosure {
+  display: none;
+  position: relative;
+}
+.composer-plan[data-expanded="true"] .plan-disclosure {
+  display: block;
+}
+.composer-plan[data-expanded="true"] .plan-preview {
+  display: none;
+}
+.plan-caption {
+  margin: 0.75rem 0 0.375rem;
+  font-size: var(--text-sm);
+  color: var(--foreground);
+}
+.plan-scroll {
+  max-height: min(18rem, 45dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .plan-disclosure .plan-task {
   position: relative;
   transform: none;
@@ -123,10 +142,20 @@
 .plan-disclosure .plan-task[data-status="cancelled"] .plan-task-title {
   text-decoration: line-through;
 }
-.plan-disclosure .plan-task-title::after { display: none; }
-.plan-editor .plan-scroll { max-height: min(18rem, 35dvh); }
-.plan-editor .plan-edit-row { transition: background-color 150ms, opacity 150ms; }
-.composer-plan[data-editing="true"] .plan-disclosure { padding-top: 1rem; }
+.plan-disclosure .plan-task-title::after {
+  display: none;
+}
+.plan-editor .plan-scroll {
+  max-height: min(18rem, 35dvh);
+}
+.plan-editor .plan-edit-row {
+  transition:
+    background-color 150ms,
+    opacity 150ms;
+}
+.composer-plan[data-editing="true"] .plan-disclosure {
+  padding-top: 1rem;
+}
 .plan-edit-hint {
   margin-block: 0.625rem 0.25rem;
   color: var(--muted-foreground);
@@ -145,19 +174,47 @@
   font-weight: normal;
   color: var(--foreground);
 }
-.plan-editor .plan-title-input:hover { border-bottom-color: var(--border); }
-.plan-editor .plan-title-input:focus-visible { border-bottom-color: var(--ring); }
-.plan-drag-handle { opacity: 0.45; }
-.plan-edit-row:hover .plan-drag-handle, .plan-edit-row:focus-within .plan-drag-handle { opacity: 1; }
-.plan-edit-status { width: 3.5rem; text-align: right; }
-.plan-editor .plan-remove { color: var(--muted-foreground); }
-.plan-add { margin-inline: 2rem 0.25rem; border-bottom: 1px solid var(--border); }
-.plan-add .plan-title-input:hover { border-bottom-color: transparent; }
-@media (hover: hover) {
-  .plan-remove { opacity: 0; }
-  .plan-edit-row:hover .plan-remove, .plan-edit-row:focus-within .plan-remove { opacity: 1; }
+.plan-editor .plan-title-input:hover {
+  border-bottom-color: var(--border);
 }
-.plan-hint { margin-top: 0.75rem; padding-top: 0.625rem; border-top: 1px solid var(--border); color: var(--muted-foreground); }
+.plan-editor .plan-title-input:focus-visible {
+  border-bottom-color: var(--ring);
+}
+.plan-drag-handle {
+  opacity: 0.45;
+}
+.plan-edit-row:hover .plan-drag-handle,
+.plan-edit-row:focus-within .plan-drag-handle {
+  opacity: 1;
+}
+.plan-edit-status {
+  width: 3.5rem;
+  text-align: right;
+}
+.plan-editor .plan-remove {
+  color: var(--muted-foreground);
+}
+.plan-add {
+  margin-inline: 2rem 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.plan-add .plan-title-input:hover {
+  border-bottom-color: transparent;
+}
+@media (hover: hover) {
+  .plan-remove {
+    opacity: 0;
+  }
+  .plan-edit-row:hover .plan-remove,
+  .plan-edit-row:focus-within .plan-remove {
+    opacity: 1;
+  }
+}
+.plan-hint {
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
+  color: var(--muted-foreground);
+}
 .composer-plan .plan-toggle {
   position: absolute;
   inset: 0 0 auto;
@@ -167,15 +224,34 @@
   border-radius: var(--radius-composer);
   background: transparent;
 }
-.composer-plan[data-expanded="true"] .plan-toggle { top: auto; bottom: 0; height: 2.5rem; }
-.composer-plan .plan-toggle:hover { background: transparent; }
-@keyframes plan-finish {
-  0%, 42% { opacity: 1; translate: 0 0; }
-  100% { opacity: 0; translate: 0 1rem; }
+.composer-plan[data-expanded="true"] .plan-toggle {
+  top: auto;
+  bottom: 0;
+  height: 2.5rem;
 }
-@keyframes plan-breathe { 50% { opacity: 0.5; } }
+.composer-plan .plan-toggle:hover {
+  background: transparent;
+}
+@keyframes plan-finish {
+  0%,
+  42% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  100% {
+    opacity: 0;
+    translate: 0 1rem;
+  }
+}
+@keyframes plan-breathe {
+  50% {
+    opacity: 0.5;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .composer-plan *, .composer-plan *::before, .composer-plan *::after {
+  .composer-plan *,
+  .composer-plan *::before,
+  .composer-plan *::after {
     animation: none !important;
     transition: none !important;
   }

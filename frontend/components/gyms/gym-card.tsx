@@ -1,5 +1,6 @@
 import { Terminal, Beaker } from "lucide-react"
 import Link from "next/link"
+import { ResourceRow, ResourceTitle } from "@/components/ui/resource-list"
 
 export interface GymCardProps {
   id: string
@@ -11,7 +12,7 @@ export interface GymCardProps {
 export function GymCard({ id, name, description }: GymCardProps) {
   const isBash = id === "bash"
   return (
-    <article className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 border-b border-border py-5 text-sm">
+    <ResourceRow className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 text-sm">
       <Link
         href={`/gyms/new-gym?gym=${encodeURIComponent(id)}`}
         aria-label={`Practise ${name}`}
@@ -23,9 +24,9 @@ export function GymCard({ id, name, description }: GymCardProps) {
           ) : (
             <Beaker className="size-4 text-muted-foreground" />
           )}
-          <h2 className="font-display text-xl leading-snug font-normal group-hover:underline">
+          <ResourceTitle className="group-hover:underline">
             {name}
-          </h2>
+          </ResourceTitle>
         </div>
         <p className="text-sm text-muted-foreground">{description}</p>
       </Link>
@@ -37,6 +38,6 @@ export function GymCard({ id, name, description }: GymCardProps) {
           Evaluate and view history
         </Link>
       </div>
-    </article>
+    </ResourceRow>
   )
 }

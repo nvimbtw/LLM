@@ -47,9 +47,7 @@ export function newStep(kind: "train" | "benchmark" = "train"): Step {
       ...DEFAULT_CONFIG,
       mode: "sft",
       model_name: "",
-      // A fine-tune inherits the base's architecture, so these are placeholders the
-      // server replaces at promotion. They still have to pass validation, and the
-      // defaults do.
+
       lr: 0.00001,
       epochs: 2,
     },
@@ -64,8 +62,7 @@ export function toFollowUps(steps: Step[]): FollowUp[] {
     step.kind === "train"
       ? {
           kind: "train" as const,
-          // Stripped for the same reason the rail strips it: the server refuses a
-          // follow-up that names its own base.
+
           config: { ...step.train, base_model_id: undefined },
         }
       : { kind: "benchmark" as const, config: { suite: step.suite } }
@@ -132,10 +129,7 @@ export function FollowUps({
           </p>
         ) : (
           steps.map((step, i) => (
-            <div
-              key={step.id}
-              className="border-t border-border py-6 first:border-t-0 first:pt-0"
-            >
+            <div key={step.id} className="py-6 first:pt-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="w-6 shrink-0 text-sm text-muted-foreground tabular-nums">
                   {i + 1}.

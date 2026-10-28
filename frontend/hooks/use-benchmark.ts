@@ -20,12 +20,13 @@ import {
 // and polling stops entirely once nothing is running.
 const POLL_MS = 2000
 
-export function useBenchmark() {
+/** Owns the selected suite's history, report and polling; the route supplies a validated initial suite. */
+export function useBenchmark(initialSuite: BenchmarkSuite = "language") {
   // Which of the two benchmarks the page is showing. Everything below is scoped to
   // it: the history, the selection, and — importantly — `active`. Without the
   // scoping, queueing both suites for one model would show the markup run's spinner
   // over the language page and then select the wrong report when it finished.
-  const [selected, setSelected] = React.useState<BenchmarkSuite>("language")
+  const [selected, setSelected] = React.useState<BenchmarkSuite>(initialSuite)
   const [runs, setRuns] = React.useState<BenchmarkRun[]>([])
   const [suite, setSuite] = React.useState<SuiteInfo | null>(null)
   const [selectedId, setSelectedId] = React.useState<string | null>(null)

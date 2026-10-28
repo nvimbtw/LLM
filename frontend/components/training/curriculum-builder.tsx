@@ -71,7 +71,7 @@ export function CurriculumBuilder({
         const isCollapsed = collapsed.has(i)
         const title = stage.name?.trim() || `Stage ${i + 1}`
         return (
-          <div key={i} className="border-t border-border first:border-t-0">
+          <div key={i} className="py-1">
             <div className="flex items-center justify-between gap-2 py-3">
               <button
                 type="button"

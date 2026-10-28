@@ -35,10 +35,12 @@ const chartConfig = {
   correct: { label: "Correct", color: "var(--chart-1)" },
 } satisfies ChartConfig
 
+/** Resolves a readable source name for measured gym progress. */
 function sourceLabel(source: string): string {
   return source === "bash" ? "just-bash" : source.replaceAll("_", " ")
 }
 
+/** Presents accumulated source scores and recent task order while retaining the charts’ measured samples and axes. */
 export function GeneralGymProgress({
   history,
   sources,
@@ -91,7 +93,7 @@ export function GeneralGymProgress({
   }, [recent.length, latestStep])
 
   return (
-    <div className="space-y-5 border-b border-border pb-6">
+    <div className="space-y-5 pb-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold">
@@ -107,7 +109,7 @@ export function GeneralGymProgress({
         </span>
       </div>
 
-      <div className="border-y border-border py-3">
+      <div className="py-3">
         <div className="flex items-center justify-between gap-3">
           <span className="eyebrow text-muted-foreground">
             {hasGroupOrder ? "Recent task groups" : "Recent gym mix by batch"}
@@ -124,10 +126,10 @@ export function GeneralGymProgress({
               <span
                 key={`${step}-${index}`}
                 title={`Iteration ${step} · ${sourceLabel(source)}`}
-                className={`shrink-0 rounded-(--radius-control-sm) border px-2.5 py-1 text-xs ${
+                className={`shrink-0 px-2.5 py-1 text-xs ${
                   index === recent.length - 1
-                    ? "border-primary bg-primary/10 font-semibold text-foreground"
-                    : "border-border text-muted-foreground"
+                    ? "font-semibold text-primary"
+                    : "text-muted-foreground"
                 }`}
               >
                 {sourceLabel(source)}
@@ -146,10 +148,7 @@ export function GeneralGymProgress({
           const values = progress.series.get(source) ?? []
           const total = progress.totals.get(source)
           return (
-            <div
-              key={source}
-              className="min-w-0 border-b border-border pb-4"
-            >
+            <div key={source} className="min-w-0 pb-4">
               <div className="flex items-baseline justify-between gap-3">
                 <h4 className="text-sm font-semibold">{sourceLabel(source)}</h4>
                 <span className="figure text-xl tabular-nums">

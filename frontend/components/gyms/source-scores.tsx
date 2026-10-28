@@ -12,7 +12,7 @@ export function SourceScores({ episodes, scores }: SourceScoresProps) {
     : [...new Set(episodes.map((episode) => episode.gym_id))]
   return (
     <Panel variant="open" title="By gym">
-      <dl className="divide-y divide-border/60 text-sm">
+      <dl className="text-sm">
         {sources.map((source) => {
           const graded = (episodes ?? []).filter(
             (episode) => episode.gym_id === source && episode.score !== null

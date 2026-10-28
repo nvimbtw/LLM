@@ -40,6 +40,7 @@ interface UsagePayload {
   }[]
 }
 
+/** Maps account usage measurements into chart series, per-model totals and the existing notional cost. */
 function mapUsage(payload: UsagePayload): Usage {
   const series = payload.series.map((day) => ({
     date: day.date,
@@ -55,7 +56,6 @@ function mapUsage(payload: UsagePayload): Usage {
     series,
     byModel: payload.by_model.map((m) => ({
       id: m.model_id ?? "",
-      // A model since deleted still owns the tokens it generated.
       name: m.name ?? "Deleted model",
       tokens: m.tokens,
       requests: m.replies,
@@ -71,7 +71,9 @@ const EMPTY_USAGE: Usage = {
   byModel: [],
 }
 
+/** Loads usage for the mounted account view and retries failed reads without changing the selected settings section. */
 export function useUsage() {
+  const [revision, setRevision] = React.useState(0)
   const [usage, setUsage] = React.useState<Usage>(EMPTY_USAGE)
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<Error | null>(null)
@@ -101,7 +103,13 @@ export function useUsage() {
     return () => {
       active = false
     }
-  }, [])
+  }, [revision])
 
-  return { usage, isLoading, error }
+  /** Starts a fresh read from the user's retry action, retaining the last complete usage snapshot. */
+  const retry = React.useCallback(() => {
+    setIsLoading(true)
+    setError(null)
+    setRevision((value) => value + 1)
+  }, [])
+  return { usage, isLoading, error, retry }
 }

@@ -6,6 +6,7 @@ import Link from "next/link"
 import { useArchitectureHistory } from "@/hooks/use-architecture-history"
 import { useArchitectureRevision } from "@/hooks/use-architecture-revision"
 import type { ResourceSummary } from "@/lib/architecture/contracts.generated"
+import { ResourceRow } from "@/components/ui/resource-list"
 import { Button } from "@/components/ui/button"
 import { Panel } from "@/components/ui/panel"
 import { LoadError } from "@/components/ui/error-state"
@@ -56,11 +57,12 @@ export function RevisionHistory({
         )}
         {history.value && (
           <>
-            <ol className="divide-y divide-border">
+            <ol className="space-y-2">
               {history.value.items.map((item) => (
-                <li
+                <ResourceRow
+                  density="compact"
                   key={item.reference.revision_id}
-                  className="grid gap-2 py-3 text-sm"
+                  className="grid gap-2 text-sm"
                 >
                   <div className="flex flex-wrap items-center gap-3">
                     <Button
@@ -79,7 +81,7 @@ export function RevisionHistory({
                   <code className="break-all">
                     {item.reference.content_hash}
                   </code>
-                </li>
+                </ResourceRow>
               ))}
             </ol>
             {!history.value.items.length && (
@@ -109,7 +111,7 @@ export function RevisionHistory({
         {selected && (
           <section
             aria-label="Immutable accepted source"
-            className="grid gap-3 border-t border-border pt-4"
+            className="grid gap-3 pt-4"
           >
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm break-all">Accepted revision {selected}</p>

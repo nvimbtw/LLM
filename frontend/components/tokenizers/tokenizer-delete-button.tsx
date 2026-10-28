@@ -1,7 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { Trash2 } from "lucide-react"
+import { Trash2, MoreHorizontal } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { DeleteConfirmation } from "@/components/ui/delete-confirmation"
 import type { TokenizerInfo } from "@/lib/tokenizers"
@@ -23,18 +29,46 @@ export function TokenizerDeleteButton({
   const [open, setOpen] = React.useState(false)
   return (
     <>
-      <Button
-        type="button"
-        variant="text"
-        size={iconOnly ? "icon" : "sm"}
-        aria-label={`Delete ${tokenizer.name}`}
-        disabled={disabled}
-        onClick={() => setOpen(true)}
-        className="[@media(pointer:coarse)]:min-h-10 [@media(pointer:coarse)]:min-w-10"
-      >
-        <Trash2 className="size-4" />
-        {!iconOnly && "Delete"}
-      </Button>
+      {iconOnly ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`Options for ${tokenizer.name}`}
+                disabled={disabled}
+              >
+                <MoreHorizontal />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => setOpen(true)}
+            >
+              <Trash2 />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        <Button
+          type="button"
+          variant="text"
+          size={iconOnly ? "icon" : "sm"}
+          aria-label={`Delete ${tokenizer.name}`}
+          disabled={disabled}
+          onClick={() => setOpen(true)}
+          className="[@media(pointer:coarse)]:min-h-10 [@media(pointer:coarse)]:min-w-10"
+        >
+          <Trash2 className="size-4" />
+          {!iconOnly && "Delete"}
+        </Button>
+      )}
+
       {open && (
         <DeleteConfirmation
           open

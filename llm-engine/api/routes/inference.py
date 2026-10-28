@@ -14,11 +14,11 @@ from api.chat_request import Ask, _new_turns
 from llm.config import ChatTurn
 from llm.model import device
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 from fastapi.responses import StreamingResponse
 
-from api import sse
+from api import auth, sse
 from api import serving
 from api import interactive
 from llm.runtime.supervisor import WorkerStopped
@@ -93,8 +93,10 @@ def count_tokens(req: CountRequest):
 
 
 @router.post("/chat/prepare")
-def prepare_turn(body: "Ask"):
-    """Validate, render and count turns before Rust stores them."""
+def prepare_turn(body: "Ask", administration: bool = Depends(auth.administration_visible)):
+    """Authorize publication before tokenizer access, then render/count turns before Rust stores them."""
+    if not administration:
+        require_published_chat_model(body.model_name)
     turns = _new_turns(body)
     try:
         ChatConfig(**body.model_dump(exclude={"text", "tool_result", "interject", "attachment_ids", "history_floor"}),
@@ -119,6 +121,17 @@ def prepare_turn(body: "Ask"):
             model.parameters = {**(model.parameters or {}), "recovery_referenced": True}
         return {"turns": counted, "model_id": str(model.id) if model else None,
                 "model_name": model.name if model else body.model_name}
+
+
+def require_published_chat_model(reference: str) -> None:
+    """Require an indexed published model/checkpoint for public chat admission; missing/private references share a safe 404."""
+    with store.session() as db:
+        try:
+            model = q.get_model(db, uuid.UUID(reference))
+        except ValueError:
+            model = q.find_model_by_name(db, reference)
+        if model is None or not model.published:
+            raise HTTPException(status_code=404, detail="model not found")
 
 
 @router.post("/chat/context-floor")

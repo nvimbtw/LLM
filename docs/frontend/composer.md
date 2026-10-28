@@ -92,7 +92,7 @@ stripped when dictation ends and which `docToMarkdown` would ignore anyway.
 
 Sending or `/clear` stops dictation. The footer band holds the three bars in its
 middle column while it runs — it is a `1fr auto 1fr` grid rather than a two-ended
-row precisely so the bars are centred on the band itself, and so the title and
+row precisely so the bars are centred on the band itself, and so the model choices and
 the context meter never move to make room for them. The bars are also the only
 thing that animates: the mic button just fills blue and swaps to a stop glyph,
 the same swap the send button makes mid-turn. `Ctrl`/`Cmd`+`Shift`+`Space`
@@ -231,26 +231,12 @@ as active. Nothing on the chat path ever learned what a checkpoint is: it is a
 model id and a directory, exactly like the finished weights
 ([`../decisions/checkpoints-are-models.md`](../decisions/checkpoints-are-models.md)).
 
-**Model, checkpoint and thinking budget are one popover**,
-`components/chat/composer-picker.tsx`, replacing the footer's model trigger.
-Earlier this was two-to-three separate controls — a model dropdown, a
-checkpoint dropdown rendered as its sibling only when the model had
-intermediates, and a wholly separate thinking-budget dropdown — with the
-checkpoint control deliberately kept as "a sibling and not a flyout off the
-model list, so that list stays a list of models." **That rationale is
-superseded here, at the user's request**: the three are all answers to "what
-should this turn send with," and one control that opens to three legible
-sections reads better in the footer than several buttons in a row. The
-checkpoint section still only appears nested under the model it belongs to,
-and only when that model's run left intermediates, listing its finished
-weights and each checkpoint by index and step — the same list
-`components/training/resume-picker.tsx`'s `ResumePicker` shows, off the same
-`useCheckpoints` hook. The thinking-budget options are their own section,
-under a separator, rather than blended into the model list — a budget and a
-model are different kinds of choice and are shown as such. `ComposerPicker`
-owns none of the state itself: it composes `useModels`, `useCheckpointParent`
-and `useCheckpoints` exactly as before, and reads and writes `model` and
-`budget` through `useComposerChoice()` like everything else in this section.
+Model selection sits at the left of the footer, followed immediately by a
+separate thinking dropdown; context stays right. The compact searchable picker
+opens on published models. Administrators can switch to All models. Checkpoint
+options are absent, but existing persisted checkpoint ids keep their identity
+through parent resolution. The footer no longer repeats the conversation title
+or rename control; sidebar and archive renaming remain available.
 
 ## Slash commands & fuzzy finder
 
@@ -263,19 +249,11 @@ reordering. Plans are not yet synchronized with the backend or model.
 Typing a leading `/` in the composer opens its fuzzy finder drawer
 (`components/chat/slash-command-menu.tsx`, driven by `lib/commands.ts`).
 
-The suggestions rise from behind the composer's upper edge in a top drawer,
-slightly inset like the plan disclosure, with no floating gap and the app's slight
-top corners. Its translucency and blur match the composer, without a shadow
-falling over it. Padded command rows omit their leading slash and align with quiet
-current values; a thin left marker indicates keyboard selection. It opens with a
-short fade/slide clipped at its bottom join, leaves the composer's height alone,
-and removes its motion when reduced motion is requested. Longer lists scroll
-within a drawer capped at half the viewport height. The closest row to the editor
-remains the best match, so arrow-key order and completion retain their bottom-up
-contract. Completing a command or argument prefix preserves its separating space
-for further typing. A selected setting shows its current value beside its quiet
-command heading. Numeric helpers present plain presets and a small allowed range;
-other choices use text rows, and the steering prompt appears as quoted prose.
+Commands and plans share a faint grey textured region inside the existing
+composer outline, above the message editor. Slash discovery temporarily replaces
+the plan and restores it on dismissal. Suggestions retain their bottom-up match
+and keyboard order, with bounded scrolling and reduced-motion support. No
+separate drawer, outline or shadow surrounds this upper region.
 
 - **Stage 1 (Command Discovery)**: Fuzzy-matches command names, aliases, and
   descriptions (e.g. `/model`, `/thinking`, `/show-thinking`, `/temperature`,

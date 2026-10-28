@@ -36,6 +36,7 @@ pub(super) async fn run(
         &connection.registry,
         &connection.pool,
         claims.sub,
+        crate::upstream::visibility(&claims),
         connection.chat_id,
     );
     turn::run(&mut session, turn, ask, interjections).await;

@@ -26,7 +26,9 @@ selecting an old immutable source never replaces the editable draft.
 the actual administrator session. Changing the bearer token remounts all private
 state. Rust's administrator extractor and engine signed scope remain the actual
 authorization boundary. Server page shells never read browser credentials.
-The administrator directory links here; validation rows link to
+The Workbench Architectures group links directly to Blocks and Architectures;
+both catalogues return to Admin. Their shared open rows preserve wrapping names,
+metadata and bounded paging without decorative separators. Validation rows link to
 `/arch/validations/{run_id}`. Ordinary signed-in users retain normal model/chat pages.
 
 ## Draft and metadata ownership

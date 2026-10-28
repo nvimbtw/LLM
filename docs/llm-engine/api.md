@@ -437,3 +437,27 @@ to 2,000 characters. Omission preserves it; null clears it. Duplicate names
 return 409 and roll back every field. Unknown IDs return 404. A disk-only build
 gains an index row on its first edit. Display changes never write artifacts,
 change vocabulary fingerprints or rewrite historical training configurations.
+
+## Publication and public model projections
+
+Rust may send anonymous catalogue reads with system actor and public scope;
+service authentication remains required. Only exact administration scope permits
+private registry/detail/checkpoint reads. Public list queries cannot override
+publication, and disk-only artifact directories cannot become public models.
+Private and nonexistent model details/checkpoint parents both return 404.
+Checkpoint lists filter each child's publication independently of the parent.
+
+`public_model` uses an explicit allowlist of display metadata, resolved shape,
+measured vocabulary/parameter counts, context support and published-model facts.
+It removes opaque config/results, run/parent identities and recovery metadata.
+New administrative fields are private by default. Training provenance remains
+unavailable to public readers rather than being reconstructed from private inputs.
+
+Browser chat admission uses `/chat/prepare` with Rust's verified caller scope.
+Before reading tokenizer bytes or marking a checkpoint referenced, public scope
+requires an indexed published model/checkpoint; private and missing references
+return the same `404 model not found`. Administrative preparation retains private
+and disk-only legacy access. Rust runs this admission before storing accepted
+inputs for both HTTP chat and each WebSocket/tool round. Internal stateless
+inference endpoints used by trusted gym/evaluation coordination keep their
+existing separate service contract.

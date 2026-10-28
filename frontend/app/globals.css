@@ -23,6 +23,9 @@
   --color-kind-chat: var(--kind-chat);
   --color-kind-tokenize: var(--kind-tokenize);
   --color-kind-rl: var(--kind-rl);
+  --color-kind-model: var(--kind-model);
+  --color-status-success: var(--status-success);
+  --color-status-warning: var(--status-warning);
   --color-tier-low: var(--tier-low);
   --color-tier-med: var(--tier-med);
   --color-tier-high: var(--tier-high);
@@ -193,9 +196,7 @@
   --space-stack: calc(var(--spacing) * 3);
   --space-inline: calc(var(--spacing) * 2);
 
-  /* The ruled ledger's own rhythm — see the elevation rule below. Columns sit
-     far enough apart to read as columns; rows breathe more than they do in a
-     table because there is no rule between them to do the separating. */
+  /* Open collection rhythm: alignment and space separate entries without rules. */
   --space-ledger-x: calc(var(--spacing) * 8);
   --space-ledger-y: calc(var(--spacing) * 5);
 
@@ -242,6 +243,38 @@
      footer: it is a band inside the composer, on the composer's own corner. */
   --radius-composer: 0.875rem;
   --radius-bubble: var(--radius-composer);
+  --texture-opacity: 0.065;
+  --texture-warm-opacity: 0.16;
+  --texture-glyph-size: 8px;
+}
+
+:root,
+.theme-light,
+.dark {
+  --kind-model: var(--kind-tokenize);
+  --status-success: var(--kind-benchmark);
+  --status-warning: var(--chart-1);
+  --texture-warm: var(--tier-med);
+}
+
+.section-texture {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  fill: var(--foreground);
+  opacity: var(--texture-opacity);
+  font-family: var(--font-mono);
+  font-size: var(--texture-glyph-size);
+  mask-image: linear-gradient(90deg, transparent 12%, black 90%);
+}
+
+.section-texture[data-tone="warm"] {
+  fill: var(--texture-warm);
+  opacity: var(--texture-warm-opacity);
+  mask-image: radial-gradient(ellipse at center, black, transparent 72%);
 }
 
 /* ---- The eyebrow, as a utility -----------------------------------------
@@ -590,75 +623,16 @@
   --sidebar-ring-light: var(--kanagawa-lotus-blue4);
   --sidebar-ring-dark: var(--kanagawa-dragon-blue2);
 
-  /* ── Elevation ────────────────────────────────────────────────────────
-     Two levels, and one rule for which is which: a surface you can *act on*
-     is a sheet and gets an elevation; a surface that *summarises* is
-     furniture and gets rules instead (`border-y`, no box, no fill). The app
-     used to give both the same 1px box at the same radius, which is why a
-     stat band and a model tile carried equal weight and the eye found no
-     entry point — the flatness was a missing distinction, not a missing
-     shadow.
-
-     Light lifts with a shadow mixed from the ink itself, never a neutral
-     grey: grey on cream reads as dirt, where the paper's own dark reads as
-     shade. Dark cannot lift with a shadow — on near-black there is nothing
-     for one to fall on — so it lifts with the surface step it already has
-     plus a 6% highlight along the top edge, the way a real pane catches the
-     light above it. That is why the two halves are not the same shape. */
-  --elevation-sheet-light:
-    0 1px 1px
-      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 5%, transparent),
-    0 10px 24px -10px
-      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 22%, transparent);
-  --elevation-sheet-dark:
-    inset 0 1px 0
-      color-mix(in oklab, var(--kanagawa-dragon-white) 6%, transparent),
-    0 12px 26px -12px
-      color-mix(in oklab, var(--kanagawa-dragon-black0) 60%, transparent);
-  --elevation-sheet-hover-light:
-    0 2px 4px
-      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 7%, transparent),
-    0 16px 32px -12px
-      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 28%, transparent);
-  --elevation-sheet-hover-dark:
-    inset 0 1px 0
-      color-mix(in oklab, var(--kanagawa-dragon-white) 9%, transparent),
-    0 16px 32px -12px
-      color-mix(in oklab, var(--kanagawa-dragon-black0) 70%, transparent);
-
-  /* Below the sheet: a control that sits a hair proud of its surface — the
-     checkbox, the switch thumb, the active tab, the composer. Spelled
-     `shadow-sm` in six places, which is Tailwind's default black at 5% and takes
-     no account of the theme; on the dragon ground it is invisible, which is why
-     those controls read as flat in dark mode. */
-  --elevation-raised-light: 0 1px 2px
-    color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 8%, transparent);
-  --elevation-raised-dark:
-    inset 0 1px 0
-      color-mix(in oklab, var(--kanagawa-dragon-white) 5%, transparent),
-    0 1px 2px
-      color-mix(in oklab, var(--kanagawa-dragon-black0) 40%, transparent);
-
-  /* Above the sheet: anything that floats free of the page — a menu, a select
-     popup, a dialog, a toast, a chart tooltip. One job, and it was spelled three
-     ways (`shadow-md`, `shadow-lg`, `shadow-xl`) depending on which shadcn file
-     it came from, so a dropdown and the dialog it opened sat at different
-     heights for no reason anyone chose.
-
-     It is a long, soft shadow rather than a big one: an overlay has to separate
-     from a *sheet* that already casts its own, so the readable difference is
-     travel, not darkness. In dark the highlight is stronger than the sheet's,
-     because on near-black the top edge is the only thing that says "in front". */
-  --elevation-overlay-light:
-    0 2px 4px
-      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 6%, transparent),
-    0 24px 48px -16px
-      color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 30%, transparent);
-  --elevation-overlay-dark:
-    inset 0 1px 0
-      color-mix(in oklab, var(--kanagawa-dragon-white) 10%, transparent),
-    0 24px 48px -16px
-      color-mix(in oklab, var(--kanagawa-dragon-black0) 78%, transparent);
+  /* Crisp elevation separates overlapping surfaces without a blurred halo.
+     The light theme mixes its own ink; dark uses the palette's deepest ground. */
+  --elevation-sheet-light: 1px 2px 0 color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 24%, transparent);
+  --elevation-sheet-dark: 1px 2px 0 color-mix(in oklab, var(--kanagawa-dragon-black0) 80%, transparent);
+  --elevation-sheet-hover-light: var(--elevation-sheet-light);
+  --elevation-sheet-hover-dark: var(--elevation-sheet-dark);
+  --elevation-raised-light: 0 1px 0 color-mix(in oklab, var(--kanagawa-lotus-ink-soft) 24%, transparent);
+  --elevation-raised-dark: 0 1px 0 color-mix(in oklab, var(--kanagawa-dragon-black0) 80%, transparent);
+  --elevation-overlay-light: var(--elevation-sheet-light);
+  --elevation-overlay-dark: var(--elevation-sheet-dark);
 }
 
 /* ═══ 3. The active mode ═══════════════════════════════════════════════════

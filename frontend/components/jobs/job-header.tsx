@@ -6,7 +6,6 @@ import { RotateCcw, Trash2 } from "lucide-react"
 
 import { PageHeader } from "@/components/ui/page-header"
 import { Button } from "@/components/ui/button"
-import { RunningDot } from "@/components/ui/running-dot"
 import { useParentTrail } from "@/hooks/use-parent-trail"
 import {
   jobHref,
@@ -82,7 +81,6 @@ export function JobHeader({ job, onCancel }: JobHeaderProps) {
         title={
           <span className="flex items-center gap-3">
             <span className="min-w-0 break-words">{job.label}</span>
-            {isRunning(job) && <RunningDot />}
           </span>
         }
         description={

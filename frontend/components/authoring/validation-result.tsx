@@ -38,7 +38,7 @@ export function ValidationResult({
     if (report) onReport?.(report)
   }, [report, onReport])
   return (
-    <div className="grid gap-3 border-t border-border pt-4">
+    <div className="grid gap-3 pt-4">
       <RetainedSourceDialog
         kind="validations"
         id={run.run_id}

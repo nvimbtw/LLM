@@ -5,10 +5,12 @@ from api.chat_request import Ask, _new_turns
 from fastapi import HTTPException
 from llm.chat.template import Role, Turn, render_conversation
 from tests.fixtures.tiny_env import TINY_MODEL
+from tests.test_architecture_visibility import headers
 
 
 async def test_prepare_counts_without_persisting(engine_client):
-    response = await engine_client.post('/chat/prepare',json={'model_name':TINY_MODEL,'text':'hello'})
+    """Administrative legacy preparation counts canonical input without owning conversation storage."""
+    response = await engine_client.post('/chat/prepare',json={'model_name':TINY_MODEL,'text':'hello'}, headers=headers(['administration']))
     assert response.status_code == 200
     assert response.json()['turns'][0]['role'] == 'user'
     assert response.json()['turns'][0]['tokens'] > 0

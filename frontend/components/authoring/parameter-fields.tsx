@@ -13,6 +13,7 @@ import {
 import type { ParameterDeclaration } from "@/lib/architecture/contracts.generated"
 import type { ParameterValue } from "@/lib/architecture/parameters"
 export interface ParameterFieldsProps {
+  variant?: "default" | "inline"
   declarations: Record<string, ParameterDeclaration>
   values: Record<string, ParameterValue | undefined>
   errors?: Record<string, string | undefined>
@@ -20,6 +21,7 @@ export interface ParameterFieldsProps {
   onChange: (name: string, value: ParameterValue | undefined) => void
 }
 export interface ParameterFieldProps {
+  variant?: "default" | "inline"
   name: string
   declaration: ParameterDeclaration
   value: ParameterValue | undefined
@@ -29,6 +31,7 @@ export interface ParameterFieldProps {
 }
 /** Renders accessible declared controls; changes remain local and never rewrite Python or submit requests. */
 export function ParameterFields({
+  variant = "default",
   declarations,
   values,
   errors,
@@ -39,6 +42,7 @@ export function ParameterFields({
     <div className="grid gap-4">
       {Object.entries(declarations).map(([name, declaration]) => (
         <ParameterField
+          variant={variant}
           key={name}
           name={name}
           declaration={declaration}
@@ -53,6 +57,7 @@ export function ParameterFields({
 }
 /** Renders one typed declaration, preserving empty numeric drafts as unset and enum scalar types by index. */
 export function ParameterField({
+  variant = "default",
   name,
   declaration,
   value,
@@ -75,14 +80,24 @@ export function ParameterField({
   const choices =
     declaration.type === "boolean" ? [true, false] : (declaration.choices ?? [])
   return (
-    <div className="grid gap-2">
-      <label htmlFor={id} className="text-sm font-medium">
+    <div
+      className={
+        variant === "inline"
+          ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2"
+          : "grid gap-2"
+      }
+    >
+      <label
+        htmlFor={id}
+        className={variant === "inline" ? "text-sm" : "text-sm font-medium"}
+      >
         {declaration.title || name}
         {declaration.required ? " *" : ""}
       </label>
       {declaration.type === "boolean" && value !== undefined ? (
         <Switch
           {...accessible}
+          className={variant === "inline" ? "justify-self-end" : undefined}
           checked={value === true}
           onCheckedChange={(checked) => onChange(name, checked)}
         />
@@ -103,7 +118,11 @@ export function ParameterField({
           }
           disabled={disabled}
         >
-          <SelectTrigger {...accessible}>
+          <SelectTrigger
+            {...accessible}
+            variant={variant}
+            className={variant === "inline" ? "h-9 w-auto max-w-52" : undefined}
+          >
             <SelectValue>
               {() => (value === undefined ? "Choose a value" : String(value))}
             </SelectValue>
@@ -119,6 +138,12 @@ export function ParameterField({
       ) : (
         <Input
           {...accessible}
+          variant={variant}
+          className={
+            variant === "inline"
+              ? "h-9 w-32 text-right tabular-nums"
+              : undefined
+          }
           type={declaration.type === "string" ? "text" : "number"}
           value={value === undefined ? "" : String(value)}
           min={declaration.minimum ?? undefined}
@@ -138,12 +163,22 @@ export function ParameterField({
         />
       )}
       {declaration.description && (
-        <p id={descriptionId} className="text-sm text-muted-foreground">
+        <p
+          id={descriptionId}
+          className={
+            variant === "inline"
+              ? "col-span-2 text-xs text-muted-foreground"
+              : "text-sm text-muted-foreground"
+          }
+        >
           {declaration.description}
         </p>
       )}
       {error && (
-        <div id={errorId}>
+        <div
+          id={errorId}
+          className={variant === "inline" ? "col-span-2" : undefined}
+        >
           <FormError>{error}</FormError>
         </div>
       )}

@@ -6,6 +6,7 @@ export interface AdminSectionHeaderProps {
   action?: ReactNode
 }
 
+/** Presents an Admin section title with truthful counts and independent lifecycle actions. */
 export function AdminSectionHeader({
   title,
   meta,

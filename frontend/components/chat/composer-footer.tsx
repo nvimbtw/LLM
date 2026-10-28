@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { ConversationRename } from "./conversation-rename"
 
 import { cn } from "@/lib/utils"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -9,10 +8,7 @@ import { VoiceWaveform } from "./voice-waveform"
 
 export interface ComposerFooterProps {
   isLoading?: boolean
-  title: string
-  /** Omitted where there's no chat yet to rename (the new-chat screen) — the
-   *  title renders as plain text rather than an edit control. */
-  onRenameTitle?: (title: string) => void | Promise<void>
+  choices?: React.ReactNode
   /** Tokens used so far in this conversation — see chat-thread.tsx for how
    *  it's derived; it's an estimate, not a server-verified count. */
   contextTokensUsed: number
@@ -49,26 +45,19 @@ export interface ComposerFooterProps {
   className?: string
 }
 
+/** Formats a token count compactly for the footer meter. */
 function formatTokens(n: number) {
   if (n < 1000) return `${n}`
   const k = n / 1000
   return `${k.toFixed(k < 10 ? 1 : 0)}k`
 }
 
-// "×4", but "×2.5" for a half-step multiplier — settings.ts allows 0.5 steps,
-// and a trailing ".0" on every whole one would be noise the common case pays
-// for the rare one.
+/** Formats the effective context multiplier without redundant decimal zeros. */
 function formatMultiplier(n: number) {
   return `×${Number.isInteger(n) ? n : n.toFixed(1)}`
 }
 
-// Calm well under the *real* ceiling, amber approaching it, red once the next
-// turn is likely to start evicting history. Stops rather than a gradient,
-// using only tokens already in the palette (chart-1 doubles as the app's one
-// amber) — three legible states instead of a scale nobody can read at a
-// glance. The real ceiling is the multiplied window when one is in effect, not
-// the trained one — crossing into extended territory is what this feature is
-// for, not itself a danger sign.
+/** Selects warning colours against the effective context ceiling. */
 function meterTone(percentUsed: number) {
   if (percentUsed >= 0.9) {
     return { bar: "bg-destructive", text: "text-destructive" }
@@ -79,12 +68,7 @@ function meterTone(percentUsed: number) {
   return { bar: "bg-muted-foreground/60", text: "text-muted-foreground" }
 }
 
-// The two halves of the figure are known to different standards and the tooltip
-// is where that gets said: the draft is a real count under the model's
-// vocabulary, the conversation behind it is the running estimate described in
-// chat-thread.tsx. Rounding both into one "(estimated)" hid a number that is
-// exact, and claiming both were counted would have been the worse half of that
-// trade.
+/** Describes exact draft counts, estimated history, extension and pruning independently. */
 function describeUsage(
   used: number,
   draft: number,
@@ -101,11 +85,6 @@ function describeUsage(
         `${count(draft)}, counted under the model's vocabulary; the ~${count(used)} ` +
         `before it is estimated`
 
-  // Independent facts, stated independently — both can be true at once: a
-  // prune brings usage back under the trained window the moment it runs, but
-  // the conversation can grow past that window again afterwards, at which
-  // point some of this chat is unseen *and* what's left has again gone past
-  // the trained size.
   const clauses: string[] = []
 
   if (unseen > 0) {
@@ -118,10 +97,6 @@ function describeUsage(
   }
 
   if (multiplier > 1 && used + draft > trained) {
-    // Percent *past the trained window*, not percent of the extended one — the
-    // number this feature exists to show is how far past what the model
-    // actually trained on you are, which the bar's own fill (scaled to the
-    // real ceiling) doesn't say on its own.
     const overPercent = Math.round(((used + draft) / trained - 1) * 100)
     clauses.push(
       `${formatMultiplier(multiplier)} extended from ${count(trained)} — ` +
@@ -132,19 +107,10 @@ function describeUsage(
   return clauses.length ? `${base} (${clauses.join("; ")})` : base
 }
 
-/**
- * The composer's bottom band, inside its border and under a hairline: which
- * conversation this is, how much of its context window is spent, and — while
- * someone is speaking — the three bars between them.
- *
- * It reads as the quieter line by type and colour rather than by being a
- * separate object — it was one, floating below the card, and the gap between
- * them was a slot of unblurred thread text between two frosted surfaces.
- */
+/** Renders footer choices, dictation waveform and independent draft/history context segments with pruning and extension badges. */
 export function ComposerFooter({
   isLoading = false,
-  title,
-  onRenameTitle,
+  choices,
   contextTokensUsed,
   draftTokens = 0,
   contextWindow,
@@ -154,7 +120,6 @@ export function ComposerFooter({
   onDeviceDictation = false,
   className,
 }: ComposerFooterProps) {
-  const [editing, setEditing] = React.useState(false)
   const totalTokens = contextTokensUsed + draftTokens
   const effectiveLimit =
     contextWindow && contextWindow > 0
@@ -188,28 +153,7 @@ export function ComposerFooter({
         className
       )}
     >
-      {!onRenameTitle ? (
-        <span className="min-w-0 truncate font-medium text-foreground/80">
-          {title}
-        </span>
-      ) : editing ? (
-        <ConversationRename
-          title={title}
-          onSave={onRenameTitle}
-          onDone={() => setEditing(false)}
-        />
-      ) : (
-        <button
-          type="button"
-          aria-label="Rename conversation"
-          onClick={() => setEditing(true)}
-          className="flex min-h-8 min-w-0 items-center text-left outline-none"
-        >
-          <span className="truncate font-medium text-foreground/80">
-            {title}
-          </span>
-        </button>
-      )}
+      <div className="min-w-0">{choices}</div>
 
       <span className="flex justify-center">
         {listening && <VoiceWaveform onDevice={onDeviceDictation} />}

@@ -5,13 +5,15 @@ and Python source. Catalogue forms retain declared types, defaults and ranges.
 The overall before/after diff and `dropped_by` badge describe the pipeline's
 outcome; there is no per-step trace.
 
-The Data page's Processors link opens `/processors`. Each directory entry opens
+The Admin Workbench Data group opens Processors at `/processors`. Each directory entry opens
 `/processors/{processor_id}`, where the registered name is the stable identifier.
 All signed-in users can inspect source. Administrators can edit complete custom
 files in Monaco and save them; builtins stay read-only. Rust independently
 enforces write permission.
 
-Processors is a normal directory link beside the Datasets/Browse/Runs panel tabs.
+Processors lives in the Workbench rather than beside the Datasets/Browse/Runs tabs.
+Its directory returns to Admin. Catalogue rows share open spacing and wrapping
+names without decorative rules; operational acquisition rows use compact spacing.
 Dataset entries use their whole main content as the open target. Detail pages
 put the loaded dataset name, kind and status in the primary header, without
 offering an unsupported rename operation. Administrator deletion uses the shared

@@ -284,7 +284,9 @@ function HardestConversations({ latest }: { latest: DiagPoint }) {
 
   return (
     <ChartContainer
-      config={{ loss: { label: "Loss", color: ACCENT_COLOR } } satisfies ChartConfig}
+      config={
+        { loss: { label: "Loss", color: ACCENT_COLOR } } satisfies ChartConfig
+      }
       className="aspect-auto h-72 w-full"
     >
       <ComposedChart
@@ -581,6 +583,7 @@ export interface DiagnosticsPanelProps {
 // rail+hero section. Each metric is one captioned figure in the same idiom as the
 // loss/spread charts, so the page reads as one editorial system. The section keeps
 // its slot from first paint and shows a placeholder until the first report lands.
+/** Presents measured report diagnostics without fabricating absent values; expensive embedding inputs retain memoized array identities. */
 export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
   const last = diag.at(-1)
   const layerCount = last?.grad_layers.length ?? 0
@@ -588,20 +591,15 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
   const pcaCount = last?.emb_pca.length ?? 0
 
   const [attnLayer, setAttnLayer] = React.useState(0)
-  // Clamp at read time (not via an effect) so a new run with fewer layers can't
-  // leave the selector pointing past the end.
+
   const selLayer = attnLayer < layerCount ? attnLayer : 0
 
-  // Small derived arrays (a handful of layers/heads) — left as plain consts for the
-  // React Compiler to memoize; a manual useMemo here can't be preserved once they
-  // feed the composed trace lists below.
   const layerTraces: Trace[] = Array.from({ length: layerCount }, (_, i) => ({
     key: `l${i}`,
     name: `Layer ${i}`,
     color: layerColor(i, layerCount),
   }))
 
-  // ── grad norms: per-layer ramp + global accent + the two shared tables ──────
   const gradRows = React.useMemo(
     () =>
       diag.map((d) => {
@@ -623,7 +621,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     { key: "unembed", name: "Unembed", color: MUTED_SERIES, dash: "1 3" },
   ]
 
-  // ── update:weight ratio ─────────────────────────────────────────────────────
   const updateRows = React.useMemo(
     () =>
       diag.map((d) => {
@@ -634,7 +631,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     [diag]
   )
 
-  // ── activation RMS per block ────────────────────────────────────────────────
   const actRows = React.useMemo(
     () =>
       diag.map((d) => {
@@ -645,7 +641,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     [diag]
   )
 
-  // ── attention entropy for the selected layer ────────────────────────────────
   const attnTraces: Trace[] = Array.from({ length: headCount }, (_, j) => ({
     key: `h${j}`,
     name: `Head ${j}`,
@@ -662,7 +657,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     [diag, selLayer]
   )
 
-  // ── embedding anisotropy: mean line + p5–p95 band ───────────────────────────
   const embRows = React.useMemo(
     () =>
       diag.map((d) => ({
@@ -679,10 +673,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     mean: { label: "Mean cosine", color: EMB_COLOR },
   } satisfies ChartConfig
 
-  // ── fine-tuning: present only on a run that measured them ───────────────────
-  // An SFT run sends these keys and a pretrain run sends none, so their presence
-  // *is* how the panel tells the two modes apart — there is no mode flag on a
-  // frame, and there does not need to be one.
   const fineTuned = diag.some((d) => d.loss_masked !== undefined)
   const forgetting = diag.some((d) => d.pretrain_loss !== undefined)
   const anchored = diag.some((d) => d.base_kl !== undefined)
@@ -700,7 +690,12 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     [diag]
   )
   const finetuneTraces: Trace[] = [
-    { key: "masked", name: "Assistant tokens", color: finetuneColors.masked, width: 2 },
+    {
+      key: "masked",
+      name: "Assistant tokens",
+      color: finetuneColors.masked,
+      width: 2,
+    },
     {
       key: "unmasked",
       name: "Prompt tokens",
@@ -736,19 +731,9 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
     })
   )
 
-  // ── embedding PCA frames, for the biplot and the globe ──────────────────────
-  // Unlike every other derived array in this panel, these feed components whose
-  // own expensive work (`alignFrames`'s sign-matching, `EmbeddingGlobe`'s
-  // icosphere/convex-hull rebuild) is memoized on the *reference* of the array
-  // they're handed. Building it inline in JSX would create a new array on every
-  // render of this panel regardless of whether `diag` changed, silently
-  // defeating that memoization and re-running the full rebuild every time.
   const embPcaFrames = React.useMemo(() => diag.map((d) => d.emb_pca), [diag])
   const embSteps = React.useMemo(() => diag.map((d) => d.step), [diag])
-  const embPca3Frames = React.useMemo(
-    () => diag.map((d) => d.emb_pca3),
-    [diag]
-  )
+  const embPca3Frames = React.useMemo(() => diag.map((d) => d.emb_pca3), [diag])
 
   const ready = diag.length > 1
   const ramp = (
@@ -760,7 +745,7 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
   )
 
   return (
-    <section className="space-y-6 border-t pt-6">
+    <section className="space-y-6 pt-6">
       <div className="flex items-baseline justify-between">
         <h2 className="font-heading text-sm font-semibold tracking-tight">
           Diagnostics
@@ -867,9 +852,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
                   onValueChange={(v) => setAttnLayer(Number(v))}
                 >
                   <SelectTrigger size="sm" className="h-7 w-28">
-                    {/* A render function, not a bare `<SelectValue />`: Base UI
-                        prints the raw value, so the trigger read "0" while the
-                        list it opened read "Layer 0". */}
                     <SelectValue>
                       {(value: string | null) => `Layer ${value ?? 0}`}
                     </SelectValue>
@@ -947,9 +929,6 @@ export function DiagnosticsPanel({ diag }: DiagnosticsPanelProps) {
               />
             }
           >
-            {/* Two lenses on the same PCA cloud: the flat top-2 biplot, and the
-                rotating top-3 solid. The biplot is square, so they sit side by side
-                on wide screens and stack on narrow ones. */}
             <div className="grid gap-8 lg:grid-cols-2 lg:items-start">
               <div>
                 <EmbeddingBiplot frames={embPcaFrames} steps={embSteps} />

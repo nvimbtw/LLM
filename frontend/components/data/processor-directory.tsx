@@ -1,11 +1,18 @@
 "use client"
 
+import { EmptyState } from "@/components/ui/empty-state"
+
 import Link from "next/link"
 import { Plus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { LoadError } from "@/components/ui/error-state"
 import { PageHeader } from "@/components/ui/page-header"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceTitle,
+} from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useAuth, useSessionToken } from "@/hooks/use-auth"
 import { useProcessors } from "@/hooks/use-data"
@@ -24,7 +31,7 @@ function Directory() {
     <>
       <PageHeader
         title="Processors"
-        back={{ href: "/data", label: "Data" }}
+        back={{ href: "/admin", label: "Admin" }}
         meta={`${data.length} processors`}
         action={
           isAdmin ? (
@@ -43,36 +50,37 @@ function Directory() {
       ) : error ? (
         <LoadError title="Processors did not load." hint={error} />
       ) : (
-        <ul>
-          {data.map((processor) => (
-            <li key={processor.name} className="border-b border-border">
-              <Link
-                href={`/processors/${encodeURIComponent(processor.name)}`}
-                className="flex flex-wrap items-start justify-between gap-4 rounded-(--radius-control) px-2 py-5 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <div className="min-w-0 flex-1">
-                  <h2 className="font-display text-xl font-semibold">
-                    {processor.title}
-                  </h2>
-                  {processor.description && (
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {processor.description}
-                    </p>
-                  )}
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {processor.name} · {processor.applies_to.join(" · ")}
-                  </p>
-                </div>
-                <code
-                  className="text-xs text-muted-foreground"
-                  title={processor.version_hash}
+        <>
+          {data.length === 0 && <EmptyState title="No processors available" />}
+          <ResourceList>
+            {data.map((processor) => (
+              <ResourceRow key={processor.name}>
+                <Link
+                  href={`/processors/${encodeURIComponent(processor.name)}`}
+                  className="flex flex-wrap items-start justify-between gap-4 rounded-(--radius-control) py-0 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {processor.version_hash.slice(0, 12)}
-                </code>
-              </Link>
-            </li>
-          ))}
-        </ul>
+                  <div className="min-w-0 flex-1">
+                    <ResourceTitle>{processor.title}</ResourceTitle>
+                    {processor.description && (
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {processor.description}
+                      </p>
+                    )}
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {processor.name} · {processor.applies_to.join(" · ")}
+                    </p>
+                  </div>
+                  <code
+                    className="text-xs text-muted-foreground"
+                    title={processor.version_hash}
+                  >
+                    {processor.version_hash.slice(0, 12)}
+                  </code>
+                </Link>
+              </ResourceRow>
+            ))}
+          </ResourceList>
+        </>
       )}
     </>
   )

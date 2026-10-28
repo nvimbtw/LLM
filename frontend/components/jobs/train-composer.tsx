@@ -15,11 +15,17 @@ import {
 import { TrainBoard } from "@/components/training/train-board"
 import { toast } from "@/components/ui/toast"
 import { DEFAULT_CONFIG, useTrainingComposer } from "@/hooks/use-training"
+import { configForMode } from "@/components/training/run-config"
 import type { TrainConfig } from "@/lib/training"
 import { FormError, LoadError } from "@/components/ui/error-state"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { useTrainingDraft } from "@/hooks/use-training-draft"
+import {
+  trainingEntryMode,
+  trainingEntryConfig,
+  type TrainingEntryMode,
+} from "@/lib/training-entry"
 import { serializeTrainingDraft } from "@/lib/training-draft"
 
 /** Keys the private training form by actual bearer and rerun/resume URL selection; replacement releases its draft, read and submission owners. */
@@ -29,6 +35,7 @@ export function TrainComposer() {
   const draft = useTrainingDraft(token)
   const from = params.get("from")
   const resume = params.get("resume")
+  const mode = trainingEntryMode(params.get("mode"))
   if (draft.isLoading) return <Skeleton className="h-96 w-full" />
   if (draft.accountError)
     return (
@@ -40,10 +47,11 @@ export function TrainComposer() {
     )
   return token ? (
     <TrainingForm
-      key={`${token}:${from}:${resume}`}
+      key={`${token}:${from}:${resume}:${mode}`}
       token={token}
       from={from}
       resume={resume}
+      mode={mode}
       draft={draft}
     />
   ) : null
@@ -54,11 +62,13 @@ function TrainingForm({
   token,
   from,
   resume,
+  mode,
   draft,
 }: {
   token: string
   from: string | null
   resume: string | null
+  mode: TrainingEntryMode | null
   draft: ReturnType<typeof useTrainingDraft>
 }) {
   const {
@@ -74,10 +84,13 @@ function TrainingForm({
     error: null as string | null,
   })
 
-  const [cfg, setCfg] = React.useState<TrainConfig>(
-    () =>
-      initialDraft?.config ??
-      (resume ? { ...DEFAULT_CONFIG, resume_from: resume } : DEFAULT_CONFIG)
+  const [cfg, setCfg] = React.useState<TrainConfig>(() =>
+    trainingEntryConfig({
+      defaults: DEFAULT_CONFIG,
+      draft: initialDraft?.config ?? null,
+      resume,
+      mode,
+    })
   )
   const [steps, setSteps] = React.useState<Step[]>(initialDraft?.steps ?? [])
   const [edited, setEdited] = React.useState(Boolean(initialDraft))
@@ -103,10 +116,10 @@ function TrainingForm({
     saveDraft(cfg, next)
   }
 
-  /** Explicitly discards the saved draft and resets the editor to a fresh pretraining form. */
+  /** Explicitly discards the saved draft and resets the editor to a fresh form in the requested Workbench mode. */
   const discard = () => {
     if (!clearDraft()) return
-    setCfg(DEFAULT_CONFIG)
+    setCfg(mode ? configForMode(DEFAULT_CONFIG, mode) : DEFAULT_CONFIG)
     setSteps([])
     setEdited(false)
   }
@@ -162,6 +175,27 @@ function TrainingForm({
     <>
       {submissionError && <FormError>{submissionError}</FormError>}
       {draftError && <FormError>{draftError}</FormError>}
+      {mode && initialDraft && !from && !resume && cfg.mode !== mode && (
+        <div className="mb-6 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+          <span>
+            Restored your{" "}
+            {cfg.mode === "pretrain"
+              ? "pre-training"
+              : cfg.mode === "sft"
+                ? "fine-tuning"
+                : cfg.mode}{" "}
+            draft.
+          </span>
+          <Button
+            variant="text"
+            size="sm"
+            disabled={isSubmitting}
+            onClick={() => changeConfig(configForMode(cfg, mode))}
+          >
+            Switch to {mode === "sft" ? "fine-tuning" : "pre-training"}
+          </Button>
+        </div>
+      )}
       <TrainBoard
         cfg={cfg}
         onChange={changeConfig}
@@ -169,13 +203,7 @@ function TrainingForm({
         onStart={submit}
         draftStatus={
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span role="status">
-              {draftError
-                ? "Draft not saved"
-                : edited
-                  ? "Draft saved in this browser"
-                  : "Drafts save in this browser"}
-            </span>
+            {draftError && <span role="status">Draft not saved</span>}
             {(savedDraft || draftError) && (
               <Button
                 type="button"

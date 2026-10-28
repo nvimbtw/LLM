@@ -1,6 +1,13 @@
 "use client"
 
-import Link from "next/link"
+import { EmptyState } from "@/components/ui/empty-state"
+
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceTitle,
+  ResourceLink,
+} from "@/components/ui/resource-list"
 import { TokenizerDeleteButton } from "./tokenizer-delete-button"
 import { describeDatasets, type TokenizerInfo } from "@/lib/tokenizers"
 import { useAuth } from "@/hooks/use-auth"
@@ -28,16 +35,9 @@ export function TokenizerCatalogue({
   onDelete,
 }: TokenizerCatalogueProps) {
   if (tokenizers.length === 0)
-    return (
-      <p className="py-6 text-sm text-muted-foreground">
-        No vocabularies in this category.
-      </p>
-    )
+    return <EmptyState title="No vocabularies in this category" />
   return (
-    <ul
-      aria-label="Vocabulary catalogue"
-      className="divide-y divide-border"
-    >
+    <ResourceList aria-label="Vocabulary catalogue">
       {tokenizers.map((tokenizer) => (
         <Row
           key={tokenizer.id}
@@ -45,7 +45,7 @@ export function TokenizerCatalogue({
           onDelete={() => onDelete(tokenizer)}
         />
       ))}
-    </ul>
+    </ResourceList>
   )
 }
 
@@ -59,16 +59,9 @@ function Row({
 }) {
   const { isAdmin } = useAuth()
   return (
-    <li className="flex items-start justify-between gap-4 py-5">
-      <div className="min-w-0">
-        <h2 className="font-display text-xl leading-snug break-words">
-          <Link
-            href={`/tokenizers/${tokenizer.id}`}
-            className="hover:text-primary focus-visible:outline-2 focus-visible:outline-ring"
-          >
-            {tokenizer.name}
-          </Link>
-        </h2>
+    <ResourceRow className="flex items-start justify-between gap-4">
+      <ResourceLink href={`/tokenizers/${tokenizer.id}`}>
+        <ResourceTitle>{tokenizer.name}</ResourceTitle>
         <p className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span>{tokenizer.implicit ? "Learned by a run" : "Named build"}</span>
           {!tokenizer.hasVocab && (
@@ -84,12 +77,12 @@ function Row({
           {" · "}
           {compact(tokenizer.files)} files · {megabytes(tokenizer.bytes)}
         </p>
-      </div>
+      </ResourceLink>
       <div className="shrink-0">
         {isAdmin && (
           <TokenizerDeleteButton tokenizer={tokenizer} onDelete={onDelete} />
         )}
       </div>
-    </li>
+    </ResourceRow>
   )
 }

@@ -1,17 +1,9 @@
 "use client"
 
-import { useEffect, useRef, type RefObject } from "react"
-
+import { useEffect, useMemo, useRef, type RefObject } from "react"
 import type { ChatMessage } from "@/lib/chat-messages"
-import { cn } from "@/lib/utils"
 import { useChatPosition } from "@/hooks/use-chat-position"
-import { Button } from "@/components/ui/button"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+import "./chat-position-rail.css"
 
 export interface ChatPositionRailProps {
   messages: ChatMessage[]
@@ -20,25 +12,29 @@ export interface ChatPositionRailProps {
   onNavigate: () => void
 }
 
-/** Labels a question with its ordinal and a bounded preview of the user's text. */
-function messageLabel(message: ChatMessage, index: number): string {
-  const preview = message.content
-    .slice(0, 160)
+/** Produces bounded plain text for exchange previews and accessible destinations. */
+function excerpt(text: string): string {
+  return text
+    .slice(0, 1200)
+    .replace(/<\|[^>]*\|>/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 120)
-  return `Question ${index + 1}${preview ? ` — ${preview}` : ""}`
+    .slice(0, 400)
 }
 
-/** Renders an edge-anchored index of user questions, with keyboard-accessible previews and a longer stroke for the current exchange. */
+/** Presents fluid exchange strokes and neutral previews; proximity changes DOM styles without rerendering the conversation. */
 export function ChatPositionRail({
   messages,
   scrollRef,
   contentRef,
   onNavigate,
 }: ChatPositionRailProps) {
-  const questions = messages.flatMap((message, messageIndex) =>
-    message.role === "user" ? [{ message, messageIndex }] : []
+  const questions = useMemo(
+    () =>
+      messages.flatMap((message, messageIndex) =>
+        message.role === "user" ? [{ message, messageIndex }] : []
+      ),
+    [messages]
   )
   const { activeIndex, jumpToMessage } = useChatPosition(
     scrollRef,
@@ -46,73 +42,205 @@ export function ChatPositionRail({
     questions.length
   )
   const railRef = useRef<HTMLElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef(messages)
+  const questionsRef = useRef(questions)
+  useEffect(() => {
+    messagesRef.current = messages
+    questionsRef.current = questions
+  }, [messages, questions])
+  const activeRef = useRef(activeIndex)
+  useEffect(() => {
+    activeRef.current = activeIndex
+  }, [activeIndex])
+  useEffect(() => {
+    const rail = railRef.current
+    const preview = previewRef.current
+    if (!rail || !preview) return
+    const buttons = Array.from(
+      rail.querySelectorAll<HTMLButtonElement>("button")
+    )
+    let selected: number | null = null
+    /** Paints proximity and places the adjacent preview within the viewport. */
+    const paint = (index: number | null) => {
+      const affected = new Set<number>([activeRef.current])
+      for (const center of [selected, index]) {
+        if (center === null) continue
+        for (
+          let i = Math.max(0, center - 8);
+          i <= Math.min(buttons.length - 1, center + 8);
+          i++
+        )
+          affected.add(i)
+      }
+      selected = index
+      affected.forEach((i) => {
+        const button = buttons[i]
+        if (!button) return
+        const weight =
+          index === null ? 0 : Math.exp(-Math.pow((i - index) / 2, 2))
+        button.style.setProperty(
+          "--stroke-width",
+          `${(i === activeRef.current ? 12 : 7) + 21 * weight}px`
+        )
+        button.style.setProperty(
+          "--stroke-opacity",
+          `${Math.min(1, (i === activeRef.current ? 0.9 : 0.3) + 0.45 * weight)}`
+        )
+      })
+      preview.hidden = index === null
+      if (index === null) return
+      const question = questionsRef.current[index]
+      const latestMessages = messagesRef.current
+      const nextQuestion =
+        questionsRef.current[index + 1]?.messageIndex ?? latestMessages.length
+      const reply = latestMessages
+        .slice(question.messageIndex + 1, nextQuestion)
+        .find((message) => message.role === "assistant")
+      const promptNode = preview.querySelector("[data-preview-prompt]")
+      const replyNode = preview.querySelector("[data-preview-reply]")
+      if (promptNode)
+        promptNode.textContent =
+          excerpt(question.message.content) || "Attachment"
+      if (replyNode)
+        replyNode.textContent = reply ? excerpt(reply.content) : "No reply yet"
+      const bounds = buttons[index].getBoundingClientRect()
+      const parent = preview.parentElement!.getBoundingClientRect()
+      const top = Math.max(
+        12,
+        Math.min(
+          window.innerHeight - preview.offsetHeight - 12,
+          bounds.top + bounds.height / 2 - preview.offsetHeight / 2
+        )
+      )
+      preview.style.top = `${top - parent.top}px`
+    }
+    /** Chooses the nearest stroke from the pointer's vertical position. */
+    const point = (event: PointerEvent) => {
+      const index = Math.max(
+        0,
+        Math.min(
+          buttons.length - 1,
+          Math.floor(
+            (event.clientY -
+              rail.getBoundingClientRect().top +
+              rail.scrollTop) /
+              11
+          )
+        )
+      )
+      paint(index)
+    }
+    /** Restores resting strokes after pointer exit or keyboard focus leaves. */
+    const leave = () => {
+      paint(null)
+    }
+    /** Reveals the focused exchange using the same preview as the pointer. */
+    const focus = (event: FocusEvent) => {
+      const index = buttons.indexOf(event.target as HTMLButtonElement)
+      if (index >= 0) paint(index)
+    }
+    /** Moves keyboard focus sequentially and dismisses the preview with Escape. */
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        paint(null)
+        return
+      }
+      const direction =
+        event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0
+      const index = buttons.indexOf(event.target as HTMLButtonElement)
+      if (!direction || index < 0) return
+      event.preventDefault()
+      buttons[
+        Math.max(0, Math.min(buttons.length - 1, index + direction))
+      ]?.focus()
+    }
+    /** Repositions the open preview after scrolling or viewport resizing. */
+    const reposition = () => {
+      if (selected !== null) paint(selected)
+    }
+    paint(null)
+    rail.addEventListener("pointermove", point)
+    rail.addEventListener("pointerleave", leave)
+    rail.addEventListener("focusin", focus)
+    /** Closes the preview only when focus leaves the rail, rather than between adjacent strokes. */
+    const blur = (event: FocusEvent) => {
+      if (!rail.contains(event.relatedTarget as Node | null)) paint(null)
+    }
+    rail.addEventListener("focusout", blur)
+    rail.addEventListener("keydown", key)
+    rail.addEventListener("scroll", reposition)
+    window.addEventListener("resize", reposition)
+    return () => {
+      rail.removeEventListener("pointermove", point)
+      rail.removeEventListener("pointerleave", leave)
+      rail.removeEventListener("focusin", focus)
+      rail.removeEventListener("focusout", blur)
+      rail.removeEventListener("keydown", key)
+      rail.removeEventListener("scroll", reposition)
+      window.removeEventListener("resize", reposition)
+    }
+  }, [questions.length])
   useEffect(() => {
     const rail = railRef.current
     const current = rail?.querySelector<HTMLElement>(
       "[aria-current='location']"
     )
     if (!rail || !current) return
-    /** Keeps the current question in the bounded rail when selection or pane visibility changes, without moving the page. */
-    const alignCurrent = () => {
-      if (!rail.clientHeight) return
-      rail.scrollTo({
-        top: current.offsetTop - (rail.clientHeight - current.clientHeight) / 2,
-        behavior: "instant",
+    rail
+      .querySelectorAll<HTMLButtonElement>("button")
+      .forEach((button, index) => {
+        button.style.setProperty(
+          "--stroke-width",
+          `${index === activeIndex ? 12 : 7}px`
+        )
+        button.style.setProperty(
+          "--stroke-opacity",
+          index === activeIndex ? ".9" : ".3"
+        )
       })
-    }
-    alignCurrent()
-    const observer = new ResizeObserver(alignCurrent)
-    observer.observe(rail)
-    return () => observer.disconnect()
+    rail.scrollTo({
+      top: current.offsetTop - (rail.clientHeight - current.clientHeight) / 2,
+      behavior: "instant",
+    })
   }, [activeIndex, questions.length])
   if (!questions.length) return null
-
   return (
-    <div className="pointer-events-none absolute top-1/2 left-6 z-20 hidden -translate-y-1/2 @3xl/chat:block">
+    <div className="fluid-chat-position pointer-events-none absolute top-1/2 left-6 z-20 hidden -translate-y-1/2 @3xl/chat:block">
       <nav
         ref={railRef}
         aria-label="Conversation questions"
-        className="pointer-events-auto relative max-h-48 [scrollbar-width:none] overflow-y-auto overscroll-contain"
+        className="fluid-chat-index pointer-events-auto"
       >
-        <TooltipProvider delay={250}>
-          {questions.map(({ message, messageIndex }, index) => {
-            const label = messageLabel(message, index)
-            const active = index === activeIndex
-            return (
-              <Tooltip key={index}>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={label}
-                      aria-current={active ? "location" : undefined}
-                      className="group/position flex h-4 w-7 justify-start rounded-none pl-2 hover:bg-transparent focus-visible:ring-1 dark:hover:bg-transparent"
-                      onClick={() => {
-                        onNavigate()
-                        jumpToMessage(messageIndex)
-                      }}
-                    >
-                      <span
-                        aria-hidden="true"
-                        className={cn(
-                          "block h-px transition-all duration-150 group-hover/position:bg-foreground group-focus-visible/position:bg-foreground motion-reduce:transition-none",
-                          active
-                            ? "w-4 bg-foreground/80"
-                            : "w-2.5 bg-muted-foreground/60"
-                        )}
-                      />
-                    </Button>
-                  }
-                />
-                <TooltipContent side="right" className="max-w-64">
-                  {label}
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
-        </TooltipProvider>
+        {questions.map(({ message, messageIndex }, index) => (
+          <button
+            key={messageIndex}
+            type="button"
+            aria-label={`Question ${index + 1}: ${excerpt(message.content)}`}
+            aria-current={index === activeIndex ? "location" : undefined}
+            className="fluid-chat-tick"
+            onClick={() => {
+              onNavigate()
+              jumpToMessage(messageIndex)
+            }}
+          >
+            <span aria-hidden="true" />
+          </button>
+        ))}
       </nav>
+      <div
+        ref={previewRef}
+        hidden
+        className="fluid-chat-preview"
+        aria-hidden="true"
+      >
+        <p data-preview-prompt className="line-clamp-1 font-medium" />
+        <p
+          data-preview-reply
+          className="mt-1.5 line-clamp-3 text-muted-foreground"
+        />
+      </div>
     </div>
   )
 }

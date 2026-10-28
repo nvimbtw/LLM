@@ -1,5 +1,6 @@
 "use client"
 
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useId } from "react"
 import { Input, type InputProps } from "@/components/ui/input"
@@ -123,9 +124,7 @@ export function DatasetPicker({
       </div>
 
       {loading ? (
-        <p className="py-3 text-xs text-muted-foreground">
-          Loading datasets…
-        </p>
+        <p className="py-3 text-xs text-muted-foreground">Loading datasets…</p>
       ) : available.length === 0 ? (
         <p className="py-3 text-xs text-muted-foreground">
           {emptyHint ?? (
@@ -133,15 +132,16 @@ export function DatasetPicker({
           )}
         </p>
       ) : (
-        <ul className="divide-y divide-border">
+        <ResourceList density="compact">
           {available.map((d) => {
             const checked = selected.has(d.id)
             const count = selected.get(d.id) ?? 0
             const rowId = `${pickerId}-dataset-${d.id}`
             return (
-              <li
+              <ResourceRow
+                density="compact"
                 key={d.id}
-                className="flex items-center justify-between gap-3 py-3"
+                className="flex items-center justify-between gap-3"
               >
                 <label
                   htmlFor={rowId}
@@ -187,10 +187,10 @@ export function DatasetPicker({
                     </span>
                   )}
                 </span>
-              </li>
+              </ResourceRow>
             )
           })}
-        </ul>
+        </ResourceList>
       )}
     </div>
   )

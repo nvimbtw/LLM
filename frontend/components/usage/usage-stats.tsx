@@ -1,6 +1,7 @@
 import type { Usage } from "@/hooks/use-usage"
 import { formatCompact, formatCurrency, formatNumber } from "./format"
 
+/** Presents a measured usage total and its optional unit or reporting period. */
 function Stat({
   label,
   value,
@@ -28,21 +29,18 @@ export interface UsageStatsProps {
   compact?: boolean
 }
 
+/** Summarizes the supplied usage measurements in an open grid sized for its containing panel. */
 export function UsageStats({ usage, compact = false }: UsageStatsProps) {
   const avgPerRequest = usage.totalRequests
     ? Math.round(usage.totalTokens / usage.totalRequests)
     : 0
 
-  // The ruled ledger: summary figures are furniture, not content, so they take
-  // rules and no box (see the elevation rule in globals.css). A rule above and
-  // below, the figures spaced across it, and the page showing through — the
-  // band no longer competes with the cards it sits over.
   return (
     <dl
       className={
         compact
-          ? "grid grid-cols-1 gap-x-4 gap-y-4 border-y border-border py-4 sm:grid-cols-2"
-          : "grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4"
+          ? "grid grid-cols-1 gap-x-4 gap-y-4 py-4 sm:grid-cols-2"
+          : "grid grid-cols-2 gap-x-8 gap-y-5 py-4 sm:grid-cols-4"
       }
     >
       <Stat

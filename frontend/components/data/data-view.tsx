@@ -1,12 +1,10 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
-import { ArrowUpRight } from "lucide-react"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
-import { RunningDot } from "@/components/ui/running-dot"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DatasetList } from "@/components/data/dataset-list"
@@ -47,13 +45,6 @@ function DataSession() {
             Runs{active > 0 ? ` (${active})` : ""}
           </TabsTrigger>
         </TabsList>
-        <Link
-          href="/processors"
-          className="inline-flex min-h-8 items-center gap-1.5 text-xs text-muted-foreground outline-none hover:text-foreground"
-        >
-          Processors
-          <ArrowUpRight className="size-3.5" aria-hidden="true" />
-        </Link>
       </div>
 
       <TabsContent value="datasets" className="mt-6">
@@ -108,11 +99,15 @@ function RunList({ runs, isLoading, error }: RunListProps) {
           Nothing has run yet.
         </p>
       ) : (
-        <ul className="divide-y divide-border">
+        <ResourceList density="compact">
           {runs.map((run) => (
-            <li key={run.id} className="flex items-center gap-4 py-3">
+            <ResourceRow
+              density="compact"
+              key={run.id}
+              className="flex items-center gap-4"
+            >
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm">{run.label}</p>
+                <p className="text-sm break-words">{run.label}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {run.status === "running" && run.stage
                     ? `${run.stage} · ${Math.round(run.progress * 100)}%`
@@ -120,10 +115,9 @@ function RunList({ runs, isLoading, error }: RunListProps) {
                   {run.error ? ` — ${run.error}` : ""}
                 </p>
               </div>
-              {run.status === "running" && <RunningDot />}
-            </li>
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       )}
     </Panel>
   )

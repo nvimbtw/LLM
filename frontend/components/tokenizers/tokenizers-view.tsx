@@ -147,7 +147,7 @@ function BuildingBand({ job }: { job: Job }) {
   return (
     <Link
       href={jobHref(job)}
-      className="flex items-center gap-4 border-y border-border py-4 transition-colors hover:bg-muted/30 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+      className="flex items-center gap-4 py-4 transition-colors hover:bg-muted/30 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
     >
       <Throbber mode="tokenizing" />
       <span className="min-w-0">

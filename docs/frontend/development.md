@@ -22,15 +22,12 @@ purpose, inputs and outputs. No comments inside implementation bodies.
 
 ## Failure states
 
-Two components in [`components/ui/error-state.tsx`](../../frontend/components/ui/error-state.tsx),
-split by who can act on the failure. Never hand-roll a third.
-
-- **`FormError`** — a submission was rejected. Sits against the control that
-  produced it, `role="alert"`, and is the one place red earns its keep.
-- **`LoadError`** — a section could not fetch what it needed. Not set in red
-  (the reader did not cause it), takes the footprint of the content it replaces
-  so a failed section does not collapse the page, and takes an `onRetry` when
-  the caller can refetch.
+Use the notification owner in [`components/ui/toast.tsx`](../../frontend/components/ui/toast.tsx)
+and [Notifications](notifications.md). Errors and confirmations do not get a new
+boxed paragraph. `FormError` and `LoadError` retain their call-site contracts but
+publish explanations through notifications with deduplication. Keep invalid-field
+semantics and useful retry/recovery controls beside the affected content. A timed
+popup disappearing is distinct from dismissing a retained notification.
 
 ## Selects
 
@@ -68,13 +65,13 @@ for cache freshness, session isolation, and selection readiness.
 ## Styling
 
 - Use the shared `PageHeader` for page titles, back links and actions. Keep its
-  default hairline unless an immediately opening ledger supplies the rule.
+  shared identity texture and omit decorative header/list/stat separators.
   Headers contain no decorative description prose. Keep functional metadata
   such as task counts, status or thread/token figures; use header meta for figures
   beside actions. Stored resource descriptions and editable resource fields remain
   content, not introductions. Settings section titles stand alone. Secondary text
   carries measurements or instructions needed to use a control. Admin directory
-  links show the destination's title and icon.
+  links use the grouped Workbench structure.
 - Tailwind utility classes in JSX. No separate `.module.css` files.
 - Use `cn()` from `@/lib/utils` for conditional class merging.
 - Follow the existing design: Geist font (sans), the shadcn/ui color tokens, the sidebar layout.

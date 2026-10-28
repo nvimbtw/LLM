@@ -3,7 +3,8 @@
 import * as React from "react"
 
 import { apiFetch, getToken } from "@/lib/api"
-import { useSessionToken } from "./use-auth"
+import { useAuth, useSessionToken } from "./use-auth"
+import { readModel } from "@/lib/model-reads"
 import { listDatasets } from "@/lib/data"
 import {
   architectureOf,
@@ -87,6 +88,7 @@ function mapDetail(raw: RawModel): ModelDetail {
 /** Loads one actual-session model and owns its reads/admin writes; replacement aborts transport and cannot publish into another model or account. */
 export function useModel(id: string) {
   const token = useSessionToken()
+  const { isLoading: identityLoading } = useAuth()
   const resource = `${token}:${id}`
   const [state, setState] = React.useState<{
     resource: string
@@ -100,7 +102,7 @@ export function useModel(id: string) {
     controllers: Set<AbortController>
   } | null>(null)
   React.useEffect(() => {
-    if (!token || !id) return
+    if (identityLoading || !id) return
     const owner = {
       resource,
       active: true,
@@ -109,10 +111,11 @@ export function useModel(id: string) {
     lifetime.current = owner
     const controller = new AbortController()
     owner.controllers.add(controller)
-    void apiFetch(`/models/${encodeURIComponent(id)}`, {
-      signal: controller.signal,
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    void readModel(
+      `/models/${encodeURIComponent(id)}`,
+      token,
+      controller.signal
+    )
       .then(async (response) => {
         if (response.status === 404) return null
         if (!response.ok) throw new Error("Unable to load this model.")
@@ -143,7 +146,7 @@ export function useModel(id: string) {
       owner.controllers.forEach((current) => current.abort())
       owner.controllers.clear()
     }
-  }, [id, token, resource])
+  }, [id, token, resource, identityLoading])
 
   /** Writes explicit admin fields or deletion under this same session/resource, surfacing refusals and suppressing late navigation/snapshot changes. */
   const write = React.useCallback(
@@ -218,7 +221,7 @@ export function useModel(id: string) {
   const current = state?.resource === resource ? state : null
   return {
     model: current?.model ?? null,
-    isLoading: Boolean(token && id && !current),
+    isLoading: identityLoading || Boolean(id && !current),
     notFound: current?.notFound ?? false,
     error: current?.error ?? null,
     update,
@@ -356,6 +359,7 @@ export function useModelLineage(model: ModelDetail | null) {
   }, [rootId, rootNextId, attempt])
 
   React.useEffect(() => {
+    if (!model?.trainingDatasets.length && !rootNextId) return
     let active = true
     listDatasets()
       .then((rows) => {
@@ -365,7 +369,7 @@ export function useModelLineage(model: ModelDetail | null) {
     return () => {
       active = false
     }
-  }, [])
+  }, [model?.trainingDatasets.length, rootNextId])
 
   const nodes: LineageNode[] = React.useMemo(() => {
     if (!model) return []

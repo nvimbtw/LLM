@@ -49,10 +49,13 @@ def list_models(include_private: bool = True, checkpoints: bool = False, adminis
     with store.session() as db:
         rows = {
             m.id: m
-            for m in q.list_models(db, include_private=include_private, checkpoints=checkpoints)
+            for m in q.list_models(db, include_private=include_private if administration else False, checkpoints=checkpoints)
         }
         directories = _joinable_dirs(db, checkpoints)
-        listed = [_model(db, _row_for(rows, name), d) for name, d in directories.items()]
+        listed = [
+            _model(db, _row_for(rows, name), d) for name, d in directories.items()
+            if administration or _row_for(rows, name) is not None
+        ]
         listed += [_model(db, m, None) for m in rows.values() if str(m.id) not in directories]
     return {"models": listed if administration else [public_model(model) for model in listed]}
 
@@ -62,7 +65,7 @@ def get_model(model_id: uuid.UUID, administration: bool = Depends(auth.administr
     """Return one indexed model with resolved metadata, or 404 for an unknown identity."""
     with store.session() as db:
         model = q.get_model(db, model_id)
-        if model is None:
+        if model is None or (not administration and not model.published):
             raise HTTPException(status_code=404, detail=f"no model {model_id}")
         value = _model(db, model, storage.model_dir(str(model_id)))
         return value if administration else public_model(value)
@@ -121,7 +124,10 @@ def list_checkpoints(model_id: uuid.UUID, administration: bool = Depends(auth.ad
     every chat, and a run's ten extra rows are wanted on exactly one page.
     """
     with store.session() as db:
-        found = q.checkpoints_of(db, model_id)
+        parent = q.get_model(db, model_id)
+        if parent is None or (not administration and not parent.published):
+            raise HTTPException(status_code=404, detail=f"no model {model_id}")
+        found = [c for c in q.checkpoints_of(db, model_id) if administration or c.published]
         return {
             "checkpoints": [
                 _model(db, c, storage.model_dir(str(c.id))) if administration else public_model(

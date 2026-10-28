@@ -5,7 +5,6 @@ import * as React from "react"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
-import { RunningDot } from "@/components/ui/running-dot"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/ui/page-header"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -60,7 +59,6 @@ export function DatasetDetail({ datasetId }: DatasetDetailProps) {
         meta={
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             {dataset.kind === "sft" ? "Conversations" : "Prose"} ·{" "}
-            {dataset.status === "pulling" && <RunningDot />}
             {dataset.status}
           </span>
         }
@@ -109,9 +107,7 @@ function Summary({ dataset }: { dataset: Dataset }) {
           label="Status"
           value={
             dataset.status === "pulling" ? (
-              <span className="flex items-center gap-1.5">
-                <RunningDot /> pulling
-              </span>
+              <span className="flex items-center gap-1.5">pulling</span>
             ) : (
               dataset.status
             )
@@ -150,7 +146,7 @@ function Summary({ dataset }: { dataset: Dataset }) {
       </dl>
 
       {dataset.steps && dataset.steps.length > 0 && (
-        <div className="mt-5 border-t border-border pt-4">
+        <div className="mt-5 pt-4">
           <p className="mb-2 eyebrow text-muted-foreground">How it was made</p>
           <ol className="space-y-1 text-xs text-muted-foreground">
             {dataset.steps.map((step, index) => (
@@ -205,11 +201,9 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
           <Skeleton className="h-16 w-full" />
         </div>
       ) : data.length === 0 ? (
-        <p className="py-6 text-sm text-muted-foreground">
-          Nothing here yet.
-        </p>
+        <p className="py-6 text-sm text-muted-foreground">Nothing here yet.</p>
       ) : (
-        <ul className="divide-y divide-border">
+        <ul className="space-y-2">
           {data.map((document) => (
             <li key={document.id} className="py-4">
               <p className="mb-1 text-xs text-muted-foreground tabular-nums">
@@ -224,7 +218,7 @@ function Documents({ datasetId, total }: { datasetId: string; total: number }) {
       )}
 
       {pages > 1 && (
-        <div className="flex items-center justify-between border-t border-border py-3 text-xs">
+        <div className="flex items-center justify-between py-3 text-xs">
           <button
             className="text-muted-foreground hover:text-foreground disabled:opacity-40"
             disabled={page === 0}

@@ -70,3 +70,8 @@ turning an unknown account copy into writable defaults. A later failed PUT leave
 local values intact; the next change retries the current complete value.
 
 See [`../backend/README.md`](../backend/README.md) for account storage.
+
+Settings and [Notifications](notifications.md) share the account modal frame and
+fixed section rail through `components/ui/account-modal.tsx`. The notification
+center has its own Bell entry and Ctrl+Alt+N shortcut; its history and visibility
+are owned independently of account preferences.

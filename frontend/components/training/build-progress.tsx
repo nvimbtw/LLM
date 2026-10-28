@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { Check } from "lucide-react"
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 
 import { Progress } from "@/components/ui/progress"
@@ -98,7 +97,7 @@ export function BuildProgress({ isSft, tokenize, series }: BuildProgressProps) {
         }
         minHeight="0"
       >
-        <ul className="rounded-(--radius-control-sm) border border-dashed px-4 py-1">
+        <ul className="py-1">
           {steps.map((step) => (
             <BuildStepRow key={step.label} {...step} />
           ))}
@@ -163,15 +162,12 @@ export function BuildProgress({ isSft, tokenize, series }: BuildProgressProps) {
         )}
       </Figure>
 
-      <SourceStrip
-        sources={tokenize.sources}
-        total={tokenize.sources_total}
-      />
+      <SourceStrip sources={tokenize.sources} total={tokenize.sources_total} />
     </div>
   )
 }
 
-// One step of the build: a mark, what it is, and what it has produced so far.
+/** Presents a build step’s explicit state and measured value; only active steps show their measured progress bar. */
 function BuildStepRow({
   label,
   value,
@@ -184,20 +180,15 @@ function BuildStepRow({
   fraction?: number
 }) {
   return (
-    <li className="border-b border-border py-2.5 last:border-b-0">
+    <li className="py-2.5">
       <div className="flex items-baseline justify-between gap-4">
         <span className="flex min-w-0 items-center gap-2">
-          <span
-            aria-hidden
-            className={cn(
-              "flex size-4 shrink-0 items-center justify-center rounded-full",
-              state === "done" && "bg-chart-2/20 text-chart-2",
-              state === "active" &&
-                "animate-pulse bg-primary/30 ring-1 ring-primary/50",
-              state === "todo" && "bg-muted"
-            )}
-          >
-            {state === "done" && <Check className="size-2.5" />}
+          <span className="w-14 shrink-0 text-xs text-muted-foreground">
+            {state === "active"
+              ? "Running"
+              : state === "done"
+                ? "Done"
+                : "Pending"}
           </span>
           <span
             className={cn(
@@ -212,9 +203,6 @@ function BuildStepRow({
           {value}
         </span>
       </div>
-      {/* Only the step in flight draws one. A bar on a finished step is a full
-          bar, which says nothing, and a bar on one that has not started is an
-          empty one, which says something untrue. */}
       {state === "active" && fraction != null && (
         <Progress className="mt-2" value={Math.round(fraction * 100)} />
       )}
@@ -222,7 +210,7 @@ function BuildStepRow({
   )
 }
 
-// Where the build has got to, source by source, in reading order.
+/** Presents the bounded source window with stage labels only when multiple stages were observed. */
 function SourceStrip({
   sources,
   total,
@@ -233,8 +221,6 @@ function SourceStrip({
   if (!sources?.length) return null
   const shown = sources.length
   const named = total != null && total > shown
-  // The stage only earns a label on a run that has more than one. A plain run is
-  // stage 1 on every row, which is a column of the same word.
   const staged = sources.some((source) => source.stage > 0)
   return (
     <Figure
@@ -314,6 +300,7 @@ function BuildClock({ from, done }: { from: number; done: boolean }) {
 // A step is done once the build has moved past it, active while it is on it, and
 // to come otherwise. `reusing` is the build finding its corpus already on disk:
 // everything that would have produced it is done, and nothing was run.
+/** Resolves explicit phase order, treating reused corpus stages as complete while measurement remains active. */
 function stateOf(
   step: BuildStep,
   current: BuildStep | undefined,
@@ -328,6 +315,7 @@ function stateOf(
   return mine === at ? "active" : "todo"
 }
 
+/** Builds measured pretraining step rows without inferring completion from optional counters. */
 function pretrainSteps(tokenize: Partial<TokenizeStats>) {
   const done = tokenize.done === true
   const state = (step: BuildStep) => stateOf(step, tokenize.step, done)
@@ -385,6 +373,7 @@ function pretrainSteps(tokenize: Partial<TokenizeStats>) {
 // A fine-tune's build is one step producing three counters, not three steps — so
 // the rows below the first are readings of the step in flight rather than stages
 // of it, and none of them is finished until the build is.
+/** Builds one fine-tuning build step and its companion measurements from actual optional counters. */
 function sftSteps(tokenize: Partial<TokenizeStats>) {
   const read = tokenize.documents_done
   const rendered = tokenize.conversations ?? tokenize.examples
@@ -427,6 +416,7 @@ function sftSteps(tokenize: Partial<TokenizeStats>) {
 // The vocabulary's sample is the one figure here measured in text rather than in
 // documents or tokens, and it is bounded in the megabytes `bpe.SAMPLE_BYTES`
 // names — so it reads as megabytes and not as a compacted count of bytes.
+/** Formats vocabulary sample bytes in decimal megabytes. */
 function megabytes(bytes: number): string {
   return `${(bytes / 1e6).toFixed(1)} MB`
 }

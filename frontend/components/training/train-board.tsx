@@ -135,7 +135,7 @@ export function TrainBoard({
           />
         }
       />
-      <div className="border-b border-border pt-5">
+      <div className="pt-5">
         <ModeToggle
           mode={cfg.mode}
           isCycleMode={isCycleMode}
@@ -413,7 +413,7 @@ function ModeToggle({
     <div className="inline-flex gap-6">
       {(
         [
-          ["pretrain", "Pretrain"],
+          ["pretrain", "Pre-train"],
           ["sft", "Fine-tune"],
         ] as [TrainMode, string][]
       ).map(([value, label]) => (
@@ -422,7 +422,7 @@ function ModeToggle({
           type="button"
           size="sm"
           variant="text"
-          className={`h-auto rounded-none border-0 border-b-2 px-0 pb-3 hover:bg-transparent ${mode === value ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground"}`}
+          className={`h-auto rounded-none px-0 pb-3 hover:bg-transparent ${mode === value ? "font-medium text-primary" : "text-muted-foreground"}`}
           disabled={disabled}
           aria-pressed={mode === value}
           onClick={() => onChange(value)}

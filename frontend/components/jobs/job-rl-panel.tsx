@@ -55,6 +55,7 @@ const chartConfig = {
   signal: { label: "Groups with signal", color: MUTED_SERIES },
 } satisfies ChartConfig
 
+/** Shows saved/live practice evidence with pass-rate and signal fractions on the fixed [0, 1] axis. */
 export function JobRlPanel({ run }: JobRlPanelProps) {
   const result = run.job?.result as {
     source_scores?: Record<string, GymSourceScore>
@@ -80,8 +81,7 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
     const fromResult = Object.keys(result?.source_scores ?? {})
     return [...new Set([...fromHistory, ...fromResult])]
   }, [history, result?.source_scores])
-  // The durable run row currently omits config. A live snapshot may have it;
-  // otherwise, more than one actual source is proof this is a General run.
+
   const isGeneral =
     (run.runConfig as { gym_id?: string } | null)?.gym_id === "general" ||
     sources.length > 1
@@ -111,7 +111,7 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
       <PracticePanel report={report} />
       <Panel variant="open" title="Practising">
         <div className="space-y-5">
-          <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-4">
+          <dl className="grid grid-cols-2 gap-x-8 gap-y-5 py-4 sm:grid-cols-4">
             <Stat
               label="Training pass rate"
               value={percent(last?.pass_rate ?? result?.pass_rate)}
@@ -159,9 +159,6 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
                   domain={["dataMin", "dataMax"]}
                   {...axisProps}
                 />
-                {/* Both series are fractions, so the axis is pinned to [0, 1]
-                    rather than fitted: a pass rate climbing from 0.02 to 0.04
-                    should not fill the panel the way an autoscaled one would. */}
                 <YAxis
                   domain={[0, 1]}
                   tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
@@ -212,18 +209,22 @@ export function JobRlPanel({ run }: JobRlPanelProps) {
   )
 }
 
+/** Formats a measured fraction as a percentage, retaining unavailable values. */
 function percent(value: number | undefined): string {
   return value == null ? "—" : `${(value * 100).toFixed(0)}%`
 }
 
+/** Formats a measured value to the requested decimal places or an unavailable marker. */
 function fixed(value: number | undefined, places: number): string {
   return value == null ? "—" : value.toFixed(places)
 }
 
+/** Formats an available integral count without supplying a missing measurement. */
 function integer(value: number | undefined): string {
   return value == null ? "—" : String(value)
 }
 
+/** Displays one actual practice measurement with its label. */
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="pr-6">

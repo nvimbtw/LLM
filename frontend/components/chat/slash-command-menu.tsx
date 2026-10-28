@@ -76,10 +76,7 @@ interface CommandDrawerProps {
 /** Reveals a glass command drawer from behind its composer's upper edge. The clipped join and lower stacking layer keep its motion out of the editor without changing editor height. */
 function CommandDrawer({ visible, children }: CommandDrawerProps) {
   return (
-    <div
-      data-slot="slash-command-drawer"
-      className="pointer-events-none absolute inset-x-3 bottom-full z-0 overflow-hidden rounded-t-(--radius-control)"
-    >
+    <div data-slot="slash-command-drawer" className="relative overflow-hidden">
       <div
         role="region"
         aria-label="Slash commands"
@@ -87,7 +84,7 @@ function CommandDrawer({ visible, children }: CommandDrawerProps) {
         inert={!visible}
         data-slot="slash-command-menu"
         className={cn(
-          "max-h-[50dvh] overflow-y-auto overscroll-contain rounded-t-(--radius-control) border border-b-0 border-border/60 bg-card/75 text-foreground backdrop-blur-2xl backdrop-saturate-150 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
+          "max-h-[40dvh] overflow-y-auto overscroll-contain text-foreground transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
           visible
             ? "pointer-events-auto translate-y-0 opacity-100"
             : "pointer-events-none translate-y-3 opacity-0"

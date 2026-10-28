@@ -1,5 +1,7 @@
 "use client"
 
+import { EmptyState } from "@/components/ui/empty-state"
+
 import Link from "next/link"
 import { AdminBoundary } from "@/components/admin/admin-boundary"
 import {
@@ -7,7 +9,12 @@ import {
   type ArchitectureKind,
 } from "@/hooks/use-architecture-catalog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { SearchField } from "@/components/ui/search-field"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceTitle,
+} from "@/components/ui/resource-list"
 import { LoadError } from "@/components/ui/error-state"
 import { PageHeader } from "@/components/ui/page-header"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -42,22 +49,9 @@ function CatalogContent({ kind }: ArchitectureCatalogProps) {
     <>
       <PageHeader
         title={title}
-        back={
-          kind === "block"
-            ? { href: "/arch", label: "Architectures" }
-            : { href: "/admin", label: "Administration" }
-        }
+        back={{ href: "/admin", label: "Admin" }}
         action={
           <div className="flex gap-2">
-            {kind === "architecture" && (
-              <Button
-                nativeButton={false}
-                variant="outline"
-                render={<Link href="/arch/blocks" />}
-              >
-                Blocks
-              </Button>
-            )}
             <Button
               nativeButton={false}
               render={
@@ -80,7 +74,7 @@ function CatalogContent({ kind }: ArchitectureCatalogProps) {
       >
         <label className="grid gap-1 text-sm">
           Search
-          <Input
+          <SearchField
             value={catalog.search}
             maxLength={200}
             onChange={(event) => catalog.setSearch(event.target.value)}
@@ -136,16 +130,14 @@ function CatalogContent({ kind }: ArchitectureCatalogProps) {
         />
       ) : (
         <>
-          <ul className="divide-y divide-border">
+          <ResourceList>
             {catalog.page?.items.map((item) => (
-              <li key={item.resource_id}>
+              <ResourceRow key={item.resource_id}>
                 <Link
                   href={`${root}/${item.resource_id}`}
-                  className="block rounded-(--radius-control) px-2 py-5 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
+                  className="block rounded-(--radius-control) py-0 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <h2 className="font-display text-xl font-semibold">
-                    {item.name}
-                  </h2>
+                  <ResourceTitle>{item.name}</ResourceTitle>
                   {item.description && (
                     <p className="mt-1 text-sm text-muted-foreground">
                       {item.description}
@@ -158,13 +150,11 @@ function CatalogContent({ kind }: ArchitectureCatalogProps) {
                       : "No accepted revision"}
                   </p>
                 </Link>
-              </li>
+              </ResourceRow>
             ))}
-          </ul>
+          </ResourceList>
           {!catalog.page?.items.length && (
-            <p className="py-8 text-sm text-muted-foreground">
-              No matching {title.toLowerCase()}.
-            </p>
+            <EmptyState title={`No matching ${title.toLowerCase()}`} />
           )}
           <div className="mt-4 flex gap-2">
             {catalog.query.cursor && (

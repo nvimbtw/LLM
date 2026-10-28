@@ -78,7 +78,7 @@ function ValidationContent({ id }: ValidationDetailProps) {
     <>
       <PageHeader
         title={run.label}
-        back={{ href: "/admin", label: "Administration" }}
+        back={{ href: "/admin", label: "Admin" }}
         meta={`Validation · ${verdict}`}
         action={
           <div className="flex flex-wrap gap-2">
@@ -150,7 +150,7 @@ function ValidationContent({ id }: ValidationDetailProps) {
           variant="open"
           title={report ? "Validation stages" : "Last observed stages"}
         >
-          <ol className="divide-y divide-border">
+          <ol className="space-y-1">
             {state.stages.map((stage) => (
               <li
                 key={stage.stage}

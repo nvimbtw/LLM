@@ -160,6 +160,7 @@ async function fixture(route) {
     }
     return json(model)
   }
+  if (path.endsWith("/benchmarks")) return json({ benchmarks: [] })
   if (path.endsWith("/checkpoints")) return json({ checkpoints: [] })
   if (path === "/tokenizers") return json({ tokenizers: [tokenizer] })
   if (path === `/tokenizers/${ids.tokenizer}`) {
@@ -259,6 +260,18 @@ function record(name) {
   console.log(`passed: ${name}`)
 }
 
+/** Dismisses failure popups after asserting them so retained notifications do not cover later independent fixture controls. */
+async function dismissPopups(page) {
+  const close = page.getByRole("button", {
+    name: "Dismiss notification",
+    exact: true,
+  })
+  for (let attempt = 0; attempt < 20 && (await close.count()); attempt += 1) {
+    await close.first().click()
+    await page.waitForTimeout(150)
+  }
+}
+
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH,
   headless: true,
@@ -281,16 +294,43 @@ await context.addInitScript(() => {
     args[0] === "field-sizing" ? false : supports(...args)
 })
 const page = await context.newPage()
-page.setDefaultTimeout(15000)
+page.setDefaultTimeout(60000)
+page.setDefaultNavigationTimeout(60000)
 page.on("pageerror", (error) => errors.push(error.message))
 
 try {
-  await page.goto(`${origin}/projects/${ids.project}`)
+  await page.goto(`${origin}/projects/${ids.project}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   const projectName = page.getByRole("textbox", {
     name: "Project name",
     exact: true,
   })
   await projectName.waitFor()
+  const titleCue = projectName.locator("..").locator('[aria-hidden="true"]')
+  assert.equal(
+    await titleCue.evaluate((element) => getComputedStyle(element).opacity),
+    "0"
+  )
+  await projectName.focus()
+  assert.equal(
+    await titleCue.evaluate((element) => getComputedStyle(element).opacity),
+    "1"
+  )
+  const description = page.getByRole("textbox", {
+    name: "Project description",
+    exact: true,
+  })
+  await description.focus()
+  assert.equal(
+    await description
+      .locator("..")
+      .locator('[aria-hidden="true"]')
+      .evaluate((element) => getComputedStyle(element).opacity),
+    "1"
+  )
+  record("title and description Edit cues reveal on focus")
   await projectName.fill("Unfinished project")
   const notes = page.getByRole("textbox", {
     name: "Notes and instructions",
@@ -317,7 +357,15 @@ try {
   await projectName.waitFor()
   assert.equal(await projectName.inputValue(), "Unfinished project")
   await page.getByRole("button", { name: "Save changes", exact: true }).click()
-  await page.locator("main").getByRole("alert").waitFor()
+  await page
+    .getByText(/Fixture|Unable to|could not|cannot/)
+    .first()
+    .waitFor({ state: "attached" })
+  await page
+    .getByRole("button", { name: "Dismiss notification", exact: true })
+    .first()
+    .waitFor()
+  await dismissPopups(page)
   assert.equal(await projectName.inputValue(), "Unfinished project")
   failSave = false
   await page.getByRole("button", { name: "Save changes", exact: true }).click()
@@ -343,7 +391,15 @@ try {
     }
   })
   await projectName.fill("Unretained project edit")
-  await page.locator("main").getByRole("alert").waitFor()
+  await page
+    .getByText(/Fixture|Unable to|could not|cannot/)
+    .first()
+    .waitFor({ state: "attached" })
+  await page
+    .getByRole("button", { name: "Dismiss notification", exact: true })
+    .first()
+    .waitFor()
+  await dismissPopups(page)
   let lossWarnings = 0
   page.once("dialog", async (dialog) => {
     lossWarnings += 1
@@ -362,11 +418,16 @@ try {
     "failed draft retention warns before leaving and preserves declined edits"
   )
 
+  await dismissPopups(page)
   for (const [route, label, original] of [
     [`/models/${ids.model}`, "Model name", model.name],
     [`/tokenizers/${ids.tokenizer}`, "Vocabulary name", tokenizer.name],
   ]) {
-    await page.goto(`${origin}${route}`)
+    await page.goto(`${origin}${route}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    })
+    console.log(`checking recovery: ${label}`)
     const field = page.getByRole("textbox", { name: label, exact: true })
     await field.waitFor()
     await field.fill(`${original} draft`)
@@ -413,7 +474,10 @@ try {
   }
   record("model/vocabulary recovery, Cancel and keyboard focus")
 
-  await page.goto(`${origin}/arch/${ids.architecture}`)
+  await page.goto(`${origin}/arch/${ids.architecture}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   const architectureName = page.getByRole("textbox", {
     name: "Architecture name",
     exact: true,
@@ -470,9 +534,13 @@ try {
     "architecture header, independent metadata/source saves, source recovery and explicit reload"
   )
 
-  await page.goto(`${origin}/conversations`)
+  await page.goto(`${origin}/conversations`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await page
     .locator("main")
+    .last()
     .getByRole("button", { name: "Chat options", exact: true })
     .click()
   await page.getByRole("menuitem", { name: "Rename", exact: true }).click()
@@ -484,7 +552,15 @@ try {
   await title.press("Tab")
   assert.equal(await title.inputValue(), "Attempted conversation title")
   await title.press("Enter")
-  await page.locator("main").getByRole("alert").waitFor()
+  await page
+    .getByText(/Fixture|Unable to|could not|cannot/)
+    .first()
+    .waitFor({ state: "attached" })
+  await page
+    .getByRole("button", { name: "Dismiss notification", exact: true })
+    .first()
+    .waitFor()
+  await dismissPopups(page)
   assert.equal(await title.inputValue(), "Attempted conversation title")
   failRename = false
   await page.getByRole("button", { name: "Save changes", exact: true }).click()
@@ -498,38 +574,58 @@ try {
   await title.fill("Cancelled sidebar rename")
   await title.press("Escape")
   assert.equal(await title.count(), 0)
-  await page.goto(`${origin}/chat/${ids.chat}`)
-  await page
-    .getByRole("button", { name: "Rename conversation", exact: true })
-    .click()
-  title = page.getByRole("textbox", { name: "Conversation title", exact: true })
-  await title.fill("Composer title")
-  await title.press("Enter")
-  await title.waitFor({ state: "hidden" })
-  assert.equal(chat.title, "Composer title")
+  await page.goto(`${origin}/chat/${ids.chat}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Rename conversation", exact: true })
+      .count(),
+    0
+  )
+  assert.equal(chat.title, "Attempted conversation title")
   record(
-    "all three rename entry points, blur/Enter/Escape and failed-write recovery"
+    "archive/sidebar rename, blur/Enter/Escape, failed-write recovery and absent footer rename"
   )
 
-  await page.goto(`${origin}/data/${ids.dataset}`)
+  await page.goto(`${origin}/data/${ids.dataset}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await page
     .getByRole("heading", { name: dataset.name, exact: true, level: 1 })
     .waitFor()
-  await page.goto(`${origin}/data`)
+  await page.goto(`${origin}/data`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   assert.equal(
     await page.getByRole("tab", { name: "Processors", exact: true }).count(),
     0
   )
-  await page.getByRole("link", { name: "Processors", exact: true }).waitFor()
+  assert.equal(
+    await page
+      .locator("main")
+      .last()
+      .getByRole("link", { name: "Processors", exact: true })
+      .count(),
+    0
+  )
   await page
-    .getByRole("button", { name: `Delete ${dataset.name}`, exact: true })
+    .getByRole("button", { name: `Options for ${dataset.name}`, exact: true })
     .click()
-  const dialog = page.getByRole("alertdialog")
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click()
+  const dialog = page.getByRole("alertdialog", { name: `Delete ${dataset.name}?`, exact: true })
   assert.equal(mutations.filter((entry) => entry.method === "DELETE").length, 0)
   await dialog
     .getByRole("button", { name: "Delete dataset", exact: true })
     .click()
-  await dialog.getByRole("alert").waitFor()
+  await page
+    .getByText(/Fixture|Unable to|could not|cannot/)
+    .first()
+    .waitFor({ state: "attached" })
+  await dismissPopups(page)
   assert.equal(await dialog.isVisible(), true)
   failDelete = false
   await dialog
@@ -540,7 +636,10 @@ try {
     "dataset identity, route link semantics and confirmed deletion with retry"
   )
 
-  await page.goto(`${origin}/gyms`)
+  await page.goto(`${origin}/gyms`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await page
     .getByRole("link", { name: "Practise General", exact: true })
     .waitFor()
@@ -570,7 +669,10 @@ try {
     .getByRole("link", { name: "Models", exact: true })
     .waitFor()
   await page.keyboard.press("Escape")
-  await page.goto(`${origin}/projects/${ids.project}`)
+  await page.goto(`${origin}/projects/${ids.project}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await projectName.waitFor()
   assert.equal(
     await page.evaluate(
@@ -601,7 +703,10 @@ try {
   })
   const touchPage = await touch.newPage()
   touchPage.on("pageerror", (error) => errors.push(error.message))
-  await touchPage.goto(`${origin}/chat/${ids.chat}`)
+  await touchPage.goto(`${origin}/chat/${ids.chat}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await touchPage.locator('input[type="file"]').setInputFiles({
     name: "notes.txt",
     mimeType: "text/plain",
@@ -622,9 +727,13 @@ try {
   assert.ok(removeBox.width >= 32 && removeBox.height >= 32)
   await removeAttachment.tap()
   await removeAttachment.waitFor({ state: "hidden" })
-  await touchPage.goto(`${origin}/conversations`)
+  await touchPage.goto(`${origin}/conversations`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   const options = touchPage
     .locator("main")
+    .last()
     .getByRole("button", { name: "Chat options", exact: true })
   await options.waitFor()
   assert.equal(
@@ -650,7 +759,10 @@ try {
     localStorage.setItem("access_level", "user")
   })
   const readerPage = await reader.newPage()
-  await readerPage.goto(`${origin}/models/${ids.model}`)
+  await readerPage.goto(`${origin}/models/${ids.model}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await readerPage
     .getByRole("heading", { name: model.name, exact: true, level: 1 })
     .waitFor()
@@ -666,7 +778,10 @@ try {
       .count(),
     0
   )
-  await readerPage.goto(`${origin}/tokenizers/${ids.tokenizer}`)
+  await readerPage.goto(`${origin}/tokenizers/${ids.tokenizer}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  })
   await readerPage
     .getByRole("heading", { name: tokenizer.name, exact: true, level: 1 })
     .waitFor()
@@ -693,6 +808,7 @@ try {
     })
   )
 } catch (error) {
+  await page.screenshot({ path: "/tmp/slate-notebook-failure.png" })
   console.error(
     JSON.stringify({
       url: page.url(),

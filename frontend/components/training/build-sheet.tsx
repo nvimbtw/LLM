@@ -56,7 +56,7 @@ export function BuildSheet({
   const stages = cfg.curriculum?.length ?? 0
 
   return (
-    <div className="min-w-0 border-t border-border">
+    <div className="min-w-0">
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 pt-6 pb-4">
         <h2 className="font-display text-xl">Review</h2>
         <p className="min-w-0 text-xs break-words text-muted-foreground">
@@ -150,7 +150,10 @@ export function BuildSheet({
 
       <div className="flex flex-wrap items-center justify-between gap-4 py-4">
         {errors.length > 0 && !disabled && (
-          <ul className="w-full space-y-1 text-xs text-destructive">
+          <ul
+            aria-label="Before starting this run"
+            className="w-full space-y-1 text-xs text-muted-foreground"
+          >
             {errors.map((err) => (
               <li key={err}>{err}</li>
             ))}

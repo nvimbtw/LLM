@@ -31,7 +31,7 @@ function Textarea({
     if (element.current) observer.observe(element.current)
     return () => observer.disconnect()
   }, [variant, props.value])
-  return (
+  const input = (
     <textarea
       ref={(node) => {
         element.current = node
@@ -42,7 +42,7 @@ function Textarea({
       className={cn(
         "flex field-sizing-content min-h-16 w-full rounded-(--radius-control) border border-input bg-transparent px-2.5 py-2 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40",
         variant === "inline" &&
-          "min-h-5 resize-none overflow-hidden rounded-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed shadow-none focus-visible:ring-0 focus-visible:outline-none disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent",
+          "min-h-5 resize-none overflow-hidden rounded-none border-0 bg-transparent py-0 pr-9 pl-0 text-sm leading-relaxed shadow-none focus-visible:ring-0 focus-visible:outline-none disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent",
         className
       )}
       onChange={(event) => {
@@ -51,6 +51,20 @@ function Textarea({
       }}
       {...props}
     />
+  )
+  if (variant !== "inline") return input
+  return (
+    <span className="group/editable relative block min-w-0">
+      {input}
+      {!props.readOnly && !props.disabled && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute top-0 right-0 text-2xs text-muted-foreground opacity-0 transition-opacity group-focus-within/editable:text-primary group-focus-within/editable:opacity-100 group-hover/editable:opacity-100 motion-reduce:transition-none"
+        >
+          Edit
+        </span>
+      )}
+    </span>
   )
 }
 

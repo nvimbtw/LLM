@@ -1,25 +1,21 @@
 "use client"
 
 import * as React from "react"
+import { Check } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { PageHeader } from "@/components/ui/page-header"
 import type { RunPhase, TrainMode } from "@/lib/training"
 
-// A step in the Pretrain › SFT masthead stepper. `state` drives the editorial
-// rendering: a filled rule/dot for done, a solid dot for active, muted otherwise.
 type StepState = "todo" | "active" | "done"
 
+/** Names a training phase and identifies completed work with an explicit check rather than an activity dot. */
 function Step({ label, state }: { label: string; state: StepState }) {
   return (
     <span className="flex items-center gap-2">
-      <span
-        className={cn(
-          "size-1.5 rounded-full",
-          state === "active" && "bg-foreground",
-          state === "done" && "bg-chart-2",
-          state === "todo" && "bg-muted-foreground/40"
-        )}
-      />
+      {state === "done" && (
+        <Check aria-label="Complete" className="size-3 text-status-success" />
+      )}
       <span
         className={cn(
           "text-sm",
@@ -33,9 +29,7 @@ function Step({ label, state }: { label: string; state: StepState }) {
   )
 }
 
-// Two-step Pretrain › SFT indicator. Makes the two activities lateral instead of
-// stacked. Reflects the current run's mode + status and the sticky "pretrain
-// succeeded" marker, so it reads Pretrain ✓ → SFT active across the continuation.
+/** Resolves pre-training and fine-tuning phase states from the actual run and completed predecessor. */
 function PhaseStepper({
   status,
   mode,
@@ -61,13 +55,15 @@ function PhaseStepper({
       ? "active"
       : status === "done"
         ? "done"
-        : "active" // SFT config staged but not yet started
+        : "active"
     : "todo"
 
   return (
     <div className="flex items-center gap-3">
       <Step label="Pretrain" state={pretrainState} />
-      <span aria-hidden className="h-px w-8 bg-border" />
+      <span aria-hidden className="text-muted-foreground">
+        →
+      </span>
       <Step label="SFT" state={sftState} />
     </div>
   )
@@ -81,19 +77,10 @@ const STATUS_LABEL: Record<RunPhase, string> = {
   failed: "failed",
 }
 
-function StatusDot({ status }: { status: RunPhase | null }) {
-  const running = status === "tokenizing" || status === "training"
+/** Displays the current run state as text, including a truthful idle state before execution. */
+function StatusLabel({ status }: { status: RunPhase | null }) {
   return (
-    <span className="flex items-center gap-2 text-sm text-muted-foreground">
-      <span
-        className={cn(
-          "size-2 rounded-full",
-          running && "animate-pulse bg-foreground",
-          status === "done" && "bg-chart-2",
-          (status === "failed" || status === "cancelled") && "bg-destructive",
-          status == null && "bg-muted-foreground/40"
-        )}
-      />
+    <span className="text-sm text-muted-foreground">
       {status ? STATUS_LABEL[status] : "idle"}
     </span>
   )
@@ -107,16 +94,11 @@ export interface TrainingShellProps {
   primaryAction?: React.ReactNode
   rail: React.ReactNode
   main: React.ReactNode
-  // Full-width deep-dive section rendered below the rail+main grid, spanning the
-  // whole content width (the diagnostics charts stack here).
   diagnostics?: React.ReactNode
   appendix: React.ReactNode
 }
 
-// The editorial spread: a masthead (identity · status · phase stepper · primary
-// action) over a wide two-column body — a fixed params rail beside a fluid main
-// column. Every region is always present and fills in; nothing mounts/unmounts as
-// the run progresses, so the layout never pops or jumps.
+/** Arranges training identity, phase controls, parameters and telemetry without decorative section rules. */
 export function TrainingShell({
   modelName,
   status,
@@ -130,36 +112,25 @@ export function TrainingShell({
 }: TrainingShellProps) {
   return (
     <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 sm:px-8">
-      {/* Masthead */}
-      <header className="flex flex-wrap items-center justify-between gap-4 pb-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            {modelName || "Train a model"}
-          </h1>
-          <StatusDot status={status} />
-        </div>
-        <div className="flex items-center gap-6">
-          <PhaseStepper
-            status={status}
-            mode={mode}
-            pretrainDone={pretrainDone}
-          />
-          {primaryAction}
-        </div>
-      </header>
-      {/* The masthead keeps its own hairline. It used to be the throbber itself —
-          a full-width rule doubling as the border — which is exactly what made the
-          indicator too wide to read as one mark. */}
-      <div className="border-b border-border" />
-
-      {/* Body: fixed rail + fluid main */}
+      <PageHeader
+        title={modelName || "Train a model"}
+        meta={<StatusLabel status={status} />}
+        action={
+          <div className="flex items-center gap-6">
+            <PhaseStepper
+              status={status}
+              mode={mode}
+              pretrainDone={pretrainDone}
+            />
+            {primaryAction}
+          </div>
+        }
+      />
       <div className="grid grid-cols-1 gap-8 pt-6 lg:grid-cols-[340px_minmax(0,1fr)] lg:gap-12">
         <aside className="lg:sticky lg:top-6 lg:self-start">{rail}</aside>
         <main className="min-w-0 space-y-8">{main}</main>
       </div>
 
-      {/* Full-width deep-dive: the diagnostics stack, then the appendix, both
-          spanning the whole content width below the rail+hero section. */}
       {(diagnostics || appendix) && (
         <div className="mt-8 space-y-8">
           {diagnostics}
