@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "description": "Immutable bounded materialization grant; the parent resolves IDs, never worker paths.",
+  "properties": {
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "format": {
+      "enum": [
+        "source_snapshot_v1",
+        "validation_snapshot_v1",
+        "definition_v1",
+        "model_package_v1",
+        "training_config_v1",
+        "corpus_v1",
+        "tokenizer_v1",
+        "span_table_v1",
+        "loss_mask_v1",
+        "sft_probe_v1",
+        "prompt_v1",
+        "measurement_v1",
+        "effect_data_v1",
+        "validation_result_v1",
+        "training_result_v1",
+        "training_progress_v1",
+        "generation_result_v1",
+        "measurement_result_v1",
+        "checkpoint_v1"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "size_bytes": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "title": "Size Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "sha256",
+    "size_bytes",
+    "format"
+  ],
+  "title": "RuntimeArtifact",
+  "type": "object"
+}

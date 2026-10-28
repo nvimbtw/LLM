@@ -27,7 +27,7 @@ from threading import Event
 from tokenizers import Tokenizer
 
 from llm import storage
-from llm.config import TrainConfig
+from llm.config import LEGACY_STRUCTURE_FIELDS, TrainConfig
 from llm.corpus import bpe, pack, remote, spans as spans_mod, vocab
 from llm.model import checkpoint
 from llm.model.checkpoint import TrainState
@@ -41,10 +41,7 @@ from llm.train.progress import BuildReport, Checkpoint, ProgressCallback, log_pr
 #: checkpoint; the point of the list is which ones a *request* is then compared
 #: against, because pydantic cannot tell "unset" from "set to the default" any
 #: other way than `model_fields_set`.
-_ARCHITECTURE = frozenset(
-    {"dimensions", "heads", "layers", "ff_multiplier", "ctx_window", "rope_base",
-     "learned_temperature"}
-)
+_ARCHITECTURE = LEGACY_STRUCTURE_FIELDS
 
 #: The shape fields shown wherever a model's architecture is surfaced — a
 #: pretrain's live on its own `TrainConfig` under `config.*`; `sft.py` reads
@@ -296,6 +293,7 @@ def build_dataset(
     tokenizer_id: str,
     fingerprint: str,
     report: BuildReport,
+    budget: pack.PackBudget | None = None,
 ) -> pack.PackStats:
     """Phase 1: text on disk -> corpus.bin + segments.json, under `key`.
 
@@ -309,6 +307,8 @@ def build_dataset(
     that had stopped. What makes that possible is `plan` — the selection's own
     document counts, in reading order, which is the one thing the stream of
     documents handed to the packer cannot say about itself.
+    An optional budget limits streamed token bytes and document rows; output
+    refusals preserve any previously complete pack rather than publishing it.
     """
     stages = cfg.stages()
     plan = [
@@ -316,9 +316,7 @@ def build_dataset(
             "dataset": selected.name,
             "stage": index,
             "expected": selected.taken,
-            # What the pack projects its ETA against. Documents are what a person
-            # counts and are the wrong unit to divide elapsed time by — see
-            # `remote.Selected.weight`.
+
             "expected_chars": selected.weight,
         }
         for index, (_, datasets) in enumerate(selection)
@@ -333,8 +331,6 @@ def build_dataset(
         )
     merges = bpe.merge_count(tokenizer)
 
-    # Per-dataset counts, because a cap that silently failed to apply is otherwise
-    # invisible until the run's wall-clock comes in several times over.
     breakdown = ", ".join(
         f"{selected.name} {selected.taken:,}"
         for _, datasets in selection
@@ -356,10 +352,7 @@ def build_dataset(
         _documents(client, selection),
         tokenizer,
         key=key,
-        # The *resolved* selection, not the request: a stage asking for "all"
-        # must record the corpora that meant at build time, or `is_built` would
-        # compare an expanded request against an unexpanded record and rebuild
-        # every time.
+
         stages=[
             {
                 "name": st.name,
@@ -372,14 +365,13 @@ def build_dataset(
         fingerprint=fingerprint,
         report=report,
         plan=plan,
+        budget=budget,
     )
     print(
         f"      {stats.corpus_len:,} tokens, {stats.documents:,} documents, "
         f"vocab {stats.vocab_size:,}"
     )
-    # The frame that closes phase 1 is `_phase_one`'s, not this function's: what
-    # a fresh build produced is measured off the corpus it wrote, by the same
-    # code that measures one it is reusing.
+
     return stats
 
 
@@ -505,21 +497,18 @@ def run(
     cancel: Event | None = None,
     owner: str | None = None,
 ) -> dict:
-    """The whole pipeline. Returns a summary of the run."""
+    """Run the legacy flat pipeline; recipe selections require the supervised training adapter.
+
+    Refuse a selected recipe before authenticated dataset acquisition or model
+    construction so it can never silently execute the flat Transformer path.
+    """
+    if cfg.architecture is not None:
+        raise ValueError("recipe training requires the supervised training adapter")
     started = time.time()
 
-    # Held open across phase 1 and closed before training starts: the documents
-    # are read while the corpus is packed and never afterwards.
     with remote.Client(owner) as client:
         selection = pack.resolve(client, cfg.stages())
-        # Resolved once, ahead of the vocabulary: a resumed run's tokenizer is
-        # the checkpoint's own rather than anything derived from `selection`, and
-        # `_train` needs this same state again to build the model and decide
-        # resumed-vs-continued, so it is not resolved twice.
         state = resume_state(cfg.resume_from)
-        # One reporter across the whole of phase 1, because the bar and the clock
-        # it carries are the phase's and not any one step's — a vocabulary, a
-        # pack and a measuring pass are three steps of one wait.
         report = BuildReport(on_progress)
         tokenizer_id = _vocabulary(cfg, client, selection, report, state)
         return _train(

@@ -1,0 +1,74 @@
+{
+  "additionalProperties": false,
+  "description": "Expose declared view identity separately from worker-lifetime numerical evidence and its exact tested bound.",
+  "properties": {
+    "call_path": {
+      "items": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 64,
+      "title": "Call Path",
+      "type": "array"
+    },
+    "evidence_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evidence Hash"
+    },
+    "heads": {
+      "anyOf": [
+        {
+          "maximum": 256,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Heads"
+    },
+    "id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "instance_path": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "title": "Instance Path",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "validated_sequence_max": {
+      "default": 0,
+      "maximum": 512,
+      "minimum": 0,
+      "title": "Validated Sequence Max",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "instance_path",
+    "call_path"
+  ],
+  "title": "InspectionPointView",
+  "type": "object"
+}

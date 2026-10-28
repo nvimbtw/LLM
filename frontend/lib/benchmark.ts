@@ -82,9 +82,9 @@ export const BENCHMARK_SUITES: {
 export interface ReportModel {
   id: string
   name: string | null
-  layers: number
-  dimensions: number
-  heads: number
+  layers: number | null
+  dimensions: number | null
+  heads: number | null
   context: number
   vocab: number
   parameters: number

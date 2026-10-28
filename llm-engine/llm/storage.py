@@ -12,6 +12,14 @@ held out from training and therefore not training data.
     artifacts/models/<id>/       weights, a copy of the tokenizer, meta.json,
                                  and train_state.pt where the run left one
     artifacts/.recovery-staging/ unpublished checkpoint directories
+    artifacts/.package-staging/  unpublished modular model packages
+    artifacts/.tokenizer-staging/ unpublished builtin example tokenizers
+    artifacts/validations/<uuid>/ immutable validation graphs/reports
+    artifacts/definitions/<sha>/ immutable resolved definition/source snapshots
+    artifacts/training-preparations/<uuid>/ parent-owned final SFT input authority
+    artifacts/gym-effects/<uuid>/ parent-owned RL resource/issued-operation evidence
+    artifacts/.runtime/<uuid>/   supervised worker session materializations
+    artifacts/.runtime/engine.lock engine lifetime exclusion
 
     datasets/corpus.bin          the pre-keyed singletons, left where they are
     datasets/segments.json       (see `legacy_pretrain_paths`)
@@ -19,6 +27,8 @@ held out from training and therefore not training data.
 """
 
 import os
+import re
+import uuid
 from pathlib import Path
 
 
@@ -91,7 +101,7 @@ def legacy_pretrain_paths() -> list[Path]:
     return [datasets_dir() / "corpus.bin", datasets_dir() / "segments.json", tokenizer_dir()]
 
 
-def sft_dataset_dir(key: str) -> Path:
+def sft_dataset_dir(key: str, *, directory: Path | None = None) -> Path:
     """One built SFT dataset, in its own directory keyed by the request that
     produced it (see `llm.corpus.sft.dataset_key`).
 
@@ -100,25 +110,30 @@ def sft_dataset_dir(key: str) -> Path:
     every token and every mask byte. Sharing one path meant a second run reused
     the first run's corpus whenever `rebuild_dataset` was false — training on the
     opposite of what was asked for, while `meta.json` claimed otherwise.
+    A supplied directory is caller-owned private preparation storage, without
+    changing the module's global artifact root or shared dataset cache.
     """
-    return datasets_dir() / "sft" / key
+    return datasets_dir() / "sft" / key if directory is None else directory
 
 
-def sft_corpus_path(key: str) -> Path:
-    return sft_dataset_dir(key) / "corpus.bin"
+def sft_corpus_path(key: str, *, directory: Path | None = None) -> Path:
+    """Return the token file in the keyed cache or explicitly owned preparation directory."""
+    return sft_dataset_dir(key, directory=directory) / "corpus.bin"
 
 
-def sft_mask_path(key: str) -> Path:
-    return sft_dataset_dir(key) / "mask.bin"
+def sft_mask_path(key: str, *, directory: Path | None = None) -> Path:
+    """Return the aligned target-mask file beside its cached or privately prepared corpus."""
+    return sft_dataset_dir(key, directory=directory) / "mask.bin"
 
 
-def sft_segments_path(key: str) -> Path:
-    return sft_dataset_dir(key) / "segments.json"
+def sft_segments_path(key: str, *, directory: Path | None = None) -> Path:
+    """Return the provenance sidecar beside its cached or privately prepared corpus."""
+    return sft_dataset_dir(key, directory=directory) / "segments.json"
 
 
-def sft_spans_path(key: str) -> Path:
+def sft_spans_path(key: str, *, directory: Path | None = None) -> Path:
     """The conversation table. `pretrain_spans_path`, for the other build."""
-    return sft_dataset_dir(key) / "spans.npy"
+    return sft_dataset_dir(key, directory=directory) / "spans.npy"
 
 
 def legacy_sft_paths() -> list[Path]:
@@ -148,6 +163,11 @@ def tokenizer_build_dir(tokenizer_id: str) -> Path:
     """One built vocabulary. The id is the directory, so a name can change
     without moving bytes — the same arrangement `model_dir` has."""
     return tokenizers_dir() / tokenizer_id
+
+
+def tokenizer_staging_dir() -> Path:
+    """Return unpublished builtin tokenizer staging, reconciled only under exclusive startup ownership."""
+    return root() / "artifacts" / ".tokenizer-staging"
 
 
 def tokenizer_meta_path(tokenizer_id: str) -> Path:
@@ -183,6 +203,78 @@ def models_dir() -> Path:
 
 def recovery_staging_dir() -> Path:
     return root() / "artifacts" / ".recovery-staging"
+
+
+def package_staging_dir() -> Path:
+    """Return unpublished modular package trees, separate from model discovery and recovery staging."""
+    return root() / "artifacts" / ".package-staging"
+
+
+def training_preparations_dir() -> Path:
+    """Return the parent-owned final-input authority root without creating it."""
+    return root() / "artifacts" / "training-preparations"
+
+
+def training_preparation_dir(run_id: uuid.UUID | str) -> Path:
+    """Resolve one parent-owned immutable prepared-input authority directory without creating it."""
+    return training_preparations_dir() / str(uuid.UUID(str(run_id)))
+
+
+def gym_effects_dir() -> Path:
+    """Return the bounded parent-owned RL resource/operation evidence root without creating it."""
+    return root() / "artifacts" / "gym-effects"
+
+
+def gym_effect_dir(run_id: uuid.UUID | str) -> Path:
+    """Resolve one queued job's durable gym-effect evidence directory without creating or reusing a worker session."""
+    return gym_effects_dir() / str(uuid.UUID(str(run_id)))
+
+
+def model_package_path(model_name: str) -> Path:
+    """Return the discriminated manifest beside a model's existing weight/tokenizer paths."""
+    return model_dir(model_name) / "package.json"
+
+
+def validations_dir() -> Path:
+    """Return the engine-owned parent of immutable validation artifacts without creating it."""
+    return root() / "artifacts" / "validations"
+
+
+def validation_dir(run_id: uuid.UUID | str) -> Path:
+    """Resolve a validated run UUID to its report/graph directory without filesystem effects."""
+    return validations_dir() / str(uuid.UUID(str(run_id)))
+
+
+def validation_staging_dir() -> Path:
+    """Return private unpublished validation staging beneath the same artifact filesystem."""
+    return root() / "artifacts" / ".validation-staging"
+
+
+def definitions_dir() -> Path:
+    """Return the immutable semantic-definition artifact parent without creating it."""
+    return root() / "artifacts" / "definitions"
+
+
+def definition_dir(definition_id: str) -> Path:
+    """Resolve one lowercase SHA-256 definition identity, rejecting path traversal or names."""
+    if re.fullmatch(r"[0-9a-f]{64}", definition_id) is None:
+        raise ValueError("definition_id must be a lowercase SHA-256 digest")
+    return definitions_dir() / definition_id
+
+
+def runtime_root() -> Path:
+    """Return private supervised worker materializations, separate from published models."""
+    return root() / "artifacts" / ".runtime"
+
+
+def runtime_session_dir(worker_id: uuid.UUID | str) -> Path:
+    """Resolve a validated worker UUID beneath its engine-owned runtime directory."""
+    return runtime_root() / str(uuid.UUID(str(worker_id)))
+
+
+def runtime_lock_path() -> Path:
+    """Return the single engine-lifetime lock path; the supervisor owns locking and cleanup."""
+    return runtime_root() / "engine.lock"
 
 
 def model_dir(model_name: str) -> Path:

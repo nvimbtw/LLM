@@ -1,42 +1,18 @@
 "use client"
-
-import Editor, { loader } from "@monaco-editor/react"
-import { useTheme } from "next-themes"
-
-loader.config({ paths: { vs: "/monaco/vs" } })
-
+import { SourceEditor } from "@/components/authoring/source-editor"
 export interface PythonSourceEditorProps {
   value: string
   readOnly: boolean
   onChange: (value: string) => void
   height?: string
 }
-
-/** Displays locally hosted Python syntax highlighting and optional full-file editing. */
-export function PythonSourceEditor({
-  value,
-  readOnly,
-  onChange,
-  height = "360px",
-}: PythonSourceEditorProps) {
-  const { resolvedTheme } = useTheme()
+/** Keeps processor source editing behavior while using the neutral locally hosted editor surface. */
+export function PythonSourceEditor(props: PythonSourceEditorProps) {
   return (
-    <Editor
-      height={height}
+    <SourceEditor
+      {...props}
       language="python"
-      value={value}
-      theme={resolvedTheme === "dark" ? "vs-dark" : "vs"}
-      onChange={(next) => onChange(next ?? "")}
-      options={{
-        readOnly,
-        minimap: { enabled: false },
-        fontSize: 12,
-        scrollBeyondLastLine: false,
-        wordWrap: "on",
-        tabSize: 4,
-        ariaLabel: "Processor Python source",
-        automaticLayout: true,
-      }}
+      ariaLabel="Processor Python source"
     />
   )
 }

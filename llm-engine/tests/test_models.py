@@ -17,6 +17,7 @@ def client(engine_client):
     import main
 
     main.app.dependency_overrides[auth.require_service] = lambda: auth.SYSTEM
+    main.app.dependency_overrides[auth.administration_visible] = lambda: True
     yield engine_client
     main.app.dependency_overrides.clear()
 

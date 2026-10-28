@@ -5,6 +5,11 @@
 // be able to disagree with the other about what a learning rate may be.
 
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
+import { decodeArchitecture } from "@/lib/architecture/decoder"
+import {
+  trainingSelectionKey,
+  type TrainingArchitectureCheck,
+} from "@/lib/training-selection"
 import {
   RESUMED_ARCH_FIELDS,
   RESUMED_TOKENIZER_FIELDS,
@@ -77,7 +82,11 @@ export const ARCH_FIELDS: Field[] = [
 ]
 
 export const RUN_FIELDS: Field[] = [
-  { key: "checkpoint_target", label: "Recovery saves", hint: "Approximate saves per run; keep only the latest automatically. 0 disables." },
+  {
+    key: "checkpoint_target",
+    label: "Recovery saves",
+    hint: "Approximate saves per run; keep only the latest automatically. 0 disables.",
+  },
   { key: "epochs", label: "Epochs", hint: "Passes over the corpus" },
   {
     key: "batch_size",
@@ -123,6 +132,7 @@ export const MODE_DEFAULT_LRS: number[] = [
   KTO_DEFAULT_LR,
 ]
 
+/** Returns the deliberate optimizer default for one training mode without changing explicit user edits. */
 export function defaultLrFor(mode: TrainMode): number {
   if (mode === "sft") return SFT_DEFAULT_LR
   if (mode === "raft") return RAFT_DEFAULT_LR
@@ -143,6 +153,7 @@ export function configForMode(cfg: TrainConfig, mode: TrainMode): TrainConfig {
   return next
 }
 
+/** Tests the legacy standard-layout power-of-two constraint; modular parameter declarations own their own constraints. */
 export function isPowerOfTwo(n: number) {
   return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0
 }
@@ -163,9 +174,7 @@ export const FROM_SCRATCH = "from-scratch"
 // Selecting it means `resume_from` is the parent model's own id.
 export const FINISHED_WEIGHTS = "finished-weights"
 
-// Name is a display label only (weights live under the model's UUID), so spaces
-// and dots like "Opal 1.1" are allowed — just no surrounding whitespace or
-// control characters. Shared by both modes.
+/** Validates the user-visible training label, allowing spaces/dots while rejecting empty, padded or control-character names. */
 function validateName(name: string): string[] {
   if (!name.trim()) return ["Model name is required."]
   if (name !== name.trim())
@@ -175,15 +184,39 @@ function validateName(name: string): string[] {
   return []
 }
 
-// Mirrors the backend's validate_config / validate_sft so the user sees the
-// constraints before submitting. Returns a list of human-readable problems.
-export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
+/** Validates effective training inputs while keeping selected/inherited structure separate from legacy form defaults; declared parameter checks remain in the loaded recipe editor. */
+export function validate(
+  cfg: TrainConfig,
+  inheritsBase = false,
+  architectureCheck?: TrainingArchitectureCheck | null
+): string[] {
   const errs = validateName(cfg.model_name)
-  if (cfg.checkpoint_target !== undefined && (!Number.isInteger(cfg.checkpoint_target) || cfg.checkpoint_target < 0)) errs.push("Recovery saves must be a nonnegative integer.")
+  if (!Number.isSafeInteger(cfg.batch_size) || cfg.batch_size < 1)
+    errs.push("Batch size must be a positive integer.")
+  if (cfg.architecture && !inheritsArchitecture(cfg)) {
+    try {
+      decodeArchitecture("ArchitectureSelection", cfg.architecture)
+    } catch {
+      errs.push(
+        "Choose a valid accepted architecture revision and parameter values."
+      )
+    }
+    if (
+      !architectureCheck ||
+      architectureCheck.key !== trainingSelectionKey(cfg)
+    )
+      errs.push(
+        "Read the current selected recipe and training profile before starting."
+      )
+    else errs.push(...architectureCheck.errors)
+  }
+  if (
+    cfg.checkpoint_target !== undefined &&
+    (!Number.isInteger(cfg.checkpoint_target) || cfg.checkpoint_target < 0)
+  )
+    errs.push("Recovery saves must be a nonnegative integer.")
 
   if (isFineTune(cfg.mode)) {
-    // A follow-up has no base to select: it fine-tunes whatever the job before it
-    // produces, which is exactly why it is a follow-up.
     if (!cfg.base_model_id && !inheritsBase)
       errs.push("Select a base model to fine-tune.")
     if (
@@ -196,10 +229,6 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
       errs.push("Epochs must be positive.")
     if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
       errs.push("Learning rate must be positive.")
-    // A plain fine-tune trains on conversations it names. RAFT and KTO train on
-    // the model's own generations instead, so a dataset selection there is not a
-    // thing to require. The LLM engine refuses a run that names nothing — this is
-    // what stops that arriving as a job that queues and then fails.
     if (cfg.mode === "sft" && (cfg.datasets ?? []).length === 0)
       errs.push("Select at least one dataset to fine-tune on.")
     return errs
@@ -208,10 +237,7 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
   if (!Number.isFinite(cfg.epochs) || cfg.epochs <= 0)
     errs.push("Epochs must be positive.")
 
-  // A resumed run's architecture is the checkpoint's and is not sent at all
-  // (`RESUMED_ARCH_FIELDS`), so validating what the form is still holding would
-  // refuse a run over numbers nobody is going to read.
-  if (!cfg.resume_from) {
+  if (!cfg.resume_from && !cfg.architecture) {
     const positives: [keyof TrainConfig, string][] = [
       ["dimensions", "Dimensions"],
       ["ctx_window", "Context window"],
@@ -240,17 +266,13 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
 
   if (!Number.isFinite(cfg.lr) || cfg.lr <= 0)
     errs.push("Learning rate must be positive.")
-  // Not sent for a resume either (`RESUMED_TOKENIZER_FIELDS`), and for the same
-  // reason: the vocabulary is the checkpoint's, so a ceiling left over in the
-  // form is not a number this run gets to be refused over.
   if (
     !cfg.resume_from &&
+    !cfg.tokenizer_id &&
     (!Number.isFinite(cfg.max_vocab) || cfg.max_vocab < 256)
   )
     errs.push("Max vocab must be at least 256.")
 
-  // Curriculum runs supply their datasets per stage; a plain run uses the flat
-  // selection. Validate whichever is active (mirrors the backend).
   const curriculum = cfg.curriculum ?? []
   if (curriculum.length > 0) {
     curriculum.forEach((stage, i) => {
@@ -265,9 +287,6 @@ export function validate(cfg: TrainConfig, inheritsBase = false): string[] {
         )
     })
   } else {
-    // Defensive: a config from a stale source (e.g. a preset saved before this
-    // field existed) may lack `datasets`; treat missing as an empty selection so
-    // it surfaces as a normal validation error rather than a crash.
     const selected = cfg.datasets ?? []
     if (selected.length === 0)
       errs.push("Select at least one dataset to train on.")
@@ -308,7 +327,6 @@ export function hidesTokenizer(cfg: TrainConfig): boolean {
 /** The numeric fields a mode actually shows, in the order they are rendered. */
 export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
   const curriculumOn = (cfg.curriculum?.length ?? 0) > 0
-  // In curriculum mode, epochs are per-stage, so drop the run-wide Epochs field.
   const run = curriculumOn
     ? RUN_FIELDS.filter((f) => f.key !== "epochs")
     : RUN_FIELDS
@@ -329,13 +347,6 @@ export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
   }
   if (isFineTune(cfg.mode)) return { arch: [], run: RUN_FIELDS }
 
-  // Fields drop out for one reason — a control wired to a number this run does
-  // not decide. A named vocabulary carries its own size, so `max_vocab` is
-  // ignored whenever one is named; and a resumed run inherits both its shape and
-  // its vocabulary from the checkpoint, so restating either is at best ignored
-  // and at worst a refusal. The resume case reads the same two lists the payload
-  // is stripped against, so what the composer hides and what it declines to send
-  // cannot drift apart.
   const inherited: readonly string[] = cfg.resume_from
     ? [...RESUMED_ARCH_FIELDS, ...RESUMED_TOKENIZER_FIELDS]
     : []
@@ -343,6 +354,7 @@ export function fieldsFor(cfg: TrainConfig): { arch: Field[]; run: Field[] } {
     arch: ARCH_FIELDS.filter(
       (f) =>
         !(f.key === "max_vocab" && cfg.tokenizer_id) &&
+        !(cfg.architecture && f.key !== "max_vocab") &&
         !inherited.includes(f.key)
     ),
     run,
@@ -354,6 +366,8 @@ export function derived(cfg: TrainConfig): {
   headDim: number | null
   dFf: number | null
 } {
+  if (cfg.architecture || inheritsArchitecture(cfg))
+    return { headDim: null, dFf: null }
   return {
     headDim:
       cfg.heads > 0 && cfg.dimensions % cfg.heads === 0

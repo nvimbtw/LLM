@@ -14,6 +14,7 @@ import {
   isRunning,
   jobHref,
   type Job,
+  validationConfig,
 } from "@/lib/jobs"
 
 /**
@@ -30,19 +31,17 @@ export interface JobQueuedPanelProps {
   job: Job
 }
 
+/** Presents the queued snapshot and actual known board position; absent/stale board rows never imply that a newly submitted job is next. */
 export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
   const { board, paused, reorder } = useJobsContext()
 
   const queued = board.active.filter((j) => j.status === "queued")
   const index = queued.findIndex((j) => j.id_job === job.id_job)
-  const ahead = index < 0 ? 0 : index
+  const ahead = index < 0 ? null : index
   const running = board.active.find(isRunning) ?? null
 
   const next = whatHappens(job)
 
-  // A follow-up has no place in the line to report: it starts when the job it
-  // names finishes, however long that takes and wherever that job currently sits.
-  // The honest answer to "when" is the other job's name.
   const after =
     job.status === "waiting"
       ? ([...board.active, ...board.history].find(
@@ -82,14 +81,20 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
           <Panel variant="open" title="In line">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="figure text-4xl leading-none">
-                {ahead === 0 ? "Next" : ordinal(ahead + 1)}
+                {ahead === null
+                  ? "—"
+                  : ahead === 0
+                    ? "Next"
+                    : ordinal(ahead + 1)}
               </span>
               <span className="text-sm text-muted-foreground">
-                {ahead === 0
-                  ? running
-                    ? "as soon as the current job ends"
-                    : "starting shortly"
-                  : `${ahead} job${ahead === 1 ? "" : "s"} ahead`}
+                {ahead === null
+                  ? "Queue position is unavailable while the board refreshes."
+                  : ahead === 0
+                    ? running
+                      ? "as soon as the current job ends"
+                      : "starting shortly"
+                    : `${ahead} job${ahead === 1 ? "" : "s"} ahead`}
               </span>
             </div>
 
@@ -106,9 +111,6 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
               </p>
             )}
 
-            {/* Paused is the one state where "next" means nothing, so it is said
-              plainly rather than left to be inferred from a queue that never
-              advances. */}
             {paused && (
               <p className="mt-4 border-l border-border py-2 pl-3 text-sm text-muted-foreground">
                 The queue is paused. Nothing new will start until it is resumed
@@ -116,7 +118,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
               </p>
             )}
 
-            {ahead > 0 && (
+            {ahead !== null && ahead > 0 && (
               <Button
                 variant="outline"
                 size="sm"
@@ -213,8 +215,6 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
     case "benchmark":
       return {
         title: "What it will score",
-        // The two suites score different things, so the running order shown to
-        // somebody waiting has to be the one their job will actually work through.
         steps: benchmarkSections(benchmarkSuiteOf(job)).map((section) => ({
           name: `${section.name} · ${Math.round(section.weight * 100)}%`,
           blurb: section.blurb,
@@ -245,6 +245,41 @@ function whatHappens(job: Job): { title: string; steps: Step[] } {
               "Every iteration saves a model you can chat with, benchmark, or run the gym against on tasks it never trained on.",
           },
         ],
+      }
+    case "model_validation":
+      return {
+        title: "What it will check",
+        steps:
+          validationConfig(job)?.mode === "inspect"
+            ? [
+                {
+                  name: "Inspect saved source",
+                  blurb:
+                    "Read the declared controls and ports without requiring constructor inputs.",
+                },
+                {
+                  name: "Publish inspection",
+                  blurb:
+                    "Inspection metadata does not accept the revision or authorize training.",
+                },
+              ]
+            : [
+                {
+                  name: "Check bound inputs",
+                  blurb:
+                    "Validate the saved source, selected parameters and exact input profile.",
+                },
+                {
+                  name: "Capture and compare",
+                  blurb:
+                    "Capture complete execution and check numerical behavior within the requested profile.",
+                },
+                {
+                  name: "Publish the verdict",
+                  blurb:
+                    "A completed invalid result remains distinct from a worker failure or a valid configuration.",
+                },
+              ],
       }
   }
 }

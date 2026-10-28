@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from llm.chat.context import MAX_MEMORIES, MemoryContext, ProjectContext
+from llm.architecture.wire import ArchitectureSelection
 
 # `model_name` collides with pydantic v2's protected `model_` namespace, which
 # would warn on every instantiation. The field name is worth keeping — it is
@@ -20,6 +21,19 @@ from llm.chat.context import MAX_MEMORIES, MemoryContext, ProjectContext
 _ALLOW_MODEL_PREFIX = ConfigDict(protected_namespaces=())
 
 DEFAULT_CHAT_MAX_TOKENS = 2048
+LEGACY_STRUCTURE_FIELDS = frozenset({
+    "dimensions", "heads", "layers", "ff_multiplier", "ctx_window", "rope_base",
+    "learned_temperature",
+})
+
+
+def _inherited_definition(value):
+    """Reject structural overrides on saved-model consumers before unknown fields can be discarded."""
+    if isinstance(value, dict):
+        overrides = LEGACY_STRUCTURE_FIELDS.intersection(value)
+        if value.get("architecture") is not None or overrides:
+            raise ValueError("saved-model training inherits its definition; structural overrides are not allowed")
+    return value
 
 
 class DatasetSelection(BaseModel):
@@ -100,6 +114,9 @@ class TrainConfig(BaseModel):
     model_config = _ALLOW_MODEL_PREFIX
 
     model_name: str = Field(description="names the run's directory under artifacts/models/")
+    architecture: ArchitectureSelection | None = Field(
+        default=None, description="accepted immutable recipe revision and public parameter values",
+    )
 
     # ── Architecture ────────────────────────────────────────────────────────
     dimensions: int = 256
@@ -221,16 +238,29 @@ class TrainConfig(BaseModel):
 
     _normalize_datasets = field_validator("datasets", mode="before")(_as_selections)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _select_definition(cls, value):
+        """Require one structural authority: an accepted recipe or the deliberate legacy flat adapter."""
+        if isinstance(value, dict) and value.get("architecture") is not None:
+            if LEGACY_STRUCTURE_FIELDS.intersection(value):
+                raise ValueError("recipe selection cannot restate legacy structural fields")
+            if value.get("resume_from"):
+                raise ValueError("resume inherits its saved definition and cannot select another recipe")
+        return value
+
     @model_validator(mode="after")
     def _check_architecture(self):
+        """Validate the legacy RoPE shape only when this request uses the flat Transformer adapter."""
+        if self.architecture is not None:
+            return self
+        if self.dimensions <= 0 or self.heads <= 0:
+            raise ValueError("dimensions and heads must be positive")
         if self.dimensions % self.heads != 0:
             raise ValueError(
                 f"dimensions {self.dimensions} must be divisible by heads {self.heads}"
             )
         head_dim = self.dimensions // self.heads
-        # RoPE rotates adjacent pairs (2i, 2i+1) of each head's dimensions, so an
-        # odd head_dim leaves the last one unrotated — a silently half-positioned
-        # model rather than a failure. Cheap to catch here.
         if head_dim % 2 != 0:
             raise ValueError(
                 f"head_dim must be even for RoPE: dimensions {self.dimensions} "
@@ -240,6 +270,7 @@ class TrainConfig(BaseModel):
 
     @property
     def head_dim(self) -> int:
+        """Return the legacy flat attention width; recipe dimensions are owned by its resolved definition."""
         return self.dimensions // self.heads
 
     def stages(self) -> list[CurriculumStage]:
@@ -261,6 +292,7 @@ class SftConfig(BaseModel):
     """
 
     model_config = _ALLOW_MODEL_PREFIX
+    _inherit_definition = model_validator(mode="before")(_inherited_definition)
 
     model_name: str = Field(description="names the fine-tuned run's directory")
     base_model: str = Field(description="the pretrained model to fine-tune from")
@@ -275,10 +307,9 @@ class SftConfig(BaseModel):
     warmup_steps: int = 50
     grad_clip: float = 1.0
     weight_decay: float = 0.1
-    # The one performance knob SFT restates, because it is not one: a base model
-    # large enough to need it in pretrain cannot be fine-tuned without it either,
-    # and the rest of that section — precision, compile, tf32 — only decides how
-    # fast a run that already fits goes. See `TrainConfig.recompute_blocks`.
+    precision: str = Field(default="bf16", pattern="^(bf16|fp16|fp32)$")
+    compile_model: bool = True
+    allow_tf32: bool = True
     recompute_blocks: bool | int | None = Field(
         default=None,
         description="how many transformer blocks recompute their activations in the "
@@ -378,6 +409,7 @@ class RlConfig(BaseModel):
     """
 
     model_config = _ALLOW_MODEL_PREFIX
+    _inherit_definition = model_validator(mode="before")(_inherited_definition)
 
     model_name: str = Field(description="names the run's directory under artifacts/models/")
     base_model: str = Field(description="the model to start from, and the frozen reference")

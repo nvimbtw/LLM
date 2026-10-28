@@ -65,7 +65,7 @@ function ModelsGridContent() {
           m.description.toLowerCase().includes(needle) ||
           familyOf(m).toLowerCase().includes(needle)
       )
-      .sort((a, b) => b.params - a.params)
+      .sort((a, b) => (b.params ?? -1) - (a.params ?? -1))
   }, [models, visibility, query])
 
   const chosen = React.useMemo(

@@ -1,0 +1,354 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "cpu-policy",
+      "model": "RuntimePolicy",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        }
+      }
+    },
+    {
+      "name": "cuda-policy",
+      "model": "RuntimePolicy",
+      "valid": true,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cuda",
+          "device_allocator_bytes": 4294967296,
+          "owned_processes": 3,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        }
+      }
+    },
+    {
+      "name": "hard-tree-policy",
+      "model": "RuntimePolicy",
+      "valid": true,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "cgroup_v2",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        }
+      }
+    },
+    {
+      "name": "cpu-device-budget",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 2147483648,
+        "tree_memory_enforcement": "preflight_and_monitor",
+        "device": "cpu",
+        "device_allocator_bytes": 1,
+        "owned_processes": 1,
+        "open_files_per_process": 64,
+        "artifact_bytes": 8388608,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "cuda-missing-budget",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 2147483648,
+        "tree_memory_enforcement": "preflight_and_monitor",
+        "device": "cuda",
+        "device_allocator_bytes": 0,
+        "owned_processes": 1,
+        "open_files_per_process": 64,
+        "artifact_bytes": 8388608,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "zero-tree-budget",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 0,
+        "tree_memory_enforcement": "preflight_and_monitor",
+        "device": "cpu",
+        "device_allocator_bytes": 0,
+        "owned_processes": 1,
+        "open_files_per_process": 64,
+        "artifact_bytes": 8388608,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "unowned-helper-count",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 2147483648,
+        "tree_memory_enforcement": "preflight_and_monitor",
+        "device": "cpu",
+        "device_allocator_bytes": 0,
+        "owned_processes": 9,
+        "open_files_per_process": 64,
+        "artifact_bytes": 8388608,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "per-process-not-tree-enforcement",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 2147483648,
+        "tree_memory_enforcement": "rlimit_as",
+        "device": "cpu",
+        "device_allocator_bytes": 0,
+        "owned_processes": 1,
+        "open_files_per_process": 64,
+        "artifact_bytes": 8388608,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "artifact-exceeds-total",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 2147483648,
+        "tree_memory_enforcement": "preflight_and_monitor",
+        "device": "cpu",
+        "device_allocator_bytes": 0,
+        "owned_processes": 1,
+        "open_files_per_process": 64,
+        "artifact_bytes": 33554432,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "boolean-process-count",
+      "model": "RuntimeResources",
+      "valid": false,
+      "value": {
+        "process_address_bytes": 17179869184,
+        "tree_resident_bytes": 2147483648,
+        "tree_memory_enforcement": "preflight_and_monitor",
+        "device": "cpu",
+        "device_allocator_bytes": 0,
+        "owned_processes": true,
+        "open_files_per_process": 64,
+        "artifact_bytes": 8388608,
+        "total_artifact_bytes": 16777216
+      }
+    },
+    {
+      "name": "unbounded-progress",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "pending_messages": 65
+      }
+    },
+    {
+      "name": "multiple-pending-writes",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "pending_effects": 2
+      }
+    },
+    {
+      "name": "multiple-pending-publications",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "pending_publications": 2
+      }
+    },
+    {
+      "name": "larger-packet",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "packet_bytes": 8192
+      }
+    },
+    {
+      "name": "boolean-version",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "schema_version": true
+      }
+    },
+    {
+      "name": "distinct-deadlines",
+      "model": "RuntimeDeadlines",
+      "valid": true,
+      "value": {
+        "import_seconds": 30.0,
+        "training_progress_seconds": 300.0
+      }
+    },
+    {
+      "name": "zero-grace",
+      "model": "RuntimeDeadlines",
+      "valid": false,
+      "value": {
+        "cancel_grace_seconds": 0.0
+      }
+    },
+    {
+      "name": "zero-progress-watchdog",
+      "model": "RuntimeDeadlines",
+      "valid": false,
+      "value": {
+        "training_progress_seconds": 0.0
+      }
+    },
+    {
+      "name": "source-at-limit",
+      "model": "RuntimeArtifact",
+      "valid": true,
+      "value": {
+        "artifact_id": "11111111-1111-4111-8111-111111111111",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size_bytes": 262144,
+        "format": "source_snapshot_v1"
+      }
+    },
+    {
+      "name": "source-over-limit",
+      "model": "RuntimeArtifact",
+      "valid": false,
+      "value": {
+        "artifact_id": "11111111-1111-4111-8111-111111111111",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size_bytes": 262145,
+        "format": "source_snapshot_v1"
+      }
+    },
+    {
+      "name": "boolean-pending-effect",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "pending_effects": true
+      }
+    },
+    {
+      "name": "boolean-pending-publication",
+      "model": "RuntimePolicy",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "resources": {
+          "process_address_bytes": 17179869184,
+          "tree_resident_bytes": 2147483648,
+          "tree_memory_enforcement": "preflight_and_monitor",
+          "device": "cpu",
+          "device_allocator_bytes": 0,
+          "owned_processes": 1,
+          "open_files_per_process": 64,
+          "artifact_bytes": 8388608,
+          "total_artifact_bytes": 16777216
+        },
+        "pending_publications": true
+      }
+    }
+  ]
+}

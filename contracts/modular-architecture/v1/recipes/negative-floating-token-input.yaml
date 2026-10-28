@@ -1,0 +1,172 @@
+schema_version: 1
+interface: causal_lm
+parameters:
+  dimensions:
+    type: integer
+    required: false
+    default: 32
+    minimum: 8
+    maximum: 1024
+  heads:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    maximum: 32
+  layers:
+    type: integer
+    required: false
+    default: 2
+    minimum: 1
+    maximum: 32
+  ff_multiplier:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    maximum: 16
+  context_window:
+    type: integer
+    required: false
+    default: 32
+    minimum: 2
+    maximum: 4096
+  rope_base:
+    type: number
+    required: false
+    default: 10000.0
+    minimum: 2.0
+  learned_temperature:
+    type: boolean
+    required: false
+    default: false
+  gain:
+    type: number
+    default: 0.25
+    minimum: -2.0
+    maximum: 2.0
+    title: Residual scale
+    description: Initial value of the custom learned residual scale.
+inputs:
+  tokens:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+  positions:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  key_mask:
+    dtype: bool
+    shape:
+    - batch
+    - sequence
+outputs:
+  logits:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - vocabulary
+result:
+  logits: model_logits
+context_window: ${context_window}
+modules:
+  embedding:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000002
+      revision_id: 20000000-0000-4000-8000-000000000002
+      content_hash: 8ac77e06dd71783fd447b661ee2024a054bf0726e61c03c09b78b87729ec05ff
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      width: ${dimensions}
+  final_norm:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000004
+      revision_id: 20000000-0000-4000-8000-000000000004
+      content_hash: 6eaca966c17fe2d10861355c41bf0e4c2417162e0daa8ad2c68344c0900fe636
+    parameters:
+      width: ${dimensions}
+      epsilon: 1.0e-05
+  head:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000005
+      revision_id: 20000000-0000-4000-8000-000000000005
+      content_hash: 10415f492f3f60e49fa1b7beeb5bb37330edef5ce77ab2d40f27ed84fbe4b989
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      width: ${dimensions}
+  scale:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000008
+      revision_id: 20000000-0000-4000-8000-000000000008
+      content_hash: 1eca38c60d4ba8c954e63db8f744edaef6603d9b3d7a465557d5b687695c19e4
+    parameters:
+      gain: ${gain}
+  merge:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000006
+      revision_id: 20000000-0000-4000-8000-000000000006
+      content_hash: aa1f64cd2eb7fc88b35c0bf372996003cbfdc7c2bf67e42fb2f43a50a3bf477e
+    parameters: {}
+aliases:
+- owner: embedding.weight
+  target: head.weight
+flow:
+- call: embedding
+  inputs:
+    tokens: tokens
+  outputs:
+    hidden: embedded
+- stack: ${layers}
+  name: layers
+  template:
+    reference:
+      kind: block
+      resource_id: 10000000-0000-4000-8000-000000000003
+      revision_id: 20000000-0000-4000-8000-000000000003
+      content_hash: 0b258c5da5d0307b0016ea1ac6cac6054785b97553756a6cd282abb14256e25c
+    parameters:
+      dimensions: ${dimensions}
+      heads: ${heads}
+      ff_multiplier: ${ff_multiplier}
+      ctx_window: ${context_window}
+      rope_base: ${rope_base}
+      learned_temperature: ${learned_temperature}
+  inputs:
+    positions: positions
+    key_mask: key_mask
+  carry:
+    hidden:
+      initial: embedded
+      input: hidden
+      output: hidden
+      result: trunk_hidden
+- call: scale
+  inputs:
+    hidden: trunk_hidden
+  outputs:
+    hidden: scaled_hidden
+- call: merge
+  inputs:
+    left: trunk_hidden
+    right: scaled_hidden
+  outputs:
+    hidden: residual_hidden
+- call: final_norm
+  inputs:
+    hidden: residual_hidden
+  outputs:
+    hidden: normalized
+- call: head
+  inputs:
+    hidden: normalized
+  outputs:
+    logits: model_logits

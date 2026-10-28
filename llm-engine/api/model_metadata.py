@@ -1,6 +1,5 @@
 """Resolve model facts from saved results, legacy metadata and bounded ancestry."""
 
-import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +7,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from llm import storage
+from llm.architecture import package
+from llm.architecture.package_integrity import METADATA_BYTES, decode_json, read_bytes
 from store import queries as q
 from store.schema import Model
 
@@ -23,6 +24,7 @@ class ModelMetadata:
     context: int | None
     vocabulary_size: int | None
     parameter_count: int | None
+    definition_id: str | None = None
 
 
 def read_model_meta(directory: Path | None) -> dict:
@@ -30,8 +32,8 @@ def read_model_meta(directory: Path | None) -> dict:
     if directory is None or not (directory / "meta.json").is_file():
         return {}
     try:
-        value = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
-    except (ValueError, UnicodeError):
+        value = decode_json(read_bytes(directory / "meta.json", METADATA_BYTES))
+    except (OSError, ValueError, UnicodeError):
         return {}
     return value if isinstance(value, dict) else {}
 
@@ -66,12 +68,14 @@ def _facts(parameters: dict, meta: dict) -> tuple[dict[str, int], int | None, in
     return architecture, vocabulary, parameters_count
 
 
-def resolve_model_metadata(db: Session, model: Model | None, meta: dict) -> ModelMetadata:
+def resolve_model_metadata(db: Session, model: Model | None, meta: dict, directory: Path | None = None) -> ModelMetadata:
     """Resolve a model's own facts, filling legacy gaps through base/resume models for at most 25 hops.
 
     Does not mutate rows or copy ancestor training data. Cycles, malformed IDs and deleted
     ancestors stop the walk; the model's resolved facts always override inherited ones.
     """
+    if model is not None and model.definition_id is not None or directory is not None and (directory / "package.json").exists():
+        return modular_metadata(model, meta, directory)
     architecture: dict[str, int] = {}
     vocabulary = parameter_count = context = None
     seen: set[uuid.UUID] = set()
@@ -107,3 +111,27 @@ def resolve_model_metadata(db: Session, model: Model | None, meta: dict) -> Mode
         vocabulary_size=vocabulary,
         parameter_count=parameter_count,
     )
+
+
+def modular_metadata(model: Model | None, meta: dict, directory: Path | None) -> ModelMetadata:
+    """Use saved modular context/tokenizer facts and local measured counts without inheriting incompatible legacy dimensions."""
+    context = positive_count(model.context) if model else None
+    parameters = (model.parameters or {}) if model else {}
+    result = meta.get("result") or parameters.get("result", {})
+    if not isinstance(result, dict):
+        result = {}
+    vocabulary = positive_count(result.get("vocab"))
+    measured = result.get("parameters")
+    count = measured if type(measured) is int and 0 <= measured <= 2**53 - 1 else None
+    definition_id = model.definition_id if model else None
+    if directory is not None and (directory / "package.json").exists():
+        try:
+            manifest = package.read_manifest(directory)
+            if model is not None and model.definition_id not in (None, manifest.definition_id):
+                raise ValueError("saved model definition differs from its index")
+            context = manifest.definition.context_window
+            definition_id = manifest.definition_id
+            vocabulary = manifest.definition.tokenizer.vocabulary_size
+        except (OSError, ValueError):
+            return ModelMetadata(None, context, None, None, definition_id)
+    return ModelMetadata(None, context, vocabulary, count, definition_id)

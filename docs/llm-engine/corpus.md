@@ -114,6 +114,36 @@ slot adoption are documented in [project-memory.md](project-memory.md).
 Packed SFT keys/sidecars record `context_format: 1`. This intentionally rebuilds
 older packs that skipped the new roles; ordinary source rendering is unchanged.
 
+`sft.build` also accepts a caller-owned `directory` for private supervised
+preparation, without changing `DATA_DIR` or sharing files between vocabularies.
+The storage map resolves the same four artifact names in that directory. The
+existing default cache path and legacy callers retain their behavior.
+
+An explicit `PackBudget` limits combined uint16 token plus uint8 mask bytes
+(three bytes per token, including separators) and document rows before append.
+Bounded mode also refuses a source conversation above 8,388,608 characters or
+the policy's smaller one-character-per-admitted-output-byte ceiling, before
+tokenization. Cooperative cancellation is checked per source row, encoded
+example and before publication. Budget refusal, source failure and cancellation
+remove both partial files, preserving earlier complete token/mask files before
+publication starts. This is private preparation support; it does not establish
+durable cross-file cache transactions or the SFT worker/package integration.
+
+When a legacy vocabulary still names the memory slots as placeholders, rendering
+privately adopts their names through the canonical template. The report now
+records actual IDs 47/48 from those examples even though the original tokenizer
+does not name them yet. They remain input-only. The SFT tokenizer-byte helper can
+then retain a derived identity while leaving the base bytes unchanged.
+
+## Builtin example vocabulary
+
+The builtin architecture catalog also publishes a real byte-alphabet tokenizer
+for its concrete numerical acceptance examples. `corpus/baseline.py` constructs
+the engine's reserved block plus every byte with zero learned merges, without
+fetching or fitting text. Its implicit index and complete artifact are separate
+from ordinary dataset-derived vocabularies. It never replaces a pending training
+tokenizer; see [builtin lifecycle](architecture-builtins.md).
+
 ## What the encoder is given, and why the pack is not slower than it is
 
 Packing is where a rebuild spends nearly all of its time, so the shape of what
@@ -167,6 +197,17 @@ LLM engine has. `llm/corpus/spans.py` carries the measurements.
 A build packed before the table moved out of `segments.json` carries its rows
 inline there. Those are read, not invalidated — a repacked corpus is hours of
 work, and `spans.from_sidecar` takes either shape.
+
+Recipe pretraining preparation supplies `pack.PackBudget`: at most 16 GiB of
+uint16 token bytes, including separators, and 16,777,216 document rows. Each
+piece is admitted before adding token bytes or a completed row, so crossing a
+ceiling cannot publish an oversized build. The temporary token file is removed
+on budget/source failure; a previous complete build remains intact. Exact-fit
+budgets preserve the existing token, span and sidecar bytes, including empty
+documents and split encoding batches. Reused builds are checked against the
+same ceilings. These are output bounds, not a tokenizer allocation estimate;
+parent admission/staging capacity and worker resident-memory planning remain
+separate parts of the supervised training integration.
 
 ## What phase 1 measures, and why it is measured where it is
 

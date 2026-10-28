@@ -1,4 +1,4 @@
-"""Warm-starting embedding rows before a fine-tune.
+"""Capability-owned token-table warm-start before a fine-tune, with a deliberate legacy adapter.
 
 A marker absent from the pretrain corpus reaches SFT with its embedding still at
 random init, and injects noise into the shared trunk the instant SFT feeds it —
@@ -14,31 +14,70 @@ that bound catches around half of all legitimately-trained-but-small embeddings
 vocabulary onto one mean vector and *caused* the gibberish it was meant to
 prevent. A weight value does not carry its own history; only a record made at
 pretrain time does, which is what `special_ids_seen` is for.
+
+Declared custom capabilities own their tied/untied input and output tables.
+Unsupported whole models retain all weights and return a distinct skipped status.
 """
 
-import torch
+from torch import nn
 
+from llm.architecture.build import RecipeModule
+from llm.architecture.interfaces import TokenRowInitializer, TokenRowResult
+from llm.architecture.plan import PlanCall
 from llm.model.transformer import Transformer
 
 
-def warm_start_embeddings(model: Transformer, ids: list[int]) -> int:
-    """Reset each row in `ids` to the mean embedding. Returns how many were reset.
+def declared_initializer(model: nn.Module) -> TokenRowInitializer | None:
+    """Find an explicitly declared whole-model token-table owner, without inferring ownership from tensor names.
 
-    Ids at or past the vocabulary are skipped rather than rejected: a mismatched
-    record should not fail a run that is otherwise fine.
+    A composition delegates only when its sole child is called once with the
+    complete unchanged named interface. Loops, other children and tensor-only
+    compositions do not promote a local block capability to the whole model.
     """
-    if not ids:
-        return 0
+    if isinstance(model, RecipeModule):
+        if model.plan.interface != "causal_lm" or len(model.instances) != 1 or len(model.plan.operations) != 1:
+            return None
+        call = model.plan.operations[0]
+        if (not isinstance(call, PlanCall) or call.inputs != {name: name for name in model.plan.inputs}
+                or call.outputs != model.plan.result):
+            return None
+        return declared_initializer(model.instances[call.instance])
+    if "token_rows" in getattr(model, "__slate_capabilities__", ()) and isinstance(model, TokenRowInitializer):
+        return model
+    return None
 
-    with torch.no_grad():
-        table = model.embedding.weight
-        mean = table.mean(dim=0)
-        reset = 0
-        for token_id in ids:
-            if 0 <= token_id < table.shape[0]:
-                table[token_id] = mean
-                reset += 1
-    return reset
+
+def initialize_token_rows(model: nn.Module, ids: list[int]) -> TokenRowResult:
+    """Initialize unique requested rows through declared table ownership, or skip without changing unsupported weights.
+
+    The caller owns an admitted worker and supplies marker provenance; weights
+    cannot reveal which markers were trained. Invalid ID types/budgets refuse
+    before mutation. Out-of-vocabulary IDs follow the capability's skipped report.
+    """
+    if len(ids) > 65536 or any(type(token_id) is not int for token_id in ids):
+        raise ValueError("token row initialization requires at most 65536 integer IDs")
+    token_ids = tuple(dict.fromkeys(ids))
+    if isinstance(model, Transformer):
+        return model.initialize_token_rows(token_ids)
+    initializer = declared_initializer(model)
+    if initializer is None:
+        return TokenRowResult("skipped_unsupported", skipped_ids=token_ids)
+    result = initializer.initialize_token_rows(token_ids)
+    if (not isinstance(result, TokenRowResult) or type(result.initialized_ids) is not tuple
+            or type(result.skipped_ids) is not tuple):
+        raise ValueError("token row capability returned an invalid outcome")
+    reported = result.initialized_ids + result.skipped_ids
+    if (result.status not in {"initialized", "skipped_unsupported"}
+            or any(type(token_id) is not int for token_id in reported)
+            or len(reported) != len(set(reported)) or set(reported) != set(token_ids)
+            or result.status == "skipped_unsupported" and result.initialized_ids):
+        raise ValueError("token row capability returned inconsistent row ownership")
+    return result
+
+
+def warm_start_embeddings(model: nn.Module, ids: list[int]) -> int:
+    """Keep the existing count-returning SFT call compatible while routing through explicit token-row ownership."""
+    return len(initialize_token_rows(model, ids).initialized_ids)
 
 
 def untrained_marker_ids(used: list[int], seen: list[int] | None) -> list[int]:

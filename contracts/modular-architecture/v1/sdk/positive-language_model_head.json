@@ -1,0 +1,41 @@
+{
+  "sdk_version": 1,
+  "name": "language_model_head",
+  "title": "Language Model Head",
+  "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+  "parameters": {
+    "vocab": {
+      "type": "integer",
+      "required": true,
+      "minimum": 1
+    },
+    "width": {
+      "type": "integer",
+      "required": true,
+      "minimum": 1
+    }
+  },
+  "inputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "outputs": {
+    "logits": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "vocabulary"
+      ]
+    }
+  },
+  "capabilities": [
+    "token_rows"
+  ]
+}

@@ -1,0 +1,266 @@
+{
+  "$defs": {
+    "Call": {
+      "additionalProperties": false,
+      "description": "Call an existing instance; named outputs introduce fresh lexical values.",
+      "properties": {
+        "call": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Call",
+          "type": "string"
+        },
+        "inputs": {
+          "maxProperties": 32,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputs": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "call",
+        "inputs",
+        "outputs"
+      ],
+      "title": "Call",
+      "type": "object"
+    },
+    "CarryBinding": {
+      "additionalProperties": false,
+      "description": "Initialize an iteration value and export its final value into a fresh outer name.",
+      "properties": {
+        "initial": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Initial",
+          "type": "string"
+        },
+        "input": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Input",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        },
+        "result": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "initial",
+        "input",
+        "output",
+        "result"
+      ],
+      "title": "CarryBinding",
+      "type": "object"
+    },
+    "ModuleDeclaration": {
+      "additionalProperties": false,
+      "description": "Create exactly one instance of a pinned block/subarchitecture with typed bindings.",
+      "properties": {
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "reference": {
+          "$ref": "#/$defs/RevisionRef"
+        }
+      },
+      "required": [
+        "reference"
+      ],
+      "title": "ModuleDeclaration",
+      "type": "object"
+    },
+    "Repeat": {
+      "additionalProperties": false,
+      "description": "Run a fixed bounded body with shared instances and explicit lexical carry.",
+      "properties": {
+        "body": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Call"
+              },
+              {
+                "$ref": "#/$defs/Repeat"
+              },
+              {
+                "$ref": "#/$defs/Stack"
+              }
+            ]
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "title": "Body",
+          "type": "array"
+        },
+        "carry": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/CarryBinding"
+            }
+          },
+          "title": "Carry",
+          "type": "object"
+        },
+        "repeat": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Repeat"
+        }
+      },
+      "required": [
+        "repeat",
+        "carry",
+        "body"
+      ],
+      "title": "Repeat",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    },
+    "Stack": {
+      "additionalProperties": false,
+      "description": "Construct independent indexed instances; carry maps template ports across them.",
+      "properties": {
+        "carry": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/CarryBinding"
+            }
+          },
+          "title": "Carry",
+          "type": "object"
+        },
+        "inputs": {
+          "maxProperties": 32,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "stack": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Stack"
+        },
+        "template": {
+          "$ref": "#/$defs/ModuleDeclaration"
+        }
+      },
+      "required": [
+        "stack",
+        "name",
+        "template",
+        "carry"
+      ],
+      "title": "Stack",
+      "type": "object"
+    }
+  },
+  "$ref": "#/$defs/Repeat"
+}

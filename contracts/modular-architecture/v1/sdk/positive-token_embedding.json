@@ -1,0 +1,40 @@
+{
+  "sdk_version": 1,
+  "name": "token_embedding",
+  "title": "Token Embedding",
+  "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+  "parameters": {
+    "vocab": {
+      "type": "integer",
+      "required": true,
+      "minimum": 1
+    },
+    "width": {
+      "type": "integer",
+      "required": true,
+      "minimum": 1
+    }
+  },
+  "inputs": {
+    "tokens": {
+      "dtype": "int64",
+      "shape": [
+        "batch",
+        "sequence"
+      ]
+    }
+  },
+  "outputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "capabilities": [
+    "token_rows"
+  ]
+}

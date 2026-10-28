@@ -30,6 +30,7 @@ import { ModelBenchmarks } from "./model-benchmarks"
 import { ModelCheckpoints } from "./model-checkpoints"
 import { ModelHeader } from "./model-header"
 import { ModelLineage } from "./model-lineage"
+import { SavedModelDefinition } from "./saved-definition"
 import {
   formatContext,
   formatCount,
@@ -193,7 +194,7 @@ function ModelDetailContent({ modelId }: ModelDetailProps) {
         <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-5 sm:grid-cols-3">
           <HeroStat
             label="Parameters"
-            value={model.params ? formatParams(model.params) : "—"}
+            value={formatParams(model.params, model.parameterCountEstimated)}
           />
           <HeroStat
             label="Context"
@@ -210,18 +211,19 @@ function ModelDetailContent({ modelId }: ModelDetailProps) {
             hint="tokens"
           />
         </dl>
-        <ModelArchitecture model={model} />
+        {model.definitionId && isAdmin ? (
+          <SavedModelDefinition
+            modelId={model.id}
+            definitionId={model.definitionId}
+          />
+        ) : (
+          <ModelArchitecture model={model} />
+        )}
         <TrainingFacts model={model} />
         <ModelLineage model={model} />
         <ModelCheckpoints modelId={modelId} canContinue={isAdmin} />
         {isAdmin && <ModelBenchmarks modelId={modelId} />}
-        {model.architecture && (
-          <AttentionViewer
-            modelId={modelId}
-            layers={model.architecture.layers}
-            heads={model.architecture.heads}
-          />
-        )}
+        {model.hasWeights && <AttentionViewer modelId={modelId} />}
       </div>
     </>
   )
@@ -253,7 +255,9 @@ function ModelArchitecture({ model }: { model: ModelData }) {
     return (
       <Panel variant="open" title="Architecture">
         <p className="text-sm text-muted-foreground">
-          Architecture metadata is unavailable.
+          {model.definitionId
+            ? "This model uses a saved modular architecture."
+            : "Architecture metadata is unavailable."}
         </p>
       </Panel>
     )

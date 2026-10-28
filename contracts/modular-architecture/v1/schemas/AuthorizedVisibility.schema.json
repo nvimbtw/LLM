@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "description": "Trusted Rust-to-engine scope; browser filters cannot grant administration visibility.",
+  "properties": {
+    "actor_id": {
+      "format": "uuid",
+      "title": "Actor Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "scope": {
+      "enum": [
+        "public",
+        "administration"
+      ],
+      "title": "Scope",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "actor_id",
+    "scope"
+  ],
+  "title": "AuthorizedVisibility",
+  "type": "object"
+}

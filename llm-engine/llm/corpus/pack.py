@@ -22,9 +22,13 @@ import hashlib
 import json
 import re
 import shutil
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from queue import Full, Queue
 from threading import Event, Thread
+from typing import BinaryIO
 
 import numpy as np
 from tokenizers import Tokenizer
@@ -112,6 +116,31 @@ BUILD_SOURCES = 16
 #: datasets it drew from, each resolved against the data engine. Epochs are
 #: absent on purpose — see `corpus_key`.
 StageSelection = tuple[str | None, list[remote.Selected]]
+
+
+@dataclass(frozen=True)
+class PackBudget:
+    """Bound streamed token bytes and retained document rows before either grows past admission."""
+
+    max_corpus_bytes: int
+    max_documents: int
+
+    def __post_init__(self) -> None:
+        """Require positive integer byte/row ceilings; booleans cannot stand in for resource budgets."""
+        if any(type(value) is not int or value < 1 for value in (self.max_corpus_bytes, self.max_documents)):
+            raise ValueError("packing budgets must be positive integer byte/row ceilings")
+
+
+@contextmanager
+def _corpus_output(corpus: Path) -> Iterator[BinaryIO]:
+    """Replace token bytes after successful streaming and remove incomplete output on every failure."""
+    partial = corpus.with_suffix(".bin.partial")
+    try:
+        with partial.open("wb") as output:
+            yield output
+        partial.replace(corpus)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -461,6 +490,7 @@ def pack(
     fingerprint: str = "",
     report=None,
     plan: list[dict] | None = None,
+    budget: PackBudget | None = None,
 ) -> PackStats:
     """Encode every document into one flat corpus, recording its boundaries.
 
@@ -476,6 +506,10 @@ def pack(
     itself. Without it the pack still reports what it has done, and cannot say
     how much is left. `expected_chars` is optional and is what an ETA is
     projected from where it is there — see `_Tally.expected_chars`.
+    `budget` bounds token bytes, including separators, and document rows before
+    buffering/writing them. A refusal removes partial token output and retains
+    a previous complete build. Encoding one text batch precedes this
+    output check; the budget is not a tokenizer allocation estimate.
     """
     vocab = bpe.vocab_size(tok)
     if vocab > np.iinfo(CORPUS_DTYPE).max + 1:
@@ -495,57 +529,47 @@ def pack(
     documents = SpanBuilder()
     seen: set[int] = set()
     corpus_len = 0
-    # A handful of counters per source rather than any per document: the only
-    # moment the text and its encoding are both in hand is this loop, and what
-    # it accumulates is both the sidecar's fertility and every live frame.
+
     tally = _Tally(plan)
 
     storage.ensure_dir(storage.pretrain_dataset_dir(key))
 
-    # Written through a .partial and renamed, so an interrupted pack leaves the
-    # previous corpus intact rather than a truncated file that still loads.
     corpus = storage.pretrain_corpus_path(key)
-    partial = corpus.with_suffix(".bin.partial")
 
     buffer: list[int] = []
-    # How often each token id occurs, accumulated over the blocks on their way to
-    # disk. Free here — every id is already in hand, as a numpy array, at the one
-    # moment the whole corpus passes through a single point.
-    #
-    # Recorded because the alternative is reading it back: the training loop's
-    # diagnostics need the most frequent ids, and computing them from corpus.bin
-    # cost 64 s and pulled all 8.3 GB of the mapping resident before the first
-    # step of every run. See `llm.train.diagnostics.histogram`.
+
     counts = np.zeros(vocab, dtype=np.int64)
 
-    # The document being written, which a batch boundary is allowed to fall in
-    # the middle of: where it began in the corpus, and how much of it has been
-    # written so far. Its span cannot be recorded until its last piece has been
-    # encoded, and that may be the first piece of the next batch.
     open_start = 0
     open_length = 0
+    document_count = 0
 
     def flush() -> None:
+        """Write the current bounded token buffer and accumulate its exact vocabulary histogram."""
         if buffer:
             block = np.asarray(buffer, dtype=CORPUS_DTYPE)
             counts[:] += np.bincount(block, minlength=vocab)[:vocab]
             out.write(block.tobytes())
             buffer.clear()
 
-    with partial.open("wb") as out:
+    with _corpus_output(corpus) as out:
 
         def write(batch: list[_Piece]) -> None:
             """Encode one batch and append what it holds, in order."""
-            nonlocal corpus_len, open_start, open_length
+            nonlocal corpus_len, open_start, open_length, document_count
 
             encoded = bpe.encode_batch(tok, [piece.text for piece in batch])
             for piece, ids in zip(batch, encoded):
                 source = piece.source
+                closes_document = piece.closes and (bool(ids) or (not piece.opens and open_length > 0))
+                next_tokens = corpus_len + len(ids) + int(closes_document)
+                if budget is not None:
+                    if next_tokens * np.dtype(CORPUS_DTYPE).itemsize > budget.max_corpus_bytes:
+                        raise ValueError("packed corpus exceeds training input byte budget")
+                    if document_count + int(closes_document) > budget.max_documents:
+                        raise ValueError("packed corpus exceeds training document row budget")
                 if piece.opens:
-                    # Counted before anything is looked at, so `chars` is what
-                    # was read and not what survived encoding — a source that
-                    # encodes to nothing is a fact about the tokenizer, not an
-                    # absence of text.
+
                     tally.read(source)
                     open_start, open_length = corpus_len, 0
 
@@ -558,45 +582,30 @@ def pack(
                         flush()
 
                 if piece.closes and open_length:
+                    document_count += 1
                     documents.append(
                         source.dataset,
                         start=open_start,
                         length=open_length,
                         stage=source.stage,
                     )
-                    # The document's own tokens, as `spans` records them — the
-                    # separator belongs to the packing, not to the source.
+
                     buffer.append(eot_id)
                     corpus_len += 1
                     tally.wrote(source, open_length)
 
-            # One batch is one report at most, and usually fewer: this is the
-            # only boundary at which the counters are consistent, and it is
-            # reached often enough (a batch is `ENCODE_BATCH_CHARS` of text)
-            # that the throttle rather than the loop decides the frame rate.
             tally.report(report)
 
-        # Read on one thread and encoded on this one, so a page is being fetched
-        # while the page before it is being encoded. Peak memory is a handful of
-        # batches whatever the corpus is, which is what `_Piece` bought.
         for batch in _read_ahead(_batches(documents_in)):
             write(batch)
         flush()
 
-    partial.replace(corpus)
-    # Forced, because the throttle would otherwise drop the one frame that says
-    # the pack is over: the last batch of a build is usually seconds after the
-    # one before it, and a step whose final state was never reported leaves the
-    # panel showing wherever the last frame happened to land.
     tally.report(report, force=True)
 
     per_dataset = tally.fertility()
     spans = documents.build()
     spans.save(storage.pretrain_spans_path(key))
 
-    # The selection and the vocabulary are written beside the documents so a
-    # packed corpus says what it is. `is_built` compares against this rather than
-    # trusting the directory name, which is the check that makes reuse safe.
     storage.pretrain_segments_path(key).write_text(
         json.dumps(
             {
@@ -607,13 +616,9 @@ def pack(
                 "stages": stages or [],
                 "special_ids_seen": sorted(seen),
                 "token_counts": counts.tolist(),
-                # Beside the build rather than only in the run that made it: a
-                # reused corpus reports what it is from here, and a metric that
-                # existed only on a fresh build would read as missing on every
-                # cached one.
+
                 "fertility": per_dataset,
-                # The rows themselves are in spans.npy; what stays here is the
-                # count a person reads and the name table those rows index into.
+
                 "documents": len(spans),
                 "datasets": spans.names,
             },

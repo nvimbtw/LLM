@@ -1,0 +1,163 @@
+{
+  "$defs": {
+    "ShapeDomain": {
+      "additionalProperties": false,
+      "description": "Bound actual tensor signatures; singleton specializations are explicit profiles.",
+      "properties": {
+        "batch_max": {
+          "minimum": 1,
+          "title": "Batch Max",
+          "type": "integer"
+        },
+        "batch_min": {
+          "minimum": 1,
+          "title": "Batch Min",
+          "type": "integer"
+        },
+        "past_max": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Past Max",
+          "type": "integer"
+        },
+        "past_min": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Past Min",
+          "type": "integer"
+        },
+        "sequence_max": {
+          "minimum": 1,
+          "title": "Sequence Max",
+          "type": "integer"
+        },
+        "sequence_min": {
+          "minimum": 1,
+          "title": "Sequence Min",
+          "type": "integer"
+        },
+        "signatures": {
+          "items": {
+            "enum": [
+              "full_prefix",
+              "prefill",
+              "decode"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Signatures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "batch_min",
+        "batch_max",
+        "sequence_min",
+        "sequence_max",
+        "signatures"
+      ],
+      "title": "ShapeDomain",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Bind numerical/capture evidence to runtime compatibility and explicit shape guards.",
+  "properties": {
+    "allow_tf32": {
+      "default": false,
+      "title": "Allow Tf32",
+      "type": "boolean"
+    },
+    "capture_policy": {
+      "const": "torch-export-strict-v1",
+      "title": "Capture Policy",
+      "type": "string"
+    },
+    "device": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Device",
+      "type": "string"
+    },
+    "domains": {
+      "items": {
+        "$ref": "#/$defs/ShapeDomain"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Domains",
+      "type": "array"
+    },
+    "export_guards": {
+      "default": [],
+      "items": {
+        "maxLength": 1024,
+        "type": "string"
+      },
+      "maxItems": 128,
+      "title": "Export Guards",
+      "type": "array"
+    },
+    "modes": {
+      "items": {
+        "enum": [
+          "train",
+          "eval"
+        ],
+        "type": "string"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Modes",
+      "type": "array"
+    },
+    "numerical_seed": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Numerical Seed",
+      "type": "integer"
+    },
+    "precision": {
+      "enum": [
+        "fp32",
+        "fp16",
+        "bf16"
+      ],
+      "title": "Precision",
+      "type": "string"
+    },
+    "sdk_version": {
+      "const": 1,
+      "title": "Sdk Version",
+      "type": "integer"
+    },
+    "token_dtype": {
+      "default": "int64",
+      "enum": [
+        "int64",
+        "int32"
+      ],
+      "title": "Token Dtype",
+      "type": "string"
+    },
+    "torch_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Torch Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "torch_version",
+    "sdk_version",
+    "device",
+    "precision",
+    "capture_policy",
+    "domains",
+    "modes"
+  ],
+  "title": "RuntimeProfile",
+  "type": "object"
+}

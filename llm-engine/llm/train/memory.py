@@ -357,8 +357,12 @@ def guard(device: str, budget: int) -> None:
     cap was honoured and the context was not in it. That is what the margin in
     `budget_bytes` is for. Driver-free plus allocator-reserved memory excludes
     existing external allocations, unlike total device capacity.
+
+    An existing worker admission cap may only be tightened by training. Reading
+    the current allocator fraction prevents a later planner from widening it.
     """
     if device != "cuda" or not torch.cuda.is_available() or budget <= 0:
         return
     total = torch.cuda.get_device_properties(0).total_memory
-    torch.cuda.set_per_process_memory_fraction(min(1.0, budget / total))
+    current = torch.cuda.get_per_process_memory_fraction()
+    torch.cuda.set_per_process_memory_fraction(min(current, budget / total))

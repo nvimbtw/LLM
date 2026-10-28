@@ -7,10 +7,11 @@ const UNITS: [number, string][] = [
   [1e3, "K"],
 ]
 
-/** Parameter count, e.g. 8_442_304 -> "8.4M". 0 reads as undisclosed. */
-export function formatParams(count: number): string {
-  if (!count) return "Undisclosed"
-  return formatCount(count)
+/** Formats a known nonnegative count, preserving measured zero and explicitly distinguishing legacy estimates from unavailable values. */
+export function formatParams(count: number | null, estimated = false): string {
+  if (count === null || !Number.isSafeInteger(count) || count < 0)
+    return "Unavailable"
+  return `${estimated ? "≈ " : ""}${formatCount(count)}`
 }
 
 /** Context window in tokens, e.g. 64 -> "64", 8192 -> "8K". */

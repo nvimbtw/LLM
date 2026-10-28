@@ -1,0 +1,34 @@
+{
+  "sdk_version": 1,
+  "name": "custom_scale",
+  "title": "Custom Scale",
+  "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+  "parameters": {
+    "gain": {
+      "type": "integer",
+      "required": false,
+      "default": true
+    }
+  },
+  "inputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "outputs": {
+    "hidden": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "width"
+      ]
+    }
+  },
+  "capabilities": []
+}

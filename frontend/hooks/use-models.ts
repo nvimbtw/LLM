@@ -5,6 +5,7 @@ import * as React from "react"
 import { apiFetch } from "@/lib/api"
 import type { CurriculumStage, DatasetSelection } from "@/lib/training"
 import { estimateTrainingParameters } from "@/lib/training-architecture"
+import { useSessionToken } from "./use-auth"
 
 export type ModelTier = "flagship" | "balanced" | "fast"
 
@@ -13,13 +14,19 @@ export interface Model {
   name: string
   family: string
   tier: ModelTier | null
-  /** Raw parameter count. 0 means unknown. */
-  params: number
+  /** Measured count or legacy shape estimate; null means unavailable and zero remains a measured zero. */
+  params: number | null
+  /** Distinguishes a legacy shape estimate from a saved measurement. */
+  parameterCountEstimated?: boolean
   /** Context window in tokens. */
   contextWindow: number
   description: string
   /** Whether the model is published (visible to non-admins). */
   published: boolean
+  /** Immutable saved modular semantics; absence retains legacy architecture presentation. */
+  definitionId?: string | null
+  /** True only when public runtime metadata reports implemented context extension. */
+  supportsContextExtension?: boolean
 }
 
 export interface RawModelConfig {
@@ -77,6 +84,8 @@ export interface RawModelResult {
 }
 
 export interface RawModel {
+  definition_id?: string | null
+  context_extension_supported?: boolean
   architecture?: RawArchitecture | null
   vocab_size?: number | null
   parameter_count?: number | null
@@ -100,8 +109,10 @@ export interface RawModel {
   checkpoint_index: number | null
 }
 
-/** Returns the resolved shape, preferring actual results over requested dimensions. Invalid or incomplete metadata stays unavailable. */
+/** Returns authoritative resolved shape, including explicit unavailability; older responses alone fall back to saved results/config. */
 export function architectureOf(raw: RawModel): RawArchitecture | null {
+  if ("architecture" in raw)
+    return validArchitecture(raw.architecture) ? { ...raw.architecture } : null
   const c = raw.parameters?.config
   for (const shape of [
     raw.architecture,
@@ -193,16 +204,23 @@ export function datasetsOf(raw: RawModel): LineageDatasetRef[] {
   return out
 }
 
-/** Returns recorded parameters, or the shared training estimate from shape and measured vocabulary; zero means unavailable. */
-export function estimateParams(raw: RawModel): number {
-  const measured = [
-    raw.parameter_count,
-    raw.parameters?.result?.parameters,
-  ].find(validCount)
-  if (measured !== undefined) return measured
+/** Reads a local nonnegative parameter measurement without confusing an actual zero with absence. */
+function measuredParameters(raw: RawModel): number | null {
+  return (
+    [raw.parameter_count, raw.parameters?.result?.parameters].find(
+      (value) =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ) ?? null
+  )
+}
+
+/** Returns recorded nonnegative parameters, or the standard legacy shape estimate; unavailable counts remain null. */
+export function estimateParams(raw: RawModel): number | null {
+  const measured = measuredParameters(raw)
+  if (measured !== null) return measured
   const arch = architectureOf(raw)
-  if (!arch) return 0
-  return estimateTrainingParameters(arch, vocabularySizeOf(raw)) ?? 0
+  if (!arch) return null
+  return estimateTrainingParameters(arch, vocabularySizeOf(raw))
 }
 
 /** Returns only an explicitly assigned size category; unknown values never acquire an automatic tier. */
@@ -216,6 +234,8 @@ export function tierFor(raw: RawModel): ModelTier | null {
 
 /** Maps a registry response into shared card and picker facts without inventing unavailable measurements. */
 export function mapModel(raw: RawModel): Model {
+  if (raw.definition_id != null && !/^[0-9a-f]{64}$/.test(raw.definition_id))
+    throw new Error("Model definition identity is invalid.")
   const arch = architectureOf(raw)
   const description =
     raw.description ??
@@ -228,9 +248,13 @@ export function mapModel(raw: RawModel): Model {
     family: raw.family ?? "Custom",
     tier: tierFor(raw),
     params: estimateParams(raw),
+    parameterCountEstimated:
+      measuredParameters(raw) === null && estimateParams(raw) !== null,
     contextWindow: raw.context ?? arch?.ctx_window ?? 0,
     description,
     published: raw.published,
+    definitionId: raw.definition_id ?? null,
+    supportsContextExtension: raw.context_extension_supported === true,
   }
 }
 
@@ -249,42 +273,64 @@ export async function deleteModel(id: string): Promise<void> {
   }
 }
 
-/** Loads finished registry models for the supplied refresh key, ignoring obsolete reads. Checkpoints remain on their parent’s page. */
+/** Maps registry models while retaining usable public rows whose private training provenance has been deliberately removed. */
+export function modelsFromRegistry(rows: readonly RawModel[]): Model[] {
+  return rows
+    .filter((model) => model.has_weights || model.parameters)
+    .map(mapModel)
+}
+
+/** Loads registry facts for one actual session/refresh identity, aborting replaced reads and masking old private models immediately. */
 export function useModels(refreshKey?: unknown) {
-  const [models, setModels] = React.useState<Model[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
-  const [error, setError] = React.useState<Error | null>(null)
-
-  const [loadedFor, setLoadedFor] = React.useState(refreshKey)
-  if (loadedFor !== refreshKey) {
-    setLoadedFor(refreshKey)
-    setIsLoading(true)
-  }
-
+  const token = useSessionToken()
+  const [state, setState] = React.useState<{
+    token: string
+    refreshKey: unknown
+    models: Model[]
+    error: Error | null
+  } | null>(null)
   React.useEffect(() => {
+    if (!token) return
+    const controller = new AbortController()
     let active = true
-    apiFetch(`/models`)
-      .then((res) => {
-        if (!res.ok) throw new Error("Unable to load models.")
-        return res.json() as Promise<{ models: RawModel[] }>
+    void apiFetch("/models", {
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load models.")
+        const data: { models: RawModel[] } = await response.json()
+        if (!Array.isArray(data.models))
+          throw new Error("Model registry response is invalid.")
+        return modelsFromRegistry(data.models)
       })
-      .then((data) => {
+      .then((models) => {
+        if (active) setState({ token, refreshKey, models, error: null })
+      })
+      .catch((cause: unknown) => {
         if (active)
-          setModels(data.models.filter((m) => m.parameters).map(mapModel))
-      })
-      .catch((err) => {
-        if (active)
-          setError(
-            err instanceof Error ? err : new Error("Unable to load models.")
-          )
-      })
-      .finally(() => {
-        if (active) setIsLoading(false)
+          setState({
+            token,
+            refreshKey,
+            models: [],
+            error:
+              cause instanceof Error
+                ? cause
+                : new Error("Unable to load models."),
+          })
       })
     return () => {
       active = false
+      controller.abort()
     }
-  }, [refreshKey])
-
-  return { models, isLoading, error }
+  }, [token, refreshKey])
+  const current =
+    state?.token === token && Object.is(state.refreshKey, refreshKey)
+      ? state
+      : null
+  return {
+    models: current?.models ?? [],
+    isLoading: Boolean(token && !current),
+    error: current?.error ?? null,
+  }
 }

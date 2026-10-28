@@ -2,6 +2,9 @@
 
 import * as React from "react"
 import { useSearchParams } from "next/navigation"
+import { useSessionToken } from "@/hooks/use-auth"
+import { ArchitectureReadOwner } from "@/lib/architecture/read-owner"
+import { loadTrainingSeed } from "@/lib/training-seed"
 
 import {
   FollowUps,
@@ -12,69 +15,74 @@ import {
 import { TrainBoard } from "@/components/training/train-board"
 import { toast } from "@/components/ui/toast"
 import { DEFAULT_CONFIG, useTrainingComposer } from "@/hooks/use-training"
-import { getJob, trainConfig } from "@/lib/jobs"
 import type { TrainConfig } from "@/lib/training"
+import { FormError, LoadError } from "@/components/ui/error-state"
+import { Skeleton } from "@/components/ui/skeleton"
 
-/**
- * The training form.
- *
- * Purely a form: submitting queues a job and hands off to /train/{id}, where the
- * run's live figures live — so there is no telemetry state to own here.
- *
- * `?from=<job id>` seeds it from a previous run's stored config. Most runs are a
- * tweak of the last one, and retyping a dozen hyperparameters to change one of
- * them was the worst part of the old flow.
- *
- * `?resume=<model id>` seeds what the run continues from — a finished model or
- * one of its checkpoints, which is the link a model page's checkpoint list
- * carries. Independent of `?from=`: one says what the run *is*, the other says
- * where its weights start, and a run that reuses both is the ordinary way to
- * pick a run back up from the point it went wrong.
- */
+/** Keys the private training form by actual bearer and rerun/resume URL selection; replacement releases its draft, read and submission owners. */
 export function TrainComposer() {
   const params = useSearchParams()
+  const token = useSessionToken()
   const from = params.get("from")
   const resume = params.get("resume")
-  const { start, isSubmitting } = useTrainingComposer()
+  return token ? (
+    <TrainingForm
+      key={`${token}:${from}:${resume}`}
+      token={token}
+      from={from}
+      resume={resume}
+    />
+  ) : null
+}
+
+/** Owns one session and rerun/resume seed; loading finishes before editing starts, and failed seed reads never silently authorize default settings. */
+function TrainingForm({
+  token,
+  from,
+  resume,
+}: {
+  token: string
+  from: string | null
+  resume: string | null
+}) {
+  const { start, isSubmitting, submissionError } = useTrainingComposer()
+  const [epoch, retrySeed] = React.useReducer((value: number) => value + 1, 0)
+  const [seed, setSeed] = React.useState({
+    loaded: !from,
+    error: null as string | null,
+  })
 
   const [cfg, setCfg] = React.useState<TrainConfig>(() =>
     resume ? { ...DEFAULT_CONFIG, resume_from: resume } : DEFAULT_CONFIG
   )
-  // What runs after this one, if anything. Held here rather than inside the rail
-  // because the rail is one job's parameters and this is a list of other jobs —
-  // and because the submit that has to carry both lives here.
   const [steps, setSteps] = React.useState<Step[]>([])
 
   React.useEffect(() => {
     if (!from) return
-    let alive = true
-    getJob(from)
-      .then((job) => {
-        const config = trainConfig(job)
-        // The name carries over as-is: training the same name again is a retrain
-        // of that model (it reuses the storage id), which is usually what "run
-        // again" means. Change it here to fork instead.
-        //
-        // `?resume=` wins over whatever the seeded run continued from: the two
-        // arrive together when someone re-runs a job *starting from* a
-        // checkpoint, and the one in the URL is the one just clicked.
-        if (alive && config)
-          setCfg(resume ? { ...config, resume_from: resume } : config)
+    const owner = new ArchitectureReadOwner({
+      token,
+      resource: `training-seed:${from}:${resume}`,
+    })
+    void owner
+      .read((signal) => loadTrainingSeed(from, resume, { token, signal }))
+      .then((config) => {
+        if (!config) return
+        setCfg(config)
+        setSeed({ loaded: true, error: null })
       })
-      .catch(() => {
-        // A seed that can't be loaded just leaves the defaults in place; the form
-        // is still perfectly usable and saying so would be noise.
-      })
-    return () => {
-      alive = false
-    }
-  }, [from, resume])
+      .catch((cause: unknown) =>
+        setSeed({
+          loaded: false,
+          error:
+            cause instanceof Error
+              ? cause.message.slice(0, 2000)
+              : "Previous training settings did not load.",
+        })
+      )
+    return () => owner.dispose()
+  }, [token, from, resume, epoch])
 
-  // The rail's own submit is the one submit on the page; the chain rides along with
-  // it. A step that does not validate stops the whole submit rather than being
-  // silently dropped — a run that queues without the fine-tune you asked to follow
-  // it is worse than one that refuses to queue at all, because you find out in the
-  // morning.
+  /** Validates every follow-up before requesting one atomic root/chain submission. */
   const submit = (config: TrainConfig) => {
     const problems = stepErrors(steps)
     if (problems.length > 0) {
@@ -84,22 +92,35 @@ export function TrainComposer() {
     start(config, toFollowUps(steps))
   }
 
-  // Client-side validation stays inside the board, next to the field it is
-  // about. A rejection from the server is an outcome and arrives as a toast.
+  if (seed.error)
+    return (
+      <LoadError
+        title="Previous training settings did not load."
+        hint={seed.error}
+        onRetry={() => {
+          setSeed({ loaded: false, error: null })
+          retrySeed()
+        }}
+      />
+    )
+  if (!seed.loaded) return <Skeleton className="h-96 w-full" />
   return (
-    <TrainBoard
-      cfg={cfg}
-      onChange={setCfg}
-      disabled={isSubmitting}
-      onStart={submit}
-      footer={
-        <FollowUps
-          steps={steps}
-          onChange={setSteps}
-          disabled={isSubmitting}
-          rootLabel="this run"
-        />
-      }
-    />
+    <>
+      {submissionError && <FormError>{submissionError}</FormError>}
+      <TrainBoard
+        cfg={cfg}
+        onChange={setCfg}
+        disabled={isSubmitting}
+        onStart={submit}
+        footer={
+          <FollowUps
+            steps={steps}
+            onChange={setSteps}
+            disabled={isSubmitting}
+            rootLabel="this run"
+          />
+        }
+      />
+    </>
   )
 }

@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "Save exact Python bytes only if the current editable draft version matches.",
+  "properties": {
+    "expected_version": {
+      "minimum": 1,
+      "title": "Expected Version",
+      "type": "integer"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_version",
+    "source"
+  ],
+  "title": "BlockDraftSave",
+  "type": "object"
+}

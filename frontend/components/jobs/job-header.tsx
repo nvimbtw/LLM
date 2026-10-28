@@ -11,7 +11,7 @@ import { useParentTrail } from "@/hooks/use-parent-trail"
 import {
   jobHref,
   KIND_LABEL,
-  STATUS_LABEL,
+  jobStatusLabel,
   deleteJob,
   elapsedSeconds,
   formatElapsed,
@@ -23,6 +23,7 @@ import {
 } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 import { FormError } from "@/components/ui/error-state"
+import { useJobSubmission } from "@/hooks/use-job-submission"
 
 /**
  * A job's masthead: what it is, where it stands, and the three things you can do
@@ -40,22 +41,16 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
   const router = useRouter()
   const parent = useParentTrail({ href: "/admin", label: "Admin" })
   const [busy, setBusy] = React.useState(false)
-  const [actionError, setActionError] = React.useState<string | null>(null)
+  const submission = useJobSubmission(`job:${job.id_job}`)
+  const actionError = submission.state?.error
 
   /** Starts recovery from the latest artifact and opens the new job, preserving actionable failures. */
   const recover = async () => {
-    setBusy(true)
-    setActionError(null)
-    try {
-      const next = await recoverJob(job.id_job)
-      router.push(jobHref(next))
-    } catch (error) {
-      setActionError(
-        error instanceof Error ? error.message : "Recovery could not start."
-      )
-    } finally {
-      setBusy(false)
-    }
+    const next = await submission.owner?.submit(
+      `recover:${job.id_job}`,
+      (request) => recoverJob(job.id_job, request)
+    )
+    if (next) router.push(jobHref(next))
   }
 
   const [now, setNow] = React.useState(() => Date.now())
@@ -70,13 +65,11 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
 
   /** Queues the same job configuration again and navigates to the new job. */
   const retry = async () => {
-    setBusy(true)
-    try {
-      const next = await retryJob(job)
-      router.push(jobHref(next))
-    } finally {
-      setBusy(false)
-    }
+    const next = await submission.owner?.submit(
+      `retry:${job.id_job}`,
+      (request) => retryJob(job, request)
+    )
+    if (next) router.push(jobHref(next))
   }
 
   /** Deletes the job and returns to its resolved parent; failures refresh the current row. */
@@ -114,7 +107,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
                 job.status === "running" && "text-foreground"
               )}
             >
-              {STATUS_LABEL[job.status]}
+              {jobStatusLabel(job)}
             </span>
             {elapsed !== null && (
               <>
@@ -141,7 +134,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={busy}
+                    disabled={busy || submission.pending}
                     onClick={recover}
                   >
                     Recover latest
@@ -149,7 +142,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
                 )}
               <Button
                 size="sm"
-                disabled={busy}
+                disabled={busy || submission.pending}
                 onClick={retry}
                 className="gap-1.5"
               >
@@ -159,7 +152,7 @@ export function JobHeader({ job, onCancel, onChanged }: JobHeaderProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={busy}
+                disabled={busy || submission.pending}
                 onClick={remove}
                 className="gap-1.5 text-muted-foreground hover:text-destructive"
               >

@@ -31,9 +31,12 @@ from llm.chat.markup import OpenBlocks, Rules
 from llm.chat.template import ASSISTANT_OPEN, Role, Turn, build_prompt, tool_block
 from llm.corpus import bpe
 from llm.backend import RemoteError
-from llm.gym.client import Client, Episode
+from llm.gym.client import Episode
+from llm.gym.interfaces import GymClient
 from llm.model import sample
-from llm.orchestrate.chat import MAX_TOOL_CALLS_PER_TURN, _ToolCalls
+from llm.model.language import evaluating
+from llm.model.generation import MAX_TOOL_CALLS_PER_TURN, ToolCalls as _ToolCalls
+from llm.model.decoding import PrefixDecoder
 
 #: What a round may spend on one reply. The browser's driver uses the same
 #: number (`MAX_TOKENS` in `gym.rs`), and the two have to agree or a batch
@@ -157,10 +160,9 @@ def _generate(
     generation, kept for a backward pass that never comes. It is the largest
     thing in the process and it is pure waste.
 
-    Rows that end early are carried to the end of the round and ignored. Their
-    tokens enter their own KV cache and nothing else's — attention does not cross
-    rows — so the alternative, re-packing the batch every time one finishes,
-    would buy nothing but a smaller matmul.
+    Rows ending early remain in their own cache/full prefix until the round ends;
+    attention never crosses rows. Legacy cache and declared full-prefix fallback
+    preserve the same explicit padding/position semantics in evaluation mode.
 
     `window` bounds the decode as well as `cfg.max_tokens`, and it is not
     optional: the longest row sets the batch's positions, and a position past the
@@ -171,40 +173,31 @@ def _generate(
     """
     device = next(model.parameters()).device
     ids, positions, live = padded([roll.ids for roll in batch], device)
-    logits, caches = model(
-        ids, caches=model.empty_caches(), positions=positions, key_mask=live, rope=rope
-    )
+    with evaluating(model), PrefixDecoder(model, ids, positions, live, window=window, rope=rope) as decoder:
+        for _ in range(cfg.max_tokens):
+            if int(decoder.positions[:, -1:].max()) + 1 + round_state.depth() >= window:
+                break
+            step = decoder.values[:, -1].float()
+            round_state.mask(step)
+            drawn = sample.pick_rows(step, cfg.temperature, cfg.top_k, cfg.top_p, generator)
 
-    at = positions[:, -1:]
-    for _ in range(cfg.max_tokens):
-        if int(at.max()) + 1 + round_state.depth() >= window:
-            break
-        step = logits[:, -1].float()
-        round_state.mask(step)
-        drawn = sample.pick_rows(step, cfg.temperature, cfg.top_k, cfg.top_p, generator)
+            for index, token in enumerate(drawn.tolist()):
+                if not round_state.open[index]:
+                    continue
+                if token in (rules.end_of_assistant, rules.end_of_text):
+                    round_state.open[index] = False
+                    continue
+                round_state.observe(index, token)
 
-        for index, token in enumerate(drawn.tolist()):
-            if not round_state.open[index]:
-                continue
-            if token in (rules.end_of_assistant, rules.end_of_text):
-                round_state.open[index] = False
-                continue
-            round_state.observe(index, token)
-
-        if not any(round_state.open):
-            break
-
-        at = at + 1
-        live = torch.cat((live, torch.ones_like(at, dtype=torch.bool)), dim=1)
-        logits, caches = model(
-            drawn[:, None], caches=caches, positions=at, key_mask=live, rope=rope
-        )
+            if not any(round_state.open):
+                break
+            decoder.advance(drawn)
 
     for index in range(len(batch)):
         round_state.drain(index)
 
 
-def _observed(client: Client, roll: Rollout) -> tuple[Rollout, str | None, float]:
+def _observed(client: GymClient, roll: Rollout) -> tuple[Rollout, str | None, float]:
     """The first call of a round, run. Only the first: that is the rule the
     engine sets for a chat turn, and an episode's conversation has to have the
     shape serving produces.
@@ -269,7 +262,8 @@ def _continue(
     return True
 
 
-def _grade(client: Client, roll: Rollout, why: str) -> None:
+def _grade(client: GymClient, roll: Rollout, why: str) -> None:
+    """Finish the sampled reply through the gym seam; only legacy transport failures become absent episodes."""
     roll.live = False
     roll.stopped = why
     try:
@@ -315,7 +309,7 @@ def start(episodes: list[Episode], tokenizer, window: int) -> list[Rollout]:
 def run(
     model,
     tokenizer,
-    client: Client,
+    client: GymClient,
     episodes: list[Episode],
     cfg,
     *,
@@ -329,6 +323,8 @@ def run(
     Nothing is written down here. The gyms engine owns the record — runs,
     episodes, steps, rewards — exactly as it does for a browser-driven run; this
     holds the batch in memory, takes its step, and drops it.
+    The final round masks tool calls so the model must answer in prose; tool-free
+    episodes keep that same mask on every round.
     """
     rules = Rules.build(tokenizer)
     scaffold = Scaffold.of(rules, tokenizer)
@@ -339,12 +335,6 @@ def run(
         if not live:
             break
 
-        # The last round is terminal: the tool-call opener is masked out of the
-        # grammar, so the model must answer in prose. It is a mask and not an
-        # instruction because a model this size does not reliably follow one —
-        # 22 of the 30 episodes in the first correctly seeded runs ended still
-        # calling the shell, scoring zero for a reason that says nothing about
-        # whether the answer had been found.
         terminal = round_index + 1 == max_rounds
         state = _Round.of(rules, tokenizer, len(live), 0 if terminal else MAX_TOOL_CALLS_PER_TURN)
         for index, roll in enumerate(live):

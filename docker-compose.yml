@@ -228,6 +228,7 @@ services:
       # The docs renderer resolves these paths one directory above /app. Keep
       # the source tree live in dev so markdown edits are picked up immediately.
       - ./docs:/docs:ro
+      - ./contracts:/contracts:ro
       - ./README.md:/README.md:ro
       - ./AGENTS.md:/AGENTS.md:ro
       # Masks the host's node_modules: bun resolves some packages per platform,

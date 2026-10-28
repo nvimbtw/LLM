@@ -1,66 +1,34 @@
-"""The migrations and the models must describe the same database.
-
-Editing `store/schema.py` without a migration is silent: the tests pass against
-a `create_all` database and production is missing the column. This is the check
-that says so, and it is the only test that needs a real Postgres.
-"""
+"""Production PostgreSQL migrations and ORM models must describe one schema."""
 
 import os
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
+
+from tests.fixtures.postgres import database
 
 pytestmark = pytest.mark.postgres
-
-ADMIN_URL = os.environ.get("LLM_ENGINE_TEST_ADMIN_URL", "postgresql+psycopg://localhost/postgres")
-SCRATCH = "slate_engine_migration_check"
-
-
-def _postgres_reachable() -> bool:
-    try:
-        create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT").connect().close()
-        return True
-    except Exception:
-        return False
 
 
 @pytest.fixture
 def scratch_database():
-    if not _postgres_reachable():
-        pytest.skip(f"no postgres at {ADMIN_URL}")
+    """Own one disposable PostgreSQL database without colliding with concurrent test runs."""
+    import store
 
-    admin = create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
-    with admin.connect() as c:
-        c.execute(text(f'DROP DATABASE IF EXISTS "{SCRATCH}"'))
-        c.execute(text(f'CREATE DATABASE "{SCRATCH}"'))
-
-    url = ADMIN_URL.rsplit("/", 1)[0] + f"/{SCRATCH}"
-    previous = os.environ.get("LLM_ENGINE_DATABASE_URL")
-    os.environ["LLM_ENGINE_DATABASE_URL"] = url
-    try:
-        yield url
-    finally:
-        if previous is None:
-            os.environ.pop("LLM_ENGINE_DATABASE_URL", None)
-        else:
-            os.environ["LLM_ENGINE_DATABASE_URL"] = previous
-
-        # Every pool holding this database has to let go before it can be
-        # dropped, and a test that failed mid-way may have left one open.
-        import store
-
-        if store._sessions is not None:
-            store._sessions.kw["bind"].dispose()
-            store._sessions = None
-        with admin.connect() as c:
-            c.execute(
-                text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :name AND pid <> pg_backend_pid()"
-                ),
-                {"name": SCRATCH},
-            )
-            c.execute(text(f'DROP DATABASE IF EXISTS "{SCRATCH}"'))
+    previous_url = os.environ.get("LLM_ENGINE_DATABASE_URL")
+    previous_sessions = store._sessions
+    with database() as url:
+        os.environ["LLM_ENGINE_DATABASE_URL"] = url
+        try:
+            yield url
+        finally:
+            if previous_url is None:
+                os.environ.pop("LLM_ENGINE_DATABASE_URL", None)
+            else:
+                os.environ["LLM_ENGINE_DATABASE_URL"] = previous_url
+            if store._sessions is not None and store._sessions is not previous_sessions:
+                store._sessions.kw["bind"].dispose()
+            store._sessions = previous_sessions
 
 
 def test_migrations_reproduce_the_models(scratch_database):

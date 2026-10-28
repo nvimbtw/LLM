@@ -30,6 +30,10 @@ import { useDatasets } from "@/hooks/use-datasets"
 import { useTokenizers } from "@/hooks/use-tokenizers"
 import { useModels } from "@/hooks/use-models"
 import { cn } from "@/lib/utils"
+import { ArchitectureChoice } from "./architecture-choice"
+import { InheritedArchitecture } from "./inherited-architecture"
+import { TrainingExecutionFields } from "./execution-fields"
+import type { TrainingArchitectureCheck } from "@/lib/training-selection"
 import { isFineTune } from "@/lib/training"
 import type { TrainConfig, TrainMode } from "@/lib/training"
 
@@ -139,7 +143,9 @@ export function ParamsRail({
       ? { ...cfg, base_model_id: baseModelId }
       : cfg
 
-  const errors = validate(effectiveCfg, followUp)
+  const [architectureCheck, setArchitectureCheck] =
+    React.useState<TrainingArchitectureCheck | null>(null)
+  const errors = validate(effectiveCfg, followUp, architectureCheck)
   const errorKey = errors.join("\n")
   const reportValidity = React.useEffectEvent(() =>
     onValidity?.(errorKey ? errorKey.split("\n") : [])
@@ -215,6 +221,23 @@ export function ParamsRail({
           className="h-auto py-0 font-display text-xl md:text-xl"
         />
       </div>
+
+      {!inheritsArchitecture(effectiveCfg) && (
+        <ArchitectureChoice
+          config={effectiveCfg}
+          onChange={onChange}
+          disabled={disabled}
+          onValidity={setArchitectureCheck}
+        />
+      )}
+      {!followUp &&
+        inheritsArchitecture(effectiveCfg) &&
+        (isSft ? baseModelId : cfg.resume_from) && (
+          <InheritedArchitecture
+            cfg={effectiveCfg}
+            modelId={(isSft ? baseModelId : cfg.resume_from)!}
+          />
+        )}
 
       <div className="grid gap-x-8 sm:grid-cols-2">
         {isSft && !followUp && (
@@ -380,6 +403,11 @@ export function ParamsRail({
         </div>
       )}
 
+      <TrainingExecutionFields
+        config={effectiveCfg}
+        disabled={disabled}
+        onChange={onChange}
+      />
       {!isSft && (
         <div className="space-y-3">
           <div className="space-y-3 border-y border-border/60 py-3">
@@ -437,7 +465,7 @@ export function ParamsRail({
 
       {inheritsArchitecture(cfg) ? (
         <p className="text-xs text-muted-foreground">
-          Architecture (dimensions, context, heads, layers) is inherited from{" "}
+          Architecture and vocabulary are inherited from{" "}
           {isSft ? "the base model" : "the checkpoint"} — only the run knobs
           above apply.
           {!isSft && (
@@ -465,7 +493,7 @@ export function ParamsRail({
             </>
           )}
         </p>
-      ) : (
+      ) : !cfg.architecture ? (
         <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
           <div className="flex justify-between">
             <span>Head size (dims ÷ heads)</span>
@@ -480,7 +508,7 @@ export function ParamsRail({
             </span>
           </div>
         </div>
-      )}
+      ) : null}
 
       {errors.length > 0 && !disabled && (
         <ul className="space-y-0.5 text-xs text-destructive">

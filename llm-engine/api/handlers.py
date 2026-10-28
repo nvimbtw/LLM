@@ -12,6 +12,7 @@ import shutil
 from llm import storage
 
 import store
+from api.validation_handler import ValidationHandler
 from llm.config import EvalConfig, RlConfig, SftConfig, TokenizerConfig, TrainConfig
 from llm.orchestrate import rl as rl_pipeline
 from llm.orchestrate import sft as sft_pipeline
@@ -328,6 +329,7 @@ def reinforce(config: dict, progress, cancel, owner: str | None = None) -> dict:
 
 
 HANDLERS = {
+    RunKind.model_validation: ValidationHandler(),
     RunKind.train: train,
     RunKind.benchmark: benchmark,
     RunKind.tokenize: tokenize,

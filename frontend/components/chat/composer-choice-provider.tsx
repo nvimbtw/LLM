@@ -4,6 +4,7 @@ import * as React from "react"
 import type { ThinkBudget } from "@/lib/think-budget"
 import { getToken } from "@/lib/api"
 import { useAuth, useSessionToken } from "@/hooks/use-auth"
+import { useModel, type ModelDetail } from "@/hooks/use-model"
 import {
   DEFAULT_COMPOSER_CHOICE,
   loadComposerChoice,
@@ -17,6 +18,7 @@ interface ComposerChoiceValue {
   setModel: (id: string) => void
   budget: ThinkBudget
   setBudget: (budget: ThinkBudget) => void
+  modelFacts: ModelDetail | null
 }
 
 interface ChoiceState {
@@ -39,6 +41,7 @@ export function ComposerChoiceProvider({
   const [state, setState] = React.useState<ChoiceState | null>(null)
   const current = state?.token === token ? state : null
   const choice = current?.choice ?? DEFAULT_COMPOSER_CHOICE
+  const { model: modelFacts, isLoading: factsLoading } = useModel(choice.model)
 
   React.useEffect(() => {
     if (!token) return
@@ -80,11 +83,13 @@ export function ComposerChoiceProvider({
   return (
     <ComposerChoiceContext.Provider
       value={{
-        isLoading: authLoading || (Boolean(token) && !current?.loaded),
+        isLoading:
+          authLoading || (Boolean(token) && !current?.loaded) || factsLoading,
         model: choice.model,
         budget: choice.budget,
         setModel,
         setBudget,
+        modelFacts,
       }}
     >
       {children}

@@ -9,7 +9,7 @@ import { Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
-import { LoadError } from "@/components/ui/error-state"
+import { FormError, LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
@@ -23,6 +23,8 @@ import {
 import { useModels } from "@/hooks/use-models"
 import { listGyms, LEVELS, type Gym } from "@/lib/gyms"
 import { jobHref, queueReinforcement } from "@/lib/jobs"
+import { useJobSubmission } from "@/hooks/use-job-submission"
+import { identityDigest } from "@/lib/architecture/decoder"
 import { DemonstrationsForm } from "@/components/gyms/demonstrations-form"
 
 /**
@@ -73,7 +75,8 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
   const [temperature, setTemperature] = React.useState("1.0")
   const [automatic, setAutomatic] = React.useState(true)
   const [checkEvery, setCheckEvery] = React.useState(10)
-  const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const submission = useJobSubmission("rl-composer")
+  const isSubmitting = submission.pending
 
   React.useEffect(() => {
     let alive = true
@@ -161,36 +164,31 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
       return base.includes(id) ? base.filter((t) => t !== id) : [...base, id]
     })
 
+  /** Queues an immutable practice configuration under one session/request identity, preserving unknown outcomes for an unchanged retry. */
   const submit = async () => {
-    setIsSubmitting(true)
-    try {
-      // `model_name` carries the *typed* name. The LLM engine mints the id the
-      // weights live under and keeps what was typed as `display_name` — the
-      // same arrangement every training composer relies on.
-      const job = await queueReinforcement({
-        model_name: name.trim(),
-        base_model: baseModel,
-        gym_id: gymId,
-        task_types: selected,
-        ...(gym?.composite ? { gym_weights: sourceWeights } : {}),
-        group_size: groupSize,
-        tasks_per_batch: tasksPerBatch,
-        iterations,
-        checkpoint_target: recoverySaves,
-        max_rounds: noTools ? 1 : maxRounds,
-        ...(adaptive ? { curriculum: { check_every: checkEvery } } : {}),
-        lr: lrValue,
-        beta: betaValue,
-        temperature: temperatureValue,
-      })
+    const config = {
+      model_name: name.trim(),
+      base_model: baseModel,
+      gym_id: gymId,
+      task_types: [...selected],
+      ...(gym?.composite ? { gym_weights: { ...sourceWeights } } : {}),
+      group_size: groupSize,
+      tasks_per_batch: tasksPerBatch,
+      iterations,
+      checkpoint_target: recoverySaves,
+      max_rounds: noTools ? 1 : maxRounds,
+      ...(adaptive ? { curriculum: { check_every: checkEvery } } : {}),
+      lr: lrValue,
+      beta: betaValue,
+      temperature: temperatureValue,
+    }
+    const job = await submission.owner?.submit(
+      identityDigest(config),
+      (request) => queueReinforcement(config, [], request)
+    )
+    if (job) {
       toast.success("Practice run queued.", job.label)
       router.push(jobHref(job))
-    } catch (e) {
-      toast.error(
-        "Couldn't queue the run",
-        e instanceof Error ? e.message : "Something went wrong."
-      )
-      setIsSubmitting(false)
     }
   }
 
@@ -198,6 +196,9 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
 
   return (
     <div className="space-y-6">
+      {submission.state?.error && (
+        <FormError>{submission.state.error}</FormError>
+      )}
       <Panel variant="open" title="The model">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Base model" hint="the run's frozen reference too">

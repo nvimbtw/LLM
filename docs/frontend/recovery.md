@@ -14,3 +14,8 @@ comparison are separate from these implementation changes.
 Legacy `language_v3` benchmark reports remain in a separate history tab with their
 original score version. They cannot be newly queued or retried; the active
 benchmark composer offers `language` only.
+
+Benchmark model summaries allow unavailable Transformer layer, width and head
+counts for custom definitions. Score cards omit those shape labels and retain
+the actual parameter count. Compression remains unavailable when no reference
+corpus is installed.

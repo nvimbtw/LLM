@@ -100,6 +100,13 @@ visible. Both Enter and the Send button wait for in-flight uploads.
 
 ## Jobs, gyms and models
 
+[Modular architecture foundations](architectures.md) maps shared runtime decoders,
+identity-scoped reads, neutral source editors and declared parameter controls.
+[Administrator architecture drafts](architecture-authoring.md) maps connected
+catalog/copy/editing, validation/acceptance and frozen-source inspection pages.
+Their real browser/service evidence and final gate status are tracked in the
+[feature acceptance map](../llm-engine/modular-architecture-acceptance.md).
+
 [Data processing](data-processing.md) covers processor directory/creation pages,
 source editing, saved/active versions and the dataset save/repreview loop.
 

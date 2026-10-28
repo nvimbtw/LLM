@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "Create a named resource with arbitrary draft bytes, including malformed Python.",
+  "properties": {
+    "description": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "Description",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "source"
+  ],
+  "title": "BlockCreate",
+  "type": "object"
+}

@@ -14,6 +14,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
+
+from llm.architecture.wire import Diagnostic, ValidationEvent
 
 #: Frames after which a subscriber stops listening.
 FINAL = ("done", "error", "cancelled")
@@ -92,6 +95,11 @@ class Registry:
 
         kind = {"completed": "done", "cancelled": "cancelled", "failed": "error"}[status]
         payload = {"error": run.error} if status == "failed" else {"result": run.result}
+        if run.kind == "model_validation":
+            payload = ValidationEvent(schema_version=1,run_id=UUID(run.id),sequence=len(run.history),type=kind,
+                verdict=run.result.get("verdict") if status == "completed" and run.result else None,
+                diagnostic=Diagnostic(code="validation_execution",phase="execution",message=(run.error or "validation failed")[:2000])
+                if status == "failed" else None).model_dump(mode="json",exclude_none=True)
         self.publish(run, Event(kind, payload))
 
     def publish(self, run: Run, event: Event) -> None:

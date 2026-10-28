@@ -34,6 +34,7 @@ Key = Uuid(as_uuid=True)
 
 
 def _now() -> datetime:
+    """Return a UTC timestamp for engine-owned persistence transitions."""
     return datetime.now(timezone.utc)
 
 
@@ -54,6 +55,7 @@ class RunKind(str, enum.Enum):
     #: rather than a loss curve, and nothing that reads a run's frames can tell
     #: those apart from the numbers alone.
     rl = "rl"
+    model_validation = "model_validation"
 
 
 class RunStatus(str, enum.Enum):
@@ -91,6 +93,7 @@ class Model(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
     family: Mapped[str | None] = mapped_column(String(120))
+    definition_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("model_definitions.id", ondelete="RESTRICT"), index=True)
     #: The TrainConfig the run was started with, stored opaquely.
     parameters: Mapped[dict | None] = mapped_column(Json)
     context: Mapped[int | None] = mapped_column(Integer)
@@ -181,8 +184,10 @@ class Run(Base):
     training: Mapped["TrainingRun | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
     tokenizer_build: Mapped["TokenizerBuild | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
     benchmark_dispatch: Mapped["BenchmarkDispatch | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
+    model_validation: Mapped["ModelValidation | None"] = relationship(cascade="all, delete-orphan", lazy="joined", uselist=False)
 
     def _domain(self):
+        """Return/create the kind-specific domain row without copying execution lifecycle state."""
         if self.kind in (RunKind.train, RunKind.rl):
             if self.training is None:
                 self.training = TrainingRun(training_type="rl" if self.kind == RunKind.rl else "pretrain")
@@ -195,14 +200,20 @@ class Run(Base):
             if self.benchmark_dispatch is None:
                 self.benchmark_dispatch = BenchmarkDispatch()
             return self.benchmark_dispatch
+        if self.kind == RunKind.model_validation:
+            if self.model_validation is None:
+                self.model_validation = ModelValidation()
+            return self.model_validation
         raise ValueError(f"unsupported execution kind {self.kind}")
 
     @property
     def config(self):
+        """Read the persisted kind-specific input snapshot, preserving legacy empty inputs."""
         return self._domain().config or {}
 
     @config.setter
     def config(self, value):
+        """Store inputs and reserve the appropriate model/tokenizer output identity."""
         domain = self._domain()
         domain.config = value
         if isinstance(domain, TrainingRun):
@@ -213,15 +224,20 @@ class Run(Base):
 
     @property
     def result(self):
+        """Read kind-specific results independently of the execution job status."""
         return self._domain().result
 
     @result.setter
     def result(self, value):
+        """Store domain results without changing queue lifecycle or publication state."""
         self._domain().result = value
 
     @property
     def ref_id(self):
+        """Project the typed output identity; validation always refers to its own job UUID."""
         domain = self._domain()
+        if isinstance(domain, ModelValidation):
+            return self.id
         if isinstance(domain, TrainingRun):
             return domain.model_id
         if isinstance(domain, TokenizerBuild):
@@ -230,7 +246,12 @@ class Run(Base):
 
     @ref_id.setter
     def ref_id(self, value):
+        """Assign a produced model/tokenizer/report reference or verify validation identity."""
         domain = self._domain()
+        if isinstance(domain, ModelValidation):
+            if value is not None and value != self.id:
+                raise ValueError("validation output must equal its job UUID")
+            return
         if isinstance(domain, TrainingRun):
             domain.model_id = value
         elif isinstance(domain, TokenizerBuild):
@@ -238,12 +259,23 @@ class Run(Base):
         else:
             domain.benchmark_id = value
 
+    @property
+    def output(self) -> dict[str, str | None]:
+        """Serialize the existing typed output envelope with a distinct validation family."""
+        kinds = {
+            RunKind.train: "model", RunKind.rl: "model", RunKind.tokenize: "tokenizer",
+            RunKind.benchmark: "benchmark", RunKind.model_validation: "validation",
+        }
+        reference = self.ref_id
+        return {"type": kinds[self.kind], "id": str(reference) if reference else None}
+
 
 def _uuid(value):
+    """Parse optional historical artifact identity, preserving absent legacy output UUIDs."""
     try:
         return uuid.UUID(str(value))
     except (ValueError, TypeError):
-        return None  # Historical runs may predate reserved output UUIDs.
+        return None
 
 
 class TrainingRun(Base):
@@ -262,6 +294,7 @@ class TrainingRun(Base):
     result: Mapped[dict | None] = mapped_column(Json)
     target_model_id: Mapped[uuid.UUID | None] = mapped_column(Key)
     model_id: Mapped[uuid.UUID | None] = mapped_column(Key, ForeignKey("models.id", ondelete="SET NULL"))
+    definition_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("model_definitions.id", ondelete="RESTRICT"), index=True)
 
 
 class TokenizerBuild(Base):
@@ -282,9 +315,19 @@ class BenchmarkDispatch(Base):
 
     @property
     def result(self):
+        """Project the remote benchmark reference without mirroring its service-owned report."""
         return {"benchmark_id": str(self.benchmark_id)} if self.benchmark_id else None
 
     @result.setter
     def result(self, value):
+        """Adopt a valid remote report identity from benchmark dispatch results."""
         if value and value.get("benchmark_id"):
             self.benchmark_id = _uuid(value["benchmark_id"])
+
+
+# Catalog mappings share Base and register after the execution facade declarations.
+from store.architecture_schema import (  # noqa: E402
+    Architecture, ArchitectureDependency, ArchitectureRevision, BlockRevision,
+    DefinitionEvidence, ModelBlock, ModelDefinition, ModelValidation,
+    MutationRequest, RunArchitecturePin, ValidationEvidence,
+)

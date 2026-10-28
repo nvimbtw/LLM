@@ -1,0 +1,49 @@
+schema_version: 1
+interface: tensor
+parameters: {}
+inputs:
+  hidden:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - width
+outputs:
+  hidden:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - width
+  joined:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - merged_width
+result:
+  hidden: second_hidden
+  joined: second_joined
+modules:
+  branch:
+    reference:
+      kind: architecture
+      resource_id: 10000000-0000-4000-8000-000000000100
+      revision_id: 20000000-0000-4000-8000-000000000999
+      content_hash: 2543a35b0a4b4c721e20ee311525e442047d4e666faeb77d405b11d91233b288
+    parameters:
+      gain: 0.25
+      outer_iterations: 2
+flow:
+- call: branch
+  inputs:
+    hidden: hidden
+  outputs:
+    hidden: first_hidden
+    joined: first_joined
+- call: branch
+  inputs:
+    hidden: first_hidden
+  outputs:
+    hidden: second_hidden
+    joined: second_joined

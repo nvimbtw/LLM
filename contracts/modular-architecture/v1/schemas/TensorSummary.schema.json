@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "description": "Show bounded shape/dtype metadata without embedding raw tensor contents.",
+  "properties": {
+    "dtype": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Dtype",
+      "type": "string"
+    },
+    "shape": {
+      "items": {
+        "anyOf": [
+          {
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+            "type": "string"
+          }
+        ]
+      },
+      "maxItems": 8,
+      "title": "Shape",
+      "type": "array"
+    }
+  },
+  "required": [
+    "shape",
+    "dtype"
+  ],
+  "title": "TensorSummary",
+  "type": "object"
+}

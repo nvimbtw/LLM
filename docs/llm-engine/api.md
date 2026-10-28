@@ -13,6 +13,197 @@ upgrade is an HTTP request, so the socket routes are covered by the same check.
 FastAPI's own `/docs`, `/redoc` and `/openapi.json` bypass an app-level
 dependency, so all three are turned off.
 
+Generic run/model reads and run SSE derive visibility from the service JWT's
+exact singleton `scope: ["administration"]` or public fallback. Rust mints that
+claim from verified browser access; browser query fields never grant visibility.
+Legacy, missing and malformed scopes use public projection, including open
+development requests. Validation jobs are excluded in SQL before active/history
+pagination and counts, and detail/events reject public access before replay.
+Public run config/results/stage/logs and raw errors, plus opaque model metadata,
+are omitted; measured model facts and finite known progress metrics remain.
+Administrators retain complete metadata. A durable observer disconnect does not
+cancel the job. Health hides an active validation's identity from public callers.
+
+## Architecture catalogs (partial ISS-56 delivery)
+
+`/blocks` and `/architectures` currently expose administrator-only collection,
+detail, draft, metadata/archive and immutable revision reads. An exact
+administrative scope and actor UUID are required, even in open-development
+mode. Configured hop authentication verifies the token signature; open development
+retains the existing optional unsigned-claim policy. Browser visibility queries
+cannot authorize these routes. Listing and
+saving never import custom Python or parse editable YAML. Invalid drafts remain
+readable/editable, with independent draft/metadata versions. Stale mutations
+return 409; builtin mutation returns 403; unknown identities return 404.
+
+Collection reads bound search/filter/page inputs and use UUID keyset cursors
+scoped to their original family/filters/administrative visibility. Revision
+pages bind their cursor to the original resource and use immutable revision
+numbers. Immutable source reads verify both resource and revision identities;
+retained acceptance evidence survives original job pruning. Sources and graph
+bodies do not appear in catalog summaries. Source UTF-8 byte overruns return
+413; other interpreted input refusals return bounded structured 422 errors.
+
+Literal `GET /architectures/schema` precedes UUID routes and exposes the actual
+recipe schema plus source/YAML/work limits and binding syntax. Its typed
+`ArchitectureSchema` also supplies the installed runtime's prospective default
+profile and reported CPU/CUDA devices; these are editable validation inputs,
+not capability evidence or device admission.
+
+Explicit `POST /architectures/{id}/declaration` accepts the exact `DraftSubject`
+and returns `RecipeDraftInspection` for those saved YAML bytes. It safely parses
+declared parameters, ports and pinned references without importing dependencies,
+resolving a model, constructing tensors or enqueueing work. Changed version/hash
+returns 409; invalid YAML returns a bounded inspection-phase 422. The result is
+always `inspection_only` and cannot authorize revision acceptance or training.
+Ordinary draft reads/saves retain their no-parsing behavior. Block declaration
+inspection executes Python and continues to use the supervised validation queue.
+The versioned
+[architecture contracts](architecture-contracts.md) define these interfaces.
+
+`POST /blocks/{id}/validations` and `/architectures/{id}/validations` return 202
+normal validation run envelopes. Submission locks the unarchived resource and
+freezes exact saved bytes, immutable dependency sources, builtin compatibility
+pins and the requested profile before committing one actor/request-idempotent
+queue row. Reusing the same actor/request with different arguments returns 409;
+replaying a pruned operation returns 404 and requires a fresh request UUID.
+Inspection needs no constructor/profile values and is block-only. Full requests
+may use pending tokenizer bindings, which return provisional metadata with
+construction/capture/numerical stages skipped. They authorize neither acceptance
+nor training. Serialized snapshots cap at 256 KiB for inspection and 8 MiB for
+full validation; the snapshot ceiling includes JSON encoding and dependency bytes.
+
+Final tokenizer facts must match a complete owned tokenizer build. The adapter
+reads bounded data-only tokenizer bytes and checks their full SHA-256, actual
+vocabulary size and requested reserved marker IDs. The legacy shortened corpus
+fingerprint is not a version-one binding hash. Invented facts or client-supplied
+derived provenance return 422. Admin-only
+`GET /tokenizers/{id}/architecture-binding` returns the authoritative `FinalTokenizer`;
+optional repeated `reserved` query names request engine marker IDs. Names use an
+`_id` suffix; `pad_id` refers to the existing end-of-text padding token. Other
+supported names identify their `<|name|>` marker. Missing builds return 404;
+inconsistent bytes/sidecars or unavailable markers return 422. Tokenizer bytes
+cap at 64 MiB; this operation loads no model weights.
+
+`GET /validations/{id}` serves a completed, verified immutable report.
+`GET /validations/{id}/graph` pages previously published receipt-bound scopes;
+it never constructs a model or starts capture. Page sizes, scope/cursor lengths
+and view/mode/signature are checked before artifact reads. Incomplete/failed jobs,
+invalid/provisional evidence, unavailable artifacts and stale graph identities
+return structured 409 errors. A completed-invalid validation is a done job with
+diagnostics; a worker/cleanup failure is a failed job without acceptance evidence.
+
+`POST /blocks/{id}/revisions` and `/architectures/{id}/revisions` accept only
+the exact current draft/version/hash and dependency digest with fully bound,
+valid retained evidence. Changed builtin implementations invalidate copied-source
+evidence before acceptance. Identical source acceptance returns its existing
+revision. Evidence, reports and graph bytes for retained receipts survive deletion
+of the original run. Cancellation discards a completed report from the cancelled
+job result and cannot retain acceptance evidence. Retry copies the frozen bytes,
+minting fresh job/request UUIDs without adding `model_name`. Durable observer
+disconnects do not cancel the worker.
+
+Startup seeds nine read-only builtin block drafts and ordinary CPU validation
+jobs. Their manifest-derived revisions are accepted only after the same verified
+publication/evidence transaction. The immutable source view shows exact builtin
+implementation Python; its revision hash covers the complete implementation
+manifest. `GET /blocks/{id}/revisions/{revision_id}/copy-source` separately returns
+eligible custom wrapper bytes as `BlockCreate`, without creating a resource.
+Unavailable historical builtin implementations cannot be replaced with current
+copy source. See [builtin identities](architecture-builtins.md).
+
+Four builtin architecture drafts become eligible for their own ordinary checks
+only after their required block revisions exist. Those checks use a real
+published byte-alphabet tokenizer, with zero learned merges, for one concrete
+acceptance profile. No receipt is manufactured at startup. Live completion and
+startup adoption queue newly ready checks transactionally; retries retain exact
+bytes and repeated startup is idempotent. Training with pending bindings still
+finalizes its own tokenizer before optimization.
+
+The existing queue owns pause, admission, cancellation, retry and stages/events.
+The supervised handler verifies child cleanup before publication, then the runner
+commits done and retained evidence in one transaction. Restart adopts only a
+complete matching parent publication after exclusive process reconciliation;
+corrupt or mismatched publications remain unsuccessful. See
+[validation](architecture-validation.md). Actual supervised bootstrap acceptance and the full
+authoring-to-training flow remain incomplete. Current in-process adapter checks
+do not establish real worker/network or PostgreSQL concurrency acceptance.
+
+## Recipe training submission (partial ISS-58 delivery)
+
+`POST /train?request_id=<uuid>` accepts `architecture: {revision_id, parameters,
+validation_run_id?}`. Selected recipes require administrative visibility, an
+actor UUID and the request UUID. Explicit legacy structural fields cannot
+accompany a selection, including values equal to defaults. Resume/SFT/RL inherit
+their saved definition and reject new structural selections/overrides. Ordinary
+flat requests remain supported through the deliberate legacy adapter.
+
+A pretrain `resume_from` referencing a modular model also requires administrative
+actor attribution and a request UUID. It inherits retained immutable definition,
+source and final-tokenizer facts even after original training history is pruned,
+the catalog root is archived or the named tokenizer build is deleted. The actual
+saved package is verified by the execution adapter before dataset acquisition;
+model/source loading stays in the worker. Replays retain their access check even
+if the original saved input has since been deleted.
+
+`POST /sft?request_id=<uuid>` uses the same administrative actor/request contract
+when `base_model` or `resume_from` references a modular model. It inherits that
+registered definition's exact source/tokenizer pin, with sparse original SFT
+config and actor-scoped idempotency. Legacy SFT remains supported. Private
+tokenizer-label adoption and recovery retain immutable enqueue pins and require
+the [parent-prepared SFT authority](modular-sft.md) before publication.
+
+`POST /rl?request_id=<uuid>` applies that same administrative actor/request
+contract to modular saved policies. It retains the exact original reference and
+source definition through new attempts and completed-iteration recovery; no
+corpus grant is used. The [RL adapter](rl.md) owns bounded actor/resource effects,
+durable task-seed position and fresh sandbox creation after recovery. Rust's
+`/runs/rl` proxy preserves query, scope and upstream status.
+
+Submission resolves public parameter defaults/types/bounds without importing
+source, reads actual final tokenizer facts or pins this job's pending tokenizer
+operation, and freezes the accepted root, full dependency source/declaration/
+compatibility closure, values and evidence alongside the reserved model output
+UUID. Serialized source snapshots cap at 8 MiB. Explicit prior evidence must
+match source/dependencies/values/tokenizer/context and effective input/runtime
+profile. Final in-job preflight remains required under actual worker admission,
+including when prior matching evidence is retained.
+
+`POST /runs/chain?request_id=<uuid>` prepares all source/evidence pins before
+inserting any job and commits the complete chain together. Waiting SFT/RL steps
+inherit the preceding model's frozen recipe. Actor/request replay returns every
+original chain UUID; changed arguments return 409, and missing pruned history
+returns 404 without recreating work. Retry and recovery copy existing immutable
+pins after root archive/draft edits. Optional `request_id` also deduplicates
+those operations. Recovery reserves a new output and uses the latest registered
+generation; it does not select the current recipe draft.
+
+Pinned pretraining now dispatches through a parent acquisition/admission handler
+and the actual child training backend using the existing queue/device lease.
+Verified package/evidence/definition/model registration precedes acknowledgement;
+terminal success follows worker/session cleanup. Pinned SFT now uses the same
+session/publication owner with private mask/probe grants and saved-definition
+preflight. Pinned RL now dispatches its saved policy/original-reference packages
+through the same queue/lease/publication boundary, with a separate parent effect
+owner and finite journal admission. Actual supervised pretraining/SFT/RL and saved/process recovery remain open acceptance
+gates in this sandbox; trusted adapter/numerical checks do not establish them.
+
+## Existing execution routes
+
+Saved modular models now route `/chat`, `/chat/stream` and `/measure/{request_id}`
+through the reusable supervised [serving adapter](modular-serving.md). Public
+published-model chat remains usable with the normal service scope. Serving
+requires retained exact full-prefix evidence for batch one and the complete
+trained context; unsupported declared context extension refuses. Interactive
+disconnect signals cancellation before waiting for verified execution cleanup.
+
+Administrator-only `/models/{model_id}/definition` returns `ModelDefinitionSummary`
+with retained `validation_receipts`; `/models/{model_id}/graph` uses the same
+bounded `GraphQuery` as validation graphs. These read immutable package metadata
+without tensor/source loading or recapture. Legacy models without a modular
+definition return 404 on these two administrative readers. Generic summaries
+retain measured context/counts and null incompatible legacy five-field shapes.
+
 Conversation/file persistence routes now live in Rust. Python exposes stateless
 `POST /chat` and `/chat/stream`, plus `/chat/prepare` (validate/render/count new
 turns and snapshot model attribution) and `/chat/context-floor` (return a history
@@ -179,7 +370,20 @@ in.
 `POST /models/{model_name}/attention` takes `{text, layer, head}` and answers
 with that one head's attention matrix and the token strings on both axes — the
 labels are most of the value; an unlabelled matrix is a grey square.
-`api/routes/attention.py` is the route, `llm/orchestrate/attention.py` the work.
+`api/routes/attention.py` is the route. Legacy work remains in
+`llm/orchestrate/attention.py`; saved modular models use the resident supervised
+[attention owner](modular-serving.md#occurrence-aware-attention).
+
+`GET /models/{model_name}/attention-points` returns `InspectionCatalog` on explicit
+request. It discovers actual module/loop occurrences, optionally loading the
+resident worker. `POST` also accepts `{text, point_id, head}`; supplying both a
+point ID and a layer is invalid. Declared candidates carry no numerical proof
+until their actual view/domain passes strict capture and numerical checks.
+Successful modular matrices bind point, definition, profile and worker UUID plus
+the actual validated sequence bound. Legacy numeric selection remains deliberate
+and generic recipes never invent layer counts. Neither response exposes source
+or captured graph data. Unknown/unsupported attention remains an explicit refusal.
+The following recording details describe the legacy adapter.
 
 **Nothing is recorded by default and this endpoint is the only thing that ever
 changes that.** `Attention.record_attention` — the same flag the diagnostics
@@ -208,11 +412,11 @@ Three constraints shape the rest of it:
   decoder, and it would put "the rows sum to 1" inside a tolerance instead of at
   the exactness the model computed it to.
 
-The model is the one `orchestrate/chat.py` caches, so a chat generating in
-another thread during the window takes the explicit-softmax path for one block.
-That is the same arithmetic (`bench.py` pins the two paths to 1e-5) and it is
-slower; the alternative is a second resident copy of the weights, which is the
-cost that cache exists to avoid.
+Legacy inspection uses the existing cached model under device admission and
+resets its recording flag on every exit. Modular inspection uses stateless
+canonical probability operations and leaves normal recording state unchanged.
+Interactive HTTP disconnect signals the request and drains its owned operation;
+live browser-through-Rust disconnect behavior remains an integration gate.
 # Queue pause
 
 `POST /runs/pause?paused=true` stops admission of new queued work for the current

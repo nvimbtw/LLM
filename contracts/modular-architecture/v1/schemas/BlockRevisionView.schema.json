@@ -1,0 +1,348 @@
+{
+  "$defs": {
+    "AcceptedRevision": {
+      "additionalProperties": false,
+      "description": "Return immutable revision/evidence identity without tying retention to job history.",
+      "properties": {
+        "acceptance_identity_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Acceptance Identity Hash",
+          "type": "string"
+        },
+        "acceptance_receipt_id": {
+          "format": "uuid",
+          "title": "Acceptance Receipt Id",
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/RevisionRef"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reference",
+        "revision_number",
+        "acceptance_receipt_id",
+        "acceptance_identity_hash"
+      ],
+      "title": "AcceptedRevision",
+      "type": "object"
+    },
+    "BlockDeclaration": {
+      "additionalProperties": false,
+      "description": "Expose declaration metadata before any constructor/profile inputs are available.",
+      "properties": {
+        "capabilities": {
+          "default": [],
+          "items": {
+            "enum": [
+              "cache",
+              "introspection",
+              "attention",
+              "context_extension",
+              "recompute",
+              "token_rows"
+            ],
+            "type": "string"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
+        "inputs": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "$ref": "#/$defs/TensorPort"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "outputs": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "$ref": "#/$defs/TensorPort"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "$ref": "#/$defs/ParameterDeclaration"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "sdk_version": {
+          "const": 1,
+          "title": "Sdk Version",
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sdk_version",
+        "name",
+        "title",
+        "parameters",
+        "inputs",
+        "outputs"
+      ],
+      "title": "BlockDeclaration",
+      "type": "object"
+    },
+    "ParameterDeclaration": {
+      "additionalProperties": false,
+      "description": "Declare constructor value types, defaults and editor bounds without executing code.",
+      "properties": {
+        "choices": {
+          "default": [],
+          "items": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "maxLength": 4096,
+                "type": "string"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "title": "Choices",
+          "type": "array"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "title": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "integer",
+            "number",
+            "boolean",
+            "string",
+            "enum"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ParameterDeclaration",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    },
+    "TensorPort": {
+      "additionalProperties": false,
+      "description": "Declare tensor rank, dtype family and resolved or named dimension constraints.",
+      "properties": {
+        "dtype": {
+          "enum": [
+            "int64",
+            "int32",
+            "bool",
+            "floating",
+            "float32",
+            "float16",
+            "bfloat16"
+          ],
+          "title": "Dtype",
+          "type": "string"
+        },
+        "shape": {
+          "items": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              }
+            ]
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Shape",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dtype",
+        "shape"
+      ],
+      "title": "TensorPort",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Read immutable block source and its accepted constructor/port declarations.",
+  "properties": {
+    "accepted": {
+      "$ref": "#/$defs/AcceptedRevision"
+    },
+    "declaration": {
+      "$ref": "#/$defs/BlockDeclaration"
+    },
+    "sdk_version": {
+      "const": 1,
+      "title": "Sdk Version",
+      "type": "integer"
+    },
+    "source": {
+      "maxLength": 262144,
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "accepted",
+    "source",
+    "declaration",
+    "sdk_version"
+  ],
+  "title": "BlockRevisionView",
+  "type": "object"
+}

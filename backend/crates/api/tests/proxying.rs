@@ -322,6 +322,7 @@ async fn an_admin_action_reaches_the_engine_as_the_backend_itself() {
 }
 
 #[actix_web::test]
+/// A refused read preserves the service status and structured error body.
 async fn a_run_the_engine_refuses_is_refused_here_with_the_same_status() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -355,7 +356,7 @@ async fn a_run_the_engine_refuses_is_refused_here_with_the_same_status() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body: Value = test::read_body_json(response).await;
-    assert!(body["error"].as_str().unwrap().contains("no run 7"));
+    assert_eq!(body["detail"], "no run 7");
 }
 
 #[actix_web::test]

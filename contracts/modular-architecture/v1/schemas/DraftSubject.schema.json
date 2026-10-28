@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Select exact saved draft bytes; later saves cannot mutate this snapshot.",
+  "properties": {
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "draft_version": {
+      "minimum": 1,
+      "title": "Draft Version",
+      "type": "integer"
+    },
+    "kind": {
+      "const": "draft",
+      "title": "Kind",
+      "type": "string"
+    },
+    "resource_id": {
+      "format": "uuid",
+      "title": "Resource Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "resource_id",
+    "draft_version",
+    "content_hash"
+  ],
+  "title": "DraftSubject",
+  "type": "object"
+}

@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useSessionToken } from "@/hooks/use-auth"
 import { useModel } from "@/hooks/use-model"
 import type { TrainConfig } from "@/lib/training"
+import { SavedModelDefinition } from "@/components/models/saved-definition"
 
 export interface InheritedArchitectureProps {
   cfg: TrainConfig
@@ -38,6 +39,14 @@ function InheritedArchitectureDetails({
       </Panel>
     )
   const architecture = model?.architecture
+  if (model?.definitionId)
+    return (
+      <SavedModelDefinition
+        modelId={modelId}
+        definitionId={model.definitionId}
+        inherited
+      />
+    )
   if (error || notFound || !architecture)
     return (
       <Panel variant="open" title="Architecture">
@@ -47,7 +56,7 @@ function InheritedArchitectureDetails({
       </Panel>
     )
   const vocabularySize = model.vocabularySize
-  const parameterCount = model.params || null
+  const parameterCount = model.params
   const facts = [
     { label: "Dimensions", value: architecture.dimensions.toLocaleString() },
     {
@@ -67,7 +76,7 @@ function InheritedArchitectureDetails({
       variant="open"
       title="Architecture"
       descriptionLayout="stacked"
-      description={`${parameterCount === null ? "—" : `≈ ${compact(parameterCount)}`} parameters`}
+      description={`${parameterCount === null ? "Unavailable" : `${model.parameterCountEstimated ? "≈ " : ""}${compact(parameterCount)}`} parameters`}
       aside="Inherited"
     >
       <dl className="grid gap-x-8 sm:grid-cols-2">

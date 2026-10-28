@@ -274,6 +274,9 @@ def _finetune(cfg, client, on_progress, cancel, started) -> dict:
         seed=cfg.seed,
         recompute_blocks=cfg.recompute_blocks,
         checkpoint_target=cfg.checkpoint_target,
+        precision=cfg.precision,
+        compile_model=cfg.compile_model,
+        allow_tf32=cfg.allow_tf32,
     )
 
     print(f"[4/5] Fine-tuning {cfg.epochs} epoch(s) at lr {cfg.lr:g}")

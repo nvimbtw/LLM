@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "description": "Freeze submission selection; pending tokenizer requires final in-job preflight.",
+  "properties": {
+    "parameters": {
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,63}$": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "maxLength": 4096,
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "revision_id": {
+      "format": "uuid",
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "validation_run_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validation Run Id"
+    }
+  },
+  "required": [
+    "revision_id",
+    "parameters"
+  ],
+  "title": "ArchitectureSelection",
+  "type": "object"
+}

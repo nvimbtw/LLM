@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "description": "Connect explicit named ports between graph nodes with no implicit merge semantics.",
+  "properties": {
+    "source": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_port": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Source Port",
+      "type": "string"
+    },
+    "target": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Target",
+      "type": "string"
+    },
+    "target_port": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Target Port",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "source_port",
+    "target",
+    "target_port"
+  ],
+  "title": "GraphEdge",
+  "type": "object"
+}

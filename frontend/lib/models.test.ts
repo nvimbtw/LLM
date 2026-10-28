@@ -4,6 +4,7 @@ import {
   architectureOf,
   estimateParams,
   mapModel,
+  modelsFromRegistry,
   tierFor,
   vocabularySizeOf,
   type RawModel,
@@ -39,6 +40,19 @@ function model(overrides: Partial<RawModel> = {}): RawModel {
 }
 
 describe("resolved model facts", () => {
+  test("published models remain selectable when ordinary-user projection removes private parameters", () => {
+    const publicRow = model({
+      parameters: null,
+      parameter_count: 712,
+      context: 8,
+      definition_id: "a".repeat(64),
+    })
+    const mapped = modelsFromRegistry([publicRow])
+    assert.equal(mapped.length, 1)
+    assert.equal(mapped[0].id, publicRow.model_id)
+    assert.equal(mapped[0].params, 712)
+    assert.equal(mapped[0].definitionId, "a".repeat(64))
+  })
   test("an older SFT uses inherited shape and recorded count without needing architecture in its request", () => {
     const raw = model({
       architecture,
@@ -65,6 +79,21 @@ describe("resolved model facts", () => {
         })
       ),
       architecture
+    )
+  })
+
+  test("explicit unavailable shape cannot become a legacy Transformer from request defaults", () => {
+    const raw = model({
+      architecture: null,
+      parameters: { config: architecture, result: { architecture } },
+      parameter_count: 123,
+      vocab_size: 320,
+    })
+    assert.equal(architectureOf(raw), null)
+    assert.equal(estimateParams(raw), 123)
+    assert.equal(
+      architectureOf({ ...raw, architecture: { ...architecture, heads: -1 } }),
+      null
     )
   })
 
@@ -103,7 +132,28 @@ describe("resolved model facts", () => {
     })
     assert.equal(architectureOf(raw), null)
     assert.equal(vocabularySizeOf(raw), null)
-    assert.equal(estimateParams(raw), 0)
+    assert.equal(estimateParams(raw), null)
+  })
+
+  test("a measured zero remains distinct from unavailable and legacy estimated counts", () => {
+    const zero = mapModel(model({ architecture: null, parameter_count: 0 }))
+    assert.equal(zero.params, 0)
+    assert.equal(zero.parameterCountEstimated, false)
+    const unknown = mapModel(
+      model({ architecture: null, parameter_count: null })
+    )
+    assert.equal(unknown.params, null)
+    assert.equal(unknown.parameterCountEstimated, false)
+    const estimated = mapModel(
+      model({
+        parameters: {
+          config: architecture,
+          result: { dataset: { vocab_size: 320 } },
+        },
+      })
+    )
+    assert.equal(estimated.parameterCountEstimated, true)
+    assert.ok(estimated.params! > 0)
   })
 
   test("size is manually assigned and never inferred from parameter count", () => {

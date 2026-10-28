@@ -1,0 +1,359 @@
+{
+  "occurrences": [
+    {
+      "call_path": [
+        0
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "embedding",
+      "output_rms": [
+        0.014941049739718435
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        0.2514953911304474
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        0,
+        0,
+        0,
+        1
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        0.2514953911304474
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        0,
+        0,
+        0,
+        2
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "merge",
+      "output_rms": [
+        0.5029907822608948
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        0,
+        0,
+        1,
+        0
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        0.7505095601081848
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        0,
+        0,
+        1,
+        1
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        0.7505095601081848
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        0,
+        0,
+        1,
+        2
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "merge",
+      "output_rms": [
+        1.5010191202163696
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        1.8183963298797607
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        1,
+        0,
+        0,
+        1
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        1.8183963298797607
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        1,
+        0,
+        0,
+        2
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "merge",
+      "output_rms": [
+        3.6367926597595215
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        1,
+        0,
+        1,
+        0
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        4.449484825134277
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        1,
+        0,
+        1,
+        1
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "core",
+      "output_rms": [
+        4.449484825134277
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        1,
+        1,
+        0,
+        1,
+        2
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "merge",
+      "output_rms": [
+        8.898969650268555
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        2
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "final_norm",
+      "output_rms": [
+        0.9999974370002748
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          4
+        ]
+      ]
+    },
+    {
+      "call_path": [
+        3
+      ],
+      "dtypes": [
+        "torch.float32"
+      ],
+      "instance_path": "head",
+      "output_rms": [
+        0.0312943160533905
+      ],
+      "shapes": [
+        [
+          1,
+          64,
+          8192
+        ]
+      ]
+    }
+  ],
+  "parameter_grad_norm": {
+    "core.gate.bias": 0.002107195556163788,
+    "core.gate.weight": 0.0030880507547408342,
+    "core.output.bias": 0.0246974378824234,
+    "core.output.weight": 0.011412112042307854,
+    "core.value.bias": 0.0019965791143476963,
+    "core.value.weight": 0.005434204358607531,
+    "embedding.weight": 0.36867445707321167,
+    "final_norm.norm.bias": 0.007670664694160223,
+    "final_norm.norm.weight": 0.008206444792449474
+  },
+  "parameter_update_ratio": {
+    "core.gate.bias": 0.0000035997853759847743,
+    "core.gate.weight": 0.0000041885925706704765,
+    "core.output.bias": 0.0000036628113033934226,
+    "core.output.weight": 0.0000046674865984770105,
+    "core.value.bias": 0.000003672191392280989,
+    "core.value.weight": 0.000003861315209376005,
+    "embedding.weight": 0.00010591480404735147,
+    "final_norm.norm.bias": 0.35707923502096856,
+    "final_norm.norm.weight": 0.0000014295833045762533
+  }
+}

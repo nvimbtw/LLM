@@ -116,7 +116,7 @@ class Probes:
     chat: np.ndarray | None = None
     # The unmodified base model, resident alongside the one being trained. This
     # is the field that doubles a run's model memory, which is why it is opt-in.
-    reference: Transformer | None = None
+    reference: torch.nn.Module | None = None
 
 
 @dataclass

@@ -1,0 +1,2022 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "inspect-0",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "inspect",
+          "snapshot": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "source_snapshot_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "inspect-0-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "inspect",
+          "snapshot": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "source_snapshot_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "validate-1",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "validate",
+          "snapshot": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "validation_snapshot_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "validate-1-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "validate",
+          "snapshot": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "validation_snapshot_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "load-2",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "load",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "definition": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "definition_v1"
+          },
+          "package": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "load-2-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "load",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "definition": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "definition_v1"
+          },
+          "package": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "model_package_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "train-3",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "pretrain",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "train-3-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "pretrain",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "corpus": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "corpus_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "train-4",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "train-4-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "recovery": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "train-5",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "train-5-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "rl",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "generate-6",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "generate",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "prompt": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "prompt_v1"
+          },
+          "max_tokens": 32,
+          "seed": 48,
+          "temperature": 0.8
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "generate-6-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "generate",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "prompt": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "prompt_v1"
+          },
+          "max_tokens": 32,
+          "seed": 48,
+          "temperature": 0.8,
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "measure-7",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "measure",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "measurement": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "measurement_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "measure-7-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "measure",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "measurement": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "measurement_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "cancel-8",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "cancel",
+          "target_request_id": "22222222-2222-4222-8222-222222222222",
+          "reason": "deadline"
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "cancel-8-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "cancel",
+          "target_request_id": "22222222-2222-4222-8222-222222222222",
+          "reason": "deadline",
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "shutdown-9",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "shutdown",
+          "reason": "eviction"
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "shutdown-9-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "shutdown",
+          "reason": "eviction",
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "effect_request-10",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "dataset_read",
+            "dataset_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "effect_request-10-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "unexpected": true,
+          "effect": {
+            "operation": "dataset_read",
+            "dataset_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "effect_request-11",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "effect_request-11-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "unexpected": true,
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "effect_reply-12",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_reply",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "completed",
+          "result": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "effect_data_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "effect_reply-12-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_reply",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "completed",
+          "result": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "effect_data_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "effect_reply-13",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_reply",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "uncertain",
+          "error_code": "lost_reply"
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "effect_reply-13-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_reply",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "uncertain",
+          "error_code": "lost_reply",
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "progress-14",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "progress",
+          "phase": "backward",
+          "completed": 3,
+          "total": 100,
+          "unit": "steps",
+          "loss": 0.25
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "progress-14-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "progress",
+          "phase": "backward",
+          "completed": 3,
+          "total": 100,
+          "unit": "steps",
+          "loss": 0.25,
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "tokens-15",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "tokens",
+          "token_ids": [
+            1,
+            2,
+            3
+          ],
+          "log_probabilities": [
+            -0.1,
+            -0.2,
+            -0.3
+          ]
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "tokens-15-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "tokens",
+          "token_ids": [
+            1,
+            2,
+            3
+          ],
+          "log_probabilities": [
+            -0.1,
+            -0.2,
+            -0.3
+          ],
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "artifact_ready-16",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "artifact_ready",
+          "publication_id": "22222222-2222-4222-8222-222222222222",
+          "artifact": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          },
+          "completed_step": 3,
+          "final": false
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "artifact_ready-16-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "artifact_ready",
+          "publication_id": "22222222-2222-4222-8222-222222222222",
+          "artifact": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          },
+          "completed_step": 3,
+          "final": false,
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "artifact_adopted-17",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "artifact_adopted",
+          "publication_id": "22222222-2222-4222-8222-222222222222",
+          "artifact_id": "11111111-1111-4111-8111-111111111111",
+          "outcome": "adopted"
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "artifact_adopted-17-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "artifact_adopted",
+          "publication_id": "22222222-2222-4222-8222-222222222222",
+          "artifact_id": "11111111-1111-4111-8111-111111111111",
+          "outcome": "adopted",
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "completed-18",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "completed",
+          "outcome": "ok",
+          "result": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_result_v1"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "completed-18-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "completed",
+          "outcome": "ok",
+          "result": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_result_v1"
+          },
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "failed-19",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "failed",
+          "phase": "forward",
+          "code": "invalid_shape",
+          "message": "The profile does not permit this shape."
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "failed-19-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "failed",
+          "phase": "forward",
+          "code": "invalid_shape",
+          "message": "The profile does not permit this shape.",
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "cleanup_verified-20",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "cleanup_verified",
+          "lease_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "reaped",
+          "owned_processes_remaining": 0
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "cleanup_verified-20-unknown-field",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "cleanup_verified",
+          "lease_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "reaped",
+          "owned_processes_remaining": 0,
+          "unexpected": true
+        }
+      }
+    },
+    {
+      "name": "unknown-command",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "tensor_operation",
+          "tensor": [
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "name": "source-role-confusion",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "inspect",
+          "snapshot": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "training_config_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "training-role-confusion",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "train",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "job_id": "11111111-1111-4111-8111-111111111111",
+          "training_kind": "sft",
+          "config": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "source_snapshot_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "actor_id": "11111111-1111-4111-8111-111111111111",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "service-url-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "url": "http://data-engine:8002",
+          "effect": {
+            "operation": "dataset_read",
+            "dataset_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "uncertain-success-payload",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_reply",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "uncertain",
+          "error_code": "lost_reply",
+          "result": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "effect_data_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "success-error",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_reply",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "completed",
+          "error_code": "failure"
+        }
+      }
+    },
+    {
+      "name": "progress-over-total",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "progress",
+          "phase": "backward",
+          "completed": 11,
+          "total": 10,
+          "unit": "steps"
+        }
+      }
+    },
+    {
+      "name": "positive-log-probability",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "tokens",
+          "token_ids": [
+            1
+          ],
+          "log_probabilities": [
+            0.1
+          ]
+        }
+      }
+    },
+    {
+      "name": "unequal-log-probabilities",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "tokens",
+          "token_ids": [
+            1,
+            2
+          ],
+          "log_probabilities": [
+            -1.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "oversized-token-chunk",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "tokens",
+          "token_ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32
+          ]
+        }
+      }
+    },
+    {
+      "name": "zero-generation-budget",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "generate",
+          "pins": {
+            "definition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bindings_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "profile_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "receipt_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "prompt": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "prompt_v1"
+          },
+          "max_tokens": 0,
+          "seed": 48,
+          "temperature": 1.0
+        }
+      }
+    },
+    {
+      "name": "cleanup-has-live-process",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "cleanup_verified",
+          "lease_id": "22222222-2222-4222-8222-222222222222",
+          "outcome": "reaped",
+          "owned_processes_remaining": 1
+        }
+      }
+    },
+    {
+      "name": "boolean-work-count",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "progress",
+          "phase": "backward",
+          "completed": true,
+          "unit": "steps"
+        }
+      }
+    },
+    {
+      "name": "publication-source-confusion",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "artifact_ready",
+          "publication_id": "22222222-2222-4222-8222-222222222222",
+          "artifact": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "source_snapshot_v1"
+          },
+          "completed_step": 3,
+          "final": false
+        }
+      }
+    },
+    {
+      "name": "completion-checkpoint-without-adoption",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "completed",
+          "outcome": "ok",
+          "result": {
+            "artifact_id": "11111111-1111-4111-8111-111111111111",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "size_bytes": 1024,
+            "format": "checkpoint_v1"
+          }
+        }
+      }
+    },
+    {
+      "name": "gym-write-without-data",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-dataset_read-0",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "dataset_read",
+            "dataset_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-dataset_read-0-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "dataset_read",
+            "dataset_id": "11111111-1111-4111-8111-111111111111",
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_catalogue-1",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_catalogue"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_catalogue-1-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_catalogue",
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_catalogue-1-unnecessary-resource",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_catalogue",
+            "resource_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_create-2",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_create",
+            "gym_id": "math",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_create-2-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_create",
+            "gym_id": "math",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            },
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_create-2-missing-write-data",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_create",
+            "gym_id": "math"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_create-3",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_create",
+            "gym_id": "general",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_create-3-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_create",
+            "gym_id": "general",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            },
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_create-3-missing-write-data",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_create",
+            "gym_id": "general"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_read-4",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_read",
+            "run_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_read-4-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_read",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_read-4-opaque-run-id",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_read",
+            "run_id": "general"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_step-5",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_step-5-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            },
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_step-5-opaque-episode-id",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "math",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_step-5-missing-write-data",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_step",
+            "episode_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_finish-6",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_finish",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_finish-6-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_finish",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            },
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_finish-6-opaque-episode-id",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_finish",
+            "episode_id": "math",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_finish-6-missing-write-data",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_finish",
+            "episode_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_abandon-7",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_abandon",
+            "episode_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_abandon-7-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_abandon",
+            "episode_id": "11111111-1111-4111-8111-111111111111",
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_abandon-7-opaque-episode-id",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_abandon",
+            "episode_id": "math"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_status-8",
+      "model": "RuntimeEnvelope",
+      "valid": true,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_status",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      },
+      "check": "runtime_packet"
+    },
+    {
+      "name": "actual-client-gym_status-8-actor-override",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_status",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            },
+            "actor_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_status-8-opaque-run-id",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_status",
+            "run_id": "general",
+            "payload": {
+              "artifact_id": "11111111-1111-4111-8111-111111111111",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size_bytes": 1024,
+              "format": "effect_data_v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "actual-client-gym_status-8-missing-write-data",
+      "model": "RuntimeEnvelope",
+      "valid": false,
+      "value": {
+        "schema_version": 1,
+        "worker_id": "11111111-1111-4111-8111-111111111111",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "sequence": 1,
+        "payload": {
+          "type": "effect_request",
+          "operation_id": "22222222-2222-4222-8222-222222222222",
+          "effect": {
+            "operation": "gym_status",
+            "run_id": "11111111-1111-4111-8111-111111111111"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -11,6 +11,11 @@ Collapsed, the profile entry shows only its centered icon; the username,
 loading placeholder, and shortcut hint are hidden. Its tooltip and accessible
 name still identify the settings entry.
 
+Anonymous sidebar navigation does not mount the profile reader or request
+`/user/me`, so public documentation and markup fixtures remain accessible without
+a session. The signed-in profile entry remounts on actual bearer replacement,
+preventing a previous account's response from becoming the replacement profile.
+
 The rail stays visible while the content scrolls, including on narrow screens.
 The selected section has a thin rule on its left, matching conversation
 navigation. The dialog uses display headings and ruled account

@@ -1,0 +1,209 @@
+{
+  "$defs": {
+    "Capability": {
+      "additionalProperties": false,
+      "description": "Report optional supported behavior only when required profile evidence exists.",
+      "properties": {
+        "evidence_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Hash"
+        },
+        "name": {
+          "enum": [
+            "cache",
+            "introspection",
+            "attention",
+            "context_extension",
+            "recompute",
+            "token_rows"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "supported": {
+          "title": "Supported",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "supported"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "ResourceSummary": {
+      "additionalProperties": false,
+      "description": "List bounded catalog metadata without embedding administrative source or graphs.",
+      "properties": {
+        "accepted_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RevisionRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "archived": {
+          "title": "Archived",
+          "type": "boolean"
+        },
+        "capabilities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "maxItems": 6,
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "description": {
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
+        "draft_version": {
+          "minimum": 1,
+          "title": "Draft Version",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "metadata_version": {
+          "minimum": 1,
+          "title": "Metadata Version",
+          "type": "integer"
+        },
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "builtin",
+            "custom"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_id",
+        "kind",
+        "name",
+        "description",
+        "origin",
+        "archived",
+        "metadata_version",
+        "draft_version",
+        "accepted_revision"
+      ],
+      "title": "ResourceSummary",
+      "type": "object"
+    },
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Page summary rows with one stable opaque cursor scoped to filters and visibility.",
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ResourceSummary"
+      },
+      "maxItems": 100,
+      "title": "Items",
+      "type": "array"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Cursor"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "CatalogPage",
+  "type": "object"
+}

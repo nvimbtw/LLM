@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Initialize an iteration value and export its final value into a fresh outer name.",
+  "properties": {
+    "initial": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Initial",
+      "type": "string"
+    },
+    "input": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Input",
+      "type": "string"
+    },
+    "output": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Output",
+      "type": "string"
+    },
+    "result": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Result",
+      "type": "string"
+    }
+  },
+  "required": [
+    "initial",
+    "input",
+    "output",
+    "result"
+  ],
+  "title": "CarryBinding",
+  "type": "object"
+}

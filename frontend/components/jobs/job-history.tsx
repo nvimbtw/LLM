@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import {
   KIND_LABEL,
-  STATUS_LABEL,
+  jobStatusLabel,
   durationSeconds,
   formatClock,
   formatDayGroup,
@@ -78,6 +78,7 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
   )
 }
 
+/** Presents one finished lifecycle/verdict and its explicit retry/delete actions without treating invalid validation as successful evidence. */
 function HistoryRow({
   job,
   onRetry,
@@ -118,8 +119,6 @@ function HistoryRow({
           {ran === null ? "" : formatElapsed(ran)}
         </span>
 
-        {/* Status carries the row's whole verdict, so it is the one place colour
-            is spent — and only on the outcomes that aren't the expected one. */}
         <span
           className={cn(
             "col-start-2 row-start-1 w-20 shrink-0 text-right text-xs",
@@ -128,7 +127,7 @@ function HistoryRow({
             job.status === "cancelled" && "text-muted-foreground"
           )}
         >
-          {STATUS_LABEL[job.status]}
+          {jobStatusLabel(job)}
         </span>
 
         <DropdownMenu>
@@ -145,11 +144,7 @@ function HistoryRow({
             }
           />
           <DropdownMenuContent align="end">
-            {/* A chat turn's reply already exists; re-running it would append a
-                second answer to the same question. */}
-            <DropdownMenuItem
-              onClick={() => onRetry(job)}
-            >
+            <DropdownMenuItem onClick={() => onRetry(job)}>
               <RotateCcw />
               Run again
             </DropdownMenuItem>

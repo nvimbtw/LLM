@@ -1,0 +1,118 @@
+{
+  "additionalProperties": false,
+  "description": "Declare constructor value types, defaults and editor bounds without executing code.",
+  "properties": {
+    "choices": {
+      "default": [],
+      "items": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "maxLength": 4096,
+            "type": "string"
+          }
+        ]
+      },
+      "maxItems": 64,
+      "title": "Choices",
+      "type": "array"
+    },
+    "default": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Default"
+    },
+    "description": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "Description",
+      "type": "string"
+    },
+    "maximum": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Maximum"
+    },
+    "minimum": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Minimum"
+    },
+    "required": {
+      "default": false,
+      "title": "Required",
+      "type": "boolean"
+    },
+    "title": {
+      "default": "",
+      "maxLength": 120,
+      "title": "Title",
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "integer",
+        "number",
+        "boolean",
+        "string",
+        "enum"
+      ],
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "ParameterDeclaration",
+  "type": "object"
+}

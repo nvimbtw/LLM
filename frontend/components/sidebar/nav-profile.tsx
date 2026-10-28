@@ -8,27 +8,31 @@ import {
   SidebarMenuButton,
 } from "@/components/ui/sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useAuth } from "@/hooks/use-auth"
+import { useSessionToken } from "@/hooks/use-auth"
 import { useSettings } from "@/components/settings/settings-provider"
 import { useProfile } from "@/hooks/use-profile"
 
+/** Shows anonymous navigation without profile requests and remounts signed-in profile reads for each actual session. */
 export function NavProfile() {
-  const { isAuthenticated } = useAuth()
+  const token = useSessionToken()
+  if (token) return <SignedInProfile key={token} />
+
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <SidebarMenuButton tooltip="Log in" render={<Link href="/login" />}>
+          <LogIn />
+          <span className="group-data-[collapsible=icon]:hidden">Log in</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+}
+
+/** Loads one mounted account's profile and opens its settings from the sidebar. */
+function SignedInProfile() {
   const { openSettings } = useSettings()
   const { user, isLoading } = useProfile()
-
-  if (!isAuthenticated) {
-    return (
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton tooltip="Log in" render={<Link href="/login" />}>
-            <LogIn />
-            <span className="group-data-[collapsible=icon]:hidden">Log in</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      </SidebarMenu>
-    )
-  }
 
   return (
     <SidebarMenu>

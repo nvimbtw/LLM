@@ -1,0 +1,208 @@
+{
+  "$defs": {
+    "InspectionPointView": {
+      "additionalProperties": false,
+      "description": "Expose declared view identity separately from worker-lifetime numerical evidence and its exact tested bound.",
+      "properties": {
+        "call_path": {
+          "items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 64,
+          "title": "Call Path",
+          "type": "array"
+        },
+        "evidence_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Hash"
+        },
+        "heads": {
+          "anyOf": [
+            {
+              "maximum": 256,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heads"
+        },
+        "id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "instance_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Instance Path",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "validated_sequence_max": {
+          "default": 0,
+          "maximum": 512,
+          "minimum": 0,
+          "title": "Validated Sequence Max",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "instance_path",
+        "call_path"
+      ],
+      "title": "InspectionPointView",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Describe bounded model-local attention candidates; reading declarations alone never certifies their measurement path.",
+  "properties": {
+    "context_window": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Window"
+    },
+    "definition_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Definition Id"
+    },
+    "legacy_heads": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Legacy Heads"
+    },
+    "legacy_layers": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Legacy Layers"
+    },
+    "max_tokens": {
+      "anyOf": [
+        {
+          "maximum": 512,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Tokens"
+    },
+    "model_name": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Model Name",
+      "type": "string"
+    },
+    "points": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/InspectionPointView"
+      },
+      "maxItems": 128,
+      "title": "Points",
+      "type": "array"
+    },
+    "profile_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile Digest"
+    },
+    "runtime_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Id"
+    },
+    "unavailable_reason": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unavailable Reason"
+    }
+  },
+  "required": [
+    "model_name"
+  ],
+  "title": "InspectionCatalog",
+  "type": "object"
+}

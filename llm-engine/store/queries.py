@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 from store.schema import (
     Model,
     Run,
+    RunKind,
     RunStatus,
     Tokenizer,
 )
@@ -261,19 +262,26 @@ def claim_next(db: Session) -> Run | None:
     return run
 
 
-def active_runs(db: Session) -> list[Run]:
+def active_runs(db: Session, *, include_validation: bool = True) -> list[Run]:
+    """Return the live band, applying trusted validation visibility in SQL."""
     live = (RunStatus.waiting, RunStatus.queued, RunStatus.running, RunStatus.cancelling)
-    return list(db.scalars(select(Run).where(Run.status.in_(live)).order_by(Run.rank)))
+    statement = select(Run).where(Run.status.in_(live))
+    if not include_validation:
+        statement = statement.where(Run.kind != RunKind.model_validation)
+    return list(db.scalars(statement.order_by(Run.rank)))
 
 
 _TERMINAL = (RunStatus.done, RunStatus.cancelled, RunStatus.failed)
 
 
-def run_history(db: Session, limit: int = 50, offset: int = 0) -> list[Run]:
+def run_history(db: Session, limit: int = 50, offset: int = 0, *, include_validation: bool = True) -> list[Run]:
+    """Page terminal jobs after filtering validation rows for the authorized viewer."""
+    statement = select(Run).where(Run.status.in_(_TERMINAL))
+    if not include_validation:
+        statement = statement.where(Run.kind != RunKind.model_validation)
     return list(
         db.scalars(
-            select(Run)
-            .where(Run.status.in_(_TERMINAL))
+            statement
             .order_by(Run.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -281,11 +289,25 @@ def run_history(db: Session, limit: int = 50, offset: int = 0) -> list[Run]:
     )
 
 
-def count_history(db: Session) -> int:
-    return db.scalar(select(func.count()).select_from(Run).where(Run.status.in_(_TERMINAL))) or 0
+def count_history(db: Session, *, include_validation: bool = True) -> int:
+    """Count exactly the same visible terminal domain as the history page query."""
+    statement = select(func.count()).select_from(Run).where(Run.status.in_(_TERMINAL))
+    if not include_validation:
+        statement = statement.where(Run.kind != RunKind.model_validation)
+    return db.scalar(statement) or 0
+
+
+def lock_run(db: Session, run_id: uuid.UUID) -> Run | None:
+    """Serialize cancellation/completion on the owning execution row and refresh its domain snapshot.
+
+    PostgreSQL must lock only execution_jobs: eager domain relationships use
+    nullable outer joins, whose nullable sides cannot be selected FOR UPDATE.
+    """
+    return db.scalar(select(Run).where(Run.id == run_id).with_for_update(of=Run).execution_options(populate_existing=True))
 
 
 def finish_run(db: Session, run_id: uuid.UUID, status: RunStatus, **fields) -> Run | None:
+    """Write one final status and its domain result within the caller-owned transaction."""
     run = db.get(Run, run_id)
     if run is None:
         return None

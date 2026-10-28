@@ -1,0 +1,84 @@
+{
+  "additionalProperties": false,
+  "description": "Parent admission budgets; tree RSS supervision is distinct from per-process AS.",
+  "properties": {
+    "artifact_bytes": {
+      "maximum": 1099511627776,
+      "minimum": 1,
+      "title": "Artifact Bytes",
+      "type": "integer"
+    },
+    "device": {
+      "enum": [
+        "cpu",
+        "cuda"
+      ],
+      "title": "Device",
+      "type": "string"
+    },
+    "device_allocator_bytes": {
+      "maximum": 1099511627776,
+      "minimum": 0,
+      "title": "Device Allocator Bytes",
+      "type": "integer"
+    },
+    "monitor_interval_seconds": {
+      "default": 0.05,
+      "exclusiveMinimum": 0,
+      "maximum": 0.1,
+      "title": "Monitor Interval Seconds",
+      "type": "number"
+    },
+    "open_files_per_process": {
+      "default": 64,
+      "maximum": 256,
+      "minimum": 8,
+      "title": "Open Files Per Process",
+      "type": "integer"
+    },
+    "owned_processes": {
+      "default": 1,
+      "maximum": 8,
+      "minimum": 1,
+      "title": "Owned Processes",
+      "type": "integer"
+    },
+    "process_address_bytes": {
+      "maximum": 1099511627776,
+      "minimum": 1048576,
+      "title": "Process Address Bytes",
+      "type": "integer"
+    },
+    "total_artifact_bytes": {
+      "maximum": 1099511627776,
+      "minimum": 1,
+      "title": "Total Artifact Bytes",
+      "type": "integer"
+    },
+    "tree_memory_enforcement": {
+      "enum": [
+        "cgroup_v2",
+        "preflight_and_monitor"
+      ],
+      "title": "Tree Memory Enforcement",
+      "type": "string"
+    },
+    "tree_resident_bytes": {
+      "maximum": 1099511627776,
+      "minimum": 1048576,
+      "title": "Tree Resident Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "process_address_bytes",
+    "tree_resident_bytes",
+    "tree_memory_enforcement",
+    "device",
+    "device_allocator_bytes",
+    "artifact_bytes",
+    "total_artifact_bytes"
+  ],
+  "title": "RuntimeResources",
+  "type": "object"
+}

@@ -1,0 +1,109 @@
+schema_version: 1
+interface: causal_lm
+parameters:
+  dimensions:
+    type: integer
+    required: false
+    default: 32
+    minimum: 2
+    choices: []
+    title: ''
+    description: ''
+  heads:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  ff_multiplier:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  rope_base:
+    type: number
+    required: false
+    default: 10000.0
+    minimum: 2.0
+    choices: []
+    title: ''
+    description: ''
+  learned_temperature:
+    type: boolean
+    required: false
+    default: false
+    choices: []
+    title: ''
+    description: ''
+  context_window:
+    type: integer
+    required: false
+    default: 32
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  layers:
+    type: integer
+    required: false
+    default: 2
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+inputs:
+  tokens:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  positions:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  key_mask:
+    dtype: bool
+    shape:
+    - batch
+    - sequence
+outputs:
+  logits:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - vocabulary
+result:
+  logits: logits
+context_window: ${context_window}
+modules:
+  model:
+    reference:
+      kind: block
+      resource_id: f0310582-9fac-53ce-818c-7dfa99656a0a
+      revision_id: 231543ca-6c49-5561-854b-e6799befc1a8
+      content_hash: 551637bffd1646dd678d57a9d852c7238f70f3beaf81558eaa963f2c509cd4e9
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      dimensions: ${dimensions}
+      heads: ${heads}
+      ff_multiplier: ${ff_multiplier}
+      ctx_window: ${context_window}
+      rope_base: ${rope_base}
+      learned_temperature: ${learned_temperature}
+      layers: ${layers}
+aliases: []
+flow:
+- call: model
+  inputs:
+    tokens: tokens
+    positions: positions
+    key_mask: key_mask
+  outputs:
+    logits: logits

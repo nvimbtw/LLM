@@ -18,6 +18,13 @@ Drafts, requests and diagram state reset when session or model identity changes.
 
 ## Architecture and counts across training families
 
+Administrator saved-definition panels open pinned source identities and captured
+locations directly from `/models/{id}/sources/{revision_id}`. Imported packages
+need no surviving catalog row. Source reads verify exact inventory/revision hashes
+and the selected definition; missing bytes refuse instead of adopting current
+code. Builtin descriptors remain explicitly JSON manifests when Python bytes were
+not packaged. These private reads never mount for ordinary model/chat readers.
+
 The LLM engine resolves `architecture`, `vocab_size` and `parameter_count` for
 listings, details and checkpoints. Saved results override requested config;
 legacy gaps fall back to metadata on disk and a bounded base/resume ancestry walk.
@@ -37,7 +44,7 @@ model was trained: token scores feed sampling, and the chosen token returns to
 the growing prompt before the next forward pass. The training page selects the
 training view. See [Architecture diagram](architecture.md) for motion, geometry,
 accessibility and the limits of the illustration. The attention viewer uses the
-resolved layer/head counts, so it remains available for inherited architectures.
+actual discovered layer/head or occurrence metadata, so it remains available for inherited architectures.
 
 ## Lineage: how a model was constructed
 
@@ -92,6 +99,21 @@ is the wire (base64 fp32 in, a `Float32Array` out), `hooks/use-attention.ts` the
 state, `components/models/attention-canvas.tsx` the figure. The LLM engine side —
 including why nothing records attention until someone asks — is
 [`../llm-engine/README.md`](../llm-engine/README.md).
+
+The viewer is available for models with saved weights even when a legacy shape
+is unavailable. “Find attention views” explicitly discovers the selected model's
+real metadata; no request runs on mount. Legacy models retain layer/head controls.
+Modular views use opaque engine IDs and actual instance/call labels, with head
+counts and numerical proof bounds kept distinct from unproved declarations.
+Unavailable inspection stays explicit. A changed model/session/text/selection
+aborts pending reads and clears the previous figure. Late noncooperative results
+cannot overwrite current state. Replacing a resident worker clears prior-worker
+view proofs before accepting the new measurement. Base64/axes/probability/runtime
+identity checks use the shared generated contracts before canvas allocation.
+
+An explicit `architecture: null` from the engine is authoritative unavailability.
+Only older responses omitting that field fall back to saved results/config; a
+modular model cannot acquire an invented Transformer diagram from request defaults.
 
 - **Canvas2d, and measured rather than assumed.** One backing pixel per cell,
   filled through a 256-entry ramp into one `ImageData`, one `putImageData`, and

@@ -6,20 +6,17 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{answer, caller, with_query, Answer};
+use crate::upstream::{answer, caller, visibility, visible_get, with_query, Answer};
 
 /// The query string rides through so `?checkpoints=true` reaches the LLM engine,
 /// which leaves a run's intermediates out unless asked. Nothing here restates
 /// that default: the LLM engine owns it, and a second copy could disagree with it.
 #[get("")]
 async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
-    answer(
-        engine
-            .get(&caller(&user), &with_query("/models", &req))
-            .await?,
-    )
+    visible_get(&user, &engine, &with_query("/models", &req)).await
 }
 
+/// Read authorized model metadata and attach its public benchmark scores.
 #[get("/{model_id}")]
 async fn get_one(
     user: AuthUser,
@@ -27,9 +24,23 @@ async fn get_one(
     engine: web::Data<Proxy>,
     bench: web::Data<bench_engine::Proxy>,
 ) -> Answer {
-    let mut model = engine
-        .get(&caller(&user), &format!("/models/{model_id}"))
+    let (status, mut model) = engine
+        .scoped_json(
+            &caller(&user),
+            visibility(&user.claims),
+            llm_engine::Method::GET,
+            &format!("/models/{model_id}"),
+            None,
+            8 * 1024 * 1024,
+        )
         .await?;
+    if !(200..300).contains(&status) {
+        return Ok(actix_web::HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status)
+                .unwrap_or(actix_web::http::StatusCode::BAD_GATEWAY),
+        )
+        .json(model));
+    }
     let scores = bench
         .get(
             &caller(&user),
@@ -69,11 +80,7 @@ async fn checkpoints(
     model_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
 ) -> Answer {
-    answer(
-        engine
-            .get(&caller(&user), &format!("/models/{model_id}/checkpoints"))
-            .await?,
-    )
+    visible_get(&user, &engine, &format!("/models/{model_id}/checkpoints")).await
 }
 
 /// One head's attention over the caller's own text, materialized by the LLM engine
@@ -97,6 +104,21 @@ async fn attention(
             .post(&caller(&user), &path, body.into_inner())
             .await?,
     )
+}
+
+/// Discover actual legacy dimensions or declared occurrence-aware attention views for any signed-in user.
+#[get("/{model_id}/attention-points")]
+async fn attention_points(
+    user: AuthUser,
+    model_id: web::Path<Uuid>,
+    engine: web::Data<Proxy>,
+) -> Answer {
+    visible_get(
+        &user,
+        &engine,
+        &format!("/models/{model_id}/attention-points"),
+    )
+    .await
 }
 
 #[patch("/{model_id}")]
@@ -123,12 +145,14 @@ async fn remove(_admin: AdminUser, model_id: web::Path<Uuid>, engine: web::Data<
     )
 }
 
+/// Register shared model reads/inspection and administrator-only model mutations.
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(list);
     cfg.service(benchmarks);
     cfg.service(checkpoints);
     cfg.service(get_one);
     cfg.service(attention);
+    cfg.service(attention_points);
     cfg.service(edit);
     cfg.service(remove);
 }

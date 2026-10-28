@@ -2,7 +2,8 @@
 
 import * as React from "react"
 
-import { apiFetch } from "@/lib/api"
+import { apiFetch, getToken } from "@/lib/api"
+import { useSessionToken } from "./use-auth"
 import { listDatasets } from "@/lib/data"
 import {
   architectureOf,
@@ -21,6 +22,7 @@ import {
 } from "./use-models"
 
 export interface ModelDetail extends Model {
+  hasWeights: boolean
   createdAt: string
   vocabularySize: number | null
   storedDescription: string
@@ -61,6 +63,7 @@ export interface ModelEdits {
 function mapDetail(raw: RawModel): ModelDetail {
   return {
     ...mapModel(raw),
+    hasWeights: raw.has_weights,
     createdAt: raw.created_at ?? "",
     vocabularySize: vocabularySizeOf(raw),
     storedDescription: raw.description ?? "",
@@ -81,97 +84,147 @@ function mapDetail(raw: RawModel): ModelDetail {
   }
 }
 
-/** Loads one model and exposes admin mutations. Switching model identities resets read status and ignores obsolete responses. */
+/** Loads one actual-session model and owns its reads/admin writes; replacement aborts transport and cannot publish into another model or account. */
 export function useModel(id: string) {
-  const [model, setModel] = React.useState<ModelDetail | null>(null)
-  const [isLoading, setIsLoading] = React.useState(true)
-  const [notFound, setNotFound] = React.useState(false)
-  const [error, setError] = React.useState<Error | null>(null)
-
-  const [loadedFor, setLoadedFor] = React.useState(id)
-  if (loadedFor !== id) {
-    setLoadedFor(id)
-    setIsLoading(true)
-    setNotFound(false)
-    setError(null)
-  }
-
+  const token = useSessionToken()
+  const resource = `${token}:${id}`
+  const [state, setState] = React.useState<{
+    resource: string
+    model: ModelDetail | null
+    notFound: boolean
+    error: Error | null
+  } | null>(null)
+  const lifetime = React.useRef<{
+    resource: string
+    active: boolean
+    controllers: Set<AbortController>
+  } | null>(null)
   React.useEffect(() => {
-    let active = true
-    apiFetch(`/models/${id}`)
-      .then(async (res) => {
-        if (res.status === 404) {
-          if (active) setNotFound(true)
-          return null
-        }
-        if (!res.ok) throw new Error("Unable to load this model.")
-        return (await res.json()) as RawModel
+    if (!token || !id) return
+    const owner = {
+      resource,
+      active: true,
+      controllers: new Set<AbortController>(),
+    }
+    lifetime.current = owner
+    const controller = new AbortController()
+    owner.controllers.add(controller)
+    void apiFetch(`/models/${encodeURIComponent(id)}`, {
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        if (response.status === 404) return null
+        if (!response.ok) throw new Error("Unable to load this model.")
+        const raw: RawModel = await response.json()
+        if (raw.model_id !== id)
+          throw new Error("Model response belongs to another resource.")
+        return mapDetail(raw)
       })
-      .then((raw) => {
-        if (active && raw) setModel(mapDetail(raw))
+      .then((model) => {
+        if (owner.active)
+          setState({ resource, model, notFound: model === null, error: null })
       })
-      .catch((err) => {
-        if (active)
-          setError(
-            err instanceof Error ? err : new Error("Unable to load this model.")
-          )
+      .catch((cause: unknown) => {
+        if (owner.active)
+          setState({
+            resource,
+            model: null,
+            notFound: false,
+            error:
+              cause instanceof Error
+                ? cause
+                : new Error("Unable to load this model."),
+          })
       })
-      .finally(() => {
-        if (active) setIsLoading(false)
-      })
+      .finally(() => owner.controllers.delete(controller))
     return () => {
-      active = false
+      owner.active = false
+      owner.controllers.forEach((current) => current.abort())
+      owner.controllers.clear()
     }
-  }, [id])
+  }, [id, token, resource])
 
-  /** Saves supplied admin display fields and replaces this model's persisted snapshot on success. */
+  /** Writes explicit admin fields or deletion under this same session/resource, surfacing refusals and suppressing late navigation/snapshot changes. */
+  const write = React.useCallback(
+    async (
+      method: "PATCH" | "DELETE",
+      fields?: ModelEdits | { published: boolean }
+    ): Promise<void> => {
+      const owner = lifetime.current
+      if (
+        !token ||
+        !owner?.active ||
+        owner.resource !== resource ||
+        getToken() !== token
+      )
+        throw new Error("Your account or selected model changed. Try again.")
+      const controller = new AbortController()
+      owner.controllers.add(controller)
+      try {
+        const response = await apiFetch(`/models/${encodeURIComponent(id)}`, {
+          method,
+          body: fields ? JSON.stringify(fields) : undefined,
+          signal: controller.signal,
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!response.ok)
+          throw new Error(
+            (await response.text()).slice(0, 2000) ||
+              "Unable to update the model."
+          )
+        if (!owner.active || getToken() !== token)
+          throw new Error(
+            "Your account or selected model changed. Refresh to check the saved result."
+          )
+        if (method === "PATCH") {
+          const raw: RawModel = await response.json()
+          if (raw.model_id !== id)
+            throw new Error("Updated model belongs to another resource.")
+          if (!owner.active || getToken() !== token)
+            throw new Error(
+              "Your account or selected model changed. Refresh to check the saved result."
+            )
+          setState({
+            resource,
+            model: mapDetail(raw),
+            notFound: false,
+            error: null,
+          })
+        } else await response.body?.cancel()
+        if (!owner.active || getToken() !== token)
+          throw new Error(
+            "Your account or selected model changed. Refresh to check the saved result."
+          )
+      } finally {
+        owner.controllers.delete(controller)
+      }
+    },
+    [token, resource, id]
+  )
+
+  /** Saves only supplied model display fields for this originating owner. */
   const update = React.useCallback(
-    async (fields: ModelEdits) => {
-      const res = await apiFetch(`/models/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify(fields),
-      })
-      if (!res.ok) {
-        const body: unknown = await res.json().catch(() => null)
-        const detail =
-          body && typeof body === "object" && "detail" in body
-            ? body.detail
-            : null
-        throw new Error(
-          typeof detail === "string" ? detail : "Unable to update the model."
-        )
-      }
-      setModel(mapDetail((await res.json()) as RawModel))
-    },
-    [id]
+    (fields: ModelEdits) => write("PATCH", fields),
+    [write]
   )
-
-  /** Persists model publication and refreshes the local snapshot; rejected writes preserve the current row. */
+  /** Changes publication under the actual administrator identity without replacing unsaved source/form state. */
   const setPublished = React.useCallback(
-    async (published: boolean) => {
-      const res = await apiFetch(`/models/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ published }),
-      })
-      if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || "Unable to update visibility.")
-      }
-      setModel(mapDetail((await res.json()) as RawModel))
-    },
-    [id]
+    (published: boolean) => write("PATCH", { published }),
+    [write]
   )
-
-  /** Deletes the selected shared model through the admin-only route; failures reject without navigation. */
-  const remove = React.useCallback(async () => {
-    const res = await apiFetch(`/models/${id}`, { method: "DELETE" })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(text || "Unable to delete the model.")
-    }
-  }, [id])
-
-  return { model, isLoading, notFound, error, update, setPublished, remove }
+  /** Deletes this resource only on explicit action; disposed requests reject before their caller may navigate. */
+  const remove = React.useCallback(() => write("DELETE"), [write])
+  const current = state?.resource === resource ? state : null
+  return {
+    model: current?.model ?? null,
+    isLoading: Boolean(token && id && !current),
+    notFound: current?.notFound ?? false,
+    error: current?.error ?? null,
+    update,
+    setPublished,
+    remove,
+  }
 }
 
 const MAX_LINEAGE_HOPS = 25

@@ -1,0 +1,155 @@
+schema_version: 1
+interface: causal_lm
+parameters:
+  dimensions:
+    type: integer
+    required: false
+    default: 32
+    minimum: 2
+    choices: []
+    title: ''
+    description: ''
+  heads:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  ff_multiplier:
+    type: integer
+    required: false
+    default: 4
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  rope_base:
+    type: number
+    required: false
+    default: 10000.0
+    minimum: 2.0
+    choices: []
+    title: ''
+    description: ''
+  learned_temperature:
+    type: boolean
+    required: false
+    default: false
+    choices: []
+    title: ''
+    description: ''
+  context_window:
+    type: integer
+    required: false
+    default: 32
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+  layers:
+    type: integer
+    required: false
+    default: 2
+    minimum: 1
+    choices: []
+    title: ''
+    description: ''
+inputs:
+  tokens:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  positions:
+    dtype: int64
+    shape:
+    - batch
+    - sequence
+  key_mask:
+    dtype: bool
+    shape:
+    - batch
+    - sequence
+outputs:
+  logits:
+    dtype: floating
+    shape:
+    - batch
+    - sequence
+    - vocabulary
+result:
+  logits: logits
+context_window: ${context_window}
+modules:
+  embedding:
+    reference:
+      kind: block
+      resource_id: e36f74dc-b4ee-54b4-b6db-4a94690c9c88
+      revision_id: ccda902c-1e69-53b1-af00-fb3f9efc8947
+      content_hash: 29012d07fb46434a7a93106aa19604243b50ab171f9d5a4adb0786145157cfc0
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      width: ${dimensions}
+  final_norm:
+    reference:
+      kind: block
+      resource_id: b65f7a8c-36e9-5a5c-ad4a-e5eac1bd5a52
+      revision_id: b73bb4c4-b055-5e26-9d14-2fc2b271680c
+      content_hash: 24551ee991689eed7349d68c23c0986d8f58463bd220e0f719f7ca32c86c9c14
+    parameters:
+      width: ${dimensions}
+      epsilon: 1.0e-05
+  head:
+    reference:
+      kind: block
+      resource_id: 34df4f5b-8410-5c72-8623-fb62924b445e
+      revision_id: 380401b5-b447-56d0-ac3a-be34a2670698
+      content_hash: 1fb5f44f9e7de9fb2a1aaecb31a2a2f06da600fceaed2ba57556303a55178c4d
+    parameters:
+      vocab: ${tokenizer.vocabulary_size}
+      width: ${dimensions}
+aliases:
+- owner: embedding.weight
+  target: head.weight
+flow:
+- call: embedding
+  inputs:
+    tokens: tokens
+  outputs:
+    hidden: embedded
+- stack: ${layers}
+  name: layers
+  template:
+    reference:
+      kind: block
+      resource_id: e94aa13b-a937-5124-9372-6570e499f985
+      revision_id: cdb5189b-03a7-59db-91e9-68b72dd792f3
+      content_hash: 24a1740fe1b1a721b769004882f40f995a27d61f262ae594d2e1439650209041
+    parameters:
+      dimensions: ${dimensions}
+      heads: ${heads}
+      ff_multiplier: ${ff_multiplier}
+      ctx_window: ${context_window}
+      rope_base: ${rope_base}
+      learned_temperature: ${learned_temperature}
+  inputs:
+    positions: positions
+    key_mask: key_mask
+  carry:
+    hidden:
+      initial: embedded
+      input: hidden
+      output: hidden
+      result: trunk
+- call: final_norm
+  inputs:
+    hidden: trunk
+  outputs:
+    hidden: normalized
+- call: head
+  inputs:
+    hidden: normalized
+  outputs:
+    logits: logits

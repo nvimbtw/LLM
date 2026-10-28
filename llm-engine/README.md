@@ -23,6 +23,12 @@ run it standalone (and point the backend at it with `LLM_ENGINE_AUTOSTART=false`
 Project/memory prompt contracts, reserved-token adoption and SFT source messages
 are documented in [project-memory.md](../docs/llm-engine/project-memory.md).
 
+The modular architecture [capture](../docs/llm-engine/architecture-capture.md) and
+[runtime](../docs/llm-engine/modular-runtime-feasibility.md) records document
+ISS-48 CPU feasibility experiments and the remaining production/GPU gates.
+The [version-one contract map](../docs/llm-engine/architecture-contracts.md) links
+the SDK, YAML, worker and wire schemas consumed by later implementation slices.
+
 ## Data
 
 `data/` is owned by this module and is not versioned. Corpora arrive through the

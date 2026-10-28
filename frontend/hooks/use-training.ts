@@ -4,8 +4,15 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 
 import { toast } from "@/components/ui/toast"
-import { jobHref, queueTraining, type FollowUp } from "@/lib/jobs"
+import {
+  jobHref,
+  queueTraining,
+  trainingForEngine,
+  type FollowUp,
+} from "@/lib/jobs"
 import type { TrainConfig } from "@/lib/training"
+import { useJobSubmission } from "./use-job-submission"
+import { identityDigest } from "@/lib/architecture/decoder"
 
 export const DEFAULT_CONFIG: TrainConfig = {
   model_name: "my-model",
@@ -50,13 +57,24 @@ export type { LossPoint, BatchPoint, BuildPoint } from "@/lib/job-telemetry"
  */
 export function useTrainingComposer() {
   const router = useRouter()
-  const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const submission = useJobSubmission("training-composer")
 
   const start = React.useCallback(
     async (config: TrainConfig, steps: FollowUp[] = []) => {
-      setIsSubmitting(true)
-      try {
-        const job = await queueTraining(config, steps)
+      const frozenConfig = structuredClone(config)
+      const frozenSteps = structuredClone(steps)
+      const key = identityDigest({
+        config: trainingForEngine(frozenConfig),
+        steps: frozenSteps.map((step) =>
+          step.kind === "train"
+            ? { ...step, config: trainingForEngine(step.config) }
+            : step
+        ),
+      })
+      const job = await submission.owner?.submit(key, (request) =>
+        queueTraining(frozenConfig, frozenSteps, request)
+      )
+      if (job) {
         toast.success(
           "Training run queued.",
           steps.length > 0
@@ -64,19 +82,14 @@ export function useTrainingComposer() {
             : job.label
         )
         router.push(jobHref(job))
-      } catch (e) {
-        // The backend's 400 names the offending field ("dimensions must be a
-        // power of two"), which is the whole value of validating at enqueue —
-        // so it is shown as-is rather than replaced with something generic.
-        toast.error(
-          "Couldn't queue the run",
-          e instanceof Error ? e.message : "Something went wrong."
-        )
-        setIsSubmitting(false)
       }
     },
-    [router]
+    [router, submission.owner]
   )
 
-  return { start, isSubmitting }
+  return {
+    start,
+    isSubmitting: submission.pending,
+    submissionError: submission.state?.error ?? null,
+  }
 }

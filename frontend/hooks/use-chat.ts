@@ -28,6 +28,7 @@ import { useChats } from "@/components/chat/chats-provider"
 import { useComposerChoice } from "@/components/chat/composer-choice-provider"
 import { useSettings } from "@/components/settings/settings-provider"
 import type { ThinkBudget } from "@/lib/think-budget"
+import { effectiveContextMultiplier } from "@/lib/model-context"
 
 export type { ChatMessage } from "@/lib/chat-messages"
 
@@ -73,7 +74,7 @@ export function useChat(chatId: string) {
   const token = useSessionToken()
   const ready = Boolean(token) && catalog.getSnapshot().token === token
   const { settings } = useSettings()
-  const { model: currentModel } = useComposerChoice()
+  const { model: currentModel, modelFacts } = useComposerChoice()
   const { floor, pruneContext } = useChatContextFloor(chatId)
   const [messages, setMessages] = React.useState<ChatMessage[]>(() =>
     groupTurns(cachedChatHistory(chatId)?.messages ?? [])
@@ -93,11 +94,11 @@ export function useChat(chatId: string) {
     setLoadedOnce(false)
   }
 
-  const settingsRef = React.useRef({ settings, floor })
+  const settingsRef = React.useRef({ settings, floor, modelFacts })
   const messagesRef = React.useRef(messages)
   React.useEffect(() => {
-    settingsRef.current = { settings, floor }
-  }, [settings, floor])
+    settingsRef.current = { settings, floor, modelFacts }
+  }, [settings, floor, modelFacts])
   React.useEffect(() => {
     messagesRef.current = messages
   }, [messages])
@@ -131,14 +132,21 @@ export function useChat(chatId: string) {
   )
   /** Reads current preferences at send time and applies a floor only to its matching model. */
   const sendOptions = React.useCallback((modelId: string): ChatSendOptions => {
-    const { settings: current, floor: activeFloor } = settingsRef.current
+    const {
+      settings: current,
+      floor: activeFloor,
+      modelFacts: facts,
+    } = settingsRef.current
     return {
       system: current.systemPrompt,
       sampling: {
         temperature: current.temperature,
         topK: current.topK,
         topP: current.topP,
-        contextMultiplier: current.contextMultiplier,
+        contextMultiplier: effectiveContextMultiplier(
+          facts?.id === modelId ? facts : null,
+          current.contextMultiplier
+        ),
       },
       historyFloor:
         activeFloor?.modelId === modelId ? activeFloor.messageId : null,

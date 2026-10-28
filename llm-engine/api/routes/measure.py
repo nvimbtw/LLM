@@ -13,6 +13,8 @@ from llm.corpus import bpe
 from llm.model import device, likelihood, continuation
 from llm.eval import ablation
 from llm.orchestrate import chat
+from api import serving
+from llm.runtime.supervisor import RequestCancelled, WorkerStopped
 
 router = APIRouter(tags=['inference'])
 _active: dict[uuid.UUID, threading.Event] = {}
@@ -27,6 +29,7 @@ class Measure(BaseModel):
 
 @router.post('/measure/{request_id}/cancel')
 def cancel_measure(request_id: uuid.UUID):
+    """Signal the active measurement's owned cancellation event; supervised execution observes it and reaps its worker."""
     with _guard:
         event = _active.get(request_id)
         if event:
@@ -36,26 +39,51 @@ def cancel_measure(request_id: uuid.UUID):
 
 @router.post('/measure/{request_id}')
 def measure(request_id: uuid.UUID, body: Measure):
+    """Serialize a bounded measurement under its request identity and select saved-definition supervision or the legacy adapter."""
     cancel = threading.Event()
     with _guard:
         if request_id in _active:
             raise HTTPException(409, 'measurement is already active')
         _active[request_id] = cancel
     try:
+        if serving.modular(body.config.model_name):
+            try:
+                result = serving.SERVING.measure(body.config, body.text, body.prompts, cancel)
+            except RequestCancelled:
+                return {"model": {"id": body.config.model_name, "name": body.config.model_name},
+                    "likelihood": {"total": 0.0, "count": 0, "unscored_bytes": 0},
+                    "samples": [], "ablation": None, "cancelled": True}
+            result["model"]["name"] = reference_name(body.config.model_name)
+            return result
+        serving.SERVING.evict()
         with device.admit(wait=True):
             return _measure(body, cancel)
+    except device.Busy as error:
+        raise HTTPException(409, str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(404, "model is unavailable") from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except WorkerStopped as error:
+        raise HTTPException(409, "model measurement stopped") from error
     finally:
         with _guard:
             _active.pop(request_id, None)
 
 
-def _measure(body: Measure, cancel: threading.Event):
-    model, tokenizer, device_name = chat.load(body.config.model_name)
+def reference_name(model_name: str) -> str:
+    """Mark an actually used checkpoint as referenced and return its display name without reading or executing model code."""
     with store.session() as db:
-        row = q.get_model(db, uuid.UUID(body.config.model_name))
+        row = q.get_model(db, uuid.UUID(model_name))
         if row and row.checkpoint_index is not None:
             row.parameters = {**(row.parameters or {}), 'recovery_referenced': True}
-        name = row.name if row else body.config.model_name
+        return row.name if row else model_name
+
+
+def _measure(body: Measure, cancel: threading.Event):
+    """Preserve existing legacy Transformer measurements, including supported layer ablation, under parent admission."""
+    model, tokenizer, device_name = chat.load(body.config.model_name)
+    name = reference_name(body.config.model_name)
     info = dict(id=body.config.model_name, name=name, layers=model.layers,
                 dimensions=model.dimensions, heads=model.heads, context=model.ctx_window,
                 vocab=model.vocab, parameters=model.parameter_count())

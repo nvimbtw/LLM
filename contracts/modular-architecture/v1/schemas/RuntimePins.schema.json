@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Exact semantic definition, binding, execution-profile and valid-receipt identity.",
+  "properties": {
+    "bindings_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Bindings Digest",
+      "type": "string"
+    },
+    "definition_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Definition Id",
+      "type": "string"
+    },
+    "profile_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Profile Digest",
+      "type": "string"
+    },
+    "receipt_id": {
+      "format": "uuid",
+      "title": "Receipt Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "definition_id",
+    "bindings_digest",
+    "profile_digest",
+    "receipt_id"
+  ],
+  "title": "RuntimePins",
+  "type": "object"
+}

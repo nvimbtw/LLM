@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "RevisionRef": {
+      "additionalProperties": false,
+      "description": "Pin immutable bytes separately from their resource's editable display identity.",
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "block",
+            "architecture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "resource_id",
+        "revision_id",
+        "content_hash"
+      ],
+      "title": "RevisionRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Return immutable revision/evidence identity without tying retention to job history.",
+  "properties": {
+    "acceptance_identity_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Acceptance Identity Hash",
+      "type": "string"
+    },
+    "acceptance_receipt_id": {
+      "format": "uuid",
+      "title": "Acceptance Receipt Id",
+      "type": "string"
+    },
+    "reference": {
+      "$ref": "#/$defs/RevisionRef"
+    },
+    "revision_number": {
+      "minimum": 1,
+      "title": "Revision Number",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "reference",
+    "revision_number",
+    "acceptance_receipt_id",
+    "acceptance_identity_hash"
+  ],
+  "title": "AcceptedRevision",
+  "type": "object"
+}

@@ -1,0 +1,100 @@
+{
+  "sdk_version": 1,
+  "name": "legacy_transformer",
+  "title": "Legacy Transformer",
+  "description": "Synthetic version-one contract fixture; not an accepted deployed catalog revision.",
+  "parameters": {
+    "vocab": {
+      "type": "integer",
+      "required": true,
+      "minimum": 1
+    },
+    "dimensions": {
+      "type": "integer",
+      "required": false,
+      "default": 32,
+      "minimum": 8,
+      "maximum": 1024
+    },
+    "heads": {
+      "type": "integer",
+      "required": false,
+      "default": 4,
+      "minimum": 1,
+      "maximum": 32
+    },
+    "layers": {
+      "type": "integer",
+      "required": false,
+      "default": 2,
+      "minimum": 1,
+      "maximum": 32
+    },
+    "ff_multiplier": {
+      "type": "integer",
+      "required": false,
+      "default": 4,
+      "minimum": 1,
+      "maximum": 16
+    },
+    "ctx_window": {
+      "type": "integer",
+      "required": false,
+      "default": 32,
+      "minimum": 2,
+      "maximum": 4096
+    },
+    "rope_base": {
+      "type": "number",
+      "required": false,
+      "default": 10000.0,
+      "minimum": 2.0
+    },
+    "learned_temperature": {
+      "type": "boolean",
+      "required": false,
+      "default": false
+    }
+  },
+  "inputs": {
+    "tokens": {
+      "dtype": "int64",
+      "shape": [
+        "batch",
+        "sequence"
+      ]
+    },
+    "positions": {
+      "dtype": "int64",
+      "shape": [
+        "batch",
+        "sequence"
+      ]
+    },
+    "key_mask": {
+      "dtype": "bool",
+      "shape": [
+        "batch",
+        "sequence"
+      ]
+    }
+  },
+  "outputs": {
+    "logits": {
+      "dtype": "floating",
+      "shape": [
+        "batch",
+        "sequence",
+        "vocabulary"
+      ]
+    }
+  },
+  "capabilities": [
+    "cache",
+    "introspection",
+    "attention",
+    "context_extension",
+    "recompute",
+    "token_rows"
+  ]
+}

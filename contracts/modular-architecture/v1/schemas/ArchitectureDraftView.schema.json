@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Read exact editable YAML bytes without executing or validating its contents.",
+  "properties": {
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "draft_version": {
+      "minimum": 1,
+      "title": "Draft Version",
+      "type": "integer"
+    },
+    "resource_id": {
+      "format": "uuid",
+      "title": "Resource Id",
+      "type": "string"
+    },
+    "yaml": {
+      "maxLength": 262144,
+      "title": "Yaml",
+      "type": "string"
+    }
+  },
+  "required": [
+    "resource_id",
+    "draft_version",
+    "content_hash",
+    "yaml"
+  ],
+  "title": "ArchitectureDraftView",
+  "type": "object"
+}

@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "description": "Select an actual declared observation or a compatible legacy layer; one request never guesses between the two.",
+  "properties": {
+    "head": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Head",
+      "type": "integer"
+    },
+    "layer": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layer"
+    },
+    "point_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Point Id"
+    },
+    "text": {
+      "maxLength": 1048576,
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "AttentionSelection",
+  "type": "object"
+}

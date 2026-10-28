@@ -8,7 +8,7 @@
 //! Nothing here names the LLM engine. A second service is a second `Proxy` with its
 //! own audience and its own routers above it; this is the whole seam.
 
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 
 mod sse;
 #[cfg(test)]
@@ -88,6 +88,55 @@ impl Proxy {
             audience: audience.into(),
             secret,
         }
+    }
+
+    /// Forward bounded JSON with a trusted authorization scope and preserve all HTTP statuses.
+    /// The response body is capped before decoding and requests expire after thirty seconds.
+    pub async fn scoped_json(
+        &self,
+        caller: &auth::Caller,
+        scope: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        max_response_bytes: usize,
+    ) -> Result<(u16, Value)> {
+        let token = auth::token::issue_service_token(
+            &self.audience,
+            caller,
+            &[scope],
+            self.secret.as_deref().unwrap_or(UNSIGNED),
+        )
+        .map_err(|error| Error::Transport(error.to_string()))?;
+        let mut request = self
+            .http
+            .request(method, self.url(path))
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(30));
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+        let status = response.status().as_u16();
+        let mut chunks = response.bytes_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|error| Error::Transport(error.to_string()))?;
+            if chunk.len() > max_response_bytes.saturating_sub(bytes.len()) {
+                return Err(Error::Decode("service response exceeds byte limit".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Decode("invalid service JSON".into()))?
+        };
+        Ok((status, value))
     }
 
     /// Forward an owner-scoped GET and decode the service JSON response.
@@ -187,6 +236,25 @@ impl Proxy {
         path: &str,
     ) -> Result<impl Stream<Item = Result<Frame>>> {
         self.streaming(caller, Method::GET, path, None).await
+    }
+
+    /// Open job observation with a Rust-authorized signed visibility scope.
+    /// Scope authorization occurs upstream before any replayed frame is returned.
+    pub async fn scoped_events(
+        &self,
+        caller: &auth::Caller,
+        scope: &str,
+        path: &str,
+    ) -> Result<impl Stream<Item = Result<Frame>>> {
+        let token = auth::token::issue_service_token(
+            &self.audience,
+            caller,
+            &[scope],
+            self.secret.as_deref().unwrap_or(UNSIGNED),
+        )
+        .map_err(|error| Error::Transport(error.to_string()))?;
+        let response = send(self.http.get(self.url(path)).bearer_auth(token)).await?;
+        Ok(sse::frames(response.bytes_stream()))
     }
 
     /// The same for a stream that has to be opened with a body — a chat turn is

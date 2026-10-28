@@ -1,6 +1,6 @@
 import type {
   CheckpointFrame,
-  DiagPoint,
+  TrainingDiagnosticPoint,
   TokenizeStats,
   TrainConfig,
   TrainStats,
@@ -30,7 +30,7 @@ export interface JobTelemetry {
   train: Partial<TrainStats>
   loss: LossPoint[]
   batchSeries: BatchPoint[]
-  diag: DiagPoint[]
+  diag: TrainingDiagnosticPoint[]
   buildSeries: BuildPoint[]
   checkpoints: CheckpointFrame[]
   log: string[]

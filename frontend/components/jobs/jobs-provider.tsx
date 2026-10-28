@@ -4,9 +4,16 @@ import * as React from "react"
 
 import { useSettings } from "@/components/settings/settings-provider"
 import { toast } from "@/components/ui/toast"
-import { useAuth } from "@/hooks/use-auth"
+import { useAuth, useSessionToken } from "@/hooks/use-auth"
 import { useJobs } from "@/hooks/use-jobs"
-import { KIND_LABEL, getJob, type Job } from "@/lib/jobs"
+import {
+  KIND_LABEL,
+  getJob,
+  jobStatusLabel,
+  validationReport,
+  type Job,
+} from "@/lib/jobs"
+import { getToken } from "@/lib/api"
 
 /**
  * One subscription to the queue for the whole app.
@@ -23,10 +30,33 @@ type JobsContextValue = ReturnType<typeof useJobs>
 
 const JobsContext = React.createContext<JobsContextValue | null>(null)
 
-export function JobsProvider({ children }: { children: React.ReactNode }) {
+export interface JobsProviderProps {
+  children: React.ReactNode
+}
+interface JobsSessionProps extends JobsProviderProps {
+  enabled: boolean
+  token: string | null
+}
+
+/** Replaces queue state with the actual bearer/access identity so private validation rows never survive session replacement. */
+export function JobsProvider({ children }: JobsProviderProps) {
   const { isAdmin } = useAuth()
-  const value = useJobs(isAdmin)
-  useFinishNotices(value.board.active)
+  const token = useSessionToken()
+  return (
+    <JobsSession
+      key={`${token ?? "anonymous"}:${isAdmin}`}
+      enabled={Boolean(token && isAdmin)}
+      token={token}
+    >
+      {children}
+    </JobsSession>
+  )
+}
+
+/** Owns one session's queue subscription and best-effort completion notices without sharing their lifetime with a replacement session. */
+function JobsSession({ children, enabled, token }: JobsSessionProps) {
+  const value = useJobs(enabled)
+  useFinishNotices(value.board.active, token)
   return <JobsContext.Provider value={value}>{children}</JobsContext.Provider>
 }
 
@@ -46,13 +76,19 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
  * where this would never see it. One request per finished job, and jobs finish
  * minutes apart.
  */
-function useFinishNotices(active: Job[]) {
+function useFinishNotices(active: Job[], token: string | null) {
   const { settings } = useSettings()
   const enabled = settings.notifyOnFinish
 
   const wasActive = React.useRef<Set<string>>(new Set())
-  // Read inside the effect rather than depended upon, so switching the setting on
-  // does not replay every job that finished while it was off.
+  const lifetime = React.useRef({ active: false })
+  React.useEffect(() => {
+    const owner = { active: true }
+    lifetime.current = owner
+    return () => {
+      owner.active = false
+    }
+  }, [])
   const enabledRef = React.useRef(enabled)
   React.useEffect(() => {
     enabledRef.current = enabled
@@ -63,27 +99,43 @@ function useFinishNotices(active: Job[]) {
     const current = new Set(active.map((job) => job.id_job))
     wasActive.current = current
 
-    if (!enabledRef.current || previous.size === 0) return
+    const owner = lifetime.current
+    if (
+      !enabledRef.current ||
+      !owner.active ||
+      !token ||
+      getToken() !== token ||
+      previous.size === 0
+    )
+      return
 
     for (const id of previous) {
       if (current.has(id)) continue
-      // A job that left the live band without a terminal row was deleted, and its
-      // lookup 404s — which is not worth announcing, so the failure is swallowed.
-      void getJob(id).then(announce).catch(noop)
+      void getJob(id)
+        .then((job) => {
+          if (owner.active && enabledRef.current && getToken() === token)
+            announce(job)
+        })
+        .catch(noop)
     }
-  }, [active])
+  }, [active, token])
 }
 
+/** Announces the actual completed verdict or lifecycle outcome only after the session owner approves delivery. */
 function announce(job: Job) {
   const what = `${KIND_LABEL[job.kind]} · ${job.label}`
-  if (job.status === "done") toast.success("Finished", what)
+  if (job.status === "done" && validationReport(job))
+    toast({ title: jobStatusLabel(job), description: what })
+  else if (job.status === "done") toast.success("Finished", what)
   else if (job.status === "failed") toast.error("Failed", job.error ?? what)
   else if (job.status === "cancelled")
     toast({ title: "Cancelled", description: what })
 }
 
+/** Ignore best-effort notice lookup failures; the current queue remains the authoritative visible status. */
 function noop() {}
 
+/** Returns this mounted queue session, refusing consumers outside its explicit provider. */
 export function useJobsContext(): JobsContextValue {
   const value = React.useContext(JobsContext)
   if (!value) {

@@ -17,6 +17,7 @@ FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ .
 COPY docs /docs
+COPY contracts /contracts
 COPY README.md /README.md
 COPY AGENTS.md /AGENTS.md
 RUN bun run build

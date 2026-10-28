@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "ArchitectureSelection": {
+      "additionalProperties": false,
+      "description": "Freeze submission selection; pending tokenizer requires final in-job preflight.",
+      "properties": {
+        "parameters": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}$": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "revision_id": {
+          "format": "uuid",
+          "title": "Revision Id",
+          "type": "string"
+        },
+        "validation_run_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Validation Run Id"
+        }
+      },
+      "required": [
+        "revision_id",
+        "parameters"
+      ],
+      "title": "ArchitectureSelection",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Read prospective selected-recipe bindings/profile without allocating a model, queue row or future tokenizer identity.",
+  "properties": {
+    "allow_tf32": {
+      "default": true,
+      "title": "Allow Tf32",
+      "type": "boolean"
+    },
+    "batch_size": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "title": "Batch Size",
+      "type": "integer"
+    },
+    "precision": {
+      "default": "bf16",
+      "enum": [
+        "fp32",
+        "fp16",
+        "bf16"
+      ],
+      "title": "Precision",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "seed": {
+      "default": 0,
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "selection": {
+      "$ref": "#/$defs/ArchitectureSelection"
+    },
+    "tokenizer_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tokenizer Id"
+    }
+  },
+  "required": [
+    "selection",
+    "batch_size"
+  ],
+  "title": "TrainingArchitectureRequest",
+  "type": "object"
+}

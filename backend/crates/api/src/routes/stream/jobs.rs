@@ -25,15 +25,24 @@ pub(super) async fn run(
         stream,
         engine.clone(),
         run_id,
-        matches!(claims.access_level, auth::AccessLevel::Admin),
+        matches!(claims.access_level, auth::AccessLevel::Admin).then_some(claims.sub),
     )));
     match engine
-        .events(&caller, &format!("/runs/{run_id}/events"))
+        .scoped_events(
+            &caller,
+            crate::upstream::visibility(&claims),
+            &format!("/runs/{run_id}/events"),
+        )
         .await
     {
         Ok(frames) => relay(&mut session, frames).await,
         Err(error) => {
-            let _ = session.text(ws::error_frame(&error.to_string())).await;
+            let message = if matches!(claims.access_level, auth::AccessLevel::Admin) {
+                error.to_string()
+            } else {
+                "job observation failed".to_string()
+            };
+            let _ = session.text(ws::error_frame(&message)).await;
         }
     }
     drop(control);

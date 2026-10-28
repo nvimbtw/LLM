@@ -19,7 +19,11 @@ from llm.config import TrainConfig
 from llm.model import checkpoint
 from llm.model.checkpoint import TrainState
 from llm.model.transformer import Transformer
+from llm.model.language import logits, model_facts
 from llm.train import memory
+from llm.train.diagnostics_model import ModelCollector
+from llm.train.model_memory import ModelMemoryPlan, owned_tensors
+from llm.train.model_policy import optimizer_groups
 from llm.train import plan as plan_mod
 from llm.train.diagnostics import Collector, Probes, diagnostic_rows
 from llm.train.plan import DataPlan
@@ -117,7 +121,7 @@ def compiled(fn, enabled: bool):
         return fn
 
 
-def step_fn(model: Transformer, vocab: int):
+def step_fn(model: torch.nn.Module, vocab: int):
     """The forward pass and its loss as one callable, so both compile together.
 
     Compiling the model alone leaves cross-entropy in eager, and on this model
@@ -131,8 +135,8 @@ def step_fn(model: Transformer, vocab: int):
     """
 
     def forward_loss(x, y, w):
-        logits, _ = model(x)
-        return _loss(logits, y, w, vocab)
+        """Compute next-token loss through the deliberate legacy or declared whole-model logits interface."""
+        return _loss(logits(model,x), y, w, vocab)
 
     return forward_loss
 
@@ -233,7 +237,7 @@ class _Checkpoints:
 
     def at(
         self,
-        model: Transformer,
+        model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         *,
         step: int,
@@ -280,14 +284,15 @@ class _Checkpoints:
 
 
 def _resume(
-    model: Transformer,
+    model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     state: TrainState | None,
 ) -> int:
     """Put the optimizer and the generators back, and answer with the step to
     re-enter at.
 
-    Applied literally: whatever `state` carries is restored and the run
+    Saved moments and RNG are restored, while the newly constructed optimizer's
+    group options retain the requested decay and admitted device policy. The run
     fast-forwards to `state.step`. A continuation that means to keep the moments
     but not the position hands over a state whose step is 0 — which of the two a
     request meant is the orchestrator's to decide, because it is the only layer
@@ -300,13 +305,17 @@ def _resume(
     if state is None:
         return 0
     if state.optimizer:
+        options = [{key: value for key, value in group.items() if key != "params"}
+                   for group in optimizer.param_groups]
         optimizer.load_state_dict(state.optimizer)
+        for group, requested in zip(optimizer.param_groups, options, strict=True):
+            group.update(requested)
     checkpoint.restore_rng(state.rng)
     return state.step
 
 
 def run(
-    model: Transformer,
+    model: torch.nn.Module,
     corpus: np.ndarray,
     data_plan: DataPlan,
     cfg: TrainConfig,
@@ -318,6 +327,8 @@ def run(
     probes: Probes | None = None,
     on_checkpoint: CheckpointWriter | None = None,
     resume: TrainState | None = None,
+    model_plan: ModelMemoryPlan | None = None,
+    on_batch: Callable[[int], None] | None = None,
 ) -> dict:
     """Train `model` in place. Returns a summary; True in `cancelled` means the
     run stopped at a step boundary with its weights intact.
@@ -338,63 +349,61 @@ def run(
     Masked batches can advance the cursor without an optimizer step. Legacy
     points without a cursor use the old step-based fallback; exact SFT recovery
     refuses those points in the orchestrator.
+
+    A declared recipe model requires its actual captured/admitted model_plan
+    from in-worker final preflight. Its facts own context/vocabulary; legacy
+    shape defaults never configure it. Recomputation is already selected by that
+    preflight, without changing structural loop counts here.
+
+    Learning rate, reporting and checkpoint cadence share one optimizer-step
+    counter. Epoch shuffling uses zero-based epoch identities; frames report
+    one-based epochs. Cancellation lands before an update, gradients are dropped
+    before each forward and saved cursors name the next unconsumed batch.
+    on_batch reports consumed batches for worker liveness, including masked
+    batches without an update; it never substitutes for optimizer-step telemetry.
     """
-    budget = memory.budget_bytes(device)
+    facts = model_facts(model)
+    if isinstance(model,Transformer) and model_plan is not None:
+        raise ValueError("legacy Transformer training owns its measured legacy memory planner")
+    if not isinstance(model,Transformer):
+        cfg = cfg.model_copy(update={"ctx_window":facts.context_window})
+        if model_plan is None:
+            raise ValueError("recipe training requires captured final-profile memory admission")
+        actual_bytes = sum(value.numel() * value.element_size() for value in owned_tensors(model).values())
+        if actual_bytes != model_plan.parameter_bytes or model_plan.estimated_bytes > model_plan.target_bytes:
+            raise ValueError("captured memory plan differs from the admitted model")
+        if model_plan.input_shapes != ((cfg.batch_size,facts.context_window),)*3:
+            raise ValueError("captured full-prefix memory profile differs from the training batch/context")
+        if probes is not None and probes.reference is not None:
+            reference = probes.reference
+            reference_bytes = sum(value.numel() * value.element_size() for value in owned_tensors(reference).values())
+            if any(value.requires_grad for value in reference.parameters()) or model_plan.reference_bytes < reference_bytes:
+                raise ValueError("captured memory plan does not admit the frozen SFT reference")
+    budget = model_plan.allocator_bytes if model_plan is not None else memory.budget_bytes(device)
     resident_bytes = memory.other_allocated_bytes(model, device)
     memory.guard(device, budget)
     model.to(device)
     model.train()
-    eager_forward = step_fn(model, model.vocab)
+    eager_forward = step_fn(model, facts.vocabulary_size)
     forward = compiled(eager_forward, cfg.compile_model and device == "cuda")
-    # How much of the step's memory to trade for time, decided before the first
-    # step rather than discovered by it — on this hardware a run that does not
-    # fit does not fail, it silently spills into host RAM and never finishes.
-    # See `llm/train/memory.py`, which is entirely about why that is so.
-    #
-    # Set on the model rather than passed through the forward, because it is the
-    # model that knows a decode step must never recompute. It stays set for the
-    # model's lifetime and is not restored on the way out, which costs nothing:
-    # `Transformer.forward` recomputes only a cache-free pass that requires grad,
-    # and every use of a trained model here is one or the other — generation
-    # passes caches, evaluation runs under `no_grad`.
-    memory_plan = memory.plan(
+    memory_plan = model_plan or memory.plan(
         model, batch_size=cfg.batch_size, device=device,
         requested=cfg.recompute_blocks, budget=budget,
         compiled=forward is not eager_forward,
         resident_bytes=resident_bytes,
     )
-    model.recompute_depth = memory_plan.recompute_depth
-    # The high-water mark is what `report` and `_summary` publish, and it is
-    # process-wide and cumulative: a uvicorn that has already trained something
-    # larger would otherwise have every frame of this run quoting that run's
-    # peak. Reset here so the number means "this run".
+    if isinstance(model,Transformer):
+        model.recompute_depth = memory_plan.recompute_depth
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     print(f"[memory] {memory_plan.reason}")
 
-    # ~1.1x on Ampere for a tenth of a bit of matmul mantissa. Torch defaults it off.
     if device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = cfg.allow_tf32
         torch.backends.cudnn.allow_tf32 = cfg.allow_tf32
 
     amp_dtype = autocast_dtype(cfg.precision, device)
-    # One kernel for the whole update instead of one per tensor: a few hundred
-    # launches a step saved, which matters at a size where launch overhead is a
-    # real share of it. CUDA-only, so asked for rather than assumed.
-    # Attention temperatures are excluded from weight decay. Decay pulls a weight
-    # toward zero, and zero in log-temperature space is tau=1 — the shared scale a
-    # per-head temperature exists to escape. Left in the main group, the decay term
-    # would quietly argue against every head that tried to specialize. Everything
-    # else keeps the single flat group it has always had.
-    temperatures = [p for n, p in model.named_parameters() if n.endswith("log_temperature")]
-    if temperatures:
-        decayed = [p for p in model.parameters() if not any(p is t for t in temperatures)]
-        groups = [
-            {"params": decayed, "weight_decay": cfg.weight_decay},
-            {"params": temperatures, "weight_decay": 0.0},
-        ]
-    else:
-        groups = [{"params": list(model.parameters()), "weight_decay": cfg.weight_decay}]
+    groups = optimizer_groups(model,weight_decay=cfg.weight_decay)
 
     optimizer = torch.optim.AdamW(
         groups,
@@ -415,8 +424,6 @@ def run(
 
     collector = _LazyCollector(model, corpus, token_counts, probes)
 
-    # Cadence follows the run's length, so a 200-step run and a 200k-step run
-    # both draw a curve rather than a line or a flood.
     interval = report_every(total_steps)
     diag_interval = diagnose_every(max(1, total_steps // interval))
     total_epochs = sum(st.epochs for st in stages)
@@ -435,11 +442,6 @@ def run(
     grad = None
 
     def report(
-        # 0-based, as the loop counts them; reported 1-based. The two differ on
-        # purpose: the shuffle seed is derived from the 0-based index, while the
-        # consumer's contract is `step = (epoch - 1) * total_chunks + chunk`, so
-        # emitting 0-based here would both read as off-by-one and break the
-        # (epoch, chunk) reconstruction a reattaching socket does.
         epoch: int,
         stage_index: int,
         stage,
@@ -450,15 +452,11 @@ def run(
         done: bool = False,
         checkpoint_path: str | None = None,
     ) -> None:
+        """Publish measured windows with one-based epoch identity and optional bounded diagnostics."""
         log.flush()
         epoch_losses = log.epoch
         window = log.values[-interval:] or [0.0]
         elapsed = time.time() - started
-        # Projected from the rate achieved so far rather than from the last
-        # window: a single slow batch should not swing the estimate a person is
-        # reading off the screen. Off the steps *this* process has taken, so a
-        # resumed run does not divide its few seconds by the whole run's step
-        # count and promise to finish immediately.
         remaining = max(0, total_steps - step)
         taken = step - resumed_at
         eta = (elapsed / taken * remaining) if taken else 0.0
@@ -485,10 +483,6 @@ def run(
                 epoch_done=done,
                 epoch_duration_secs=time.time() - epoch_started,
                 checkpoint_path=checkpoint_path,
-                # The high-water mark since the run started, against what it was
-                # planned to fit in. Read off the allocator rather than
-                # `nvidia-smi`: what is reserved includes the pool this process
-                # is holding for its own reuse, which is not what a step costs.
                 peak_mib=(
                     torch.cuda.max_memory_allocated() / 2**20
                     if device == "cuda" else None
@@ -496,8 +490,6 @@ def run(
                 budget_mib=memory_plan.budget_mib if device == "cuda" else None,
                 stage=stage_index,
                 stage_name=stage.name,
-                # `grad` is only ever set on a diagnosed step, which is also the
-                # only way the collector exists by now.
                 diag=diagnostics.as_dict() if diagnostics is not None else None,
             )
         )
@@ -508,11 +500,8 @@ def run(
         return float(np.mean(log.values[-interval:] or [0.0]))
 
     epochs_done = 0
-    # Epochs already behind the step being resumed at are skipped whole, by
-    # subtraction rather than by iterating them: `EpochStream` is addressable, so
-    # neither the skipped epochs nor the skipped head of the one being re-entered
-    # is ever gathered.
     to_skip = resumed_at
+    consumed_batches = 0
     cursor = resume.extra.get("cursor") if resume is not None else None
 
     for stage_index, stage in enumerate(stages):
@@ -536,18 +525,15 @@ def run(
             stream, cfg.ctx_window, cfg.batch_size, mask is not None, staging,
             start_batch=start_batch,
         ), start=start_batch):
-            # Cooperative cancellation at a step boundary: the weights are
-            # consistent here, mid-backward they are not.
             if cancel is not None and cancel.is_set():
                 log.flush()
                 return _summary(step, total_steps, log.values, started, cancelled=True,
                                 plan=memory_plan)
 
-            # A window with no assistant tokens has exactly zero loss, which would
-            # pollute the reported average with non-measurements. Answered from the
-            # host-side mask: asking the uploaded tensor would sync the device on
-            # every step of every SFT run.
             if weights is not None and not weights.any():
+                consumed_batches += 1
+                if on_batch is not None:
+                    on_batch(consumed_batches)
                 continue
 
             x = torch.from_numpy(inputs).to(device)
@@ -558,59 +544,37 @@ def run(
             for group in optimizer.param_groups:
                 group["lr"] = lr
 
-            # The first step of a run always reports. Without it the opening
-            # frame waits for `interval` steps — 158 of them on a 24k-step run,
-            # which is minutes at a long context — and until it arrives nothing
-            # downstream can tell a run that is training from one that is
-            # wedged. That ambiguity is where a run spilling into host RAM used
-            # to hide: full card, 100% utilization, and no frame to say
-            # otherwise. It also puts the step's real peak (see `report`) in
-            # front of somebody while the run is still young enough to restart.
             first_step = step == resumed_at
             reporting = (step + 1) % interval == 0 or first_step
             measuring = on_progress is not None and reporting
-            # Diagnostics keep their own cadence and sit out the opening frame:
-            # that frame exists to say the run is alive, and it should not also
-            # be the most expensive step in the run.
             diagnosing = (
                 measuring
                 and not first_step
                 and ((step + 1) // interval) % diag_interval == 0
             )
 
-            # Previous gradients have already been consumed by AdamW and the
-            # report. Keeping them through the next forward raises its peak.
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device_type="cuda", dtype=amp_dtype, enabled=amp_dtype is not None
             ):
-                # Under the same autocast as the step it describes, so it reports
-                # the arithmetic the model is actually training in. It runs first
-                # and under no_grad: the training step below is then untouched by
-                # the fact that this one is measured.
                 if diagnosing:
                     collector().observe(x, y, w, _diagnosed_documents(stream, offset, cfg, w))
-                # Cross-entropy is on autocast's fp32 list, so the softmax and
-                # its gradient run in full precision regardless of amp_dtype.
                 loss = forward(x, y, w)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
 
-            # Between backward and step: the gradients still exist, and the
-            # weights have not moved yet. Both halves of the update ratio need
-            # this exact window.
             grad = collector().before_step() if diagnosing else None
 
             optimizer.step()
+            consumed_batches += 1
+            if on_batch is not None:
+                on_batch(consumed_batches)
 
             log.record(loss)
             step += 1
             chunk += 1
 
-            # The interval is a multiple of the report interval, so a checkpoint
-            # always lands on a step that is publishing a frame anyway and rides
-            # that frame's `checkpoint_path` out.
             saved = (
                 checkpoints.at(
                     model, optimizer,
@@ -625,10 +589,6 @@ def run(
             if measuring:
                 report(epoch, stage_index, stage, chunk, steps_this_epoch,
                        lr, epoch_started, checkpoint_path=saved)
-                # Hands the GIL to the event loop so the frame just published actually
-                # goes out. Without it a tight loop holds the GIL and every frame flushes
-                # at once when the run ends, which looks exactly like broken streaming.
-                # `sleep(0)` does not release it.
                 time.sleep(0.002)
 
         saved = checkpoints.at(
@@ -660,22 +620,26 @@ class _LazyCollector:
 
     Diagnostics are sampled across the reports, so the first call comes at least
     `interval * diag_interval` steps in, by which point the run is warm and the
-    cost is off the critical path either way.
+    cost is off the critical path either way. Declared recipe models instead use
+    bounded semantic ModelCollector samples, without inferred embedding/layer fields.
     """
 
     def __init__(
         self,
-        model: Transformer,
+        model: torch.nn.Module,
         corpus: np.ndarray,
         counts: list[int] | None,
         probes: Probes | None = None,
     ):
+        """Retain diagnostic inputs without allocating the optional collector before first use."""
         self._args = (model, corpus, counts, probes)
-        self._collector: Collector | None = None
+        self._collector: Collector | ModelCollector | None = None
 
-    def __call__(self) -> Collector:
+    def __call__(self) -> Collector | ModelCollector:
+        """Create the model-appropriate measured diagnostics only when the existing cadence requests them."""
         if self._collector is None:
-            self._collector = Collector(*self._args)
+            self._collector = (Collector(*self._args) if isinstance(self._args[0],Transformer)
+                               else ModelCollector(self._args[0], self._args[3]))
         return self._collector
 
 

@@ -1,0 +1,233 @@
+{
+  "$defs": {
+    "RuntimeDeadlines": {
+      "additionalProperties": false,
+      "description": "Distinct absolute startup/request limits and completed-work training watchdogs.",
+      "properties": {
+        "artifact_adoption_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Artifact Adoption Seconds",
+          "type": "number"
+        },
+        "cancel_grace_seconds": {
+          "default": 0.15,
+          "exclusiveMinimum": 0,
+          "maximum": 10,
+          "title": "Cancel Grace Seconds",
+          "type": "number"
+        },
+        "construction_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Construction Seconds",
+          "type": "number"
+        },
+        "effect_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Effect Seconds",
+          "type": "number"
+        },
+        "import_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Import Seconds",
+          "type": "number"
+        },
+        "inference_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Inference Seconds",
+          "type": "number"
+        },
+        "measurement_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Measurement Seconds",
+          "type": "number"
+        },
+        "reap_seconds": {
+          "default": 2,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Reap Seconds",
+          "type": "number"
+        },
+        "serving_idle_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Serving Idle Seconds",
+          "type": "number"
+        },
+        "training_progress_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Training Progress Seconds",
+          "type": "number"
+        },
+        "validation_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Validation Seconds",
+          "type": "number"
+        }
+      },
+      "title": "RuntimeDeadlines",
+      "type": "object"
+    },
+    "RuntimeResources": {
+      "additionalProperties": false,
+      "description": "Parent admission budgets; tree RSS supervision is distinct from per-process AS.",
+      "properties": {
+        "artifact_bytes": {
+          "maximum": 1099511627776,
+          "minimum": 1,
+          "title": "Artifact Bytes",
+          "type": "integer"
+        },
+        "device": {
+          "enum": [
+            "cpu",
+            "cuda"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "device_allocator_bytes": {
+          "maximum": 1099511627776,
+          "minimum": 0,
+          "title": "Device Allocator Bytes",
+          "type": "integer"
+        },
+        "monitor_interval_seconds": {
+          "default": 0.05,
+          "exclusiveMinimum": 0,
+          "maximum": 0.1,
+          "title": "Monitor Interval Seconds",
+          "type": "number"
+        },
+        "open_files_per_process": {
+          "default": 64,
+          "maximum": 256,
+          "minimum": 8,
+          "title": "Open Files Per Process",
+          "type": "integer"
+        },
+        "owned_processes": {
+          "default": 1,
+          "maximum": 8,
+          "minimum": 1,
+          "title": "Owned Processes",
+          "type": "integer"
+        },
+        "process_address_bytes": {
+          "maximum": 1099511627776,
+          "minimum": 1048576,
+          "title": "Process Address Bytes",
+          "type": "integer"
+        },
+        "total_artifact_bytes": {
+          "maximum": 1099511627776,
+          "minimum": 1,
+          "title": "Total Artifact Bytes",
+          "type": "integer"
+        },
+        "tree_memory_enforcement": {
+          "enum": [
+            "cgroup_v2",
+            "preflight_and_monitor"
+          ],
+          "title": "Tree Memory Enforcement",
+          "type": "string"
+        },
+        "tree_resident_bytes": {
+          "maximum": 1099511627776,
+          "minimum": 1048576,
+          "title": "Tree Resident Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "process_address_bytes",
+        "tree_resident_bytes",
+        "tree_memory_enforcement",
+        "device",
+        "device_allocator_bytes",
+        "artifact_bytes",
+        "total_artifact_bytes"
+      ],
+      "title": "RuntimeResources",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Parent-owned bounded transport and resident-worker resource/deadline policy.",
+  "properties": {
+    "deadlines": {
+      "$ref": "#/$defs/RuntimeDeadlines"
+    },
+    "packet_bytes": {
+      "const": 4096,
+      "default": 4096,
+      "title": "Packet Bytes",
+      "type": "integer"
+    },
+    "pending_effects": {
+      "const": 1,
+      "default": 1,
+      "title": "Pending Effects",
+      "type": "integer"
+    },
+    "pending_messages": {
+      "default": 64,
+      "maximum": 64,
+      "minimum": 1,
+      "title": "Pending Messages",
+      "type": "integer"
+    },
+    "pending_publications": {
+      "const": 1,
+      "default": 1,
+      "title": "Pending Publications",
+      "type": "integer"
+    },
+    "progress_interval_seconds": {
+      "default": 0.25,
+      "maximum": 30,
+      "minimum": 0.1,
+      "title": "Progress Interval Seconds",
+      "type": "number"
+    },
+    "resources": {
+      "$ref": "#/$defs/RuntimeResources"
+    },
+    "retained_progress": {
+      "default": 64,
+      "maximum": 64,
+      "minimum": 1,
+      "title": "Retained Progress",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "resources"
+  ],
+  "title": "RuntimePolicy",
+  "type": "object"
+}

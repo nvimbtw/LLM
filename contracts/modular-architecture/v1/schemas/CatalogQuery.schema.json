@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "description": "Bound catalog reads independently of untrusted client-supplied paging values.",
+  "properties": {
+    "archived": {
+      "default": false,
+      "title": "Archived",
+      "type": "boolean"
+    },
+    "cursor": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cursor"
+    },
+    "limit": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "enum": [
+            "builtin",
+            "custom"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Origin"
+    },
+    "search": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Search",
+      "type": "string"
+    }
+  },
+  "title": "CatalogQuery",
+  "type": "object"
+}
