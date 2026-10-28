@@ -7,6 +7,12 @@ import { architectures } from "@/lib/architectures"
 import { blocks } from "@/lib/blocks"
 import { ArchitectureDraft } from "@/lib/architecture/draft"
 import { ArchitectureReadOwner } from "@/lib/architecture/read-owner"
+import {
+  readDraftStrings,
+  readPageDraft,
+  writePageDraft,
+} from "@/lib/page-draft"
+import { useDraftRetentionWarning } from "./use-draft-retention-warning"
 import type { ResourceDetail } from "@/lib/architecture/contracts.generated"
 
 interface WorkspaceState {
@@ -15,6 +21,13 @@ interface WorkspaceState {
   detail?: ResourceDetail
   document?: ArchitectureDraft
   error?: string
+  storageError?: string | null
+  retained?: boolean
+}
+
+/** Restores exact unsaved source text without interpreting Python or YAML. */
+function sourceDraft(value: unknown) {
+  return readDraftStrings(["text"], value)
 }
 
 /** Supplies no subscription before this resource's private draft has loaded. */
@@ -32,6 +45,7 @@ export function useArchitectureWorkspace(kind: ArchitectureKind, id: string) {
     if (!token) return
     const owner = new ArchitectureReadOwner({ token, resource })
     let document: ArchitectureDraft | undefined
+    let unsubscribe: (() => void) | undefined
     let active = true
     owner
       .read(async (signal) => {
@@ -75,7 +89,54 @@ export function useArchitectureWorkspace(kind: ArchitectureKind, id: string) {
                   { token, signal }
                 )
         )
-        setState({ token, resource, detail, document })
+        const identity = { token, resource: `source:${kind}:${id}` }
+        const restored =
+          epoch === 0 && detail.summary.origin === "custom"
+            ? readPageDraft(identity, { text }, sourceDraft)
+            : { fields: { text }, error: null, retained: true }
+        if (restored.fields.text !== text) document.edit(restored.fields.text)
+        setState({
+          token,
+          resource,
+          detail,
+          document,
+          storageError: restored.error,
+          retained: restored.retained,
+        })
+        const currentDocument = document
+        /** Retains the external document's exact current bytes and acknowledged baseline, reporting storage failures independently of engine save errors. */
+        const retainSource = () => {
+          const snapshot = currentDocument.getSnapshot()
+          try {
+            writePageDraft(
+              identity,
+              { text: snapshot.savedText },
+              { text: snapshot.text }
+            )
+            if (active)
+              setState((previous) =>
+                previous?.resource === resource
+                  ? { ...previous, storageError: null, retained: true }
+                  : previous
+              )
+          } catch (cause) {
+            if (active)
+              setState((previous) =>
+                previous?.resource === resource
+                  ? {
+                      ...previous,
+                      storageError:
+                        cause instanceof Error
+                          ? cause.message
+                          : "Source edits could not be retained in this tab.",
+                      retained: false,
+                    }
+                  : previous
+              )
+          }
+        }
+        unsubscribe = document.subscribe(retainSource)
+        if (epoch > 0) retainSource()
       })
       .catch((error: unknown) => {
         if (active)
@@ -91,9 +152,10 @@ export function useArchitectureWorkspace(kind: ArchitectureKind, id: string) {
     return () => {
       active = false
       owner.dispose()
+      unsubscribe?.()
       document?.dispose()
     }
-  }, [token, resource, kind, id])
+  }, [token, resource, kind, id, epoch])
   const current =
     state?.token === token && state.resource === resource ? state : null
   const document = current?.document
@@ -101,6 +163,11 @@ export function useArchitectureWorkspace(kind: ArchitectureKind, id: string) {
     document?.subscribe ?? noSubscription,
     document?.getSnapshot ?? noDraft,
     noDraft
+  )
+  useDraftRetentionWarning(
+    Boolean(
+      draft && draft.text !== draft.savedText && current?.retained === false
+    )
   )
   /** Replaces only current metadata after a confirmed mutation, retaining the editor's independently versioned local bytes. */
   function updateMetadata(detail: ResourceDetail) {
@@ -119,6 +186,7 @@ export function useArchitectureWorkspace(kind: ArchitectureKind, id: string) {
     document,
     reload,
     error: current?.error ?? null,
+    storageError: current?.storageError ?? null,
     loading: Boolean(token && !current),
   }
 }

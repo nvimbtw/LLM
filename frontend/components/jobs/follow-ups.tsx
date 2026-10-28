@@ -15,7 +15,8 @@ import {
 } from "@/components/ui/select"
 import { ACTIVE_BENCHMARK_SUITES, type BenchmarkSuite } from "@/lib/benchmark"
 import type { FollowUp } from "@/lib/jobs"
-import type { TrainConfig } from "@/lib/training"
+import type { TrainingStep as Step } from "@/lib/training"
+export type { TrainingStep as Step } from "@/lib/training"
 import { DEFAULT_CONFIG } from "@/hooks/use-training"
 
 /**
@@ -36,20 +37,6 @@ import { DEFAULT_CONFIG } from "@/hooks/use-training"
  * whatever the job before it builds, and it is filled in server-side at the moment
  * that becomes true.
  */
-
-/** One step, as this editor holds it: the kind plus its own config state. */
-export interface Step {
-  // Stable across re-renders and reorders, so React keys a step by identity rather
-  // than by index — an index key would carry one step's input state onto another
-  // when one above it is removed.
-  id: string
-  kind: "train" | "benchmark"
-  train: TrainConfig
-  suite: BenchmarkSuite
-  // Validation problems reported up by the step's own editor. Held here so the
-  // composer's submit can refuse a chain that would 400.
-  errors: string[]
-}
 
 /** A fresh step. Fine-tune rather than pretrain: it is what follows a run. */
 export function newStep(kind: "train" | "benchmark" = "train"): Step {
@@ -145,7 +132,10 @@ export function FollowUps({
           </p>
         ) : (
           steps.map((step, i) => (
-            <div key={step.id} className="border-y border-border/60 py-4">
+            <div
+              key={step.id}
+              className="border-t border-border py-6 first:border-t-0 first:pt-0"
+            >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="w-6 shrink-0 text-sm text-muted-foreground tabular-nums">
                   {i + 1}.
@@ -230,7 +220,7 @@ export function FollowUps({
               </p>
 
               {step.kind === "train" && (
-                <div className="mt-3 border-t pt-3">
+                <div className="mt-5">
                   <ParamsRail
                     cfg={step.train}
                     onChange={(train) => update(step.id, { train })}

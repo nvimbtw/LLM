@@ -44,7 +44,7 @@ export function NowBand({ job, onCancel }: NowBandProps) {
   }, [job])
 
   if (!job) {
-    return <div className="border-b border-border/60" />
+    return <div className="border-b border-border" />
   }
 
   const elapsed = elapsedSeconds(job, now)

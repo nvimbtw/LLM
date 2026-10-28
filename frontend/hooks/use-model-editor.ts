@@ -3,6 +3,28 @@
 import { useEffect, useRef, useState } from "react"
 import type { ModelDetail, ModelEdits } from "@/hooks/use-model"
 import { toast } from "@/components/ui/toast"
+import { usePageDraft } from "./use-page-draft"
+import { readDraftStrings } from "@/lib/page-draft"
+
+/** Restores text and the explicit supported size category from tab-local metadata without coercing unknown values. */
+function modelDraft(value: unknown): ModelEdits {
+  const text = readDraftStrings(
+    ["display_name", "description", "family"],
+    value
+  )
+  const size =
+    value && typeof value === "object" && "size" in value
+      ? value.size
+      : undefined
+  if (
+    size !== null &&
+    size !== "fast" &&
+    size !== "balanced" &&
+    size !== "flagship"
+  )
+    throw new Error("The saved model size is invalid.")
+  return { ...text, size }
+}
 
 /** Returns editable display metadata, preserving the stored description independently of calculated fallbacks. */
 function fieldsOf(model: ModelDetail): ModelEdits {
@@ -21,16 +43,12 @@ export function useModelEditor(
 ) {
   const initial = fieldsOf(model)
   const source = JSON.stringify(initial)
-  const [loadedFor, setLoadedFor] = useState(source)
-  const [fields, setFields] = useState(initial)
+  const draft = usePageDraft(`model:${model.id}`, initial, modelDraft)
+  const fields = draft.fields
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const active = useRef(true)
-  if (loadedFor !== source) {
-    setLoadedFor(source)
-    setFields(initial)
-    setError(null)
-  }
+  const pending = useRef(false)
   useEffect(() => {
     active.current = true
     return () => {
@@ -40,13 +58,13 @@ export function useModelEditor(
 
   /** Changes a single display field and clears a previous submission failure. */
   function change<K extends keyof ModelEdits>(key: K, value: ModelEdits[K]) {
-    setFields((previous) => ({ ...previous, [key]: value }))
+    draft.change({ ...fields, [key]: value })
     setError(null)
   }
 
   /** Persists a validated draft; validation and server failures remain beside the editable page fields. */
   async function submit() {
-    if (saving) return
+    if (pending.current) return
     const values = {
       ...fields,
       display_name: fields.display_name.trim(),
@@ -65,24 +83,31 @@ export function useModelEditor(
       setError("Name and family must be at most 120 characters.")
       return
     }
+    pending.current = true
     setSaving(true)
     setError(null)
     try {
       await save(values)
-      if (active.current) toast.success("Model updated.", values.display_name)
+      if (active.current) {
+        draft.change(values)
+        draft.forget()
+        toast.success("Model updated.", values.display_name)
+      }
     } catch (failure) {
       if (active.current)
         setError(
           failure instanceof Error ? failure.message : "Couldn't save changes."
         )
     } finally {
+      pending.current = false
       if (active.current) setSaving(false)
     }
   }
 
   /** Discards unsaved fields and restores the current persisted metadata. */
   function reset() {
-    setFields(initial)
+    if (pending.current) return
+    draft.reset()
     setError(null)
   }
 
@@ -92,7 +117,7 @@ export function useModelEditor(
     submit,
     reset,
     saving,
-    error,
+    error: error ?? draft.persistenceError,
     hasChanges: JSON.stringify(fields) !== source,
   }
 }

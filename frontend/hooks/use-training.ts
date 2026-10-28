@@ -48,14 +48,14 @@ export const DEFAULT_CONFIG: TrainConfig = {
 export type { LossPoint, BatchPoint, BuildPoint } from "@/lib/job-telemetry"
 
 /**
- * Composing a training run.
+ * Composes training submissions and invokes optional onQueued only after a confirmed queue acknowledgement, before navigation.
  *
  * Starting a run is now queueing a job: the composer submits, the server puts it
  * in line, and the page hands off to /train/{id} where the run's telemetry lives.
  * That split is what lets the composer stay a plain form — it has no live state to
  * own, because by the time there is any, you are on the job's own page.
  */
-export function useTrainingComposer() {
+export function useTrainingComposer(onQueued?: () => void) {
   const router = useRouter()
   const submission = useJobSubmission("training-composer")
 
@@ -75,6 +75,7 @@ export function useTrainingComposer() {
         queueTraining(frozenConfig, frozenSteps, request)
       )
       if (job) {
+        onQueued?.()
         toast.success(
           "Training run queued.",
           steps.length > 0
@@ -84,7 +85,7 @@ export function useTrainingComposer() {
         router.push(jobHref(job))
       }
     },
-    [router, submission.owner]
+    [router, submission.owner, onQueued]
   )
 
   return {

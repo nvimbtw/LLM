@@ -20,17 +20,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { Input } from "@/components/ui/input"
+import { DeleteConfirmation } from "@/components/ui/delete-confirmation"
+import { ConversationRename } from "@/components/chat/conversation-rename"
 import { useChats, type ChatSummary } from "@/components/chat/chats-provider"
 import { prefetchChatHistory } from "@/lib/chat-history"
 import { SidebarEntryButton } from "./sidebar-entry-button"
@@ -114,7 +105,6 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
   const { renameChat, deleteChat } = useChats()
 
   const [isRenaming, setRenaming] = React.useState(false)
-  const [title, setTitle] = React.useState(chat.title)
   const [confirmOpen, setConfirmOpen] = React.useState(false)
 
   const isActive = pathname === `/chat/${chat.id}`
@@ -126,42 +116,13 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
     prefetchChatHistory(chat.id)
   }
 
-  /** Commits a nonblank changed title or restores the persisted title. */
-  async function commitRename() {
-    const next = title.trim()
-    setRenaming(false)
-    if (next && next !== chat.title) {
-      await renameChat(chat.id, next)
-    } else {
-      setTitle(chat.title)
-    }
-  }
-
-  /** Deletes the selected chat and leaves its page if currently open. */
-  async function handleDelete() {
-    await deleteChat(chat.id)
-    setConfirmOpen(false)
-    if (isActive) router.push("/")
-  }
-
   if (isRenaming) {
     return (
       <SidebarMenuItem>
-        <Input
-          autoFocus
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault()
-              commitRename()
-            } else if (e.key === "Escape") {
-              setTitle(chat.title)
-              setRenaming(false)
-            }
-          }}
-          className="h-8 text-sm"
+        <ConversationRename
+          title={chat.title}
+          onSave={(next) => renameChat(chat.id, next)}
+          onDone={() => setRenaming(false)}
         />
       </SidebarMenuItem>
     )
@@ -208,26 +169,19 @@ function ConversationItem({ chat }: { chat: ChatSummary }) {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this chat?</AlertDialogTitle>
-            <AlertDialogDescription>
-              &ldquo;{chat.title}&rdquo; and all its messages will be
-              permanently deleted. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-white hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {confirmOpen && (
+        <DeleteConfirmation
+          open
+          onOpenChange={setConfirmOpen}
+          title="Delete this conversation?"
+          description={`“${chat.title}” and all its messages will be permanently deleted. This cannot be undone.`}
+          label="Delete conversation"
+          onDelete={() => deleteChat(chat.id)}
+          onDeleted={() => {
+            if (isActive) router.push("/")
+          }}
+        />
+      )}
     </SidebarMenuItem>
   )
 }

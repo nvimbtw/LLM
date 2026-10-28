@@ -38,19 +38,18 @@ export default function GymsPage() {
       {error ? (
         <LoadError hint={error} />
       ) : orderedGyms === null ? (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4">
           <Skeleton className="h-36" />
           <Skeleton className="h-36" />
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid">
           {orderedGyms.map((gym) => (
             <GymCard
               key={gym.id}
               id={gym.id}
               name={gym.name}
               description={gym.description}
-              featured={gym.id === "general"}
             />
           ))}
         </div>

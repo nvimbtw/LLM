@@ -7,7 +7,7 @@ export interface InputProps extends React.ComponentProps<"input"> {
   variant?: "default" | "ruled" | "inline"
 }
 
-/** Renders a text or numeric field; inline fields read as page text and retain a visible focus outline. */
+/** Renders a text or numeric field; inline text stays unboxed during focus and uses its editing caret. */
 function Input({ className, type, variant = "default", ...props }: InputProps) {
   return (
     <InputPrimitive
@@ -18,7 +18,7 @@ function Input({ className, type, variant = "default", ...props }: InputProps) {
         variant === "ruled" &&
           "rounded-none border-0 border-b bg-transparent px-0 focus-visible:border-b-2 focus-visible:ring-0 aria-invalid:ring-0 dark:bg-transparent dark:aria-invalid:ring-0",
         variant === "inline" &&
-          "rounded-none border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 disabled:bg-transparent aria-invalid:ring-0 dark:bg-transparent dark:disabled:bg-transparent dark:aria-invalid:ring-0",
+          "rounded-none border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 focus-visible:outline-none disabled:bg-transparent aria-invalid:ring-0 dark:bg-transparent dark:disabled:bg-transparent dark:aria-invalid:ring-0",
         className
       )}
       {...props}

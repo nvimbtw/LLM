@@ -46,10 +46,11 @@ subject you are reading.
   is a split diff (`lib/diff.ts` — an LCS over lines, no dependency), with
   untouched stretches folded away so what a step did is not buried in what it
   left alone.
-- **`NavJobs` stays in the sidebar content** and is not navigation: it is the
-  ambient "the GPU is busy" signal, a window onto the panel rather than a way
-  in. `NavAdmin`'s `QueueTell` is the same fact when the sidebar is collapsed to
-  icons and that group is hidden.
+- **`NavJobs` stays in the sidebar content** as **Currently working**, with the
+  browser-local training draft first and active executions below it. The draft
+  links back to the composer; executions provide the ambient "the GPU is busy"
+  signal. `NavAdmin`'s `QueueTell` carries execution activity when the sidebar is
+  collapsed to icons and that group is hidden.
 - Admin-ness is a client fact (`useAuth().isAdmin`, read from the stored access
   level), so these are hidden rather than guarded. **The endpoints are the
   boundary** — the LLM engine's queue routes are admin-only, and `JobsProvider` is
@@ -105,6 +106,21 @@ a retry boundary instead of silently enabling the default configuration. Changin
 the session or seed aborts its read and remounts form state, so a late response
 cannot overwrite edits made in another selection. Reused SFT/KTO/RAFT settings
 retain their recorded mode instead of being converted to ordinary pretraining.
+
+The training composer autosaves changes to one browser-local draft per account,
+including incomplete settings and ordered follow-ups. `/train/new-train` restores
+it after navigation or reload; explicit `?from=`/`?resume=` choices take precedence
+and replace the draft only once edited. The draft is pinned above executions in
+the sidebar's **Currently working** group, even when the queue is empty. The page
+shows storage errors and provides **Discard draft** to reset the form. Saved
+drafts stay in this browser across logins for the same account; they do not sync
+to other machines or call a draft endpoint. The existing authenticated profile
+read supplies the account ID; encrypted bearer tokens are never decoded in the
+browser. Failed identity reads offer retry before the editor mounts. Restoring removes validation receipts
+and recomputes follow-up errors. Confirmed queue submission clears only the exact
+submitted draft; failed/uncertain submissions and newer edits from another tab
+retain their saved state. Simultaneous editors keep their own form state, with
+the latest successful save becoming the draft restored on the next visit.
 
 The same fields are rendered two ways, and neither may drift from the other:
 

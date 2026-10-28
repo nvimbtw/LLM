@@ -1,5 +1,4 @@
 import { DatasetDetail } from "@/components/data/dataset-detail"
-import { PageHeader } from "@/components/ui/page-header"
 import { PageShell } from "@/components/ui/page-shell"
 
 /** Opens the requested dataset’s documents and cleaning workspace. */
@@ -11,7 +10,6 @@ export default async function DatasetPage({
   const { id } = await params
   return (
     <PageShell width="board">
-      <PageHeader title="Dataset" back={{ href: "/data", label: "Data" }} />
       <DatasetDetail datasetId={id} />
     </PageShell>
   )

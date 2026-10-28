@@ -39,7 +39,7 @@ export interface JobHistoryProps {
 export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
   if (jobs.length === 0) {
     return (
-      <p className="border-y border-border/60 py-8 text-sm text-muted-foreground">
+      <p className="border-y border-border py-8 text-sm text-muted-foreground">
         Nothing has run yet.
       </p>
     )
@@ -59,7 +59,7 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
     <div>
       {[...groups].map(([day, dayJobs]) => (
         <section key={day}>
-          <h3 className="border-y border-border/60 py-2 eyebrow text-muted-foreground">
+          <h3 className="border-y border-border py-2 eyebrow text-muted-foreground">
             {day}
           </h3>
           <ul>
@@ -91,7 +91,7 @@ function HistoryRow({
   const ran = durationSeconds(job)
 
   return (
-    <li className="group border-b border-border/40 last:border-0">
+    <li className="group border-b border-border last:border-0">
       <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-2 py-4 sm:flex">
         <span className="col-start-1 row-start-2 w-14 shrink-0 text-xs text-muted-foreground tabular-nums">
           {formatClock(job.created_at)}

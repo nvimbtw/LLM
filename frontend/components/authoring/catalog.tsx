@@ -136,7 +136,7 @@ function CatalogContent({ kind }: ArchitectureCatalogProps) {
         />
       ) : (
         <>
-          <ul className="divide-y divide-border border-y border-border">
+          <ul className="divide-y divide-border">
             {catalog.page?.items.map((item) => (
               <li key={item.resource_id}>
                 <Link

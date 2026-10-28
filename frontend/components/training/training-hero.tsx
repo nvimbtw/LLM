@@ -343,7 +343,7 @@ export function TrainingHero({
           : "Phase 1 of 2 — preparing the data"
 
   return (
-    <section className="border-y border-border/60">
+    <section className="border-y border-border">
       <div className="flex items-start justify-between gap-6 py-4">
         <div className="min-w-0 space-y-1">
           <h2 className="font-display text-xl">{headline}</h2>
