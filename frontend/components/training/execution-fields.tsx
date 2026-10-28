@@ -26,10 +26,7 @@ export function TrainingExecutionFields({
 }: TrainingExecutionFieldsProps) {
   const id = useId()
   return (
-    <fieldset
-      disabled={disabled}
-      className="grid gap-4 border-t border-border/40 py-4 sm:grid-cols-2"
-    >
+    <fieldset disabled={disabled} className="grid gap-4 py-4 sm:grid-cols-2">
       <legend className="sr-only">Numerical execution</legend>
       <label className="grid gap-2 text-sm" htmlFor={`${id}-precision`}>
         Precision

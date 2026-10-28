@@ -5,17 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { ArrowLeft, Eye, EyeOff, Trash2 } from "lucide-react"
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
+import { DeleteConfirmation } from "@/components/ui/delete-confirmation"
 import { ArchitectureFlow } from "@/components/training/architecture-flow"
 import { Button } from "@/components/ui/button"
 import { LoadError } from "@/components/ui/error-state"
@@ -61,6 +51,7 @@ function ModelDetailContent({ modelId }: ModelDetailProps) {
     new Set(models.map((entry) => entry.family).filter(Boolean))
   ).sort()
   const [busy, setBusy] = React.useState(false)
+  const [confirmOpen, setConfirmOpen] = React.useState(false)
   const active = React.useRef(true)
   React.useEffect(() => {
     active.current = true
@@ -85,25 +76,6 @@ function ModelDetailContent({ modelId }: ModelDetailProps) {
       )
     } finally {
       if (active.current) setBusy(false)
-    }
-  }
-
-  /** Removes the selected model and returns to the registry only after a successful response. */
-  async function deleteModel() {
-    if (busy) return
-    setBusy(true)
-    try {
-      await remove()
-      if (!active.current) return
-      toast.success("Model deleted.")
-      router.push("/models")
-    } catch (failure) {
-      if (!active.current) return
-      toast.error(
-        "Couldn't delete the model",
-        failure instanceof Error ? failure.message : "Something went wrong."
-      )
-      setBusy(false)
     }
   }
 
@@ -152,44 +124,33 @@ function ModelDetailContent({ modelId }: ModelDetailProps) {
               {model.published ? <EyeOff /> : <Eye />}
               {model.published ? "Unpublish" : "Publish"}
             </Button>
-            <AlertDialog>
-              <AlertDialogTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="text"
-                    size="sm"
-                    disabled={busy || saving}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <Trash2 />
-                    Delete
-                  </Button>
-                }
-              />
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete {model.name}?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This permanently removes the model and its weights. Existing
-                    messages are kept but detached. This cannot be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={busy}
-                    onClick={deleteModel}
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                  >
-                    {busy ? "Deleting…" : "Delete model"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <Button
+              type="button"
+              variant="text"
+              size="sm"
+              disabled={busy || saving}
+              onClick={() => setConfirmOpen(true)}
+            >
+              <Trash2 />
+              Delete
+            </Button>
           </>
         )}
       />
+      {confirmOpen && (
+        <DeleteConfirmation
+          open
+          onOpenChange={setConfirmOpen}
+          title={`Delete ${model.name}?`}
+          description="This permanently removes the model and its weights. Existing messages are kept but detached. This cannot be undone."
+          label="Delete model"
+          onDelete={remove}
+          onDeleted={() => {
+            toast.success("Model deleted.")
+            router.push("/models")
+          }}
+        />
+      )}
       <div className="flex flex-col gap-8">
         <dl className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-border py-5 sm:grid-cols-3">
           <HeroStat

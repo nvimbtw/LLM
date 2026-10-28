@@ -2,6 +2,8 @@
 
 import * as React from "react"
 import { useSessionToken } from "./use-auth"
+import { usePageDraft } from "./use-page-draft"
+import { readDraftStrings } from "@/lib/page-draft"
 import type { ArchitectureKind } from "./use-architecture-catalog"
 import { architectures } from "@/lib/architectures"
 import { blocks } from "@/lib/blocks"
@@ -11,6 +13,19 @@ import type {
   ResourceSummary,
 } from "@/lib/architecture/contracts.generated"
 
+/** Restores independently owned display/archive metadata without treating source bytes as metadata. */
+function metadataDraft(value: unknown) {
+  const text = readDraftStrings(["name", "description"], value)
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("archived" in value) ||
+    typeof value.archived !== "boolean"
+  )
+    throw new Error("The saved archive choice is invalid.")
+  return { ...text, archived: value.archived }
+}
+
 /** Edits one optimistic metadata version without changing or replacing the source document owned by its workspace. */
 export function useArchitectureMetadata(
   kind: ArchitectureKind,
@@ -18,9 +33,16 @@ export function useArchitectureMetadata(
   onSaved: (detail: ResourceDetail) => void
 ) {
   const token = useSessionToken()
-  const [name, setName] = React.useState(summary.name)
-  const [description, setDescription] = React.useState(summary.description)
-  const [archived, setArchived] = React.useState(summary.archived)
+  const draft = usePageDraft(
+    `metadata:${kind}:${summary.resource_id}`,
+    {
+      name: summary.name,
+      description: summary.description,
+      archived: summary.archived,
+    },
+    metadataDraft
+  )
+  const { name, description, archived } = draft.fields
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const active = React.useRef(false)
@@ -71,7 +93,10 @@ export function useArchitectureMetadata(
         throw new Error(
           "Metadata response differs from the submitted resource update."
         )
-      if (active.current) onSaved(result)
+      if (active.current) {
+        draft.forget()
+        onSaved(result)
+      }
     } catch (error) {
       if (active.current)
         setError(
@@ -85,14 +110,22 @@ export function useArchitectureMetadata(
 
   return {
     name,
-    setName,
+    setName: (name: string) => draft.change({ ...draft.fields, name }),
     description,
-    setDescription,
+    setDescription: (description: string) =>
+      draft.change({ ...draft.fields, description }),
     archived,
-    setArchived,
+    setArchived: (archived: boolean) =>
+      draft.change({ ...draft.fields, archived }),
     busy,
-    error,
+    error: error ?? draft.persistenceError,
     save,
+    reset: () => {
+      if (!pending.current) {
+        draft.reset()
+        setError(null)
+      }
+    },
     dirty:
       name !== summary.name ||
       description !== summary.description ||

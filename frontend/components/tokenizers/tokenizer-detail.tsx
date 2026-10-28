@@ -11,8 +11,8 @@ import {
 import { formatBytes } from "@/lib/data"
 import { PageHeader } from "@/components/ui/page-header"
 import { Panel } from "@/components/ui/panel"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { EditableTitle } from "@/components/ui/editable-title"
+import { EditActions } from "@/components/ui/edit-actions"
 import { Textarea } from "@/components/ui/textarea"
 import { LoadError, FormError } from "@/components/ui/error-state"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -58,7 +58,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
             isAdmin ? (
               <>
                 <span className="sr-only">{tokenizer.name}</span>
-                <Input
+                <EditableTitle
                   aria-label="Vocabulary name"
                   variant="inline"
                   value={fields.name}
@@ -68,7 +68,6 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
                   onChange={(event) =>
                     editor.change("name", event.target.value)
                   }
-                  className="h-auto px-0 py-0 font-display text-3xl font-semibold tracking-tight md:text-3xl"
                 />
               </>
             ) : (
@@ -78,6 +77,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
           description={
             isAdmin ? (
               <Textarea
+                variant="inline"
                 aria-label="Vocabulary description"
                 rows={1}
                 placeholder="Add a description…"
@@ -87,7 +87,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
                 onChange={(event) =>
                   editor.change("description", event.target.value)
                 }
-                className="min-h-5 resize-none rounded-none border-0 bg-transparent px-0 py-0 text-sm text-muted-foreground shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 dark:bg-transparent"
+                className="text-muted-foreground"
               />
             ) : (
               tokenizer.description || undefined
@@ -96,24 +96,12 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
           action={
             isAdmin && (
               <div className="flex flex-wrap items-center gap-2">
-                {editor.changed && (
-                  <>
-                    <Button
-                      type="submit"
-                      disabled={editor.busy || !fields.name.trim()}
-                    >
-                      {editor.busy ? "Saving…" : "Save changes"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      disabled={editor.busy}
-                      onClick={editor.cancel}
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                )}
+                <EditActions
+                  dirty={editor.changed}
+                  busy={editor.busy}
+                  disabled={!fields.name.trim()}
+                  onCancel={editor.cancel}
+                />
                 <TokenizerDeleteButton
                   tokenizer={tokenizer}
                   onDelete={editor.remove}
@@ -129,7 +117,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
         )}
       </form>
       <div className="space-y-8">
-        <dl className="grid gap-x-8 gap-y-5 border-y border-border/60 py-4 sm:grid-cols-2">
+        <dl className="grid gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-2">
           <Fact
             label="Vocabulary"
             value={tokenizer.vocabSize?.toLocaleString() ?? "—"}
@@ -171,7 +159,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
         </dl>
         <Panel variant="open" title="Datasets">
           {tokenizer.datasets.length ? (
-            <ul className="divide-y divide-border/60">
+            <ul className="divide-y divide-border">
               {tokenizer.datasets.map((dataset) => (
                 <li
                   key={dataset.id}
@@ -200,7 +188,7 @@ function TokenizerDetailContent({ tokenizerId }: TokenizerDetailViewProps) {
         </Panel>
         <Panel variant="open" title="Models">
           {tokenizer.models.length ? (
-            <ul className="divide-y divide-border/60">
+            <ul className="divide-y divide-border">
               {tokenizer.models.map((model) => (
                 <li key={model.id} className="py-3">
                   <Link

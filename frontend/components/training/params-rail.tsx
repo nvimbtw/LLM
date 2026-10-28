@@ -46,7 +46,7 @@ function Row({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/40 py-3">
+    <div className="flex min-w-0 items-center justify-between gap-3 py-3">
       <span className="text-sm text-muted-foreground">{label}</span>
       {children}
     </div>
@@ -182,7 +182,7 @@ export function ParamsRail({
           themselves.
         </p>
       ) : (
-        <div className="inline-flex gap-6 border-b border-border/60">
+        <div className="inline-flex gap-6 border-b border-border">
           {(
             [
               ["pretrain", "Pretrain"],
@@ -410,7 +410,7 @@ export function ParamsRail({
       />
       {!isSft && (
         <div className="space-y-3">
-          <div className="space-y-3 border-y border-border/60 py-3">
+          <div className="space-y-5 py-3">
             <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
                 Shuffle documents each epoch
@@ -426,7 +426,7 @@ export function ParamsRail({
                 }
               />
             </label>
-            <label className="flex items-center justify-between gap-2 border-t pt-2">
+            <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
                 Curriculum
                 <span className="block text-xs text-muted-foreground">

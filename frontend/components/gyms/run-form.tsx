@@ -258,7 +258,7 @@ export function RunForm({ gym }: { gym: Gym }) {
         )}
 
         {groupSize > 1 && (
-          <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
+          <p className="py-2 text-xs text-muted-foreground">
             <span className="text-foreground">
               {count / groupSize || 0} task{count / groupSize === 1 ? "" : "s"},
               each attempted {groupSize} times.
@@ -271,7 +271,7 @@ export function RunForm({ gym }: { gym: Gym }) {
         )}
 
         {partialGroup && (
-          <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
+          <p className="py-2 text-xs text-muted-foreground">
             {count} tasks does not divide into groups of {groupSize}. The last
             group would be smaller than the rest, and a group of one has no
             siblings to be better than.
@@ -279,7 +279,7 @@ export function RunForm({ gym }: { gym: Gym }) {
         )}
 
         {cramped && (
-          <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
+          <p className="py-2 text-xs text-muted-foreground">
             <span className="text-foreground">
               {chosen?.name} trained at {chosen?.contextWindow} tokens.
             </span>{" "}

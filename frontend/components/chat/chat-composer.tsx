@@ -61,7 +61,7 @@ export interface ChatComposerProps {
   onCancel?: () => void
   placeholder?: string
   title?: string
-  onRenameTitle?: (title: string) => void
+  onRenameTitle?: (title: string) => void | Promise<void>
   contextTokensUsed?: number
   unseenTokens?: number
   draft?: { text: string }

@@ -46,6 +46,13 @@ the source document, including unsaved text. Builtins remain read-only. Archive
 hides new selection and disables source editing; unarchiving retains the saved
 draft and accepted revision identities.
 
+Custom names, descriptions and archive choices are edited in the page header,
+with the shared unsaved state and Save changes/Cancel controls. Metadata and exact
+source bytes have independent [tab-local recovery](editing.md#draft-recovery).
+Returning after navigation/reload restores the same session/resource's edits and
+warns if the server baseline moved. Reload server draft discards source edits
+only; metadata remains independently recoverable.
+
 ## Creation and copying
 
 Creation saves exact entered source without implying inspection or acceptance.

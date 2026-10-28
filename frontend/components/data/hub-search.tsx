@@ -108,7 +108,7 @@ export function HubSearch({ onQueued }: HubSearchProps) {
           <Skeleton className="h-10 w-full" />
         </div>
       ) : results.length === 0 ? (
-        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
+        <p className="py-6 text-sm text-muted-foreground">
           Nothing matched “{query}”.
         </p>
       ) : (
@@ -467,7 +467,7 @@ function SamplePanel({
 }) {
   if (error) {
     return (
-      <p className="border-y border-border/60 py-3 text-xs text-muted-foreground">
+      <p className="py-3 text-xs text-muted-foreground">
         No preview: {error}. The pull reads the files directly and is
         unaffected.
       </p>
@@ -522,7 +522,7 @@ function SamplePanel({
         )}
       </div>
 
-      <div className="min-h-48 flex-1 space-y-2 overflow-y-auto border-y border-border/60 py-3">
+      <div className="min-h-48 flex-1 space-y-2 overflow-y-auto py-3">
         {sample.rows.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             The split is indexed but empty.

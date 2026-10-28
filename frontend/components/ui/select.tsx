@@ -30,7 +30,7 @@ function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   )
 }
 
-/** Opens the options; inline triggers share the page's surface and show an outline on keyboard focus. */
+/** Opens the options; inline triggers share the page surface without borders or added focus decoration. */
 function SelectTrigger({
   className,
   size = "default",
@@ -49,7 +49,7 @@ function SelectTrigger({
       className={cn(
         "flex w-fit items-center justify-between gap-1.5 rounded-(--radius-control) border border-input bg-transparent py-2 pr-2 pl-2.5 text-sm whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-8 data-[size=sm]:h-7 data-[size=sm]:rounded-(--radius-control-sm) *:data-[slot=select-value]:block *:data-[slot=select-value]:truncate dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         variant === "inline" &&
-          "rounded-none border-0 px-0 shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 data-[size=sm]:rounded-none dark:bg-transparent dark:hover:bg-transparent",
+          "rounded-none border-0 px-0 shadow-none focus-visible:ring-0 focus-visible:outline-none data-[size=sm]:rounded-none dark:bg-transparent dark:hover:bg-transparent",
         className
       )}
       {...props}

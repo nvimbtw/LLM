@@ -37,13 +37,13 @@ export function ChainBand({ jobs, all, onCancel, onDelete }: ChainBandProps) {
     all.find((job) => job.id_job === id)?.label
 
   return (
-    <ul className="border-t border-border/60">
+    <ul className="border-t border-border">
       {jobs.map((job) => {
         const after = labelOf(job.depends_on)
         return (
           <li
             key={job.id_job}
-            className="group border-b border-border/40 last:border-0"
+            className="group border-b border-border last:border-0"
           >
             <div className="flex items-center gap-3 py-4 sm:gap-4">
               <CornerDownRight

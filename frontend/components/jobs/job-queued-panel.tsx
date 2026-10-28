@@ -112,7 +112,7 @@ export function JobQueuedPanel({ job }: JobQueuedPanelProps) {
             )}
 
             {paused && (
-              <p className="mt-4 border-l border-border py-2 pl-3 text-sm text-muted-foreground">
+              <p className="mt-4 py-2 text-sm text-muted-foreground">
                 The queue is paused. Nothing new will start until it is resumed
                 — the running job carries on.
               </p>

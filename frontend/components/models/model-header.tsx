@@ -2,7 +2,8 @@
 
 import Link from "next/link"
 import type { ReactNode } from "react"
-import { Button } from "@/components/ui/button"
+import { EditableTitle } from "@/components/ui/editable-title"
+import { EditActions } from "@/components/ui/edit-actions"
 import { FormError } from "@/components/ui/error-state"
 import { Input } from "@/components/ui/input"
 import { PageHeader } from "@/components/ui/page-header"
@@ -32,8 +33,6 @@ const SIZE_LABELS = {
   balanced: "Balanced",
   flagship: "Flagship",
 }
-const INLINE_FIELD =
-  "h-auto rounded-none border-0 bg-transparent px-0 py-0 shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 dark:bg-transparent"
 
 /** Renders model identity as editable page fields for admins and ordinary text for readers. Saves are explicit and failed drafts remain visible. */
 export function ModelHeader({
@@ -65,7 +64,7 @@ export function ModelHeader({
         contentClassName="min-w-48 flex-1"
         title={
           editable ? (
-            <Input
+            <EditableTitle
               aria-label="Model name"
               required
               maxLength={240}
@@ -74,7 +73,6 @@ export function ModelHeader({
               onChange={(event) =>
                 editor.change("display_name", event.target.value)
               }
-              className={`${INLINE_FIELD} w-full font-display text-3xl font-semibold tracking-tight md:text-3xl`}
             />
           ) : (
             model.name
@@ -84,6 +82,7 @@ export function ModelHeader({
           <>
             {editable ? (
               <Textarea
+                variant="inline"
                 aria-label="Model description"
                 rows={1}
                 placeholder="Add a description…"
@@ -92,7 +91,7 @@ export function ModelHeader({
                 onChange={(event) =>
                   editor.change("description", event.target.value)
                 }
-                className={`${INLINE_FIELD} min-h-5 resize-none text-sm leading-relaxed text-muted-foreground`}
+                className="text-muted-foreground"
               />
             ) : (
               model.description && <p>{model.description}</p>
@@ -102,6 +101,7 @@ export function ModelHeader({
                 <label className="flex items-baseline gap-2">
                   <span>Family</span>
                   <Input
+                    variant="inline"
                     aria-label="Model family"
                     list="model-families"
                     required
@@ -111,7 +111,7 @@ export function ModelHeader({
                     onChange={(event) =>
                       editor.change("family", event.target.value)
                     }
-                    className={`${INLINE_FIELD} w-28 text-xs text-foreground md:text-xs`}
+                    className="h-auto w-28 py-0 text-xs text-foreground md:text-xs"
                   />
                   <datalist id="model-families">
                     {families.map((family) => (
@@ -195,27 +195,11 @@ export function ModelHeader({
         action={
           editable && (
             <div className="flex flex-wrap items-center gap-2">
-              {editor.hasChanges && (
-                <>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    variant="outline"
-                    disabled={editor.saving || busy}
-                  >
-                    {editor.saving ? "Saving…" : "Save changes"}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="text"
-                    disabled={editor.saving || busy}
-                    onClick={editor.reset}
-                  >
-                    Cancel
-                  </Button>
-                </>
-              )}
+              <EditActions
+                dirty={editor.hasChanges}
+                busy={editor.saving || busy}
+                onCancel={editor.reset}
+              />
               {actions(editor.saving)}
             </div>
           )

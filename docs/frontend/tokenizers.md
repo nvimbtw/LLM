@@ -28,7 +28,8 @@ delete controls. Confirmed deletion preserves trained models' own vocabulary
 copies and removes the packed corpora belonging to the deleted vocabulary.
 
 The detail editor and pending requests belong to the actual browser session and
-resource identity. Switching resource/account discards its draft; late reads or
-writes cannot change or navigate the replacement editor. Creation has the same
+resource identity. [Tab-local recovery](editing.md#draft-recovery) retains metadata
+edits while navigating or reloading within the same session; replacement accounts
+have separate drafts. Late reads or writes cannot change or navigate the replacement editor. Creation has the same
 session-bound handoff to its durable build. Vocabulary requests remain on Rust's
 API paths; the browser never reaches the engine directly.

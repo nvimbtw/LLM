@@ -70,7 +70,7 @@ export function SettingsDialog() {
           }}
           className="min-h-0 flex-1 gap-0"
         >
-          <aside className="flex w-28 shrink-0 flex-col border-r border-border/60 px-2 py-8 sm:w-40 sm:px-4">
+          <aside className="flex w-28 shrink-0 flex-col border-r border-border px-2 py-8 sm:w-40 sm:px-4">
             <p className="mb-6 px-2 eyebrow text-muted-foreground">Settings</p>
             <TabsList
               aria-label="Settings sections"

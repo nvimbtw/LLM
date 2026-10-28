@@ -104,7 +104,7 @@ export function QueueBand({
               commit()
             }}
             className={cn(
-              "group relative border-b border-border/40 last:border-0",
+              "group relative border-b border-border last:border-0",
               isDragging && "opacity-40"
             )}
           >

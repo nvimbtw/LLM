@@ -18,19 +18,33 @@ import { DEFAULT_CONFIG, useTrainingComposer } from "@/hooks/use-training"
 import type { TrainConfig } from "@/lib/training"
 import { FormError, LoadError } from "@/components/ui/error-state"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
+import { useTrainingDraft } from "@/hooks/use-training-draft"
+import { serializeTrainingDraft } from "@/lib/training-draft"
 
 /** Keys the private training form by actual bearer and rerun/resume URL selection; replacement releases its draft, read and submission owners. */
 export function TrainComposer() {
   const params = useSearchParams()
   const token = useSessionToken()
+  const draft = useTrainingDraft(token)
   const from = params.get("from")
   const resume = params.get("resume")
+  if (draft.isLoading) return <Skeleton className="h-96 w-full" />
+  if (draft.accountError)
+    return (
+      <LoadError
+        title="Your account could not be loaded for training drafts."
+        hint={draft.accountError}
+        onRetry={draft.retry}
+      />
+    )
   return token ? (
     <TrainingForm
       key={`${token}:${from}:${resume}`}
       token={token}
       from={from}
       resume={resume}
+      draft={draft}
     />
   ) : null
 }
@@ -40,22 +54,62 @@ function TrainingForm({
   token,
   from,
   resume,
+  draft,
 }: {
   token: string
   from: string | null
   resume: string | null
+  draft: ReturnType<typeof useTrainingDraft>
 }) {
-  const { start, isSubmitting, submissionError } = useTrainingComposer()
+  const {
+    draft: savedDraft,
+    error: draftError,
+    save: saveDraft,
+    clear: clearDraft,
+  } = draft
+  const initialDraft = !from && !resume ? savedDraft : null
   const [epoch, retrySeed] = React.useReducer((value: number) => value + 1, 0)
   const [seed, setSeed] = React.useState({
     loaded: !from,
     error: null as string | null,
   })
 
-  const [cfg, setCfg] = React.useState<TrainConfig>(() =>
-    resume ? { ...DEFAULT_CONFIG, resume_from: resume } : DEFAULT_CONFIG
+  const [cfg, setCfg] = React.useState<TrainConfig>(
+    () =>
+      initialDraft?.config ??
+      (resume ? { ...DEFAULT_CONFIG, resume_from: resume } : DEFAULT_CONFIG)
   )
-  const [steps, setSteps] = React.useState<Step[]>([])
+  const [steps, setSteps] = React.useState<Step[]>(initialDraft?.steps ?? [])
+  const [edited, setEdited] = React.useState(Boolean(initialDraft))
+
+  /** Acknowledges only this form's submitted snapshot, preserving a newer draft from another tab. */
+  const acknowledgeDraft = () => {
+    if (edited) clearDraft(serializeTrainingDraft(cfg, steps))
+  }
+  const { start, isSubmitting, submissionError } =
+    useTrainingComposer(acknowledgeDraft)
+
+  /** Updates root settings and saves the complete draft without requiring valid submission inputs. */
+  const changeConfig = (config: TrainConfig) => {
+    setCfg(config)
+    setEdited(true)
+    saveDraft(config, steps)
+  }
+
+  /** Updates follow-up order/settings and saves them with the current root configuration. */
+  const changeSteps = (next: Step[]) => {
+    setSteps(next)
+    setEdited(true)
+    saveDraft(cfg, next)
+  }
+
+  /** Explicitly discards the saved draft and resets the editor to a fresh pretraining form. */
+  const discard = () => {
+    if (!clearDraft()) return
+    setCfg(DEFAULT_CONFIG)
+    setSteps([])
+    setEdited(false)
+  }
 
   React.useEffect(() => {
     if (!from) return
@@ -107,15 +161,38 @@ function TrainingForm({
   return (
     <>
       {submissionError && <FormError>{submissionError}</FormError>}
+      {draftError && <FormError>{draftError}</FormError>}
       <TrainBoard
         cfg={cfg}
-        onChange={setCfg}
+        onChange={changeConfig}
         disabled={isSubmitting}
         onStart={submit}
+        draftStatus={
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span role="status">
+              {draftError
+                ? "Draft not saved"
+                : edited
+                  ? "Draft saved in this browser"
+                  : "Drafts save in this browser"}
+            </span>
+            {(savedDraft || draftError) && (
+              <Button
+                type="button"
+                variant="text"
+                size="sm"
+                disabled={isSubmitting}
+                onClick={discard}
+              >
+                Discard draft
+              </Button>
+            )}
+          </div>
+        }
         footer={
           <FollowUps
             steps={steps}
-            onChange={setSteps}
+            onChange={changeSteps}
             disabled={isSubmitting}
             rootLabel="this run"
           />

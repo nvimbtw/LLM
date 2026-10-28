@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { TokenizerDeleteButton } from "./tokenizer-delete-button"
 import { describeDatasets, type TokenizerInfo } from "@/lib/tokenizers"
+import { useAuth } from "@/hooks/use-auth"
 
 /** Formats a measured count compactly, keeping unavailable values explicit. */
 function compact(n: number | null): string {
@@ -18,7 +19,7 @@ function megabytes(bytes: number): string {
 
 export interface TokenizerCatalogueProps {
   tokenizers: TokenizerInfo[]
-  onDelete: (tokenizer: TokenizerInfo) => void
+  onDelete: (tokenizer: TokenizerInfo) => Promise<void>
 }
 
 /** Lists read-only vocabularies with their provenance, figures and confirmed deletion. */
@@ -28,14 +29,14 @@ export function TokenizerCatalogue({
 }: TokenizerCatalogueProps) {
   if (tokenizers.length === 0)
     return (
-      <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
+      <p className="py-6 text-sm text-muted-foreground">
         No vocabularies in this category.
       </p>
     )
   return (
     <ul
       aria-label="Vocabulary catalogue"
-      className="divide-y divide-border/60 border-y border-border/60"
+      className="divide-y divide-border"
     >
       {tokenizers.map((tokenizer) => (
         <Row
@@ -54,8 +55,9 @@ function Row({
   onDelete,
 }: {
   tokenizer: TokenizerInfo
-  onDelete: () => void
+  onDelete: () => Promise<void>
 }) {
+  const { isAdmin } = useAuth()
   return (
     <li className="flex items-start justify-between gap-4 py-5">
       <div className="min-w-0">
@@ -84,7 +86,9 @@ function Row({
         </p>
       </div>
       <div className="shrink-0">
-        <TokenizerDeleteButton tokenizer={tokenizer} onDelete={onDelete} />
+        {isAdmin && (
+          <TokenizerDeleteButton tokenizer={tokenizer} onDelete={onDelete} />
+        )}
       </div>
     </li>
   )

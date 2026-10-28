@@ -83,7 +83,7 @@ function InheritedArchitectureDetails({
         {facts.map((fact) => (
           <div
             key={fact.label}
-            className="flex items-baseline justify-between gap-3 border-b border-border/40 py-4"
+            className="flex items-baseline justify-between gap-3 py-4"
           >
             <dt className="text-sm">{fact.label}</dt>
             <dd className="text-sm tabular-nums">{fact.value}</dd>

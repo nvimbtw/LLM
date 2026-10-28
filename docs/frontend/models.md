@@ -14,7 +14,9 @@ and failures retain the draft. Size is an explicit Fast, Balanced or Flagship
 category, shown as quiet text. Unassigned models have no category; parameter
 counts never assign it. Readers see text without editing, publication or deletion
 controls. Rust's admin extractor remains the write-authorization boundary.
-Drafts, requests and diagram state reset when session or model identity changes.
+Requests and diagram state reset when session or model identity changes. Display
+drafts use [tab-local recovery](editing.md#draft-recovery) for the same actual
+session/model, with explicit dirty, save, failure and cancel states.
 
 ## Architecture and counts across training families
 

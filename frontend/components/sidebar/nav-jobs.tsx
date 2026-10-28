@@ -12,38 +12,27 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 import { useJobsContext } from "@/components/jobs/jobs-provider"
-import { useAuth } from "@/hooks/use-auth"
+import { useAuth, useSessionToken } from "@/hooks/use-auth"
+import { useTrainingDraft } from "@/hooks/use-training-draft"
+import { SidebarEntryButton } from "./sidebar-entry-button"
 import { KIND_LABEL, isRunning, jobHref, type Job } from "@/lib/jobs"
-import { cn } from "@/lib/utils"
 
 // Keep the sidebar list short — the rest are one click away on /admin. Same limit
 // and same reasoning as the recent-conversations list above it.
 const LIMIT = 5
 
-/**
- * What the GPU is working on, wherever you are.
- *
- * Deliberately *not* a second entry called "Active Jobs" sitting beside the Admin
- * row — two rows that name the same destination read as two destinations. It is a
- * labelled group in its own right, exactly like Conversations, so the label
- * describes a list rather than competing with a nav item. That the Admin row now
- * lives in the footer helps: the group and the door are no longer adjacent.
- *
- * The group has no collapse toggle, unlike Conversations. It only exists while
- * there is work, and a collapsed-but-active queue would hide the one thing it was
- * added to show — a disclosure triangle on something that disappears by itself is
- * a control for nothing.
- */
+/** Shows the account's local training draft before running/queued work. The expanded group remains visible while either exists. */
 export function NavJobs() {
   const { isAdmin } = useAuth()
   const { running, queued } = useJobsContext()
+  const token = useSessionToken()
+  const { draft } = useTrainingDraft(isAdmin ? token : null)
+  const pathname = usePathname()
 
   if (!isAdmin) return null
 
-  // Running first, then the line behind it — the same order as the /admin ledger,
-  // so the sidebar is a short window onto that page rather than its own view.
   const active = [...(running ? [running] : []), ...queued]
-  if (active.length === 0) return null
+  if (active.length === 0 && !draft) return null
 
   const shown = active.slice(0, LIMIT)
   const overflow = active.length - shown.length
@@ -51,16 +40,32 @@ export function NavJobs() {
   return (
     <SidebarGroup className="group-data-[collapsible=icon]:hidden">
       <SidebarGroupLabel className="eyebrow text-sidebar-foreground/75">
-        Active
+        Currently working
         <span className="ml-auto text-sidebar-foreground/75 tabular-nums">
-          {active.length}
+          {active.length + (draft ? 1 : 0)}
         </span>
       </SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
+          {draft && (
+            <SidebarMenuItem>
+              <SidebarEntryButton
+                isActive={pathname === "/train/new-train"}
+                render={<Link href="/train/new-train" />}
+                className="h-auto items-start py-1.5"
+              >
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="w-full truncate text-sm leading-tight">
+                    {draft.config.model_name.trim() || "Untitled training"}
+                  </span>
+                  <span className="eyebrow text-muted-foreground">
+                    Train · Draft
+                  </span>
+                </span>
+              </SidebarEntryButton>
+            </SidebarMenuItem>
+          )}
           {shown.map((job, index) => (
-            // Places in line are numbered from the first *waiting* job, so the
-            // queue reads 1, 2, 3 whether or not something is currently running.
             <JobItem
               key={job.id_job}
               job={job}
@@ -83,6 +88,7 @@ export function NavJobs() {
   )
 }
 
+/** Renders one active execution with progress or its waiting position, independently of the pinned draft. */
 function JobItem({ job, position }: { job: Job; position: number }) {
   const pathname = usePathname()
   const href = jobHref(job)
@@ -92,39 +98,27 @@ function JobItem({ job, position }: { job: Job; position: number }) {
 
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
+      <SidebarEntryButton
         isActive={isActive}
         render={<Link href={href} />}
-        className={cn(
-          // Two-line "index entry", matching the conversation rows: label over a
-          // muted subtitle, with a left marginalia rule that grows on hover and
-          // turns accent when active.
-          "relative h-auto items-start gap-2 py-1.5 pl-3.5",
-          "before:absolute before:top-1/2 before:left-1 before:h-0 before:w-px before:-translate-y-1/2",
-          "before:rounded-full before:bg-sidebar-foreground/30 before:transition-all before:content-['']",
-          "hover:before:h-4",
-          isActive &&
-            "before:h-4 before:w-0.5 before:bg-primary hover:before:bg-primary"
-        )}
+        className="h-auto items-start gap-2 py-1.5"
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="w-full truncate text-sm leading-tight">
             {job.label}
           </span>
-          <span className="eyebrow flex w-full items-center justify-between gap-2 text-muted-foreground tabular-nums">
+          <span className="flex w-full items-center justify-between gap-2 eyebrow text-muted-foreground tabular-nums">
             <span className="truncate">
               {KIND_LABEL[job.kind]}
               {live && job.stage ? ` · ${job.stage}` : ""}
               {!live ? " · queued" : ""}
             </span>
-            {/* One right-hand column, one number: how far along the running job
-                is, or how far down the line a waiting one sits. */}
             <span className="shrink-0">
               {live ? `${percent}%` : `#${position}`}
             </span>
           </span>
         </span>
-      </SidebarMenuButton>
+      </SidebarEntryButton>
     </SidebarMenuItem>
   )
 }

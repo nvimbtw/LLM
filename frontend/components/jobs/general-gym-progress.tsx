@@ -107,7 +107,7 @@ export function GeneralGymProgress({
         </span>
       </div>
 
-      <div className="border-y border-border/60 py-3">
+      <div className="border-y border-border py-3">
         <div className="flex items-center justify-between gap-3">
           <span className="eyebrow text-muted-foreground">
             {hasGroupOrder ? "Recent task groups" : "Recent gym mix by batch"}
@@ -148,7 +148,7 @@ export function GeneralGymProgress({
           return (
             <div
               key={source}
-              className="min-w-0 border-b border-border/60 pb-4"
+              className="min-w-0 border-b border-border pb-4"
             >
               <div className="flex items-baseline justify-between gap-3">
                 <h4 className="text-sm font-semibold">{sourceLabel(source)}</h4>

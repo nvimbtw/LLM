@@ -136,10 +136,11 @@ middle two:
   and `shadow-sheet` — the default `ui/panel.tsx` and `ui/card.tsx`. A tile
   that is also a link adds `group-hover:-translate-y-px
   group-hover:shadow-sheet-hover` (and `motion-reduce:` opts out of the move).
-- **A surface that summarises is furniture.** No box, no fill: rules only. The
-  **ruled ledger** is the idiom — `grid … gap-x-8 gap-y-5 border-y border-border
-  py-4`, cells carrying nothing but `pr-6`. It is what the headline figures use
-  in account usage, on a model page, and inside the benchmark and job panels.
+- **A surface that summarises is furniture.** No box or fill. Align fact grids
+  with spacing; keep a rule only where it separates a major region. Repeated
+  catalogue entries use one separator between siblings. A facts band may own
+  its outer boundary, but its cells do not add their own vertical or horizontal
+  rules. See the [hairline rule](design.md#hairline-rule).
 
 The app used to give both the same 1px box at the same radius, which is why a
 stat band and a model tile carried equal weight and a page of them read flat.
@@ -148,10 +149,12 @@ The distinction is the fix; the shadow is only how one half of it is drawn.
 **Admin workspaces use open sections.** Data, Tokenizers, Train, Benchmark,
 Gyms and their job/run views opt into `Panel variant="open"`: no card fill,
 outline or shadow, a restrained serif heading with quiet metadata, and a body
-aligned with the heading. Lists and recaps use rules between rows. Training fields
-use `Input` and `SelectTrigger`'s `inline` variant: no resting border or fill,
-with an outline on keyboard focus, matching the project editor's page-native
-fields. Quiet training actions use the transparent `Button` text variant.
+aligned with the heading. Lists use rules between entries; compact facts and
+training fields use spacing rather than a rule around every value. Training fields
+use `Input` and `SelectTrigger`'s `inline` variant: no border or fill,
+including during focus. Inline text fields use only their caret while editing,
+matching the project editor's page-native fields. Quiet training actions use the
+transparent `Button` text variant.
 Training data policies use the `Checkbox` block variant: the entire labeled
 block toggles, and only selected blocks take a subtle theme-accent tint.
 Other forms keep their control surfaces. The sheet remains the default elsewhere.

@@ -50,7 +50,7 @@ export function PracticePanel({ report }: PracticePanelProps) {
             </thead>
             <tbody>
               {report.mastery.map((skill) => (
-                <tr key={skill.task_type} className="border-b border-border/40">
+                <tr key={skill.task_type} className="border-b border-border">
                   <td className="py-2 pr-3">{skill.label}</td>
                   <td className="pr-3">{STATUS[skill.status]}</td>
                   <td className="pr-3 tabular-nums">

@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { ArrowUpRight } from "lucide-react"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
@@ -12,6 +13,7 @@ import { DatasetList } from "@/components/data/dataset-list"
 import { HubSearch } from "@/components/data/hub-search"
 import { useDataRuns, useStoredDatasets } from "@/hooks/use-data"
 import type { DataRun } from "@/lib/data"
+import { useSessionToken } from "@/hooks/use-auth"
 
 /**
  * The data page: what is stored, what can be pulled, and what is in flight.
@@ -21,6 +23,12 @@ import type { DataRun } from "@/lib/data"
  * search box above the list a returning user actually came for.
  */
 export function DataView() {
+  const token = useSessionToken()
+  return token ? <DataSession key={token} /> : null
+}
+
+/** Owns one account's dataset tab, selected deletion and catalogue reads, clearing them on session replacement. */
+function DataSession() {
   const [refreshKey, setRefreshKey] = React.useState(0)
   const datasets = useStoredDatasets(refreshKey)
   const runs = useDataRuns(refreshKey)
@@ -31,20 +39,22 @@ export function DataView() {
 
   return (
     <Tabs defaultValue="datasets">
-      <TabsList variant="line">
-        <TabsTrigger value="datasets">Datasets</TabsTrigger>
-        <TabsTrigger value="browse">Browse</TabsTrigger>
-        <TabsTrigger value="runs">
-          Runs{active > 0 ? ` (${active})` : ""}
-        </TabsTrigger>
-        <TabsTrigger
-          value="processors"
-          nativeButton={false}
-          render={<Link href="/processors" />}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <TabsList variant="line">
+          <TabsTrigger value="datasets">Datasets</TabsTrigger>
+          <TabsTrigger value="browse">Browse</TabsTrigger>
+          <TabsTrigger value="runs">
+            Runs{active > 0 ? ` (${active})` : ""}
+          </TabsTrigger>
+        </TabsList>
+        <Link
+          href="/processors"
+          className="inline-flex min-h-8 items-center gap-1.5 text-xs text-muted-foreground outline-none hover:text-foreground"
         >
           Processors
-        </TabsTrigger>
-      </TabsList>
+          <ArrowUpRight className="size-3.5" aria-hidden="true" />
+        </Link>
+      </div>
 
       <TabsContent value="datasets" className="mt-6">
         <DatasetList
@@ -94,7 +104,7 @@ function RunList({ runs, isLoading, error }: RunListProps) {
           <Skeleton className="h-10 w-full" />
         </div>
       ) : runs.length === 0 ? (
-        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
+        <p className="py-6 text-sm text-muted-foreground">
           Nothing has run yet.
         </p>
       ) : (

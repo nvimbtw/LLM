@@ -11,6 +11,12 @@ All signed-in users can inspect source. Administrators can edit complete custom
 files in Monaco and save them; builtins stay read-only. Rust independently
 enforces write permission.
 
+Processors is a normal directory link beside the Datasets/Browse/Runs panel tabs.
+Dataset entries use their whole main content as the open target. Detail pages
+put the loaded dataset name, kind and status in the primary header, without
+offering an unsupported rename operation. Administrator deletion uses the shared
+[confirmation behavior](editing.md#navigation-catalogues-and-deletion).
+
 `/processors/new-processor` is the dedicated administrator creation form, using
 the same page/header primitives as project and training creation. It starts with
 a source template; identifier, title, kinds, parameters and logic live in that

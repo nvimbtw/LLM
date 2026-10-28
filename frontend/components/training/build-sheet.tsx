@@ -56,7 +56,7 @@ export function BuildSheet({
   const stages = cfg.curriculum?.length ?? 0
 
   return (
-    <div className="min-w-0 border-t border-border/60">
+    <div className="min-w-0 border-t border-border">
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 pt-6 pb-4">
         <h2 className="font-display text-xl">Review</h2>
         <p className="min-w-0 text-xs break-words text-muted-foreground">
@@ -189,7 +189,7 @@ function Spec({
   muted?: boolean
 }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-border/40 py-2.5">
+    <div className="flex min-w-0 items-baseline justify-between gap-3 py-2.5">
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd
         className={cn(

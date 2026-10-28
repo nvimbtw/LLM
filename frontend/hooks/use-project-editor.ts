@@ -3,12 +3,19 @@
 import * as React from "react"
 import { useSessionToken } from "./use-auth"
 import { getToken } from "@/lib/api"
+import { usePageDraft } from "./use-page-draft"
+import { readDraftStrings } from "@/lib/page-draft"
 import { useProjects } from "@/components/projects/projects-provider"
 import {
   validateProjectFields,
   type Project,
   type ProjectFields,
 } from "@/lib/projects"
+
+/** Restores only the project's three editable text fields, including incomplete or multiline values. */
+function projectDraft(value: unknown): ProjectFields {
+  return readDraftStrings(["name", "description", "notes"], value)
+}
 
 /** Owns a project form's editable fields and persistence; stale account completions cannot close or navigate its replacement. */
 export function useProjectEditor(
@@ -17,11 +24,16 @@ export function useProjectEditor(
 ) {
   const token = useSessionToken()
   const { create, save } = useProjects()
-  const [fields, setFields] = React.useState<ProjectFields>(() => ({
-    name: project?.name ?? "",
-    description: project?.description ?? "",
-    notes: project?.notes ?? "",
-  }))
+  const draft = usePageDraft(
+    `project:${project?.project_id ?? "new"}`,
+    {
+      name: project?.name ?? "",
+      description: project?.description ?? "",
+      notes: project?.notes ?? "",
+    },
+    projectDraft
+  )
+  const fields = draft.fields
   const [submitting, setSubmitting] = React.useState(false)
   const submittingRef = React.useRef(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -34,12 +46,15 @@ export function useProjectEditor(
   }, [])
 
   /** Updates one named draft field without writing private metadata before submission. */
-  const change = React.useCallback(
-    (field: keyof ProjectFields, value: string): void => {
-      setFields((current) => ({ ...current, [field]: value }))
-    },
-    []
-  )
+  const change = (field: keyof ProjectFields, value: string): void =>
+    draft.change({ ...fields, [field]: value })
+
+  /** Discards local changes and restores the current saved project fields. */
+  const reset = () => {
+    if (submittingRef.current) return
+    draft.reset()
+    setError(null)
+  }
 
   /** Validates and persists this form, reporting failures beside the controls and preserving the draft for retry. */
   const submit = async (): Promise<void> => {
@@ -55,7 +70,8 @@ export function useProjectEditor(
         projectId = project.project_id
       } else projectId = await create(next)
       if (active.current && getToken() === token) {
-        setFields(next)
+        draft.change(next)
+        draft.forget()
         onSaved(projectId)
       }
     } catch (failure) {
@@ -74,5 +90,13 @@ export function useProjectEditor(
     fields.name !== (project?.name ?? "") ||
     fields.description !== (project?.description ?? "") ||
     fields.notes !== (project?.notes ?? "")
-  return { fields, change, submitting, error, submit, hasChanges }
+  return {
+    fields,
+    change,
+    reset,
+    submitting,
+    error: error ?? draft.persistenceError,
+    submit,
+    hasChanges,
+  }
 }

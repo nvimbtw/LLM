@@ -36,8 +36,8 @@ Each page should answer three questions through its hierarchy and content:
   width for prose and text-editing surfaces. A few inline fields do not turn a
   facts page into a prose page.
 - Prefer single-column lists and open ledger rows for catalogues and summaries.
-  Use hairline rules to group related facts instead of wrapping every region in
-  a card. Keep a sheet surface for a focused, actionable composition; controls,
+  Group related facts with spacing and alignment, using a rule only at a useful
+  boundary. Keep a sheet surface for a focused, actionable composition; controls,
   dialogs and confirmations still need clear interactive boundaries.
 - Keep pages and controls aligned. A form, diagram or chart should have a
   readable sequence, consistent edges and spacing, and a clear relationship to
@@ -82,6 +82,36 @@ Keep these treatments muted and local to the page that owns them: the
 authentication pages use a quiet field of characters, while the new-chat page
 has its own mountain-and-wordmark figure. Do not spread decorative artwork
 through ordinary pages or let it compete with controls and data.
+
+## Hairline rule
+
+Use **one rule per meaningful boundary**, with one layout owning that rule.
+Spacing, alignment and type establish hierarchy inside a group. The shared
+panels/statistics, training forms, follow-ups and workbench ledgers follow this
+rule; keep it when extending other screens.
+
+- Keep horizontal rules between major page sections or repeated ledger entries
+  when spacing alone makes their boundaries hard to scan. A header rule and an
+  immediately adjacent ledger rule describe one boundary: keep only one.
+- Keep a vertical rule at a persistent pane boundary, such as the sidebar or a
+  split editor. Use one continuous divider owned by their parent. Avoid vertical
+  rules between ordinary form columns, statistics and nested content groups.
+- Do not give a section both an outer rule and inner rules around the same
+  content. Do not put a rule directly below a heading when the containing section
+  already has a boundary. A list owns separators between siblings; individual
+  rows do not each draw top and bottom edges.
+- Structural hairlines use **1 CSS pixel**, `border-border` (or
+  `border-sidebar-border` in the sidebar), with no per-component opacity changes.
+  Horizontal rules share the content column's edges; nested content does not add
+  a second, shorter rule. Vertical rules follow the pane boundary throughout.
+- Control outlines, keyboard focus, selection markers, chart marks and semantic
+  quote/tree rails serve their own purpose. Preserve those functional cues;
+  they do not justify additional decorative separators nearby.
+
+Follow-up steps and curriculum stages have one separator between siblings.
+Fields, numerical settings and statistics use spacing. Dataset choices and
+catalogues keep row separators without a second surrounding pair of rules.
+Sheet headings do not add an inner rule beside the sheet's existing edge.
 
 ## Ideas that remain exploratory
 

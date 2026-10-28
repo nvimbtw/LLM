@@ -184,7 +184,7 @@ function BuildStepRow({
   fraction?: number
 }) {
   return (
-    <li className="border-b border-border/40 py-2.5 last:border-b-0">
+    <li className="border-b border-border py-2.5 last:border-b-0">
       <div className="flex items-baseline justify-between gap-4">
         <span className="flex min-w-0 items-center gap-2">
           <span
