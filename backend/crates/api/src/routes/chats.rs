@@ -1,5 +1,5 @@
 //! Conversation persistence belongs to Rust; model preparation stays in Python.
-use crate::upstream::{answer, caller, Answer};
+use crate::upstream::{answer, caller, visibility, Answer};
 use crate::{conversation as c, extractors::AuthUser};
 use actix_web::{delete, get, patch, post, put, web, HttpResponse};
 use db::conversation as queries;
@@ -166,7 +166,15 @@ async fn ask(
     engine: web::Data<Proxy>,
 ) -> Answer {
     let _guard = c::lock(*id).await;
-    let round = c::prepare(&pool, &engine, user.claims.sub, *id, body.into_inner()).await?;
+    let round = c::prepare(
+        &pool,
+        &engine,
+        user.claims.sub,
+        visibility(&user.claims),
+        *id,
+        body.into_inner(),
+    )
+    .await?;
     let reply = engine
         .post(&caller(&user), "/chat", round.config.clone())
         .await?;

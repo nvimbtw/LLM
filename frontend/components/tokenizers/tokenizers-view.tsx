@@ -58,14 +58,10 @@ function TokenizersCatalogue({ token }: { token: string }) {
           ? `${corpora} packed ${corpora === 1 ? "corpus" : "corpora"} went with it.`
           : undefined
       )
+      refresh()
     } catch (e) {
       if (!active.current || getToken() !== token) return
-      toast.error(
-        "Couldn't delete it",
-        e instanceof Error ? e.message : "Something went wrong."
-      )
-    } finally {
-      if (active.current && getToken() === token) refresh()
+      throw e
     }
   }
 
@@ -151,7 +147,7 @@ function BuildingBand({ job }: { job: Job }) {
   return (
     <Link
       href={jobHref(job)}
-      className="flex items-center gap-4 border-y border-border/60 py-4 transition-colors hover:bg-muted/30 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+      className="flex items-center gap-4 py-4 transition-colors hover:bg-muted/30 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
     >
       <Throbber mode="tokenizing" />
       <span className="min-w-0">

@@ -30,6 +30,7 @@ import {
 } from "@/hooks/use-composer-editor"
 import { useComposerCommands } from "@/hooks/use-composer-commands"
 import { useDraftTokens } from "@/hooks/use-draft-tokens"
+import { SectionTexture } from "@/components/ui/section-texture"
 import { ComposerPicker } from "./composer-picker"
 import type { ThinkBudget } from "@/lib/think-budget"
 import { useComposerChoice } from "./composer-choice-provider"
@@ -61,7 +62,7 @@ export interface ChatComposerProps {
   onCancel?: () => void
   placeholder?: string
   title?: string
-  onRenameTitle?: (title: string) => void
+  onRenameTitle?: (title: string) => void | Promise<void>
   contextTokensUsed?: number
   unseenTokens?: number
   draft?: { text: string }
@@ -76,8 +77,6 @@ export function ChatComposer({
   compact = false,
   onCancel,
   placeholder = "Message Slate…",
-  title,
-  onRenameTitle,
   contextTokensUsed = 0,
   unseenTokens = 0,
   draft,
@@ -327,24 +326,7 @@ export function ChatComposer({
 
   return (
     <div className="flex flex-col">
-      {visiblePlan && (
-        <ComposerPlan
-          key={visiblePlan.id}
-          plan={visiblePlan}
-          running={sending}
-          suppressed={isSlashActive}
-          editing={planEditor.editing}
-        />
-      )}
       <div className="relative z-20">
-        <SlashCommandMenu
-          open={isSlashActive}
-          input={editorText}
-          selectedIndex={selectedIndex}
-          onSelectCommand={handleSelectCommand}
-          onSelectOption={handleSelectOption}
-          ctx={commandContext}
-        />
         <div
           ref={shellRef}
           data-composer-size={compact ? "compact" : "expanded"}
@@ -360,6 +342,29 @@ export function ChatComposer({
           onDrop={handleDrop}
         >
           <div ref={bodyRef}>
+            {(isSlashActive || visiblePlan) && (
+              <div className="relative isolate overflow-hidden">
+                <SectionTexture />
+                {visiblePlan && (
+                  <div hidden={isSlashActive}>
+                    <ComposerPlan
+                      key={visiblePlan.id}
+                      plan={visiblePlan}
+                      running={sending}
+                      editing={planEditor.editing}
+                    />
+                  </div>
+                )}
+                <SlashCommandMenu
+                  open={isSlashActive}
+                  input={editorText}
+                  selectedIndex={selectedIndex}
+                  onSelectCommand={handleSelectCommand}
+                  onSelectOption={handleSelectOption}
+                  ctx={commandContext}
+                />
+              </div>
+            )}
             {isDraggingFiles && (
               <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-(--radius-composer) border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
                 <Paperclip className="size-4" />
@@ -402,12 +407,6 @@ export function ChatComposer({
 
             <div className="flex items-center gap-2 px-2.5 pb-2">
               <AttachMenu onFiles={addFiles} disabled={disabled || sending} />
-              <ComposerPicker
-                model={model}
-                onModelChange={setModel}
-                budget={budget}
-                onBudgetChange={setBudget}
-              />
               <div className="ml-auto flex items-center gap-2">
                 {voiceSupported && (
                   <MicButton
@@ -444,24 +443,28 @@ export function ChatComposer({
         </div>
       </div>
 
-      {title !== undefined && (
-        <ComposerFooter
-          title={title}
-          onRenameTitle={onRenameTitle}
-          contextTokensUsed={contextTokensUsed}
-          draftTokens={draftTokens}
-          contextWindow={contextWindow}
-          isLoading={modelsLoading || choiceLoading}
-          contextMultiplier={effectiveContextMultiplier(
-            selectedModel,
-            settings.contextMultiplier
-          )}
-          unseenTokens={unseenTokens}
-          listening={listening}
-          onDeviceDictation={voiceOnDevice}
-          className="mx-2 -mt-3 rounded-b-(--radius-composer) bg-card/60 px-2 pt-4 pb-1 backdrop-blur-md"
-        />
-      )}
+      <ComposerFooter
+        choices={
+          <ComposerPicker
+            model={model}
+            onModelChange={setModel}
+            budget={budget}
+            onBudgetChange={setBudget}
+          />
+        }
+        contextTokensUsed={contextTokensUsed}
+        draftTokens={draftTokens}
+        contextWindow={contextWindow}
+        isLoading={modelsLoading || choiceLoading}
+        contextMultiplier={effectiveContextMultiplier(
+          selectedModel,
+          settings.contextMultiplier
+        )}
+        unseenTokens={unseenTokens}
+        listening={listening}
+        onDeviceDictation={voiceOnDevice}
+        className="mx-2 -mt-3 rounded-b-(--radius-composer) bg-card/60 px-2 pt-4 pb-1 backdrop-blur-md"
+      />
       {selectedModel &&
         !choiceLoading &&
         settings.contextMultiplier > 1 &&

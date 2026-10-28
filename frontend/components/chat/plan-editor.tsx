@@ -13,6 +13,7 @@ export interface PlanEditorProps {
   editing: PlanEditing
 }
 
+/** Edits a local plan with bounded tasks, accessible group-preserving reordering and explicit Save/Cancel. */
 export function PlanEditor({ editing }: PlanEditorProps) {
   const [title, setTitle] = React.useState("")
   const [dragging, setDragging] = React.useState<string | null>(null)
@@ -22,10 +23,12 @@ export function PlanEditor({ editing }: PlanEditorProps) {
   const hint = React.useId()
   const { draft } = editing
 
+  /** Adds the entered title when valid and clears only an accepted task. */
   function add() {
     if (editing.add(title)) setTitle("")
   }
 
+  /** Commits a valid local drag order and announces it, leaving persistence to Save. */
   function finish() {
     if (dragging && target && dragging !== target) {
       editing.move(dragging, target)
@@ -146,9 +149,7 @@ export function PlanEditor({ editing }: PlanEditorProps) {
           ))}
         </ol>
         {!draft.tasks.length && (
-          <p className="py-3 text-xs text-muted-foreground">
-            An empty page. Add the first task below.
-          </p>
+          <p className="py-3 text-xs text-muted-foreground">No tasks</p>
         )}
       </div>
       <form

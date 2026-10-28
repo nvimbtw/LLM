@@ -5,6 +5,8 @@ import * as React from "react"
 import { PageHeader } from "@/components/ui/page-header"
 import { PageShell } from "@/components/ui/page-shell"
 import { LoadError } from "@/components/ui/error-state"
+import { EmptyState } from "@/components/ui/empty-state"
+import { ResourceList } from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { GymCard } from "@/components/gyms/gym-card"
 import { listGyms, type Gym } from "@/lib/gyms"
@@ -38,22 +40,23 @@ export default function GymsPage() {
       {error ? (
         <LoadError hint={error} />
       ) : orderedGyms === null ? (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4">
           <Skeleton className="h-36" />
           <Skeleton className="h-36" />
         </div>
+      ) : orderedGyms.length === 0 ? (
+        <EmptyState title="No gyms available" />
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
+        <ResourceList>
           {orderedGyms.map((gym) => (
             <GymCard
               key={gym.id}
               id={gym.id}
               name={gym.name}
               description={gym.description}
-              featured={gym.id === "general"}
             />
           ))}
-        </div>
+        </ResourceList>
       )}
     </PageShell>
   )

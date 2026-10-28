@@ -69,78 +69,87 @@ function WorkspaceContent({
   const summary = detail.summary
   const readOnly = summary.origin === "builtin" || summary.archived
   const dirty = draft.text !== draft.savedText
+  const back = {
+    href: root,
+    label: kind === "block" ? "Blocks" : "Architectures",
+  }
+  const sourceStatus = `Source draft ${draft.saved.draft_version}${dirty ? " · Unsaved changes" : " · Saved"}`
+  const actions = (
+    <div className="flex flex-wrap gap-2">
+      {summary.accepted_revision && (
+        <Button
+          nativeButton={false}
+          variant="outline"
+          render={
+            <Link
+              href={`${root}/${kind === "block" ? "new-block" : "new-arch"}?copy=${id}&revision=${summary.accepted_revision.revision_id}`}
+            />
+          }
+        >
+          Copy accepted {kind}
+        </Button>
+      )}
+      <AlertDialog>
+        <AlertDialogTrigger
+          render={
+            <Button type="button" variant="outline" disabled={draft.saving} />
+          }
+        >
+          Reload server draft
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reload server draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Local unsaved source edits will be discarded. Metadata edits are
+              saved separately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction onClick={workspace.reload}>
+              Reload source
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {!readOnly && (
+        <Button
+          type="button"
+          disabled={!dirty || draft.saving || draft.conflict}
+          onClick={() => void document.save()}
+        >
+          {draft.saving ? "Saving source…" : "Save draft"}
+        </Button>
+      )}
+    </div>
+  )
   return (
     <>
-      <PageHeader
-        title={summary.name}
-        back={{
-          href: root,
-          label: kind === "block" ? "Blocks" : "Architectures",
-        }}
-        meta={`Draft ${draft.saved.draft_version}${dirty ? " · Unsaved changes" : " · Saved"}`}
-        action={
-          <div className="flex flex-wrap gap-2">
-            {summary.accepted_revision && (
-              <Button
-                nativeButton={false}
-                variant="outline"
-                render={
-                  <Link
-                    href={`${root}/${kind === "block" ? "new-block" : "new-arch"}?copy=${id}&revision=${summary.accepted_revision.revision_id}`}
-                  />
-                }
-              >
-                Copy accepted {kind}
-              </Button>
-            )}
-            <AlertDialog>
-              <AlertDialogTrigger
-                render={<Button variant="outline" disabled={draft.saving} />}
-              >
-                Reload server draft
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Reload server draft?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Local unsaved edits will be discarded. Copy any text you
-                    want to keep before reloading.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep editing</AlertDialogCancel>
-                  <AlertDialogAction onClick={workspace.reload}>
-                    Reload
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            {!readOnly && (
-              <Button
-                disabled={!dirty || draft.saving || draft.conflict}
-                onClick={() => void document.save()}
-              >
-                {draft.saving ? "Saving…" : "Save draft"}
-              </Button>
-            )}
-          </div>
-        }
-      />
+      {summary.origin === "custom" ? (
+        <ArchitectureMetadata
+          key={summary.metadata_version}
+          kind={kind}
+          summary={summary}
+          onSaved={workspace.updateMetadata}
+          back={back}
+          sourceStatus={sourceStatus}
+          actions={actions}
+        />
+      ) : (
+        <PageHeader
+          title={summary.name}
+          back={{
+            href: root,
+            label: kind === "block" ? "Blocks" : "Architectures",
+          }}
+          description={summary.description || undefined}
+          meta={sourceStatus}
+          action={actions}
+        />
+      )}
       <div className="grid gap-8">
-        {summary.origin === "custom" && (
-          <ArchitectureMetadata
-            key={summary.metadata_version}
-            kind={kind}
-            summary={summary}
-            onSaved={workspace.updateMetadata}
-          />
-        )}
-        {summary.description && (
-          <p className="max-w-prose text-sm text-muted-foreground">
-            {summary.description}
-          </p>
-        )}
-        <dl className="grid gap-3 border-y border-border py-4 text-sm sm:grid-cols-2">
+        <dl className="grid gap-3 py-4 text-sm sm:grid-cols-2">
           <div>
             <dt className="eyebrow text-muted-foreground">Accepted revision</dt>
             <dd className="mt-1 font-mono break-all">
@@ -167,6 +176,9 @@ function WorkspaceContent({
               </p>
             )}
             {draft.error && <FormError>{draft.error}</FormError>}
+            {workspace.storageError && (
+              <FormError>{workspace.storageError}</FormError>
+            )}
             {draft.conflict && (
               <p className="text-sm text-muted-foreground">
                 Your local bytes remain in the editor. Reload only after keeping

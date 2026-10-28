@@ -1,9 +1,8 @@
 "use client"
 
-import { Check, Circle, Dot, X } from "lucide-react"
+import { Check, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { RunningDot } from "@/components/ui/running-dot"
 import type { GymEpisode } from "@/lib/gyms"
 
 /**
@@ -60,7 +59,8 @@ export function EpisodeList({
 
 /** Displays the episode’s live, graded or abandoned status without changing its selection behavior. */
 function Mark({ episode, live }: { episode: GymEpisode; live: boolean }) {
-  if (live) return <RunningDot label="running" />
+  if (live)
+    return <span className="text-xs text-muted-foreground">Running</span>
   if (episode.status === "graded") {
     return (episode.score ?? 0) >= 1 ? (
       <Check aria-label="correct" className="size-4 shrink-0 text-foreground" />
@@ -68,18 +68,9 @@ function Mark({ episode, live }: { episode: GymEpisode; live: boolean }) {
       <X aria-label="wrong" className="size-4 shrink-0 text-destructive" />
     )
   }
-  if (episode.status === "closed") {
-    return (
-      <Dot
-        aria-label="abandoned"
-        className="size-4 shrink-0 text-muted-foreground"
-      />
-    )
-  }
   return (
-    <Circle
-      aria-label="not run"
-      className="size-3 shrink-0 text-muted-foreground/50"
-    />
+    <span className="text-xs text-muted-foreground">
+      {episode.status === "closed" ? "Abandoned" : "Not run"}
+    </span>
   )
 }

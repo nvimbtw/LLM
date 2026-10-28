@@ -126,75 +126,43 @@ utilities left are `rounded-full` (pills, avatars), `rounded-none`, and three
 micro values on chart bars and inline code where the role step would round them
 into blobs.
 
-## Elevation
+## Surfaces, elevation and texture
 
-Four levels on one ladder — `shadow-raised`, `shadow-sheet`,
-`shadow-sheet-hover`, `shadow-overlay` — and one rule for deciding between the
-middle two:
+The approved design uses a crisp small offset instead of diffuse elevation.
+`shadow-overlay`, `shadow-sheet` and `shadow-sheet-hover` resolve to **1px right,
+2px down, zero blur/spread**, mixed from light ink at 24% or the deepest dark
+palette ground at 80%. `shadow-raised` is a single crisp lower edge. Keep these
+roles in the theme layer; do not add default `shadow-sm`/`md`/`lg`/`xl`, inset
+highlights, ambient glows or per-component shadow recipes.
 
-- **A sheet surface uses** `bg-card`, an edge at `border/45`,
-  and `shadow-sheet` — the default `ui/panel.tsx` and `ui/card.tsx`. A tile
-  that is also a link adds `group-hover:-translate-y-px
-  group-hover:shadow-sheet-hover` (and `motion-reduce:` opts out of the move).
-- **A surface that summarises is furniture.** No box, no fill: rules only. The
-  **ruled ledger** is the idiom — `grid … gap-x-8 gap-y-5 border-y border-border
-  py-4`, cells carrying nothing but `pr-6`. It is what the headline figures use
-  in account usage, on a model page, and inside the benchmark and job panels.
+A focused actionable sheet can retain `bg-card`, a restrained functional edge
+and the sheet role. Summaries, catalogue entries and statistics stay open: no
+surrounding card, row separators or outer band rules. Admin workspaces use
+`Panel variant="open"`, aligned serif headings and content. Training inputs and
+select triggers use their existing `inline` variants; ordinary outlined controls
+keep clear functional boundaries and keyboard focus.
 
-The app used to give both the same 1px box at the same radius, which is why a
-stat band and a model tile carried equal weight and a page of them read flat.
-The distinction is the fix; the shadow is only how one half of it is drawn.
+Menus/selects use compact neutral surfaces, aligned labels and small icons.
+Meaningful groups use spacing. The composer and toasts use the same frosted
+material (`bg-card/75 backdrop-blur-2xl backdrop-saturate-150`); the crisp shadow
+separates them without removing that glass. Settings and notification dialogs
+share one opaque background/frame, border, pane divider and vertical selection
+marker. Composer-related popovers retain its softer corners.
 
-**Admin workspaces use open sections.** Data, Tokenizers, Train, Benchmark,
-Gyms and their job/run views opt into `Panel variant="open"`: no card fill,
-outline or shadow, a restrained serif heading with quiet metadata, and a body
-aligned with the heading. Lists and recaps use rules between rows. Training fields
-use `Input` and `SelectTrigger`'s `inline` variant: no resting border or fill,
-with an outline on keyboard focus, matching the project editor's page-native
-fields. Quiet training actions use the transparent `Button` text variant.
-Training data policies use the `Checkbox` block variant: the entire labeled
-block toggles, and only selected blocks take a subtle theme-accent tint.
-Other forms keep their control surfaces. The sheet remains the default elsewhere.
-Fixture pages use the same open frame while rendering the real chat and throbber
-components, so their previews continue to represent the application.
+`PageHeader` owns the display title, back link, functional metadata, actions and
+faint grey `SectionTexture`, with no decorative bottom rule. The sidebar Slate
+brand header and composer's command/plan upper region use the same neutral field.
+`EmptyState` uses bounded warm-clay texture. Other section headings, populated
+lists and whole ordinary pages do not gain texture. The SVG is decorative and
+pointer-transparent. `--texture-opacity` (0.065), `--texture-warm-opacity` (0.16)
+and `--texture-glyph-size` own its rendering. The landing artwork below retains
+its separate geometry and motion contract.
 
-Either side of the sheet:
-
-- **`shadow-raised`** — a control that sits a hair proud of its surface: the
-  checkbox, the switch thumb, the active tab, the composer.
-- **`shadow-overlay`** — anything that floats free of the page: a menu, a select
-  popup, a dialog, a toast, a chart tooltip. It separates from a sheet that is
-  *already* casting a shadow, so the difference is travel (48px) rather than
-  darkness.
-
-The composer, its command drawer and the toast are frosted
-(`bg-*/75 backdrop-blur-2xl backdrop-saturate-150`). They land on top of content
-that is still live underneath — a thread being scrolled, a queue that is moving —
-and a solid card cuts a hole in it. The blur is what stops what passes behind
-from being *readable*, and the saturate puts back the colour that blurring alone
-averages away. The command drawer has slight control corners and no shadow over
-the composer. Other menus and dialogs use opaque surfaces.
-
-Every elevation lives in the theme layer with the other roles. The two modes are
-deliberately **not** the same shape: light lifts with a shadow mixed from the ink
-(grey on cream reads as dirt), while dark — where a shadow has nothing to fall on
-— lifts with its surface step plus a highlight along the top edge, the way a pane
-catches the light above it. This is why `shadow-sm`/`md`/`lg`/`xl` are banned:
-Tailwind's defaults are black at a fixed opacity, invisible on the dragon ground,
-which is what made those controls read flat in dark mode.
-
-`PageHeader` supplies the display title, back link, functional metadata,
-right-side actions and bottom hairline. Headers have no decorative description
-prose. Run task counts, status and elapsed time remain factual metadata;
-conversation thread/token figures sit in right-aligned header meta beside the
-action. Stored resource descriptions and their editable fields remain content. Pages keep that
-rule when tabs, forms, section headings or unruled rows follow. Only a ledger
-that opens immediately with its own rule drops the header rule
-(`className="mb-6 border-b-0 pb-0"`), as the model registry does. The editable
-training heading and the gym-run telemetry header retain their existing compact
-composition. Model and tokenizer catalogues use open ledger entries; selection
-controls, data previews and markup source blocks use hairlines without outer
-boxes. Overlay dialogs and confirmations retain their surfaces.
+Colour roles are assigned in [Design](design.md#colour-surfaces-and-texture):
+steel blue for action/selection/focus, ochre for models/vocabularies, mauve for
+chat, aqua for practice, sage for benchmarks/labelled success, amber for warnings,
+soft red for failures/destruction and clay for empty texture. Domain colours
+are small accents; text/status labels carry meaning independently of colour.
 
 ## New-chat figure
 
@@ -228,7 +196,7 @@ The standalone `FigureSlate` retains its six fixed clusters of twelve ridge
 characters, shimmering in a 24-second loop. The new-chat scene disables that
 loop in favour of the pointer reveal and one-time wordmark sweep.
 
-## Throbber or dot
+## Activity figures and state
 
 `components/ui/throbber.tsx` selects the classic trellis or optional circular
 token art using the account's **Use live throbber** setting (off by default).
@@ -306,7 +274,7 @@ room for it:
 - the queue's now-band,
 - the benchmark empty state.
 
-Everywhere else — beside a line of text, inside a button, in a sidebar row — use
-`components/ui/running-dot.tsx`. Those places need the *fact* of activity, not
-something to look at. Don't reach for a third indicator: a lucide `Loader2` on a
-button is the thing `RunningDot` replaced.
+Elsewhere, use concise state words, useful counts or actual progress. Standalone
+status dots are removed, including in the sidebar and beside already-labelled
+activity. Do not replace them with another arbitrary spinner. This does not
+remove semantic chart/diagram marks or the approved exchange rail's strokes.

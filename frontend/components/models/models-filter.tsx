@@ -1,9 +1,8 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { Search } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { SearchField } from "@/components/ui/search-field"
 import { cn } from "@/lib/utils"
 
 export type Visibility = "all" | "published" | "private"
@@ -46,10 +45,8 @@ export function ModelsFilter({
               aria-pressed={visibility === option}
               onClick={() => onVisibility(option)}
               className={cn(
-                "gap-1.5 rounded-none border-b px-0 pb-1",
-                visibility === option
-                  ? "border-foreground text-foreground"
-                  : "border-transparent text-muted-foreground"
+                "gap-1.5 rounded-none px-0 pb-1",
+                visibility === option ? "text-primary" : "text-muted-foreground"
               )}
             >
               {VISIBILITY_LABEL[option]}
@@ -61,14 +58,12 @@ export function ModelsFilter({
         </div>
       )}
       <div className="relative ml-auto w-full sm:w-52">
-        <Search className="pointer-events-none absolute top-1/2 left-0 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          variant="inline"
+        <SearchField
           value={query}
           onChange={(event) => onQuery(event.target.value)}
           placeholder="Search models"
           aria-label="Search models"
-          className="h-8 pl-6 text-sm"
+          className="h-8 text-sm"
         />
       </div>
       {action}

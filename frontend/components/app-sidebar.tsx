@@ -15,6 +15,8 @@ import { NavConversations } from "./sidebar/nav-conversations"
 import { NavAdmin } from "./sidebar/nav-admin"
 import { NavJobs } from "./sidebar/nav-jobs"
 import { NavProfile } from "./sidebar/nav-profile"
+import { NavNotifications } from "./sidebar/nav-notifications"
+import { SectionTexture } from "@/components/ui/section-texture"
 
 // Brand shown in the sidebar header. Change these to rename the app:
 // APP_NAME is shown when expanded, APP_NAME_SHORT when collapsed to icons.
@@ -25,7 +27,8 @@ const APP_NAME_SHORT = "S"
 export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b border-sidebar-border/60 px-3 pt-4 pb-3 group-data-[collapsible=icon]:px-2">
+      <SidebarHeader className="relative isolate border-b border-sidebar-border px-3 pt-4 pb-3 group-data-[collapsible=icon]:px-2">
+        <SectionTexture className="-z-10" />
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
@@ -54,8 +57,9 @@ export function AppSidebar() {
         <NavProjects />
         <NavConversations />
       </SidebarContent>
-      <SidebarFooter className="border-t border-sidebar-border/60 px-1 py-2 group-data-[collapsible=icon]:px-2">
+      <SidebarFooter className="border-t border-sidebar-border px-1 py-2 group-data-[collapsible=icon]:px-2">
         <NavAdmin />
+        <NavNotifications />
         <NavProfile />
       </SidebarFooter>
       <SidebarRail />

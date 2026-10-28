@@ -40,14 +40,23 @@ import type { TrainConfig, TrainMode } from "@/lib/training"
 /** Aligns the supplied field label and inline control in one quiet settings row. */
 function Row({
   label,
+  hint,
   children,
 }: {
   label: string
+  hint?: string
   children: React.ReactNode
 }) {
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/40 py-3">
-      <span className="text-sm text-muted-foreground">{label}</span>
+    <div className="flex min-w-0 items-center justify-between gap-3 py-3">
+      <span className="min-w-0 text-sm">
+        {label}
+        {hint && (
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            {hint}
+          </span>
+        )}
+      </span>
       {children}
     </div>
   )
@@ -173,7 +182,7 @@ export function ParamsRail({
       )}
 
       {isCycleMode ? (
-        <p className="rounded-(--radius-control-sm) border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+        <p className="py-2 text-xs text-muted-foreground">
           Seeded from a cycle&rsquo;s{" "}
           <span className="font-medium text-foreground">
             {isRaft ? "self-train" : "preference"}
@@ -182,10 +191,10 @@ export function ParamsRail({
           themselves.
         </p>
       ) : (
-        <div className="inline-flex gap-6 border-b border-border/60">
+        <div className="inline-flex gap-6">
           {(
             [
-              ["pretrain", "Pretrain"],
+              ["pretrain", "Pre-train"],
               ["sft", "Fine-tune"],
             ] as [TrainMode, string][]
           ).map(([mode, label]) => (
@@ -195,12 +204,13 @@ export function ParamsRail({
               size="sm"
               variant="text"
               className={cn(
-                "h-auto rounded-none border-0 border-b-2 px-0 pb-3 hover:bg-transparent",
+                "h-auto rounded-none px-0 pb-3 hover:bg-transparent",
                 cfg.mode === mode
-                  ? "border-foreground font-medium text-foreground"
-                  : "border-transparent text-muted-foreground"
+                  ? "font-medium text-primary"
+                  : "text-muted-foreground"
               )}
               disabled={disabled}
+              aria-pressed={cfg.mode === mode}
               onClick={() => setMode(mode)}
             >
               {label}
@@ -350,7 +360,7 @@ export function ParamsRail({
 
         {numFields.map((f) =>
           f.pow2 ? (
-            <Row key={f.key} label={f.label}>
+            <Row key={f.key} label={f.label} hint={f.hint}>
               <Pow2Input
                 variant="inline"
                 ariaLabel={`${f.label} exponent`}
@@ -361,7 +371,7 @@ export function ParamsRail({
               />
             </Row>
           ) : (
-            <Row key={f.key} label={f.label}>
+            <Row key={f.key} label={f.label} hint={f.hint}>
               <Input
                 variant="inline"
                 aria-label={f.label}
@@ -410,7 +420,7 @@ export function ParamsRail({
       />
       {!isSft && (
         <div className="space-y-3">
-          <div className="space-y-3 border-y border-border/60 py-3">
+          <div className="space-y-5 py-3">
             <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
                 Shuffle documents each epoch
@@ -426,7 +436,7 @@ export function ParamsRail({
                 }
               />
             </label>
-            <label className="flex items-center justify-between gap-2 border-t pt-2">
+            <label className="flex items-center justify-between gap-2">
               <span className="min-w-0 text-sm">
                 Curriculum
                 <span className="block text-xs text-muted-foreground">
@@ -511,7 +521,10 @@ export function ParamsRail({
       ) : null}
 
       {errors.length > 0 && !disabled && (
-        <ul className="space-y-0.5 text-xs text-destructive">
+        <ul
+          aria-label="Before starting this run"
+          className="space-y-0.5 text-xs text-muted-foreground"
+        >
           {errors.map((err) => (
             <li key={err}>{err}</li>
           ))}

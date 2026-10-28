@@ -3,6 +3,8 @@
 import * as React from "react"
 import { useSessionToken } from "./use-auth"
 import { getToken } from "@/lib/api"
+import { usePageDraft } from "./use-page-draft"
+import { readDraftStrings } from "@/lib/page-draft"
 import {
   getTokenizer,
   editTokenizer,
@@ -11,14 +13,22 @@ import {
   type TokenizerFields,
 } from "@/lib/tokenizers"
 
+/** Restores exactly the vocabulary's editable text fields, preserving unfinished names and multiline descriptions. */
+function tokenizerDraft(value: unknown): TokenizerFields {
+  return readDraftStrings(["name", "description"], value)
+}
+
 /** Owns one mounted session/resource's metadata, draft and writes; stale completions cannot mutate or navigate its replacement. */
 export function useTokenizer(id: string, onDeleted: () => void) {
   const token = useSessionToken()
   const [tokenizer, setTokenizer] = React.useState<TokenizerDetail | null>(null)
-  const [fields, setFields] = React.useState<TokenizerFields>({
-    name: "",
-    description: "",
-  })
+  const draft = usePageDraft(
+    `tokenizer:${id}`,
+    { name: tokenizer?.name ?? "", description: tokenizer?.description ?? "" },
+    tokenizerDraft,
+    Boolean(tokenizer)
+  )
+  const fields = draft.fields
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [failure, setFailure] = React.useState<string | null>(null)
@@ -34,7 +44,6 @@ export function useTokenizer(id: string, onDeleted: () => void) {
       .then((next) => {
         if (!current || getToken() !== token) return
         setTokenizer(next)
-        setFields({ name: next.name, description: next.description })
       })
       .catch((cause: unknown) => {
         if (current && getToken() === token)
@@ -56,12 +65,12 @@ export function useTokenizer(id: string, onDeleted: () => void) {
 
   /** Changes a local draft field; persistence occurs only on Save. */
   const change = (field: keyof TokenizerFields, value: string) =>
-    setFields((previous) => ({ ...previous, [field]: value }))
+    draft.change({ ...fields, [field]: value })
 
   /** Restores the stored display fields and clears the last submission failure. */
   const cancel = () => {
     if (!tokenizer || pending.current) return
-    setFields({ name: tokenizer.name, description: tokenizer.description })
+    draft.reset()
     setFailure(null)
   }
 
@@ -74,8 +83,9 @@ export function useTokenizer(id: string, onDeleted: () => void) {
     try {
       const saved = await editTokenizer(token, id, fields)
       if (!active.current || getToken() !== token) return
+      draft.change({ name: saved.name, description: saved.description })
+      draft.forget()
       setTokenizer(saved)
-      setFields({ name: saved.name, description: saved.description })
     } catch (cause) {
       if (active.current && getToken() === token)
         setFailure(
@@ -105,6 +115,7 @@ export function useTokenizer(id: string, onDeleted: () => void) {
             ? cause.message
             : "The vocabulary could not be deleted."
         )
+      throw cause
     } finally {
       pending.current = false
       if (active.current && getToken() === token) setBusy(false)
@@ -116,7 +127,7 @@ export function useTokenizer(id: string, onDeleted: () => void) {
     fields,
     loading,
     error,
-    failure,
+    failure: failure ?? draft.persistenceError,
     busy,
     change,
     cancel,

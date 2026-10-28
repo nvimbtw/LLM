@@ -10,7 +10,8 @@ import {
   type Project,
 } from "@/lib/projects"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { EditableTitle } from "@/components/ui/editable-title"
+import { EditActions } from "@/components/ui/edit-actions"
 import { Textarea } from "@/components/ui/textarea"
 import { PageHeader } from "@/components/ui/page-header"
 import { FormError } from "@/components/ui/error-state"
@@ -48,7 +49,7 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
         title={
           <>
             <span className="sr-only">{project?.name ?? "New project"}</span>
-            <Input
+            <EditableTitle
               aria-label="Project name"
               autoFocus={!project}
               required
@@ -57,13 +58,13 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
               value={editor.fields.name}
               onChange={(event) => editor.change("name", event.target.value)}
               disabled={editor.submitting}
-              className="h-auto rounded-none border-0 bg-transparent px-0 py-0 font-display text-3xl font-semibold tracking-tight shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 md:text-3xl dark:bg-transparent"
             />
           </>
         }
         description={
           <>
             <Textarea
+              variant="inline"
               aria-label="Project description"
               rows={1}
               placeholder="Add a description…"
@@ -73,7 +74,7 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
                 editor.change("description", event.target.value)
               }
               disabled={editor.submitting}
-              className="min-h-5 resize-none rounded-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed text-muted-foreground shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 dark:bg-transparent"
+              className="text-muted-foreground"
             />
             <p className="text-xs text-muted-foreground">
               Private project
@@ -91,7 +92,7 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
         }
         action={
           <div className="flex flex-wrap items-center gap-2">
-            {(!project || editor.hasChanges) && (
+            {!project && (
               <Button
                 type="submit"
                 variant={project ? "outline" : "default"}
@@ -103,6 +104,14 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
                     ? "Save changes"
                     : "Create project"}
               </Button>
+            )}
+            {project && (
+              <EditActions
+                dirty={editor.hasChanges}
+                busy={editor.submitting}
+                disabled={!editor.fields.name.trim()}
+                onCancel={editor.reset}
+              />
             )}
             {actions}
           </div>
@@ -116,6 +125,7 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
           Notes and instructions
         </h2>
         <Textarea
+          variant="inline"
           aria-labelledby="project-notes-heading"
           rows={1}
           placeholder="Add notes and instructions…"
@@ -123,7 +133,7 @@ function ProjectEditorForm({ project, actions, onSaved }: ProjectEditorProps) {
           value={editor.fields.notes}
           onChange={(event) => editor.change("notes", event.target.value)}
           disabled={editor.submitting}
-          className="min-h-6 resize-none rounded-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed shadow-none focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring/50 dark:bg-transparent"
+          className="min-h-6"
         />
       </section>
       {editor.error && <FormError className="mb-6">{editor.error}</FormError>}

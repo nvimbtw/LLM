@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Download, Search } from "lucide-react"
+import { Download } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -13,6 +13,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { FormError, LoadError } from "@/components/ui/error-state"
+import { SearchField } from "@/components/ui/search-field"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceTitle,
+} from "@/components/ui/resource-list"
+import { EmptyState } from "@/components/ui/empty-state"
 import { Input } from "@/components/ui/input"
 import { Panel } from "@/components/ui/panel"
 import {
@@ -47,6 +54,7 @@ export interface HubSearchProps {
   onQueued: () => void
 }
 
+/** Searches the Hub on a bounded debounce and opens a dataset preview before queueing an acquisition. */
 export function HubSearch({ onQueued }: HubSearchProps) {
   const [query, setQuery] = React.useState("")
   const [results, setResults] = React.useState<HubResult[]>([])
@@ -84,17 +92,13 @@ export function HubSearch({ onQueued }: HubSearchProps) {
       description="most downloaded first"
       bodyClassName="p-0"
     >
-      <div className="border-b border-border py-4">
-        <div className="relative">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search datasets — tinystories, fineweb, smoltalk…"
-            className="pl-8"
-            aria-label="Search Hugging Face datasets"
-          />
-        </div>
+      <div className="py-4">
+        <SearchField
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search datasets — tinystories, fineweb, smoltalk…"
+          aria-label="Search Hugging Face datasets"
+        />
       </div>
 
       {error ? (
@@ -108,23 +112,18 @@ export function HubSearch({ onQueued }: HubSearchProps) {
           <Skeleton className="h-10 w-full" />
         </div>
       ) : results.length === 0 ? (
-        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
-          Nothing matched “{query}”.
-        </p>
+        <EmptyState title={`Nothing matched “${query}”`} />
       ) : (
-        <ul className="divide-y divide-border">
+        <ResourceList>
           {results.map((result) => (
-            <li key={result.repo} className="flex items-center gap-4 py-3">
-              {/* The row itself opens the dialog, which leads with a sample of
-                  the rows: choosing a dataset means looking at it first, and
-                  making that a separate affordance would hide it. */}
+            <ResourceRow key={result.repo} className="flex items-center gap-4">
               <button
                 type="button"
                 className="min-w-0 flex-1 cursor-pointer text-left"
                 onClick={() => setChosen(result)}
               >
-                <p className="truncate text-sm font-medium">{result.repo}</p>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                <ResourceTitle>{result.repo}</ResourceTitle>
+                <p className="mt-2 text-xs break-words text-muted-foreground">
                   {result.downloads !== null
                     ? `${result.downloads.toLocaleString()} downloads`
                     : "downloads unknown"}
@@ -141,13 +140,10 @@ export function HubSearch({ onQueued }: HubSearchProps) {
                 <Download data-icon="inline-start" className="size-3.5" />
                 Pull
               </Button>
-            </li>
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       )}
-
-      {/* Keyed by repo so choosing another one remounts it with fresh fields,
-          rather than an effect resetting six pieces of state on every change. */}
       <PullDialog
         key={chosen?.repo ?? "none"}
         repo={chosen?.repo ?? null}
@@ -467,7 +463,7 @@ function SamplePanel({
 }) {
   if (error) {
     return (
-      <p className="border-y border-border/60 py-3 text-xs text-muted-foreground">
+      <p className="py-3 text-xs text-muted-foreground">
         No preview: {error}. The pull reads the files directly and is
         unaffected.
       </p>
@@ -522,7 +518,7 @@ function SamplePanel({
         )}
       </div>
 
-      <div className="min-h-48 flex-1 space-y-2 overflow-y-auto border-y border-border/60 py-3">
+      <div className="min-h-48 flex-1 space-y-2 overflow-y-auto py-3">
         {sample.rows.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             The split is indexed but empty.

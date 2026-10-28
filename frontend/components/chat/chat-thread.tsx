@@ -273,7 +273,7 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
             compact={messages.length > 0}
             onCancel={cancel}
             title={chatSummary?.title ?? "New chat"}
-            onRenameTitle={(next) => void renameChat(chatId, next)}
+            onRenameTitle={(next) => renameChat(chatId, next)}
             contextTokensUsed={contextTokensUsed}
             unseenTokens={prunedTokens}
             draft={draft}

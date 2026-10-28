@@ -18,6 +18,7 @@ from llm.chat.template import (
 from llm.config import ChatConfig
 from llm.corpus import bpe, relabel, special
 from llm.corpus.sft import _conversation, _turns
+from tests.test_architecture_visibility import headers
 from tests.fixtures.tiny_env import TINY_MODEL
 
 
@@ -331,7 +332,7 @@ async def test_legacy_project_chat_prepare_and_generation_are_functional(engine_
     before = tokenizer.to_str()
     body = {"model_name": TINY_MODEL, "text": contract["turns"][0]["text"],
             "project": contract["project"], "memories": contract["memories"]}
-    response = await engine_client.post("/chat/prepare", json=body)
+    response = await engine_client.post("/chat/prepare", json=body, headers=headers(["administration"]))
     assert response.status_code == 200, response.text
     response = await engine_client.post("/chat", json={"model_name": TINY_MODEL, **contract,
                                                      "max_tokens": 2, "temperature": 0})
@@ -347,7 +348,7 @@ async def test_prepare_refuses_foreign_vocabulary_before_rust_persists(engine_cl
     """A missing reserved block is actionable at the preparation boundary."""
     foreign = Tokenizer(BPE(vocab={"a": 0}, merges=[]))
     monkeypatch.setattr(bpe, "load", lambda _directory: foreign)
-    response = await engine_client.post("/chat/prepare", json={
+    response = await engine_client.post("/chat/prepare", headers=headers(["administration"]), json={
         "model_name": TINY_MODEL, "text": "hi", "memories": contract["memories"],
     })
     assert response.status_code == 400

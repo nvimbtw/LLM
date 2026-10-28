@@ -1,26 +1,30 @@
 "use client"
 
+import { EmptyState } from "@/components/ui/empty-state"
+
 import Link from "next/link"
 import * as React from "react"
-import { ArrowRight, GitBranch, Trash2 } from "lucide-react"
+import { GitBranch, Trash2, MoreHorizontal } from "lucide-react"
 
+import { DeleteConfirmation } from "@/components/ui/delete-confirmation"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
-import { RunningDot } from "@/components/ui/running-dot"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceMetadata,
+} from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
 import { deleteDataset, formatBytes, type Dataset } from "@/lib/data"
+import { useAuth } from "@/hooks/use-auth"
 
 export interface DatasetListProps {
   datasets: Dataset[]
@@ -43,20 +47,7 @@ export function DatasetList({
   onChanged,
 }: DatasetListProps) {
   const [pending, setPending] = React.useState<Dataset | null>(null)
-
-  /** Deletes the confirmed dataset and refreshes the list, reporting failures by toast. */
-  async function confirmDelete() {
-    if (!pending) return
-    const name = pending.name
-    setPending(null)
-    try {
-      await deleteDataset(pending.id)
-      toast.success(`Deleted ${name}.`)
-      onChanged()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : `Could not delete ${name}.`)
-    }
-  }
+  const { isAdmin } = useAuth()
 
   if (error) {
     return (
@@ -85,21 +76,21 @@ export function DatasetList({
           <Skeleton className="h-12 w-full" />
         </div>
       ) : datasets.length === 0 ? (
-        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
-          Nothing pulled yet. Find a dataset on the Hub and pull a slice of it.
-        </p>
+        <EmptyState title="No datasets yet">
+          Find a dataset in Browse and pull a slice of it.
+        </EmptyState>
       ) : (
-        <ul className="divide-y divide-border">
+        <ResourceList>
           {datasets.map((dataset) => (
-            <li key={dataset.id} className="flex items-center gap-4 py-4">
-              <div className="min-w-0 flex-1">
+            <ResourceRow key={dataset.id} className="flex items-center gap-4">
+              <Link
+                href={`/data/${dataset.id}`}
+                className="min-w-0 flex-1 self-stretch outline-none"
+              >
                 <div className="flex items-center gap-2">
-                  <Link
-                    href={`/data/${dataset.id}`}
-                    className="truncate text-sm font-medium hover:underline"
-                  >
+                  <span className="font-display text-xl leading-snug break-words group-hover:underline">
                     {dataset.name}
-                  </Link>
+                  </span>
                   {dataset.origin === "derived" && (
                     <GitBranch
                       className="size-3.5 shrink-0 text-muted-foreground"
@@ -108,57 +99,62 @@ export function DatasetList({
                   )}
                   <StatusBadge dataset={dataset} />
                 </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground tabular-nums">
+                <ResourceMetadata className="tabular-nums">
                   {dataset.kind === "sft" ? "Conversations" : "Prose"}
                   {dataset.source_repo ? ` · ${dataset.source_repo}` : ""}
                   {` · ${dataset.document_count.toLocaleString()} documents`}
                   {dataset.byte_size > 0
                     ? ` · ${formatBytes(dataset.byte_size)}`
                     : ""}
-                </p>
-              </div>
-
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Delete ${dataset.name}`}
-                onClick={() => setPending(dataset)}
-              >
-                <Trash2 className="size-4" />
-              </Button>
-              <Link
-                href={`/data/${dataset.id}`}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label={`Open ${dataset.name}`}
-              >
-                <ArrowRight className="size-4" />
+                </ResourceMetadata>
               </Link>
-            </li>
+
+              {isAdmin && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Options for ${dataset.name}`}
+                      >
+                        <MoreHorizontal />
+                      </Button>
+                    }
+                  />
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => setPending(dataset)}
+                    >
+                      <Trash2 />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       )}
 
-      <AlertDialog
-        open={pending !== null}
-        onOpenChange={(open) => !open && setPending(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete {pending?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pending?.document_count.toLocaleString()} documents go with it.
-              Datasets cleaned from this one are kept, and lose their link back
-              to it.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep it</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete}>
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {pending && (
+        <DeleteConfirmation
+          key={pending.id}
+          open
+          onOpenChange={(open) => {
+            if (!open) setPending(null)
+          }}
+          title={`Delete ${pending.name}?`}
+          description={`${pending.document_count.toLocaleString()} documents will be removed. Datasets cleaned from this one are kept and lose their link to it. This cannot be undone.`}
+          label="Delete dataset"
+          onDelete={() => deleteDataset(pending.id)}
+          onDeleted={() => {
+            toast.success(`Deleted ${pending.name}.`)
+            onChanged()
+          }}
+        />
+      )}
     </Panel>
   )
 }
@@ -168,7 +164,6 @@ function StatusBadge({ dataset }: { dataset: Dataset }) {
   if (dataset.status === "pulling") {
     return (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <RunningDot />
         pulling
       </span>
     )

@@ -345,7 +345,7 @@ approximation does not show, and that quietness is the requirement it is tuned
 against — if the line-break flicker at the leading edge ever reads as noise, the
 0.055em delta is the knob before the duration is.
 
-`budget` is the composer's thinking-budget choice, one section of
+`budget` is the composer's thinking-budget choice, the separate footer dropdown in
 `components/chat/composer-picker.tsx` (the type and its options live in
 `lib/think-budget.ts`, shared with `/thinking`'s argument list) — `"low" |
 "med" | "high"`, matching the labels the SFT corpus is tagged with, since the
@@ -367,3 +367,14 @@ question. 1 (the default) is the model exactly as trained; the LLM engine builds
 NTK-scaled RoPE table fresh per turn for anything above that, computed from the
 model's own `ctx_window` rather than a token count this side would have to keep
 in sync with it — see `docs/llm-engine/README.md`.
+
+## Exchange navigation
+
+The chat margin contains a dense rail of short strokes, one per user question.
+The current exchange stays steel blue. Pointer proximity expands nearby strokes;
+keyboard focus reveals the same adjacent neutral preview of the user prompt and
+first assistant reply excerpt. Arrow keys move focus, Enter jumps and Escape
+closes the preview. Navigation preserves follow cancellation and existing active
+scroll tracking. Long rails scroll within a bounded height; preview position is
+clamped to the viewport. Proximity updates write rail DOM styles without React
+conversation rerenders, and reduced motion removes stroke transitions.

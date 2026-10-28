@@ -1,11 +1,19 @@
 "use client"
 
+import { EmptyState } from "@/components/ui/empty-state"
+
 import Link from "next/link"
 import { Folder, Plus } from "lucide-react"
 import { useProjects } from "./projects-provider"
 import { Button } from "@/components/ui/button"
 import { PageHeader } from "@/components/ui/page-header"
 import { LoadError } from "@/components/ui/error-state"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceLink,
+  ResourceTitle,
+} from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 
 /** Renders the private project directory, bounded pagination and the create-project flow. */
@@ -34,32 +42,31 @@ export function ProjectsView() {
       ) : catalog.error ? (
         <LoadError title={catalog.error} onRetry={() => void refresh()} />
       ) : catalog.projects.length === 0 ? (
-        <div className="flex flex-col items-center gap-4 py-20 text-center">
-          <Folder className="size-7 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">
-            Keep related conversations, notes and instructions together.
-          </p>
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={<Link href="/projects/new-project" />}
-          >
-            Create your first project
-          </Button>
-        </div>
+        <EmptyState
+          title="No projects yet"
+          action={
+            <Button
+              variant="outline"
+              nativeButton={false}
+              render={<Link href="/projects/new-project" />}
+            >
+              Create your first project
+            </Button>
+          }
+        >
+          Keep related conversations, notes and instructions together.
+        </EmptyState>
       ) : (
-        <ul>
+        <ResourceList>
           {catalog.projects.map((project) => (
-            <li key={project.project_id} className="border-b border-border">
-              <Link
+            <ResourceRow key={project.project_id}>
+              <ResourceLink
                 href={`/projects/${project.project_id}`}
-                className="flex items-start gap-4 rounded-(--radius-control) px-2 py-6 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex items-start gap-4 rounded-(--radius-control) py-0 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Folder className="mt-1 size-5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <h2 className="truncate font-display text-xl font-semibold">
-                    {project.name}
-                  </h2>
+                  <ResourceTitle>{project.name}</ResourceTitle>
                   {project.description && (
                     <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                       {project.description}
@@ -70,10 +77,10 @@ export function ProjectsView() {
                   {project.thread_count}{" "}
                   {project.thread_count === 1 ? "chat" : "chats"}
                 </span>
-              </Link>
-            </li>
+              </ResourceLink>
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       )}
       {catalog.nextOffset < catalog.total && (
         <Button

@@ -38,7 +38,7 @@ export function Panel({
         className={cn(
           open
             ? "mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"
-            : "flex items-baseline justify-between gap-3 border-b border-border px-5 py-4"
+            : "flex items-baseline justify-between gap-3 px-5 py-4"
         )}
       >
         <div

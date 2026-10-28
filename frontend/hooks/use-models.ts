@@ -5,7 +5,8 @@ import * as React from "react"
 import { apiFetch } from "@/lib/api"
 import type { CurriculumStage, DatasetSelection } from "@/lib/training"
 import { estimateTrainingParameters } from "@/lib/training-architecture"
-import { useSessionToken } from "./use-auth"
+import { useAuth, useSessionToken } from "./use-auth"
+import { readModel } from "@/lib/model-reads"
 
 export type ModelTier = "flagship" | "balanced" | "fast"
 
@@ -39,6 +40,7 @@ export interface RawModelConfig {
   max_vocab?: number
   lr?: number
   epochs?: number
+  batch_size?: number
   base_model?: string
   resume_from?: string
   datasets?: DatasetSelection[]
@@ -283,20 +285,18 @@ export function modelsFromRegistry(rows: readonly RawModel[]): Model[] {
 /** Loads registry facts for one actual session/refresh identity, aborting replaced reads and masking old private models immediately. */
 export function useModels(refreshKey?: unknown) {
   const token = useSessionToken()
+  const { isLoading: identityLoading } = useAuth()
   const [state, setState] = React.useState<{
-    token: string
+    token: string | null
     refreshKey: unknown
     models: Model[]
     error: Error | null
   } | null>(null)
   React.useEffect(() => {
-    if (!token) return
+    if (identityLoading) return
     const controller = new AbortController()
     let active = true
-    void apiFetch("/models", {
-      signal: controller.signal,
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    void readModel("/models", token, controller.signal)
       .then(async (response) => {
         if (!response.ok) throw new Error("Unable to load models.")
         const data: { models: RawModel[] } = await response.json()
@@ -323,14 +323,14 @@ export function useModels(refreshKey?: unknown) {
       active = false
       controller.abort()
     }
-  }, [token, refreshKey])
+  }, [token, refreshKey, identityLoading])
   const current =
     state?.token === token && Object.is(state.refreshKey, refreshKey)
       ? state
       : null
   return {
     models: current?.models ?? [],
-    isLoading: Boolean(token && !current),
+    isLoading: identityLoading || !current,
     error: current?.error ?? null,
   }
 }

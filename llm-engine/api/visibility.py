@@ -22,7 +22,14 @@ def public_run(value: dict) -> dict:
 
 def public_model(value: dict) -> dict:
     """Keep resolved model facts while removing arbitrary saved configuration and provenance blobs."""
-    return {**value, "config": {}, "parameters": None}
+    return {
+        **{key: value.get(key) for key in (
+            "model_id", "name", "description", "family", "context", "architecture",
+            "vocab_size", "parameter_count", "definition_id", "context_extension_supported",
+            "size", "published", "created_at", "has_weights", "checkpoint_step", "checkpoint_index",
+        )},
+        "config": {}, "parameters": None, "run_id": None, "parent_id": None,
+    }
 
 
 def public_event(event: Event) -> Event | None:

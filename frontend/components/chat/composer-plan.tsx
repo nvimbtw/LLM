@@ -19,6 +19,7 @@ export interface ComposerPlanProps {
   editing?: PlanEditing | null
 }
 
+/** Presents ordered local tasks and revision-safe editing within the composer; disclosure never changes task status. */
 export function ComposerPlan({
   plan,
   running = false,
@@ -84,6 +85,7 @@ export function ComposerPlan({
         ? "Plan finished"
         : "Plan"
 
+  /** Releases hover disclosure and its pending timer when the pointer leaves. */
   function leave() {
     if (hoverTimer.current) clearTimeout(hoverTimer.current)
     setHovered(false)

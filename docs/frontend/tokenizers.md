@@ -1,11 +1,12 @@
 # Tokenizers
 
 `/tokenizers` is the board-width vocabulary catalogue. All, Built and From runs
-filter the open ledger. Vocabulary names link to `/tokenizers/{id}`; Build
+filter the shared open list with wrapping names and no decorative row separators. Vocabulary names link to `/tokenizers/{id}`; Build
 vocabulary opens `/tokenizers/new-tokenizer`. There is no creation dialog.
 The new and detail pages also use board width and page-native fields. Their
 dataset selection and facts ledger share the catalogue's available workspace.
-The detail ledger supplies the single hairline below the editable header.
+The detail ledger and related-resource lists use open spacing without decorative
+header or row rules.
 
 Creation queues a durable vocabulary build, preserving its existing dataset and
 learning-ceiling contracts. Empty dataset selection means all available corpora
@@ -28,7 +29,8 @@ delete controls. Confirmed deletion preserves trained models' own vocabulary
 copies and removes the packed corpora belonging to the deleted vocabulary.
 
 The detail editor and pending requests belong to the actual browser session and
-resource identity. Switching resource/account discards its draft; late reads or
-writes cannot change or navigate the replacement editor. Creation has the same
+resource identity. [Tab-local recovery](editing.md#draft-recovery) retains metadata
+edits while navigating or reloading within the same session; replacement accounts
+have separate drafts. Late reads or writes cannot change or navigate the replacement editor. Creation has the same
 session-bound handoff to its durable build. Vocabulary requests remain on Rust's
 API paths; the browser never reaches the engine directly.

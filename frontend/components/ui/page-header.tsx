@@ -2,17 +2,9 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { SectionTexture } from "./section-texture"
 
-/**
- * Descriptions are stored resource content or functional metadata; decorative
- * introductory prose does not belong in headers.
- * Keep the default rule unless the next section opens with its own ledger rule.
- *
- * Pulled out of the pages because all fifteen of them had spelled the same header
- * by hand, and they had drifted: two type scales, two fonts, three paddings. One
- * component is what makes the rule (display face, hairline rule under, action on
- * the right) hold as pages get added.
- */
+/** Page identity includes authored resource content, functional metadata and actions; generic introductory prose does not belong here. */
 export interface PageHeaderProps {
   title: React.ReactNode
   description?: React.ReactNode
@@ -44,7 +36,8 @@ export function PageHeader({
   contentClassName,
 }: PageHeaderProps) {
   return (
-    <header className={cn("mb-8 border-b border-border pb-6", className)}>
+    <header className={cn("relative isolate mb-8 py-3 pb-6", className)}>
+      <SectionTexture className="-z-10" />
       {back && (
         <Link
           href={back.href}

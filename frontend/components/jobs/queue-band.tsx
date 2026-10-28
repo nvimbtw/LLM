@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { ArrowUp, GripVertical, MoreHorizontal, Trash2, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -14,19 +15,6 @@ import {
 import { KIND_LABEL, formatClock, jobHref, type Job } from "@/lib/jobs"
 import { cn } from "@/lib/utils"
 
-/**
- * The waiting line, in the order it will execute.
- *
- * Rows are hairline-ruled and carry a tabular-figure gutter, so the queue reads as
- * a numbered ledger rather than a stack of cards — the position *is* the
- * information, and a number in a fixed-width column is the shortest way to say it.
- *
- * Reordering is a drag, using the native HTML5 drag API rather than a library: the
- * whole interaction is one list of one row type, and a dependency for that would
- * cost more than it saves. A drop sends "put this one after that one" rather than
- * an index, so it lands where it was dropped even if the queue moved mid-drag.
- * "Run next" in each row's menu is the same move for anyone not dragging.
- */
 export interface QueueBandProps {
   jobs: Job[]
   paused: boolean
@@ -35,6 +23,7 @@ export interface QueueBandProps {
   onDelete: (id: string) => void
 }
 
+/** Renders ordered waiting jobs with drag reordering and equivalent Run next actions; dispatch pause does not stop running work. */
 export function QueueBand({
   jobs,
   paused,
@@ -43,19 +32,16 @@ export function QueueBand({
   onDelete,
 }: QueueBandProps) {
   const [draggingId, setDraggingId] = React.useState<string | null>(null)
-  // Where the dragged row would land: the id it would sit after, or null for the
-  // front of the queue. Held separately from `draggingId` so the marker can show
-  // a drop above the first row, which has no preceding id to name.
+
   const [dropAfter, setDropAfter] = React.useState<string | null | undefined>(
     undefined
   )
 
   if (jobs.length === 0) return null
 
+  /** Commits a changed drag position and clears the transient drop indicator. */
   const commit = () => {
     if (draggingId && dropAfter !== undefined) {
-      // Dropping a row back where it already was is a no-op worth skipping: it
-      // would otherwise rewrite a rank and nudge every watching client.
       const index = jobs.findIndex((j) => j.id_job === draggingId)
       const currentAfter = index > 0 ? jobs[index - 1].id_job : null
       if (dropAfter !== currentAfter) onReorder(draggingId, dropAfter)
@@ -65,10 +51,13 @@ export function QueueBand({
   }
 
   return (
-    <ul className={cn("transition-opacity", paused && "opacity-50")}>
+    <ResourceList
+      density="compact"
+      className={cn("transition-opacity", paused && "opacity-60")}
+    >
       {jobs.map((job, index) => {
         const isDragging = job.id_job === draggingId
-        // The line lands above this row when the drop target is the row before it.
+
         const showMarkerAbove =
           dropAfter !== undefined &&
           (index === 0
@@ -76,7 +65,8 @@ export function QueueBand({
             : dropAfter === jobs[index - 1].id_job)
 
         return (
-          <li
+          <ResourceRow
+            density="compact"
             key={job.id_job}
             draggable
             onDragStart={() => setDraggingId(job.id_job)}
@@ -87,8 +77,7 @@ export function QueueBand({
             onDragOver={(event) => {
               event.preventDefault()
               if (!draggingId) return
-              // Above the midpoint means "before this row", i.e. after its
-              // predecessor; below means "after this row".
+
               const box = event.currentTarget.getBoundingClientRect()
               const above = event.clientY < box.top + box.height / 2
               setDropAfter(
@@ -103,18 +92,13 @@ export function QueueBand({
               event.preventDefault()
               commit()
             }}
-            className={cn(
-              "group relative border-b border-border/40 last:border-0",
-              isDragging && "opacity-40"
-            )}
+            className={cn("group relative", isDragging && "opacity-40")}
           >
             {showMarkerAbove && (
               <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-primary" />
             )}
 
-            <div className="flex items-center gap-2 py-4 sm:gap-4">
-              {/* The grip is the drag affordance; the whole row is draggable, but
-                  nothing would say so without it. */}
+            <div className="flex items-center gap-2 sm:gap-4">
               <GripVertical
                 className="size-3.5 shrink-0 cursor-grab text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/40"
                 aria-hidden
@@ -127,7 +111,7 @@ export function QueueBand({
               <div className="min-w-0 flex-1">
                 <Link
                   href={jobHref(job)}
-                  className="block truncate text-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+                  className="block text-sm break-words hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
                 >
                   {job.label}
                 </Link>
@@ -148,7 +132,7 @@ export function QueueBand({
                       variant="ghost"
                       size="icon-sm"
                       aria-label={`Options for ${job.label}`}
-                      className="shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 data-[popup-open]:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      className="shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 data-[popup-open]:opacity-100 sm:opacity-70 sm:group-hover:opacity-100"
                     >
                       <MoreHorizontal />
                     </Button>
@@ -176,15 +160,12 @@ export function QueueBand({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-
-            {/* A drop past the last row has no following row to draw above, so the
-                final row carries the marker on its own bottom edge. */}
             {index === jobs.length - 1 && dropAfter === job.id_job && (
               <span className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-primary" />
             )}
-          </li>
+          </ResourceRow>
         )
       })}
-    </ul>
+    </ResourceList>
   )
 }

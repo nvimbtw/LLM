@@ -29,7 +29,7 @@ def saved_model(data_root, store_session):
     directory = storage.model_dir(str(model_id))
     package.publish(directory, manifest, files)
     with store.session() as db:
-        q.upsert_model(db, model_id=model_id, name="saved nested model", parameters={"config": {
+        q.upsert_model(db, model_id=model_id, name="saved nested model", published=True, parameters={"config": {
             "dimensions": 999, "layers": 999, "heads": 999, "ff_multiplier": 999, "ctx_window": 999}})
     return model_id, directory, manifest
 

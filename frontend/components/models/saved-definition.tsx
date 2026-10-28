@@ -113,7 +113,7 @@ function SavedDefinitionContent({
           ].map((fact) => (
             <div
               key={fact.label}
-              className="flex justify-between gap-3 border-b border-border/40 py-3 text-sm"
+              className="flex justify-between gap-3 py-3 text-sm"
             >
               <dt>{fact.label}</dt>
               <dd className="text-right break-all">{fact.value}</dd>

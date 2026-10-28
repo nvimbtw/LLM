@@ -51,3 +51,11 @@ message rows when PostgreSQL's visibility map permits an index-only scan;
 the unique `(chat_id, position)` index serves ordered history reads.
 `GET /chats?limit=N` accepts a limit from 1 through 100 and computes totals only
 for the selected newest chats. `GET /chats` retains the complete archive contract.
+
+Model selection is authorized during `/chat/prepare`, before tokenizer reads,
+recovery-reference changes or input persistence. Both HTTP turns and WebSocket
+tool rounds send the scope derived from the verified browser claims. Ordinary
+accounts can invoke only indexed published models/checkpoints; unpublished and
+unknown references share a safe 404. Administrators retain private and legacy
+model access. A browser cannot grant itself administration by putting a scope in
+the ask. Stateless internal gym inference remains a separate trusted service path.

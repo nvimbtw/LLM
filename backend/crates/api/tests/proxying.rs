@@ -86,13 +86,20 @@ fn acting_for(raw: &str) -> Caller {
     token::verify_service_token(service, llm_engine::AUDIENCE, SERVICE_SECRET).expect("valid")
 }
 
+/// A supplied invalid browser token cannot downgrade a public model read to anonymous.
 #[actix_web::test]
-async fn an_unauthenticated_request_never_reaches_the_engine() {
+async fn invalid_authorization_never_reaches_the_engine() {
     let (url, asked) = stub("{}");
     let app = service!(url);
 
-    let response =
-        test::call_service(&app, test::TestRequest::get().uri("/models").to_request()).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/models")
+            .insert_header(("Authorization", "Bearer invalid"))
+            .to_request(),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(

@@ -15,6 +15,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { ButtonLink } from "@/components/ui/button-link"
+import { EmptyState } from "@/components/ui/empty-state"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/components/ui/toast"
 import { useAuth, useSessionToken } from "@/hooks/use-auth"
@@ -24,10 +27,10 @@ import { LoadError } from "@/components/ui/error-state"
 import { ModelCard } from "./model-card"
 import { ModelsFilter, type Visibility } from "./models-filter"
 
-/** Scopes registry filters and selection to the current authenticated session. */
+/** Scopes registry filters and selection to the current session or anonymous visitor. */
 export function ModelsGrid() {
   const token = useSessionToken()
-  return token ? <ModelsGridContent key={token} /> : null
+  return <ModelsGridContent key={token ?? "anonymous"} />
 }
 
 /** Owns one session's registry filters, selection and sequential batch deletion. */
@@ -126,7 +129,7 @@ function ModelsGridContent() {
     return (
       <LoadError
         title="The models didn't load."
-        hint="Nothing has changed — this is a read."
+        onRetry={() => setRefreshKey((key) => key + 1)}
       />
     )
   }
@@ -135,30 +138,31 @@ function ModelsGridContent() {
     return (
       <div className="flex flex-col gap-6">
         <Skeleton className="h-8 w-72 rounded-(--radius-control-sm)" />
-        <ul
-          className="divide-y divide-border/60 border-y border-border/60"
-          aria-label="Loading models"
-        >
+        <ResourceList aria-label="Loading models">
           {Array.from({ length: 4 }).map((_, i) => (
-            <li key={i} className="space-y-3 py-5">
+            <ResourceRow key={i} className="space-y-3">
               <Skeleton className="h-3 w-24" />
               <Skeleton className="h-6 w-48" />
               <Skeleton className="h-4 w-64 max-w-full" />
-            </li>
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       </div>
     )
   }
 
   if (models.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-24 text-center">
-        <p className="text-sm text-muted-foreground">No models yet.</p>
-        <p className="max-w-xs text-xs text-muted-foreground">
-          Train one and it will appear here.
-        </p>
-      </div>
+      <EmptyState
+        title={isAdmin ? "No models yet" : "No published models yet"}
+        action={
+          isAdmin ? (
+            <ButtonLink href="/train/new-train?mode=pretrain">
+              Pre-train a model
+            </ButtonLink>
+          ) : undefined
+        }
+      />
     )
   }
 
@@ -196,22 +200,19 @@ function ModelsGridContent() {
       )}
 
       {shown.length === 0 ? (
-        <p className="py-16 text-center text-sm text-muted-foreground">
-          Nothing matches that.
-        </p>
+        <EmptyState title="Nothing matches that." />
       ) : (
-        <ul className="border-b border-border">
+        <ResourceList>
           {shown.map((model) => (
-            <li key={model.id}>
-              <ModelCard
-                model={model}
-                selectable={selecting && isAdmin}
-                selected={selected.has(model.id)}
-                onSelectedChange={(next) => toggle(model.id, next)}
-              />
-            </li>
+            <ModelCard
+              key={model.id}
+              model={model}
+              selectable={selecting && isAdmin}
+              selected={selected.has(model.id)}
+              onSelectedChange={(next) => toggle(model.id, next)}
+            />
           ))}
-        </ul>
+        </ResourceList>
       )}
     </div>
   )
@@ -239,7 +240,7 @@ function SelectBar({
     shown.length > 0 && shown.every((m) => chosen.some((c) => c.id === m.id))
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-y border-border/60 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-3 py-3">
       <p className="text-sm tabular-nums">
         {chosen.length === 0
           ? "Nothing selected"
@@ -282,7 +283,7 @@ function SelectBar({
               </AlertDialogDescription>
             </AlertDialogHeader>
 
-            <ul className="max-h-48 space-y-1 overflow-y-auto rounded-(--radius-control-sm) border border-border bg-muted/30 px-3 py-2 text-sm">
+            <ul className="max-h-48 space-y-1 overflow-y-auto rounded-(--radius-control-sm) bg-muted/30 px-3 py-2 text-sm">
               {chosen.map((m) => (
                 <li key={m.id} className="truncate">
                   {m.name}

@@ -129,6 +129,45 @@ impl FromRequest for AuthUser {
     }
 }
 
+/// Optional verified browser identity for public catalogue reads; supplied invalid credentials still refuse.
+pub struct ModelReader {
+    pub user: Option<AuthUser>,
+}
+
+impl FromRequest for ModelReader {
+    type Error = actix_web::Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    /// Admit missing authorization as anonymous and validate every supplied header normally.
+    fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+        ready(if req.headers().contains_key(AUTHORIZATION) {
+            authenticate(req).map(|claims| Self {
+                user: Some(AuthUser { claims }),
+            })
+        } else {
+            Ok(Self { user: None })
+        })
+    }
+}
+
+impl ModelReader {
+    /// Preserve a signed-in actor; anonymous reads use Rust's system actor with explicit public scope.
+    pub fn caller(&self) -> auth::Caller {
+        self.user
+            .as_ref()
+            .map(crate::upstream::caller)
+            .unwrap_or(auth::Caller::System)
+    }
+
+    /// Select administration only from verified administrator claims.
+    pub fn visibility(&self) -> &'static str {
+        self.user
+            .as_ref()
+            .map(|user| crate::upstream::visibility(&user.claims))
+            .unwrap_or("public")
+    }
+}
+
 /// Authenticated *and* an admin. A valid non-admin token is 403, not 401.
 pub struct AdminUser {
     #[allow(dead_code)]

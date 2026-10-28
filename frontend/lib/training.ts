@@ -1,5 +1,6 @@
 import type { GymSourceScore } from "./gyms"
 import type { ArchitectureSelection } from "./architecture/contracts.generated"
+import type { BenchmarkSuite } from "./benchmark"
 
 // The shape of a training run: its config, and the frames it reports while it
 // executes.
@@ -133,6 +134,15 @@ export interface TrainConfig {
   // have this field, the same way it has no `tokenizer_id` or `curriculum`.
   resume_from?: string
   checkpoint_target?: number
+}
+
+/** One ordered follow-up in the browser editor; validation errors are transient and recomputed after restoration. */
+export interface TrainingStep {
+  id: string
+  kind: "train" | "benchmark"
+  train: TrainConfig
+  suite: BenchmarkSuite
+  errors: string[]
 }
 
 // The architecture a resumed run takes from the checkpoint instead of from the

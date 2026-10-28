@@ -29,7 +29,7 @@ export function JobTokenizePanel({ run }: JobTokenizePanelProps) {
         title={tokenize.done ? "Built" : "Learning the merges"}
       >
         <div className="space-y-5">
-          <dl className="grid grid-cols-1 gap-x-8 gap-y-5 border-y border-border py-4 sm:grid-cols-3">
+          <dl className="grid grid-cols-1 gap-x-8 gap-y-5 py-4 sm:grid-cols-3">
             <Figure
               label="Documents"
               value={count(tokenize.documents ?? tokenize.files)}

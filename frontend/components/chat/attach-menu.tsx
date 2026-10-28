@@ -26,6 +26,7 @@ export function AttachMenu({
 }) {
   const inputRef = React.useRef<HTMLInputElement>(null)
 
+  /** Opens the shared native picker with the requested file filter. */
   const openPicker = (accept: string) => {
     const input = inputRef.current
     if (!input) return
@@ -42,7 +43,6 @@ export function AttachMenu({
         hidden
         onChange={(e) => {
           if (e.target.files?.length) onFiles(e.target.files)
-          // Reset so picking the same file twice in a row still fires onChange.
           e.target.value = ""
         }}
       />
@@ -61,7 +61,11 @@ export function AttachMenu({
             </Button>
           }
         />
-        <DropdownMenuContent side="top" align="start" className="min-w-44 p-1">
+        <DropdownMenuContent
+          side="top"
+          align="start"
+          className="min-w-40 rounded-(--radius-composer) p-1.5 shadow-overlay"
+        >
           <DropdownMenuItem
             onClick={() => openPicker("image/*")}
             className="gap-2"

@@ -26,7 +26,9 @@ selecting an old immutable source never replaces the editable draft.
 the actual administrator session. Changing the bearer token remounts all private
 state. Rust's administrator extractor and engine signed scope remain the actual
 authorization boundary. Server page shells never read browser credentials.
-The administrator directory links here; validation rows link to
+The Workbench Architectures group links directly to Blocks and Architectures;
+both catalogues return to Admin. Their shared open rows preserve wrapping names,
+metadata and bounded paging without decorative separators. Validation rows link to
 `/arch/validations/{run_id}`. Ordinary signed-in users retain normal model/chat pages.
 
 ## Draft and metadata ownership
@@ -45,6 +47,13 @@ metadata version. A confirmed metadata update replaces metadata alone and retain
 the source document, including unsaved text. Builtins remain read-only. Archive
 hides new selection and disables source editing; unarchiving retains the saved
 draft and accepted revision identities.
+
+Custom names, descriptions and archive choices are edited in the page header,
+with the shared unsaved state and Save changes/Cancel controls. Metadata and exact
+source bytes have independent [tab-local recovery](editing.md#draft-recovery).
+Returning after navigation/reload restores the same session/resource's edits and
+warns if the server baseline moved. Reload server draft discards source edits
+only; metadata remains independently recoverable.
 
 ## Creation and copying
 

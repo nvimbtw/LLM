@@ -21,8 +21,9 @@ KaTeX typesets maths; Recharts renders telemetry.
 | [`gpu/`](../../frontend/gpu) | Optional live-throbber renderer |
 | [`public/`](../../frontend/public) | Static assets and generated renderer bindings |
 
-The signed-in frame is `app/(app)`: sidebar, scroll container and content, without
-an additional header. `/login` and `/signup` live outside it. `/docs` is public.
+The signed-in frame is `app/(app)`: sidebar, scroll container and content. Desktop
+has no additional header; mobile has a compact navigation opener. `/login` and
+`/signup` live outside it. `/docs` is public.
 `app/(app)/admin` contains the queue, workbench directory and history. Executions
 and composers live under `/train`, `/bench`, `/gyms` and `/tokenizers`; old
 `/jobs` URLs redirect with their query intact. [Routing](routing.md) maps canonical
@@ -35,6 +36,11 @@ context, data fetching, errors, routing and primitives. Named functions, hooks a
 components have brief JSDoc explaining purpose, inputs and outputs. Implementation
 bodies contain no comments. Keep calculations and event reduction separate from
 network/storage effects, and give sockets, timers and object URLs explicit owners.
+
+[Notebook editing](editing.md) defines shared page-native fields, Save/Cancel,
+tab-local draft recovery, conversation renaming, mobile navigation and confirmed
+resource deletion. [Design](design.md) defines the active composition, copy, list, field, colour,
+texture and boundary rules; read it before changing presentation.
 
 Pages remain server components until browser interaction requires a client
 boundary. Authenticated browser data loads through domain hooks and centralized
@@ -55,6 +61,7 @@ topic here adds a route automatically; deployed docs require a frontend rebuild.
 | [Composer](composer.md) | Uploads, dictation, context meter, pruning, choice persistence and commands |
 | [Plans](composer-plan.md) | Local plans, revision-aware edits, ordering and fixture behavior |
 | [Settings and profile](settings.md) | Dialog sections, account preferences and persistence |
+| [Notifications](notifications.md) | Account-local history, toast lifetimes, dismissal and keyboard access |
 | [Private projects](projects.md) | Project navigation, notes, conversation membership and composer/session ownership |
 
 A token frame is a decoded delta. Concatenate it verbatim; insert no whitespace.
@@ -146,6 +153,10 @@ Use existing theme roles and accessible controls. Decorative assets ignore point
 events and assistive technology. Reduced motion preserves state information while
 removing nonessential movement. `/markup`, `/throbber` and `/colors` render the real
 components or tokens so previews continue to describe the application.
+
+Notifications use one browser-local, account-scoped owner for retained history
+and glass toasts; the sidebar bell and Ctrl+Alt+N open a settings-style modal.
+Opening does not dismiss retained items. See [Notifications](notifications.md).
 
 Settings writes use a single debounced owner in
 [`lib/settings-writer.ts`](../../frontend/lib/settings-writer.ts). Preference

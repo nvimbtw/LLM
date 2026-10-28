@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 import { MoreHorizontal, RotateCcw, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -20,7 +19,12 @@ import {
   jobHref,
   type Job,
 } from "@/lib/jobs"
-import { cn } from "@/lib/utils"
+import {
+  ResourceList,
+  ResourceRow,
+  ResourceMetadata,
+  ResourceLink,
+} from "@/components/ui/resource-list"
 
 /**
  * Everything that has finished, newest first, grouped by the day it was queued.
@@ -36,17 +40,14 @@ export interface JobHistoryProps {
   onDelete: (id: string) => void
 }
 
+/** Groups the supplied bounded history rows by their recorded queue date, preserving server order. */
 export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
   if (jobs.length === 0) {
     return (
-      <p className="border-y border-border/60 py-8 text-sm text-muted-foreground">
-        Nothing has run yet.
-      </p>
+      <p className="py-8 text-sm text-muted-foreground">Nothing has run yet.</p>
     )
   }
 
-  // Preserves the server's newest-first order: keys are inserted in the order
-  // they're first seen, and a Map iterates in insertion order.
   const groups = new Map<string, Job[]>()
   for (const job of jobs) {
     const day = formatDayGroup(job.created_at)
@@ -59,10 +60,8 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
     <div>
       {[...groups].map(([day, dayJobs]) => (
         <section key={day}>
-          <h3 className="border-y border-border/60 py-2 eyebrow text-muted-foreground">
-            {day}
-          </h3>
-          <ul>
+          <h3 className="py-2 eyebrow text-muted-foreground">{day}</h3>
+          <ResourceList density="compact">
             {dayJobs.map((job) => (
               <HistoryRow
                 key={job.id_job}
@@ -71,7 +70,7 @@ export function JobHistory({ jobs, onRetry, onDelete }: JobHistoryProps) {
                 onDelete={onDelete}
               />
             ))}
-          </ul>
+          </ResourceList>
         </section>
       ))}
     </div>
@@ -91,73 +90,56 @@ function HistoryRow({
   const ran = durationSeconds(job)
 
   return (
-    <li className="group border-b border-border/40 last:border-0">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-2 py-4 sm:flex">
-        <span className="col-start-1 row-start-2 w-14 shrink-0 text-xs text-muted-foreground tabular-nums">
-          {formatClock(job.created_at)}
-        </span>
-
-        <div className="col-start-1 row-start-1 min-w-0 flex-1">
-          <Link
-            href={jobHref(job)}
-            className="block truncate text-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+    <ResourceRow density="compact" className="flex items-start gap-3">
+      <div className="min-w-0 flex-1">
+        <ResourceLink href={jobHref(job)} className="text-sm">
+          {job.label}
+        </ResourceLink>
+        {job.error && (
+          <p className="mt-1 text-xs break-words text-destructive">
+            {job.error}
+          </p>
+        )}
+        <ResourceMetadata className="mt-1 tabular-nums">
+          <span>{formatClock(job.created_at)}</span>
+          <span>{KIND_LABEL[job.kind]}</span>
+          <span>
+            {ran === null ? "Duration unavailable" : formatElapsed(ran)}
+          </span>
+          <span
+            className={job.status === "failed" ? "text-destructive" : undefined}
           >
-            {job.label}
-          </Link>
-          {job.error && (
-            <span className="mt-0.5 block truncate text-xs text-destructive/70">
-              {job.error}
-            </span>
-          )}
-        </div>
-
-        <span className="col-start-2 row-start-2 shrink-0 text-right text-xs text-muted-foreground sm:w-20 sm:text-left">
-          {KIND_LABEL[job.kind]}
-        </span>
-
-        <span className="hidden w-16 shrink-0 text-right text-xs text-muted-foreground tabular-nums sm:block">
-          {ran === null ? "" : formatElapsed(ran)}
-        </span>
-
-        <span
-          className={cn(
-            "col-start-2 row-start-1 w-20 shrink-0 text-right text-xs",
-            job.status === "done" && "text-muted-foreground",
-            job.status === "failed" && "text-destructive/70",
-            job.status === "cancelled" && "text-muted-foreground"
-          )}
-        >
-          {jobStatusLabel(job)}
-        </span>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Options for ${job.label}`}
-                className="col-start-3 row-span-2 row-start-1 shrink-0 text-muted-foreground transition-opacity focus-visible:opacity-100 data-[popup-open]:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-              >
-                <MoreHorizontal />
-              </Button>
-            }
-          />
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => onRetry(job)}>
-              <RotateCcw />
-              Run again
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              variant="destructive"
-              onClick={() => onDelete(job.id_job)}
-            >
-              <Trash2 />
-              Remove
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            {jobStatusLabel(job)}
+          </span>
+        </ResourceMetadata>
       </div>
-    </li>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Options for ${job.label}`}
+              className="shrink-0 text-muted-foreground"
+            >
+              <MoreHorizontal />
+            </Button>
+          }
+        />
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => onRetry(job)}>
+            <RotateCcw />
+            Run again
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => onDelete(job.id_job)}
+          >
+            <Trash2 />
+            Remove
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </ResourceRow>
   )
 }

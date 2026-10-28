@@ -1,7 +1,11 @@
-import Link from "next/link"
-import { ArrowUpRight } from "lucide-react"
-
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  ResourceRow,
+  ResourceLink,
+  ResourceTitle,
+  ResourceMetadata,
+  ResourceFacts,
+} from "@/components/ui/resource-list"
 import type { Model } from "@/hooks/use-models"
 import { cn } from "@/lib/utils"
 import { formatContext, formatParams } from "./format"
@@ -13,88 +17,35 @@ export interface ModelCardProps {
   onSelectedChange?: (next: boolean) => void
 }
 
-/** Presents a model as an open editorial entry or an accessible selection label for bulk deletion. */
+/** Presents model identity and measured facts as a catalogue row, preserving explicit bulk selection. */
 export function ModelCard({
   model,
   selectable = false,
   selected = false,
   onSelectedChange,
 }: ModelCardProps) {
-  const content = (
-    <CardBody
-      model={model}
-      selected={selected}
-      corner={
-        selectable ? (
+  const content = <ModelContent model={model} />
+  return (
+    <ResourceRow
+      className={cn(
+        "flex flex-wrap items-start gap-x-8 gap-y-4",
+        selected && "bg-accent/40"
+      )}
+    >
+      {selectable ? (
+        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-4 focus-within:ring-2 focus-within:ring-ring">
           <Checkbox
+            className="mt-1"
             checked={selected}
             onCheckedChange={(next) => onSelectedChange?.(Boolean(next))}
             aria-label={`Select ${model.name}`}
           />
-        ) : (
-          <ArrowUpRight className="size-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-        )
-      }
-    />
-  )
-  const className =
-    "group block min-w-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring focus-within:ring-ring"
-  return selectable ? (
-    <label
-      className={cn(
-        className,
-        "cursor-pointer focus-within:outline-2 focus-within:outline-ring"
+          {content}
+        </label>
+      ) : (
+        <ResourceLink href={`/models/${model.id}`}>{content}</ResourceLink>
       )}
-    >
-      {content}
-    </label>
-  ) : (
-    <Link href={`/models/${model.id}`} className={className}>
-      {content}
-    </Link>
-  )
-}
-
-/** Renders model identity and measured figures without a filled tile or decorative size meter. Explicit categories use quiet text. */
-function CardBody({
-  model,
-  selected,
-  corner,
-}: {
-  model: Model
-  selected: boolean
-  corner: React.ReactNode
-}) {
-  return (
-    <article
-      className={cn(
-        "flex h-full flex-col border-t py-5",
-        selected
-          ? "border-primary"
-          : "border-border transition-colors group-hover:border-foreground/40"
-      )}
-    >
-      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span className="truncate">
-          {model.family || "Custom"}
-          {!model.published && " · Private"}
-        </span>
-        <span className="flex shrink-0 items-center gap-3">
-          {model.tier && (
-            <span className="capitalize italic">{model.tier}</span>
-          )}
-          {corner}
-        </span>
-      </div>
-      <h2 className="line-clamp-2 font-display text-xl leading-snug tracking-tight transition-colors group-hover:text-primary">
-        {model.name}
-      </h2>
-      {model.description && (
-        <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-          {model.description}
-        </p>
-      )}
-      <dl className="mt-auto flex flex-wrap gap-x-8 gap-y-3 pt-5">
+      <ResourceFacts className="gap-x-8 sm:pt-1">
         <Stat
           label="Parameters"
           value={formatParams(model.params, model.parameterCountEstimated)}
@@ -107,17 +58,36 @@ function CardBody({
               : "—"
           }
         />
-      </dl>
-    </article>
+      </ResourceFacts>
+    </ResourceRow>
   )
 }
 
-/** Displays a compact model measurement with a prose label. */
+/** Groups a model's wrapping name, description and explicit provenance without invented measurements. */
+function ModelContent({ model }: { model: Model }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <ResourceTitle>{model.name}</ResourceTitle>
+      {model.description && (
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          {model.description}
+        </p>
+      )}
+      <ResourceMetadata>
+        <span className="text-(--kind-model)">{model.family || "Custom"}</span>
+        {!model.published && <span>Private</span>}
+        {model.tier && <span className="capitalize">{model.tier}</span>}
+      </ResourceMetadata>
+    </div>
+  )
+}
+
+/** Displays one measured model fact with an explicit label. */
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-1 font-display text-lg tabular-nums">{value}</dd>
+      <div className="text-xs">{label}</div>
+      <div className="mt-1 text-foreground">{value}</div>
     </div>
   )
 }

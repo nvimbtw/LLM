@@ -486,7 +486,7 @@ export function RlComposer({ gym: preselected }: { gym?: string }) {
           </div>
 
           {!numeric && (
-            <p className="border-l border-border py-2 pl-3 text-xs text-muted-foreground">
+            <p className="py-2 text-xs text-muted-foreground">
               A learning rate and a temperature above zero, and a KL weight of
               zero or more. A temperature of zero makes a group of {groupSize}{" "}
               attempts one attempt counted {groupSize} times, and a group whose

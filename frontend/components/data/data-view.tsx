@@ -1,17 +1,17 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 
 import { LoadError } from "@/components/ui/error-state"
 import { Panel } from "@/components/ui/panel"
-import { RunningDot } from "@/components/ui/running-dot"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DatasetList } from "@/components/data/dataset-list"
 import { HubSearch } from "@/components/data/hub-search"
 import { useDataRuns, useStoredDatasets } from "@/hooks/use-data"
 import type { DataRun } from "@/lib/data"
+import { useSessionToken } from "@/hooks/use-auth"
 
 /**
  * The data page: what is stored, what can be pulled, and what is in flight.
@@ -21,6 +21,12 @@ import type { DataRun } from "@/lib/data"
  * search box above the list a returning user actually came for.
  */
 export function DataView() {
+  const token = useSessionToken()
+  return token ? <DataSession key={token} /> : null
+}
+
+/** Owns one account's dataset tab, selected deletion and catalogue reads, clearing them on session replacement. */
+function DataSession() {
   const [refreshKey, setRefreshKey] = React.useState(0)
   const datasets = useStoredDatasets(refreshKey)
   const runs = useDataRuns(refreshKey)
@@ -31,20 +37,15 @@ export function DataView() {
 
   return (
     <Tabs defaultValue="datasets">
-      <TabsList variant="line">
-        <TabsTrigger value="datasets">Datasets</TabsTrigger>
-        <TabsTrigger value="browse">Browse</TabsTrigger>
-        <TabsTrigger value="runs">
-          Runs{active > 0 ? ` (${active})` : ""}
-        </TabsTrigger>
-        <TabsTrigger
-          value="processors"
-          nativeButton={false}
-          render={<Link href="/processors" />}
-        >
-          Processors
-        </TabsTrigger>
-      </TabsList>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <TabsList variant="line">
+          <TabsTrigger value="datasets">Datasets</TabsTrigger>
+          <TabsTrigger value="browse">Browse</TabsTrigger>
+          <TabsTrigger value="runs">
+            Runs{active > 0 ? ` (${active})` : ""}
+          </TabsTrigger>
+        </TabsList>
+      </div>
 
       <TabsContent value="datasets" className="mt-6">
         <DatasetList
@@ -94,15 +95,19 @@ function RunList({ runs, isLoading, error }: RunListProps) {
           <Skeleton className="h-10 w-full" />
         </div>
       ) : runs.length === 0 ? (
-        <p className="border-y border-border/60 py-6 text-sm text-muted-foreground">
+        <p className="py-6 text-sm text-muted-foreground">
           Nothing has run yet.
         </p>
       ) : (
-        <ul className="divide-y divide-border">
+        <ResourceList density="compact">
           {runs.map((run) => (
-            <li key={run.id} className="flex items-center gap-4 py-3">
+            <ResourceRow
+              density="compact"
+              key={run.id}
+              className="flex items-center gap-4"
+            >
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm">{run.label}</p>
+                <p className="text-sm break-words">{run.label}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {run.status === "running" && run.stage
                     ? `${run.stage} · ${Math.round(run.progress * 100)}%`
@@ -110,10 +115,9 @@ function RunList({ runs, isLoading, error }: RunListProps) {
                   {run.error ? ` — ${run.error}` : ""}
                 </p>
               </div>
-              {run.status === "running" && <RunningDot />}
-            </li>
+            </ResourceRow>
           ))}
-        </ul>
+        </ResourceList>
       )}
     </Panel>
   )

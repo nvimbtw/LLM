@@ -294,9 +294,11 @@ def test_a_composed_name_stays_inside_the_column(store_session):
 
 @pytest.fixture
 def client(engine_client):
+    """Read all recovery artifacts as an administrator already authorized by Rust."""
     import main
 
     main.app.dependency_overrides[auth.require_service] = lambda: auth.SYSTEM
+    main.app.dependency_overrides[auth.administration_visible] = lambda: True
     yield engine_client
     main.app.dependency_overrides.clear()
 
@@ -362,8 +364,13 @@ async def test_a_models_checkpoints_come_back_in_the_order_they_were_taken(
 
 
 async def test_a_model_with_no_checkpoints_answers_with_none(client, run_output):
-    body = (await client.get(f"/models/{uuid.uuid4()}/checkpoints")).json()
+    """Existing empty parents return an empty list, while missing parents are not found."""
+    model_id = uuid.uuid4()
+    with store.session() as db:
+        q.upsert_model(db, model_id=model_id, name="No checkpoints")
+    body = (await client.get(f"/models/{model_id}/checkpoints")).json()
     assert body == {"checkpoints": []}
+    assert (await client.get(f"/models/{uuid.uuid4()}/checkpoints")).status_code == 404
 
 
 # ── deletion ────────────────────────────────────────────────────────────────

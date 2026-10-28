@@ -12,6 +12,8 @@ import type { ResourceSummary } from "@/lib/architecture/contracts.generated"
 import { dependencySnippet } from "@/lib/architecture/dependency-snippet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { SearchField } from "@/components/ui/search-field"
+import { ResourceList, ResourceRow } from "@/components/ui/resource-list"
 import { Panel } from "@/components/ui/panel"
 import { FormError, LoadError } from "@/components/ui/error-state"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -29,13 +31,21 @@ export function DependencyPicker() {
         </p>
         <div className="flex gap-2">
           <Button
-            variant={kind === "block" ? "default" : "outline"}
+            variant="text"
+            aria-pressed={kind === "block"}
+            className={
+              kind === "block" ? "text-primary" : "text-muted-foreground"
+            }
             onClick={() => setKind("block")}
           >
             Blocks
           </Button>
           <Button
-            variant={kind === "architecture" ? "default" : "outline"}
+            variant="text"
+            aria-pressed={kind === "architecture"}
+            className={
+              kind === "architecture" ? "text-primary" : "text-muted-foreground"
+            }
             onClick={() => setKind("architecture")}
           >
             Subarchitectures
@@ -66,7 +76,7 @@ function DependencyCatalog({ kind }: DependencyCatalogProps) {
       >
         <label className="grid gap-2 text-sm">
           Search dependencies
-          <Input
+          <SearchField
             value={catalog.search}
             maxLength={200}
             onChange={(event) => catalog.setSearch(event.target.value)}
@@ -89,22 +99,22 @@ function DependencyCatalog({ kind }: DependencyCatalogProps) {
         />
       ) : (
         <>
-          <ul className="max-h-72 divide-y divide-border overflow-auto">
+          <ResourceList density="compact" className="max-h-72 overflow-auto">
             {catalog.page?.items
               .filter((item) => !item.archived && item.accepted_revision)
               .map((item) => (
-                <li key={item.resource_id}>
+                <ResourceRow density="compact" key={item.resource_id}>
                   <Button
                     variant="ghost"
-                    className="h-auto w-full justify-start py-3 text-left whitespace-normal"
+                    className="h-auto w-full justify-start py-0 text-left whitespace-normal"
                     onClick={() => select(item)}
                   >
                     {item.name} ·{" "}
                     {item.accepted_revision!.content_hash.slice(0, 12)}
                   </Button>
-                </li>
+                </ResourceRow>
               ))}
-          </ul>
+          </ResourceList>
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -196,10 +206,7 @@ function DependencyRevision({ summary }: DependencyRevisionProps) {
   }
 
   return (
-    <section
-      aria-label="Selected dependency"
-      className="grid gap-3 border-t border-border pt-4"
-    >
+    <section aria-label="Selected dependency" className="grid gap-3 pt-4">
       <Link
         className="text-sm underline"
         href={`${summary.kind === "block" ? "/arch/blocks" : "/arch"}/${summary.resource_id}`}

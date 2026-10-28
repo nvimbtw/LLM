@@ -80,12 +80,13 @@ export function AttachmentStrip({
             onClick={() => onRemove(a.key)}
             aria-label={`Remove ${a.file.name}`}
             className={cn(
-              "absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-foreground/70 text-background opacity-0 transition-opacity",
+              "absolute top-0 right-0 flex size-8 items-center justify-center rounded-(--radius-control) bg-background/90 text-foreground opacity-100 transition-opacity outline-none focus-visible:bg-muted focus-visible:text-foreground md:opacity-0 [@media(pointer:coarse)]:opacity-100",
               "group-hover/attachment:opacity-100 focus-visible:opacity-100",
-              a.status === "failed" && "bg-destructive opacity-100"
+              a.status === "failed" &&
+                "bg-destructive/10 text-destructive opacity-100"
             )}
           >
-            <X className="size-2.5" />
+            <X className="size-4" />
           </button>
         </div>
       ))}

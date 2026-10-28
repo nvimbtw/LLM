@@ -9,10 +9,7 @@ import {
   SidebarMenuItem,
   SidebarMenuButton,
 } from "@/components/ui/sidebar"
-import { RunningDot } from "@/components/ui/running-dot"
-import { useJobsContext } from "@/components/jobs/jobs-provider"
 import { useAuth } from "@/hooks/use-auth"
-import { KIND_LABEL } from "@/lib/jobs"
 
 /**
  * One row for everything behind the admin flag.
@@ -45,33 +42,8 @@ export function NavAdmin() {
         >
           <Shield />
           <span>Admin</span>
-          <QueueTell />
         </SidebarMenuButton>
       </SidebarMenuItem>
     </SidebarMenu>
-  )
-}
-
-/**
- * The GPU's state on the Admin row itself.
- *
- * Redundant with the Active group above it while the sidebar is expanded — and
- * that is exactly when it earns its keep, because that group is hidden when the
- * sidebar collapses to icons. Then this mark is the only thing left saying the
- * machine is busy.
- *
- * Which is why it has to survive the collapse without shoving the icon off
- * centre: expanded it is a trailing mark on the row, collapsed it lifts out of
- * the flow into the corner of the 32px square and reads as a badge on the glyph.
- */
-function QueueTell() {
-  const { running } = useJobsContext()
-  if (!running) return null
-
-  return (
-    <RunningDot
-      label={`${KIND_LABEL[running.kind]} running`}
-      className="ml-auto bg-sidebar-foreground group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:absolute group-data-[collapsible=icon]:top-1 group-data-[collapsible=icon]:right-1 group-data-[collapsible=icon]:ml-0"
-    />
   )
 }

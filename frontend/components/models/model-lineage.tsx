@@ -12,7 +12,6 @@ import {
   type ModelDetail,
 } from "@/hooks/use-model"
 import type { LineageDatasetRef } from "@/hooks/use-models"
-import { cn } from "@/lib/utils"
 import { formatNumber } from "./format"
 
 export interface ModelLineageProps {
@@ -61,10 +60,7 @@ export function ModelLineage({ model }: ModelLineageProps) {
           {nodes.map((node, i) => {
             const isLast = i === nodes.length - 1
             return (
-              <li
-                key={node.id}
-                className={cn(!isLast && "border-b border-border/40")}
-              >
+              <li key={node.id}>
                 <LineageRow
                   node={node}
                   resolveDatasetName={resolveDatasetName}

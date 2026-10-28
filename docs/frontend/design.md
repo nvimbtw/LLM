@@ -1,126 +1,194 @@
-# Slate design direction
+# Slate design
 
-Slate should feel like **an LLM workspace with the quietness of a notebook**.
-It brings model building, data preparation, benchmarks, task gyms and chat into
-one place. The interface should make the work legible, make live state visible,
-and let the content carry the weight.
+Slate is an editorial, minimal LLM workspace with the quietness of a notebook.
+Content, typography and meaningful state carry the hierarchy. Warm surfaces,
+restrained corners and faint character texture give it identity. Controls feel
+part of the page; their relationships stay clear without drawing a box or line
+around every fact. This is the active design contract, settled in
+[FEAT-6](https://discord.com/channels/1538659898383011961/1565025604586438841).
+[Appearance](appearance.md) defines the tokens and implementation details.
 
-This guide records the product and visual direction that has emerged from the
-standalone `frontend/slate-system-design.html` sketch, the frontend
-implementation docs, and the design issues in Discord. [Appearance](appearance.md)
-is the detailed reference for theme, type, sizing and surfaces; this page is the
-short guide to the choices those rules should serve.
+## Page composition
 
-## The character
+Use `PageShell` and `PageHeader`. Collection pages share the dashboard board
+width and title alignment, including Projects, Models and Conversations.
+Technical resource details and operational workspaces use the board too.
+Constrain prose and short forms inside that frame when line length needs it;
+a few editable fields do not make a collection a centered reading page.
+Chat retains its focused thread/composer layout; authentication retains its
+separate composition. Do not add page-specific width overrides to fix a list.
 
-Aim for editorial minimalism that feels professional, useful and considered.
-The page should feel clean without feeling empty or generic. Preserve the
-information and flow people use; remove repeated chrome, decoration and copy
-that adds no decision-making value. A visible phrase should be content, a
-control label, an instruction, or useful state.
+Keep headings, content and actions aligned. Useful metadata can sit beside a
+heading or action. Resource descriptions are authored content and remain
+editable where the domain allows it. Omit generic introductory subtitles.
 
-Each page should answer three questions through its hierarchy and content:
+Admin uses queue/history beside a grouped, collapsible Workbench. Preserve its
+usable data, queue operations and navigation as it responds to narrower widths.
+Model detail uses the declared architecture to organize its measurements and a
+compact training record. Do not spread unrelated facts across oversized tiles,
+ruled bands or a sparse collection of label/value widgets. Do not draw a legacy
+transformer for a modular architecture that does not declare that structure.
+Benchmark presentation remains outside this redesign.
 
-- Where am I?
-- What is this for?
-- What is the next useful action?
+## Shared lists
 
-## Page structure
+Use the composable `ResourceList`, `ResourceRow`, `ResourceLink`,
+`ResourceTitle`, `ResourceMetadata`, `ResourceFacts` and `ResourceActions` in
+`components/ui/resource-list.tsx`. The list owns rhythm and interaction;
+the domain supplies meaningful content, measurements and actions.
 
-- Use the shared `PageHeader` for the title, back link, actions and useful
-  metadata. Do not add a sentence under the title just to explain the page.
-  Counts, status, elapsed time and conversation figures are useful when they
-  help someone act; render them as quiet metadata. Descriptions that belong to
-  a resource remain editable content on that resource.
-- Give catalogues and facts ledgers the available board width. Reserve reading
-  width for prose and text-editing surfaces. A few inline fields do not turn a
-  facts page into a prose page.
-- Prefer single-column lists and open ledger rows for catalogues and summaries.
-  Use hairline rules to group related facts instead of wrapping every region in
-  a card. Keep a sheet surface for a focused, actionable composition; controls,
-  dialogs and confirmations still need clear interactive boundaries.
-- Keep pages and controls aligned. A form, diagram or chart should have a
-  readable sequence, consistent edges and spacing, and a clear relationship to
-  the data it represents.
-- Let durable resources be browsed as a list, opened as a detail page, and
-  created on a dedicated page when the workflow has meaningful fields. Prefer
-  editing resource fields in place with clear Save/Cancel behavior over a
-  second modal form. Keep transient choices and confirmations in dialogs.
-- Use URLs that name the domain and distinguish a resource from an execution.
-  The canonical route map is in [Browser routes](routing.md).
+- Use **open** density for catalogues and **compact** density for operational
+  queue/history rows. Keep domain differences explicit rather than adding
+  unrelated mode flags to one universal item record.
+- Resource names use the shared editorial hierarchy. Metadata stays secondary;
+  operational rows can use interface type for quicker comparison.
+- Keep the main destination generous and predictable. Secondary controls remain
+  separate, correctly labelled targets; do not nest a button inside a link.
+- Group with space, alignment and headings. Draw no separators between entries
+  or around the list. Hover/focus can add a restrained neutral surface.
+- Keep quiet actions accessible to keyboard and coarse pointers. An action must
+  not depend on hover to exist or work. Preserve selection, confirmation,
+  pagination, pending, empty and failure behavior.
+- Use `EmptyState` for a bounded warm-clay character field, a clear empty title
+  and a useful action. Supporting copy needs the same justification as elsewhere.
 
-## Visual language
+## Hairline rule
 
-- The palette follows customized Kanagawa: warm paper in light mode and Dragon
-  tones in dark mode. Use semantic theme roles so both modes remain coherent;
-  do not put palette hex values directly in components.
-- Fraunces gives display headings and figures their editorial voice. Geist is
-  for interface text; Geist Mono is for technical traces, tags and metrics.
-  Keep labels quiet and consistent, and use tabular numerals for changing
-  figures.
-- Use restrained typography, open space and thin rules to establish hierarchy.
-  Reserve accent colour for meaning and interaction. Pair status colour with
-  text or an icon, keep keyboard focus visible, and preserve contrast in both
-  themes.
-- Distinguish a sheet from a ledger. A sheet has a surface, edge and
-  theme-aware elevation because it holds an actionable group. A ledger is
-  furniture: open rows and rules that let the facts remain prominent. Do not
-  give summaries and controls equal visual weight by boxing both.
-- Keep corners restrained across the application. The composer and chat
-  bubbles have their own softer shape; that exception should stay recognizable.
+**Decorative rules are absent by default.** Do not add a border below a page or
+section heading, between ordinary list items, around a statistics band, between
+form columns, or around each summary value. Adding data does not authorize
+adding separators. Solve hierarchy through composition, space and type.
 
-## Motion and distinctive detail
+Keep functional boundaries and marks:
 
-Use motion when it explains a real state change or makes an interaction easier
-to understand. A training or generation diagram should show what each operation
-does, keep its arrows and blocks aligned, and follow the actual process. Make
-expressive movement smooth and restrained; keep the interface useful with
-reduced motion and on narrow screens.
+- The existing sidebar frame and its header/footer boundaries.
+- Persistent editor/pane boundaries and the settings/notification modal rail.
+- Composer outlines, input boundaries, keyboard focus and invalid/selection cues.
+- The single thin underline identifying a search field.
+- Diagram connections, chart axes/data, progress indicators, semantic quote/tree
+  rails and the functional exchange-navigation strokes.
 
-Slate can have texture and a distinctive mark when they give a surface character.
-Keep these treatments muted and local to the page that owns them: the
-authentication pages use a quiet field of characters, while the new-chat page
-has its own mountain-and-wordmark figure. Do not spread decorative artwork
-through ordinary pages or let it compete with controls and data.
+One owner draws each retained boundary. Use its semantic token at one CSS pixel;
+do not compose two edges at the same join or invent per-component border colours.
+Horizontal page tabs have no underline or dot, including under the active tab.
 
-## Ideas that remain exploratory
+## Titles, prose fields and searches
 
-The standalone sketch also proposes a workspace pulse and command search,
-model comparison, a dataset lineage rail, undo/recovery affordances and a
-mobile bottom-sheet workflow. These are product ideas, not settled requirements
-or a mandate for a broad redesign. The Discord discussions also contain
-domain-specific proposals for model architecture and processor authoring. Keep
-their detailed contracts in those threads, and track each as individual work
-before treating it as implementation scope.
+Editable identity and prose remain page-native. `EditableTitle` and
+`Textarea variant="inline"` share the small **Edit** cue, visible only when that
+field is hovered or keyboard-focused. Keep the editing caret, accessible labels,
+clear read-only/permission distinctions and the existing Save/Cancel contract.
+Do not add a persistent pencil, filled input, focus underline or ring to imitate
+editability. The keyboard cue must remain visible. Ordinary outlined controls
+retain their functional focus indication.
 
-## References
+Use `SearchField` for searches: magnifier, accessible name and one thin underline.
+A search must not look like editable page prose. Use a placeholder only when it
+helps identify the input. [Editing](editing.md) defines draft/retry behavior.
 
-- [Appearance](appearance.md) — current theme roles, sizing, surfaces, artwork
-  and motion details.
-- [Frontend development](development.md) — shared components and implementation
-  conventions.
-- [Authentication pages](authentication.md) — the focused form and character
-  texture treatment.
-- [Browser routes](routing.md) — canonical resource and execution paths.
-- `frontend/slate-system-design.html` — the standalone original product thesis,
-  surface map and exploratory roadmap.
-- Related feature and system discussions: [FEAT-1](https://discord.com/channels/1538659898383011961/1559193308117344298)
-  on live status art, [FEAT-2](https://discord.com/channels/1538659898383011961/1559882446177304607)
-  on project pages and inline editing, [FEAT-3](https://discord.com/channels/1538659898383011961/1559933878020472866)
-  on processor authoring, [DOC-5](https://discord.com/channels/1538659898383011961/1560318859095834664)
-  on modular model architecture, and [DOC-6](https://discord.com/channels/1538659898383011961/1560320001989152781)
-  on data processor design. These are workflow and domain specs, not visual
-  language rules.
-- Discord discussions: [ISS-16](https://discord.com/channels/1538659898383011961/1557269277659111425),
-  [ISS-17](https://discord.com/channels/1538659898383011961/1557274460023951442),
-  [ISS-25](https://discord.com/channels/1538659898383011961/1558566415387328574),
-  [ISS-26](https://discord.com/channels/1538659898383011961/1559991013852839938),
-  [ISS-29](https://discord.com/channels/1538659898383011961/1560305653476499537),
-  [ISS-30](https://discord.com/channels/1538659898383011961/1560322898894397565),
-  [ISS-31](https://discord.com/channels/1538659898383011961/1560423303447846944),
-  [ISS-32](https://discord.com/channels/1538659898383011961/1560423364643000521),
-  [ISS-33](https://discord.com/channels/1538659898383011961/1560423431592353825),
-  [ISS-34](https://discord.com/channels/1538659898383011961/1560423478975529034),
-  [ISS-35](https://discord.com/channels/1538659898383011961/1560423511271411924),
-  [ISS-36](https://discord.com/channels/1538659898383011961/1560423568788029481), and
-  [ISS-37](https://discord.com/channels/1538659898383011961/1560423627223076987).
+## Tabs and menus
+
+Horizontal tabs are plain labels with muted counts. Active text uses steel blue
+and a small weight change, without a pill, underline, dot or raised tile.
+Retain the vertical primary marker in settings-style modal navigation.
+Use the accessible primitives and their keyboard behavior; a route link is not
+an in-page tab.
+
+Menus are compact neutral overlays with aligned labels and restrained icons.
+Separate meaningful action groups with space. Keep destructive actions explicit
+and theme-aware. Selects and overflow menus share the same surface language;
+composer-related popovers use its softer corner exception. Do not create a new
+menu style at a call site.
+
+## Colour, surfaces and texture
+
+Keep the existing palette and steel-blue primary. Use semantic roles in both
+themes; palette hexes belong only in the palette layer of `globals.css`.
+
+| Role | Meaning |
+| --- | --- |
+| Primary steel blue | Actions, active selection and focus |
+| Warm ochre (`kind-model`, `kind-tokenize`) | Model/vocabulary identity |
+| Muted mauve (`kind-chat`) | Conversation identity |
+| Aqua (`kind-rl`) | Practice identity |
+| Sage (`kind-benchmark`, `status-success`) | Benchmark identity or explicitly labelled success |
+| Amber (`status-warning`) | Warnings and limits |
+| Soft red (`destructive`) | Failure and destructive actions |
+| Warm clay (`texture-warm`) | Decorative empty-state texture |
+
+Domain accents belong in small labels or marks, not whole-page fills or coloured
+body text. Pair status colour with a word or icon. A quiet empty state is not an
+error. Authored content and ordinary headings keep neutral ink.
+
+Floating menus, dialogs, tooltips and toasts use the shared crisp shadow:
+**1px right, 2px down, zero blur and spread**. Light/dark opacity is token-owned.
+Do not add glowing halos, diffuse shadows or bespoke elevation. Keep general
+corners restrained. Composer-related surfaces and chat bubbles retain their
+existing softer shapes.
+
+Every page header and the sidebar Slate brand header use `SectionTexture`'s
+faint grey character field. It also belongs in the composer's shared command/plan
+upper area. Only empty states use its warm tone. Do not repeat it behind every
+section heading, behind populated lists, or across ordinary whole-page content.
+Keep it decorative, static, muted, clipped and unable to intercept interaction.
+The existing landing mountain/wordmark and pointer treatment remain special.
+
+## Composer and conversation navigation
+
+The existing composer outline contains its editor and a shared textured upper
+region for commands/plans. Do not stack another outlined drawer above it.
+Model selection sits on the footer left, separate thinking selection immediately
+right, and context usage on the right. Remove the redundant conversation title;
+sidebar/archive renaming remains available. The model picker is searchable,
+starts with published choices and offers all eligible models only to admins.
+Checkpoint choices do not belong in this menu.
+
+Retain upload/dictation, command ordering, plan status/editing and context
+semantics. Visual changes do not authorize treating local plans as model state.
+See [Composer](composer.md) and [Plans](composer-plan.md).
+
+The exchange rail uses dense, short functional strokes. Proximity/focus smoothly
+extends nearby strokes; the current exchange stays steel blue. A compact adjacent
+neutral preview shows the user prompt and reply excerpt, with restrained corners
+and the crisp shadow. Keep scroll tracking, keyboard navigation and viewport
+bounds; reduced motion preserves information. Do not use the rejected numbered
+margin/counter alternatives or a pale inverse speech-bubble tooltip.
+
+## Feedback and interface copy
+
+Use [Notifications](notifications.md) for failure explanations and event feedback.
+The separate sidebar-footer bell opens the settings-style modal; its count means
+retained, undismissed notifications. Opening does not clear it. Severity and
+lifetime are separate. Retention is browser-local and account-scoped.
+
+Remove standalone status dots, including navigation badges and dots beside
+already-labelled activity. Use concise state words, counts or actual progress.
+The meaningful live throbber/diagram remains a separate figure with its existing
+motion contract; do not substitute a new spinner at each call site.
+
+**Default to no explanatory subtext.** Add secondary copy only when it helps the
+current decision, identifies meaningful content or communicates a real current
+state. Do not narrate background mechanics, reassure users that ordinary features
+work, repeat a heading or add a subtitle to fill space.
+
+| Remove | Keep when applicable |
+| --- | --- |
+| “Drafts save in this browser.” | Unsaved changes |
+| “Manage all your models in one place.” | Paused |
+| “Configure the settings below.” | Legacy |
+| An automatic subtitle for every section | 2 waiting |
+
+User-authored descriptions, units, consequential field hints, recovery actions
+and genuine failure explanations remain useful. Put failure explanations in the
+notification system instead of another boxed paragraph.
+
+## Extending Slate
+
+Choose an existing page/list/field/menu contract first. Add a shared variant only
+for a demonstrated semantic difference. Keep storage, networking and domain
+calculations out of presentation primitives. Check keyboard/touch, narrow widths,
+light/dark, long content, pending/failure and reduced motion. Keep topic docs and
+the module map current when a public behavior changes.
+
+The original `frontend/slate-system-design.html` contains historical exploration;
+it does not override this contract or authorize additional product features.

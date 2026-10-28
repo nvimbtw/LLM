@@ -546,6 +546,33 @@ async fn live_python_visibility_http_and_websocket_contract() {
         assert!(!String::from_utf8_lossy(&response.body().await.unwrap())
             .contains("PRIVATE_SOURCE_GRAPH_MARKER"));
     }
+    for authorization in [None, Some(public.as_str())] {
+        for identity in [
+            engine.manifest["private_model"].as_str().unwrap(),
+            engine.manifest["private_checkpoint"].as_str().unwrap(),
+        ] {
+            let mut request = client.get(backend.url(&format!("/models/{identity}")));
+            if let Some(bearer) = authorization {
+                request = request.insert_header(("Authorization", bearer));
+            }
+            assert_eq!(
+                request.send().await.unwrap().status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+        let mut request = client
+            .get(backend.url("/models?include_private=true&checkpoints=true&scope=administration"));
+        if let Some(bearer) = authorization {
+            request = request.insert_header(("Authorization", bearer));
+        }
+        let mut response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["models"].as_array().unwrap().len(), 1);
+        assert_eq!(body["models"][0]["model_id"], model);
+        assert!(body["models"][0]["run_id"].is_null());
+        assert!(!body.to_string().contains("PRIVATE_SOURCE_GRAPH_MARKER"));
+    }
     let proxy = llm_engine::Proxy::new(&url, Some(SERVICE_SECRET.into()));
     let refusal = proxy
         .scoped_events(
@@ -640,4 +667,216 @@ async fn attention_discovery_is_a_public_authenticated_read() {
         assert_eq!(body["scope"], json!([scope]));
         assert_eq!(body["path"], path);
     }
+}
+
+/// Public catalogue reads preserve optional identity, reject invalid bearer tokens and keep mutations protected.
+#[actix_web::test]
+async fn model_reads_distinguish_anonymous_from_invalid_authorization() {
+    let server = actix_test::start(|| App::new().default_service(web::to(echo)));
+    let bench = actix_test::start(|| {
+        App::new().default_service(web::to(|| async {
+            HttpResponse::Ok().json(json!({"benchmarks": []}))
+        }))
+    });
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(SECRET.to_string()))
+            .app_data(web::Data::new(llm_engine::Proxy::new(
+                server.url("").trim_end_matches('/'),
+                Some(SERVICE_SECRET.into()),
+            )))
+            .app_data(web::Data::new(bench_engine::Proxy::new(
+                bench.url("").trim_end_matches('/'),
+                None,
+            )))
+            .configure(api::configure),
+    )
+    .await;
+    let actor = Uuid::new_v4();
+    for path in [
+        "/models?scope=administration".to_string(),
+        format!("/models/{actor}"),
+        format!("/models/{actor}/checkpoints"),
+    ] {
+        for (authorization, expected_actor, scope) in [
+            (None, "system".to_string(), "public"),
+            (
+                Some(session(actor, AccessLevel::User)),
+                actor.to_string(),
+                "public",
+            ),
+            (
+                Some(session(actor, AccessLevel::Admin)),
+                actor.to_string(),
+                "administration",
+            ),
+        ] {
+            let mut request = test::TestRequest::get().uri(&path);
+            if let Some(header) = authorization {
+                request = request.insert_header(("Authorization", header));
+            }
+            let response = test::call_service(&app, request.to_request()).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value = test::read_body_json(response).await;
+            assert_eq!(body["actor"], expected_actor);
+            assert_eq!(body["scope"], json!([scope]));
+        }
+        let request = test::TestRequest::get()
+            .uri(&path)
+            .insert_header(("Authorization", "Bearer invalid"))
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    for method in [Method::PATCH, Method::DELETE] {
+        let request = test::TestRequest::default()
+            .method(method)
+            .uri(&format!("/models/{actor}"))
+            .set_json(json!({}))
+            .to_request();
+        assert_eq!(
+            test::call_service(&app, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+/// HTTP and browser sockets carry verified roles to real engine admission before persisting input or starting generation.
+#[sqlx::test(migrations = "../db/migrations")]
+#[ignore = "requires installed engine Python dependencies and disposable PostgreSQL"]
+async fn live_python_chat_publication_http_and_websocket_contract(pool: sqlx::PgPool) {
+    use futures_util::{SinkExt, StreamExt};
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let engine = LiveEngine::start();
+            let url = engine.manifest["url"].as_str().unwrap().to_string();
+            let owner = db::user::create(&pool, &Uuid::new_v4().to_string(), "hash", None)
+                .await
+                .unwrap()
+                .id_user;
+            let app_pool = pool.clone();
+            let backend = actix_test::start(move || {
+                App::new()
+                    .app_data(web::Data::new(SECRET.to_string()))
+                    .app_data(web::Data::new(llm_engine::Proxy::new(
+                        &url,
+                        Some(SERVICE_SECRET.into()),
+                    )))
+                    .app_data(web::Data::new(tools::Registry::new(vec![])))
+                    .app_data(web::Data::new(app_pool.clone()))
+                    .configure(api::configure)
+            });
+            let client = awc::Client::default();
+            for (key, published) in [
+                ("model", true),
+                ("private_model", false),
+                ("private_checkpoint", false),
+            ] {
+                let model = engine.manifest[key].as_str().unwrap();
+                for (level, admin) in [(AccessLevel::User, false), (AccessLevel::Admin, true)] {
+                    let authorized = published || admin;
+                    let chat = db::conversation::create(&pool, owner, "HTTP admission")
+                        .await
+                        .unwrap();
+                    let response = client
+                        .post(backend.url(&format!("/chats/{}/messages", chat.id)))
+                        .insert_header(("Authorization", session(owner, level)))
+                        .send_json(&json!({"model_name":model,"text":"hello"}))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        response.status(),
+                        if authorized {
+                            StatusCode::CREATED
+                        } else {
+                            StatusCode::NOT_FOUND
+                        }
+                    );
+                    let messages = db::conversation::messages(&pool, owner, chat.id)
+                        .await
+                        .unwrap();
+                    assert_eq!(messages.len(), if authorized { 2 } else { 0 });
+                    let chat = db::conversation::create(&pool, owner, "WS admission")
+                        .await
+                        .unwrap();
+                    let (_, mut socket) = client
+                        .ws(backend.url(&format!("/ws/chats/{}", chat.id)))
+                        .connect()
+                        .await
+                        .unwrap();
+                    let bearer = session(owner, level);
+                    socket
+                        .send(awc::ws::Message::Text(
+                            json!({"token":bearer.strip_prefix("Bearer ").unwrap()})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                    let _ready = socket.next().await.unwrap().unwrap();
+                    socket
+                        .send(awc::ws::Message::Text(
+                            json!({"model_name":model,"text":"hello"})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                    let mut completed = false;
+                    let mut refused = false;
+                    while let Some(Ok(frame)) = socket.next().await {
+                        let awc::ws::Frame::Text(bytes) = frame else {
+                            continue;
+                        };
+                        let body: Value = serde_json::from_slice(&bytes).unwrap();
+                        completed |= body["type"] == "done";
+                        refused |= body["type"] == "error";
+                    }
+                    assert_eq!(completed, authorized);
+                    assert_eq!(refused, !authorized);
+                    let messages = db::conversation::messages(&pool, owner, chat.id)
+                        .await
+                        .unwrap();
+                    assert_eq!(messages.len(), if authorized { 2 } else { 0 });
+                }
+            }
+            let chat = db::conversation::create(&pool, owner, "Anonymous admission")
+                .await
+                .unwrap();
+            assert_eq!(
+                client
+                    .post(backend.url(&format!("/chats/{}/messages", chat.id)))
+                    .send_json(&json!({"model_name":engine.manifest["model"],"text":"hello"}))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+            let (_, mut socket) = client
+                .ws(backend.url(&format!("/ws/chats/{}", chat.id)))
+                .connect()
+                .await
+                .unwrap();
+            socket
+                .send(awc::ws::Message::Text(
+                    json!({"token":"invalid"}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            let awc::ws::Frame::Text(bytes) = socket.next().await.unwrap().unwrap() else {
+                panic!("expected authentication refusal");
+            };
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["type"], "error");
+            assert_eq!(
+                db::conversation::messages(&pool, owner, chat.id)
+                    .await
+                    .unwrap()
+                    .len(),
+                0
+            );
+        })
+        .await;
 }

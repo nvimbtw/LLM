@@ -1,23 +1,13 @@
 "use client"
 
+import * as React from "react"
+import { Button } from "@/components/ui/button"
 import { useJobsContext } from "./jobs-provider"
 import { AdminSectionHeader } from "@/components/admin/admin-section-header"
 import { HistoryPager } from "./history-pager"
 import { JobHistory } from "./job-history"
 
-/**
- * What has finished — the same ledger as `QueueView`, past tense.
- *
- * It renders last on whatever page carries it, and is a component of its own for
- * that reason rather than for any difference in what it is: a page of history is
- * hundreds of pixels of rows, and anything placed under it is unreachable without
- * scrolling past every run ever made.
- *
- * Full width, not a column beside the queue. That was tried, to use the margin,
- * but a row carries seven facts of its own — time, label, kind, ran, status,
- * menu — and squeezing them into a third of the page cost more than the empty
- * margin did.
- */
+/** Shows five recent rows or the full current history page, retaining bounded paging and all lifecycle actions. */
 export function HistoryView() {
   const {
     history,
@@ -29,14 +19,33 @@ export function HistoryView() {
     retry,
   } = useJobsContext()
 
+  const [expanded, setExpanded] = React.useState(false)
+  const shown = expanded ? history : history.slice(0, 5)
+
   return (
     <section>
-      {/* The count describes the whole ledger, rather than the current page. */}
       <AdminSectionHeader
         title="History"
         meta={`${historyTotal} ${historyTotal === 1 ? "job" : "jobs"}`}
+        action={
+          history.length > 5 && (
+            <Button
+              variant="text"
+              size="sm"
+              aria-expanded={expanded}
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded ? "Recent only" : "Full history"}
+            </Button>
+          )
+        }
       />
-      <JobHistory jobs={history} onRetry={retry} onDelete={remove} />
+      <JobHistory jobs={shown} onRetry={retry} onDelete={remove} />
+      {!expanded && history.length > 5 && (
+        <p className="py-2 text-xs text-muted-foreground">
+          Showing 5 of {history.length} on this page
+        </p>
+      )}
       <HistoryPager
         page={historyPage}
         pages={historyPages}

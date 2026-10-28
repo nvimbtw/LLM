@@ -5,29 +5,29 @@ use llm_engine::Proxy;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::extractors::{AdminUser, AuthUser};
-use crate::upstream::{answer, caller, visibility, visible_get, with_query, Answer};
+use crate::extractors::{AdminUser, AuthUser, ModelReader};
+use crate::upstream::{answer, caller, visible_get, with_query, Answer};
 
 /// The query string rides through so `?checkpoints=true` reaches the LLM engine,
 /// which leaves a run's intermediates out unless asked. Nothing here restates
 /// that default: the LLM engine owns it, and a second copy could disagree with it.
 #[get("")]
-async fn list(user: AuthUser, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
-    visible_get(&user, &engine, &with_query("/models", &req)).await
+async fn list(user: ModelReader, req: HttpRequest, engine: web::Data<Proxy>) -> Answer {
+    model_read(&user, &engine, &with_query("/models", &req)).await
 }
 
-/// Read authorized model metadata and attach its public benchmark scores.
+/// Read authorized model facts; attach existing benchmark records only for administrators.
 #[get("/{model_id}")]
 async fn get_one(
-    user: AuthUser,
+    user: ModelReader,
     model_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
     bench: web::Data<bench_engine::Proxy>,
 ) -> Answer {
     let (status, mut model) = engine
         .scoped_json(
-            &caller(&user),
-            visibility(&user.claims),
+            &user.caller(),
+            user.visibility(),
             llm_engine::Method::GET,
             &format!("/models/{model_id}"),
             None,
@@ -41,9 +41,13 @@ async fn get_one(
         )
         .json(model));
     }
+    if user.visibility() != "administration" {
+        model["benchmarks"] = serde_json::json!([]);
+        return answer(model);
+    }
     let scores = bench
         .get(
-            &caller(&user),
+            &user.caller(),
             &format!("/benchmarks?model_id={model_id}&limit=50"),
         )
         .await?;
@@ -51,12 +55,18 @@ async fn get_one(
     answer(model)
 }
 
+/// Read benchmark records only after the engine authorizes the selected model.
 #[get("/{model_id}/benchmarks")]
 async fn benchmarks(
     user: AuthUser,
     model_id: web::Path<Uuid>,
+    engine: web::Data<Proxy>,
     bench: web::Data<bench_engine::Proxy>,
 ) -> Answer {
+    let admitted = visible_get(&user, &engine, &format!("/models/{model_id}")).await?;
+    if !admitted.status().is_success() {
+        return Ok(admitted);
+    }
     answer(
         bench
             .get(
@@ -67,20 +77,14 @@ async fn benchmarks(
     )
 }
 
-/// A model's intermediate checkpoints, in the order the run took them.
-///
-/// `AuthUser`, like the model detail and the attention pass next door and unlike
-/// the edit and delete below: a checkpoint is a model, and reading which ones a
-/// run left behind reveals nothing an ordinary session cannot already read off
-/// the model itself. Admin is for the two routes that change what everyone else
-/// sees.
+/// Return visible published checkpoints, or all run intermediates for an administrator.
 #[get("/{model_id}/checkpoints")]
 async fn checkpoints(
-    user: AuthUser,
+    user: ModelReader,
     model_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
 ) -> Answer {
-    visible_get(&user, &engine, &format!("/models/{model_id}/checkpoints")).await
+    model_read(&user, &engine, &format!("/models/{model_id}/checkpoints")).await
 }
 
 /// One head's attention over the caller's own text, materialized by the LLM engine
@@ -98,6 +102,10 @@ async fn attention(
     body: web::Json<Value>,
     engine: web::Data<Proxy>,
 ) -> Answer {
+    let admitted = visible_get(&user, &engine, &format!("/models/{model_id}")).await?;
+    if !admitted.status().is_success() {
+        return Ok(admitted);
+    }
     let path = format!("/models/{model_id}/attention");
     answer(
         engine
@@ -113,6 +121,10 @@ async fn attention_points(
     model_id: web::Path<Uuid>,
     engine: web::Data<Proxy>,
 ) -> Answer {
+    let admitted = visible_get(&user, &engine, &format!("/models/{model_id}")).await?;
+    if !admitted.status().is_success() {
+        return Ok(admitted);
+    }
     visible_get(
         &user,
         &engine,
@@ -121,6 +133,7 @@ async fn attention_points(
     .await
 }
 
+/// Persist model display/publication fields after administrator admission.
 #[patch("/{model_id}")]
 async fn edit(
     _admin: AdminUser,
@@ -136,6 +149,7 @@ async fn edit(
     )
 }
 
+/// Remove model artifacts after administrator admission.
 #[delete("/{model_id}")]
 async fn remove(_admin: AdminUser, model_id: web::Path<Uuid>, engine: web::Data<Proxy>) -> Answer {
     answer(
@@ -143,6 +157,25 @@ async fn remove(_admin: AdminUser, model_id: web::Path<Uuid>, engine: web::Data<
             .delete(&auth::Caller::System, &format!("/models/{model_id}"))
             .await?,
     )
+}
+
+/// Forward model reads with verified optional identity, trusted visibility and the exact upstream status.
+async fn model_read(reader: &ModelReader, engine: &Proxy, path: &str) -> Answer {
+    let (status, value) = engine
+        .scoped_json(
+            &reader.caller(),
+            reader.visibility(),
+            llm_engine::Method::GET,
+            path,
+            None,
+            8 * 1024 * 1024,
+        )
+        .await?;
+    Ok(actix_web::HttpResponse::build(
+        actix_web::http::StatusCode::from_u16(status)
+            .unwrap_or(actix_web::http::StatusCode::BAD_GATEWAY),
+    )
+    .json(value))
 }
 
 /// Register shared model reads/inspection and administrator-only model mutations.

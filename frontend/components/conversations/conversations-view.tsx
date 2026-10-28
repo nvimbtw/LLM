@@ -4,6 +4,8 @@ import { MessageSquarePlus } from "lucide-react"
 
 import { ButtonLink } from "@/components/ui/button-link"
 import { PageHeader } from "@/components/ui/page-header"
+import { EmptyState } from "@/components/ui/empty-state"
+import { ResourceList } from "@/components/ui/resource-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useChatArchive } from "@/components/chat/chats-provider"
 import { LoadError } from "@/components/ui/error-state"
@@ -61,10 +63,7 @@ export function ConversationsView() {
         <ArchiveHeader count={0} tokens={0} />
         <ul>
           {Array.from({ length: 6 }).map((_, i) => (
-            <li
-              key={i}
-              className="flex items-baseline gap-5 border-b border-border py-5 pl-4"
-            >
+            <li key={i} className="flex items-baseline gap-5 py-5 pl-4">
               <Skeleton className="h-3 w-4" />
               <div className="flex-1 space-y-2">
                 <Skeleton className="h-4 w-56" />
@@ -90,15 +89,15 @@ export function ConversationsView() {
     return (
       <div>
         <ArchiveHeader count={0} tokens={0} />
-        <div className="flex flex-col items-center gap-5 py-24 text-center">
-          <p className="max-w-xs text-sm text-muted-foreground">
-            No conversations yet. Your archive will fill in as you chat.
-          </p>
-          <ButtonLink variant="outline" href="/">
-            <MessageSquarePlus />
-            Start a chat
-          </ButtonLink>
-        </div>
+        <EmptyState
+          title="No conversations yet"
+          action={
+            <ButtonLink variant="outline" href="/">
+              <MessageSquarePlus />
+              Start a chat
+            </ButtonLink>
+          }
+        />
       </div>
     )
   }
@@ -108,11 +107,11 @@ export function ConversationsView() {
   return (
     <div>
       <ArchiveHeader count={conversations.length} tokens={totalTokens} />
-      <ol>
+      <ResourceList>
         {conversations.map((chat, i) => (
           <ConversationItem key={chat.id} chat={chat} index={i} />
         ))}
-      </ol>
+      </ResourceList>
     </div>
   )
 }

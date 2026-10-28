@@ -6,7 +6,7 @@
 parameter/context figures in a single-column ledger. Filters and bulk-selection
 actions remain open rows above the entries, without a registry-wide summary strip. Search matches name, description and family; admins
 also have visibility filters and explicit bulk selection. `/models/[id]` uses
-open fact ledgers for architecture, training, lineage, checkpoints and attention.
+an anatomy view with resolved measurements on the operations, a compact training record, and the existing lineage, checkpoints and attention sections.
 
 Administrators edit the name, description, family and size directly in the page.
 Save changes persists the complete display draft; Cancel restores stored values
@@ -14,7 +14,9 @@ and failures retain the draft. Size is an explicit Fast, Balanced or Flagship
 category, shown as quiet text. Unassigned models have no category; parameter
 counts never assign it. Readers see text without editing, publication or deletion
 controls. Rust's admin extractor remains the write-authorization boundary.
-Drafts, requests and diagram state reset when session or model identity changes.
+Requests and diagram state reset when session or model identity changes. Display
+drafts use [tab-local recovery](editing.md#draft-recovery) for the same actual
+session/model, with explicit dirty, save, failure and cancel states.
 
 ## Architecture and counts across training families
 
@@ -38,13 +40,38 @@ take precedence; only when absent does the shared training calculation estimate
 from shape and measured vocabulary. A requested `max_vocab` is a learning ceiling,
 not the vocabulary actually built. Nested legacy dataset summaries are supported.
 
-`components/training/architecture-flow.tsx` is shared with the training composer.
-Model details explicitly select its **generation** view, regardless of how the
-model was trained: token scores feed sampling, and the chosen token returns to
-the growing prompt before the next forward pass. The training page selects the
-training view. See [Architecture diagram](architecture.md) for motion, geometry,
-accessibility and the limits of the illustration. The attention viewer uses the
-actual discovered layer/head or occurrence metadata, so it remains available for inherited architectures.
+`components/models/model-anatomy.tsx` presents the saved legacy Transformer shape
+as embedding → repeated attention/feed-forward → token scores. Exact vocabulary,
+channels, heads, layers and feed-forward width stay attached to their operations;
+context and the measured or explicitly estimated global parameter count remain
+visible. This is a simplified, read-only structure, not a captured execution graph.
+It never adds numeric editing. Saved modular definitions retain their own source
+and graph inspector for administrators and never acquire a legacy Transformer
+from requested config. Missing shape remains explicitly unavailable. The training
+record includes only available recorded figures; public provenance is explicitly
+unavailable. Training composers retain their existing ArchitectureFlow.
+
+## Public access and identity
+
+Anonymous visitors can browse published models and their public details. Ordinary
+accounts receive the same published projection; admins can inspect private models
+and provenance. Rust and the engine enforce this visibility. A private ID reads
+as missing to public readers; filters cannot grant access. Only published children
+appear in a public checkpoint list, and private parent/run identities remain hidden.
+The new-chat page presents login and published-catalogue choices to anonymous
+visitors; its send hook cannot create a chat without a current session. HTTP and
+WebSocket chat admission also enforce model publication server-side, so manually
+supplying a private model/checkpoint ID cannot bypass the picker.
+Chat and attention require login; publication, metadata, deletion and saved source
+inspection remain administrative actions. Existing benchmark presentation remains
+unchanged and admin-only.
+
+Model reads wait for browser identity hydration, then bind requests and displayed
+results to the actual session token or anonymous identity. Replacement masks old
+private facts immediately and aborts the prior read. Anonymous reads never borrow
+a later account's token. Anonymous detail mounting does not request private dataset
+catalogues or attention. Invalid bearer credentials retain the normal 401/session
+expiration behavior.
 
 ## Lineage: how a model was constructed
 

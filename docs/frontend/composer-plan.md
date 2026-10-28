@@ -14,25 +14,17 @@ out of the preview; subsequent rows move into place. Completed and cancelled
 tasks remain in the full list with distinct marks. `sending` controls the
 active task's warm mark; an interrupted turn shows it as paused.
 
-The preview takes real space above the composer and sits below its stacking
-layer, so neither the list nor its disclosure covers the input's focus ring.
-Hovering with a mouse unfolds
-the full plan upward over the conversation without moving the composer. Click
-pins it; another click folds it. Keyboard focus opens it too, Escape dismisses
-it, and touch can toggle the same button. Expanded content scrolls within a
+The preview and full disclosure occupy the composer's shared textured upper
+region within its outline. Hover, click, keyboard focus and touch expand the
+full list naturally; Escape folds it. Expanded content scrolls within a
 viewport-relative cap. Inactive copies are inert and hidden from assistive
-technology. Reduced motion removes the movement, retaining the task states.
+technology. Reduced motion removes movement while retaining task states.
 
-Slash command discovery folds the task preview down to its header until the
-menu closes. An all-completed plan keeps a compact completion header; a plan
-with cancelled tasks says finished instead of claiming every task succeeded.
-
-The compact list continues the composer's frosted surface; the full disclosure
-is opaque, like other menus. Both take the composer's rounded corners rather
-than the sheet radius. Colours and elevation use existing theme roles.
-Motion lives in `components/chat/composer-plan.css`, imported by the component.
-The plan clips its paint at the bottom join so its overlay shadow cannot bleed
-through the frosted composer. The input and its focus ring sit above that join.
+Slash command discovery temporarily replaces the plan region and restores it
+when the menu closes, including any open editing draft. An all-completed plan
+keeps a compact completion header; a plan containing cancellations says finished
+rather than claiming every task succeeded. Neither replies nor disclosure
+transitions change task status. Motion lives in `components/chat/composer-plan.css`.
 
 ## User editing
 

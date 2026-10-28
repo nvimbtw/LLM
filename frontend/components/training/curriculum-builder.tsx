@@ -71,7 +71,7 @@ export function CurriculumBuilder({
         const isCollapsed = collapsed.has(i)
         const title = stage.name?.trim() || `Stage ${i + 1}`
         return (
-          <div key={i} className="border-t border-border/60">
+          <div key={i} className="py-1">
             <div className="flex items-center justify-between gap-2 py-3">
               <button
                 type="button"
@@ -134,7 +134,7 @@ export function CurriculumBuilder({
             </div>
 
             {!isCollapsed && (
-              <div className="space-y-3 border-t border-border/60 py-3">
+              <div className="space-y-3 pb-3">
                 <Input
                   variant={variant}
                   aria-label={`Stage ${i + 1} name`}

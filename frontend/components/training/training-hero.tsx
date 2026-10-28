@@ -269,8 +269,6 @@ export function TrainingHero({
   train,
   curriculum,
 }: TrainingHeroProps) {
-  // The training figures are the headline from the moment training starts
-  // through done; before that, phase 1's own counts are.
   const trainPhase = status != null && status !== "tokenizing"
   const finished =
     status === "done" || status === "cancelled" || status === "failed"
@@ -286,8 +284,7 @@ export function TrainingHero({
         },
         { label: "Loss", value: loss4(train.loss) },
         { label: "Avg loss", value: loss4(train.avg_loss) },
-        // A run that has stopped has no estimate left, only a duration. The slot
-        // stays where it is so the strip does not reshuffle when it lands.
+
         finished
           ? { label: "Elapsed", value: duration(train.elapsed_secs) }
           : { label: "ETA", value: duration(train.eta_secs) },
@@ -296,8 +293,7 @@ export function TrainingHero({
       ? [
           {
             label: "Conversations",
-            // A preference tune names the same count `examples`; both are "how
-            // many of the things this mode trains on did phase 1 find".
+
             value: compact(tokenize.conversations ?? tokenize.examples),
           },
           { label: "Total tokens", value: compact(tokenize.total_tokens) },
@@ -305,10 +301,6 @@ export function TrainingHero({
           { label: "Too long", value: compact(tokenize.skipped_too_long) },
         ]
       : [
-          // Live counts rather than the four end-of-phase figures that used to
-          // stand here reading "—" for the whole of the build. Vocabulary and
-          // merges are in the build panel's step rail below, where they land the
-          // moment the tokenizer is trained.
           {
             label: "Documents",
             value:
@@ -343,18 +335,12 @@ export function TrainingHero({
           : "Phase 1 of 2 — preparing the data"
 
   return (
-    <section className="border-y border-border/60">
+    <section className="space-y-2">
       <div className="flex items-start justify-between gap-6 py-4">
         <div className="min-w-0 space-y-1">
           <h2 className="font-display text-xl">{headline}</h2>
           <p className="text-sm text-balance text-muted-foreground">{detail}</p>
         </div>
-        {/* The site's own mark, where a mini copy of the embedding globe used to
-            sit. The globe is a *figure* — it shows the token cloud's principal
-            axes — and up here, at 96px with no axes or caption, it read as
-            decoration while the real one (with its explanation) sits in the
-            diagnostics panel below. The throbber says the one thing this corner
-            should: which phase the run is in, and that it is still moving. */}
         <Throbber
           mode={phaseMode(status)}
           className="hidden shrink-0 self-start sm:block"
@@ -370,7 +356,7 @@ export function TrainingHero({
       </div>
 
       {showCurriculum && (
-        <div className="border-t border-border py-4">
+        <div className="py-4">
           <CurriculumProgress
             stages={curriculum}
             train={train}
@@ -379,7 +365,7 @@ export function TrainingHero({
         </div>
       )}
 
-      <div className="border-t border-border">
+      <div className="pt-2">
         <StatRun stats={stats} />
       </div>
     </section>

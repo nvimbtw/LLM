@@ -39,7 +39,9 @@ Project names are nonblank and at most 120 Unicode characters; descriptions allo
 editable on both the creation and existing-project pages; no metadata modal is
 used. Fields retain the page's heading/prose style with no resting border or note
 box. Create project or Save changes explicitly persists all three fields; failed
-saves preserve the draft. The privacy/conversation-count line sits underneath the
+saves preserve the draft. Existing projects expose Cancel and an unsaved state,
+and [tab-local recovery](editing.md#draft-recovery) preserves edits while browsing.
+The privacy/conversation-count line sits underneath the
 description, and Delete project appears beside New chat in the page header. Deleting
 a project preserves its conversations and messages, removes their association and
 refreshes both project navigation and the chat archive. Moving a chat uses the same

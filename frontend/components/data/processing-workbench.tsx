@@ -230,7 +230,7 @@ function StepChip({
     <div
       className={cn(
         "flex shrink-0 items-center gap-2 border-y px-3 py-1.5 transition-colors",
-        isOpen ? "border-primary/50" : "border-border/60"
+        isOpen ? "border-primary/50" : "border-border"
       )}
     >
       <span className="font-mono text-xs text-muted-foreground">
@@ -280,7 +280,7 @@ function StepSettings({
   onSourceSaved,
 }: StepSettingsProps) {
   return (
-    <div className="border-t border-border/60 py-4">
+    <div className="border-t border-border py-4">
       <p className="text-xs text-muted-foreground">{processor.description}</p>
 
       {processor.params.length > 0 && (
@@ -327,7 +327,7 @@ function StepSettings({
           })}
         </div>
       )}
-      <div className="mt-4 border-t border-border/60 pt-4">
+      <div className="mt-4 border-t border-border pt-4">
         <ProcessorSource
           key={processor.name}
           name={processor.name}
@@ -441,7 +441,7 @@ function DocumentDiff({
 
   if (dropped) {
     return (
-      <div className="grid overflow-hidden border-y border-border/60 sm:grid-cols-2">
+      <div className="grid overflow-hidden border-y border-border sm:grid-cols-2">
         <Side text={before} tone="removed" />
         <div className="flex items-center justify-center border-t border-border px-3 py-6 text-xs text-muted-foreground italic sm:border-t-0 sm:border-l">
           — removed —
@@ -451,7 +451,7 @@ function DocumentDiff({
   }
 
   return (
-    <div className="max-h-80 overflow-auto border-y border-border/60 font-mono text-xs">
+    <div className="max-h-80 overflow-auto border-y border-border font-mono text-xs">
       <table className="w-full table-fixed border-collapse">
         <colgroup>
           <col className="w-10" />

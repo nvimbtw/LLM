@@ -11,6 +11,12 @@ import uvicorn
 from fastapi import Depends, FastAPI
 
 
+def fixture_stream(*_args, **_kwargs):
+    """Emit one synthetic completed reply after real publication admission without loading numerical models."""
+    yield "token", {"token": "fixture answer"}
+    return {"text": "fixture answer", "generated_tokens": 1}
+
+
 def serve() -> None:
     """Configure isolated SQLite/artifacts, seed source-bearing rows and serve without engine lifespan."""
     root, engine = map(Path, sys.argv[1:])
@@ -18,7 +24,7 @@ def serve() -> None:
     sys.path.insert(0, str(engine))
     import store
     from api import auth
-    from api.routes import models, runs
+    from api.routes import inference, models, runs
     from api.runner import RUNNER
     from api.runs import Event, REGISTRY
     from store import queries as q
@@ -41,8 +47,11 @@ def serve() -> None:
         model = q.upsert_model(db, model_id=uuid4(), name="published", published=True, context=128,
             parameters={"config": {"source": source}, "result": {"graph": source, "parameters": 123}})
         ids["model"] = str(model.id)
-        q.upsert_model(db, model_id=uuid4(), name="checkpoint", parent_id=model.id, checkpoint_index=1,
+        checkpoint = q.upsert_model(db, model_id=uuid4(), name="checkpoint", parent_id=model.id, checkpoint_index=1,
             parameters={"source": source})
+        ids["private_checkpoint"] = str(checkpoint.id)
+        private = q.upsert_model(db, model_id=uuid4(), name="private model", parameters={"source": source})
+        ids["private_model"] = str(private.id)
     for name, kind in [("validation_0", "model_validation"), ("public_0", "train")]:
         live = REGISTRY.adopt(ids[name], kind, {"source": source})
         REGISTRY.publish(live, Event("log", {"line": source}))
@@ -51,6 +60,11 @@ def serve() -> None:
     app = FastAPI(dependencies=[Depends(auth.require_service)])
     app.include_router(runs.router)
     app.include_router(models.router)
+    app.include_router(inference.router)
+    inference.chat_pipeline.validate_context_tokenizer = lambda *_: None
+    inference.chat_pipeline.count_tokens = lambda *_: {"tokens": 1}
+    inference.serving.run = lambda *_args, **_kwargs: {"text": "fixture answer", "generated_tokens": 1}
+    inference.serving.stream = fixture_stream
     connection = socket.socket()
     connection.bind(("127.0.0.1", 0))
     print(json.dumps({"url": f"http://127.0.0.1:{connection.getsockname()[1]}", **ids}), flush=True)

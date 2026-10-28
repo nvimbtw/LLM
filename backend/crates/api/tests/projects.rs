@@ -361,13 +361,14 @@ async fn all_rounds_receive_only_owned_stored_project_context(pool: PgPool) {
         test::call_service(&app, request).await.status(),
         StatusCode::CREATED
     );
-    let next = api::conversation::prepare(&pool, &proxy, alice, chat.id,
+    let next = api::conversation::prepare(&pool, &proxy, alice, "public", chat.id,
         json!({"model_name":"tiny","tool_result":{"body":"other unrelated terms"},"project":{},"memories":[{}]})).await.unwrap();
     assert_eq!(next.config["memories"][0]["message"], json!(memory.id));
     let steering = api::conversation::prepare(
         &pool,
         &proxy,
         alice,
+        "public",
         chat.id,
         json!({"model_name":"tiny","tool_result":{},"interject":"unmatchedword"}),
     )
@@ -385,7 +386,7 @@ async fn all_rounds_receive_only_owned_stored_project_context(pool: PgPool) {
     let standalone = db::conversation::create(&pool, alice, "standalone")
         .await
         .unwrap();
-    let ordinary = api::conversation::prepare(&pool, &proxy, alice, standalone.id,
+    let ordinary = api::conversation::prepare(&pool, &proxy, alice, "public", standalone.id,
         json!({"model_name":"tiny","text":question,"project":expected["project"],"memories":expected["memories"]})).await.unwrap();
     assert!(ordinary.config.get("project").is_none());
     assert!(ordinary.config.get("memories").is_none());
@@ -477,6 +478,7 @@ async fn failed_preparation_and_visible_history_limit_retrieval(pool: PgPool) {
         &pool,
         &proxy,
         alice,
+        "public",
         chat.id,
         json!({"model_name":"incompatible","text":"orbit battery"}),
     )
@@ -497,6 +499,7 @@ async fn failed_preparation_and_visible_history_limit_retrieval(pool: PgPool) {
         &pool,
         &proxy,
         alice,
+        "public",
         chat.id,
         json!({"model_name":"tiny","text":"orbit battery"}),
     )
@@ -510,6 +513,7 @@ async fn failed_preparation_and_visible_history_limit_retrieval(pool: PgPool) {
         &pool,
         &proxy,
         alice,
+        "public",
         chat.id,
         json!({"model_name":"tiny","tool_result":{},"history_floor":floor.id}),
     )

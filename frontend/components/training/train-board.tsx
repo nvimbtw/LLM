@@ -25,6 +25,7 @@ import {
 } from "@/components/training/run-config"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { EditableTitle } from "@/components/ui/editable-title"
 import { Panel } from "@/components/ui/panel"
 import { PageHeader } from "@/components/ui/page-header"
 import {
@@ -48,6 +49,8 @@ export interface TrainBoardProps {
   modelsRefreshKey?: unknown
   /** The follow-up list. Part of what the button submits, so it sits above it. */
   footer?: React.ReactNode
+  /** Browser draft status and discard action beside the page title. */
+  draftStatus?: React.ReactNode
 }
 
 /** Edits a run as page-native fields and queues its effective config after shared validation. Fine-tunes default to the first available base. */
@@ -58,6 +61,7 @@ export function TrainBoard({
   onStart,
   modelsRefreshKey,
   footer,
+  draftStatus,
 }: TrainBoardProps) {
   const { models, isLoading: modelsLoading } = useModels(modelsRefreshKey)
   const { datasets, isLoading: datasetsLoading } = useDatasets(
@@ -109,17 +113,16 @@ export function TrainBoard({
         back={{ href: "/admin", label: "Admin" }}
         className="mb-0 border-b-0 pb-0"
         contentClassName="min-w-48 flex-1"
+        description={draftStatus}
         title={
           <>
             <span className="sr-only">Train a model</span>
-            <Input
-              variant="inline"
+            <EditableTitle
               aria-label="Model name"
               value={cfg.model_name}
               onChange={(event) => set("model_name", event.target.value)}
               placeholder="Model name"
               disabled={disabled}
-              className="h-auto py-0 font-display text-3xl font-semibold tracking-tight md:text-3xl"
             />
           </>
         }
@@ -132,7 +135,7 @@ export function TrainBoard({
           />
         }
       />
-      <div className="border-b border-border/60 pt-5">
+      <div className="pt-5">
         <ModeToggle
           mode={cfg.mode}
           isCycleMode={isCycleMode}
@@ -352,7 +355,7 @@ function FieldGrid({
       {fields.map((f) => (
         <label
           key={f.key}
-          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/40 py-4"
+          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-4"
         >
           <FieldLabel hint={f.hint}>{f.label}</FieldLabel>
           {f.pow2 ? (
@@ -410,7 +413,7 @@ function ModeToggle({
     <div className="inline-flex gap-6">
       {(
         [
-          ["pretrain", "Pretrain"],
+          ["pretrain", "Pre-train"],
           ["sft", "Fine-tune"],
         ] as [TrainMode, string][]
       ).map(([value, label]) => (
@@ -419,7 +422,7 @@ function ModeToggle({
           type="button"
           size="sm"
           variant="text"
-          className={`h-auto rounded-none border-0 border-b-2 px-0 pb-3 hover:bg-transparent ${mode === value ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground"}`}
+          className={`h-auto rounded-none px-0 pb-3 hover:bg-transparent ${mode === value ? "font-medium text-primary" : "text-muted-foreground"}`}
           disabled={disabled}
           aria-pressed={mode === value}
           onClick={() => onChange(value)}

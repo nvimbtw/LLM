@@ -14,6 +14,8 @@ import { ConversationItem } from "@/components/conversations/conversation-item"
 import { Button } from "@/components/ui/button"
 import { PageHeader } from "@/components/ui/page-header"
 import { Skeleton } from "@/components/ui/skeleton"
+import { EmptyState } from "@/components/ui/empty-state"
+import { ResourceList } from "@/components/ui/resource-list"
 import { FormError, LoadError } from "@/components/ui/error-state"
 import {
   AlertDialog,
@@ -105,7 +107,7 @@ export function ProjectView({ projectId }: ProjectViewProps) {
         </section>
       )}
       <section aria-labelledby="project-conversations-heading">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-4">
           <h2
             id="project-conversations-heading"
             className="font-display text-xl font-semibold"
@@ -124,11 +126,9 @@ export function ProjectView({ projectId }: ProjectViewProps) {
             onRetry={view.refresh}
           />
         ) : project.threads.length === 0 ? (
-          <p className="py-12 text-center text-sm text-muted-foreground">
-            Start a new chat or add an existing conversation.
-          </p>
+          <EmptyState title="No conversations yet" />
         ) : (
-          <ol aria-busy={view.isLoading}>
+          <ResourceList aria-busy={view.isLoading}>
             {project.threads.map((chat, index) => (
               <ConversationItem
                 key={chat.id}
@@ -140,7 +140,7 @@ export function ProjectView({ projectId }: ProjectViewProps) {
                 }}
               />
             ))}
-          </ol>
+          </ResourceList>
         )}
         {project.threads_total > PROJECT_PAGE_SIZE && (
           <div className="mt-6 flex items-center justify-between gap-3">

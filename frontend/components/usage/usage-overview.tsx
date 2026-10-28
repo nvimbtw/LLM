@@ -1,6 +1,7 @@
 "use client"
 
 import { useUsage } from "@/hooks/use-usage"
+import { LoadError } from "@/components/ui/error-state"
 import { Skeleton } from "@/components/ui/skeleton"
 import { UsageStats } from "./usage-stats"
 import { UsageChart } from "./usage-chart"
@@ -10,14 +11,17 @@ export interface UsageOverviewProps {
   compact?: boolean
 }
 
+/** Presents account usage or a notification-backed retry boundary when its read fails. */
 export function UsageOverview({ compact = false }: UsageOverviewProps) {
-  const { usage, isLoading, error } = useUsage()
+  const { usage, isLoading, error, retry } = useUsage()
 
   if (error) {
     return (
-      <p className="text-sm text-destructive">
-        Failed to load usage. Please try again.
-      </p>
+      <LoadError
+        title="Failed to load usage."
+        hint={error.message}
+        onRetry={retry}
+      />
     )
   }
 
@@ -31,9 +35,6 @@ export function UsageOverview({ compact = false }: UsageOverviewProps) {
     )
   }
 
-  // Chart first, models underneath — the per-model breakdown is secondary to the
-  // trend, and full-width lets a long list flow into columns instead of a tall
-  // side rail that quadruples the page height.
   return (
     <div className="flex flex-col gap-6">
       <UsageStats compact={compact} usage={usage} />
