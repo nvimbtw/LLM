@@ -7,7 +7,7 @@ footer, above the profile/settings entry — not a labelled nav group. The row i
 you have access to, which is what the footer holds; the content above it is the
 subject you are reading.
 
-- `/admin` places `QueueView` and `HistoryView` in the left column and the
+- `/admin` places Services, `QueueView` and `HistoryView` in the left column and the
   grouped, collapsible `AdminDirectory` Workbench in the right column. Narrow
   screens stack the Workbench after the ledger. Data links to Processors and
   Datasets; Architectures links to Blocks and Architectures; Train links to
@@ -21,10 +21,13 @@ subject you are reading.
   Full history reveals that page in full. Both views retain pagination and all
   metadata/actions. Lists have no decorative row separators, names wrap, and
   quiet overflow actions remain visible for touch and keyboard access.
-- The Services section shows backend-observed engine, just-bash and SearXNG
-  availability. Optional integrations show Not configured. A lost dashboard
-  subscription replaces the snapshot with a reconnecting message until fresh
-  data arrives. See [service availability](../backend/services.md#availability-monitoring).
+- The Admin header's character-drawn branch enters from the right over an
+  edge-to-edge character field and tapers toward the left. Six offshoots match the Services list below in
+  order. Their colour and interrupted strokes reflect the engines, just-bash and
+  SearXNG; only reconnecting offshoots move, and reduced motion keeps them still.
+  A lost dashboard subscription clears the service states and shows a
+  reconnecting message until fresh data arrives. See
+  [service availability](../backend/services.md#availability-monitoring).
 - The subpages carry the same open style: shared `PageHeader` titles,
   open rows and text-only page tabs with a steel-blue active label. The editable
   Train heading and gym-run

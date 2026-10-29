@@ -20,6 +20,8 @@ export interface PageHeaderProps {
   back?: { href: string; label: string }
   className?: string
   titleClassName?: string
+  /** Allows a page to extend its identity texture beyond the content column. */
+  textureClassName?: string
   /** Allows editable titles to occupy the space remaining beside page actions. */
   contentClassName?: string
 }
@@ -33,11 +35,12 @@ export function PageHeader({
   back,
   className,
   titleClassName,
+  textureClassName,
   contentClassName,
 }: PageHeaderProps) {
   return (
     <header className={cn("relative isolate mb-8 py-3 pb-6", className)}>
-      <SectionTexture className="-z-10" />
+      <SectionTexture className={cn("-z-10", textureClassName)} />
       {back && (
         <Link
           href={back.href}

@@ -1,0 +1,1468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Admin — DeepSeek redesign · Slate</title>
+<style>
+/* ------------------------------------------------------------------
+   Slate admin — a folio for the dispatch desk.
+   Tokens follow frontend/app/globals.css (Kanagawa Lotus / Dragon).
+   Only system faces are used so the file stands alone.
+   ------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+  --paper: #f5f1e1;
+  --paper-raised: #fdfbf5;
+  --paper-under: #eee9d8;
+  --shade: #e9e6d6;
+  --sunk: #e6e2d0;
+  --ink: #4f4f58;
+  --ink-soft: #66645f;
+  --ink-faint: #8c897c;
+  --edge: #b6b3aa;
+  --edge-strong: #8c897c;
+  --primary: #4d699b;
+  --primary-hover: #3f5f96;
+  --on-primary: #f5f1e1;
+  --primary-wash: rgba(77, 105, 155, 0.075);
+  --success: #4e6733;
+  --warning: #bf7c00;
+  --danger: #c43b4f;
+  --kind-train: #3f5f96;
+  --kind-benchmark: #4e6733;
+  --kind-tokenize: #86582a;
+  --kind-gym: #0f6f66;
+  --kind-validation: #4f4f58;
+  --selection: #c9cbd1;
+  --selection-ink: #4f4f58;
+  --sheet-shadow: 1px 2px 0 rgba(79, 79, 88, 0.18);
+  --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 2px;
+  --gutter: clamp(1.25rem, 4vw, 4rem);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --paper: #181616;
+    --paper-raised: #232221;
+    --paper-under: #12120f;
+    --shade: #2a2827;
+    --sunk: #333130;
+    --ink: #c5c9c5;
+    --ink-soft: #a6a69c;
+    --ink-faint: #68625f;
+    --edge: #514d4c;
+    --edge-strong: #68625f;
+    --primary: #8ba4b0;
+    --primary-hover: #a6bec9;
+    --on-primary: #181616;
+    --primary-wash: rgba(139, 164, 176, 0.1);
+    --success: #8fb08f;
+    --warning: #c4b28a;
+    --danger: #c4746e;
+    --kind-train: #8ba4b0;
+    --kind-benchmark: #8fb08f;
+    --kind-tokenize: #c2a184;
+    --kind-gym: #79cbb8;
+    --kind-validation: #c5c9c5;
+    --selection: #223249;
+    --selection-ink: #c5c9c5;
+    --sheet-shadow: 1px 2px 0 rgba(13, 12, 12, 0.72);
+  }
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.65;
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--selection); color: var(--selection-ink); }
+
+h1, h2, h3, p, figure, ul, ol { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.shell {
+  width: 100%;
+  max-width: 104rem;
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+.skip {
+  position: absolute;
+  left: 1rem;
+  top: -5rem;
+  z-index: 60;
+  padding: 0.5rem 0.75rem;
+  background: var(--paper-raised);
+  color: var(--ink);
+  box-shadow: var(--sheet-shadow);
+  font-size: 0.8125rem;
+}
+.skip:focus { top: 1rem; }
+
+/* ---- type devices ------------------------------------------------ */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.14em;
+  word-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+.heading-group {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  min-width: 0;
+}
+.section-head h2 {
+  font-family: var(--display);
+  font-size: 1.75rem;
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.022em;
+  color: var(--ink);
+}
+.section-meta {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.text-action {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 0.12rem 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.text-action:hover { color: var(--ink); border-bottom-color: var(--edge); }
+.text-action:focus-visible { outline-offset: 2px; }
+
+/* ---- masthead ---------------------------------------------------- */
+.masthead {
+  position: relative;
+  overflow: clip;
+  padding-block: clamp(1.4rem, 3vw, 2.3rem) clamp(2.5rem, 5vw, 4.25rem);
+}
+.masthead-bar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem 2rem;
+  flex-wrap: wrap;
+}
+.brand {
+  font-family: var(--display);
+  font-size: 1.75rem;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+.brand:hover { color: var(--primary); }
+.folio {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.035em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.masthead-main {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 33rem);
+  align-items: center;
+  gap: clamp(2rem, 5vw, 5rem);
+  margin-top: clamp(2.5rem, 5vw, 4rem);
+}
+.title-block h1 {
+  font-family: var(--display);
+  font-size: clamp(2.75rem, 4.8vw, 3.75rem);
+  font-weight: 400;
+  line-height: 0.96;
+  letter-spacing: -0.032em;
+  color: var(--ink);
+}
+.title-tail {
+  display: block;
+  margin-top: 0.32em;
+  font-size: clamp(1.125rem, 1.35vw, 1.375rem);
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--ink-soft);
+}
+
+.texture {
+  position: absolute;
+  z-index: 0;
+  top: -22%;
+  right: -2%;
+  width: 72%;
+  height: 145%;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(100deg, transparent 0%, #000 38%, #000 86%, transparent 100%);
+  mask-image: linear-gradient(100deg, transparent 0%, #000 38%, #000 86%, transparent 100%);
+}
+.texture pre {
+  width: max-content;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.85;
+  letter-spacing: 0.2em;
+  color: var(--ink-soft);
+  opacity: 0.12;
+  white-space: pre;
+  user-select: none;
+}
+
+/* ---- service tree (a signal comb, not a list) -------------------- */
+.service-tree {
+  position: relative;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.service-tree::before {
+  content: "";
+  position: absolute;
+  left: 1.25rem;
+  top: 0.45rem;
+  bottom: 0.45rem;
+  width: 1px;
+  background: var(--edge);
+  opacity: 0.75;
+}
+.service-tree::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1.25rem;
+  height: 1px;
+  background: var(--edge);
+  opacity: 0.75;
+}
+.branch {
+  display: grid;
+  grid-template-columns: minmax(2rem, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  min-height: 1.25rem;
+}
+.branch-line {
+  justify-self: stretch;
+  height: 1px;
+  background: var(--success);
+}
+.branch-name {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+  text-align: right;
+  white-space: nowrap;
+}
+.branch--online .branch-line { background: var(--success); }
+.branch--reconnecting .branch-line {
+  background: repeating-linear-gradient(90deg, var(--ink-soft) 0 3px, transparent 3px 7px);
+  opacity: 0.85;
+  animation: signal 3.4s ease-in-out infinite;
+}
+.branch--offline .branch-line {
+  position: relative;
+  justify-self: start;
+  width: 82%;
+  background: var(--danger);
+}
+.branch--offline .branch-line::after {
+  content: "×";
+  position: absolute;
+  left: calc(100% + 0.3rem);
+  top: 50%;
+  transform: translateY(-54%);
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--danger);
+}
+.branch--offline .branch-name { color: var(--danger); }
+.branch--unconfigured .branch-line {
+  background: repeating-linear-gradient(90deg, var(--ink-soft) 0 1px, transparent 1px 5px);
+  opacity: 0.5;
+}
+.branch--unconfigured .branch-name { color: var(--ink-soft); }
+
+@keyframes signal {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0.35; }
+}
+
+/* ---- workspace -------------------------------------------------- */
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  align-items: start;
+  gap: clamp(2.5rem, 6vw, 6rem);
+}
+.aside {
+  display: block;
+}
+
+/* ---- queue ------------------------------------------------------ */
+.queue-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem 1.35rem;
+}
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 1.875rem;
+  height: 1rem;
+  border: 1px solid var(--edge-strong);
+  border-radius: 999px;
+  background: var(--shade);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.switch-knob {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 50%;
+  background: var(--paper-raised);
+  transform: translateY(-50%);
+  transition: left 160ms ease;
+}
+.switch input:checked + .switch-track {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.switch input:checked + .switch-track .switch-knob { left: 0.9375rem; }
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.switch:has(input:checked) { color: var(--ink); }
+
+.button-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 0.4rem 0.65rem 0.44rem;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+.button-primary:hover { background: var(--primary-hover); }
+.button-primary .chev {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  min-width: 13.5rem;
+  padding: 0.35rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: 1px 2px 0 rgba(79, 79, 88, 0.2);
+}
+.menu a {
+  display: flex;
+  align-items: center;
+  min-height: 2.1rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 1px;
+  font-size: 0.875rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.menu a:hover,
+.menu a:focus-visible { background: var(--shade); outline-offset: 0; }
+.menu-gap { height: 0.3rem; }
+
+.now-label { margin-top: clamp(1.75rem, 3vw, 2.25rem); }
+.now {
+  margin-top: 0.55rem;
+  padding: 1.35rem 1.5rem 0;
+  background: var(--paper-raised);
+  border-radius: var(--radius);
+  box-shadow: var(--sheet-shadow);
+}
+.now-top {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1.1rem;
+  padding-bottom: 1.3rem;
+}
+.now-name {
+  display: inline;
+  font-family: var(--display);
+  font-size: clamp(1.375rem, 2.2vw, 1.75rem);
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.now-name:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.85rem;
+  margin-top: 0.55rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.now-side {
+  display: flex;
+  align-items: center;
+  gap: 1.15rem;
+}
+.now-figure { text-align: right; }
+.now-percent {
+  font-family: var(--display);
+  font-size: 1.75rem;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.now-elapsed {
+  margin-top: 0.22rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.now-progress {
+  position: relative;
+  height: 1px;
+  margin-inline: -1.5rem;
+  background: var(--shade);
+}
+.now-progress span {
+  display: block;
+  width: 42%;
+  height: 1px;
+  background: var(--primary);
+}
+
+.throbber {
+  display: grid;
+  grid-template-columns: repeat(7, 3px);
+  grid-auto-rows: 3px;
+  gap: 5px;
+  width: 3.25rem;
+  justify-content: center;
+  align-content: center;
+}
+.throbber span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink-soft);
+  opacity: 0.16;
+}
+.throbber span.on {
+  background: var(--primary);
+  animation: throb 2.6s ease-in-out infinite;
+}
+.throbber span.on:nth-child(4) { animation-delay: -0.2s; }
+.throbber span.on:nth-child(10) { animation-delay: -0.6s; }
+.throbber span.on:nth-child(11) { animation-delay: -0.9s; }
+.throbber span.on:nth-child(17) { animation-delay: -1.2s; }
+.throbber span.on:nth-child(18) { animation-delay: -1.5s; }
+.throbber span.on:nth-child(19) { animation-delay: -1.8s; }
+.throbber span.on:nth-child(25) { animation-delay: -2.1s; }
+.throbber span.on:nth-child(26) { animation-delay: -0.35s; }
+.throbber span.on:nth-child(32) { animation-delay: -0.75s; }
+@keyframes throb {
+  0%, 100% { opacity: 0.22; transform: scale(0.78); }
+  45% { opacity: 1; transform: scale(1.12); }
+}
+
+.band { margin-top: clamp(1.75rem, 3vw, 2.25rem); }
+.band-label { margin-bottom: 0.3rem; }
+.job-list {
+  display: flex;
+  flex-direction: column;
+  transition: opacity 180ms ease;
+}
+.job-list.is-paused { opacity: 0.52; }
+.job-row {
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem;
+  margin-inline: -0.65rem;
+  padding: 0.58rem 0.65rem;
+  border-radius: 1px;
+}
+.job-row:hover { background: var(--primary-wash); }
+.ordinal {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.chain-mark {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1;
+  color: var(--ink-faint);
+  text-align: right;
+}
+.job-body { min-width: 0; }
+.job-name {
+  display: inline-block;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.job-name:hover,
+.hist-name:hover {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.job-meta .kind {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+.kind--train { color: var(--kind-train); }
+.kind--benchmark { color: var(--kind-benchmark); }
+.kind--tokenize { color: var(--kind-tokenize); }
+.kind--gym { color: var(--kind-gym); }
+.kind--validation { color: var(--kind-validation); }
+.waiting { color: var(--ink-soft); }
+.dep {
+  color: var(--ink-soft);
+  text-decoration: underline;
+  text-decoration-color: var(--edge);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.dep:hover { color: var(--primary); text-decoration-color: currentColor; }
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.8rem;
+}
+.row-action {
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: none;
+  padding: 0.12rem 0;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.row-action:hover { color: var(--ink); border-bottom-color: var(--edge); }
+.row-action--danger:hover { color: var(--danger); border-bottom-color: currentColor; }
+.row-action:disabled {
+  opacity: 0.3;
+  cursor: default;
+  border-bottom-color: transparent;
+}
+
+/* ---- services --------------------------------------------------- */
+.services { margin-bottom: clamp(2.75rem, 5vw, 4.25rem); }
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1.35rem 1.75rem;
+  margin-top: 1.4rem;
+}
+.service { min-width: 0; }
+.service-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.service-state {
+  margin-top: 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+}
+.service-detail {
+  margin-top: 0.1rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+.state--online { color: var(--success); }
+.state--reconnecting { color: var(--ink-soft); }
+.state--offline { color: var(--danger); }
+.state--unconfigured { color: var(--ink-soft); }
+
+/* ---- history ---------------------------------------------------- */
+.history-toggle { margin-left: auto; }
+.history-list { margin-top: 1.35rem; }
+.day-group + .day-group { margin-top: 1.6rem; }
+.day-label { margin-bottom: 0.45rem; }
+.history-rows { display: flex; flex-direction: column; }
+.history-row {
+  display: grid;
+  grid-template-columns: 2.55rem minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.35rem 0.8rem;
+  margin-inline: -0.5rem;
+  padding: 0.42rem 0.5rem;
+  border-radius: 1px;
+}
+.history-row:hover { background: var(--primary-wash); }
+.hist-time {
+  padding-top: 0.1rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.hist-body { min-width: 0; }
+.hist-name {
+  display: inline-block;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.hist-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.65rem;
+  margin-top: 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.hist-meta .kind {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.status--done,
+.status--cancelled { color: var(--ink-soft); }
+.status--failed { color: var(--danger); }
+.hist-error {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--danger);
+}
+.hist-actions {
+  display: flex;
+  gap: 0.75rem;
+  padding-top: 0.1rem;
+}
+.history-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  margin-top: 1.4rem;
+}
+.history-note {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.pager a,
+.pager button,
+.pager span[aria-current] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.55rem;
+  height: 1.55rem;
+  border: 0;
+  border-radius: 1px;
+  background: none;
+  color: var(--ink-soft);
+  line-height: 1;
+}
+.pager a:hover { color: var(--ink); background: var(--shade); }
+.pager span[aria-current="page"] {
+  color: var(--primary);
+  font-weight: 500;
+}
+.pager .pager-arrow { font-size: 0.95rem; }
+.pager .is-disabled { opacity: 0.32; }
+
+/* ---- workbench -------------------------------------------------- */
+.workbench {
+  margin-top: clamp(4rem, 9vw, 8rem);
+  padding-bottom: clamp(3rem, 7vw, 6rem);
+}
+.directory {
+  display: grid;
+  grid-template-columns: 0.8fr 0.85fr 1.15fr 1.25fr 0.85fr;
+  align-items: start;
+  gap: clamp(1.5rem, 3vw, 2.75rem);
+  margin-top: 2rem;
+}
+.dir-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.2rem 0;
+  list-style: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+  cursor: pointer;
+}
+.dir-group summary::-webkit-details-marker { display: none; }
+.dir-chevron {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1;
+  color: var(--ink-soft);
+  transition: transform 160ms ease;
+}
+.dir-group:not([open]) .dir-chevron { transform: rotate(-90deg); }
+.dir-group ul {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.3rem;
+}
+.dir-link {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-height: 1.85rem;
+  padding: 0.28rem 0;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+.dir-link:hover {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.legacy {
+  flex: none;
+  padding: 0.08rem 0.28rem 0.12rem;
+  border-radius: 1px;
+  background: var(--shade);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  letter-spacing: 0.03em;
+  color: var(--ink-soft);
+}
+
+/* ---- responsive ------------------------------------------------- */
+@media (max-width: 64rem) {
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .service-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .directory { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 56rem) {
+  .masthead-main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+  }
+  .service-tree { max-width: 36rem; }
+}
+
+@media (max-width: 48rem) {
+  .now-top { grid-template-columns: 2.75rem minmax(0, 1fr); }
+  .now-side {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+    padding-top: 0.25rem;
+  }
+  .service-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .directory { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 40rem) {
+  .now { padding: 1rem 1rem 0; }
+  .now-progress { margin-inline: -1rem; }
+  .now-top { gap: 0.85rem; }
+  .job-row {
+    grid-template-columns: 1.35rem minmax(0, 1fr);
+    align-items: start;
+  }
+  .row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    margin-top: 0.3rem;
+  }
+  .history-row {
+    grid-template-columns: 2.4rem minmax(0, 1fr);
+  }
+  .hist-actions {
+    grid-column: 2;
+    margin-top: 0.25rem;
+  }
+  .queue-controls { width: 100%; }
+  .history-toggle { margin-left: 0; }
+}
+
+@media (max-width: 22rem) {
+  .directory { grid-template-columns: minmax(0, 1fr); }
+  .service-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+
+  <header class="masthead">
+    <div class="texture" aria-hidden="true"><pre>.  :   c o   O  08@ .    :  c   o O    . :   8 0 @ c  .   o :  O    . c  :  o  8 @ .   O 0
+  :  . o   @ 0 8   c :  O .   :  o 8 @   . c   O  0 :  .  c o   @   O .  8  :  c  0 .  o
+c  O .   8  :  o   @ 0   .  c :  O   8 0 @   .   o  :   c  O .  8  @ 0   o   :  c  . O
+  8 @ .  c   o :   O 0   . :  c  o   O  .  8 0 @   . c  :  o   @   O 0 .   :  c  8 @
+:  O   .  c  o   8 @ 0   :  .  O   c   o :   @  .  8  0  O  :  c .   o   @ 8   0  :  c
+  . c :   O 8   0  @ .   o   :  c  O .   8   @  o  :   c  .  0 O   :  8 @ .   c  o   O
+O  .  : 8   c   @ 0   o .   O   :  c  8  @ .   o  0  :  c  O .   8   @  :   o .   c  O
+   o :  c   0  @ .  8  O  :   . c   o   @ 8   0  .  O :   c  @   .  o   8  c  :  O .</pre></div>
+
+    <div class="masthead-bar">
+      <a class="brand" href="/">Slate</a>
+      <p class="folio">Thu 29 Oct 2026 · 14:32</p>
+    </div>
+
+    <div class="masthead-main">
+      <div class="title-block">
+        <h1>Admin <span class="title-tail">— DeepSeek redesign</span></h1>
+      </div>
+
+      <figure class="service-tree" aria-hidden="true">
+        <div class="branch branch--online">
+          <span class="branch-line"></span>
+          <span class="branch-name">LLM engine</span>
+        </div>
+        <div class="branch branch--online">
+          <span class="branch-line"></span>
+          <span class="branch-name">Data engine</span>
+        </div>
+        <div class="branch branch--online">
+          <span class="branch-line"></span>
+          <span class="branch-name">Gyms engine</span>
+        </div>
+        <div class="branch branch--reconnecting">
+          <span class="branch-line"></span>
+          <span class="branch-name">Bench engine</span>
+        </div>
+        <div class="branch branch--offline">
+          <span class="branch-line"></span>
+          <span class="branch-name">just-bash</span>
+        </div>
+        <div class="branch branch--unconfigured">
+          <span class="branch-line"></span>
+          <span class="branch-name">SearXNG</span>
+        </div>
+      </figure>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="services" aria-labelledby="services-heading">
+      <div class="section-head">
+        <div class="heading-group">
+          <h2 id="services-heading">Services</h2>
+          <p class="section-meta" id="services-meta" aria-live="polite">3 of 6 online</p>
+        </div>
+      </div>
+
+      <ul class="service-grid">
+        <li class="service">
+          <p class="service-name">LLM engine</p>
+          <p class="service-state state--online">Online</p>
+          <p class="service-detail">training scheduler ready</p>
+        </li>
+        <li class="service">
+          <p class="service-name">Data engine</p>
+          <p class="service-state state--online">Online</p>
+          <p class="service-detail">ingest worker on shard 12</p>
+        </li>
+        <li class="service">
+          <p class="service-name">Gyms engine</p>
+          <p class="service-state state--online">Online</p>
+          <p class="service-detail">2 tasks open</p>
+        </li>
+        <li class="service">
+          <p class="service-name">Bench engine</p>
+          <p class="service-state state--reconnecting">Reconnecting</p>
+          <p class="service-detail">last seen 14:26</p>
+        </li>
+        <li class="service">
+          <p class="service-name">just-bash</p>
+          <p class="service-state state--offline">Offline</p>
+          <p class="service-detail">sandbox host unreachable</p>
+        </li>
+        <li class="service">
+          <p class="service-name">SearXNG</p>
+          <p class="service-state state--unconfigured">Not configured</p>
+          <p class="service-detail">no endpoint set</p>
+        </li>
+      </ul>
+    </section>
+
+    <div class="workspace">
+
+      <section class="queue" aria-labelledby="queue-heading">
+        <div class="section-head">
+          <div class="heading-group">
+            <h2 id="queue-heading">Queue</h2>
+            <p class="section-meta" id="queue-meta" aria-live="polite">Running · 2 waiting</p>
+          </div>
+
+          <div class="queue-controls">
+            <label class="switch">
+              <input id="queue-pause" type="checkbox">
+              <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+              <span id="pause-label">Pause queue</span>
+            </label>
+
+            <div class="menu-wrap">
+              <button class="button-primary" id="add-job-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="add-job-menu">
+                Add job <span class="chev" aria-hidden="true">⌄</span>
+              </button>
+              <div class="menu" id="add-job-menu" role="menu" hidden>
+                <a href="/train/new-train" role="menuitem">Train a model</a>
+                <a href="/tokenizers/new-tokenizer" role="menuitem">Build a tokenizer</a>
+                <a href="/bench/new-bench" role="menuitem">Benchmark a model</a>
+                <a href="/gyms/new-gym" role="menuitem">Practise in a gym</a>
+                <div class="menu-gap" aria-hidden="true"></div>
+                <a href="/chat" role="menuitem">Chat</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="eyebrow now-label">Now</p>
+        <div class="now">
+          <div class="now-top">
+            <div class="throbber" aria-hidden="true">
+              <span></span><span></span><span></span><span class="on"></span><span></span><span></span><span></span>
+              <span></span><span></span><span class="on"></span><span class="on"></span><span></span><span></span><span></span>
+              <span></span><span></span><span class="on"></span><span class="on"></span><span class="on"></span><span></span><span></span>
+              <span></span><span></span><span></span><span class="on"></span><span class="on"></span><span></span><span></span>
+              <span></span><span></span><span></span><span class="on"></span><span></span><span></span><span></span>
+            </div>
+
+            <div class="now-body">
+              <a class="now-name" href="/train/run_9d21">Train Zephyr 1B · recipes</a>
+              <p class="job-meta">
+                <span class="kind kind--train">Train</span>
+                <span>step 1,940 of 4,600</span>
+              </p>
+            </div>
+
+            <div class="now-side">
+              <div class="now-figure">
+                <div class="now-percent">42%</div>
+                <div class="now-elapsed">00:38:12</div>
+              </div>
+              <button class="text-action" type="button">Cancel</button>
+            </div>
+          </div>
+          <div class="now-progress" role="progressbar" aria-label="Progress for Train Zephyr 1B · recipes" aria-valuemin="0" aria-valuemax="100" aria-valuenow="42">
+            <span></span>
+          </div>
+        </div>
+
+        <div class="band">
+          <h3 class="eyebrow band-label">Dispatch</h3>
+          <ol class="job-list" id="dispatch-list">
+            <li class="job-row">
+              <span class="ordinal">01</span>
+              <div class="job-body">
+                <a class="job-name" href="/bench/bm_2297">Copy Zephyr recipes</a>
+                <p class="job-meta">
+                  <span class="kind kind--benchmark">Benchmark</span>
+                  <span>14:41</span>
+                </p>
+              </div>
+              <div class="row-actions">
+                <button class="row-action" type="button" disabled aria-label="Move Copy Zephyr recipes up">Up</button>
+                <button class="row-action" type="button" aria-label="Move Copy Zephyr recipes down">Down</button>
+                <button class="row-action" type="button" aria-label="Cancel Copy Zephyr recipes">Cancel</button>
+                <button class="row-action row-action--danger" type="button" aria-label="Delete Copy Zephyr recipes">Delete</button>
+              </div>
+            </li>
+            <li class="job-row">
+              <span class="ordinal">02</span>
+              <div class="job-body">
+                <a class="job-name" href="/tokenizers/builds/tk_8821">Tokenize OpenRecipes · v4</a>
+                <p class="job-meta">
+                  <span class="kind kind--tokenize">Tokenizer</span>
+                  <span>14:43</span>
+                </p>
+              </div>
+              <div class="row-actions">
+                <button class="row-action" type="button" aria-label="Move Tokenize OpenRecipes v4 up">Up</button>
+                <button class="row-action" type="button" disabled aria-label="Move Tokenize OpenRecipes v4 down">Down</button>
+                <button class="row-action" type="button" aria-label="Cancel Tokenize OpenRecipes v4">Cancel</button>
+                <button class="row-action row-action--danger" type="button" aria-label="Delete Tokenize OpenRecipes v4">Delete</button>
+              </div>
+            </li>
+          </ol>
+        </div>
+
+        <div class="band">
+          <h3 class="eyebrow band-label">Chain</h3>
+          <ul class="job-list">
+            <li class="job-row">
+              <span class="chain-mark" aria-hidden="true">↳</span>
+              <div class="job-body">
+                <a class="job-name" href="/bench/bm_2301">Bench Zephyr 1B · language</a>
+                <p class="job-meta">
+                  <span class="waiting">after</span>
+                  <a class="dep" href="/train/run_9d21">Train Zephyr 1B · recipes</a>
+                  <span class="kind kind--benchmark">Benchmark</span>
+                </p>
+              </div>
+              <div class="row-actions">
+                <button class="row-action" type="button" aria-label="Cancel Bench Zephyr 1B language">Cancel</button>
+                <button class="row-action row-action--danger" type="button" aria-label="Delete Bench Zephyr 1B language">Delete</button>
+              </div>
+            </li>
+            <li class="job-row">
+              <span class="chain-mark" aria-hidden="true">↳</span>
+              <div class="job-body">
+                <a class="job-name" href="/gyms/run_662">Gym smoke · tool use</a>
+                <p class="job-meta">
+                  <span class="waiting">after</span>
+                  <a class="dep" href="/train/run_9d21">Train Zephyr 1B · recipes</a>
+                  <span class="kind kind--gym">Gym</span>
+                </p>
+              </div>
+              <div class="row-actions">
+                <button class="row-action" type="button" aria-label="Cancel Gym smoke tool use">Cancel</button>
+                <button class="row-action row-action--danger" type="button" aria-label="Delete Gym smoke tool use">Delete</button>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="aside">
+        <section class="history" aria-labelledby="history-heading">
+          <div class="section-head">
+            <div class="heading-group">
+              <h2 id="history-heading">History</h2>
+              <p class="section-meta">9 jobs</p>
+            </div>
+            <button class="text-action history-toggle" id="history-toggle" type="button" aria-expanded="false" aria-controls="history-extra">Full history</button>
+          </div>
+
+          <div class="history-list">
+            <section class="day-group" aria-label="Today">
+              <h3 class="eyebrow day-label">Today</h3>
+              <ul class="history-rows">
+                <li class="history-row">
+                  <span class="hist-time">13:58</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/bench/bm_2290">Zephyr 1B · language</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--benchmark">Benchmark</span>
+                      <span>12m 04s</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Zephyr 1B language">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Zephyr 1B language">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">11:20</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/train/run_9c77">Fine-tune Zephyr 1B · recipes</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--train">Train</span>
+                      <span>1h 48m</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Fine-tune Zephyr 1B recipes">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Fine-tune Zephyr 1B recipes">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">09:42</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/tokenizers/builds/tk_8817">Tokenize OpenRecipes · v3</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--tokenize">Tokenizer</span>
+                      <span>6m 31s</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Tokenize OpenRecipes v3">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Tokenize OpenRecipes v3">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">08:15</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/arch/validations/val_5760">Zephyr 1B · 4k context</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--validation">Validation</span>
+                      <span>1m 12s</span>
+                      <span class="status--failed">Failed</span>
+                    </p>
+                    <p class="hist-error">Context window 4,096 exceeded by 128 tokens.</p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Zephyr 1B 4k context">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Zephyr 1B 4k context">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">07:03</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/gyms/run_655">Gym smoke · tool use</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--gym">Gym</span>
+                      <span>3m 47s</span>
+                      <span class="status--cancelled">Cancelled</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Gym smoke tool use">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Gym smoke tool use">Delete</button>
+                  </div>
+                </li>
+              </ul>
+            </section>
+
+            <section class="day-group" id="history-extra" aria-label="Yesterday" data-extra-history hidden>
+              <h3 class="eyebrow day-label">Yesterday</h3>
+              <ul class="history-rows">
+                <li class="history-row">
+                  <span class="hist-time">22:41</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/bench/bm_2281">Zephyr 1B · language</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--benchmark">Benchmark</span>
+                      <span>11m 38s</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Zephyr 1B language">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Zephyr 1B language">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">19:26</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/train/run_9c31">Zephyr 1B · baseline</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--train">Train</span>
+                      <span>2h 06m</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Zephyr 1B baseline">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Zephyr 1B baseline">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">16:12</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/tokenizers/builds/tk_8792">OpenRecipes · v2</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--tokenize">Tokenizer</span>
+                      <span>5m 58s</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry OpenRecipes v2">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete OpenRecipes v2">Delete</button>
+                  </div>
+                </li>
+                <li class="history-row">
+                  <span class="hist-time">14:50</span>
+                  <div class="hist-body">
+                    <a class="hist-name" href="/bench/bm_2268">Language v3 · retained</a>
+                    <p class="hist-meta">
+                      <span class="kind kind--benchmark">Benchmark</span>
+                      <span>9m 15s</span>
+                      <span class="status--done">Done</span>
+                    </p>
+                  </div>
+                  <div class="hist-actions">
+                    <button class="row-action" type="button" aria-label="Retry Language v3 retained">Retry</button>
+                    <button class="row-action row-action--danger" type="button" aria-label="Delete Language v3 retained">Delete</button>
+                  </div>
+                </li>
+              </ul>
+            </section>
+          </div>
+
+          <div class="history-foot" id="history-foot">
+            <p class="history-note" id="history-note">Showing 5 of 9 on this page</p>
+            <nav class="pager" aria-label="History pages">
+              <button class="pager-arrow is-disabled" type="button" disabled aria-label="Previous page">‹</button>
+              <span aria-current="page">1</span>
+              <a href="?page=2" aria-label="Page 2">2</a>
+              <a class="pager-arrow" href="?page=2" aria-label="Next page">›</a>
+            </nav>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <section class="workbench" aria-labelledby="workbench-heading">
+      <div class="section-head">
+        <div class="heading-group">
+          <h2 id="workbench-heading">Workbench</h2>
+          <p class="section-meta">15 destinations</p>
+        </div>
+      </div>
+
+      <div class="directory">
+        <details class="dir-group" open>
+          <summary><span>Data</span><span class="dir-chevron" aria-hidden="true">⌄</span></summary>
+          <ul>
+            <li><a class="dir-link" href="/processors">Processors</a></li>
+            <li><a class="dir-link" href="/data">Datasets</a></li>
+          </ul>
+        </details>
+
+        <details class="dir-group" open>
+          <summary><span>Architectures</span><span class="dir-chevron" aria-hidden="true">⌄</span></summary>
+          <ul>
+            <li><a class="dir-link" href="/arch/blocks">Blocks</a></li>
+            <li><a class="dir-link" href="/arch">Architectures</a></li>
+          </ul>
+        </details>
+
+        <details class="dir-group" open>
+          <summary><span>Train</span><span class="dir-chevron" aria-hidden="true">⌄</span></summary>
+          <ul>
+            <li><a class="dir-link" href="/tokenizers">Tokenizers</a></li>
+            <li><a class="dir-link" href="/train/new-train?mode=pretrain">Pre-train</a></li>
+            <li><a class="dir-link" href="/train/new-train?mode=sft">Fine-tune</a></li>
+            <li><a class="dir-link" href="/gyms">Gyms</a></li>
+          </ul>
+        </details>
+
+        <details class="dir-group" open>
+          <summary><span>Bench</span><span class="dir-chevron" aria-hidden="true">⌄</span></summary>
+          <ul>
+            <li><a class="dir-link" href="/bench?suite=language">Language</a></li>
+            <li><a class="dir-link" href="/bench?suite=language_v3">Language v3 <span class="legacy">Legacy</span></a></li>
+            <li><a class="dir-link" href="/bench?suite=markup">Markup <span class="legacy">Legacy</span></a></li>
+            <li><a class="dir-link" href="/bench?suite=assistant">Assistant <span class="legacy">Legacy</span></a></li>
+          </ul>
+        </details>
+
+        <details class="dir-group" open>
+          <summary><span>Interface</span><span class="dir-chevron" aria-hidden="true">⌄</span></summary>
+          <ul>
+            <li><a class="dir-link" href="/throbber">Throbber</a></li>
+            <li><a class="dir-link" href="/markup">Markup</a></li>
+            <li><a class="dir-link" href="/docs">Docs</a></li>
+          </ul>
+        </details>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  const pause = document.getElementById("queue-pause");
+  const pauseLabel = document.getElementById("pause-label");
+  const queueMeta = document.getElementById("queue-meta");
+  const dispatch = document.getElementById("dispatch-list");
+
+  pause.addEventListener("change", () => {
+    const paused = pause.checked;
+    pauseLabel.textContent = paused ? "Resume queue" : "Pause queue";
+    queueMeta.textContent = paused ? "Paused · 2 waiting" : "Running · 2 waiting";
+    dispatch.classList.toggle("is-paused", paused);
+  });
+
+  const trigger = document.getElementById("add-job-trigger");
+  const menu = document.getElementById("add-job-menu");
+
+  const setMenu = (open) => {
+    menu.hidden = !open;
+    trigger.setAttribute("aria-expanded", String(open));
+  };
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setMenu(menu.hidden);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!menu.hidden && !menu.contains(event.target) && !trigger.contains(event.target)) {
+      setMenu(false);
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      setMenu(false);
+      trigger.focus();
+    }
+  });
+
+  menu.addEventListener("click", (event) => {
+    if (event.target.closest("a")) setMenu(false);
+  });
+
+  const historyToggle = document.getElementById("history-toggle");
+  const historyExtra = document.getElementById("history-extra");
+  const historyFoot = document.getElementById("history-foot");
+
+  historyToggle.addEventListener("click", () => {
+    const expanded = historyToggle.getAttribute("aria-expanded") !== "true";
+    historyToggle.setAttribute("aria-expanded", String(expanded));
+    historyToggle.textContent = expanded ? "Recent only" : "Full history";
+    historyExtra.hidden = !expanded;
+    historyFoot.hidden = expanded;
+  });
+})();
+</script>
+</body>
+</html>

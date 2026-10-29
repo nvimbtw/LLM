@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — GLM redesign</title>
+<style>
+/* ─── Palette: Dragon, the dark Kanagawa half (see app/globals.css) ─────── */
+:root {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Fraunces", ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --background: #181616;          /* dragon black3 */
+  --foreground: #c5c9c5;          /* dragon white */
+  --card: #232221;                /* dragon surface-1 */
+  --popover: #2a2827;             /* dragon surface-2 */
+  --secondary: #333130;           /* dragon surface-3 */
+  --muted: #2a2827;
+  --muted-foreground: #a6a69c;    /* dragon gray */
+  --primary: #8ba4b0;             /* dragon blue2 */
+  --primary-foreground: #181616;
+  --destructive: #c4746e;         /* dragon red */
+  --border: #514d4c;              /* dragon edge */
+  --input: #68625f;               /* dragon edge-strong */
+  --ring: #8ba4b0;
+
+  /* status */
+  --success: #8fb08f;             /* dragon green-light */
+  --warning: #c4b28a;             /* dragon yellow */
+
+  /* kind accents (dark halves) */
+  --kind-train: #8ba4b0;          /* dragon blue2 */
+  --kind-bench: #8fb08f;          /* dragon green-light */
+  --kind-token: #c2a184;          /* dragon orange-light */
+  --kind-gym: #79cbb8;            /* dragon aqua-light */
+
+  --radius-control: 3px;
+  --radius-sheet: 2px;
+  --space-section: 2.5rem;
+  --shadow-overlay: 1px 2px 0 color-mix(in oklab, #0d0c0c 80%, transparent);
+  --texture-opacity: 0.065;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+::selection { background: #223249; color: #c5c9c5; }
+
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+html { color-scheme: dark; }
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+ul { list-style: none; }
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+a:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
+/* ─── Board ─────────────────────────────────────────────────────────────── */
+.board {
+  max-width: 88rem;
+  margin: 0 auto;
+  padding: 2.5rem clamp(1.25rem, 4vw, 3.5rem) 6rem;
+}
+
+/* ─── Masthead: brand, page title, slim service strip ───────────────────── */
+.masthead { position: relative; }
+
+.texture {
+  position: absolute;
+  inset: -1.25rem 0 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='40' viewBox='0 0 140 40'%3E%3Ctext x='2' y='14' font-family='monospace' font-size='9' fill='%23c5c9c5'%3E.:co O8. .:coO8%3C/text%3E%3Ctext x='26' y='27' font-family='monospace' font-size='9' fill='%23c5c9c5'%3Eo . %40c:. o8 O%3C/text%3E%3Ctext x='58' y='39' font-family='monospace' font-size='9' fill='%23c5c9c5'%3E.:  oc .%40 oO:%3C/text%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 140px 40px;
+  opacity: var(--texture-opacity);
+  mask-image: linear-gradient(90deg, transparent 12%, black 90%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 12%, black 90%);
+}
+
+.mast-text { position: relative; }
+
+.brand {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 1.375rem;
+  line-height: 1.2;
+  letter-spacing: -0.014em;
+}
+
+.masthead h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 3rem;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  margin-top: 0.5rem;
+}
+
+.mast-row { display: flex; justify-content: space-between; align-items: flex-end; }
+
+/* The service tree, collapsed to one strip of names and state words */
+.svc-strip {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 2.25rem;
+  row-gap: 0.5rem;
+  margin-top: 1.5rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+}
+.svc-strip .svc { color: var(--muted-foreground); margin-right: 0.75rem; }
+.state-online      { color: var(--success); }
+.state-reconnect   { color: var(--warning); }
+.state-offline     { color: var(--destructive); }
+.state-unset       { color: color-mix(in oklab, var(--muted-foreground) 55%, transparent); }
+
+/* ─── Section headers ───────────────────────────────────────────────────── */
+.sec-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.sec-head h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.75rem;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+.sec-head .meta {
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+.sec-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-left: auto;
+}
+
+.eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  word-spacing: -0.07em;
+  line-height: 1.45;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* ─── Buttons ───────────────────────────────────────────────────────────── */
+.btn-ghost {
+  padding: 0.3125rem 0.75rem;
+  border-radius: var(--radius-control);
+  color: var(--muted-foreground);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+.btn-ghost:hover {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--secondary) 55%, transparent);
+}
+.btn-ghost.destructive { color: var(--destructive); }
+.btn-ghost.destructive:hover {
+  color: var(--destructive);
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.875rem;
+  border-radius: var(--radius-control);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 500;
+}
+.btn-primary:hover { text-decoration: none; opacity: 0.92; }
+
+.btn-text {
+  color: var(--primary);
+  font-size: 0.8125rem;
+  padding: 0.3125rem 0.5rem;
+}
+
+/* Switch (pause / resume the queue) */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.switch .track {
+  width: 1.625rem;
+  height: 0.9375rem;
+  border-radius: 999px;
+  border: 1px solid var(--input);
+  padding: 2px;
+  display: inline-flex;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.switch .thumb {
+  width: 0.5625rem;
+  height: 0.5625rem;
+  border-radius: 999px;
+  background: var(--input);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+.switch[aria-checked="true"] .track { background: var(--primary); border-color: var(--primary); }
+.switch[aria-checked="true"] .thumb {
+  transform: translateX(0.6875rem);
+  background: var(--primary-foreground);
+}
+.switch:hover { color: var(--foreground); }
+
+/* ─── Menus (Add job) ───────────────────────────────────────────────────── */
+.menu { position: relative; }
+.menu summary {
+  list-style: none;
+  cursor: pointer;
+}
+.menu summary::-webkit-details-marker { display: none; }
+.menu summary svg { color: var(--primary-foreground); }
+.menu[open] summary::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  cursor: default;
+}
+.panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.375rem);
+  z-index: 10;
+  min-width: 13rem;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-overlay);
+  padding: 0.375rem 0;
+}
+.menu .panel { right: auto; left: 0; }
+.panel a {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.4375rem 0.875rem;
+  font-size: 0.875rem;
+}
+.panel a:hover { text-decoration: none; background: var(--secondary); }
+
+/* ─── Now band ──────────────────────────────────────────────────────────── */
+.now {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem 1.5rem;
+  padding: 1.5rem 0 1.25rem;
+}
+.now .throbber { flex-shrink: 0; }
+.now-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.375rem;
+  line-height: 1.4;
+  letter-spacing: -0.014em;
+}
+.now-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.now-right {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-left: auto;
+}
+.figure {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.75rem;
+  line-height: 1;
+}
+.elapsed {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.25rem;
+  text-align: right;
+}
+.progress {
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 60%, transparent);
+}
+.progress > span {
+  display: block;
+  height: 1px;
+  background: var(--primary);
+}
+
+/* ─── Job kind chips ────────────────────────────────────────────────────── */
+.chip {
+  display: inline-block;
+  padding: 0.125rem 0.4375rem;
+  border-radius: var(--radius-sheet);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.45;
+  flex-shrink: 0;
+}
+.chip-train   { color: var(--kind-train);  background: color-mix(in oklab, var(--kind-train) 14%, transparent); }
+.chip-bench   { color: var(--kind-bench);  background: color-mix(in oklab, var(--kind-bench) 14%, transparent); }
+.chip-token   { color: var(--kind-token);  background: color-mix(in oklab, var(--kind-token) 14%, transparent); }
+.chip-gym     { color: var(--kind-gym);    background: color-mix(in oklab, var(--kind-gym) 14%, transparent); }
+.chip-valid   { color: var(--foreground);  background: var(--muted); }
+
+/* ─── Bands and rows ────────────────────────────────────────────────────── */
+.band-label { padding: 1.125rem 0 0.25rem; }
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.125rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0 -0.75rem;
+  border-radius: var(--radius-sheet);
+  transition: background-color 0.15s ease;
+}
+.row:hover, .row:focus-within { background: color-mix(in oklab, var(--secondary) 45%, transparent); }
+
+.row .label {
+  color: var(--foreground);
+  line-height: 1.55;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-num {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  text-align: right;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-clock {
+  flex: 0 0 auto;
+  width: 3.25rem;
+  text-align: right;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.row-meta .bad { color: var(--destructive); }
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  margin-left: auto;
+  flex: 0 0 auto;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+.row:hover .row-actions, .row:focus-within .row-actions { opacity: 1; }
+
+.ord {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-control);
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1;
+}
+.ord:hover { color: var(--foreground); background: color-mix(in oklab, var(--secondary) 70%, transparent); }
+.ord[disabled] { opacity: 0.35; cursor: default; }
+.ord[disabled]:hover { background: none; color: var(--muted-foreground); }
+
+.chain-arrow {
+  flex: 0 0 auto;
+  color: color-mix(in oklab, var(--muted-foreground) 40%, transparent);
+}
+.chain-note {
+  flex: 1 1 100%;
+  padding-left: 1.5rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.bands.dim { opacity: 0.6; transition: opacity 0.2s ease; }
+
+/* ─── Services ledger ───────────────────────────────────────────────────── */
+.svc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem 2rem;
+  padding-top: 0.5rem;
+}
+.svc-grid .svc-name { font-weight: 500; overflow-wrap: anywhere; }
+.svc-grid .state-line {
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+}
+.svc-grid .detail {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-top: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+/* ─── History ───────────────────────────────────────────────────────────── */
+.day { padding: 0.875rem 0 0.375rem; }
+
+.hist-note { padding: 0.5rem 0; font-size: 0.75rem; color: var(--muted-foreground); }
+
+.pager {
+  display: flex;
+  align-items: baseline;
+  gap: 0.125rem;
+  padding: 0.375rem 0;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.pg {
+  min-width: 1.75rem;
+  padding: 0.25rem 0.375rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  border-radius: var(--radius-control);
+}
+.pg:hover { color: var(--foreground); background: color-mix(in oklab, var(--secondary) 55%, transparent); text-decoration: none; }
+.pg[aria-current="page"] { color: var(--primary); font-weight: 600; }
+.pg[disabled] { opacity: 0.35; cursor: default; }
+.pg[disabled]:hover { background: none; color: var(--muted-foreground); }
+
+.hist-extra { display: none; }
+.hist-extra.open { display: block; }
+
+/* ─── Spread: Services | History ────────────────────────────────────────── */
+.spread {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--space-section) 4rem;
+  align-items: start;
+  margin-top: var(--space-section);
+}
+
+/* ─── Workbench index ───────────────────────────────────────────────────── */
+.bench-index { margin-top: calc(var(--space-section) + 1.5rem); }
+.bench-index h2 { margin-bottom: 1.25rem; }
+.wb-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5em, 1fr));
+  gap: 2rem 2.5rem;
+  align-items: start;
+}
+.wb h3 { margin-bottom: 0.375rem; }
+.wb li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  padding: 0.1875rem 0;
+}
+.wb a {
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.wb a:hover { color: var(--primary); }
+.legacy {
+  font-size: 0.6875rem;
+  color: var(--muted-foreground);
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
+/* ─── Responsive degradation ────────────────────────────────────────────── */
+@media (max-width: 1120px) {
+  .spread { grid-template-columns: minmax(0, 1fr); gap: var(--space-section); }
+  .svc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .row .row-clock { display: none; }
+}
+@media (max-width: 720px) {
+  .masthead h1 { font-size: 2.25rem; }
+  .svc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .now-right { margin-left: 0; }
+}
+@media (max-width: 560px) {
+  .svc-strip { column-gap: 1.25rem; }
+  .svc-grid { grid-template-columns: minmax(0, 1fr); }
+  .row .label { flex: 1 1 100%; }
+  .now { gap: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="board">
+
+  <!-- ═══ Masthead: Slate brand, page title, collapsed service tree ═══ -->
+  <header class="masthead">
+    <div class="texture" aria-hidden="true"></div>
+    <div class="mast-row mast-text">
+      <div>
+        <p class="brand">Slate</p>
+        <h1>Admin</h1>
+      </div>
+    </div>
+    <ul class="svc-strip" aria-label="Service status">
+      <li><span class="svc">LLM engine</span><span class="state-online">Online</span></li>
+      <li><span class="svc">Data engine</span><span class="state-online">Online</span></li>
+      <li><span class="svc">Gyms engine</span><span class="state-online">Online</span></li>
+      <li><span class="svc">Bench engine</span><span class="state-offline">Offline</span></li>
+      <li><span class="svc">just-bash</span><span class="state-reconnect">Reconnecting</span></li>
+      <li><span class="svc">SearXNG</span><span class="state-unset">Not configured</span></li>
+    </ul>
+  </header>
+
+  <!-- ═══ Queue: the dominant board ═══ -->
+  <main>
+    <section style="margin-top: var(--space-section);" aria-labelledby="queue-h">
+      <header class="sec-head">
+        <h2 id="queue-h" class="display">Queue</h2>
+        <p class="meta" id="queueMeta" aria-live="polite">Running · 2 waiting</p>
+        <div class="sec-actions">
+          <button class="switch" id="pauseSwitch" role="switch" aria-checked="false">
+            <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+            <span id="pauseLabel">Pause queue</span>
+          </button>
+          <details class="menu">
+            <summary aria-label="Add job" class="btn-primary">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              Add job
+            </summary>
+            <nav class="panel">
+              <a href="#">Train a model</a>
+              <a href="#">Build a tokenizer</a>
+              <a href="#">Benchmark a model</a>
+              <a href="#">Practise in a gym</a>
+              <a href="#">Chat</a>
+            </nav>
+          </details>
+        </div>
+      </header>
+
+      <!-- Now: the running job -->
+      <div class="now">
+        <svg class="throbber" role="img" aria-label="Running" width="56" height="42" viewBox="0 0 64 48">
+          <g fill="var(--border)" fill-opacity="0.55">
+            <circle cx="20" cy="4" r="1.5"/><circle cx="32" cy="4" r="1.5"/><circle cx="44" cy="4" r="1.5"/>
+            <circle cx="14" cy="14" r="1.5"/><circle cx="26" cy="14" r="1.5"/><circle cx="38" cy="14" r="1.5"/><circle cx="50" cy="14" r="1.5"/>
+            <circle cx="8" cy="24" r="1.5"/><circle cx="20" cy="24" r="1.5"/><circle cx="44" cy="24" r="1.5"/><circle cx="56" cy="24" r="1.5"/>
+            <circle cx="14" cy="34" r="1.5"/><circle cx="38" cy="34" r="1.5"/><circle cx="50" cy="34" r="1.5"/>
+            <circle cx="32" cy="44" r="1.5"/>
+          </g>
+          <g stroke="var(--primary)" stroke-opacity="0.55" stroke-width="1.2" stroke-linecap="round" fill="none">
+            <path d="M32 24 44 14"/>
+            <path d="M44 14 50 4"/>
+            <path d="M32 24 26 34"/>
+            <path d="M26 34 20 44"/>
+            <path d="M32 24 32 6.5"/>
+            <path d="M32 24 44 24"/>
+          </g>
+          <g fill="var(--primary)">
+            <circle cx="32" cy="24" r="3" fill-opacity="0.9"/>
+            <circle cx="44" cy="14" r="2.4"/>
+            <circle cx="32" cy="4" r="2.4"/>
+            <circle cx="20" cy="44" r="2.4"/>
+          </g>
+        </svg>
+
+        <div style="min-width: 0;">
+          <p class="now-title"><a href="#">Copy Zephyr recipes</a></p>
+          <div class="now-sub">
+            <span class="chip chip-gym">Gym</span>
+            <span aria-hidden="true">·</span>
+            <span>Staging 214 recipes</span>
+          </div>
+        </div>
+
+        <div class="now-right">
+          <div>
+            <p class="figure">42%</p>
+            <p class="elapsed">3m 12s</p>
+          </div>
+          <button class="btn-ghost">Cancel</button>
+        </div>
+      </div>
+      <div class="progress" role="progressbar" aria-label="Progress for Copy Zephyr recipes" aria-valuemin="0" aria-valuemax="100" aria-valuenow="42">
+        <span style="width: 42%;"></span>
+      </div>
+
+      <!-- Queue band: dispatch order -->
+      <p class="eyebrow band-label">Dispatch</p>
+      <ul class="bands" id="queueBands">
+        <li class="row">
+          <span class="row-num">01</span>
+          <a class="label" href="#">Pre-train Slate-1.4</a>
+          <span class="chip chip-train">Train</span>
+          <span class="row-clock">08:41</span>
+          <span class="row-actions">
+            <button class="ord" aria-label="Move up" disabled>↑</button>
+            <button class="ord" aria-label="Move down">↓</button>
+            <button class="btn-ghost">Cancel</button>
+            <button class="btn-ghost destructive">Remove</button>
+          </span>
+        </li>
+        <li class="row">
+          <span class="row-num">02</span>
+          <a class="label" href="#">Fine-tune Slate-1.4 on Gutenberg letters</a>
+          <span class="chip chip-train">Train</span>
+          <span class="row-clock">09:02</span>
+          <span class="row-actions">
+            <button class="ord" aria-label="Move up">↑</button>
+            <button class="ord" aria-label="Move down">↓</button>
+            <button class="btn-ghost">Cancel</button>
+            <button class="btn-ghost destructive">Remove</button>
+          </span>
+        </li>
+      </ul>
+
+      <!-- Chain band: follow-ups waiting on parents -->
+      <p class="eyebrow band-label">Waiting on</p>
+      <ul class="bands">
+        <li class="row">
+          <svg class="chain-arrow" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M2 3.5v4.5a2.5 2.5 0 0 0 2.5 2.5h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <path d="m9.5 7.5 3 3-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <a class="label" href="#">Benchmark Slate-1.4 — Language</a>
+          <span class="chip chip-bench">Benchmark</span>
+          <span class="chain-note">after Fine-tune Slate-1.4 on Gutenberg letters</span>
+          <span class="row-actions">
+            <button class="btn-ghost">Cancel</button>
+            <button class="btn-ghost destructive">Remove</button>
+          </span>
+        </li>
+        <li class="row">
+          <svg class="chain-arrow" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M2 3.5v4.5a2.5 2.5 0 0 0 2.5 2.5h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <path d="m9.5 7.5 3 3-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <a class="label" href="#">Validate Slate-1.4 — gutenberg-2-ckpt</a>
+          <span class="chip chip-valid">Validation</span>
+          <span class="chain-note">after Pre-train Slate-1.4</span>
+          <span class="row-actions">
+            <button class="btn-ghost">Cancel</button>
+            <button class="btn-ghost destructive">Remove</button>
+          </span>
+        </li>
+        <li class="row">
+          <svg class="chain-arrow" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M2 3.5v4.5a2.5 2.5 0 0 0 2.5 2.5h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            <path d="m9.5 7.5 3 3-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <a class="label" href="#">Benchmark Slate-1.4 — Markup (legacy)</a>
+          <span class="chip chip-bench">Benchmark</span>
+          <span class="chain-note">after Fine-tune Slate-1.4 on Gutenberg letters</span>
+          <span class="row-actions">
+            <button class="btn-ghost">Cancel</button>
+            <button class="btn-ghost destructive">Remove</button>
+          </span>
+        </li>
+      </ul>
+    </section>
+
+    <!-- ═══ Spread: Services ledger | History ═══ -->
+    <div class="spread">
+
+      <section aria-labelledby="services-h">
+        <header class="sec-head">
+          <h2 id="services-h" class="display">Services</h2>
+          <p class="meta" aria-live="polite">3 of 6 online</p>
+        </header>
+        <ul class="svc-grid">
+          <li>
+            <p class="svc-name">LLM engine</p>
+            <p class="state-line state-online">Online</p>
+            <p class="detail">training scheduler ready</p>
+          </li>
+          <li>
+            <p class="svc-name">Data engine</p>
+            <p class="state-line state-online">Online</p>
+            <p class="detail">ingest pipeline idle</p>
+          </li>
+          <li>
+            <p class="svc-name">Gyms engine</p>
+            <p class="state-line state-online">Online</p>
+          </li>
+          <li>
+            <p class="svc-name">Bench engine</p>
+            <p class="state-line state-offline">Offline</p>
+          </li>
+          <li>
+            <p class="svc-name">just-bash</p>
+            <p class="state-line state-reconnect">Reconnecting</p>
+          </li>
+          <li>
+            <p class="svc-name">SearXNG</p>
+            <p class="state-line state-unset">Not configured</p>
+          </li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="history-h">
+        <header class="sec-head">
+          <h2 id="history-h" class="display">History</h2>
+          <p class="meta">9 jobs</p>
+          <div class="sec-actions">
+            <button class="btn-text" id="histToggle" aria-expanded="false">Full history</button>
+          </div>
+        </header>
+
+        <p class="day eyebrow">Today</p>
+        <ul class="bands">
+          <li class="row">
+            <a class="label" href="#">Fine-tune Slate-1.3 on Zephyr letters</a>
+            <span class="chip chip-train">Train</span>
+            <span class="row-meta">14:32 · 1h 12m · Done</span>
+            <span class="row-actions">
+              <button class="btn-ghost">Run again</button>
+              <button class="btn-ghost destructive">Remove</button>
+            </span>
+          </li>
+          <li class="row">
+            <a class="label" href="#">Run Language bench on Slate-1.3</a>
+            <span class="chip chip-bench">Benchmark</span>
+            <span class="row-meta">12:04 · 24m · Done</span>
+            <span class="row-actions">
+              <button class="btn-ghost">Run again</button>
+              <button class="btn-ghost destructive">Remove</button>
+            </span>
+          </li>
+          <li class="row">
+            <a class="label" href="#">Rebuild the Zephyr long-form tokenizer</a>
+            <span class="chip chip-token">Tokenizer</span>
+            <span class="row-meta">09:47 · 8m · Done</span>
+            <span class="row-actions">
+              <button class="btn-ghost">Run again</button>
+              <button class="btn-ghost destructive">Remove</button>
+            </span>
+          </li>
+          <li class="row">
+            <a class="label" href="#">Validate Slate-1.3 — mimir-5-ckpt</a>
+            <span class="chip chip-valid">Validation</span>
+            <span class="row-meta">08:15 · 3m · <span class="bad">Invalid</span></span>
+            <span class="row-actions">
+              <button class="btn-ghost">Run again</button>
+              <button class="btn-ghost destructive">Remove</button>
+            </span>
+            <span class="chain-note" style="color: var(--destructive);">conversation template out of range</span>
+          </li>
+        </ul>
+
+        <p class="day eyebrow">Yesterday</p>
+        <ul class="bands">
+          <li class="row">
+            <a class="label" href="#">Practise iron-stove in gym 7 — episode 41</a>
+            <span class="chip chip-gym">Gym</span>
+            <span class="row-meta">21:18 · 41m · Done</span>
+            <span class="row-actions">
+              <button class="btn-ghost">Run again</button>
+              <button class="btn-ghost destructive">Remove</button>
+            </span>
+          </li>
+        </ul>
+
+        <div class="hist-extra" id="histExtra">
+          <ul class="bands" style="padding-top: 0.25rem;">
+            <li class="row">
+              <a class="label" href="#">Fine-tune Slate-1.3 on markup corpora</a>
+              <span class="chip chip-train">Train</span>
+              <span class="row-meta">18:50 · 2h 05m · Done</span>
+              <span class="row-actions">
+                <button class="btn-ghost">Run again</button>
+                <button class="btn-ghost destructive">Remove</button>
+              </span>
+            </li>
+            <li class="row">
+              <a class="label" href="#">Benchmark Slate-1.3 — Markup sweep</a>
+              <span class="chip chip-bench">Benchmark</span>
+              <span class="row-meta">16:22 · 17m · Cancelled</span>
+              <span class="row-actions">
+                <button class="btn-ghost">Run again</button>
+                <button class="btn-ghost destructive">Remove</button>
+              </span>
+            </li>
+            <li class="row">
+              <a class="label" href="#">Benchmark Slate-1.3 — Language v3</a>
+              <span class="chip chip-bench">Benchmark</span>
+              <span class="row-meta">10:36 · 6m · <span class="bad">Failed</span></span>
+              <span class="row-actions">
+                <button class="btn-ghost">Run again</button>
+                <button class="btn-ghost destructive">Remove</button>
+              </span>
+              <span class="chain-note" style="color: var(--destructive);">reference corpus for language_v3 is missing</span>
+            </li>
+          </ul>
+          <p class="day eyebrow">Wednesday</p>
+          <ul class="bands">
+            <li class="row">
+              <a class="label" href="#">Pre-train Slate-1.3</a>
+              <span class="chip chip-train">Train</span>
+              <span class="row-meta">22:07 · 5h 04m · Done</span>
+              <span class="row-actions">
+                <button class="btn-ghost">Run again</button>
+                <button class="btn-ghost destructive">Remove</button>
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <p class="hist-note" id="histNote">Showing 5 of 9 on this page</p>
+        <nav class="pager" aria-label="History pages">
+          <button class="pg" disabled aria-label="Previous page">‹</button>
+          <button class="pg" aria-current="page">1</button>
+          <button class="pg">2</button>
+          <button class="pg" disabled aria-label="Next page">›</button>
+        </nav>
+      </section>
+
+    </div>
+
+    <!-- ═══ Workbench index: destinations across the page bottom ═══ -->
+    <section class="bench-index" aria-labelledby="workbench-h">
+      <h2 id="workbench-h" class="display" style="font-size: 1.75rem; line-height: 1.25; letter-spacing: -0.02em;">Workbench</h2>
+      <nav class="wb-groups">
+        <div class="wb">
+          <h3 class="eyebrow">Data</h3>
+          <ul>
+            <li><a href="/processors">Processors</a></li>
+            <li><a href="/data">Datasets</a></li>
+          </ul>
+        </div>
+        <div class="wb">
+          <h3 class="eyebrow">Architectures</h3>
+          <ul>
+            <li><a href="/arch/blocks">Blocks</a></li>
+            <li><a href="/arch">Architectures</a></li>
+          </ul>
+        </div>
+        <div class="wb">
+          <h3 class="eyebrow">Train</h3>
+          <ul>
+            <li><a href="/tokenizers">Tokenizers</a></li>
+            <li><a href="/train/new-train?mode=pretrain">Pre-train</a></li>
+            <li><a href="/train/new-train?mode=sft">Fine-tune</a></li>
+            <li><a href="/gyms">Gyms</a></li>
+          </ul>
+        </div>
+        <div class="wb">
+          <h3 class="eyebrow">Bench</h3>
+          <ul>
+            <li><a href="/bench?suite=language">Language</a></li>
+            <li><a href="/bench?suite=language_v3">Language v3</a><span class="legacy">Legacy</span></li>
+            <li><a href="/bench?suite=markup">Markup</a><span class="legacy">Legacy</span></li>
+            <li><a href="/bench?suite=assistant">Assistant</a><span class="legacy">Legacy</span></li>
+          </ul>
+        </div>
+        <div class="wb">
+          <h3 class="eyebrow">Interface</h3>
+          <ul>
+            <li><a href="/throbber">Throbber</a></li>
+            <li><a href="/markup">Markup</a></li>
+            <li><a href="/docs">Docs</a></li>
+          </ul>
+        </div>
+      </nav>
+    </section>
+  </main>
+
+</div>
+
+<script>
+// Close any open Add-job menu when clicking elsewhere.
+document.addEventListener("click", function (event) {
+  document.querySelectorAll("details.menu[open]").forEach(function (menu) {
+    if (!menu.contains(event.target)) menu.removeAttribute("open")
+  })
+})
+
+// Pause / resume the queue: flips the switch's label and the queue meta.
+var pauseSwitch = document.getElementById("pauseSwitch")
+var pauseLabel = document.getElementById("pauseLabel")
+var queueMeta = document.getElementById("queueMeta")
+var queueBands = document.getElementById("queueBands")
+pauseSwitch.addEventListener("click", function () {
+  var paused = pauseSwitch.getAttribute("aria-checked") !== "true"
+  pauseSwitch.setAttribute("aria-checked", paused ? "true" : "false")
+  pauseLabel.textContent = paused ? "Resume queue" : "Pause queue"
+  queueMeta.textContent = paused ? "Paused · 2 waiting" : "Running · 2 waiting"
+  queueBands.classList.toggle("dim", paused)
+})
+
+// Full history / Recent only toggle for the current history page.
+var histToggle = document.getElementById("histToggle")
+var histExtra = document.getElementById("histExtra")
+var histNote = document.getElementById("histNote")
+histToggle.addEventListener("click", function () {
+  var expanded = histToggle.getAttribute("aria-expanded") !== "true"
+  histToggle.setAttribute("aria-expanded", expanded ? "true" : "false")
+  histToggle.textContent = expanded ? "Recent only" : "Full history"
+  histExtra.classList.toggle("open", expanded)
+  histNote.hidden = expanded
+})
+</script>
+</body>
+</html>

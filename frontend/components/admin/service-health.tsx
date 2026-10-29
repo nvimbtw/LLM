@@ -1,63 +1,77 @@
-"use client"
+import type { ServiceState, ServiceStatus } from "@/lib/service-health"
+import { cn } from "@/lib/utils"
 
-import { useServiceHealth } from "@/hooks/use-service-health"
-import { ServiceState } from "@/lib/service-health"
+export const SERVICES = [
+  { id: "llm-engine", name: "LLM engine" },
+  { id: "data-engine", name: "Data engine" },
+  { id: "gyms-engine", name: "Gyms engine" },
+  { id: "bench-engine", name: "Bench engine" },
+  { id: "just-bash", name: "just-bash" },
+  { id: "searxng", name: "SearXNG" },
+] as const
 
-const NAMES: Record<string, string> = {
-  "llm-engine": "LLM engine",
-  "data-engine": "Data engine",
-  "gyms-engine": "Gyms engine",
-  "bench-engine": "Bench engine",
-  "just-bash": "just-bash",
-  searxng: "SearXNG",
-}
-const LABELS: Record<ServiceState, string> = {
+type FigureState = ServiceState | "unavailable"
+
+const LABELS: Record<FigureState, string> = {
   online: "Online",
   reconnecting: "Reconnecting",
   offline: "Offline",
   not_configured: "Not configured",
+  unavailable: "—",
 }
 
-/** Show backend-observed service states and distinguish a disconnected dashboard subscription. */
-export function ServiceHealth() {
-  const services = useServiceHealth()
+const INK: Record<FigureState, string> = {
+  online: "text-status-success",
+  reconnecting: "text-muted-foreground",
+  offline: "text-destructive",
+  not_configured: "text-muted-foreground",
+  unavailable: "text-muted-foreground",
+}
+
+/** Show readable service observations in the same order as the header's tree. */
+export function ServiceHealth({
+  services,
+}: {
+  services: ServiceStatus[] | null
+}) {
+  const online = services?.filter(
+    (service) => service.state === "online"
+  ).length
   return (
     <section aria-labelledby="service-health-heading">
-      <h2 id="service-health-heading" className="font-serif text-xl">
-        Services
-      </h2>
-      {services === null ? (
-        <p className="mt-3 text-sm text-muted-foreground">
-          Dashboard connection reconnecting
+      <header className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 id="service-health-heading" className="font-display text-2xl">
+          Services
+        </h2>
+        <p aria-live="polite" className="text-xs text-muted-foreground">
+          {services
+            ? `${online} of ${services.length} online`
+            : "Dashboard connection reconnecting"}
         </p>
-      ) : (
-        <ul className="mt-3 space-y-2 text-sm">
-          {services.map((service) => (
-            <li
-              key={service.id}
-              className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1"
-            >
-              <span>{NAMES[service.id]}</span>
-              <span
-                className={
-                  service.state === "online"
-                    ? "text-status-success"
-                    : service.state === "offline"
-                      ? "text-destructive"
-                      : "text-muted-foreground"
-                }
-              >
-                {LABELS[service.state]}
-              </span>
-              {service.detail && (
-                <span className="w-full text-xs text-muted-foreground">
-                  {service.detail}
-                </span>
-              )}
+      </header>
+      <ul className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-3">
+        {SERVICES.map((service) => {
+          const observation = services?.find((item) => item.id === service.id)
+          const state = observation?.state ?? "unavailable"
+          return (
+            <li key={service.id} className="min-w-0">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">
+                  {service.name}
+                </p>
+                <p className={cn("mt-1 text-xs", INK[state])}>
+                  {LABELS[state]}
+                </p>
+                {observation?.detail && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {observation.detail}
+                  </p>
+                )}
+              </div>
             </li>
-          ))}
-        </ul>
-      )}
+          )
+        })}
+      </ul>
     </section>
   )
 }

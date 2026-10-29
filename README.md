@@ -18,47 +18,93 @@ data-engine/  acquiring datasets from Hugging Face and cleaning them — FastAPI
 gyms-engine/  generated tasks, sandboxed execution and scoring — FastAPI
 ```
 
-## Getting it running
+## Quick start: Docker
 
-```sh
-cp .env.example .env    # then fill in the secrets it names
-docker compose up
+Install Git and Docker with the Compose plugin, start Docker, and make sure you
+have an internet connection and roughly 10 GB of free space for images, plus
+space for datasets and models. The first build downloads several GB and the
+backend compiles on its first start, so it can take a while.
+
+Clone the `dev` branch for the version documented here, then create `.env` and
+generate the secrets. Run **one** of the following blocks for a fresh clone; do
+not rerun the setup over an existing `.env`, which contains your local secrets.
+The Bash block also requires `openssl`.
+
+**Bash (Linux, macOS or WSL):**
+
+```bash
+git clone --branch dev https://github.com/nvimbtw/llm.git slate
+cd slate
+cp .env.example .env
+for key in JWT_SECRET LLM_ENGINE_SERVICE_SECRET DATA_ENGINE_SERVICE_SECRET \
+  GYMS_ENGINE_SERVICE_SECRET BENCH_ENGINE_SERVICE_SECRET \
+  BACKEND_SERVICE_SECRET SEARXNG_SECRET; do
+  printf '%s=%s\n' "$key" "$(openssl rand -hex 32)"
+done >> .env
+docker compose up --build
 ```
 
-That is the whole thing: Postgres, four Python services, the Rust backend, the
-UI and a SearXNG instance, on the ports the map below names. Every service
-hot-reloads from the source tree, so an edit lands the same way it does natively
-— and one can be restarted without disturbing the others:
+**PowerShell (Windows):**
+
+```powershell
+git clone --branch dev https://github.com/nvimbtw/llm.git slate
+Set-Location slate
+Copy-Item .env.example .env
+$keys = @(
+  'JWT_SECRET', 'LLM_ENGINE_SERVICE_SECRET', 'DATA_ENGINE_SERVICE_SECRET',
+  'GYMS_ENGINE_SERVICE_SECRET', 'BENCH_ENGINE_SERVICE_SECRET',
+  'BACKEND_SERVICE_SECRET', 'SEARXNG_SECRET'
+)
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+  foreach ($key in $keys) {
+    $bytes = New-Object byte[] 32
+    $rng.GetBytes($bytes)
+    $secret = [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+    Add-Content -Path .env -Value "$key=$secret" -Encoding Ascii
+  }
+} finally {
+  $rng.Dispose()
+}
+docker compose up --build
+```
+
+Compose builds and starts PostgreSQL, the four Python services, the Rust backend,
+the UI, SearXNG and the shell sandbox. Once the backend has finished compiling
+and the services are ready, open **http://localhost:3000**. On a fresh database,
+sign in with username `admin` and password `admin`. Startup preserves existing
+account passwords, so these credentials apply only when the account is created.
+
+The fresh database and clone do **not** include your existing datasets or
+trained models. To chat, prepare data and train a model, or provide a compatible
+model together with the metadata it needs.
+
+Press `Ctrl+C` to stop the services. On later runs, start them from the repo
+directory with `docker compose up`. To inspect or restart a service:
 
 ```sh
+docker compose ps
+docker compose logs -f backend
 docker compose restart backend
-docker compose logs -f llm-engine
 ```
 
-The only prerequisites are Docker and the Compose plugin. It comes up CPU-only:
-**to train, uncomment the `deploy:` block on the `llm-engine` service** in
-`docker-compose.yml` and install
-[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-on the host. That block is commented out rather than the other way around
-because the reservation is not a preference — Compose refuses to start the
-service at all on a machine with no such device.
+This is a local development setup with source files mounted into the containers
+and hot reload enabled. Ports are bound to localhost: `3000` (UI), `8080`
+(backend), `8001`–`8004` (engines), `5433` (PostgreSQL), `8888` (search) and
+`8899` (shell). Ensure those ports are free. PostgreSQL's host port can be
+changed with `POSTGRES_PORT` in `.env`.
 
-Three things worth knowing before the first run:
-
-- **The LLM engine image is several GB** — torch resolves to a `+cuXXX` build and
-  pulls the CUDA wheels with it, whether or not the machine has a GPU. It is
-  built once. Everything else is small.
-- **Budget ~10 GB free wherever Docker stores images**, which is not always
-  where you think. With the containerd image store — `docker info` saying
-  `Storage Driver: overlayfs` — layers live under `/var/lib/containerd`, and
-  Docker's own `data-root` setting does not move them.
-- **Postgres publishes on 5433**, not 5432, because a development machine
-  usually already has a server there. Inside the compose network it is 5432.
+The LLM engine starts on CPU by default. For NVIDIA GPU training, install the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+and uncomment the `deploy:` block under `llm-engine` in
+[`docker-compose.yml`](docker-compose.yml). Without a GPU, training can be very
+slow. The LLM engine image is several GB even on CPU because its Linux/amd64
+PyTorch dependencies include CUDA wheels.
 
 Why several containers rather than one running everything:
 [`docs/decisions/one-command-development.md`](docs/decisions/one-command-development.md).
 
-### Running it natively
+## Running it natively
 
 Still supported, and still the better loop if you are working on the LLM engine
 itself.
