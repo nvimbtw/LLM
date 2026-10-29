@@ -7,7 +7,7 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1";
 const PORT: u16 = 8080;
 
 /// Connect backend storage, start service siblings and serve the API until graceful shutdown completes.
-/// Required configuration or startup failures are fatal; supervisors stay owned here for the server lifetime.
+/// Database and server startup failures are fatal; unavailable services are monitored while the API runs.
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
@@ -17,7 +17,7 @@ async fn main() -> std::io::Result<()> {
     let pool = db::create_pool(&database_url)
         .await
         .expect("failed to connect to database / run migrations");
-    let services = startup::Services::start().await;
+    let services = startup::Services::start();
     let application = services.application();
     HttpServer::new(move || {
         App::new()

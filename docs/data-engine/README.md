@@ -122,8 +122,9 @@ inserts are batched, reads are paged, and the export streams. Nothing in
 ## Routes
 
 Everything is behind the app-level service-token dependency, so a new endpoint
-is authenticated because it exists. `GET /` is the health probe the supervisor
-polls.
+is authenticated because it exists. `GET /` reports liveness; the authenticated
+`/health/socket` answers backend heartbeats, as described in
+[service availability](../backend/services.md#availability-monitoring).
 
 | | |
 | --- | --- |

@@ -37,3 +37,4 @@ tools = { path = "crates/tools" }
 actix-cors = "0.7.1"
 actix-web = "4"
 dotenvy = "0.15"
+tokio = { version = "1", features = ["sync"] }

@@ -1,4 +1,5 @@
 import { AdminDirectory } from "@/components/admin/admin-directory"
+import { ServiceHealth } from "@/components/admin/service-health"
 import { HistoryView } from "@/components/jobs/history-view"
 import { QueueView } from "@/components/jobs/queue-view"
 import { PageHeader } from "@/components/ui/page-header"
@@ -14,7 +15,10 @@ export default function AdminPage() {
           <QueueView />
           <HistoryView />
         </div>
-        <AdminDirectory />
+        <div className="space-y-10">
+          <ServiceHealth />
+          <AdminDirectory />
+        </div>
       </div>
     </PageShell>
   )

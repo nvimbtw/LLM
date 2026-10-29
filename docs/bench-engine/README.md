@@ -31,7 +31,7 @@ in the LLM engine's `execution_jobs`.
 
 ## API
 
-- `GET /health`: supervisor readiness.
+- `GET /health`: liveness; `/health/socket` answers authenticated backend heartbeats.
 - `POST /execute/{id}`: idempotently start English measurement; repeated IDs
   return the existing record. A retry is a new scheduling job/measurement ID.
 - `POST /execute/{id}/cancel`: signal the worker and the model measurement through

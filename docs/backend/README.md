@@ -194,8 +194,9 @@ persistence and tool execution contracts differ. See [gym runs](gyms.md).
 
 ## The Python services
 
-`src/startup.rs::Services` owns supervisors for the server lifetime; workers get
-concrete proxy types through Actix. See [configuration and lifecycle](services.md).
+`src/startup.rs::Services` owns supervisors and health monitoring for the server
+lifetime; workers get concrete proxy types through Actix. See
+[configuration and lifecycle](services.md).
 
 ## Error handling
 

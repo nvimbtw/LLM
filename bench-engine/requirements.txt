@@ -6,3 +6,4 @@ pydantic==2.13.4
 PyJWT==2.10.1
 SQLAlchemy==2.0.52
 uvicorn==0.52.1
+websockets==17.0.1

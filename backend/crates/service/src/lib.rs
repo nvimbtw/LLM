@@ -17,6 +17,7 @@
 pub mod config;
 pub mod error;
 pub mod inbound;
+pub mod health;
 pub mod proxy;
 pub mod supervisor;
 

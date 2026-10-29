@@ -4,7 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -34,6 +34,17 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan,dependencies=[Depends(auth.require_service)], docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.websocket('/health/socket')
+async def health_socket(socket: WebSocket):
+    """Answer backend heartbeat frames until the authenticated connection closes."""
+    await socket.accept()
+    try:
+        while await socket.receive_text() == "ping":
+            await socket.send_text("pong")
+    except WebSocketDisconnect:
+        return
 
 
 @app.get('/')

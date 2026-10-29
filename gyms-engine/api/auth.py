@@ -1,7 +1,8 @@
 import os
 
 import jwt
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
+from starlette.requests import HTTPConnection
 
 AUDIENCE = "gyms-engine"
 
@@ -10,7 +11,8 @@ def enforced() -> bool:
     return bool(os.environ.get("GYMS_ENGINE_SERVICE_SECRET"))
 
 
-def require_service(request: Request) -> None:
+def require_service(request: HTTPConnection) -> None:
+    """Authenticate HTTP and WebSocket requests using the gyms service secret."""
     secret = os.environ.get("GYMS_ENGINE_SERVICE_SECRET")
     if not secret:
         return

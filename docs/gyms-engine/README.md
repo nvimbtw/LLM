@@ -29,6 +29,9 @@ The service is spawned by the backend as a child (`GYMS_ENGINE_*`, port 8003) li
 [`just-bash`](../backend/README.md#the-sandboxed-shell) at `BASH_URL` and to nothing
 else.
 
+The authenticated `/health/socket` answers backend heartbeats; see
+[service availability](../backend/services.md#availability-monitoring).
+
 ## Who a run is for
 
 `gym_runs.kind` is `eval` or `rl`, and `GET /gym/runs` serves the `eval` ones.

@@ -3,6 +3,7 @@
 mod chat;
 mod connection;
 mod gym;
+mod health;
 mod jobs;
 mod reader;
 
@@ -10,6 +11,24 @@ use actix_web::{get, web, HttpRequest, HttpResponse};
 use llm_engine::Proxy;
 use tools::Registry;
 use uuid::Uuid;
+
+/// Upgrade the administrator's service-health subscription.
+#[get("/services")]
+async fn services_socket(
+    req: HttpRequest,
+    body: web::Payload,
+    health: web::Data<tokio::sync::watch::Receiver<Vec<service::health::Status>>>,
+    secret: web::Data<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let (response, session, stream) = actix_ws::handle(&req, body)?;
+    actix_web::rt::spawn(health::run(
+        session,
+        stream,
+        health.get_ref().clone(),
+        secret.get_ref().clone(),
+    ));
+    Ok(response)
+}
 
 /// Upgrade a model-job socket and start its authenticated event session.
 #[get("/runs/{run_id}")]
@@ -101,6 +120,7 @@ async fn chat_socket(
 
 /// Mount the specific data/gym families before the generic run UUID extractor.
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(services_socket);
     cfg.service(data_run_socket);
     cfg.service(gym_socket);
     cfg.service(run_socket);

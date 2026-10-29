@@ -28,6 +28,8 @@ has no additional header; mobile has a compact navigation opener. `/login` and
 and composers live under `/train`, `/bench`, `/gyms` and `/tokenizers`; old
 `/jobs` URLs redirect with their query intact. [Routing](routing.md) maps canonical
 pages, compatibility redirects and the distinct resource/execution identities.
+The admin dashboard's service availability subscription is described in
+[Jobs and administration](jobs.md#the-admin-panel).
 
 ## Development contracts
 

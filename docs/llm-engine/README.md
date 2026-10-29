@@ -201,6 +201,9 @@ The full surface — auth, the SSE chat protocol, the model listing and its
 checkpoint filter, context extension, the prune floor and the attention readout
 — is in [`api.md`](api.md).
 
+The authenticated `/health/socket` answers backend heartbeats; see
+[service availability](../backend/services.md#availability-monitoring).
+
 ## Tools
 
 A tool call is a leaf block inside an assistant turn. Every tool is called

@@ -12,7 +12,7 @@ siblings that share a caller, not a pipeline.
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 
 import store
 import processors
@@ -65,6 +65,17 @@ app = FastAPI(
 
 for router in ROUTERS:
     app.include_router(router)
+
+
+@app.websocket("/health/socket")
+async def health_socket(socket: WebSocket):
+    """Answer backend heartbeat frames until the authenticated connection closes."""
+    await socket.accept()
+    try:
+        while await socket.receive_text() == "ping":
+            await socket.send_text("pong")
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/")

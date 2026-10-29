@@ -26,6 +26,23 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    /// Start child supervision without waiting for readiness, allowing the API to report startup failures.
+    /// Externally managed services have no child; owned children retry spawn failures until shutdown.
+    pub fn start_background(config: Config) -> Supervisor {
+        if !config.autostart {
+            return Supervisor {
+                config,
+                shutdown: None,
+            };
+        }
+        let (tx, rx) = watch::channel(false);
+        tokio::spawn(supervise_background(config.clone(), rx));
+        Supervisor {
+            config,
+            shutdown: Some(tx),
+        }
+    }
+
     /// Start the LLM engine and wait until it answers.
     ///
     /// Returning only once it is *serving* is the point: a server that boots
@@ -93,6 +110,35 @@ impl Supervisor {
         if let Some(tx) = &self.shutdown {
             let _ = tx.send(true);
         }
+    }
+}
+
+/// Own a child through crashes, failed spawns and shutdown; retries are bounded by exponential backoff.
+async fn supervise_background(config: Config, mut shutdown: watch::Receiver<bool>) {
+    let mut backoff = BACKOFF_START;
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let result = config.resolved().and_then(|resolved| spawn(&resolved));
+        match result {
+            Ok(mut child) => {
+                let started = tokio::time::Instant::now();
+                tokio::select! {
+                    _ = shutdown.changed() => { let _ = child.kill().await; return; }
+                    status = child.wait() => {
+                        eprintln!("{}: process exited ({status:?})", config.audience);
+                        if started.elapsed() >= config.startup_timeout { backoff = BACKOFF_START; }
+                    }
+                }
+            }
+            Err(error) => eprintln!("{}: spawn failed: {error}", config.audience),
+        }
+        tokio::select! {
+            _ = shutdown.changed() => return,
+            _ = tokio::time::sleep(backoff) => {}
+        }
+        backoff = (backoff * 2).min(BACKOFF_MAX);
     }
 }
 
@@ -247,5 +293,30 @@ fn sign(
     match auth::token::issue_service_token(audience, &auth::Caller::System, &[], secret) {
         Ok(token) => request.bearer_auth(token),
         Err(_) => request,
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+
+    /// An unavailable externally managed service must not block backend startup.
+    #[tokio::test]
+    async fn external_service_start_is_nonblocking() {
+        let config = Config {
+            audience: "test-engine".into(),
+            python: "/missing".into(),
+            dir: ".".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            autostart: false,
+            service_secret: None,
+            secret_var: "TEST_ENGINE_SERVICE_SECRET".into(),
+            extra_env: vec![],
+            startup_timeout: Duration::from_secs(60),
+        };
+        let supervisor = Supervisor::start_background(config);
+        assert_eq!(supervisor.base_url(), "http://127.0.0.1:1");
+        supervisor.shutdown();
     }
 }

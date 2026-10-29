@@ -157,9 +157,9 @@ bun install
 bun run dev
 ```
 
-That is the whole sequence — `cargo run` spawns all four Python services as child
-processes and health-checks each before reporting ready, so you do not normally
-start them yourself. The UI is on **:3000**, the backend on **:8080**, the
+That is the whole sequence — `cargo run` starts all four Python services as child
+processes and monitors them while serving requests, so you do not normally
+start them yourself. The `/admin` dashboard reports service availability. The UI is on **:3000**, the backend on **:8080**, the
 LLM engine on **:8001**, the data engine on **:8002**, the gyms engine on
 **:8003**, bench-engine on **:8004**, and the two optional tool
 services below on **:8888** (search) and **:8899** (the shell sandbox).
@@ -244,8 +244,8 @@ references use logical IDs, with attribution snapshots where history requires th
 [`backend/crates/llm-engine/`](backend/crates/llm-engine/):
 
 - **`config`** — where the process lives, what port it wants, how to start it.
-- **`supervisor`** — spawns the process, keeps it alive, health-checks it before
-  the backend reports ready, and shuts it down with the app.
+- **`supervisor`** — spawns the process, keeps it alive, and shuts it down with
+  the app. The service monitor tracks connections independently.
 - **`proxy`** — forwards requests, signing each one with a short-lived service
   token that names the acting user. The token's shape is pinned for both
   languages by [`contracts/service-token.json`](contracts/service-token.json),

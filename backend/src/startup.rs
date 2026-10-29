@@ -8,31 +8,34 @@ pub(crate) struct Services {
     data: service::Supervisor,
     gyms: service::Supervisor,
     bench: service::Supervisor,
+    health: service::health::Monitor,
 }
 
 impl Services {
-    /// Start and health-check the four service siblings in their existing order; startup failures remain fatal.
-    pub async fn start() -> Self {
-        let engine = service::Supervisor::start(llm_engine::config())
-            .await
-            .expect("failed to start the Python LLM engine");
-        println!("llm-engine ready at {}", engine.base_url());
-        let data = service::Supervisor::start(data_engine::config())
-            .await
-            .expect("failed to start the data engine");
-        println!("data engine ready at {}", data.base_url());
-        let gyms = service::Supervisor::start(gyms_engine::config())
-            .await
-            .expect("failed to start the Python gyms engine");
-        println!("gyms-engine ready at {}", gyms.base_url());
-        let bench = service::Supervisor::start(bench_engine::config())
-            .await
-            .expect("failed to start bench-engine");
+    /// Start service supervisors and availability monitoring without delaying the API on unavailable siblings.
+    pub fn start() -> Self {
+        let engine = service::Supervisor::start_background(llm_engine::config());
+        let data = service::Supervisor::start_background(data_engine::config());
+        let gyms = service::Supervisor::start_background(gyms_engine::config());
+        let bench = service::Supervisor::start_background(bench_engine::config());
+        let tool_config = tools::Config::from_env();
+        let health = service::health::Monitor::start(
+            &[
+                engine.config().clone(),
+                data.config().clone(),
+                gyms.config().clone(),
+                bench.config().clone(),
+            ],
+            tool_config.bash_url,
+            tool_config.search_url,
+            tool_config.search_api_key.is_some(),
+        );
         Self {
             engine,
             data,
             gyms,
             bench,
+            health,
         }
     }
 
@@ -51,6 +54,7 @@ impl Services {
             data,
             inbound,
             registry,
+            health: self.health.subscribe(),
             engine: llm_engine::Proxy::new(
                 self.engine.base_url(),
                 self.engine.config().service_secret.clone(),
@@ -83,6 +87,7 @@ pub(crate) struct Application {
     bench: bench_engine::Proxy,
     inbound: service::InboundSecret,
     registry: tools::Registry,
+    health: tokio::sync::watch::Receiver<Vec<service::health::Status>>,
 }
 
 impl Application {
@@ -94,6 +99,7 @@ impl Application {
             .app_data(web::Data::new(self.bench.clone()))
             .app_data(web::Data::new(self.inbound.clone()))
             .app_data(web::Data::new(self.registry.clone()))
+            .app_data(web::Data::new(self.health.clone()))
             .configure(api::configure);
     }
 }

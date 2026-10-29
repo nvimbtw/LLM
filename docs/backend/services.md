@@ -1,9 +1,10 @@
 # Service processes and configuration
 
 `crates/service` is the only crate that knows a service is a subprocess: it
-spawns one as a child of the Actix server, health-checks it before the server
-reports ready, restarts it if it dies, and kills it on shutdown. All four Python
-services are started this way.
+can spawn one as a child of the Actix server, restarts it if it dies, and kills
+it on shutdown. All four Python services can instead be managed externally.
+The API starts while service connections are still being established, so an
+unavailable engine can be reported on the administrator dashboard.
 
 Configured by environment, because these are properties of the machine:
 
@@ -14,7 +15,7 @@ Configured by environment, because these are properties of the machine:
 | `LLM_ENGINE_HOST` | `127.0.0.1` | |
 | `LLM_ENGINE_PORT` | `8001` | 8000 is commonly taken by a local Apache |
 | `LLM_ENGINE_AUTOSTART` | `true` | Off = "an LLM engine is already running, do not spawn" |
-| `LLM_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | Importing torch is slow on a cold cache |
+| `LLM_ENGINE_STARTUP_TIMEOUT_SECS` | `60` | An owned process that survives this long resets the restart backoff |
 | `LLM_ENGINE_SERVICE_SECRET` | unset | Shared with the LLM engine; unset leaves both open |
 
 The data engine takes the same set under `DATA_ENGINE_*`, read by the same
@@ -72,6 +73,34 @@ Two things that are load-bearing and non-obvious:
 
 Autostart off is the normal development setup: run `uvicorn main:app --reload`
 in another terminal and the server attaches to it.
+
+## Availability monitoring
+
+`service::health::Monitor` owns one connection per engine and one HTTP probe per
+configured backend tool. It sends `ping` text frames to each authenticated
+`/health/socket` and expects `pong` within 15 seconds, every 5 seconds. A lost
+connection or unsuccessful probe is `reconnecting`; after 60 seconds since the
+last success it is `offline`. Retries continue, and a successful heartbeat or
+probe immediately returns the service to `online`. Timeout and retry scheduling
+can delay an outage transition. These states describe reachability from the
+backend, not process identity or dependency readiness. In particular, an
+unrelated process listening on a configured port may answer a probe; operators
+should resolve port conflicts before starting an autostart service.
+
+The monitor checks just-bash's `/health` JSON and SearXNG's HTTP root. Every
+60 seconds it also checks SearXNG's JSON search API; its failure is shown as
+detail while HTTP availability remains online. This test may contact external
+search engines. Optional `BASH_URL` and `SEARCH_URL` absent means `not_configured`;
+if Brave is selected, the SearXNG row names that provider without probing it.
+The just-bash result covers the backend's configured endpoint only, not the
+gyms engine's independently configured `BASH_URL`.
+
+`/ws/services` authenticates the browser's first token frame and requires an
+administrator. It publishes complete snapshots on change and every 15 seconds;
+the browser discards stale snapshots and reconnects after a disconnect. The
+monitor stops with the server. The common Python socket authentication contract
+is exercised by `contracts/service-health/test_engine_socket.py` from each
+engine working directory, with `HEALTH_TEST_AUDIENCE` set to that engine's name.
 
 ## Adding a service
 
