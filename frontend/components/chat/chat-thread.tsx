@@ -11,6 +11,7 @@ import { useSessionToken } from "@/hooks/use-auth"
 import { useChat } from "@/hooks/use-chat"
 import { useChatFollowing } from "@/hooks/use-chat-following"
 import { useLocalPlan } from "@/hooks/use-local-plan"
+import { useThrottledNumber } from "@/hooks/use-throttled-number"
 import { ChatComposer } from "./chat-composer"
 import { useChats } from "./chats-provider"
 import { ChatPositionRail } from "./chat-position-rail"
@@ -118,6 +119,15 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
     (content: string) => void sendMessage(content, model, budget),
     [sendMessage, model, budget]
   )
+  /** Stable identities for the memoised composer's props; inline arrows would re-render it every frame. */
+  const onRenameTitle = React.useCallback(
+    (next: string) => void renameChat(chatId, next),
+    [renameChat, chatId]
+  )
+  const prune = React.useCallback(
+    () => pruneContext(model),
+    [pruneContext, model]
+  )
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const contentRef = React.useRef<HTMLDivElement>(null)
   const composerRef = React.useRef<HTMLDivElement>(null)
@@ -131,6 +141,8 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
   const contextTokensUsed =
     Math.max(0, (chatSummary?.tokens ?? 0) - prunedTokens) +
     (isSending ? (lastMessage?.tokenCount ?? 0) : 0)
+  // The figure changes on every token; the composer it feeds must not.
+  const shownContextTokens = useThrottledNumber(contextTokensUsed, 250)
 
   const showIdle = !isLoading && !isSending && lastMessage?.role === "assistant"
   const waiting = isSending && queuedAhead !== null && queuedAhead > 0
@@ -273,11 +285,11 @@ function SessionChatThread({ chatId }: ChatThreadProps) {
             compact={messages.length > 0}
             onCancel={cancel}
             title={chatSummary?.title ?? "New chat"}
-            onRenameTitle={(next) => renameChat(chatId, next)}
-            contextTokensUsed={contextTokensUsed}
+            onRenameTitle={onRenameTitle}
+            contextTokensUsed={shownContextTokens}
             unseenTokens={prunedTokens}
             draft={draft}
-            onPruneContext={() => pruneContext(model)}
+            onPruneContext={prune}
           />
         </div>
       </div>

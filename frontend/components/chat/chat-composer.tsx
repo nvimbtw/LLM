@@ -69,8 +69,16 @@ export interface ChatComposerProps {
   onPruneContext?: () => Promise<{ prunedTurns: number; prunedTokens: number }>
 }
 
-/** Composes the editor, commands, upload draft, dictation and footer; onSend receives markdown and completed uploads. */
-export function ChatComposer({
+/**
+ * Composes the editor, commands, upload draft, dictation and footer; onSend receives markdown and completed uploads.
+ *
+ * Memoised because it is the most expensive subtree in the thread — a Tiptap
+ * editor, a model picker and a frosted surface over scrolling content — and it
+ * sits under a parent that redraws while a reply streams. Its props are stable
+ * except when the composer itself changes or the throttled context figure
+ * ticks.
+ */
+function ChatComposerBase({
   onSend,
   disabled = false,
   sending = false,
@@ -477,3 +485,5 @@ export function ChatComposer({
     </div>
   )
 }
+
+export const ChatComposer = React.memo(ChatComposerBase)

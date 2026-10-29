@@ -36,8 +36,12 @@ export function useBenchmark(initialSuite: BenchmarkSuite = "language") {
   const [fetched, setFetched] = React.useState<BenchmarkRunDetail | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
+  // Bumped when the selected run finishes, so its report is read again without
+  // making the report effect depend on every poll's fresh `runs` array.
+  const [reportRevision, setReportRevision] = React.useState(0)
 
   const active = runs.find((run) => run.status === "running") ?? null
+  const activeId = active?.id_run ?? null
 
   const refresh = React.useCallback(async () => {
     const list = await listRuns(selected)
@@ -88,7 +92,7 @@ export function useBenchmark(initialSuite: BenchmarkSuite = "language") {
 
   // Poll only while something is running.
   React.useEffect(() => {
-    if (!active) return
+    if (!activeId) return
     let alive = true
     const timer = setInterval(() => {
       listRuns(selected)
@@ -98,9 +102,12 @@ export function useBenchmark(initialSuite: BenchmarkSuite = "language") {
           // The moment the run we were watching finishes, select it — the whole
           // point of starting a run is to see its report.
           const finished = list.find(
-            (r) => r.id_run === active.id_run && r.status !== "running"
+            (r) => r.id_run === activeId && r.status !== "running"
           )
-          if (finished) setSelectedId(finished.id_run)
+          if (finished) {
+            setSelectedId(finished.id_run)
+            setReportRevision((revision) => revision + 1)
+          }
         })
         .catch(() => {
           // A transient poll failure isn't worth surfacing; the next tick retries
@@ -111,7 +118,7 @@ export function useBenchmark(initialSuite: BenchmarkSuite = "language") {
       alive = false
       clearInterval(timer)
     }
-  }, [active, selected])
+  }, [activeId, selected])
 
   // Fetch the full report whenever the selection changes. Summaries in the list
   // deliberately omit it (a report embeds generated text), so it's loaded on demand.
@@ -129,7 +136,7 @@ export function useBenchmark(initialSuite: BenchmarkSuite = "language") {
     return () => {
       alive = false
     }
-  }, [selectedId, runs])
+  }, [selectedId, reportRevision])
 
   const remove = React.useCallback(
     async (id: string) => {

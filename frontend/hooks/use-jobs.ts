@@ -53,6 +53,11 @@ export function useJobs(enabled = true) {
     }
   }, [])
 
+  // The poll runs every few seconds for the life of a page. Most answers are
+  // byte-identical to the one already on screen, and adopting an identical
+  // board still re-renders every row, chart and control under it.
+  const lastBoard = React.useRef<string | null>(null)
+
   /** Refreshes only this mounted queue owner and ignores obsolete pages/responses. */
   const refresh = React.useCallback(async () => {
     const owner = lifetime.current
@@ -66,8 +71,12 @@ export function useJobs(enabled = true) {
         setHistoryPage(pageRef.current)
         next = await getBoard(pageRef.current * HISTORY_PAGE_SIZE)
       }
-      if (owner.active && mine === generation.current) {
-        setBoard(next)
+      if (mine === generation.current && owner.active) {
+        const serialized = JSON.stringify(next)
+        if (serialized !== lastBoard.current) {
+          lastBoard.current = serialized
+          setBoard(next)
+        }
         setError(null)
       }
     } catch (e) {

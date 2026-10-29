@@ -3,11 +3,11 @@ import { Geist, Geist_Mono, Fraunces } from "next/font/google"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
+import { SessionExpiryGuard } from "@/components/auth/session-expiry-guard"
 import { cn } from "@/lib/utils"
 
 import { ProjectsProvider } from "@/components/projects/projects-provider"
 import { ChatsProvider } from "@/components/chat/chats-provider"
-import { ComposerChoiceProvider } from "@/components/chat/composer-choice-provider"
 import { JobsProvider } from "@/components/jobs/jobs-provider"
 import { ToastProvider } from "@/components/ui/toast"
 import { SettingsProvider } from "@/components/settings/settings-provider"
@@ -38,6 +38,23 @@ export const metadata: Metadata = {
   title: { default: "Slate", template: "%s · Slate" },
 }
 
+// Every form in the app is submitted by JavaScript. Before hydration the
+// browser would perform the form's native GET and reload the document, so a
+// capture listener cancels the default for forms that declare no `action`.
+// React's handler still runs once it is attached.
+const FORM_SUBMIT_GUARD = `
+document.addEventListener(
+  "submit",
+  function (event) {
+    var form = event.target
+    if (form && form.tagName === "FORM" && !form.hasAttribute("action")) {
+      event.preventDefault()
+    }
+  },
+  true
+)
+`
+
 /**
  * Fonts, theme and the providers — and nothing else.
  *
@@ -50,6 +67,8 @@ export const metadata: Metadata = {
  * The providers stay above the split on purpose. `ChatsProvider` already keys
  * its load off the session, so it handles being mounted logged-out, and keeping
  * it here means logging in does not remount the tree that just fetched.
+ * `ComposerChoiceProvider` is different: it reads account choices for the
+ * composer, so it lives with the app frame instead of running on public pages.
  */
 export default function RootLayout({
   children,
@@ -68,15 +87,18 @@ export default function RootLayout({
       )}
     >
       <body>
+        <script
+          id="form-submit-guard"
+          dangerouslySetInnerHTML={{ __html: FORM_SUBMIT_GUARD }}
+        />
+        <SessionExpiryGuard />
         <ThemeProvider>
           <ToastProvider>
             <SettingsProvider>
               <SettingsDialog />
               <ChatsProvider>
                 <ProjectsProvider>
-                  <ComposerChoiceProvider>
-                    <JobsProvider>{children}</JobsProvider>
-                  </ComposerChoiceProvider>
+                  <JobsProvider>{children}</JobsProvider>
                 </ProjectsProvider>
               </ChatsProvider>
             </SettingsProvider>

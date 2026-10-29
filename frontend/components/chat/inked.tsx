@@ -1,5 +1,7 @@
 "use client"
 
+import * as React from "react"
+
 /**
  * The unit an animation is hung on: a word together with the whitespace in
  * front of it, which is the shape a token actually arrives in.
@@ -23,23 +25,56 @@
 const TOKEN = /\s*\S+|\s+/g
 
 /**
- * Text with each of those units wrapped so a newly-arrived one is *set* —
- * arriving a little loose and tightening to its own tracking, which is what
- * `word-ink` in `globals.css` draws.
+ * A settled prefix of a streaming text run.
+ *
+ * `word-ink` is an arrival animation, not a styling: once it has played the
+ * span holds nothing the characters themselves do not. Rendering the settled
+ * part as plain text is therefore identical on screen — and it is memoised, so
+ * a reply that has grown to a hundred thousand characters still costs one text
+ * node per frame instead of one span per word.
+ */
+const SettledText = React.memo(function SettledText({
+  text,
+}: {
+  text: string
+}) {
+  return <>{text}</>
+})
+
+/**
+ * How much trailing text keeps its arrival animation.
+ *
+ * Anything nearer the end may still be mid-animation, so it stays a live run of
+ * spans; the window is roughly a long line and outlasts `word-ink-in`, which
+ * means a word reaches the settled prefix only after it has finished moving.
+ */
+const LIVE_WINDOW = 240
+
+/** Offset where the still-animating tail begins; 0 while the whole run is live. */
+function liveStart(text: string): number {
+  if (text.length <= LIVE_WINDOW) return 0
+  const from = text.length - LIVE_WINDOW
+  const at = Math.max(text.lastIndexOf(" ", from), text.lastIndexOf("\n", from))
+  return at < 0 ? 0 : at + 1
+}
+
+/**
+ * The live edge: text with each arrival unit wrapped so a newly-arrived one is
+ * *set* — arriving a little loose and tightening to its own tracking, which is
+ * what `word-ink` in `globals.css` draws.
  *
  * Keyed by index deliberately. React keeps the units already on screen mounted,
  * so only the ones this render added animate; keying by content would remount a
  * word every time the same one arrived again later in the sentence, and the
- * reply would twinkle. A settled unit is never re-created — its chunk can only
- * grow while it is the last one, and a chunk that has something after it is
- * final.
+ * reply would twinkle. A unit that has something after it is final, which is
+ * exactly the boundary `Inked` settles on.
  *
  * The word is still an approximation of the arrival unit and knowingly so: the
  * animation fires on a word's *first* fragment, and the rest of the word grows
  * inside a span that is already mid-movement. Waiting for the word to complete
  * is worse — it animates type the reader can already read — and animating the
  * true unit would mean threading token offsets through the parser, since
- * `RichContent` is handed the whole accumulated string and re-parses it.
+ * `RichContent` is handed the whole accumulated string.
  *
  * Note for whoever comes next: pairing the space with the word does *not*
  * narrow the leading edge. Measured against a settled line, the tracking pushes
@@ -47,7 +82,7 @@ const TOKEN = /\s*\S+|\s+/g
  * span tracks the space too, which is marginally wider still. The knob for how
  * far the edge travels is the 0.055em delta in `globals.css`, not this split.
  */
-export function Inked({ text }: { text: string }) {
+function LiveInk({ text }: { text: string }) {
   return (
     <>
       {(text.match(TOKEN) ?? []).map((part, i) =>
@@ -59,6 +94,24 @@ export function Inked({ text }: { text: string }) {
           </span>
         )
       )}
+    </>
+  )
+}
+
+/**
+ * Text of one streaming run: the settled prefix, which is plain, and the live
+ * edge, which is animated word by word.
+ *
+ * Splitting them is what keeps a growing paragraph from costing one span per
+ * word per frame; see `SettledText` and `LIVE_WINDOW`.
+ */
+export function Inked({ text }: { text: string }) {
+  const live = liveStart(text)
+  if (live === 0) return <LiveInk text={text} />
+  return (
+    <>
+      <SettledText text={text.slice(0, live)} />
+      <LiveInk text={text.slice(live)} />
     </>
   )
 }

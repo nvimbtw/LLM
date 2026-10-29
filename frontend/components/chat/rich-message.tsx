@@ -103,21 +103,48 @@ interface Ctx {
 // Block containers where whitespace between children is just formatting noise.
 const BLOCK_CONTAINERS = new Set(["root", "ordered list", "list"])
 
+/**
+ * One top-level block, rendered once per change.
+ *
+ * The parser reuses every node a new token did not touch, so a block whose node
+ * is still the same object has nothing new to say. Re-rendering all of them was
+ * what made a long reply cost more with every token; comparing six fields is
+ * the whole price of skipping one.
+ */
+const RichBlock = React.memo(
+  function RichBlock({ node, ctx }: { node: MNode; ctx: Ctx }) {
+    return <>{renderNode(node, ctx)}</>
+  },
+  (previous, next) =>
+    previous.node === next.node &&
+    previous.ctx.streaming === next.ctx.streaming &&
+    previous.ctx.liveThinking === next.ctx.liveThinking &&
+    previous.ctx.showReasoning === next.ctx.showReasoning &&
+    previous.ctx.isLast === next.ctx.isLast
+)
+
 function renderChildren(node: MElement, ctx: Ctx): React.ReactNode {
   const children = BLOCK_CONTAINERS.has(node.type)
     ? node.children.filter((c) => !(isText(c) && c.value.trim() === ""))
     : node.children
 
-  return children.map((child, i) => (
-    <React.Fragment key={i}>
-      {renderNode(child, {
-        ...ctx,
-        // Only meaningful at the top level: a thinking block nested inside a
-        // paragraph is not the message's trailing node whatever its index says.
-        isLast: node.type === "root" && i === children.length - 1,
-      })}
-    </React.Fragment>
-  ))
+  return children.map((child, i) => {
+    const childCtx = {
+      ...ctx,
+      // Only meaningful at the top level: a thinking block nested inside a
+      // paragraph is not the message's trailing node whatever its index says.
+      isLast: node.type === "root" && i === children.length - 1,
+    }
+    return (
+      <React.Fragment key={i}>
+        {node.type === "root" ? (
+          <RichBlock node={child} ctx={childCtx} />
+        ) : (
+          renderNode(child, childCtx)
+        )}
+      </React.Fragment>
+    )
+  })
 }
 
 function renderNode(node: MNode, ctx: Ctx): React.ReactNode {

@@ -9,6 +9,7 @@ import {
   loadChatHistory,
 } from "@/lib/chat-history"
 import { groupTurns, type ChatMessage } from "@/lib/chat-messages"
+import { FrameCoalescer } from "@/lib/frame-coalescer"
 import {
   applyChatMessagesChange,
   ChatSession,
@@ -117,9 +118,31 @@ export function useChat(chatId: string) {
     },
     [chatId, catalog]
   )
+  /**
+   * Folds the newest streamed message into state once per animation frame.
+   *
+   * A reply arrives as one notification per token, and each one used to redraw
+   * the whole message. Everything between two frames is superseded by the last
+   * value anyway — the message is accumulated, not appended — so the buffer
+   * only ever has to hold one.
+   */
+  const [streamQueue] = React.useState(
+    () =>
+      new FrameCoalescer<ChatMessage>((message) =>
+        setMessages((previous) =>
+          applyChatMessagesChange(previous, { type: "stream", message })
+        )
+      )
+  )
   /** Applies session notifications without performing effects inside React's replayable updater. */
   const changeMessages = React.useCallback(
     (change: ChatMessagesChange) => {
+      if (change.type === "stream") {
+        streamQueue.push(change.message)
+        return
+      }
+      // A new turn or a history read must not overtake prose already on screen.
+      streamQueue.flush()
       if (change.type === "start") {
         invalidateChatHistory(chatId)
         setError(null)
@@ -128,8 +151,9 @@ export function useChat(chatId: string) {
         catalog.rememberSummary(change.summary, change.version)
       setMessages((previous) => applyChatMessagesChange(previous, change))
     },
-    [chatId, catalog]
+    [chatId, catalog, streamQueue]
   )
+  React.useEffect(() => () => streamQueue.dispose(), [chatId, streamQueue])
   /** Reads current preferences at send time and applies a floor only to its matching model. */
   const sendOptions = React.useCallback((modelId: string): ChatSendOptions => {
     const {

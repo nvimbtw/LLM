@@ -127,6 +127,7 @@ export function streamChat(
 ): ChatStreamHandle {
   const requestId = crypto.randomUUID()
   const ws = new WebSocket(`${WS_URL}/ws/chats/${chatId}`)
+  const token = getToken()
   let settled = false
 
   const settle = (fn: () => void) => {
@@ -141,7 +142,7 @@ export function streamChat(
   }
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ token: getToken() }))
+    ws.send(JSON.stringify({ token }))
   }
 
   ws.onmessage = (event) => {
@@ -250,7 +251,7 @@ export function streamChat(
       }
       case "error":
         if (msg.error === AUTH_FAILED_MESSAGE) {
-          settle(() => handleSessionExpired())
+          settle(() => handleSessionExpired(token))
           break
         }
         settle(() => handlers.onError(msg.error || "Something went wrong."))

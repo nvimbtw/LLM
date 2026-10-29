@@ -10,11 +10,20 @@ mod tests;
 use auth::password;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
+/// Connections a process keeps available when `DB_MAX_CONNECTIONS` is unset.
+///
+/// The pool is held for milliseconds per query rather than for the life of a
+/// stream, so this is about how many queries may overlap: one turn's history
+/// read, another turn's append, the sidebar's catalog read and a queue poll are
+/// already four. Five left no headroom beyond a single reader, and a sixth
+/// caller waited instead of running.
+const DEFAULT_MAX_CONNECTIONS: u32 = 16;
+
 /// Connect to the supplied database, apply migrations, and seed missing login accounts.
 /// Returns the pool or a connection, migration, password-hashing, or insertion error.
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(max_connections())
         .connect(database_url)
         .await?;
 
@@ -22,6 +31,15 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
     insert_users(&pool).await?;
 
     Ok(pool)
+}
+
+/// Pool size from `DB_MAX_CONNECTIONS`, clamped to a usable range; unset or malformed values use the default.
+fn max_connections() -> u32 {
+    std::env::var("DB_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| (1..=256).contains(value))
+        .unwrap_or(DEFAULT_MAX_CONNECTIONS)
 }
 
 /// Seed the admin and agent accounts in the migrated pool without changing existing users.

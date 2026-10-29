@@ -92,6 +92,7 @@ export function streamGymRun(
   handlers: GymRunHandlers
 ): () => void {
   const ws = new WebSocket(`${WS_URL}/ws/gyms/runs/${runId}`)
+  const token = getToken()
   let settled = false
 
   const settle = (fn: () => void) => {
@@ -106,7 +107,7 @@ export function streamGymRun(
   }
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ token: getToken() }))
+    ws.send(JSON.stringify({ token }))
   }
 
   ws.onmessage = (event) => {
@@ -210,7 +211,7 @@ export function streamGymRun(
         break
       case "error":
         if (msg.error === AUTH_FAILED_MESSAGE) {
-          settle(() => handleSessionExpired())
+          settle(() => handleSessionExpired(token))
           break
         }
         settle(() => handlers.onError(msg.error || "Something went wrong."))

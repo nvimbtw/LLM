@@ -169,30 +169,42 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
   )
 
   const current = snapshot.token === token ? snapshot : null
-  return (
-    <ChatsContext.Provider
-      value={{
-        conversations: current?.recent ?? NO_CHATS,
-        isLoading: Boolean(token) && (!current || !current.recentLoaded),
-        error: current?.recentError ?? null,
-        archive: current?.archive ?? NO_CHATS,
-        isArchiveLoading:
-          Boolean(token) &&
-          (!current || (current.archive === null && !current.archiveError)),
-        archiveError: current?.archiveError ?? null,
-        loadArchive: catalog.loadArchive,
-        catalog,
-        refresh,
-        createChat,
-        takePendingMessage,
-        renameChat,
-        deleteChat,
-        assignProject,
-      }}
-    >
-      {children}
-    </ChatsContext.Provider>
+  /**
+   * One value per actual change, so a chat page that redraws while a reply
+   * streams does not hand every consumer (the sidebar included) a new context.
+   */
+  const value = React.useMemo<ChatsContextValue>(
+    () => ({
+      conversations: current?.recent ?? NO_CHATS,
+      isLoading: Boolean(token) && (!current || !current.recentLoaded),
+      error: current?.recentError ?? null,
+      archive: current?.archive ?? NO_CHATS,
+      isArchiveLoading:
+        Boolean(token) &&
+        (!current || (current.archive === null && !current.archiveError)),
+      archiveError: current?.archiveError ?? null,
+      loadArchive: catalog.loadArchive,
+      catalog,
+      refresh,
+      createChat,
+      takePendingMessage,
+      renameChat,
+      deleteChat,
+      assignProject,
+    }),
+    [
+      current,
+      token,
+      catalog,
+      refresh,
+      createChat,
+      takePendingMessage,
+      renameChat,
+      deleteChat,
+      assignProject,
+    ]
   )
+  return <ChatsContext.Provider value={value}>{children}</ChatsContext.Provider>
 }
 
 /** Returns the session's archive and mutation actions; requires a ChatsProvider. */

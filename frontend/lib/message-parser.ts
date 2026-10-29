@@ -31,7 +31,7 @@
 // Tags may carry attributes after a `|` separator (e.g. `href='...'`).
 // `<|divider|>` is void (no closing tag).
 
-import { splitMath } from "./math-parser"
+import { MATH_LITERAL, splitText } from "./math-parser"
 
 // Backend token name -> render node type. Names not listed pass through
 // unchanged (quote, divider, italic, bold, list, item, link, …).
@@ -91,7 +91,8 @@ export function callOf(node: MNode): ToolCall | null {
   const key = ARGUMENT_KEYS.find((k) => typeof source[k] === "string")
 
   return {
-    tool: typeof fields.tool === "string" ? fields.tool : String(fields.name ?? ""),
+    tool:
+      typeof fields.tool === "string" ? fields.tool : String(fields.name ?? ""),
     argument: key ? String(source[key]) : "",
   }
 }
@@ -166,20 +167,117 @@ function parseOpenTag(inner: string): {
   return { name, attrs }
 }
 
-export function parseMessage(input: string): MElement {
-  const root: MElement = { type: "root", children: [] }
-  const stack: MElement[] = [root]
+/** One open element and where it sits in its parent, enough to copy the path back to the root. */
+interface Frame {
+  node: MElement
+  index: number
+}
 
-  const pushText = (text: string) => {
-    if (!text) return
-    stack[stack.length - 1].children.push({ type: "text", value: text })
+/**
+ * Scanner state left behind by the previous parse of a prefix of this message.
+ *
+ * `root` deliberately omits the trailing text node: everything after `offset`
+ * is still-arriving prose, and dropping it here is what makes the next parse
+ * resume at the frontier instead of re-reading the message. The cost of the
+ * omission is one shallow copy of the open path when the tree is handed out.
+ */
+interface ParseCheckpoint {
+  source: string
+  output: MElement
+  root: MElement
+  stack: Frame[]
+  offset: number
+}
+
+/**
+ * One message's checkpoint. Only one reply streams at a time, so one entry is
+ * enough; a message that is not a prefix of it (a second chat, a user bubble
+ * parsed in between) simply takes the full-parse path.
+ */
+let checkpoint: ParseCheckpoint | null = null
+
+/**
+ * Copies the path from `deepest` to the root, replacing the deepest open
+ * element's children with `children`.
+ *
+ * Unchanged siblings keep their identity, so a memoised renderer can skip every
+ * block a new token did not touch.
+ */
+function copyPath(
+  stack: Frame[],
+  children: MNode[]
+): { root: MElement; stack: Frame[] } {
+  const nodes = stack.map((frame) => frame.node)
+  const deepest = nodes.length - 1
+  nodes[deepest] = { ...nodes[deepest], children }
+  for (let i = deepest; i > 0; i--) {
+    const parent = nodes[i - 1]
+    const replaced = parent.children.slice()
+    replaced[stack[i].index] = nodes[i]
+    nodes[i - 1] = { ...parent, children: replaced }
   }
+  return {
+    root: nodes[0],
+    stack: nodes.map((node, index) => ({ node, index: stack[index].index })),
+  }
+}
 
-  let last = 0
+/** Appends finished nodes to the deepest open element and returns the new tree and path. */
+function append(
+  stack: Frame[],
+  nodes: MNode[]
+): { root: MElement; stack: Frame[] } {
+  const current = stack[stack.length - 1]
+  return copyPath(stack, [...current.node.children, ...nodes])
+}
+
+/** True when text here is literal — code or a tool call — and must not be read for maths. */
+function insideLiteral(stack: Frame[]): boolean {
+  return stack.some((frame) => MATH_LITERAL.has(frame.node.type))
+}
+
+/** Appends a run of prose, lifting out any complete maths once the run has stopped growing. */
+function appendProse(
+  stack: Frame[],
+  text: string
+): { root: MElement; stack: Frame[] } {
+  if (!text) return { root: stack[0].node, stack }
+  const parts = insideLiteral(stack) ? null : splitText(text)
+  return append(stack, parts ?? [{ type: "text", value: text }])
+}
+
+/**
+ * Parses model markup into the render tree, reusing the previous result while
+ * the same message keeps growing.
+ *
+ * The parser is called once per token on the accumulated reply, so a full
+ * re-parse each time is quadratic in the reply's length. Resuming from the last
+ * complete tag makes a token cost its own length, and identity-preserving path
+ * copies make the unchanged part of the message free to re-render. A caller
+ * that passes a string which is not an extension of the previous one gets an
+ * ordinary full parse.
+ */
+export function parseMessage(input: string): MElement {
+  if (checkpoint?.source === input) return checkpoint.output
+
+  const resumed =
+    checkpoint !== null && input.startsWith(checkpoint.source)
+      ? checkpoint
+      : null
+  const stack: Frame[] = resumed
+    ? resumed.stack
+    : [{ node: { type: "root", children: [] }, index: 0 }]
+  let tree = resumed ? resumed.root : stack[0].node
+  let last = resumed?.offset ?? 0
+
   let m: RegExpExecArray | null
-  TAG_RE.lastIndex = 0
+  TAG_RE.lastIndex = last
   while ((m = TAG_RE.exec(input))) {
-    if (m.index > last) pushText(input.slice(last, m.index))
+    if (m.index > last) {
+      const next = appendProse(stack, input.slice(last, m.index))
+      tree = next.root
+      stack.splice(0, stack.length, ...next.stack)
+    }
     last = TAG_RE.lastIndex
 
     const inner = m[1]
@@ -188,7 +286,7 @@ export function parseMessage(input: string): MElement {
       // name so `<|/par|>` matches the `paragraph` node opened by `<|par|>`.
       const name = mapTokenName(inner.slice(1).trim())
       for (let i = stack.length - 1; i > 0; i--) {
-        if (stack[i].type === name) {
+        if (stack[i].node.type === name) {
           stack.length = i
           break
         }
@@ -198,13 +296,20 @@ export function parseMessage(input: string): MElement {
 
     const { name, attrs } = parseOpenTag(inner)
     const node: MElement = { type: name, attrs, children: [] }
-    stack[stack.length - 1].children.push(node)
-    if (!VOID_TAGS.has(name)) stack.push(node)
+    const index = stack[stack.length - 1].node.children.length
+    const next = append(stack, [node])
+    tree = next.root
+    stack.splice(0, stack.length, ...next.stack)
+    if (!VOID_TAGS.has(name)) stack.push({ node, index })
   }
 
-  if (last < input.length) pushText(input.slice(last))
+  // The prose after the last tag is the live edge: it is not stored in the
+  // checkpoint, it is attached to the copy that is handed out.
+  const tail = input.slice(last)
+  const output = tail ? appendProse(stack, tail).root : tree
 
-  return splitMath(root)
+  checkpoint = { source: input, output, root: tree, stack, offset: last }
+  return output
 }
 
 /** Flattens an element's descendant text — used for code, which is plain text. */
