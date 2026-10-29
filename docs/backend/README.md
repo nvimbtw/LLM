@@ -23,6 +23,11 @@ After migrations, `create_pool` calls `insert_users` to seed missing `admin` and
 levels; other insertion failures stop startup. Development login credentials live
 in [`AGENTS.md`](../../AGENTS.md#application-login).
 
+The pool itself is sized by `DB_MAX_CONNECTIONS` (default 16, clamped to 1–256).
+A connection is held for the length of a query rather than of a stream, so the
+number bounds how many queries may overlap — a turn's history read, another
+turn's append, the sidebar's catalog read and a queue poll are already four.
+
 `query_as!`/`query!` check against a live schema at **compile** time, so a build
 needs either `DATABASE_URL` pointing at a migrated database or the checked-in
 `.sqlx/` cache and `SQLX_OFFLINE=true`. The container images use the second —

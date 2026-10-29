@@ -136,6 +136,7 @@ cargo run
 | Key | Meaning |
 | --- | --- |
 | `DATABASE_URL` | The backend's Postgres. Read at build time *and* runtime. |
+| `DB_MAX_CONNECTIONS` | Connections the backend's pool keeps (default 16, clamped to 1–256). |
 | `JWT_SECRET` | Signs user sessions. |
 | `LLM_ENGINE_DIR`, `LLM_ENGINE_PYTHON`, `LLM_ENGINE_PORT` | Where the LLM engine lives and how to start it. |
 | `LLM_ENGINE_SERVICE_SECRET` | Authenticates the backend→LLM-engine hop. Unset leaves the LLM engine open, and it says so at startup. |

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, type RefObject } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, type RefObject } from "react"
 import type { ChatMessage } from "@/lib/chat-messages"
 import { useChatPosition } from "@/hooks/use-chat-position"
 import "./chat-position-rail.css"
@@ -22,6 +22,41 @@ function excerpt(text: string): string {
     .slice(0, 400)
 }
 
+/**
+ * One tick in the rail.
+ *
+ * The rail is a child of the thread, and the thread redraws while a reply
+ * streams, so every tick used to be rebuilt — label normalisation and button
+ * included — on every frame, for questions that had not changed. A tick only
+ * depends on its own message, its index, whether it is current, and a stable
+ * jump callback, so all of those bailing out is the normal case.
+ */
+const PositionTick = memo(function PositionTick({
+  message,
+  index,
+  messageIndex,
+  active,
+  onJump,
+}: {
+  message: ChatMessage
+  index: number
+  messageIndex: number
+  active: boolean
+  onJump: (messageIndex: number) => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`Question ${index + 1}: ${excerpt(message.content)}`}
+      aria-current={active ? "location" : undefined}
+      className="fluid-chat-tick"
+      onClick={() => onJump(messageIndex)}
+    >
+      <span aria-hidden="true" />
+    </button>
+  )
+})
+
 /** Presents fluid exchange strokes and neutral previews; proximity changes DOM styles without rerendering the conversation. */
 export function ChatPositionRail({
   messages,
@@ -40,6 +75,14 @@ export function ChatPositionRail({
     scrollRef,
     contentRef,
     questions.length
+  )
+  /** Stable for the life of a conversation, so a tick is skipped when nothing about it changed. */
+  const jump = useCallback(
+    (messageIndex: number) => {
+      onNavigate()
+      jumpToMessage(messageIndex)
+    },
+    [onNavigate, jumpToMessage]
   )
   const railRef = useRef<HTMLElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
@@ -214,19 +257,14 @@ export function ChatPositionRail({
         className="fluid-chat-index pointer-events-auto"
       >
         {questions.map(({ message, messageIndex }, index) => (
-          <button
+          <PositionTick
             key={messageIndex}
-            type="button"
-            aria-label={`Question ${index + 1}: ${excerpt(message.content)}`}
-            aria-current={index === activeIndex ? "location" : undefined}
-            className="fluid-chat-tick"
-            onClick={() => {
-              onNavigate()
-              jumpToMessage(messageIndex)
-            }}
-          >
-            <span aria-hidden="true" />
-          </button>
+            message={message}
+            index={index}
+            messageIndex={messageIndex}
+            active={index === activeIndex}
+            onJump={jump}
+          />
         ))}
       </nav>
       <div

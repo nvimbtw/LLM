@@ -15,8 +15,10 @@
 import { isText, type MElement, type MNode } from "./message-parser"
 
 // Contents that are already literal: a dollar sign in a shell snippet or in a
-// tool call's JSON is a dollar sign, not the start of an equation.
-const LITERAL = new Set(["code block", "code inline", "tool-call"])
+// tool call's JSON is a dollar sign, not the start of an equation. Exported
+// because the streaming parser decides this per text run rather than once per
+// finished tree.
+export const MATH_LITERAL = new Set(["code block", "code inline", "tool-call"])
 
 /**
  * Display `$$…$$` first, so a displayed equation is never read as two inline
@@ -61,8 +63,12 @@ function boxedEnd(value: string, start: number): number | null {
 /**
  * Splits complete delimited math and balanced bare boxed answers; unfinished streams stay text.
  * Display math consumes adjacent layout newlines because its renderer supplies that spacing.
+ *
+ * Exported so the streaming parser can lift math out of one text node as soon
+ * as that node stops growing, instead of re-walking the whole message; returns
+ * null when the value holds no complete equation.
  */
-function splitText(value: string): MNode[] | null {
+export function splitText(value: string): MNode[] | null {
   const out: MNode[] = []
   let last = 0
   let m: RegExpExecArray | null
@@ -96,7 +102,7 @@ function splitText(value: string): MNode[] | null {
 
 /** Rewrites the tree in place, returning it for chaining onto a parse. */
 export function splitMath(root: MElement): MElement {
-  if (LITERAL.has(root.type)) return root
+  if (MATH_LITERAL.has(root.type)) return root
 
   const children: MNode[] = []
   for (const child of root.children) {

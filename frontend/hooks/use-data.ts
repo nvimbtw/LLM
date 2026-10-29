@@ -77,29 +77,35 @@ export function useStoredDatasets(refreshKey = 0): Loaded<Dataset[]> & {
 }
 
 export function useDataset(id: string, refreshKey = 0): Loaded<Dataset | null> {
-  const [state, setState] = React.useState<Loaded<Dataset | null>>({
-    data: null,
-    isLoading: true,
-    error: null,
-  })
+  // The id a result belongs to is stored with it, so navigating to another
+  // dataset shows its own loading frame instead of the previous one's content.
+  // A refresh of the same id keeps the current content visible while it reloads.
+  const [loaded, setLoaded] = React.useState<{
+    key: string
+    data: Dataset | null
+    error: string | null
+  } | null>(null)
 
   React.useEffect(() => {
     let active = true
     getDataset(id)
-      .then(
-        (data) => active && setState({ data, isLoading: false, error: null })
-      )
-      .catch(
-        (e) =>
-          active &&
-          setState({ data: null, isLoading: false, error: message(e) })
-      )
+      .then((data) => {
+        if (active) setLoaded({ key: id, data, error: null })
+      })
+      .catch((e) => {
+        if (active) setLoaded({ key: id, data: null, error: message(e) })
+      })
     return () => {
       active = false
     }
   }, [id, refreshKey])
 
-  return state
+  const fresh = loaded !== null && loaded.key === id
+  return {
+    data: fresh ? loaded.data : null,
+    isLoading: !fresh,
+    error: fresh ? loaded.error : null,
+  }
 }
 
 export function useDocuments(

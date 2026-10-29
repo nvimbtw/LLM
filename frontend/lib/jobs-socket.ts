@@ -1,4 +1,7 @@
-import { WS_URL, getToken } from "./api"
+import { WS_URL, getToken, handleSessionExpired } from "./api"
+
+// The backend's exact error frame for a bad/expired token (api/src/ws.rs).
+const AUTH_FAILED_MESSAGE = "authentication failed"
 
 // One job's live frames, over one socket:
 //
@@ -64,6 +67,16 @@ export function attachJob(
         handlers.onInactive?.()
         return
       case "error":
+        if (msg.error === AUTH_FAILED_MESSAGE) {
+          handleSessionExpired(token)
+          closed = true
+          try {
+            ws.close()
+          } catch {
+            // already closing
+          }
+          return
+        }
         handlers.onError?.(
           typeof msg.error === "string" ? msg.error : "Something went wrong."
         )

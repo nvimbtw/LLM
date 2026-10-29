@@ -62,6 +62,21 @@ Sidebar hover/focus warms conversation messages as well as the route; composer
 ghosts preserve its footprint while loading. See [Chat loading](chat-loading.md)
 for cache freshness, session isolation, and selection readiness.
 
+## Sessions and forms
+
+`lib/api.ts` clears only the session that authorized a rejected request, so a
+late 401 from a replaced account cannot log out the newer one; sockets pass the
+token they opened with for the same reason. A mounted `SessionExpiryGuard`
+answers expiry with a client navigation to `/login`, and repeated rejections on
+one path redirect once. `/docs`, `/login` and `/signup` keep rendering: they
+discard a stale token without leaving the page. Without a mounted shell the
+adapter falls back to a document navigation.
+
+Forms are submitted by JavaScript. Before hydration the browser would perform a
+native GET on submit and reload the page, so `app/layout.tsx` installs a capture
+listener that cancels the default for forms without an `action`. React's handler
+still runs after hydration.
+
 ## Styling
 
 - Use the shared `PageHeader` for page titles, back links and actions. Keep its

@@ -260,6 +260,74 @@ export function mapModel(raw: RawModel): Model {
   }
 }
 
+/** How long a registry read is reused by later mounts; mutations bump the caller's refresh key instead. */
+const MODELS_CACHE_MS = 30_000
+
+interface ModelsCacheEntry {
+  token: string | null
+  key: unknown
+  at: number
+  models: Model[]
+}
+
+/**
+ * One registry read shared by every mounted caller within the window.
+ *
+ * The chat page mounts two of them (the composer and its picker) and the train
+ * board three, all asking `/models` for the same list on the same paint; each
+ * was a separate round trip through the backend and the database.
+ */
+let modelsCache: ModelsCacheEntry | null = null
+let modelsInFlight: {
+  token: string | null
+  key: unknown
+  promise: Promise<Model[]>
+} | null = null
+
+/**
+ * Returns the finished-model list for one session and refresh key, from the
+ * cache while it is fresh, from the read already in flight, or from the
+ * registry.
+ *
+ * Both parts are identity: the token decides which private rows are visible,
+ * and a caller that has just changed the registry (a delete, a finished run)
+ * passes a new refresh key and gets a new read.
+ */
+function loadModels(token: string | null, key: unknown): Promise<Model[]> {
+  if (
+    modelsCache &&
+    modelsCache.token === token &&
+    modelsCache.key === key &&
+    Date.now() - modelsCache.at < MODELS_CACHE_MS
+  ) {
+    return Promise.resolve(modelsCache.models)
+  }
+  if (
+    modelsInFlight &&
+    modelsInFlight.token === token &&
+    modelsInFlight.key === key
+  ) {
+    return modelsInFlight.promise
+  }
+
+  const promise = readModel("/models", token)
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Unable to load models.")
+      const data: { models: RawModel[] } = await response.json()
+      if (!Array.isArray(data.models))
+        throw new Error("Model registry response is invalid.")
+      const models = modelsFromRegistry(data.models)
+      modelsCache = { token, key, at: Date.now(), models }
+      return models
+    })
+    .finally(() => {
+      if (modelsInFlight?.promise === promise) modelsInFlight = null
+    })
+
+  modelsInFlight = { token, key, promise }
+  return promise
+}
+
 /**
  * Removes one model: its row, its weights on disk, and the `id_model` on any
  * message that referenced it (detached, not deleted).
@@ -273,6 +341,8 @@ export async function deleteModel(id: string): Promise<void> {
   if (!res.ok) {
     throw new Error((await res.text()) || "Failed to delete the model.")
   }
+  // Other mounts may still be holding the row this just removed.
+  modelsCache = null
 }
 
 /** Maps registry models while retaining usable public rows whose private training provenance has been deliberately removed. */
@@ -294,16 +364,8 @@ export function useModels(refreshKey?: unknown) {
   } | null>(null)
   React.useEffect(() => {
     if (identityLoading) return
-    const controller = new AbortController()
     let active = true
-    void readModel("/models", token, controller.signal)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Unable to load models.")
-        const data: { models: RawModel[] } = await response.json()
-        if (!Array.isArray(data.models))
-          throw new Error("Model registry response is invalid.")
-        return modelsFromRegistry(data.models)
-      })
+    loadModels(token, refreshKey)
       .then((models) => {
         if (active) setState({ token, refreshKey, models, error: null })
       })
@@ -321,7 +383,6 @@ export function useModels(refreshKey?: unknown) {
       })
     return () => {
       active = false
-      controller.abort()
     }
   }, [token, refreshKey, identityLoading])
   const current =

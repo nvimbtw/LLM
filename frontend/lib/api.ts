@@ -16,11 +16,20 @@ export function getToken(): string | null {
 // refetch — the "storage" event only fires in *other* tabs.
 export const SESSION_CHANGED_EVENT = "session-changed"
 
+// Fired when a request proves the stored session is no longer accepted. The app
+// shell answers it with a client navigation, so expiry never reloads the
+// document and discards in-page state.
+export const SESSION_EXPIRED_EVENT = "session-expired"
+
+let expiryReportedFor: string | null = null
+let expirySubscribers = 0
+
 function emitSessionChanged() {
   window.dispatchEvent(new Event(SESSION_CHANGED_EVENT))
 }
 
 export function setToken(token: string) {
+  expiryReportedFor = null
   localStorage.setItem(TOKEN_KEY, token)
   emitSessionChanged()
 }
@@ -54,14 +63,45 @@ export function authHeaders(): HeadersInit {
   }
 }
 
-/** Clears the session and lands the user on /login (token expired/invalid). */
-export function handleSessionExpired() {
-  clearSession()
-  // Guard against a redirect loop: a 401 on the login page (e.g. a stray
-  // background fetch) must not reload it, or we spin reloading /login forever.
-  if (window.location.pathname !== "/login") {
+/**
+ * Registers the app shell's client-navigation handler for a rejected session
+ * and returns its cleanup. While a handler is mounted, expiry never reloads the
+ * document; without one, `handleSessionExpired` falls back to a document load.
+ */
+export function subscribeSessionExpiry(onExpired: () => void): () => void {
+  expirySubscribers += 1
+  window.addEventListener(SESSION_EXPIRED_EVENT, onExpired)
+  return () => {
+    expirySubscribers -= 1
+    window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired)
+  }
+}
+
+/**
+ * Clears the session that a 401 proved invalid and asks the mounted shell to
+ * leave the page without a document reload. `expectedToken` is the token the
+ * failed request was sent with, so a late rejection from a replaced session
+ * cannot clear the newer one. Returns whether a stored session was cleared;
+ * repeats on the same path are ignored so a burst redirects once.
+ */
+export function handleSessionExpired(
+  expectedToken: string | null = getToken()
+): boolean {
+  const currentToken = getToken()
+  if (expectedToken !== currentToken) return false
+  const cleared = currentToken !== null
+  if (cleared) clearSession()
+
+  const path = window.location.pathname
+  if (expiryReportedFor === path) return cleared
+  expiryReportedFor = path
+
+  if (expirySubscribers > 0) {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+  } else if (path !== "/login") {
     window.location.assign("/login")
   }
+  return cleared
 }
 
 /**
@@ -85,7 +125,7 @@ export async function apiFetch(
     const currentToken = getToken()
     const currentAuthorization = currentToken ? `Bearer ${currentToken}` : null
     if (headers.get("Authorization") === currentAuthorization)
-      handleSessionExpired()
+      handleSessionExpired(currentToken)
     throw new Error("Your session has expired. Please log in again.")
   }
   return response

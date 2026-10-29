@@ -13,4 +13,9 @@ replace the active module contracts or authorize implementation work.
 - [Rust backend refactor and independent review](2026-10-13-rust-backend-refactor.md):
   ownership boundaries, code/comment examples, PostgreSQL and wire verification, and remaining debt.
 
+- [Performance audit: front end, Rust backend and the seam](2026-10-29-performance.md):
+  measured per-token costs, the streaming optimizations implemented (resumable
+  parse, per-frame state, memoised blocks, shared registry reads), verification
+  evidence and the prioritized remainder.
+
 Discussion: [Discord DOC-4](https://discord.com/channels/1538659898383011961/1559534257695891487).
